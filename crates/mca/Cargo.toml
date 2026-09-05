@@ -9,3 +9,5 @@ name = "sekai_mca"
 path = "src/lib.rs"
 
 [dependencies]
+sekai-core = { path = "../core" }
+thiserror = "2"

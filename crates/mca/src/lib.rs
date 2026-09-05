@@ -1,14 +1,18 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! Region (`.mca`) file reading and atomic rewriting.
+//!
+//! Rationale: the MCA sector layout (8 KiB header, 4 KiB sectors, `length +
+//! type + body` payloads) is the only format knowledge in the workspace
+//! besides NBT. This crate owns both directions - parsing into
+//! [`sekai_core::RawChunk`] views and rebuilding files from exact CAS bytes -
+//! so byte-perfect rollback never depends on ad-hoc format code in
+//! `engine`. Live files are never mutated in place: writers always swap via
+//! same-directory temp file + `rename`.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+mod error;
+mod reader;
+mod region;
+mod writer;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use error::McaError;
+pub use reader::RegionFile;
+pub use writer::RegionFileWriter;
