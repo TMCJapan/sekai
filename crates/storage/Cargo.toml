@@ -1,0 +1,10 @@
+[package]
+name = "sekai-storage"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "sekai_storage"
+path = "src/lib.rs"
+
+[dependencies]

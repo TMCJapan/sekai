@@ -1,0 +1,13 @@
+[package]
+name = "sekai-nbt"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "sekai_nbt"
+path = "src/lib.rs"
+
+[dependencies]
+sekai-core = { path = "../core" }
+fastnbt = "2"
+flate2 = "1"
