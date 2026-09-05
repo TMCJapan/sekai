@@ -1,0 +1,9 @@
+[advisories]
+vulnerability = "deny"
+unmaintained = "warn"
+
+[licenses]
+unacceptable = [{ name = "GPL-3.0" }]
+
+[bans]
+multiple-versions = "warn"

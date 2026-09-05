@@ -7,10 +7,6 @@ name = "cli"
 version = "0.1.0"
 
 [[package]]
-name = "core"
-version = "0.1.0"
-
-[[package]]
 name = "engine"
 version = "0.1.0"
 
@@ -20,6 +16,10 @@ version = "0.1.0"
 
 [[package]]
 name = "nbt"
+version = "0.1.0"
+
+[[package]]
+name = "sekai-core"
 version = "0.1.0"
 
 [[package]]
