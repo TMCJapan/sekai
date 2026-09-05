@@ -140,13 +140,20 @@ jobs:
         with:
           key: test-${{ matrix.target }}
 
+      # After the cache step on purpose: `rust-cache` restores `~/.cargo/bin`,
+      # which is where `install-action` drops the binary.
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@7b8d4719ee4aaa279bdf55df38dacb9ebfe12a6c
+        with:
+          tool: cargo-nextest
+
       # Kept sequential: both invocations build the dev profile, so they would
       # queue on the same `target/<triple>/debug` cargo build lock anyway.
       - name: Clippy
         run: cargo clippy --workspace --all-targets --target ${{ matrix.target }} -- -D warnings
 
       - name: Test
-        run: cargo test --workspace --target ${{ matrix.target }}
+        run: cargo nextest run --workspace --target ${{ matrix.target }}
 
   # Intentionally not gated on `test`: waiting would give back exactly the wall
   # clock the split was meant to save, and a red run is already flagged as red.
