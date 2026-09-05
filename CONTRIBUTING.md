@@ -25,7 +25,6 @@ Keep dependencies strictly unidirectional:
 
 * **Rust Edition**: 2024
 * **Core crate constraints**: `crates/core` must remain `no_std` with **zero external dependencies**.
-* **Task Runner**: [just](https://github.com/casey/just) is recommended for running local checks.
 
 ## Coding Standards
 
@@ -48,14 +47,6 @@ Keep dependencies strictly unidirectional:
 
 Before submitting a Pull Request, make sure your changes pass all checks:
 
-If you have `just` installed, simply run:
-
-```bash
-just check
-
-```
-
-Or run the individual checks manually:
 
 ```bash
 # Format check
