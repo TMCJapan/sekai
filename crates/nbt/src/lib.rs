@@ -1,14 +1,15 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! NBT decoding, decompression, and volatile diff views.
+//!
+//! Rationale: chunk payloads arrive exactly as stored in `.mca` sectors
+//! (compression-type byte followed by compressed data) and are preserved
+//! verbatim into CAS by other crates. This crate only derives ephemeral
+//! views: it decompresses, parses, and feeds a canonical digest into
+//! [`sekai_core::DiffHasher`] output without ever mutating stored bytes.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+mod codec;
+mod error;
+mod normalize;
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+pub use codec::{Compression, decompress_into, parse_value};
+pub use error::NbtError;
+pub use normalize::NbtNormalizer;

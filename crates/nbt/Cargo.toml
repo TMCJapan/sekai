@@ -11,3 +11,9 @@ path = "src/lib.rs"
 sekai-core = { path = "../core" }
 fastnbt = "2"
 flate2 = "1"
+lz4-java-wrc = "0.2"
+blake3 = "1"
+thiserror = "2"
+
+[dev-dependencies]
+serde = { version = "1", features = ["derive"] }
