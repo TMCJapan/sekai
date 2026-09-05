@@ -72,6 +72,9 @@ cargo test --workspace
 # Run dependency, advisory, and license checks
 cargo deny check
 
+# Detect unused dependencies
+cargo machete
+
 # Build the shippable CLI binary
 cargo build -p sekai-cli --release
 

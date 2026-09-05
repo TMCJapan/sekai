@@ -36,16 +36,19 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: rustfmt
 
-      - name: Install cargo-deny
+      - name: Install cargo-deny and cargo-machete
         uses: taiki-e/install-action@7b8d4719ee4aaa279bdf55df38dacb9ebfe12a6c
         with:
-          tool: cargo-deny
+          tool: cargo-deny,cargo-machete
 
       - name: Check formatting
         run: cargo fmt --all -- --check
 
       - name: Check advisories, licenses and bans
         run: cargo deny check
+
+      - name: Check for unused dependencies
+        run: cargo machete
 
   portability:
     name: Library / ${{ matrix.name }}
