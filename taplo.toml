@@ -1,0 +1,8 @@
+[formatting]
+indent_entries = false
+indent_tables = false
+indent_string = "  "
+array_trailing_comma = true
+compact_arrays = true
+column_width = 100
+align_entries = false
