@@ -1,20 +1,19 @@
 [package]
 name = "sekai-nbt"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 license.workspace = true
 
-[lib]
-name = "sekai_nbt"
-path = "src/lib.rs"
+[lints]
+workspace = true
 
 [dependencies]
-sekai-core = { path = "../core" }
-fastnbt = "2"
-flate2 = "1"
-lz4-java-wrc = "0.2"
-blake3 = "1"
-thiserror = "2"
+sekai-core.workspace = true
+thiserror.workspace = true
+blake3.workspace = true
+fastnbt.workspace = true
+flate2.workspace = true
+lz4-java-wrc.workspace = true
 
 [dev-dependencies]
-serde = { version = "1", features = ["derive"] }
+serde.workspace = true
