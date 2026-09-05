@@ -10,8 +10,7 @@ on:
 permissions:
   contents: read
 
-# A newer push to the same branch supersedes the previous one; keep `main`
-# runs intact so every merged commit keeps its own CLI artifacts.
+# Keep `main` runs intact so every merged commit keeps its own CLI artifacts.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -27,8 +26,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Cloning the repository and downloading the audit binaries need nothing
-      # from each other, so they share the wall clock.
       - parallel:
           - name: Checkout repository
             uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -46,8 +43,7 @@ jobs:
           components: rustfmt
 
       # None of the three checks compiles anything, so they never contend for
-      # the cargo build lock. Running them together also stops the first
-      # failure from hiding the other two.
+      # the cargo build lock.
       - parallel:
           - name: Check formatting
             run: cargo fmt --all -- --check
@@ -64,15 +60,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # `core` must stay usable on bare metal: linting it against a target
-          # that ships no `std` is what actually proves the `no_std` invariant.
           - name: no_std (thumbv7m-none-eabi)
             target: thumbv7m-none-eabi
             packages: -p sekai-core
-          # `core` and `nbt` are pure computation (domain types, decoding,
-          # hashing), so they must keep building for the browser/wasm sandbox.
-          # `mca`, `storage`, `engine` and `cli` own file I/O and SQLite and are
-          # deliberately excluded.
           - name: wasm (wasm32-unknown-unknown)
             target: wasm32-unknown-unknown
             packages: -p sekai-core -p sekai-nbt
@@ -94,15 +84,12 @@ jobs:
           key: ${{ matrix.target }}
 
       # `--all-targets` is deliberately omitted: test and bench harnesses pull
-      # in `std`, which these targets do not provide. There is no runner for
-      # them either, so linting is the whole guard.
+      # in `std`, which these targets do not provide.
       - name: Clippy
         run: cargo clippy ${{ matrix.packages }} --target ${{ matrix.target }} --no-default-features -- -D warnings
 
   # Split from `dist` below so the checks and the release build get a runner
-  # each. Backgrounding the release build inside this job would overlap them on
-  # one runner's cores instead, which is why the split is a job and not a
-  # parallel step: both halves saturate the CPU, so only real hardware helps.
+  # each.
   test:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
@@ -151,8 +138,6 @@ jobs:
 
       # Kept sequential: both invocations build the dev profile, so they would
       # queue on the same `target/<triple>/debug` cargo build lock anyway.
-      # Every runner is native for its triple, so the tests below really execute
-      # on the platform they are guarding.
       - name: Clippy
         run: cargo clippy --workspace --all-targets --target ${{ matrix.target }} -- -D warnings
 
@@ -193,7 +178,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
-      # No `clippy` component: linting is the `test` job's business.
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
