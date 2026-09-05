@@ -40,10 +40,14 @@ jobs:
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
-          components: rustfmt
+          # Everything `rust-toolchain.toml` asks for -- components and targets
+          # alike -- so no parallel step below has rustup fetch anything on
+          # demand.
+          targets: thumbv7m-none-eabi,wasm32-unknown-unknown
+          components: rustfmt, clippy, rust-analyzer
 
-      # None of the three checks compiles anything, so they never contend for
-      # the cargo build lock.
+      # None of the three checks compiles anything, and the toolchain above
+      # leaves rustup nothing to fetch, so they contend over no shared lock.
       - parallel:
           - name: Check formatting
             run: cargo fmt --all -- --check
