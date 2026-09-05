@@ -9,7 +9,7 @@
 //! staying type-agnostic.
 
 use fastnbt::{Tag, Value};
-use sekai_core::{DiffHash, Normalizer};
+use sekai_core::{DiffHash, DiffHasher, Normalizer};
 
 use crate::codec::parse_value;
 use crate::error::NbtError;
@@ -50,9 +50,42 @@ impl NbtNormalizer {
     /// Digest an already-parsed value (exposed for testing and reuse).
     #[must_use]
     pub fn canonical_digest(&self, value: &Value) -> DiffHash {
-        let mut hasher = blake3::Hasher::new();
+        self.canonical_digest_with::<Blake3Feed>(value)
+    }
+
+    /// Digest with an injected hasher (test seam: a non-Blake3 digest pins
+    /// the canonical encoding without depending on the digest function).
+    #[must_use]
+    pub fn canonical_digest_with<H: DiffHasher>(&self, value: &Value) -> DiffHash {
+        let mut hasher = H::new();
         feed_value(&mut hasher, self, value);
-        DiffHash(*hasher.finalize().as_bytes())
+        hasher.finalize()
+    }
+}
+
+/// Blake3 behind the [`DiffHasher`] seam (the only digest in this crate).
+///
+/// The canonical feed never names this type: it streams into any
+/// `DiffHasher`, so the encoding stays testable without Blake3.
+#[derive(Debug, Clone)]
+struct Blake3Feed {
+    /// Inner streaming state.
+    inner: blake3::Hasher,
+}
+
+impl DiffHasher for Blake3Feed {
+    fn new() -> Self {
+        Self {
+            inner: blake3::Hasher::new(),
+        }
+    }
+
+    fn update(&mut self, data: &[u8]) {
+        self.inner.update(data);
+    }
+
+    fn finalize(self) -> DiffHash {
+        DiffHash(*self.inner.finalize().as_bytes())
     }
 }
 
@@ -118,13 +151,13 @@ fn len_i32(len: usize) -> [u8; 4] {
 }
 
 /// Feed one value with its tag discriminant (used for root and elements).
-fn feed_value(hasher: &mut blake3::Hasher, rules: &NbtNormalizer, value: &Value) {
+fn feed_value(hasher: &mut impl DiffHasher, rules: &NbtNormalizer, value: &Value) {
     hasher.update(&[tag_byte(tag_of(value))]);
     feed_payload(hasher, rules, value);
 }
 
 /// Feed a value body without tag or name (entries/elements add framing).
-fn feed_payload(hasher: &mut blake3::Hasher, rules: &NbtNormalizer, value: &Value) {
+fn feed_payload(hasher: &mut impl DiffHasher, rules: &NbtNormalizer, value: &Value) {
     match value {
         Value::Byte(v) => {
             hasher.update(&v.to_be_bytes());
@@ -265,6 +298,46 @@ mod tests {
         assert_eq!(
             extended.canonical_digest(&a),
             extended.canonical_digest(&altered)
+        );
+    }
+
+    /// Non-cryptographic digest behind the `DiffHasher` seam: proves the
+    /// canonical encoding feeds deterministically through any hasher.
+    #[derive(Default)]
+    struct FnvFeed(u64);
+
+    impl DiffHasher for FnvFeed {
+        fn new() -> Self {
+            Self(0xcbf2_9ce4_8422_2325)
+        }
+
+        fn update(&mut self, data: &[u8]) {
+            for byte in data {
+                self.0 ^= u64::from(*byte);
+                self.0 = self.0.wrapping_mul(0x0100_0000_01b3);
+            }
+        }
+
+        fn finalize(self) -> DiffHash {
+            let mut out = [0u8; 32];
+            out[..8].copy_from_slice(&self.0.to_be_bytes());
+            DiffHash(out)
+        }
+    }
+
+    #[test]
+    fn canonical_encoding_is_digest_independent() {
+        let rules = NbtNormalizer::v1();
+        let reference = rules.canonical_digest_with::<FnvFeed>(&chunk_nbt(100, "minecraft:full"));
+        // Volatile tags stay ignored without Blake3 in the loop.
+        assert_eq!(
+            reference,
+            rules.canonical_digest_with::<FnvFeed>(&chunk_nbt(999_999, "minecraft:full"))
+        );
+        // Meaningful changes still surface through the seam.
+        assert_ne!(
+            reference,
+            rules.canonical_digest_with::<FnvFeed>(&chunk_nbt(100, "minecraft:empty"))
         );
     }
 }
