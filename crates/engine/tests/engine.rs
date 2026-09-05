@@ -13,8 +13,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use sekai_core::{ChunkCoord, Dimension, MetaStore as _, RegionKind, RegionReader as _};
-use sekai_engine::{EngineError, Store, backup, discover, rollback};
+use sekai_core::{
+    BlobHash, BlobStore as _, ChunkCoord, Dimension, MetaStore as _, RegionKind, RegionReader as _,
+};
+use sekai_engine::{EngineError, Store, backup, discover, gc_apply, gc_plan, rollback};
 
 static DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -257,4 +259,44 @@ fn backup_rejects_missing_world() {
     let mut store = Store::open(&scratch.store()).unwrap();
     let err = backup(&scratch.root.join("nope"), &mut store).unwrap_err();
     assert!(matches!(err, EngineError::Io { .. }));
+}
+
+#[test]
+fn gc_reclaims_only_orphans() {
+    let scratch = Scratch::new();
+    let world = scratch.world();
+    write_region(
+        &world.join("region").join("r.0.0.mca"),
+        OVER,
+        REGION,
+        &[(0, 0, vec![2, 1])],
+    );
+    let mut store = Store::open(&scratch.store()).unwrap();
+    backup(&world, &mut store).unwrap();
+
+    // Torn-write leftover: a blob with no referencing history row.
+    let orphan = BlobHash([0xEE; 32]);
+    assert!(store.cas_mut().put(&orphan, b"orphan").unwrap());
+
+    // Plan is read-only and names exactly the orphan.
+    let plan = gc_plan(&store).unwrap();
+    assert_eq!(plan.orphans(), &[orphan]);
+    assert_eq!(plan.examined(), 2);
+    assert!(store.cas().contains(&orphan).unwrap());
+
+    let report = gc_apply(&mut store, &plan).unwrap();
+    assert_eq!(report.candidates, 1);
+    assert_eq!(report.orphans, 1);
+    assert_eq!(report.removed, 1);
+    assert!(!store.cas().contains(&orphan).unwrap());
+
+    // The referenced blob survives; a second cycle finds nothing.
+    let latest = store.meta().latest_snapshot().unwrap().unwrap();
+    let row = store
+        .meta()
+        .lookup_chunk(latest.id, &ChunkCoord::new(OVER, REGION, 0, 0))
+        .unwrap()
+        .unwrap();
+    assert!(store.cas().contains(&row.blob.unwrap()).unwrap());
+    assert!(gc_plan(&store).unwrap().is_empty());
 }

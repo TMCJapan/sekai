@@ -135,6 +135,91 @@ impl FileCas {
         })?;
         Ok(())
     }
+
+    /// Unlink the blob under `hash`; `false` when already absent.
+    ///
+    /// The shard directory is fsynced after the unlink so a crash never
+    /// resurrects the blob.
+    pub fn remove(&mut self, hash: &BlobHash) -> Result<bool, StorageError> {
+        let path = self.path_of(hash);
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(source) => {
+                return Err(StorageError::Io { path, source });
+            }
+        }
+        let io = |path: PathBuf| move |source: std::io::Error| StorageError::Io { path, source };
+        let shard = path.parent().map(Path::to_path_buf).unwrap_or_default();
+        let dir = fs::File::open(&shard).map_err(io(shard.clone()))?;
+        dir.sync_all().map_err(io(shard))?;
+        Ok(true)
+    }
+
+    /// Visit every stored blob hash, skipping foreign file names.
+    ///
+    /// Only `<2-hex>/<62-hex>` names decoding as hashes are visited; temp
+    /// leftovers and foreign files never surface (and are never GC targets).
+    /// A missing `blobs/` directory visits nothing.
+    pub fn visit_blobs<F>(&self, mut visit: F) -> Result<(), StorageError>
+    where
+        F: FnMut(&BlobHash) -> bool,
+    {
+        let blobs = self.root.join("blobs");
+        let shards = match fs::read_dir(&blobs) {
+            Ok(entries) => entries,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(source) => {
+                return Err(StorageError::Io {
+                    path: blobs,
+                    source,
+                });
+            }
+        };
+        for shard in shards {
+            let shard = shard.map_err(|source| StorageError::Io {
+                path: blobs.clone(),
+                source,
+            })?;
+            let shard_type = shard.file_type().map_err(|source| StorageError::Io {
+                path: shard.path(),
+                source,
+            })?;
+            if !shard_type.is_dir() {
+                continue;
+            }
+            let dir_name = shard.file_name();
+            let dir_name = dir_name.to_str().unwrap_or_default();
+            if dir_name.len() != 2 {
+                continue;
+            }
+            let files = fs::read_dir(shard.path()).map_err(|source| StorageError::Io {
+                path: shard.path(),
+                source,
+            })?;
+            for file in files {
+                let file = file.map_err(|source| StorageError::Io {
+                    path: shard.path(),
+                    source,
+                })?;
+                let file_name = file.file_name();
+                let file_name = file_name.to_str().unwrap_or_default();
+                if file_name.len() != 62 {
+                    continue;
+                }
+                let mut hex = [0u8; 64];
+                hex[..2].copy_from_slice(dir_name.as_bytes());
+                hex[2..].copy_from_slice(file_name.as_bytes());
+                let Ok(hash) = BlobHash::from_hex(&hex) else {
+                    continue;
+                };
+                if !visit(&hash) {
+                    return Ok(());
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl sekai_core::BlobStore for FileCas {
@@ -150,5 +235,16 @@ impl sekai_core::BlobStore for FileCas {
 
     fn fetch_into(&self, hash: &BlobHash, out: &mut Vec<u8>) -> Result<(), Self::Error> {
         Self::fetch_into(self, hash, out)
+    }
+
+    fn remove(&mut self, hash: &BlobHash) -> Result<bool, Self::Error> {
+        Self::remove(self, hash)
+    }
+
+    fn visit_blobs<F>(&self, visit: F) -> Result<(), Self::Error>
+    where
+        F: FnMut(&BlobHash) -> bool,
+    {
+        Self::visit_blobs(self, visit)
     }
 }

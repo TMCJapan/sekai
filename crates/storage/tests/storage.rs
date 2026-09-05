@@ -209,3 +209,52 @@ fn meta_survives_reopen_and_rejects_foreign_schema() {
         StorageError::UnsupportedSchema { found: 99, .. }
     ));
 }
+
+#[test]
+fn cas_remove_and_visit_blobs() {
+    let dir = ScratchDir::new();
+    let mut cas = FileCas::open(&dir.path).unwrap();
+    let a = hash(0xA1);
+    let b = hash(0xB2);
+    assert!(cas.put(&a, b"x").unwrap());
+    assert!(cas.put(&b, b"y").unwrap());
+
+    // Foreign names are never blobs: short names, temp leftovers, and
+    // full-length non-hex names are all skipped by the visit.
+    let shard = dir.path.join("blobs").join("zz");
+    fs::create_dir_all(&shard).unwrap();
+    fs::write(shard.join("short"), b"foreign").unwrap();
+    fs::write(shard.join("left.tmp-1-1"), b"tmp").unwrap();
+    fs::write(shard.join("z".repeat(62)), b"badhex").unwrap();
+    fs::write(dir.path.join("blobs").join("loose"), b"foreign").unwrap();
+
+    let mut seen = Vec::new();
+    cas.visit_blobs(|h| {
+        seen.push(*h);
+        true
+    })
+    .unwrap();
+    seen.sort();
+    assert_eq!(seen, vec![a, b]);
+
+    // Early stop is honored.
+    let mut count = 0;
+    cas.visit_blobs(|_| {
+        count += 1;
+        false
+    })
+    .unwrap();
+    assert_eq!(count, 1);
+
+    assert!(cas.remove(&a).unwrap());
+    assert!(!cas.remove(&a).unwrap());
+    assert!(!cas.contains(&a).unwrap());
+
+    let mut rest = Vec::new();
+    cas.visit_blobs(|h| {
+        rest.push(*h);
+        true
+    })
+    .unwrap();
+    assert_eq!(rest, vec![b]);
+}
