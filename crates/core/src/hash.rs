@@ -119,16 +119,10 @@ mod tests {
 
     #[test]
     fn hex_rejects_bad_length_and_chars() {
-        assert_eq!(
-            BlobHash::from_hex(b"abc"),
-            Err(CoreError::BadHexLength(3))
-        );
+        assert_eq!(BlobHash::from_hex(b"abc"), Err(CoreError::BadHexLength(3)));
         let mut bad = [b'0'; 64];
         bad[0] = b'z';
-        assert_eq!(
-            BlobHash::from_hex(&bad),
-            Err(CoreError::BadHexChar(b'z'))
-        );
+        assert_eq!(BlobHash::from_hex(&bad), Err(CoreError::BadHexChar(b'z')));
     }
 
     #[test]

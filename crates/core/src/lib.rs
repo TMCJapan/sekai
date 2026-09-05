@@ -14,4 +14,6 @@ pub use error::CoreError;
 pub use hash::{BlobHash, DiffHash};
 pub use history::ChunkHistoryEntry;
 pub use snapshot::{Snapshot, SnapshotId};
-pub use traits::{BlobHasher, BlobStore, DiffHasher, MetaStore, Normalizer, RawChunk, RegionReader, RegionWriter};
+pub use traits::{
+    BlobHasher, BlobStore, DiffHasher, MetaStore, Normalizer, RawChunk, RegionReader, RegionWriter,
+};

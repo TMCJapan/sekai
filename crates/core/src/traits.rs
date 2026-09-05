@@ -62,11 +62,8 @@ pub trait BlobStore {
     /// Errors when the blob is missing; callers treat a missing blob as
     /// database corruption, never as a tombstone (tombstones are `None`
     /// history rows, not absent files).
-    fn fetch_into(
-        &self,
-        hash: &BlobHash,
-        out: &mut alloc::vec::Vec<u8>,
-    ) -> Result<(), Self::Error>;
+    fn fetch_into(&self, hash: &BlobHash, out: &mut alloc::vec::Vec<u8>)
+    -> Result<(), Self::Error>;
 }
 
 /// MVCC metadata over snapshots and per-chunk history (by `storage`).
