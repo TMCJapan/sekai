@@ -5,13 +5,25 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch supersedes the previous one; keep `main`
+# runs intact so every merged commit keeps its own CLI artifacts.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
+  # Keep in sync with `rust-toolchain.toml`.
+  RUST_TOOLCHAIN: 1.98.0
 
 jobs:
-  check:
-    name: Code Quality & Tests
+  lint:
+    name: Format & dependency audit
     runs-on: ubuntu-latest
 
     steps:
@@ -21,27 +33,126 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
-          toolchain: 1.98.0
-          components: rustfmt, clippy
-          targets: thumbv7m-none-eabi
-
-      - name: Cache cargo registry & index
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          components: rustfmt
 
       - name: Install cargo-deny
-        uses: taiki-e/install-action@cargo-deny
+        uses: taiki-e/install-action@7b8d4719ee4aaa279bdf55df38dacb9ebfe12a6c
+        with:
+          tool: cargo-deny
 
-      - name: Check Formatting
+      - name: Check formatting
         run: cargo fmt --all -- --check
 
-      - name: Run Clippy
-        run: cargo clippy --all-targets -- -D warnings
-
-      - name: Verify core crate no_std purity
-        run: cargo check -p sekai-core --target thumbv7m-none-eabi --no-default-features
-
-      - name: Run Tests
-        run: cargo test --all
-
-      - name: Run Cargo Deny
+      - name: Check advisories, licenses and bans
         run: cargo deny check
+
+  portability:
+    name: Library / ${{ matrix.name }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # `core` must stay usable on bare metal: linting it against a target
+          # that ships no `std` is what actually proves the `no_std` invariant.
+          - name: no_std (thumbv7m-none-eabi)
+            target: thumbv7m-none-eabi
+            packages: -p sekai-core
+          # `core` and `nbt` are pure computation (domain types, decoding,
+          # hashing), so they must keep building for the browser/wasm sandbox.
+          # `mca`, `storage`, `engine` and `cli` own file I/O and SQLite and are
+          # deliberately excluded.
+          - name: wasm (wasm32-unknown-unknown)
+            target: wasm32-unknown-unknown
+            packages: -p sekai-core -p sekai-nbt
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+          components: clippy
+
+      - name: Cache cargo registry & build artifacts
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
+        with:
+          key: ${{ matrix.target }}
+
+      # `--all-targets` is deliberately omitted: test and bench harnesses pull
+      # in `std`, which these targets do not provide. There is no runner for
+      # them either, so linting is the whole guard.
+      - name: Clippy
+        run: cargo clippy ${{ matrix.packages }} --target ${{ matrix.target }} --no-default-features -- -D warnings
+
+  native:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - name: macos-x64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+          - name: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - name: windows-arm64
+            os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+          components: clippy
+
+      - name: Cache cargo registry & build artifacts
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
+        with:
+          key: ${{ matrix.target }}
+
+      # Every runner is native for its triple, so the tests below really execute
+      # on the platform they are guarding.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --target ${{ matrix.target }} -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --target ${{ matrix.target }}
+
+      - name: Build CLI (release)
+        run: cargo build -p sekai-cli --release --target ${{ matrix.target }}
+
+      # Artifacts are zipped by the upload action, which drops file modes, so
+      # the binary is tarred first to keep it executable after download.
+      - name: Package CLI
+        shell: bash
+        run: tar -czf sekai-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release sekai${{ runner.os == 'Windows' && '.exe' || '' }}
+
+      - name: Upload CLI
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: sekai-${{ matrix.target }}
+          path: sekai-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
