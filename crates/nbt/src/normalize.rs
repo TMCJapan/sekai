@@ -26,6 +26,7 @@ pub struct NbtNormalizer {
 
 impl NbtNormalizer {
     /// V1 normalization rules.
+    #[must_use]
     pub fn v1() -> Self {
         Self {
             ignored: vec!["LastUpdate".to_string()],
@@ -33,6 +34,7 @@ impl NbtNormalizer {
     }
 
     /// Additionally ignore `name` at any depth. Idempotent.
+    #[must_use]
     pub fn ignore(mut self, name: &str) -> Self {
         if !self.ignored.iter().any(|n| n == name) {
             self.ignored.push(name.to_string());
@@ -46,6 +48,7 @@ impl NbtNormalizer {
     }
 
     /// Digest an already-parsed value (exposed for testing and reuse).
+    #[must_use]
     pub fn canonical_digest(&self, value: &Value) -> DiffHash {
         let mut hasher = blake3::Hasher::new();
         feed_value(&mut hasher, self, value);
@@ -68,7 +71,7 @@ impl Normalizer for NbtNormalizer {
 }
 
 /// Stable one-byte discriminant per tag (mirrors the NBT spec IDs).
-fn tag_byte(tag: Tag) -> u8 {
+const fn tag_byte(tag: Tag) -> u8 {
     match tag {
         Tag::End => 0,
         Tag::Byte => 1,
@@ -87,7 +90,7 @@ fn tag_byte(tag: Tag) -> u8 {
 }
 
 /// Tag discriminant of a value (lists report `List` regardless of content).
-fn tag_of(value: &Value) -> Tag {
+const fn tag_of(value: &Value) -> Tag {
     match value {
         Value::Byte(_) => Tag::Byte,
         Value::Short(_) => Tag::Short,

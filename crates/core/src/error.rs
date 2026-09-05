@@ -20,10 +20,10 @@ pub enum CoreError {
 impl fmt::Display for CoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            CoreError::BadHexLength(len) => {
+            Self::BadHexLength(len) => {
                 write!(f, "invalid hash hex length: {len}, expected 64")
             }
-            CoreError::BadHexChar(byte) => {
+            Self::BadHexChar(byte) => {
                 write!(f, "invalid hex character: {byte:#04X}")
             }
         }

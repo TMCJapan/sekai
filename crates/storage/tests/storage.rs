@@ -5,6 +5,8 @@
 //! atomically, tombstones round-trip as `NULL`, and a foreign schema
 //! version fails loudly instead of misreading.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -39,11 +41,11 @@ impl Drop for ScratchDir {
     }
 }
 
-fn hash(byte: u8) -> BlobHash {
+const fn hash(byte: u8) -> BlobHash {
     BlobHash([byte; 32])
 }
 
-fn coord(x: i32, z: i32) -> ChunkCoord {
+const fn coord(x: i32, z: i32) -> ChunkCoord {
     ChunkCoord::new(Dimension::OVERWORLD, RegionKind::REGION, x, z)
 }
 

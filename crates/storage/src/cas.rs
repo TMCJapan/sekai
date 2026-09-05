@@ -7,7 +7,7 @@
 //! contract promises metadata never references an unflushed blob.
 
 use std::fs;
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -39,6 +39,7 @@ impl FileCas {
     }
 
     /// Storage root.
+    #[must_use]
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -128,7 +129,6 @@ impl FileCas {
                 }
             }
         })?;
-        use std::io::Read as _;
         f.read_to_end(out).map_err(|source| StorageError::Io {
             path: path.clone(),
             source,

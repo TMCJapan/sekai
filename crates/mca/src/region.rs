@@ -9,21 +9,21 @@ use sekai_core::{ChunkCoord, Dimension, RegionKind};
 use crate::error::McaError;
 
 /// Bytes per sector; files are whole multiples of this.
-pub(crate) const SECTOR_LEN: u64 = 4096;
+pub const SECTOR_LEN: u64 = 4096;
 /// Header sectors (locations + timestamps).
-pub(crate) const HEADER_SECTORS: u64 = 2;
+pub const HEADER_SECTORS: u64 = 2;
 /// Header bytes; files shorter than this cannot be parsed.
-pub(crate) const HEADER_LEN: u64 = HEADER_SECTORS * SECTOR_LEN;
+pub const HEADER_LEN: u64 = HEADER_SECTORS * SECTOR_LEN;
 /// Location/timestamp slots per file (32 x 32 chunks).
-pub(crate) const TABLE_ENTRIES: u32 = 1024;
+pub const TABLE_ENTRIES: u32 = 1024;
 /// Sectors per table row (region files are 32 chunks wide).
-pub(crate) const ROW_WIDTH: u32 = 32;
+pub const ROW_WIDTH: u32 = 32;
 /// First data sector (immediately after the header).
-pub(crate) const FIRST_DATA_SECTOR: u64 = HEADER_SECTORS;
+pub const FIRST_DATA_SECTOR: u64 = HEADER_SECTORS;
 /// Addressable sectors per chunk (location count field is one byte).
-pub(crate) const MAX_SECTORS_PER_CHUNK: u64 = 255;
+pub const MAX_SECTORS_PER_CHUNK: u64 = 255;
 /// Location offset field is 24 bits wide.
-pub(crate) const MAX_SECTOR_OFFSET: u64 = 0xFF_FFFF;
+pub const MAX_SECTOR_OFFSET: u64 = 0xFF_FFFF;
 
 /// Parse `r.<x>.<z>.mca` file names into region coordinates.
 ///
@@ -124,18 +124,18 @@ impl RegionLoc {
 ///
 /// Also rejects bases where `base + 31` would overflow, so per-chunk
 /// address math later cannot wrap.
-pub(crate) fn base_coords(region_x: i32, region_z: i32) -> Result<(i32, i32), McaError> {
+pub fn base_coords(region_x: i32, region_z: i32) -> Result<(i32, i32), McaError> {
     let overflow = || McaError::CoordinateOverflow { region_x, region_z };
     let base = |r: i32| {
-        r.checked_mul(ROW_WIDTH as i32)
-            .and_then(|b| b.checked_add(ROW_WIDTH as i32 - 1).map(|_| b))
+        r.checked_mul(ROW_WIDTH.cast_signed())
+            .and_then(|b| b.checked_add(ROW_WIDTH.cast_signed() - 1).map(|_| b))
             .ok_or_else(overflow)
     };
     Ok((base(region_x)?, base(region_z)?))
 }
 
 /// Validate total image length; returns the sector count.
-pub(crate) fn check_image_len(len: u64) -> Result<u64, McaError> {
+pub const fn check_image_len(len: u64) -> Result<u64, McaError> {
     if len < HEADER_LEN {
         return Err(McaError::TruncatedFile { len });
     }
@@ -146,7 +146,7 @@ pub(crate) fn check_image_len(len: u64) -> Result<u64, McaError> {
 }
 
 /// Sectors needed to store `payload_len` bytes plus the 4-byte prefix.
-pub(crate) fn sectors_for(payload_len: usize) -> Result<u64, McaError> {
+pub const fn sectors_for(payload_len: usize) -> Result<u64, McaError> {
     let total = payload_len as u64 + 4;
     let sectors = total.div_ceil(SECTOR_LEN);
     if sectors > MAX_SECTORS_PER_CHUNK {
@@ -157,6 +157,7 @@ pub(crate) fn sectors_for(payload_len: usize) -> Result<u64, McaError> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

@@ -43,6 +43,7 @@ pub enum LayoutFlavor {
 }
 
 /// Pick the derivation flavor: new layout wins when present.
+#[must_use]
 pub fn detect_flavor(world: &Path) -> LayoutFlavor {
     if world.join("dimensions").is_dir() {
         LayoutFlavor::New
@@ -121,10 +122,9 @@ fn scan_dim_root(
             }
             let name = entry.file_name();
             let name = name.to_str().unwrap_or_default();
-            let (region_x, region_z) = match sekai_mca::parse_region_name(name) {
-                Ok(coords) => coords,
+            let Ok((region_x, region_z)) = sekai_mca::parse_region_name(name) else {
                 // Foreign files (temp leftovers, etc.) are not our concern.
-                Err(_) => continue,
+                continue;
             };
             let reference = RegionRef {
                 path: path.clone(),
@@ -300,6 +300,7 @@ pub fn derive_path(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

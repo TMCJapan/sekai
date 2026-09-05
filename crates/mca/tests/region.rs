@@ -4,6 +4,8 @@
 //! on-disk contract - atomic swap leaves no temp files behind, committed
 //! bytes read back byte-identical, and removals land as absent sectors.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -49,7 +51,7 @@ impl Drop for ScratchDir {
     }
 }
 
-fn coord(x: i32, z: i32) -> ChunkCoord {
+const fn coord(x: i32, z: i32) -> ChunkCoord {
     ChunkCoord::new(Dimension::OVERWORLD, RegionKind::REGION, x, z)
 }
 
@@ -70,7 +72,9 @@ fn commit_then_open_round_trip() {
     let dir = ScratchDir::new();
     let target = dir.region("r.0.0.mca");
     let payload_a = vec![2u8; 100];
-    let payload_b: Vec<u8> = (0..5000).map(|i| (i % 251) as u8).collect();
+    let payload_b: Vec<u8> = (0..5000u32)
+        .map(|i| u8::try_from(i % 251).unwrap_or_default())
+        .collect();
 
     let mut w = RegionFileWriter::create(&target, Dimension::OVERWORLD, RegionKind::REGION, 0xABCD)
         .unwrap();

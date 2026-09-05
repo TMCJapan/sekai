@@ -42,6 +42,15 @@ pub enum StorageError {
         len: usize,
     },
 
+    /// Stored history integer does not fit its domain type.
+    #[error("stored history column {column} has out-of-range value: {value}")]
+    InvalidHistoryValue {
+        /// Column holding the bad value (`dim`, `kind`, `cx`, `cz`).
+        column: &'static str,
+        /// Observed integer value.
+        value: i64,
+    },
+
     /// Database schema version is newer than this binary understands.
     #[error("unsupported schema version: {found}, this binary supports {supported}")]
     UnsupportedSchema {

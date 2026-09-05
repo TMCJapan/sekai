@@ -101,7 +101,7 @@ mod tests {
         let mut bytes = [0u8; 32];
         let mut i = 0;
         while i < 32 {
-            bytes[i] = i as u8;
+            bytes[i] = u8::try_from(i).unwrap_or_default();
             i += 1;
         }
         let h = BlobHash(bytes);
