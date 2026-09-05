@@ -2,6 +2,7 @@
 name = "sekai-mca"
 version = "0.1.0"
 edition = "2024"
+license.workspace = true
 
 [lib]
 name = "sekai_mca"
