@@ -159,7 +159,7 @@ pub trait RegionWriter {
 ///
 /// Input is the raw stored payload; decompression and tag zeroing (e.g.
 /// `LastUpdate`) happen inside the implementation. Stored blobs are never
-/// modified — the result feeds [`DiffHash`] only.
+/// modified - the result feeds [`DiffHash`] only.
 pub trait Normalizer {
     /// Decode/normalization failure (corrupt NBT, unknown compression, ...).
     type Error;
