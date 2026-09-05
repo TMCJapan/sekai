@@ -26,7 +26,10 @@ pub(crate) const MAX_SECTORS_PER_CHUNK: u64 = 255;
 pub(crate) const MAX_SECTOR_OFFSET: u64 = 0xFF_FFFF;
 
 /// Parse `r.<x>.<z>.mca` file names into region coordinates.
-pub(crate) fn parse_region_name(file_name: &str) -> Result<(i32, i32), McaError> {
+///
+/// Shared by `engine` discovery so the naming rule lives in exactly one
+/// place: whatever this accepts, both reader and writer accept.
+pub fn parse_region_name(file_name: &str) -> Result<(i32, i32), McaError> {
     let bad = || McaError::BadFilename {
         name: file_name.to_string(),
     };

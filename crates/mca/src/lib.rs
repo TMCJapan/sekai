@@ -15,4 +15,5 @@ mod writer;
 
 pub use error::McaError;
 pub use reader::RegionFile;
+pub use region::parse_region_name;
 pub use writer::RegionFileWriter;
