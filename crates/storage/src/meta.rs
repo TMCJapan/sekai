@@ -109,29 +109,50 @@ impl SqliteMeta {
         )?;
         // AUTOINCREMENT rowids are always positive.
         let id = SnapshotId(tx.last_insert_rowid().cast_unsigned());
-        {
-            let mut stmt = tx.prepare(
-                "INSERT INTO chunk_history
-                 (snapshot_id, dim, kind, cx, cz, blob, diff)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+        for entry in entries {
+            insert_history_row(
+                &tx,
+                id,
+                &entry.coord,
+                entry.blob.as_ref(),
+                entry.diff.as_ref(),
             )?;
-            for entry in entries {
-                let blob: Option<&[u8]> = entry.blob.as_ref().map(|b| b.0.as_slice());
-                let diff: Option<&[u8]> = entry.diff.as_ref().map(|d| d.0.as_slice());
-                stmt.execute(params![
-                    id.0.cast_signed(),
-                    i64::from(entry.coord.dim.raw()),
-                    i64::from(entry.coord.kind.raw()),
-                    i64::from(entry.coord.x),
-                    i64::from(entry.coord.z),
-                    blob,
-                    diff,
-                ])?;
-            }
         }
         tx.commit()?;
         Ok(id)
     }
+}
+
+/// Insert one history row on `conn` (shared by the batched and single-row
+/// write paths so both encode coordinates and hashes identically).
+///
+/// Plain INSERT (not REPLACE): recording the same coordinate twice in one
+/// snapshot is a caller bug and must surface, never merge.
+fn insert_history_row(
+    conn: &Connection,
+    snapshot: SnapshotId,
+    coord: &ChunkCoord,
+    blob: Option<&BlobHash>,
+    diff: Option<&DiffHash>,
+) -> Result<(), StorageError> {
+    // Hashes travel as 32-byte BLOBs (`NULL` blob = tombstone).
+    let blob: Option<&[u8]> = blob.map(|b| b.0.as_slice());
+    let diff: Option<&[u8]> = diff.map(|d| d.0.as_slice());
+    conn.execute(
+        "INSERT INTO chunk_history
+         (snapshot_id, dim, kind, cx, cz, blob, diff)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        params![
+            snapshot.0.cast_signed(),
+            i64::from(coord.dim.raw()),
+            i64::from(coord.kind.raw()),
+            i64::from(coord.x),
+            i64::from(coord.z),
+            blob,
+            diff,
+        ],
+    )?;
+    Ok(())
 }
 
 /// Raw history columns as read from SQLite
@@ -190,25 +211,7 @@ impl sekai_core::MetaStore for SqliteMeta {
         blob: Option<&BlobHash>,
         diff: Option<&DiffHash>,
     ) -> Result<(), Self::Error> {
-        // Plain INSERT (not REPLACE): recording the same coordinate twice
-        // in one snapshot is a caller bug and must surface, never merge.
-        let blob: Option<&[u8]> = blob.map(|b| b.0.as_slice());
-        let diff: Option<&[u8]> = diff.map(|d| d.0.as_slice());
-        self.conn.execute(
-            "INSERT INTO chunk_history
-             (snapshot_id, dim, kind, cx, cz, blob, diff)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
-            params![
-                snapshot.0.cast_signed(),
-                i64::from(coord.dim.raw()),
-                i64::from(coord.kind.raw()),
-                i64::from(coord.x),
-                i64::from(coord.z),
-                blob,
-                diff,
-            ],
-        )?;
-        Ok(())
+        insert_history_row(&self.conn, snapshot, coord, blob, diff)
     }
 
     fn lookup_chunk(
@@ -245,6 +248,36 @@ impl sekai_core::MetaStore for SqliteMeta {
                 history_row(snapshot, dim, kind, cx, cz, blob, diff)
             })
             .transpose()
+    }
+
+    fn lookup_snapshot(&self, id: SnapshotId) -> Result<Option<Snapshot>, Self::Error> {
+        let created_at_ms: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT created_at_ms FROM snapshots WHERE id = ?",
+                params![id.0.cast_signed()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        // IDs originate from AUTOINCREMENT rowids, always positive.
+        Ok(created_at_ms.map(|ms| Snapshot::new(id, ms.cast_unsigned())))
+    }
+
+    fn latest_snapshot(&self) -> Result<Option<Snapshot>, Self::Error> {
+        let row: Option<(i64, i64)> = self
+            .conn
+            .query_row(
+                "SELECT id, created_at_ms FROM snapshots ORDER BY id DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        Ok(row.map(|(id, created_at_ms)| {
+            Snapshot::new(
+                SnapshotId(id.cast_unsigned()),
+                created_at_ms.cast_unsigned(),
+            )
+        }))
     }
 
     fn visit_snapshot_chunks<F>(

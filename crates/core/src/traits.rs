@@ -90,6 +90,15 @@ pub trait MetaStore {
         coord: &ChunkCoord,
     ) -> Result<Option<ChunkHistoryEntry>, Self::Error>;
 
+    /// Snapshot metadata for `id`, or `None` when it does not exist.
+    ///
+    /// Point query behind the seam so callers never scan the full timeline
+    /// to resolve one snapshot.
+    fn lookup_snapshot(&self, id: SnapshotId) -> Result<Option<Snapshot>, Self::Error>;
+
+    /// Highest-ID snapshot, or `None` when no backup has run yet.
+    fn latest_snapshot(&self) -> Result<Option<Snapshot>, Self::Error>;
+
     /// Visit every row of one snapshot. Return `false` to stop early.
     ///
     /// Visitor style keeps full-snapshot rollback streaming without

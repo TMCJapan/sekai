@@ -157,6 +157,33 @@ fn meta_snapshot_batch_lookup_and_tombstone() {
 }
 
 #[test]
+fn snapshot_point_queries() {
+    let dir = ScratchDir::new();
+    let db = dir.path.join("meta.sqlite");
+    let mut meta = SqliteMeta::open(&db).unwrap();
+
+    // Empty store: no latest, no hit.
+    assert!(meta.latest_snapshot().unwrap().is_none());
+    assert!(meta.lookup_snapshot(SnapshotId(1)).unwrap().is_none());
+
+    let s1 = meta.apply_snapshot(1_000, &[]).unwrap();
+    let s2 = meta
+        .apply_snapshot(
+            2_000,
+            &[SnapshotEntry::new(coord(0, 0), Some(hash(1)), None)],
+        )
+        .unwrap();
+
+    let got = meta.lookup_snapshot(s1).unwrap().unwrap();
+    assert_eq!(got.created_at_ms, 1_000);
+    assert!(meta.lookup_snapshot(SnapshotId(999)).unwrap().is_none());
+
+    let latest = meta.latest_snapshot().unwrap().unwrap();
+    assert_eq!(latest.id, s2);
+    assert_eq!(latest.created_at_ms, 2_000);
+}
+
+#[test]
 fn meta_survives_reopen_and_rejects_foreign_schema() {
     let dir = ScratchDir::new();
     let db = dir.path.join("meta.sqlite");

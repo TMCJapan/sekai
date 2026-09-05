@@ -117,7 +117,7 @@ fn backup_twice_then_rollback_each() {
 
     // The deleted chunk is a tombstone in the second snapshot.
     let tomb = store
-        .meta
+        .meta()
         .lookup_chunk(r2.snapshot, &ChunkCoord::new(OVER, REGION, 1, 0))
         .unwrap()
         .unwrap();
