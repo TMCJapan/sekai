@@ -6,4 +6,4 @@ unmaintained = "warn"
 unacceptable = [{ name = "GPL-3.0" }]
 
 [bans]
-multiple-versions = "warn"
+multiple-versions = "all"
