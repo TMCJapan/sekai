@@ -15,7 +15,7 @@ pub enum NbtError {
     ///
     /// Note: values `>= 128` mean the chunk body lives in an external
     /// `c.<x>.<z>.mcc` file rather than the region file, so the payload
-    /// handed here was likely mis-sliced by the caller.
+    /// handed here was likely incorrectly sliced by the caller.
     #[error("unknown compression type: {0}")]
     UnknownCompression(u8),
 
