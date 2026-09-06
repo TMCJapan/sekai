@@ -126,9 +126,14 @@ impl RegionFileWriter {
             f.sync_all().map_err(io(tmp.clone()))?;
             drop(f);
             fs::rename(&tmp, &self.target).map_err(io(self.target.clone()))?;
-            // Persist the rename itself.
-            let dir = fs::File::open(&parent).map_err(io(parent.clone()))?;
-            dir.sync_all().map_err(io(parent.clone()))?;
+            // Persist the rename itself. Unix-only: opening a directory
+            // with `File::open` fails on Windows (ERROR_ACCESS_DENIED),
+            // and std offers no directory-fsync equivalent there.
+            #[cfg(unix)]
+            {
+                let dir = fs::File::open(&parent).map_err(io(parent.clone()))?;
+                dir.sync_all().map_err(io(parent.clone()))?;
+            }
             Ok(())
         };
         let result = write();
