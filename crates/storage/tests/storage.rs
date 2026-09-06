@@ -396,3 +396,24 @@ fn version_one_stores_are_rejected_for_recreate() {
         StorageError::UnsupportedSchema { found: 1, .. }
     ));
 }
+
+#[test]
+fn dir_sync_batches_per_shard() {
+    use sekai_core::BlobStore as _;
+    let dir = ScratchDir::new();
+    let mut cas = FileCas::open(&dir.path).unwrap();
+    // Empty barrier is a no-op success.
+    cas.sync().unwrap();
+    // Blobs across several shards persist through one barrier call.
+    for byte in [1u8, 2, 200, 201] {
+        assert!(cas.put(&hash(byte), b"data").unwrap());
+    }
+    cas.sync().unwrap();
+    for byte in [1u8, 2, 200, 201] {
+        let mut out = Vec::new();
+        cas.fetch_into(&hash(byte), &mut out).unwrap();
+        assert_eq!(out, b"data");
+    }
+    // Second barrier with nothing pending stays a no-op.
+    cas.sync().unwrap();
+}

@@ -15,12 +15,15 @@
 //! tombstone) and the induction holds from the first backup on.
 
 use std::collections::{HashMap, HashSet};
+use std::num::NonZeroUsize;
 use std::path::Path;
+use std::sync::mpsc;
+use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sekai_core::{BlobHasher as _, ChunkCoord, MetaStore as _, RawChunk, RegionReader as _};
 use sekai_mca::RegionFile;
-use sekai_storage::{RegionFingerprint, RegionKey, RegionStateEntry, SnapshotEntry};
+use sekai_storage::{FileCas, RegionFingerprint, RegionKey, RegionStateEntry, SnapshotEntry};
 
 use crate::discover::{RegionRef, discover};
 use crate::error::EngineError;
@@ -46,6 +49,22 @@ pub struct BackupReport {
     pub carried_chunks: usize,
 }
 
+/// Changed file plus its fresh fingerprint, awaiting ingest.
+type Changed<'a> = (&'a RegionRef, RegionFingerprint);
+
+/// One ingested file's staged rows, ready to merge into the walk.
+struct FileOutcome {
+    /// Fresh fingerprint for `region_state` upsert.
+    fingerprint: RegionFingerprint,
+    /// History rows for the file's chunks.
+    entries: Vec<SnapshotEntry>,
+    /// Coordinates present in the file.
+    present: HashSet<ChunkCoord>,
+    /// Blobs newly written to CAS.
+    new_blobs: usize,
+    /// Per-region timing slice.
+    timing: RegionTiming,
+}
 /// Previous snapshot plus the state the walk needs.
 struct Previous {
     /// Latest snapshot, when the store is non-empty.
@@ -136,6 +155,15 @@ pub fn backup_with_metrics(
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))?;
+    // Persist batched shard-directory renames before the metadata commit:
+    // file data is already fsynced per blob, and this single barrier (at
+    // most one fsync per touched shard) is what makes every referenced blob
+    // crash-durable. Timed under `cas`, the durability bucket. Pinned to the
+    // `BlobStore` seam (not the inherent method) so the call site only
+    // depends on the trait.
+    let sync_started = Instant::now();
+    sekai_core::BlobStore::sync(store.cas_mut())?;
+    let dir_sync = sync_started.elapsed();
     let db_started = Instant::now();
     let carry_from = previous
         .snapshot
@@ -165,7 +193,7 @@ pub fn backup_with_metrics(
         region_open: walk.region_open,
         ingest: walk.ingest,
         hash: walk.hash,
-        cas_put: walk.cas,
+        cas_put: walk.cas + dir_sync,
         cas_checked: walk.present.len(),
         db_apply,
         skipped_regions: walk.carries.len(),
@@ -227,6 +255,7 @@ fn walk_regions(
         cas: Duration::ZERO,
         timings: Vec::with_capacity(regions.len()),
     };
+    let mut changed: Vec<Changed<'_>> = Vec::new();
     for region in regions {
         let key_tuple = (
             region.dim.raw(),
@@ -260,18 +289,183 @@ fn walk_regions(
             walk.carries.push(key);
             continue;
         }
-        ingest_file(region, observed, store, &mut walk)?;
+        changed.push((region, observed));
     }
+    ingest_changed(changed, store, &mut walk)?;
     Ok(walk)
 }
 
-/// Read, hash, and store one changed region file, staging its rows.
-fn ingest_file(
-    region: &RegionRef,
-    observed: RegionFingerprint,
+/// Ingest changed files, sequentially or across worker threads.
+///
+/// One file never justifies thread overhead, so it stays on the calling
+/// thread with identical counts. Larger sets split into size-balanced
+/// groups; each worker owns a private `FileCas` handle over the same root
+/// (disjoint blob files, unique temp names) and syncs its own shards before
+/// returning, so the scope join orders every durability barrier ahead of the
+/// metadata commit. The commit itself stays a single transaction; row merge
+/// order across workers is completion-order (DB-irrelevant, one txn).
+fn ingest_changed(
+    changed: Vec<Changed<'_>>,
     store: &mut Store,
     walk: &mut RegionWalk,
 ) -> Result<(), EngineError> {
+    if changed.len() <= 1 {
+        for (region, observed) in changed {
+            let mut entries = Vec::new();
+            let mut present = HashSet::new();
+            let mut new_blobs = 0usize;
+            let (fingerprint, timing) = ingest_file(
+                region,
+                observed,
+                store.cas_mut(),
+                &mut entries,
+                &mut present,
+                &mut new_blobs,
+            )?;
+            merge_outcome(
+                walk,
+                FileOutcome {
+                    fingerprint,
+                    entries,
+                    present,
+                    new_blobs,
+                    timing,
+                },
+            );
+        }
+        return Ok(());
+    }
+    // Owned root: workers must not borrow `store` (its SQLite handle is not
+    // shareable across threads), only the CAS directory path.
+    let cas_root = store.cas().root().to_path_buf();
+    let groups = partition_groups(changed);
+    let count = groups.len();
+    let (tx, rx) = mpsc::channel();
+    thread::scope(|scope| {
+        for group in groups {
+            let tx = tx.clone();
+            let cas_root = cas_root.clone();
+            scope.spawn(move || {
+                let outcome = ingest_group(group, &cas_root);
+                // The receiver outlives the scope, so this fails only if the
+                // worker panicked; library code has no panic paths, and a
+                // missing message still surfaces below via the receive count.
+                let _ = tx.send(outcome);
+            });
+        }
+    });
+    drop(tx);
+    for _ in 0..count {
+        match rx.recv() {
+            Ok(Ok((outcomes, sync_elapsed))) => {
+                walk.cas += sync_elapsed;
+                for outcome in outcomes {
+                    merge_outcome(walk, outcome);
+                }
+            }
+            Ok(Err(err)) => return Err(err),
+            Err(_) => {
+                return Err(EngineError::Io {
+                    path: cas_root,
+                    source: std::io::Error::other("cas worker ended without reporting"),
+                });
+            }
+        }
+    }
+    // Completion order is nondeterministic; keep timing output stable.
+    walk.timings.sort_by_key(|timing| timing.path.clone());
+    Ok(())
+}
+
+/// Split changed files into size-balanced groups, one per worker.
+///
+/// Largest files first onto the currently lightest group; worker count is
+/// hardware parallelism bounded by actual work, so every group is non-empty.
+fn partition_groups<'a>(mut changed: Vec<Changed<'a>>) -> Vec<Vec<Changed<'a>>> {
+    changed.sort_by_key(|item| std::cmp::Reverse(item.1.size));
+    let workers = thread::available_parallelism()
+        .map_or(4, NonZeroUsize::get)
+        .min(changed.len());
+    let mut groups: Vec<Vec<Changed<'a>>> = Vec::with_capacity(workers);
+    groups.resize_with(workers, Vec::new);
+    let mut loads = vec![0u64; workers];
+    for item in changed {
+        let mut lightest = 0usize;
+        for (index, load) in loads.iter().enumerate() {
+            if *load < loads[lightest] {
+                lightest = index;
+            }
+        }
+        loads[lightest] += item.1.size;
+        groups[lightest].push(item);
+    }
+    groups.retain(|group| !group.is_empty());
+    groups
+}
+
+/// Ingest one worker's group with a private CAS handle, then sync its shards.
+///
+/// Returns the per-file outcomes plus the shard-sync time so the caller can
+/// account it under `cas` (the durability bucket).
+fn ingest_group(
+    group: Vec<Changed<'_>>,
+    cas_root: &Path,
+) -> Result<(Vec<FileOutcome>, Duration), EngineError> {
+    let mut cas = FileCas::open(cas_root)?;
+    let mut outcomes = Vec::with_capacity(group.len());
+    for (region, observed) in group {
+        let mut entries = Vec::new();
+        let mut present = HashSet::new();
+        let mut new_blobs = 0usize;
+        let (fingerprint, timing) = ingest_file(
+            region,
+            observed,
+            &mut cas,
+            &mut entries,
+            &mut present,
+            &mut new_blobs,
+        )?;
+        outcomes.push(FileOutcome {
+            fingerprint,
+            entries,
+            present,
+            new_blobs,
+            timing,
+        });
+    }
+    // Barrier for this worker's shards; the scope join orders all barriers
+    // before the metadata commit. Pinned to the trait seam.
+    let sync_started = Instant::now();
+    sekai_core::BlobStore::sync(&mut cas)?;
+    Ok((outcomes, sync_started.elapsed()))
+}
+
+/// Fold one file's staged rows into the walk.
+fn merge_outcome(walk: &mut RegionWalk, outcome: FileOutcome) {
+    walk.entries.extend(outcome.entries);
+    walk.present.extend(outcome.present);
+    walk.new_blobs += outcome.new_blobs;
+    walk.region_open += outcome.timing.open;
+    walk.ingest += outcome.timing.ingest;
+    walk.hash += outcome.timing.hash;
+    walk.cas += outcome.timing.cas;
+    walk.fingerprints.push(outcome.fingerprint);
+    walk.timings.push(outcome.timing);
+}
+
+/// Read, hash, and store one changed region file, staging its rows.
+///
+/// Row staging goes through the out-params so the sequential and worker
+/// paths share one shape; the returned fingerprint feeds the `region_state`
+/// upsert and the timing slice feeds `--timing`.
+fn ingest_file(
+    region: &RegionRef,
+    observed: RegionFingerprint,
+    cas: &mut FileCas,
+    entries: &mut Vec<SnapshotEntry>,
+    present: &mut HashSet<ChunkCoord>,
+    new_blobs: &mut usize,
+) -> Result<(RegionFingerprint, RegionTiming), EngineError> {
     let opened = Instant::now();
     let file = RegionFile::open(&region.path, region.dim, region.kind)?;
     let open_elapsed = opened.elapsed();
@@ -286,13 +480,7 @@ fn ingest_file(
         if failure.is_some() {
             return false;
         }
-        match ingest_timed(
-            chunk,
-            store,
-            &mut walk.entries,
-            &mut walk.present,
-            &mut walk.new_blobs,
-        ) {
+        match ingest_timed(chunk, cas, entries, present, new_blobs) {
             Ok((hash_dt, cas_dt)) => {
                 hash_elapsed += hash_dt;
                 cas_elapsed += cas_dt;
@@ -309,21 +497,18 @@ fn ingest_file(
     if let Some(err) = failure {
         return Err(err);
     }
-    walk.region_open += open_elapsed;
-    walk.ingest += ingest_elapsed;
-    walk.hash += hash_elapsed;
-    walk.cas += cas_elapsed;
-    walk.fingerprints.push(observed);
-    walk.timings.push(RegionTiming {
-        path: region.path.clone(),
-        bytes,
-        chunks,
-        open: open_elapsed,
-        ingest: ingest_elapsed,
-        hash: hash_elapsed,
-        cas: cas_elapsed,
-    });
-    Ok(())
+    Ok((
+        observed,
+        RegionTiming {
+            path: region.path.clone(),
+            bytes,
+            chunks,
+            open: open_elapsed,
+            ingest: ingest_elapsed,
+            hash: hash_elapsed,
+            cas: cas_elapsed,
+        },
+    ))
 }
 
 /// Mark previous coordinates under skipped regions as still present.
@@ -362,7 +547,7 @@ fn carry_present(
 /// in [`BackupTimings`](crate::timing::BackupTimings).
 fn ingest_timed(
     chunk: RawChunk<'_>,
-    store: &mut Store,
+    cas: &mut FileCas,
     entries: &mut Vec<SnapshotEntry>,
     present: &mut HashSet<ChunkCoord>,
     new_blobs: &mut usize,
@@ -375,7 +560,7 @@ fn ingest_timed(
     let cas_started = Instant::now();
     // Pinned to the `BlobStore` seam (not the inherent method) so the call
     // site only depends on the trait.
-    if sekai_core::BlobStore::put(store.cas_mut(), &hash, chunk.payload)? {
+    if sekai_core::BlobStore::put(cas, &hash, chunk.payload)? {
         *new_blobs += 1;
     }
     let cas_elapsed = cas_started.elapsed();
