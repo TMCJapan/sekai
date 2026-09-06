@@ -144,39 +144,39 @@ impl FileCas {
     /// itself, but the directory entries only become crash-durable here.
     /// Opening a directory with `File::open` fails on Windows
     /// (`ERROR_ACCESS_DENIED`), and std offers no directory-fsync equivalent
-    /// there, so this is a no-op drain on non-Unix platforms.
+    /// there, so non-Unix callers use the infallible drain below instead.
+    #[cfg(unix)]
     fn sync_dirs(&mut self) -> Result<(), StorageError> {
-        #[cfg(unix)]
-        {
-            let io =
-                |path: PathBuf| move |source: std::io::Error| StorageError::Io { path, source };
-            // Draining first keeps the set consistent even when a shard
-            // fsync fails: the error aborts the caller loudly, and the next
-            // backup re-marks only shards it actually rewrites.
-            let pending = std::mem::take(&mut self.pending_dir_sync);
-            for shard_id in &pending {
-                let shard = self.root.join("blobs").join(format!("{shard_id:02x}"));
-                let dir = match fs::File::open(&shard) {
-                    Ok(dir) => dir,
-                    Err(source) => {
-                        // Restore unsynced shards so a retry still covers
-                        // them (same as the `sync_all` path below).
-                        self.pending_dir_sync.extend(pending);
-                        return Err(io(shard)(source));
-                    }
-                };
-                if let Err(source) = dir.sync_all() {
-                    // Restore unsynced shards so a retry still covers them.
+        let io = |path: PathBuf| move |source: std::io::Error| StorageError::Io { path, source };
+        // Draining first keeps the set consistent even when a shard
+        // fsync fails: the error aborts the caller loudly, and the next
+        // backup re-marks only shards it actually rewrites.
+        let pending = std::mem::take(&mut self.pending_dir_sync);
+        for shard_id in &pending {
+            let shard = self.root.join("blobs").join(format!("{shard_id:02x}"));
+            let dir = match fs::File::open(&shard) {
+                Ok(dir) => dir,
+                Err(source) => {
+                    // Restore unsynced shards so a retry still covers
+                    // them (same as the `sync_all` path below).
                     self.pending_dir_sync.extend(pending);
                     return Err(io(shard)(source));
                 }
+            };
+            if let Err(source) = dir.sync_all() {
+                // Restore unsynced shards so a retry still covers them.
+                self.pending_dir_sync.extend(pending);
+                return Err(io(shard)(source));
             }
         }
-        #[cfg(not(unix))]
-        {
-            self.pending_dir_sync.clear();
-        }
         Ok(())
+    }
+
+    /// Drain pending shards without persisting (non-Unix: std offers no
+    /// directory-fsync equivalent, so there is nothing fallible to do).
+    #[cfg(not(unix))]
+    fn sync_dirs(&mut self) {
+        self.pending_dir_sync.clear();
     }
 
     /// Load the blob into `out`, clearing it first.
@@ -307,7 +307,15 @@ impl sekai_core::BlobStore for FileCas {
     }
 
     fn sync(&mut self) -> Result<(), Self::Error> {
-        Self::sync_dirs(self)
+        #[cfg(unix)]
+        {
+            Self::sync_dirs(self)
+        }
+        #[cfg(not(unix))]
+        {
+            Self::sync_dirs(self);
+            Ok(())
+        }
     }
 
     fn fetch_into(&self, hash: &BlobHash, out: &mut Vec<u8>) -> Result<(), Self::Error> {
