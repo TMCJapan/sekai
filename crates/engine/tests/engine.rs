@@ -326,3 +326,41 @@ fn gc_reclaims_only_orphans() {
     assert!(store.cas().contains(&row.blob.unwrap()).unwrap());
     assert!(gc_plan(&store).unwrap().is_empty());
 }
+
+#[test]
+fn backup_with_metrics_matches_plain_backup() {
+    use sekai_engine::{backup_with_metrics, scan_world};
+    let scratch = Scratch::new();
+    let world = scratch.world();
+    write_region(
+        &world.join("region").join("r.0.0.mca"),
+        OVER,
+        REGION,
+        &[(0, 0, vec![2, 1, 2, 3]), (1, 0, vec![2, 4, 5])],
+    );
+    let mut store = Store::open(&scratch.store()).unwrap();
+
+    let (report, timings) = backup_with_metrics(&world, &mut store).unwrap();
+    assert_eq!(report.chunks, 2);
+    assert_eq!(report.new_blobs, 2);
+    assert_eq!(timings.cas_checked, 2);
+    assert_eq!(timings.regions.len(), 1);
+    assert_eq!(timings.regions[0].chunks, 2);
+    // Disjoint top-level phases never exceed the wall total.
+    assert!(
+        timings.discover
+            + timings.universe_load
+            + timings.region_open
+            + timings.ingest
+            + timings.db_apply
+            <= timings.total
+    );
+
+    // Read-only scan observes the same world without writing.
+    let entries = scan_world(&world).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].chunks, 2);
+    assert!(entries[0].file_bytes > 0);
+    assert!(entries[0].mtime_ms.is_some());
+    assert_eq!(entries[0].header_hash.len(), 64);
+}
