@@ -153,7 +153,7 @@ fn format_time(created_at_ms: u64) -> String {
 /// regions by `open + ingest` so a few changed regions stand out.
 fn print_timing_table(timings: &sekai_engine::BackupTimings) {
     println!(
-        "timing total={}ms discover={}ms universe={}ms fp={}ms open={}ms ingest={}ms (hash={}ms cas={}ms) db={}ms ingested={} skipped={} carried={}",
+        "timing total={}ms discover={}ms universe={}ms fp={}ms open={}ms ingest={}ms (hash={}ms cas={}ms) db={}ms ingested_files={} skipped_files={} carried_chunks={}",
         timings.total.as_millis(),
         timings.discover.as_millis(),
         timings.universe_load.as_millis(),

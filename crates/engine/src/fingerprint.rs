@@ -2,7 +2,7 @@
 //!
 //! Rationale: deciding "did this region change?" must not cost a full file
 //! read plus per-chunk hashing, or the check saves nothing. The fingerprint
-//! combines `mtime` and `size` from one `stat` with a blake3 over the
+//! combines `mtime` and `size` from the open handle with a blake3 over the
 //! location-table sector (the first 4 KiB, read only). All three must match
 //! stored state to skip ingestion; the location table is covered (rather
 //! than the timestamps sector) so timestamp-only rewrites still skip while
@@ -49,14 +49,19 @@ pub fn file_mtime_ms(path: &Path) -> Option<u64> {
 
 /// Fingerprint one region file without reading it fully.
 ///
-/// Only `stat` plus the first [`HEADER_HASH_LEN`] bytes are touched; short
-/// files (including zero-length placeholders) hash whatever bytes exist.
+/// Opens the file first and derives `size`/`mtime` from the open handle so
+/// all three signals describe the same inode; a file replaced between
+/// `stat` and `open` would otherwise mix metadata from one version with
+/// header bytes from another. Only `fstat` on the open handle plus the first
+/// [`HEADER_HASH_LEN`] bytes are touched; short files (including
+/// zero-length placeholders) hash whatever bytes exist.
 pub fn fingerprint_file(path: &Path) -> Result<FileFingerprint, EngineError> {
     let io = |source: std::io::Error| EngineError::Io {
         path: path.to_path_buf(),
         source,
     };
-    let meta = std::fs::metadata(path).map_err(&io)?;
+    let mut file = File::open(path).map_err(&io)?;
+    let meta = file.metadata().map_err(&io)?;
     let size = meta.len();
     let mtime_ms = meta
         .modified()
@@ -65,7 +70,6 @@ pub fn fingerprint_file(path: &Path) -> Result<FileFingerprint, EngineError> {
         .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
     let mut header = [0u8; HEADER_HASH_LEN];
     let mut read = 0usize;
-    let mut file = File::open(path).map_err(&io)?;
     while read < HEADER_HASH_LEN {
         match file.read(&mut header[read..]) {
             Ok(0) => break,

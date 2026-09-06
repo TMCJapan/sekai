@@ -246,6 +246,12 @@ fn walk_regions(
             size: file_fp.size,
             header_hash: file_fp.header_hash,
         };
+        // Fingerprint and ingest open the file separately, and a carried
+        // file is not re-read before the DB commit: a concurrent rewrite
+        // after the fingerprint match is silently missed by this snapshot
+        // (the next run mismatches and re-ingests). The mismatch path fails
+        // safe (stale fingerprint stored, re-ingested next run, or ingest
+        // errors). Callers must quiesce the server before snapshotting.
         // Unchanged files skip read/hash/CAS; their rows carry over below.
         if states
             .get(&key_tuple)
