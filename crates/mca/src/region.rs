@@ -48,11 +48,11 @@ pub fn parse_region_name(file_name: &str) -> Result<(i32, i32), McaError> {
 /// Rationale: reader and writer both tracked `region_x`/`region_z` and the
 /// derived `base_x`/`base_z` as four loose `i32`s. Grouping them keeps the
 /// two sides from drifting apart (single overflow-checked constructor) and
-/// gives coordinate mapping one home. Kept `pub(crate)` inside `mca` on
-/// purpose: region-file addressing is an MCA layout detail, not workspace
-/// domain state, so it does not belong in `core::coords`.
+/// gives coordinate mapping one home. Kept inside `mca` on purpose:
+/// region-file addressing is an MCA layout detail, not workspace domain
+/// state, so it does not belong in `core::coords`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct RegionLoc {
+pub struct RegionLoc {
     region_x: i32,
     region_z: i32,
     base_x: i32,
@@ -62,7 +62,7 @@ pub(crate) struct RegionLoc {
 impl RegionLoc {
     /// Build from region coordinates, rejecting bases where `base + 31`
     /// would overflow `i32` (see [`base_coords`]).
-    pub(crate) fn new(region_x: i32, region_z: i32) -> Result<Self, McaError> {
+    pub fn new(region_x: i32, region_z: i32) -> Result<Self, McaError> {
         let (base_x, base_z) = base_coords(region_x, region_z)?;
         Ok(Self {
             region_x,
@@ -73,17 +73,17 @@ impl RegionLoc {
     }
 
     /// Region X from the file name.
-    pub(crate) fn region_x(self) -> i32 {
+    pub const fn region_x(self) -> i32 {
         self.region_x
     }
 
     /// Region Z from the file name.
-    pub(crate) fn region_z(self) -> i32 {
+    pub const fn region_z(self) -> i32 {
         self.region_z
     }
 
     /// Header slot for `coord`, rejecting foreign namespaces/coordinates.
-    pub(crate) fn slot_of(
+    pub fn slot_of(
         self,
         dim: Dimension,
         kind: RegionKind,
@@ -100,22 +100,24 @@ impl RegionLoc {
         }
         let dx = coord.x.checked_sub(self.base_x).ok_or_else(wrong)?;
         let dz = coord.z.checked_sub(self.base_z).ok_or_else(wrong)?;
-        if !(0..ROW_WIDTH as i32).contains(&dx) || !(0..ROW_WIDTH as i32).contains(&dz) {
+        if !(0..ROW_WIDTH.cast_signed()).contains(&dx)
+            || !(0..ROW_WIDTH.cast_signed()).contains(&dz)
+        {
             return Err(wrong());
         }
-        Ok(dx as u32 + ROW_WIDTH * dz as u32)
+        Ok(dx.cast_unsigned() + ROW_WIDTH * dz.cast_unsigned())
     }
 
     /// Global coordinate for header slot `index` (`0..1024`).
     ///
     /// `base + 31` was validated at construction, so these additions cannot
     /// wrap; callers must still only pass in-range slots.
-    pub(crate) fn coord_at(self, dim: Dimension, kind: RegionKind, index: u32) -> ChunkCoord {
+    pub const fn coord_at(self, dim: Dimension, kind: RegionKind, index: u32) -> ChunkCoord {
         ChunkCoord::new(
             dim,
             kind,
-            self.base_x + (index % ROW_WIDTH) as i32,
-            self.base_z + (index / ROW_WIDTH) as i32,
+            self.base_x + (index % ROW_WIDTH).cast_signed(),
+            self.base_z + (index / ROW_WIDTH).cast_signed(),
         )
     }
 }
