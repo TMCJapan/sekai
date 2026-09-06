@@ -11,13 +11,16 @@ pub enum NbtError {
     #[error("empty chunk payload: missing compression-type byte")]
     EmptyPayload,
 
-    /// First byte was not 1 (Gzip), 2 (Zlib), 3 (Uncompressed), or 4 (LZ4).
-    ///
-    /// Note: values `>= 128` mean the chunk body lives in an external
-    /// `c.<x>.<z>.mcc` file rather than the region file, so the payload
-    /// handed here was likely incorrectly sliced by the caller.
+    /// First byte was not 1 (Gzip), 2 (Zlib), 3 (Uncompressed), or 4 (LZ4),
+    /// and neither a custom (127) nor an external-body (>= 128) marker.
     #[error("unknown compression type: {0}")]
     UnknownCompression(u8),
+
+    /// Type `>= 128`: the chunk body lives in an external `c.<x>.<z>.mcc`
+    /// file rather than the region file, so the payload handed here was
+    /// likely incorrectly sliced by the caller.
+    #[error("external chunk body (type {0}): payload lives in c.<x>.<z>.mcc, not the region file")]
+    ExternalBody(u8),
 
     /// Type `127`: third-party custom codec (namespaced id follows).
     ///
