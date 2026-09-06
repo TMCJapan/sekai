@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 //! Backup and rollback orchestration over region files.
 //!
 //! Rationale: `engine` owns ordering and policy, never formats. It walks
