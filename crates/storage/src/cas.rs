@@ -144,7 +144,10 @@ impl FileCas {
     /// itself, but the directory entries only become crash-durable here.
     /// Opening a directory with `File::open` fails on Windows
     /// (`ERROR_ACCESS_DENIED`), and std offers no directory-fsync equivalent
-    /// there, so this is a no-op drain on non-Unix platforms.
+    /// there, so this is a no-op drain on non-Unix platforms. The unified
+    /// `Result` keeps the `BlobStore::sync` call site cfg-free; on non-Unix
+    /// there is simply nothing fallible to persist, hence the scoped allow.
+    #[cfg_attr(not(unix), allow(clippy::unnecessary_wraps))]
     fn sync_dirs(&mut self) -> Result<(), StorageError> {
         #[cfg(unix)]
         {
