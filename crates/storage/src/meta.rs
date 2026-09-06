@@ -109,19 +109,33 @@ impl SqliteMeta {
         )?;
         // AUTOINCREMENT rowids are always positive.
         let id = SnapshotId(tx.last_insert_rowid().cast_unsigned());
+        // One prepared statement for all rows: re-parsing the same SQL per
+        // chunk dominated `db_apply` on large worlds.
+        let mut stmt = tx.prepare(INSERT_HISTORY_SQL)?;
         for entry in entries {
-            insert_history_row(
-                &tx,
-                id,
-                &entry.coord,
-                entry.blob.as_ref(),
-                entry.diff.as_ref(),
-            )?;
+            // Hashes travel as 32-byte BLOBs (`NULL` blob = tombstone).
+            let blob: Option<&[u8]> = entry.blob.as_ref().map(|b| b.0.as_slice());
+            let diff: Option<&[u8]> = entry.diff.as_ref().map(|d| d.0.as_slice());
+            stmt.execute(params![
+                id.0.cast_signed(),
+                i64::from(entry.coord.dim.raw()),
+                i64::from(entry.coord.kind.raw()),
+                i64::from(entry.coord.x),
+                i64::from(entry.coord.z),
+                blob,
+                diff,
+            ])?;
         }
+        drop(stmt);
         tx.commit()?;
         Ok(id)
     }
 }
+
+/// Shared INSERT text for history rows (batched and single-row paths).
+const INSERT_HISTORY_SQL: &str = "INSERT INTO chunk_history
+         (snapshot_id, dim, kind, cx, cz, blob, diff)
+         VALUES (?, ?, ?, ?, ?, ?, ?)";
 
 /// Insert one history row on `conn` (shared by the batched and single-row
 /// write paths so both encode coordinates and hashes identically).
@@ -139,9 +153,7 @@ fn insert_history_row(
     let blob: Option<&[u8]> = blob.map(|b| b.0.as_slice());
     let diff: Option<&[u8]> = diff.map(|d| d.0.as_slice());
     conn.execute(
-        "INSERT INTO chunk_history
-         (snapshot_id, dim, kind, cx, cz, blob, diff)
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        INSERT_HISTORY_SQL,
         params![
             snapshot.0.cast_signed(),
             i64::from(coord.dim.raw()),
