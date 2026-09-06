@@ -71,7 +71,7 @@ impl FileCas {
     /// The payload is written to a same-directory temp file, fsynced, and
     /// renamed over the destination (no in-place mutation, so concurrent
     /// readers never see a torn blob), then the shard directory is fsynced
-    /// to persist the rename itself.
+    /// to persist the rename itself (Unix-only; see below).
     pub fn put(&mut self, hash: &BlobHash, payload: &[u8]) -> Result<bool, StorageError> {
         let dest = self.ensure_shard(hash)?;
         if dest.exists() {
@@ -89,9 +89,15 @@ impl FileCas {
             f.sync_all().map_err(io(tmp.clone()))?;
             drop(f);
             fs::rename(&tmp, &dest).map_err(io(dest.clone()))?;
-            let shard = dest.parent().map(Path::to_path_buf).unwrap_or_default();
-            let dir = fs::File::open(&shard).map_err(io(shard.clone()))?;
-            dir.sync_all().map_err(io(shard.clone()))?;
+            // Persist the rename itself. Unix-only: opening a directory
+            // with `File::open` fails on Windows (ERROR_ACCESS_DENIED),
+            // and std offers no directory-fsync equivalent there.
+            #[cfg(unix)]
+            {
+                let shard = dest.parent().map(Path::to_path_buf).unwrap_or_default();
+                let dir = fs::File::open(&shard).map_err(io(shard.clone()))?;
+                dir.sync_all().map_err(io(shard.clone()))?;
+            }
             Ok(())
         };
         // A lost rename race (two writers, same blob) converges: the loser
