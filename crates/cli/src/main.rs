@@ -27,6 +27,12 @@ enum Command {
     Backup {
         /// World directory (the one containing `region/`, `DIM-1/`, or `dimensions/`).
         world: PathBuf,
+        /// Print a per-phase timing breakdown after the report.
+        #[arg(long, conflicts_with = "timing_json")]
+        timing: bool,
+        /// Print report and timings as flat JSON instead of human text.
+        #[arg(long)]
+        timing_json: bool,
     },
     /// Rebuild the world from a snapshot, overwriting region files.
     Rollback {
@@ -37,14 +43,40 @@ enum Command {
     },
     /// List recorded snapshots, oldest first.
     List,
+    /// Read-only inspection helpers (never write to world or store).
+    Debug {
+        #[command(subcommand)]
+        debug: DebugCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum DebugCommand {
+    /// List region files with size, mtime, chunk count, and header hash.
+    ///
+    /// Read-only: never writes to the world or the store.
+    Scan {
+        /// World directory to inspect.
+        world: PathBuf,
+        /// Emit the entries as a JSON array instead of a table.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     match cli.command {
-        Command::Backup { world } => run_backup(&cli.store, &world),
+        Command::Backup {
+            world,
+            timing,
+            timing_json,
+        } => run_backup(&cli.store, &world, timing, timing_json),
         Command::Rollback { world, snapshot } => run_rollback(&cli.store, &world, snapshot),
         Command::List => run_list(&cli.store),
+        Command::Debug { debug } => match debug {
+            DebugCommand::Scan { world, json } => run_debug_scan(&world, json),
+        },
     }
 }
 
@@ -53,10 +85,19 @@ fn open_store(store: &Path) -> anyhow::Result<sekai_engine::Store> {
         .with_context(|| format!("cannot open store at {}", store.display()))
 }
 
-fn run_backup(store_dir: &Path, world: &Path) -> anyhow::Result<()> {
+fn run_backup(
+    store_dir: &Path,
+    world: &Path,
+    timing: bool,
+    timing_json: bool,
+) -> anyhow::Result<()> {
     let mut store = open_store(store_dir)?;
-    let report = sekai_engine::backup(world, &mut store)
+    let (report, timings) = sekai_engine::backup_with_metrics(world, &mut store)
         .with_context(|| format!("backup of {} failed", world.display()))?;
+    if timing_json {
+        println!("{}", backup_json(&report, &timings));
+        return Ok(());
+    }
     println!(
         "snapshot {} recorded: {} chunks, {} new blobs, {} tombstones",
         report.snapshot.raw(),
@@ -64,6 +105,9 @@ fn run_backup(store_dir: &Path, world: &Path) -> anyhow::Result<()> {
         report.new_blobs,
         report.tombstones
     );
+    if timing {
+        print_timing_table(&timings);
+    }
     Ok(())
 }
 
@@ -102,6 +146,186 @@ fn format_time(created_at_ms: u64) -> String {
         .map_or_else(|| format!("{created_at_ms}ms"), |time| time.to_rfc3339())
 }
 
+/// Human-readable phase table for `backup --timing`.
+///
+/// Totals first (disjoint phases sum to roughly the wall total; `hash` and
+/// `cas` are the per-chunk split inside `ingest`), then the five slowest
+/// regions by `open + ingest` so a few changed regions stand out.
+fn print_timing_table(timings: &sekai_engine::BackupTimings) {
+    println!(
+        "timing total={}ms discover={}ms universe={}ms open={}ms ingest={}ms (hash={}ms cas={}ms) db={}ms files={} cas_checked={}",
+        timings.total.as_millis(),
+        timings.discover.as_millis(),
+        timings.universe_load.as_millis(),
+        timings.region_open.as_millis(),
+        timings.ingest.as_millis(),
+        timings.hash.as_millis(),
+        timings.cas_put.as_millis(),
+        timings.db_apply.as_millis(),
+        timings.regions.len(),
+        timings.cas_checked,
+    );
+    let mut slowest: Vec<&sekai_engine::RegionTiming> = timings.regions.iter().collect();
+    slowest.sort_by_key(|r| std::cmp::Reverse((r.open + r.ingest).as_micros()));
+    for region in slowest.iter().take(5) {
+        println!(
+            "  {} chunks={} bytes={} open={}ms ingest={}ms (hash={}ms cas={}ms)",
+            region.path.display(),
+            region.chunks,
+            region.bytes,
+            region.open.as_millis(),
+            region.ingest.as_millis(),
+            region.hash.as_millis(),
+            region.cas.as_millis(),
+        );
+    }
+}
+
+/// Flat JSON for `backup --timing-json` (hand-rolled to avoid a serde
+/// dependency for one flag).
+fn backup_json(
+    report: &sekai_engine::BackupReport,
+    timings: &sekai_engine::BackupTimings,
+) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::from("{");
+    let _ = write!(
+        out,
+        "\"snapshot\":{},\"chunks\":{},\"new_blobs\":{},\"tombstones\":{},\"total_ms\":{}",
+        report.snapshot.raw(),
+        report.chunks,
+        report.new_blobs,
+        report.tombstones,
+        timings.total.as_millis(),
+    );
+    let _ = write!(
+        out,
+        ",\"phases\":{{\"discover_ms\":{},\"universe_load_ms\":{},\"region_open_ms\":{},\"ingest_ms\":{},\"hash_ms\":{},\"cas_put_ms\":{},\"db_apply_ms\":{}}}",
+        timings.discover.as_millis(),
+        timings.universe_load.as_millis(),
+        timings.region_open.as_millis(),
+        timings.ingest.as_millis(),
+        timings.hash.as_millis(),
+        timings.cas_put.as_millis(),
+        timings.db_apply.as_millis(),
+    );
+    out.push_str(",\"regions\":[");
+    for (index, region) in timings.regions.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        let _ = write!(
+            out,
+            "{{\"path\":\"{}\",\"bytes\":{},\"chunks\":{},\"open_ms\":{},\"ingest_ms\":{},\"hash_ms\":{},\"cas_ms\":{}}}",
+            json_escape(&region.path.to_string_lossy()),
+            region.bytes,
+            region.chunks,
+            region.open.as_millis(),
+            region.ingest.as_millis(),
+            region.hash.as_millis(),
+            region.cas.as_millis(),
+        );
+    }
+    out.push_str("]}");
+    out
+}
+
+fn run_debug_scan(world: &Path, json: bool) -> anyhow::Result<()> {
+    let entries = sekai_engine::scan_world(world)
+        .with_context(|| format!("scan of {} failed", world.display()))?;
+    if json {
+        println!("{}", scan_json(&entries));
+        return Ok(());
+    }
+    for entry in &entries {
+        println!(
+            "{} dim={} kind={} region=r.{}.{} size={} mtime={} chunks={} header={}",
+            entry.path.display(),
+            entry.dim.raw(),
+            kind_name(entry.kind),
+            entry.region_x,
+            entry.region_z,
+            entry.file_bytes,
+            entry
+                .mtime_ms
+                .map_or_else(|| "n/a".to_string(), |ms| ms.to_string()),
+            entry.chunks,
+            entry.header_hash.get(..12).unwrap_or(&entry.header_hash),
+        );
+    }
+    let total_bytes: u64 = entries.iter().map(|e| e.file_bytes).sum();
+    let total_chunks: usize = entries.iter().map(|e| e.chunks).sum();
+    println!(
+        "{} files, {} bytes, {} chunks",
+        entries.len(),
+        total_bytes,
+        total_chunks
+    );
+    Ok(())
+}
+
+/// Flat JSON array for `debug scan --json` (hand-rolled to avoid a serde
+/// dependency for one flag).
+fn scan_json(entries: &[sekai_engine::RegionScanEntry]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::from("[");
+    for (index, entry) in entries.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        let mtime = entry
+            .mtime_ms
+            .map_or_else(|| "null".to_string(), |ms| ms.to_string());
+        let _ = write!(
+            out,
+            "{{\"path\":\"{}\",\"dim\":{},\"kind\":{},\"region_x\":{},\"region_z\":{},\"size\":{},\"mtime_ms\":{mtime},\"chunks\":{},\"header_hash\":\"{}\"}}",
+            json_escape(&entry.path.to_string_lossy()),
+            entry.dim.raw(),
+            entry.kind.raw(),
+            entry.region_x,
+            entry.region_z,
+            entry.file_bytes,
+            entry.chunks,
+            entry.header_hash,
+        );
+    }
+    out.push(']');
+    out
+}
+
+/// Short family name for a region kind (`region`/`entities`/`poi`).
+fn kind_name(kind: sekai_core::RegionKind) -> &'static str {
+    if kind == sekai_core::RegionKind::REGION {
+        "region"
+    } else if kind == sekai_core::RegionKind::ENTITIES {
+        "entities"
+    } else if kind == sekai_core::RegionKind::POI {
+        "poi"
+    } else {
+        "unknown"
+    }
+}
+
+/// Minimal JSON string escaper for paths (quote, backslash, controls).
+fn json_escape(text: &str) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,6 +341,32 @@ mod tests {
         assert!(matches!(cli.command, Command::Rollback { snapshot: 3, .. }));
 
         assert!(Cli::try_parse_from(["sekai", "rollback", "w"]).is_err());
+    }
+
+    #[test]
+    fn parses_timing_and_debug_scan() {
+        let cli = Cli::try_parse_from(["sekai", "backup", "--timing", "world"])
+            .expect("backup --timing parses");
+        assert!(matches!(cli.command, Command::Backup { timing: true, .. }));
+
+        let cli = Cli::try_parse_from(["sekai", "backup", "--timing-json", "world"])
+            .expect("backup --timing-json parses");
+        assert!(matches!(
+            cli.command,
+            Command::Backup {
+                timing_json: true,
+                ..
+            }
+        ));
+
+        // The two renderings are mutually exclusive.
+        assert!(
+            Cli::try_parse_from(["sekai", "backup", "--timing", "--timing-json", "world"]).is_err()
+        );
+
+        let cli =
+            Cli::try_parse_from(["sekai", "debug", "scan", "world"]).expect("debug scan parses");
+        assert!(matches!(cli.command, Command::Debug { .. }));
     }
 
     #[test]
@@ -136,7 +386,7 @@ mod tests {
         write_region(&region);
         let store = root.join("store");
 
-        run_backup(&store, &root.join("world")).expect("backup works");
+        run_backup(&store, &root.join("world"), false, false).expect("backup works");
         let opened = open_store(&store).expect("store opens");
         let snapshots = sekai_engine::list_snapshots(&opened).expect("list works");
         assert_eq!(snapshots.len(), 1);
