@@ -5,14 +5,71 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Keep `main` runs intact so every merged commit keeps its own CLI artifacts.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
+  # Keep in sync with `rust-toolchain.toml`.
+  RUST_TOOLCHAIN: 1.98.0
 
 jobs:
-  check:
-    name: Code Quality & Tests
+  lint:
+    name: Format & dependency audit
     runs-on: ubuntu-latest
+
+    steps:
+      - parallel:
+          - name: Checkout repository
+            uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+          - name: Install cargo-deny and cargo-machete
+            uses: taiki-e/install-action@7b8d4719ee4aaa279bdf55df38dacb9ebfe12a6c
+            with:
+              tool: cargo-deny,cargo-machete
+
+      # Deliberately left out of the block above: rustup populates the same
+      # `~/.cargo/bin` that `install-action` writes its binaries into.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          # Everything `rust-toolchain.toml` asks for -- components and targets
+          # alike -- so no parallel step below has rustup fetch anything on
+          # demand.
+          targets: thumbv7m-none-eabi,wasm32-unknown-unknown
+          components: rustfmt, clippy, rust-analyzer
+
+      # None of the three checks compiles anything, and the toolchain above
+      # leaves rustup nothing to fetch, so they contend over no shared lock.
+      - parallel:
+          - name: Check formatting
+            run: cargo fmt --all -- --check
+          - name: Check advisories, licenses and bans
+            run: cargo deny check
+          - name: Check for unused dependencies
+            run: cargo machete
+
+  portability:
+    name: Library / ${{ matrix.name }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: no_std (thumbv7m-none-eabi)
+            target: thumbv7m-none-eabi
+            packages: -p sekai-core
+          - name: wasm (wasm32-unknown-unknown)
+            target: wasm32-unknown-unknown
+            packages: -p sekai-core -p sekai-nbt
 
     steps:
       - name: Checkout repository
@@ -21,27 +78,140 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
-          toolchain: 1.98.0
-          components: rustfmt, clippy
-          targets: thumbv7m-none-eabi
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+          components: clippy
 
-      - name: Cache cargo registry & index
+      - name: Cache cargo registry & build artifacts
         uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
+        with:
+          key: ${{ matrix.target }}
 
-      - name: Install cargo-deny
-        uses: taiki-e/install-action@cargo-deny
+      # `--all-targets` is deliberately omitted: test and bench harnesses pull
+      # in `std`, which these targets do not provide.
+      - name: Clippy
+        run: cargo clippy ${{ matrix.packages }} --target ${{ matrix.target }} --no-default-features -- -D warnings
 
-      - name: Check Formatting
-        run: cargo fmt --all -- --check
+  # Split from `dist` below so the checks and the release build get a runner
+  # each.
+  test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
 
-      - name: Run Clippy
-        run: cargo clippy --all-targets -- -D warnings
+    strategy:
+      fail-fast: false
+      # Keep in sync with the `dist` matrix below.
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - name: macos-x64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+          - name: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - name: windows-arm64
+            os: windows-11-arm
+            target: aarch64-pc-windows-msvc
 
-      - name: Verify core crate no_std purity
-        run: cargo check -p sekai-core --target thumbv7m-none-eabi --no-default-features
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
-      - name: Run Tests
-        run: cargo test --all
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+          components: clippy
 
-      - name: Run Cargo Deny
-        run: cargo deny check
+      # Keyed apart from `dist`: this job only ever fills the dev profile, and
+      # a cache shared with the release build would thrash on every run.
+      - name: Cache cargo registry & build artifacts
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
+        with:
+          key: test-${{ matrix.target }}
+
+      # After the cache step on purpose: `rust-cache` restores `~/.cargo/bin`,
+      # which is where `install-action` drops the binary.
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@7b8d4719ee4aaa279bdf55df38dacb9ebfe12a6c
+        with:
+          tool: cargo-nextest
+
+      # Kept sequential: both invocations build the dev profile, so they would
+      # queue on the same `target/<triple>/debug` cargo build lock anyway.
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --target ${{ matrix.target }} -- -D warnings
+
+      - name: Test
+        run: cargo nextest run --workspace --target ${{ matrix.target }}
+
+  # Intentionally not gated on `test`: waiting would give back exactly the wall
+  # clock the split was meant to save, and a red run is already flagged as red.
+  dist:
+    name: CLI / ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      # Keep in sync with the `test` matrix above.
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - name: macos-x64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+          - name: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - name: windows-arm64
+            os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry & build artifacts
+        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
+        with:
+          key: dist-${{ matrix.target }}
+
+      - name: Build CLI (release)
+        run: cargo build -p sekai-cli --release --target ${{ matrix.target }}
+
+      # Artifacts are zipped by the upload action, which drops file modes, so
+      # the binary is tarred first to keep it executable after download.
+      - name: Package CLI
+        shell: bash
+        run: tar -czf sekai-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release sekai${{ runner.os == 'Windows' && '.exe' || '' }}
+
+      - name: Upload CLI
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: sekai-${{ matrix.target }}
+          path: sekai-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
