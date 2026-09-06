@@ -6,6 +6,15 @@ Chunk-level deduplicated backups for Minecraft Java region files (`.mca`).
 Snapshots share identical chunk payloads via content-addressed storage, and
 rollback rebuilds region files byte-identically and atomically.
 
+## Installation
+
+Rust toolchain is required to build this project.
+Clone this repository and run:
+
+```sh
+cargo install --path ./crates/cli
+```
+
 ## Usage
 
 ```sh

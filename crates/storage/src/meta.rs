@@ -3,7 +3,9 @@
 //! Rationale: history rows are plain `(snapshot, coord) -> (blob?, diff?)`
 //! facts; interval semantics (`[S_i, S_{i+1})`) emerge from snapshot order,
 //! so no range columns are stored. Hashes are 32-byte BLOBs (`NULL` blob =
-//! tombstone, `NULL` diff = not computed). `chunk_state`-style derived
+//! tombstone, `NULL` diff = not computed; the `diff` cache is reserved but
+//! currently always `NULL` because backup never computes it).
+//! `chunk_state`-style derived
 //! indices are intentionally absent - they rebuild from this table.
 //!
 //! Crash posture: `PRAGMA journal_mode=WAL, synchronous=FULL` plus one
@@ -45,8 +47,9 @@ CREATE INDEX idx_history_coord
     ON chunk_history(dim, kind, cx, cz, snapshot_id);
 -- Derived per-region fingerprints (see `region.rs`): which snapshot last
 -- confirmed each file (ingested, or carried by fingerprint match) and what
--- the file looked like. Rebuilt lazily by the
--- next backup when wiped, so it never needs data migration.
+-- the file looked like. Re-observed from live world files by the
+-- next backup when wiped (fingerprints are never stored in history),
+-- so it never needs data migration.
 CREATE TABLE region_state(
     dim INTEGER NOT NULL,
     kind INTEGER NOT NULL,
@@ -67,7 +70,8 @@ pub struct SnapshotEntry {
     pub coord: ChunkCoord,
     /// Exact CAS key, or `None` for a tombstone.
     pub blob: Option<BlobHash>,
-    /// Cached volatile hash, or `None` when not computed.
+    /// Cached volatile hash, or `None` when not computed (backup always
+    /// records `None` today; the column only reserves the cache).
     pub diff: Option<DiffHash>,
 }
 
