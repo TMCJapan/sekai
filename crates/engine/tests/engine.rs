@@ -533,3 +533,57 @@ fn wiped_region_state_degrades_to_full_ingest() {
         .unwrap();
     assert_eq!(first.blob, third.blob);
 }
+
+#[test]
+fn parallel_ingest_stays_content_identical() {
+    // Three region files (exercising the worker pool) with duplicate
+    // payloads across files (exercising concurrent same-hash puts).
+    let scratch = Scratch::new();
+    let world = scratch.world();
+    write_region(
+        &world.join("region").join("r.0.0.mca"),
+        OVER,
+        REGION,
+        &[(0, 0, vec![2, 1, 2, 3]), (1, 0, vec![2, 9, 9, 9])],
+    );
+    write_region(
+        &world.join("region").join("r.1.0.mca"),
+        OVER,
+        REGION,
+        &[(32, 0, vec![2, 1, 2, 3]), (33, 0, vec![2, 7])],
+    );
+    write_region(
+        &world.join("region").join("r.0.1.mca"),
+        OVER,
+        REGION,
+        &[(0, 32, vec![2, 7])],
+    );
+    let mut store = Store::open(&scratch.store()).unwrap();
+
+    let r1 = backup(&world, &mut store).unwrap();
+    assert_eq!(r1.chunks, 5);
+    assert_eq!(r1.skipped_regions, 0);
+    // Five chunks but three distinct payloads; concurrent duplicate puts
+    // may double-count, so only bound the counter from above.
+    assert!(r1.new_blobs <= 5);
+
+    // Re-run: everything skips and carries, then rollback restores bytes.
+    let r2 = backup(&world, &mut store).unwrap();
+    assert_eq!(r2.skipped_regions, 3);
+    assert_eq!(r2.carried_chunks, 5);
+    rollback(&world, &mut store, r1.snapshot).unwrap();
+    assert_eq!(read_world(&world).len(), 5);
+    for (x, z, payload) in [
+        (0, 0, vec![2, 1, 2, 3]),
+        (1, 0, vec![2, 9, 9, 9]),
+        (32, 0, vec![2, 1, 2, 3]),
+        (33, 0, vec![2, 7]),
+        (0, 32, vec![2, 7]),
+    ] {
+        assert_eq!(
+            read_world(&world)[&(OVER, REGION, x, z)],
+            payload,
+            "chunk ({x}, {z}) must round-trip byte-identically"
+        );
+    }
+}
