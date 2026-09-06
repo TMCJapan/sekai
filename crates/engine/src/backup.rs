@@ -72,8 +72,8 @@ pub fn backup_with_metrics(
     let regions = discover(world)?;
     let discover = discover_started.elapsed();
 
-    let mut entries: Vec<SnapshotEntry> = Vec::new();
-    let mut present: HashSet<ChunkCoord> = HashSet::new();
+    let mut entries: Vec<SnapshotEntry> = Vec::with_capacity(universe.len());
+    let mut present: HashSet<ChunkCoord> = HashSet::with_capacity(universe.len());
     let mut new_blobs = 0usize;
     let mut region_open = Duration::ZERO;
     let mut ingest_sum = Duration::ZERO;
