@@ -8,22 +8,12 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
 
 use sekai_core::{Dimension, RegionKind, RegionReader as _};
 
 use crate::discover::discover;
 use crate::error::EngineError;
-
-/// First bytes of a region file covered by the header hash.
-///
-/// Region headers occupy two 4 KiB sectors (location table + timestamps);
-/// hashing only the location table (first sector) is enough to detect
-/// chunk add/remove/relocate, while staying cheap (one 4 KiB read worth of
-/// digest input when the file is large). Files smaller than this hash
-/// whatever bytes exist (including the zero-length placeholder case, which
-/// hashes as empty).
-pub const HEADER_HASH_LEN: usize = 4096;
+use crate::fingerprint::{HEADER_HASH_LEN, file_mtime_ms};
 
 /// One region file observed on disk.
 #[derive(Debug, Clone)]
@@ -48,17 +38,6 @@ pub struct RegionScanEntry {
     pub header_hash: String,
 }
 
-/// Failure to read the platform modification time.
-///
-/// `metadata.modified()` fails on filesystems without timestamp support;
-/// callers treat that as "unknown" rather than an error, so this helper
-/// converts to `Option` at the boundary.
-fn mtime_ms_of(path: &Path) -> Option<u64> {
-    let modified = fs::metadata(path).ok()?.modified().ok()?;
-    let elapsed = modified.duration_since(UNIX_EPOCH).ok()?;
-    Some(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
-}
-
 /// Scan every region file under `world` without writing anything.
 pub fn scan_world(world: &Path) -> Result<Vec<RegionScanEntry>, EngineError> {
     let mut out = Vec::new();
@@ -70,7 +49,7 @@ pub fn scan_world(world: &Path) -> Result<Vec<RegionScanEntry>, EngineError> {
         let file_bytes = bytes.len() as u64;
         let header_len = bytes.len().min(HEADER_HASH_LEN);
         let header_hash = blake3::hash(&bytes[..header_len]).to_hex().to_string();
-        let mtime_ms = mtime_ms_of(&region.path);
+        let mtime_ms = file_mtime_ms(&region.path);
         let chunks = count_chunks(
             &bytes,
             region.dim,

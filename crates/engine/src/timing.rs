@@ -42,9 +42,11 @@ pub struct BackupTimings {
     pub discover: Duration,
     /// Time spent loading the previous snapshot's coordinate universe.
     pub universe_load: Duration,
-    /// Sum of per-region `RegionFile::open` times.
+    /// Time spent fingerprinting files (`stat` + header hash).
+    pub fingerprint: Duration,
+    /// Sum of per-region `RegionFile::open` times (changed regions only).
     pub region_open: Duration,
-    /// Sum of per-region visit + hash + CAS times.
+    /// Sum of per-region visit + hash + CAS times (changed regions only).
     pub ingest: Duration,
     /// Subset of `ingest` spent hashing raw payloads.
     pub hash: Duration,
@@ -54,6 +56,10 @@ pub struct BackupTimings {
     pub cas_checked: usize,
     /// Time spent committing the metadata transaction.
     pub db_apply: Duration,
-    /// Per-region details, in discovery order.
+    /// Region files skipped via fingerprint match.
+    pub skipped_regions: usize,
+    /// History rows carried over for skipped regions.
+    pub carried_chunks: usize,
+    /// Per-region details for ingested files, in discovery order.
     pub regions: Vec<RegionTiming>,
 }
