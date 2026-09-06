@@ -315,6 +315,14 @@ fn incremental_carry_copies_rows_and_state() {
         .unwrap();
     assert_eq!(carried.blob, Some(hash(1)));
 
+    // Pure carry preserves fingerprints but advances `snapshot_id`, so the
+    // state keeps meaning "last confirmed" and stays viable for FK pruning.
+    let states = meta.load_region_states().unwrap();
+    assert_eq!(states.len(), 1);
+    assert_eq!(states[0].snapshot_id, outcome.id);
+    assert_eq!(states[0].size, fingerprint().size);
+    assert_eq!(states[0].header_hash, fingerprint().header_hash);
+
     // Fingerprint refresh and removal flow through the same transaction.
     let mut fp = fingerprint();
     fp.size = 12288;

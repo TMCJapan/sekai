@@ -58,7 +58,8 @@ pub struct RegionStateEntry {
     pub size: u64,
     /// Blake3 of the file's location-table sector (first 4 KiB).
     pub header_hash: [u8; 32],
-    /// Snapshot that recorded this fingerprint.
+    /// Snapshot that last confirmed this fingerprint (ingested, or carried
+    /// over by a fingerprint match).
     pub snapshot_id: SnapshotId,
 }
 
@@ -68,9 +69,11 @@ impl RegionFingerprint {
     /// All three signals must agree, and a missing `mtime` on either side
     /// forces ingest: silently trusting a clock the platform cannot provide
     /// would risk stale snapshots, so the fail-safe direction is to redo
-    /// the work. Same-size in-place edits inside one clock tick additionally
-    /// require an unchanged location table to slip through, which keeps the
-    /// residual risk negligible for a hot-recovery tool.
+    /// the work. A same-size in-place payload rewrite that keeps the
+    /// location table unchanged inside one `mtime` granularity tick still
+    /// slips through; filesystems with coarse timestamps (e.g. FAT with 2 s
+    /// granularity) widen that window, so callers must quiesce the server
+    /// before snapshotting.
     #[must_use]
     pub fn matches_state(&self, state: &RegionStateEntry) -> bool {
         if self.key != state.key {
@@ -151,6 +154,36 @@ pub fn insert_region_states(
             i64::try_from(fp.size).unwrap_or(i64::MAX),
             fp.header_hash.as_slice(),
             snapshot.0.cast_signed(),
+        ])?;
+    }
+    Ok(())
+}
+
+/// Retarget carried regions to the new snapshot without touching fingerprints.
+///
+/// Carried files were fingerprint-matched, so their `(mtime, size,
+/// header_hash)` are unchanged; only `snapshot_id` advances. Keeps the
+/// column meaning "last snapshot this file was confirmed present" and keeps
+/// `REFERENCES snapshots(id)` viable for future snapshot pruning.
+pub fn retarget_region_states(
+    conn: &Connection,
+    snapshot: SnapshotId,
+    keys: &[RegionKey],
+) -> Result<(), StorageError> {
+    if keys.is_empty() {
+        return Ok(());
+    }
+    let mut stmt = conn.prepare(
+        "UPDATE region_state SET snapshot_id = ?
+          WHERE dim = ? AND kind = ? AND rx = ? AND rz = ?",
+    )?;
+    for key in keys {
+        stmt.execute(params![
+            snapshot.0.cast_signed(),
+            i64::from(key.dim.raw()),
+            i64::from(key.kind.raw()),
+            i64::from(key.rx),
+            i64::from(key.rz),
         ])?;
     }
     Ok(())

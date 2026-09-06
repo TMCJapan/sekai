@@ -44,7 +44,8 @@ CREATE TABLE chunk_history(
 CREATE INDEX idx_history_coord
     ON chunk_history(dim, kind, cx, cz, snapshot_id);
 -- Derived per-region fingerprints (see `region.rs`): which snapshot last
--- ingested each file and what the file looked like. Rebuilt lazily by the
+-- confirmed each file (ingested, or carried by fingerprint match) and what
+-- the file looked like. Rebuilt lazily by the
 -- next backup when wiped, so it never needs data migration.
 CREATE TABLE region_state(
     dim INTEGER NOT NULL,
@@ -131,7 +132,8 @@ impl SqliteMeta {
     /// `entries` holds freshly ingested chunks and tombstones; `carry_from`
     /// names the previous snapshot plus the regions whose rows copy over via
     /// `INSERT ... SELECT`. `fingerprints` refreshes the derived
-    /// `region_state` for ingested files and `removed` drops state for files
+    /// `region_state` for ingested files, carried keys keep their
+    /// fingerprints but advance to the new snapshot, and `removed` drops state for files
     /// gone from disk, all inside the same transaction so state and history
     /// stay consistent. Carried regions must be disjoint from `entries`;
     /// overlap aborts on the primary key instead of merging silently.
@@ -169,7 +171,12 @@ impl SqliteMeta {
         }
         drop(stmt);
         let carried_chunks = if let Some((prev, keys)) = carry_from {
-            crate::region::carry_region_chunks(&tx, id, prev, keys)?
+            let carried = crate::region::carry_region_chunks(&tx, id, prev, keys)?;
+            // Carried files keep their fingerprints but must point at the new
+            // snapshot, or `region_state.snapshot_id` goes stale and future
+            // snapshot pruning via the FK cannot tell they are still live.
+            crate::region::retarget_region_states(&tx, id, keys)?;
+            carried
         } else {
             0usize
         };
