@@ -262,6 +262,32 @@ fn backup_rejects_missing_world() {
 }
 
 #[test]
+fn backup_tolerates_zero_length_region() {
+    let scratch = Scratch::new();
+    let world = scratch.world();
+    write_region(
+        &world.join("region").join("r.0.0.mca"),
+        OVER,
+        REGION,
+        &[(0, 0, vec![2, 1])],
+    );
+    // Not-yet-generated region placeholder: servers can leave `0`-byte files.
+    let empty_path = world.join("region").join("r.1.0.mca");
+    fs::create_dir_all(empty_path.parent().unwrap()).unwrap();
+    fs::write(&empty_path, Vec::new()).unwrap();
+
+    let mut store = Store::open(&scratch.store()).unwrap();
+    let report = backup(&world, &mut store).unwrap();
+    assert_eq!(report.chunks, 1);
+    assert_eq!(read_world(&world).len(), 1);
+
+    // The placeholder stays on disk and keeps backing up cleanly.
+    assert!(empty_path.exists());
+    let second = backup(&world, &mut store).unwrap();
+    assert_eq!(second.chunks, 1);
+}
+
+#[test]
 fn gc_reclaims_only_orphans() {
     let scratch = Scratch::new();
     let world = scratch.world();
