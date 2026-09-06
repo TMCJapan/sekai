@@ -87,15 +87,17 @@ impl ChunkCoord {
     /// Local X inside the region file (`x mod 32`, always `0..32`).
     #[inline]
     #[must_use]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub const fn local_x(self) -> u8 {
-        (self.x & 31) as u8
+        self.x.rem_euclid(32) as u8
     }
 
     /// Local Z inside the region file (`z mod 32`, always `0..32`).
     #[inline]
     #[must_use]
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     pub const fn local_z(self) -> u8 {
-        (self.z & 31) as u8
+        self.z.rem_euclid(32) as u8
     }
 }
 

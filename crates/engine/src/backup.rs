@@ -44,14 +44,9 @@ pub struct BackupReport {
 /// (reclaimed by future GC), never dangling references.
 pub fn backup(world: &Path, store: &mut Store) -> Result<BackupReport, EngineError> {
     // Known universe = coordinates of the latest snapshot (empty on first run).
-    let mut latest: Option<sekai_core::SnapshotId> = None;
-    store.meta.visit_snapshots(|s| {
-        latest = Some(s.id);
-        true
-    })?;
     let mut universe: HashSet<ChunkCoord> = HashSet::new();
-    if let Some(id) = latest {
-        store.meta.visit_snapshot_chunks(id, |entry| {
+    if let Some(latest) = store.meta().latest_snapshot()? {
+        store.meta().visit_snapshot_chunks(latest.id, |entry| {
             universe.insert(entry.coord);
             true
         })?;
@@ -89,7 +84,7 @@ pub fn backup(world: &Path, store: &mut Store) -> Result<BackupReport, EngineErr
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))?;
-    let snapshot = store.meta.apply_snapshot(now_ms, &entries)?;
+    let snapshot = store.meta_mut().apply_snapshot(now_ms, &entries)?;
     Ok(BackupReport {
         snapshot,
         chunks: present.len(),
@@ -109,7 +104,9 @@ fn ingest(
     let mut hasher = <Blake3Hasher as sekai_core::BlobHasher>::new();
     hasher.update(chunk.payload);
     let hash = hasher.finalize();
-    if store.cas.put(&hash, chunk.payload)? {
+    // Pinned to the `BlobStore` seam (not the inherent method) so the call
+    // site only depends on the trait.
+    if sekai_core::BlobStore::put(store.cas_mut(), &hash, chunk.payload)? {
         *new_blobs += 1;
     }
     entries.push(SnapshotEntry::new(chunk.coord, Some(hash), None));

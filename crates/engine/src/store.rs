@@ -13,12 +13,19 @@ use sekai_storage::{FileCas, SqliteMeta};
 use crate::error::EngineError;
 
 /// Opened store handle handed to [`backup`](crate::backup) and [`rollback`](crate::rollback).
+///
+/// Fields stay private behind this seam: callers reach blobs and metadata
+/// only through the accessors below (and through `core` traits at the call
+/// site), so the on-disk layout and the concrete adapter types can evolve
+/// without touching orchestration. Constructing the concretes here is the
+/// adapter edge: tests substitute `:memory:` SQLite and scratch-dir CAS
+/// through the same [`Store::open`].
 #[derive(Debug)]
 pub struct Store {
     /// Content-addressed blob files.
-    pub cas: FileCas,
+    cas: FileCas,
     /// SQLite snapshot and history metadata.
-    pub meta: SqliteMeta,
+    meta: SqliteMeta,
 }
 
 impl Store {
@@ -32,13 +39,37 @@ impl Store {
         let meta = SqliteMeta::open(&root.join("meta.sqlite"))?;
         Ok(Self { cas, meta })
     }
+
+    /// Blob adapter behind the seam.
+    #[must_use]
+    pub const fn cas(&self) -> &FileCas {
+        &self.cas
+    }
+
+    /// Mutable blob adapter (CAS writes are `&mut` by contract).
+    #[must_use]
+    pub const fn cas_mut(&mut self) -> &mut FileCas {
+        &mut self.cas
+    }
+
+    /// Metadata adapter behind the seam.
+    #[must_use]
+    pub const fn meta(&self) -> &SqliteMeta {
+        &self.meta
+    }
+
+    /// Mutable metadata adapter (snapshot writes are `&mut` by contract).
+    #[must_use]
+    pub const fn meta_mut(&mut self) -> &mut SqliteMeta {
+        &mut self.meta
+    }
 }
 
 /// List all snapshots in ID order (for CLI `list` and pre-flight checks).
 pub fn list_snapshots(store: &Store) -> Result<Vec<Snapshot>, EngineError> {
     let mut out = Vec::new();
     store
-        .meta
+        .meta()
         .visit_snapshots(|s| {
             out.push(*s);
             true

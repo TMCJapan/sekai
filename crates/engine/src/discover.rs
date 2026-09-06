@@ -14,9 +14,10 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use sekai_core::{Dimension, RegionKind};
+use sekai_core::{BlobHasher as _, Dimension, RegionKind};
 
 use crate::error::EngineError;
+use crate::hash::Blake3Hasher;
 
 /// One region file found on disk with its global namespace.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +44,7 @@ pub enum LayoutFlavor {
 }
 
 /// Pick the derivation flavor: new layout wins when present.
+#[must_use]
 pub fn detect_flavor(world: &Path) -> LayoutFlavor {
     if world.join("dimensions").is_dir() {
         LayoutFlavor::New
@@ -64,16 +66,17 @@ const KIND_DIRS: [(RegionKind, &str); 3] = [
 /// documented); same path always yields the same code, so history stays
 /// continuous across runs and machines.
 fn custom_dim_id(relative: &str) -> Dimension {
-    let digest = blake3::hash(relative.as_bytes());
-    let bytes = digest.as_bytes();
-    let mut raw = [0u8; 4];
-    raw.copy_from_slice(&bytes[..4]);
-    let mut id = i32::from_le_bytes(raw);
+    // Routed through the crate's hasher seam (not `blake3::hash` directly)
+    // so the digest construction has a single owner.
+    let mut hasher = Blake3Hasher::new();
+    hasher.update(relative.as_bytes());
+    let bytes = hasher.finalize().as_bytes();
+    let id = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
     if id == Dimension::OVERWORLD.raw()
         || id == Dimension::NETHER.raw()
         || id == Dimension::END.raw()
     {
-        id = id.wrapping_add(0x0100_0000);
+        return Dimension(id.wrapping_add(0x0100_0000));
     }
     Dimension(id)
 }
@@ -121,10 +124,9 @@ fn scan_dim_root(
             }
             let name = entry.file_name();
             let name = name.to_str().unwrap_or_default();
-            let (region_x, region_z) = match sekai_mca::parse_region_name(name) {
-                Ok(coords) => coords,
+            let Ok((region_x, region_z)) = sekai_mca::parse_region_name(name) else {
                 // Foreign files (temp leftovers, etc.) are not our concern.
-                Err(_) => continue,
+                continue;
             };
             let reference = RegionRef {
                 path: path.clone(),
@@ -300,6 +302,7 @@ pub fn derive_path(
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     #[test]

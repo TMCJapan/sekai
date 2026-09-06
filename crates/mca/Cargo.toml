@@ -1,13 +1,12 @@
 [package]
 name = "sekai-mca"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 license.workspace = true
 
-[lib]
-name = "sekai_mca"
-path = "src/lib.rs"
+[lints]
+workspace = true
 
 [dependencies]
-sekai-core = { path = "../core" }
-thiserror = "2"
+sekai-core.workspace = true
+thiserror.workspace = true

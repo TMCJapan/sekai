@@ -86,26 +86,31 @@ impl RegionFile {
     }
 
     /// Dimension namespace of this file.
-    pub fn dim(&self) -> Dimension {
+    #[must_use]
+    pub const fn dim(&self) -> Dimension {
         self.dim
     }
 
     /// Region family of this file.
-    pub fn kind(&self) -> RegionKind {
+    #[must_use]
+    pub const fn kind(&self) -> RegionKind {
         self.kind
     }
 
     /// Region X from the file name.
-    pub fn region_x(&self) -> i32 {
+    #[must_use]
+    pub const fn region_x(&self) -> i32 {
         self.loc.region_x()
     }
 
     /// Region Z from the file name.
-    pub fn region_z(&self) -> i32 {
+    #[must_use]
+    pub const fn region_z(&self) -> i32 {
         self.loc.region_z()
     }
 
     /// Raw file image (for tests and inspection tooling).
+    #[must_use]
     pub fn image(&self) -> &[u8] {
         &self.bytes
     }
@@ -120,17 +125,14 @@ impl RegionFile {
             .get(off..off + 4)
             .and_then(|s| s.try_into().ok())
             .map(u32::from_be_bytes);
-        let entry = match raw {
-            Some(e) => e,
-            None => {
-                return Err(McaError::CorruptEntry {
-                    index,
-                    offset: 0,
-                    sectors: 0,
-                });
-            }
+        let Some(entry) = raw else {
+            return Err(McaError::CorruptEntry {
+                index,
+                offset: 0,
+                sectors: 0,
+            });
         };
-        Ok(((entry >> 8) as u64, (entry & 0xFF) as u64))
+        Ok((u64::from(entry >> 8), u64::from(entry & 0xFF)))
     }
 }
 
@@ -152,38 +154,50 @@ impl sekai_core::RegionReader for RegionFile {
             if offset < FIRST_DATA_SECTOR || count == 0 {
                 return Err(McaError::CorruptEntry {
                     index,
-                    offset: offset as u32,
-                    sectors: count as u32,
+                    offset: u32::try_from(offset).unwrap_or(u32::MAX),
+                    sectors: u32::try_from(count).unwrap_or(u32::MAX),
                 });
             }
             if offset + count > total_sectors {
                 return Err(McaError::CorruptEntry {
                     index,
-                    offset: offset as u32,
-                    sectors: count as u32,
+                    offset: u32::try_from(offset).unwrap_or(u32::MAX),
+                    sectors: u32::try_from(count).unwrap_or(u32::MAX),
                 });
             }
             let base = offset * SECTOR_LEN;
+            let base_usize =
+                usize::try_from(base).map_err(|_| McaError::CorruptChunk { index, len: 0 })?;
+            let base_end = base_usize
+                .checked_add(4)
+                .ok_or(McaError::CorruptChunk { index, len: 0 })?;
             let len_raw = self
                 .bytes
-                .get(base as usize..base as usize + 4)
+                .get(base_usize..base_end)
                 .ok_or(McaError::CorruptChunk { index, len: 0 })?;
-            let len = u32::from_be_bytes([len_raw[0], len_raw[1], len_raw[2], len_raw[3]]) as u64;
+            let len = u64::from(u32::from_be_bytes([
+                len_raw[0], len_raw[1], len_raw[2], len_raw[3],
+            ]));
             // Length covers the type byte plus body and must fit the
             // allocated sectors.
             if len < 1 || len + 4 > count * SECTOR_LEN {
                 return Err(McaError::CorruptChunk {
                     index,
-                    len: len as u32,
+                    len: u32::try_from(len).unwrap_or(u32::MAX),
                 });
             }
             let start = base + 4;
+            let start_usize =
+                usize::try_from(start).map_err(|_| McaError::CorruptChunk { index, len: 0 })?;
+            let end_usize = usize::try_from(start + len)
+                .map_err(|_| McaError::CorruptChunk { index, len: 0 })?;
+            let payload_len = u32::try_from(len).unwrap_or(u32::MAX);
             let payload = self
                 .bytes
-                .get(start as usize..(start + len) as usize)
+                .get(start_usize..end_usize)
                 .ok_or(McaError::CorruptChunk {
                     index,
-                    len: len as u32,
+                    len: payload_len,
                 })?;
             let coord = self.loc.coord_at(self.dim, self.kind, index);
             if !visit(RawChunk::new(coord, payload)) {
@@ -195,12 +209,13 @@ impl sekai_core::RegionReader for RegionFile {
 }
 
 #[cfg(test)]
-pub(crate) fn entry_of(offset: u32, sectors: u32) -> [u8; 4] {
+pub const fn entry_of(offset: u32, sectors: u32) -> [u8; 4] {
     ((offset << 8) | sectors).to_be_bytes()
 }
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use sekai_core::{ChunkCoord, RegionReader as _};
 

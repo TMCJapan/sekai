@@ -10,6 +10,8 @@ members = [
 ]
 
 [workspace.package]
+version = "0.1.0"
+edition = "2024"
 license = "Apache-2.0"
 
 [workspace.lints.clippy]
@@ -18,3 +20,20 @@ nursery = { level = "warn", priority = -1 }
 unwrap_used = "deny"
 expect_used = "warn"
 missing_errors_doc = "allow"
+
+[workspace.dependencies]
+sekai-core = { path = "crates/core" }
+sekai-engine = { path = "crates/engine" }
+sekai-mca = { path = "crates/mca" }
+sekai-storage = { path = "crates/storage" }
+
+anyhow = "1"
+blake3 = "1"
+chrono = "0.4"
+clap = { version = "4", features = ["derive"] }
+fastnbt = "2"
+flate2 = "1"
+lz4-java-wrc = "0.2"
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"

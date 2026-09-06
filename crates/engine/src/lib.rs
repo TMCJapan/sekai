@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 //! Backup and rollback orchestration over region files.
 //!
 //! Rationale: `engine` owns ordering and policy, never formats. It walks
@@ -9,6 +11,7 @@
 mod backup;
 mod discover;
 mod error;
+mod gc;
 mod hash;
 mod rollback;
 mod store;
@@ -16,6 +19,7 @@ mod store;
 pub use backup::{BackupReport, backup};
 pub use discover::{LayoutFlavor, RegionRef, derive_path, detect_flavor, discover};
 pub use error::EngineError;
+pub use gc::{GcPlan, GcReport, gc_apply, gc_plan};
 pub use hash::Blake3Hasher;
 pub use rollback::{RollbackReport, rollback};
 pub use store::{Store, list_snapshots};

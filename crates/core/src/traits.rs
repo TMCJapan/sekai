@@ -64,6 +64,22 @@ pub trait BlobStore {
     /// history rows, not absent files).
     fn fetch_into(&self, hash: &BlobHash, out: &mut alloc::vec::Vec<u8>)
     -> Result<(), Self::Error>;
+
+    /// Remove `hash` from the store; returns `false` when already absent.
+    ///
+    /// Ordering contract: callers must settle metadata *before* unlinking
+    /// blobs, so a crash never leaves history pointing at nothing. GC
+    /// re-verifies unreachability just before removing, so a blob
+    /// referenced after planning is never deleted.
+    fn remove(&mut self, hash: &BlobHash) -> Result<bool, Self::Error>;
+
+    /// Visit every stored blob hash. Return `false` to stop early.
+    ///
+    /// Names that do not decode as blob hashes (temp leftovers, foreign
+    /// files) are skipped: never visited and never removed by GC.
+    fn visit_blobs<F>(&self, visit: F) -> Result<(), Self::Error>
+    where
+        F: FnMut(&BlobHash) -> bool;
 }
 
 /// MVCC metadata over snapshots and per-chunk history (by `storage`).
@@ -89,6 +105,15 @@ pub trait MetaStore {
         snapshot: SnapshotId,
         coord: &ChunkCoord,
     ) -> Result<Option<ChunkHistoryEntry>, Self::Error>;
+
+    /// Snapshot metadata for `id`, or `None` when it does not exist.
+    ///
+    /// Point query behind the seam so callers never scan the full timeline
+    /// to resolve one snapshot.
+    fn lookup_snapshot(&self, id: SnapshotId) -> Result<Option<Snapshot>, Self::Error>;
+
+    /// Highest-ID snapshot, or `None` when no backup has run yet.
+    fn latest_snapshot(&self) -> Result<Option<Snapshot>, Self::Error>;
 
     /// Visit every row of one snapshot. Return `false` to stop early.
     ///

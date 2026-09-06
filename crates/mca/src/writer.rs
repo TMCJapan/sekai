@@ -79,22 +79,33 @@ impl RegionFileWriter {
 
     /// Assemble the full file image (header + packed sectors).
     fn image(&self) -> Result<Vec<u8>, McaError> {
-        let mut img = vec![0u8; HEADER_LEN as usize];
+        let header_len = usize::try_from(HEADER_LEN).map_err(|_| McaError::ImageTooLarge {
+            sectors: HEADER_LEN,
+        })?;
+        let mut img = vec![0u8; header_len];
         let mut offset: u64 = HEADER_LEN / SECTOR_LEN;
         for (index, payload) in &self.staged {
             let sectors = sectors_for(payload.len())?;
             if offset > MAX_SECTOR_OFFSET {
                 return Err(McaError::ImageTooLarge { sectors: offset });
             }
-            let entry = ((offset as u32) << 8) | sectors as u32;
+            let offset_u32 =
+                u32::try_from(offset).map_err(|_| McaError::ImageTooLarge { sectors: offset })?;
+            let sectors_u32 =
+                u32::try_from(sectors).map_err(|_| McaError::ImageTooLarge { sectors: offset })?;
+            let entry = (offset_u32 << 8) | sectors_u32;
             let at = *index as usize * 4;
             img[at..at + 4].copy_from_slice(&entry.to_be_bytes());
-            let ts_at = HEADER_LEN as usize / 2 + *index as usize * 4;
+            let ts_at = header_len / 2 + *index as usize * 4;
             img[ts_at..ts_at + 4].copy_from_slice(&self.timestamp.to_be_bytes());
-            img.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+            let payload_len_u32 = u32::try_from(payload.len())
+                .map_err(|_| McaError::ChunkTooLarge { len: payload.len() })?;
+            img.extend_from_slice(&payload_len_u32.to_be_bytes());
             img.extend_from_slice(payload);
             let pad = sectors * SECTOR_LEN - (payload.len() as u64 + 4);
-            img.extend(std::iter::repeat_n(0, pad as usize));
+            let pad_usize =
+                usize::try_from(pad).map_err(|_| McaError::ImageTooLarge { sectors: offset })?;
+            img.extend(std::iter::repeat_n(0, pad_usize));
             offset += sectors;
         }
         Ok(img)
@@ -107,8 +118,7 @@ impl RegionFileWriter {
             .target
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
-            .map(Path::to_path_buf)
-            .unwrap_or_else(|| PathBuf::from("."));
+            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
         let file_name = self
             .target
             .file_name()
@@ -172,6 +182,7 @@ impl sekai_core::RegionWriter for RegionFileWriter {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::reader::entry_of;
     use sekai_core::{RegionKind, RegionWriter as _};

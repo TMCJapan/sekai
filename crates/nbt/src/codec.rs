@@ -35,7 +35,7 @@ impl Compression {
     /// `127` (third-party custom codec) and `>= 128` (chunk body stored
     /// externally in `c.<x>.<z>.mcc`) are rejected with dedicated errors so
     /// callers can tell "unsupported server setup" apart from corruption.
-    fn from_byte(byte: u8) -> Result<Self, NbtError> {
+    const fn from_byte(byte: u8) -> Result<Self, NbtError> {
         match byte {
             1 => Ok(Self::Gzip),
             2 => Ok(Self::Zlib),
@@ -89,6 +89,7 @@ pub fn parse_value(raw_payload: &[u8]) -> Result<fastnbt::Value, NbtError> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
 
     fn gzip_body(data: &[u8]) -> Vec<u8> {

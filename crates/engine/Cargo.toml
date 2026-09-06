@@ -1,16 +1,15 @@
 [package]
 name = "sekai-engine"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 license.workspace = true
 
-[lib]
-name = "sekai_engine"
-path = "src/lib.rs"
+[lints]
+workspace = true
 
 [dependencies]
-sekai-core = { path = "../core" }
-sekai-mca = { path = "../mca" }
-sekai-storage = { path = "../storage" }
-blake3 = "1"
-thiserror = "2"
+sekai-core.workspace = true
+sekai-mca.workspace = true
+sekai-storage.workspace = true
+thiserror.workspace = true
+blake3.workspace = true

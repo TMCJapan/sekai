@@ -1,11 +1,22 @@
 [package]
 name = "sekai-cli"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 license.workspace = true
+
+[lints]
+workspace = true
 
 [[bin]]
 name = "sekai"
 path = "src/main.rs"
 
 [dependencies]
+sekai-core.workspace = true
+sekai-engine.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+clap.workspace = true
+
+[dev-dependencies]
+sekai-mca.workspace = true

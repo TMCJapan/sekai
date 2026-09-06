@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 //! Region (`.mca`) file reading and atomic rewriting.
 //!
 //! Rationale: the MCA sector layout (8 KiB header, 4 KiB sectors, `length +

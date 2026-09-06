@@ -5,6 +5,8 @@
 //! matter the on-disk key order or compression codec, while `LastUpdate`
 //! churn alone must never surface as a change.
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::io::Write as _;
 
 use flate2::write::{GzEncoder, ZlibEncoder};

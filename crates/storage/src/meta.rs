@@ -19,7 +19,7 @@ use sekai_core::{BlobHash, ChunkCoord, DiffHash, Snapshot, SnapshotId};
 use crate::error::StorageError;
 
 /// Schema version managed by this binary (`PRAGMA user_version`).
-pub(crate) const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 1;
 
 const SCHEMA: &str = "
 CREATE TABLE snapshots(
@@ -53,6 +53,7 @@ pub struct SnapshotEntry {
 
 impl SnapshotEntry {
     /// Construct a chunk fact.
+    #[must_use]
     pub const fn new(coord: ChunkCoord, blob: Option<BlobHash>, diff: Option<DiffHash>) -> Self {
         Self { coord, blob, diff }
     }
@@ -107,30 +108,51 @@ impl SqliteMeta {
             params![i64::try_from(created_at_ms).unwrap_or(i64::MAX)],
         )?;
         // AUTOINCREMENT rowids are always positive.
-        let id = SnapshotId(tx.last_insert_rowid() as u64);
-        {
-            let mut stmt = tx.prepare(
-                "INSERT INTO chunk_history
-                 (snapshot_id, dim, kind, cx, cz, blob, diff)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+        let id = SnapshotId(tx.last_insert_rowid().cast_unsigned());
+        for entry in entries {
+            insert_history_row(
+                &tx,
+                id,
+                &entry.coord,
+                entry.blob.as_ref(),
+                entry.diff.as_ref(),
             )?;
-            for entry in entries {
-                let blob: Option<&[u8]> = entry.blob.as_ref().map(|b| b.0.as_slice());
-                let diff: Option<&[u8]> = entry.diff.as_ref().map(|d| d.0.as_slice());
-                stmt.execute(params![
-                    id.0 as i64,
-                    entry.coord.dim.raw() as i64,
-                    entry.coord.kind.raw() as i64,
-                    entry.coord.x as i64,
-                    entry.coord.z as i64,
-                    blob,
-                    diff,
-                ])?;
-            }
         }
         tx.commit()?;
         Ok(id)
     }
+}
+
+/// Insert one history row on `conn` (shared by the batched and single-row
+/// write paths so both encode coordinates and hashes identically).
+///
+/// Plain INSERT (not REPLACE): recording the same coordinate twice in one
+/// snapshot is a caller bug and must surface, never merge.
+fn insert_history_row(
+    conn: &Connection,
+    snapshot: SnapshotId,
+    coord: &ChunkCoord,
+    blob: Option<&BlobHash>,
+    diff: Option<&DiffHash>,
+) -> Result<(), StorageError> {
+    // Hashes travel as 32-byte BLOBs (`NULL` blob = tombstone).
+    let blob: Option<&[u8]> = blob.map(|b| b.0.as_slice());
+    let diff: Option<&[u8]> = diff.map(|d| d.0.as_slice());
+    conn.execute(
+        "INSERT INTO chunk_history
+         (snapshot_id, dim, kind, cx, cz, blob, diff)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        params![
+            snapshot.0.cast_signed(),
+            i64::from(coord.dim.raw()),
+            i64::from(coord.kind.raw()),
+            i64::from(coord.x),
+            i64::from(coord.z),
+            blob,
+            diff,
+        ],
+    )?;
+    Ok(())
 }
 
 /// Raw history columns as read from SQLite
@@ -144,8 +166,9 @@ fn hash32(bytes: Vec<u8>) -> Result<[u8; 32], StorageError> {
 
 /// History row from columns `(dim, kind, cx, cz, blob, diff)`.
 ///
-/// Integers travel as `i64` (SQLite's native width) and narrow back: every
-/// value was written from a narrower type, so the casts are lossless.
+/// Integers travel as `i64` (SQLite's native width) and are validated back
+/// into their domain types: out-of-range values surface as corruption
+/// instead of silently truncating into wrong coordinates.
 fn history_row(
     snapshot: SnapshotId,
     dim: i64,
@@ -156,13 +179,14 @@ fn history_row(
     diff: Option<Vec<u8>>,
 ) -> Result<sekai_core::ChunkHistoryEntry, StorageError> {
     use sekai_core::{ChunkHistoryEntry, Dimension, RegionKind};
+    let invalid =
+        |column: &'static str, value: i64| StorageError::InvalidHistoryValue { column, value };
+    let dim = i32::try_from(dim).map_err(|_| invalid("dim", dim))?;
+    let kind = u8::try_from(kind).map_err(|_| invalid("kind", kind))?;
+    let cx = i32::try_from(cx).map_err(|_| invalid("cx", cx))?;
+    let cz = i32::try_from(cz).map_err(|_| invalid("cz", cz))?;
     Ok(ChunkHistoryEntry::new(
-        ChunkCoord::new(
-            Dimension(dim as i32),
-            RegionKind(kind as u8),
-            cx as i32,
-            cz as i32,
-        ),
+        ChunkCoord::new(Dimension(dim), RegionKind(kind), cx, cz),
         snapshot,
         blob.map(hash32).transpose()?.map(BlobHash),
         diff.map(hash32).transpose()?.map(DiffHash),
@@ -177,7 +201,7 @@ impl sekai_core::MetaStore for SqliteMeta {
             "INSERT INTO snapshots(created_at_ms) VALUES (?)",
             params![i64::try_from(created_at_ms).unwrap_or(i64::MAX)],
         )?;
-        Ok(SnapshotId(self.conn.last_insert_rowid() as u64))
+        Ok(SnapshotId(self.conn.last_insert_rowid().cast_unsigned()))
     }
 
     fn record_chunk(
@@ -187,25 +211,7 @@ impl sekai_core::MetaStore for SqliteMeta {
         blob: Option<&BlobHash>,
         diff: Option<&DiffHash>,
     ) -> Result<(), Self::Error> {
-        // Plain INSERT (not REPLACE): recording the same coordinate twice
-        // in one snapshot is a caller bug and must surface, never merge.
-        let blob: Option<&[u8]> = blob.map(|b| b.0.as_slice());
-        let diff: Option<&[u8]> = diff.map(|d| d.0.as_slice());
-        self.conn.execute(
-            "INSERT INTO chunk_history
-             (snapshot_id, dim, kind, cx, cz, blob, diff)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
-            params![
-                snapshot.0 as i64,
-                coord.dim.raw() as i64,
-                coord.kind.raw() as i64,
-                coord.x as i64,
-                coord.z as i64,
-                blob,
-                diff,
-            ],
-        )?;
-        Ok(())
+        insert_history_row(&self.conn, snapshot, coord, blob, diff)
     }
 
     fn lookup_chunk(
@@ -219,11 +225,11 @@ impl sekai_core::MetaStore for SqliteMeta {
                 "SELECT dim, kind, cx, cz, blob, diff FROM chunk_history
                  WHERE snapshot_id = ? AND dim = ? AND kind = ? AND cx = ? AND cz = ?",
                 params![
-                    snapshot.0 as i64,
-                    coord.dim.raw() as i64,
-                    coord.kind.raw() as i64,
-                    coord.x as i64,
-                    coord.z as i64,
+                    snapshot.0.cast_signed(),
+                    i64::from(coord.dim.raw()),
+                    i64::from(coord.kind.raw()),
+                    i64::from(coord.x),
+                    i64::from(coord.z),
                 ],
                 |row| {
                     Ok((
@@ -244,6 +250,36 @@ impl sekai_core::MetaStore for SqliteMeta {
             .transpose()
     }
 
+    fn lookup_snapshot(&self, id: SnapshotId) -> Result<Option<Snapshot>, Self::Error> {
+        let created_at_ms: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT created_at_ms FROM snapshots WHERE id = ?",
+                params![id.0.cast_signed()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        // IDs originate from AUTOINCREMENT rowids, always positive.
+        Ok(created_at_ms.map(|ms| Snapshot::new(id, ms.cast_unsigned())))
+    }
+
+    fn latest_snapshot(&self) -> Result<Option<Snapshot>, Self::Error> {
+        let row: Option<(i64, i64)> = self
+            .conn
+            .query_row(
+                "SELECT id, created_at_ms FROM snapshots ORDER BY id DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        Ok(row.map(|(id, created_at_ms)| {
+            Snapshot::new(
+                SnapshotId(id.cast_unsigned()),
+                created_at_ms.cast_unsigned(),
+            )
+        }))
+    }
+
     fn visit_snapshot_chunks<F>(
         &self,
         snapshot: SnapshotId,
@@ -256,7 +292,7 @@ impl sekai_core::MetaStore for SqliteMeta {
             "SELECT dim, kind, cx, cz, blob, diff FROM chunk_history
              WHERE snapshot_id = ? ORDER BY dim, kind, cx, cz",
         )?;
-        let mut rows = stmt.query(params![snapshot.0 as i64])?;
+        let mut rows = stmt.query(params![snapshot.0.cast_signed()])?;
         while let Some(row) = rows.next()? {
             let entry = history_row(
                 snapshot,
@@ -286,7 +322,10 @@ impl sekai_core::MetaStore for SqliteMeta {
             let id: i64 = row.get(0)?;
             let created_at_ms: i64 = row.get(1)?;
             // Both columns originate from non-negative writes.
-            if !visit(&Snapshot::new(SnapshotId(id as u64), created_at_ms as u64)) {
+            if !visit(&Snapshot::new(
+                SnapshotId(id.cast_unsigned()),
+                created_at_ms.cast_unsigned(),
+            )) {
                 break;
             }
         }
