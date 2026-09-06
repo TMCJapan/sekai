@@ -25,9 +25,10 @@ To guarantee byte-perfect rollback while avoiding false-positive changes from no
   - The digest runs over a canonical encoding (compound keys sorted, big-endian scalars, UTF-8 strings), never over re-serialized NBT bytes, so it is independent of on-disk key order and compression codec.
   - V1 rules exclude `LastUpdate`. Rule updates only change which names are skipped.
   - Used *only* in-memory or in cache tables to detect meaningful game-state changes. Never alters stored blobs.
+  - The `chunk_history.diff` column is reserved as that cache, but no producer populates it yet: backup always records `NULL` (not computed) and the normalizer has no caller in the hot path, so every row reads back as "not computed" until a consumer lands.
 
 ## Chunk Codec Support
-Region sectors frame payloads as compression-type byte + body. Supported vanilla codecs are `1` (Gzip), `2` (Zlib), `3` (Uncompressed), and `4` (LZ4 since 24w04a). Type `4` uses the lz4-java `LZ4BlockOutputStream` framing, which is *not* the standard LZ4 block/frame format. Type `127` (third-party custom codec) and values `>= 128` (body stored externally in `c.<x>.<z>.mcc`) are rejected with explicit errors.
+Region sectors frame payloads as compression-type byte + body. Supported vanilla codecs are `1` (Gzip), `2` (Zlib), `3` (Uncompressed), and `4` (LZ4 since 24w04a). Type `4` uses the lz4-java `LZ4BlockOutputStream` framing, which is *not* the standard LZ4 block/frame format. Codec rejection lives in the NBT diff-view path (`sekai-nbt`): type `127` (third-party custom codec) surfaces as `CustomCompression`, values `>= 128` (body stored externally in `c.<x>.<z>.mcc`) as `ExternalBody`, and anything else unknown as `UnknownCompression`. Backup itself never validates codecs: it ingests raw sector payloads opaquely into CAS, so an unsupported codec only surfaces when a diff view is derived, never as an ingest failure.
 
 ## CAS Consistency
 Normalization rules affect only change-detection logic. Updating normalization rules in future versions requires zero data migration or blob re-indexing.
@@ -44,11 +45,12 @@ A missing chunk in a snapshot (unexplored/deleted area) is explicitly tracked vi
 
 ## Single Source of Truth vs Derived State
 - **Single Source of Truth**: Metadata history (`snapshots`, `chunk_history`) and CAS storage (`blobs/`).
-- **Derived State**: Transient indices (e.g., `region_state` file fingerprints) maintained for quick change detection. Derived state can be completely dropped and rebuilt from the primary history at any time (wiping `region_state` degrades the next backup to a full ingest, never to wrong data).
+- **Derived State**: Transient indices (e.g., `region_state` file fingerprints) maintained for quick change detection. Derived state can be completely dropped at any time: fingerprints are re-observed from the live world files on the next backup (they are not recoverable from history alone, since `mtime`/`size`/header hashes are never stored in `chunk_history`), so wiping `region_state` degrades the next backup to a full ingest, never to wrong data.
 
 ## Garbage Collection (GC)
 - **Reference Scope**: GC checks referential integrity across the entire database (all chunks, dimensions, and snapshots), as CAS deduplication is global.
-- **Two-Phase Safety**: GC must offer a dry-run phase (`gc plan`) before executing physical deletion (`gc apply`).
+- **Two-Phase Safety**: GC offers a dry-run phase (`gc plan`) before physical deletion (`gc apply`) at the `engine` library seam. The CLI does not expose either phase yet, so collection is currently library-only.
+- **Current Scope (orphan-only)**: GC reclaims blobs referenced by no history row and touches no metadata rows; snapshot pruning does not exist yet, so there is no DB commit to order the unlinks against.
 
 # Rollback & I/O Invariants
 
@@ -56,5 +58,5 @@ A missing chunk in a snapshot (unexplored/deleted area) is explicitly tracked vi
 - **Sector Alignment**: Writes to `.mca` files must strictly enforce 4KiB sector boundaries and header offset table integrity.
 - **Crash Consistency Order**:
   - **Write Path**: CAS Blobs MUST be flushed and fsynced to disk *before* committing DB metadata.
-  - **GC Delete Path**: DB metadata MUST be committed *before* physically unlinking CAS Blobs.
+  - **GC Delete Path**: once snapshot pruning exists, its DB metadata MUST be committed *before* physically unlinking CAS Blobs. Today's orphan-only GC performs no metadata writes, so the ordering is vacuous until pruning lands.
 

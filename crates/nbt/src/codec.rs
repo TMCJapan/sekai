@@ -42,6 +42,7 @@ impl Compression {
             3 => Ok(Self::Raw),
             4 => Ok(Self::Lz4),
             127 => Err(NbtError::CustomCompression),
+            128..=u8::MAX => Err(NbtError::ExternalBody(byte)),
             other => Err(NbtError::UnknownCompression(other)),
         }
     }
@@ -177,8 +178,12 @@ mod tests {
             Err(NbtError::CustomCompression)
         ));
         assert!(matches!(
+            decompress_into(&[128, 0], &mut out),
+            Err(NbtError::ExternalBody(128))
+        ));
+        assert!(matches!(
             decompress_into(&[130, 0], &mut out),
-            Err(NbtError::UnknownCompression(130))
+            Err(NbtError::ExternalBody(130))
         ));
         // Declared gzip carrying garbage must surface a codec error.
         assert!(matches!(
