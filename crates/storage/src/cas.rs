@@ -3,8 +3,10 @@
 //! Rationale: blobs are immutable and addressed solely by `BlobHash`, so
 //! the layout is a fixed two-level fanout (`blobs/ab/cdef...`) keeping
 //! directory sizes bounded without any index. Writes are atomic (same-dir
-//! temp + `fsync` + `rename`, plus directory fsync) because the write-path
-//! contract promises metadata never references an unflushed blob.
+//! temp + `fsync` + `rename`); shard-directory fsyncs batch in
+//! [`FileCas::sync_dirs`] because the write-path contract only promises
+//! metadata never references an unflushed blob, and one fsync per touched
+//! shard before the metadata commit provides exactly that.
 
 use std::collections::HashSet;
 use std::fs;
@@ -29,6 +31,13 @@ pub struct FileCas {
     /// At most 256 entries; a vanished directory surfaces as a loud I/O
     /// error on write, never silent misplacement.
     ensured_shards: HashSet<u8>,
+    /// Shard ids with renames not yet persisted via directory fsync.
+    ///
+    /// `put` fsyncs file data immediately but defers the directory fsync to
+    /// [`BlobStore::sync`](sekai_core::BlobStore::sync): one fsync per
+    /// touched shard (at most 256) instead of one per blob. At most 256
+    /// entries, drained by `sync`.
+    pending_dir_sync: HashSet<u8>,
 }
 
 impl FileCas {
@@ -42,6 +51,7 @@ impl FileCas {
         Ok(Self {
             root: root.to_path_buf(),
             ensured_shards: HashSet::new(),
+            pending_dir_sync: HashSet::new(),
         })
     }
 
@@ -84,8 +94,9 @@ impl FileCas {
     ///
     /// The payload is written to a same-directory temp file, fsynced, and
     /// renamed over the destination (no in-place mutation, so concurrent
-    /// readers never see a torn blob), then the shard directory is fsynced
-    /// to persist the rename itself (Unix-only; see below).
+    /// readers never see a torn blob). The rename itself is persisted by the
+    /// next [`BlobStore::sync`](sekai_core::BlobStore::sync) call, which must
+    /// precede any metadata commit referencing the blob.
     pub fn put(&mut self, hash: &BlobHash, payload: &[u8]) -> Result<bool, StorageError> {
         let dest = self.path_of(hash);
         // Deduplicated chunks return before touching the filesystem beyond
@@ -110,15 +121,6 @@ impl FileCas {
             f.sync_all().map_err(io(tmp.clone()))?;
             drop(f);
             fs::rename(&tmp, &dest).map_err(io(dest.clone()))?;
-            // Persist the rename itself. Unix-only: opening a directory
-            // with `File::open` fails on Windows (ERROR_ACCESS_DENIED),
-            // and std offers no directory-fsync equivalent there.
-            #[cfg(unix)]
-            {
-                let shard = dest.parent().map(Path::to_path_buf).unwrap_or_default();
-                let dir = fs::File::open(&shard).map_err(io(shard.clone()))?;
-                dir.sync_all().map_err(io(shard))?;
-            }
             Ok(())
         };
         // A lost rename race (two writers, same blob) converges: the loser
@@ -130,7 +132,51 @@ impl FileCas {
             }
             return Err(err);
         }
+        self.pending_dir_sync.insert(hash.0[0]);
         Ok(true)
+    }
+
+    /// Persist all renames since the last call via one directory fsync per
+    /// touched shard (Unix-only; see below).
+    ///
+    /// Callers must invoke this after a batch of `put`s and before committing
+    /// any metadata referencing the new blobs: file data is fsynced by `put`
+    /// itself, but the directory entries only become crash-durable here.
+    /// Opening a directory with `File::open` fails on Windows
+    /// (`ERROR_ACCESS_DENIED`), and std offers no directory-fsync equivalent
+    /// there, so this is a no-op drain on non-Unix platforms.
+    fn sync_dirs(&mut self) -> Result<(), StorageError> {
+        #[cfg(unix)]
+        {
+            let io =
+                |path: PathBuf| move |source: std::io::Error| StorageError::Io { path, source };
+            // Draining first keeps the set consistent even when a shard
+            // fsync fails: the error aborts the caller loudly, and the next
+            // backup re-marks only shards it actually rewrites.
+            let pending = std::mem::take(&mut self.pending_dir_sync);
+            for shard_id in &pending {
+                let shard = self.root.join("blobs").join(format!("{shard_id:02x}"));
+                let dir = match fs::File::open(&shard) {
+                    Ok(dir) => dir,
+                    Err(source) => {
+                        // Restore unsynced shards so a retry still covers
+                        // them (same as the `sync_all` path below).
+                        self.pending_dir_sync.extend(pending);
+                        return Err(io(shard)(source));
+                    }
+                };
+                if let Err(source) = dir.sync_all() {
+                    // Restore unsynced shards so a retry still covers them.
+                    self.pending_dir_sync.extend(pending);
+                    return Err(io(shard)(source));
+                }
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            self.pending_dir_sync.clear();
+        }
+        Ok(())
     }
 
     /// Load the blob into `out`, clearing it first.
@@ -258,6 +304,10 @@ impl sekai_core::BlobStore for FileCas {
 
     fn put(&mut self, hash: &BlobHash, payload: &[u8]) -> Result<bool, Self::Error> {
         Self::put(self, hash, payload)
+    }
+
+    fn sync(&mut self) -> Result<(), Self::Error> {
+        Self::sync_dirs(self)
     }
 
     fn fetch_into(&self, hash: &BlobHash, out: &mut Vec<u8>) -> Result<(), Self::Error> {

@@ -53,9 +53,18 @@ pub trait BlobStore {
 
     /// Store `payload` under `hash`. Returns `true` when newly inserted.
     ///
-    /// Implementations must write atomically (temp file + rename) and
-    /// fsync before returning, so a later DB commit never dangles.
+    /// Implementations must write atomically (temp file + rename) and fsync
+    /// file data before returning. Directory durability may be deferred to
+    /// [`BlobStore::sync`]; callers must invoke it before committing any
+    /// metadata that references the new blobs.
     fn put(&mut self, hash: &BlobHash, payload: &[u8]) -> Result<bool, Self::Error>;
+
+    /// Make all stored blobs crash-durable (barrier before metadata commit).
+    ///
+    /// Persists whatever `put` deferred (e.g. directory entries) in bulk, so
+    /// one call covers a whole batch instead of one fsync per blob. A later
+    /// DB commit referencing the blobs must never dangle after this returns.
+    fn sync(&mut self) -> Result<(), Self::Error>;
 
     /// Load the blob into `out`, clearing it first.
     ///
