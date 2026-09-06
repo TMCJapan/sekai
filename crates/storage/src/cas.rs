@@ -6,6 +6,7 @@
 //! temp + `fsync` + `rename`, plus directory fsync) because the write-path
 //! contract promises metadata never references an unflushed blob.
 
+use std::collections::HashSet;
 use std::fs;
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
@@ -23,6 +24,11 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 pub struct FileCas {
     /// Storage root (contains `blobs/`).
     root: PathBuf,
+    /// Shard ids (`blobs/<first hash byte hex>/`) already created by this
+    /// handle, so repeat backups skip redundant `create_dir_all` syscalls.
+    /// At most 256 entries; a vanished directory surfaces as a loud I/O
+    /// error on write, never silent misplacement.
+    ensured_shards: HashSet<u8>,
 }
 
 impl FileCas {
@@ -35,6 +41,7 @@ impl FileCas {
         })?;
         Ok(Self {
             root: root.to_path_buf(),
+            ensured_shards: HashSet::new(),
         })
     }
 
@@ -46,25 +53,31 @@ impl FileCas {
 
     /// File path for `hash` (`blobs/<first byte hex>/<remaining hex>`).
     fn path_of(&self, hash: &BlobHash) -> PathBuf {
-        let hex = hash.hex_string();
+        // `hex_into` emits ASCII hex by construction; the empty fallback
+        // only exists to stay panic-free (no `unwrap` in library code).
+        let hex = hash.hex_into();
+        let dir = std::str::from_utf8(&hex[..2]).unwrap_or_default();
+        let file = std::str::from_utf8(&hex[2..]).unwrap_or_default();
         let blobs = self.root.join("blobs");
-        // `hex` is 64 ASCII chars by construction, so both ranges are
-        // always char boundaries; the fallback is unreachable-but-total.
-        match (hex.get(..2), hex.get(2..)) {
-            (Some(dir), Some(file)) => blobs.join(dir).join(file),
-            (None, _) | (_, None) => blobs.join(hex),
-        }
+        blobs.join(dir).join(file)
     }
 
-    /// Ensure the shard directory for `hash` exists.
-    fn ensure_shard(&self, hash: &BlobHash) -> Result<PathBuf, StorageError> {
-        let path = self.path_of(hash);
-        let shard = path.parent().map(Path::to_path_buf).unwrap_or_default();
+    /// Ensure the parent shard directory of `dest` exists.
+    ///
+    /// Shard ids are single hash bytes (256 directories max), so the cache
+    /// stays tiny while turning per-chunk `create_dir_all` into a hash
+    /// lookup after warmup.
+    fn ensure_parent(&mut self, dest: &Path, shard_id: u8) -> Result<(), StorageError> {
+        if self.ensured_shards.contains(&shard_id) {
+            return Ok(());
+        }
+        let shard = dest.parent().map(Path::to_path_buf).unwrap_or_default();
         fs::create_dir_all(&shard).map_err(|source| StorageError::Io {
             path: shard.clone(),
             source,
         })?;
-        Ok(path)
+        self.ensured_shards.insert(shard_id);
+        Ok(())
     }
 
     /// Durably store `payload` under `hash`; `true` when newly inserted.
@@ -74,10 +87,17 @@ impl FileCas {
     /// readers never see a torn blob), then the shard directory is fsynced
     /// to persist the rename itself (Unix-only; see below).
     pub fn put(&mut self, hash: &BlobHash, payload: &[u8]) -> Result<bool, StorageError> {
-        let dest = self.ensure_shard(hash)?;
+        let dest = self.path_of(hash);
+        // Deduplicated chunks return before touching the filesystem beyond
+        // one `stat`: only new blobs pay for directory creation and writes.
+        // A concurrent writer winning the race between this check and the
+        // rename below converges on identical bytes (same hash, same
+        // payload); only the `true` count may double-count, which is
+        // cosmetic next to the single-writer CLI contract.
         if dest.exists() {
             return Ok(false);
         }
+        self.ensure_parent(&dest, hash.0[0])?;
         let io = |path: PathBuf| move |source: std::io::Error| StorageError::Io { path, source };
         let tmp = dest.with_extension(format!(
             "tmp-{}-{}",
