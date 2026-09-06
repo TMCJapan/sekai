@@ -43,6 +43,10 @@ pub struct RegionFileWriter {
 impl RegionFileWriter {
     /// Prepare a rewrite of `target` (`r.<x>.<z>.mca`).
     ///
+    /// Filesystem access is confined to `swap` (like [`crate::RegionFile::open`],
+    /// this only parses the target name); staging and image assembly below
+    /// are pure in-memory operations.
+    ///
     /// Nothing is created on disk yet; `timestamp` fills the timestamp
     /// table for staged chunks. Bad target names fail here so a typo can
     /// never silently map chunks into the wrong region.
