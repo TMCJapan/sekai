@@ -326,3 +326,210 @@ fn gc_reclaims_only_orphans() {
     assert!(store.cas().contains(&row.blob.unwrap()).unwrap());
     assert!(gc_plan(&store).unwrap().is_empty());
 }
+
+#[test]
+fn backup_with_metrics_matches_plain_backup() {
+    use sekai_engine::{backup_with_metrics, scan_world};
+    let scratch = Scratch::new();
+    let world = scratch.world();
+    write_region(
+        &world.join("region").join("r.0.0.mca"),
+        OVER,
+        REGION,
+        &[(0, 0, vec![2, 1, 2, 3]), (1, 0, vec![2, 4, 5])],
+    );
+    let mut store = Store::open(&scratch.store()).unwrap();
+
+    let (report, timings) = backup_with_metrics(&world, &mut store).unwrap();
+    assert_eq!(report.chunks, 2);
+    assert_eq!(report.new_blobs, 2);
+    assert_eq!(report.skipped_regions, 0);
+    assert_eq!(timings.cas_checked, 2);
+    assert_eq!(timings.regions.len(), 1);
+    assert_eq!(timings.regions[0].chunks, 2);
+    // Disjoint top-level phases never exceed the wall total.
+    assert!(
+        timings.discover
+            + timings.universe_load
+            + timings.region_open
+            + timings.ingest
+            + timings.db_apply
+            <= timings.total
+    );
+
+    // Read-only scan observes the same world without writing.
+    let entries = scan_world(&world).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].chunks, 2);
+    assert!(entries[0].file_bytes > 0);
+    assert!(entries[0].mtime_ms.is_some());
+    assert_eq!(entries[0].header_hash.len(), 64);
+}
+
+#[test]
+fn unchanged_regions_skip_ingest_and_carry_rows() {
+    let scratch = Scratch::new();
+    let world = scratch.world();
+    write_region(
+        &world.join("region").join("r.0.0.mca"),
+        OVER,
+        REGION,
+        &[(0, 0, vec![2, 1, 2, 3]), (1, 0, vec![2, 4, 5])],
+    );
+    let mut store = Store::open(&scratch.store()).unwrap();
+
+    let r1 = backup(&world, &mut store).unwrap();
+    assert_eq!(r1.skipped_regions, 0);
+
+    // No changes: the single region skips read/hash/CAS entirely and its
+    // rows carry over into the new snapshot.
+    let r2 = backup(&world, &mut store).unwrap();
+    assert_eq!(r2.chunks, 2);
+    assert_eq!(r2.new_blobs, 0);
+    assert_eq!(r2.tombstones, 0);
+    assert_eq!(r2.skipped_regions, 1);
+    assert_eq!(r2.carried_chunks, 2);
+
+    // Carried rows are identical to the first snapshot's rows.
+    for (x, z) in [(0, 0), (1, 0)] {
+        let coord = ChunkCoord::new(OVER, REGION, x, z);
+        let first = store
+            .meta()
+            .lookup_chunk(r1.snapshot, &coord)
+            .unwrap()
+            .unwrap();
+        let second = store
+            .meta()
+            .lookup_chunk(r2.snapshot, &coord)
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.blob, second.blob);
+        assert!(!second.is_tombstone());
+    }
+}
+
+#[test]
+fn changed_region_reingests_while_rest_carries() {
+    let scratch = Scratch::new();
+    let world = scratch.world();
+    let changed = world.join("region").join("r.0.0.mca");
+    let stable = world.join("region").join("r.1.0.mca");
+    write_region(&changed, OVER, REGION, &[(0, 0, vec![2, 1])]);
+    // Region r.1.0 owns global columns x in [32, 63].
+    write_region(&stable, OVER, REGION, &[(32, 0, vec![2, 2, 2])]);
+    let mut store = Store::open(&scratch.store()).unwrap();
+    let r1 = backup(&world, &mut store).unwrap();
+    assert_eq!(r1.chunks, 2);
+
+    // Rewrite one file with a longer payload (size change forces ingest).
+    write_region(&changed, OVER, REGION, &[(0, 0, vec![2, 9, 9, 9, 9])]);
+    let r2 = backup(&world, &mut store).unwrap();
+    assert_eq!(r2.chunks, 2);
+    assert_eq!(r2.new_blobs, 1);
+    assert_eq!(r2.skipped_regions, 1);
+    assert_eq!(r2.carried_chunks, 1);
+
+    // Changed chunk has the new blob; stable chunk kept its blob.
+    let got = store
+        .meta()
+        .lookup_chunk(r2.snapshot, &ChunkCoord::new(OVER, REGION, 0, 0))
+        .unwrap()
+        .unwrap();
+    let before = store
+        .meta()
+        .lookup_chunk(r1.snapshot, &ChunkCoord::new(OVER, REGION, 0, 0))
+        .unwrap()
+        .unwrap();
+    assert_ne!(got.blob, before.blob);
+    let stable_coord = ChunkCoord::new(OVER, REGION, 32, 0);
+    assert_eq!(
+        store
+            .meta()
+            .lookup_chunk(r2.snapshot, &stable_coord)
+            .unwrap()
+            .unwrap()
+            .blob,
+        store
+            .meta()
+            .lookup_chunk(r1.snapshot, &stable_coord)
+            .unwrap()
+            .unwrap()
+            .blob,
+    );
+
+    // Rollback still restores byte-identical payloads after a carry.
+    rollback(&world, &mut store, r1.snapshot).unwrap();
+    assert_eq!(
+        read_world(&world),
+        WorldState::from([
+            ((OVER, REGION, 0, 0), vec![2, 1]),
+            ((OVER, REGION, 32, 0), vec![2, 2, 2]),
+        ])
+    );
+}
+
+#[test]
+fn deleted_region_file_tombstones_and_drops_state() {
+    let scratch = Scratch::new();
+    let world = scratch.world();
+    let region = world.join("region").join("r.0.0.mca");
+    write_region(
+        &region,
+        OVER,
+        REGION,
+        &[(0, 0, vec![2, 1]), (1, 0, vec![2, 2])],
+    );
+    let mut store = Store::open(&scratch.store()).unwrap();
+    backup(&world, &mut store).unwrap();
+    assert_eq!(store.meta().load_region_states().unwrap().len(), 1);
+
+    fs::remove_file(&region).unwrap();
+    let r2 = backup(&world, &mut store).unwrap();
+    assert_eq!(r2.chunks, 0);
+    assert_eq!(r2.tombstones, 2);
+    assert_eq!(r2.skipped_regions, 0);
+    assert!(store.meta().load_region_states().unwrap().is_empty());
+
+    let tomb = store
+        .meta()
+        .lookup_chunk(r2.snapshot, &ChunkCoord::new(OVER, REGION, 0, 0))
+        .unwrap()
+        .unwrap();
+    assert!(tomb.is_tombstone());
+}
+
+#[test]
+fn wiped_region_state_degrades_to_full_ingest() {
+    let scratch = Scratch::new();
+    let world = scratch.world();
+    write_region(
+        &world.join("region").join("r.0.0.mca"),
+        OVER,
+        REGION,
+        &[(0, 0, vec![2, 1, 2, 3])],
+    );
+    let mut store = Store::open(&scratch.store()).unwrap();
+    let r1 = backup(&world, &mut store).unwrap();
+
+    // Derived state loss: the next backup re-ingests everything, stays
+    // correct, and repopulates the cache for the run after.
+    store.meta_mut().reset_region_state().unwrap();
+    let r2 = backup(&world, &mut store).unwrap();
+    assert_eq!(r2.skipped_regions, 0);
+    assert_eq!(r2.new_blobs, 0);
+    let r3 = backup(&world, &mut store).unwrap();
+    assert_eq!(r3.skipped_regions, 1);
+    assert_eq!(r3.carried_chunks, 1);
+
+    let first = store
+        .meta()
+        .lookup_chunk(r1.snapshot, &ChunkCoord::new(OVER, REGION, 0, 0))
+        .unwrap()
+        .unwrap();
+    let third = store
+        .meta()
+        .lookup_chunk(r3.snapshot, &ChunkCoord::new(OVER, REGION, 0, 0))
+        .unwrap()
+        .unwrap();
+    assert_eq!(first.blob, third.blob);
+}

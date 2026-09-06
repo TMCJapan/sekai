@@ -44,7 +44,7 @@ A missing chunk in a snapshot (unexplored/deleted area) is explicitly tracked vi
 
 ## Single Source of Truth vs Derived State
 - **Single Source of Truth**: Metadata history (`snapshots`, `chunk_history`) and CAS storage (`blobs/`).
-- **Derived State**: Transient indices (e.g., `chunk_state`) maintained for quick change detection. Derived state can be completely dropped and rebuilt from the primary history at any time.
+- **Derived State**: Transient indices (e.g., `region_state` file fingerprints) maintained for quick change detection. Derived state can be completely dropped and rebuilt from the primary history at any time (wiping `region_state` degrades the next backup to a full ingest, never to wrong data).
 
 ## Garbage Collection (GC)
 - **Reference Scope**: GC checks referential integrity across the entire database (all chunks, dimensions, and snapshots), as CAS deduplication is global.

@@ -258,3 +258,141 @@ fn cas_remove_and_visit_blobs() {
     .unwrap();
     assert_eq!(rest, vec![b]);
 }
+
+use sekai_storage::{RegionFingerprint, RegionKey, RegionStateEntry};
+
+const fn stored_state() -> RegionStateEntry {
+    RegionStateEntry {
+        key: region_key(),
+        mtime_ms: Some(1_700_000_000_000),
+        size: 8192,
+        header_hash: [7; 32],
+        snapshot_id: SnapshotId(1),
+    }
+}
+
+const fn region_key() -> RegionKey {
+    RegionKey::new(Dimension::OVERWORLD, RegionKind::REGION, 0, 0)
+}
+
+const fn fingerprint() -> RegionFingerprint {
+    RegionFingerprint {
+        key: region_key(),
+        mtime_ms: Some(1_700_000_000_000),
+        size: 8192,
+        header_hash: [7; 32],
+    }
+}
+
+#[test]
+fn incremental_carry_copies_rows_and_state() {
+    let dir = ScratchDir::new();
+    let db = dir.path.join("meta.sqlite");
+    let mut meta = SqliteMeta::open(&db).unwrap();
+
+    let s1 = meta
+        .apply_snapshot_incremental(
+            1_000,
+            &[SnapshotEntry::new(coord(0, 0), Some(hash(1)), None)],
+            None,
+            &[fingerprint()],
+            &[],
+        )
+        .unwrap()
+        .id;
+    assert_eq!(s1, SnapshotId(1));
+    assert_eq!(meta.load_region_states().unwrap().len(), 1);
+
+    // Unchanged region: no fresh entries, rows carry from the previous snap.
+    let outcome = meta
+        .apply_snapshot_incremental(2_000, &[], Some((s1, &[region_key()])), &[], &[])
+        .unwrap();
+    assert_eq!(outcome.id, SnapshotId(2));
+    assert_eq!(outcome.carried_chunks, 1);
+    let carried = meta
+        .lookup_chunk(outcome.id, &coord(0, 0))
+        .unwrap()
+        .unwrap();
+    assert_eq!(carried.blob, Some(hash(1)));
+
+    // Pure carry preserves fingerprints but advances `snapshot_id`, so the
+    // state keeps meaning "last confirmed" and stays viable for FK pruning.
+    let states = meta.load_region_states().unwrap();
+    assert_eq!(states.len(), 1);
+    assert_eq!(states[0].snapshot_id, outcome.id);
+    assert_eq!(states[0].size, fingerprint().size);
+    assert_eq!(states[0].header_hash, fingerprint().header_hash);
+
+    // Fingerprint refresh and removal flow through the same transaction.
+    let mut fp = fingerprint();
+    fp.size = 12288;
+    let outcome = meta
+        .apply_snapshot_incremental(3_000, &[], Some((outcome.id, &[region_key()])), &[fp], &[])
+        .unwrap();
+    assert_eq!(outcome.carried_chunks, 1);
+    let states = meta.load_region_states().unwrap();
+    assert_eq!(states.len(), 1);
+    assert_eq!(states[0].size, 12288);
+    assert_eq!(states[0].snapshot_id, outcome.id);
+
+    meta.reset_region_state().unwrap();
+    assert!(meta.load_region_states().unwrap().is_empty());
+
+    // Carried regions must stay disjoint from fresh entries: overlap aborts
+    // on the primary key instead of merging silently.
+    let clash = meta.apply_snapshot_incremental(
+        4_000,
+        &[SnapshotEntry::new(coord(0, 0), Some(hash(2)), None)],
+        Some((outcome.id, &[region_key()])),
+        &[],
+        &[],
+    );
+    assert!(clash.is_err());
+}
+
+#[test]
+fn fingerprint_match_requires_all_signals() {
+    let base = stored_state();
+    assert!(fingerprint().matches_state(&base));
+
+    let mut changed = fingerprint();
+    changed.mtime_ms = Some(1_700_000_000_001);
+    assert!(!changed.matches_state(&base));
+
+    let mut changed = fingerprint();
+    changed.size += 1;
+    assert!(!changed.matches_state(&base));
+
+    let mut changed = fingerprint();
+    changed.header_hash[0] ^= 0xFF;
+    assert!(!changed.matches_state(&base));
+
+    // Unknown clock on either side forces ingest (fail-safe direction).
+    let mut changed = fingerprint();
+    changed.mtime_ms = None;
+    assert!(!changed.matches_state(&base));
+    let mut stored = base;
+    stored.mtime_ms = None;
+    assert!(!fingerprint().matches_state(&stored));
+}
+
+#[test]
+fn version_one_stores_are_rejected_for_recreate() {
+    let dir = ScratchDir::new();
+    let db = dir.path.join("meta.sqlite");
+    // Minimal version-1 layout (pre region_state): supported binary refuses
+    // it loudly so the operator recreates the store instead of misreading.
+    rusqlite::Connection::open(&db)
+        .unwrap()
+        .execute_batch(
+            "CREATE TABLE snapshots(id INTEGER PRIMARY KEY AUTOINCREMENT, created_at_ms INTEGER NOT NULL);
+             CREATE TABLE chunk_history(snapshot_id INTEGER NOT NULL, dim INTEGER NOT NULL, kind INTEGER NOT NULL, cx INTEGER NOT NULL, cz INTEGER NOT NULL, blob BLOB NULL, diff BLOB NULL, PRIMARY KEY(snapshot_id, dim, kind, cx, cz));
+             PRAGMA user_version=1",
+        )
+        .unwrap();
+    let err = SqliteMeta::open(&db).unwrap_err();
+    assert!(matches!(
+        err,
+        StorageError::UnsupportedSchema { found: 1, .. }
+    ));
+}
