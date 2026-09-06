@@ -37,6 +37,11 @@ pub struct RegionFile {
 impl RegionFile {
     /// Load and validate a region file from disk.
     ///
+    /// This is the `std::fs` boundary of the crate: `mca` is the designated
+    /// file-I/O owner per `ARCHITECTURE.md`, so filesystem access lives in
+    /// this thin wrapper while [`RegionFile::from_bytes`] and the sector
+    /// math below stay pure and fs-free.
+    ///
     /// Coordinates come from the `r.<x>.<z>.mca` file name; `dim`/`kind`
     /// come from the caller (directory layout is `engine`'s concern).
     pub fn open(path: &Path, dim: Dimension, kind: RegionKind) -> Result<Self, McaError> {
