@@ -9,3 +9,8 @@ name = "sekai_engine"
 path = "src/lib.rs"
 
 [dependencies]
+sekai-core = { path = "../core" }
+sekai-mca = { path = "../mca" }
+sekai-storage = { path = "../storage" }
+blake3 = "1"
+thiserror = "2"
