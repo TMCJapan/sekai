@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or discussion
+    url: https://github.com/TMCJapan/sekai/discussions
+    about: Ask how to use sekai or discuss ideas before filing an issue.

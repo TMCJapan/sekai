@@ -1,0 +1,48 @@
+name: Performance report
+description: A backup, rollback, or GC run is slower than expected. Questions go to Discussions.
+title: "[perf]: "
+labels: ["type:perf"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For backup-path slowdowns, include `backup --timing` output measured
+        with a release build. Debug builds are not comparable. Rollback/GC
+        reports have no `--timing` flag: describe reproduction and measured
+        wall-clock instead.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Release version or commit hash you ran.
+      placeholder: e.g. 0.1.0 or 3f12b64
+    validations:
+      required: true
+  - type: textarea
+    id: timing
+    attributes:
+      label: Timing output
+      description: Paste full `backup --timing` (or `--timing-json`) output for backup-path slowdowns; for rollback/GC paste measured wall-clock and reproduction steps.
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: conditions
+    attributes:
+      label: Measurement conditions
+      description: >
+        Release or debug build, world size (bytes, region file count, chunk
+        count from `debug scan`), store filesystem and disk type, number of
+        existing snapshots, cold or warm page cache, how many runs were taken.
+      placeholder: |
+        release build, 127MB / 53 files / 15237 chunks,
+        store on ext4 (HDD), 3 snapshots, warm cache, best of 3 runs
+    validations:
+      required: true
+  - type: textarea
+    id: expectation
+    attributes:
+      label: Expected behavior
+      description: Which phase dominates, what you expected instead, and why.
+    validations:
+      required: true

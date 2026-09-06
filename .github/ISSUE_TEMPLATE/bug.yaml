@@ -1,0 +1,65 @@
+name: Bug report
+description: Something behaves incorrectly. Questions go to Discussions.
+title: "[bug]: "
+labels: ["type:bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Complete all sections; incomplete reports are closed.
+        Read `ARCHITECTURE.md` and `CONTRIBUTING.md` before filing.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Release version or commit hash you ran.
+      placeholder: e.g. 0.1.0 or 3f12b64
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: Actual behavior, including the full command and its output.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: Expected behavior and why.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction steps
+      description: Minimal commands to reproduce, starting from an empty store.
+      placeholder: |
+        1. sekai --store ./s backup ./world
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: timing
+    attributes:
+      label: Timing output (for slow or wrong backups)
+      description: Paste `backup --timing` output when the issue involves backup behavior or speed.
+      render: text
+    validations:
+      required: false
+  - type: input
+    id: os
+    attributes:
+      label: OS and filesystem
+      description: OS, plus the filesystem of both the world and the store (e.g. ext4 on HDD, tmpfs).
+      placeholder: e.g. Ubuntu 24.04, world on ext4 (HDD), store on ext4 (HDD)
+    validations:
+      required: true
+  - type: textarea
+    id: invariants
+    attributes:
+      label: Safety invariants affected
+      description: Which invariant from AGENTS.md is violated, if any (core purity, atomic I/O, byte-perfect rollback, derived state, dry-run before GC)?
+    validations:
+      required: false
