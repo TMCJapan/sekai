@@ -1,8 +1,4 @@
 [toolchain]
 channel = "1.98.0"
 components = ["rustfmt", "clippy", "rust-analyzer"]
-targets = [
-  "x86_64-unknown-linux-gnu",
-  "x86_64-pc-windows-msvc",
-  "aarch64-apple-darwin",
-]
+targets = ["thumbv7m-none-eabi", "wasm32-unknown-unknown"]
