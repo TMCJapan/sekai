@@ -4,6 +4,8 @@
 //! size, header length, entry decoding, offset range). A single module owns
 //! them so the two sides cannot drift apart.
 
+use sekai_core::{ChunkCoord, Dimension, RegionKind};
+
 use crate::error::McaError;
 
 /// Bytes per sector; files are whole multiples of this.
@@ -36,6 +38,83 @@ pub(crate) fn parse_region_name(file_name: &str) -> Result<(i32, i32), McaError>
     }
     let parse = |s: Option<&str>| s.and_then(|v| v.parse::<i32>().ok()).ok_or_else(bad);
     Ok((parse(xs)?, parse(zs)?))
+}
+
+/// Region identity plus its global chunk-column origin.
+///
+/// Rationale: reader and writer both tracked `region_x`/`region_z` and the
+/// derived `base_x`/`base_z` as four loose `i32`s. Grouping them keeps the
+/// two sides from drifting apart (single overflow-checked constructor) and
+/// gives coordinate mapping one home. Kept `pub(crate)` inside `mca` on
+/// purpose: region-file addressing is an MCA layout detail, not workspace
+/// domain state, so it does not belong in `core::coords`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RegionLoc {
+    region_x: i32,
+    region_z: i32,
+    base_x: i32,
+    base_z: i32,
+}
+
+impl RegionLoc {
+    /// Build from region coordinates, rejecting bases where `base + 31`
+    /// would overflow `i32` (see [`base_coords`]).
+    pub(crate) fn new(region_x: i32, region_z: i32) -> Result<Self, McaError> {
+        let (base_x, base_z) = base_coords(region_x, region_z)?;
+        Ok(Self {
+            region_x,
+            region_z,
+            base_x,
+            base_z,
+        })
+    }
+
+    /// Region X from the file name.
+    pub(crate) fn region_x(self) -> i32 {
+        self.region_x
+    }
+
+    /// Region Z from the file name.
+    pub(crate) fn region_z(self) -> i32 {
+        self.region_z
+    }
+
+    /// Header slot for `coord`, rejecting foreign namespaces/coordinates.
+    pub(crate) fn slot_of(
+        self,
+        dim: Dimension,
+        kind: RegionKind,
+        coord: &ChunkCoord,
+    ) -> Result<u32, McaError> {
+        let wrong = || McaError::WrongRegion {
+            region_x: self.region_x,
+            region_z: self.region_z,
+            x: coord.x,
+            z: coord.z,
+        };
+        if coord.dim != dim || coord.kind != kind {
+            return Err(wrong());
+        }
+        let dx = coord.x.checked_sub(self.base_x).ok_or_else(wrong)?;
+        let dz = coord.z.checked_sub(self.base_z).ok_or_else(wrong)?;
+        if !(0..ROW_WIDTH as i32).contains(&dx) || !(0..ROW_WIDTH as i32).contains(&dz) {
+            return Err(wrong());
+        }
+        Ok(dx as u32 + ROW_WIDTH * dz as u32)
+    }
+
+    /// Global coordinate for header slot `index` (`0..1024`).
+    ///
+    /// `base + 31` was validated at construction, so these additions cannot
+    /// wrap; callers must still only pass in-range slots.
+    pub(crate) fn coord_at(self, dim: Dimension, kind: RegionKind, index: u32) -> ChunkCoord {
+        ChunkCoord::new(
+            dim,
+            kind,
+            self.base_x + (index % ROW_WIDTH) as i32,
+            self.base_z + (index / ROW_WIDTH) as i32,
+        )
+    }
 }
 
 /// Global chunk-column base (`region * 32`) with overflow rejection.
@@ -155,5 +234,33 @@ mod tests {
             sectors_for(255 * 4096),
             Err(McaError::ChunkTooLarge { .. })
         ));
+    }
+
+    #[test]
+    fn region_loc_maps_slots_both_ways() {
+        use sekai_core::{Dimension, RegionKind};
+        let loc = RegionLoc::new(-1, 2).expect("must build");
+        assert_eq!(loc.region_x(), -1);
+        assert_eq!(loc.region_z(), 2);
+        // Local (3, 5) in r.-1.2 -> global (-29, 69), slot 3 + 32 * 5.
+        let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::REGION, -29, 69);
+        let slot = loc
+            .slot_of(Dimension::OVERWORLD, RegionKind::REGION, &coord)
+            .expect("must map");
+        assert_eq!(slot, 3 + 32 * 5);
+        assert_eq!(
+            loc.coord_at(Dimension::OVERWORLD, RegionKind::REGION, slot),
+            coord
+        );
+        // Foreign namespace or out-of-region coordinates are rejected.
+        assert!(
+            loc.slot_of(Dimension::NETHER, RegionKind::REGION, &coord)
+                .is_err()
+        );
+        let far = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::REGION, 0, 0);
+        assert!(
+            loc.slot_of(Dimension::OVERWORLD, RegionKind::REGION, &far)
+                .is_err()
+        );
     }
 }

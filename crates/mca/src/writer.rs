@@ -17,8 +17,7 @@ use sekai_core::{ChunkCoord, Dimension, RegionKind};
 
 use crate::error::McaError;
 use crate::region::{
-    HEADER_LEN, MAX_SECTOR_OFFSET, ROW_WIDTH, SECTOR_LEN, base_coords, parse_region_name,
-    sectors_for,
+    HEADER_LEN, MAX_SECTOR_OFFSET, RegionLoc, SECTOR_LEN, parse_region_name, sectors_for,
 };
 
 /// Monotonic temp-file disambiguator within this process.
@@ -31,14 +30,8 @@ pub struct RegionFileWriter {
     dim: Dimension,
     /// Region family (staged coords must match).
     kind: RegionKind,
-    /// Region X from the target file name.
-    region_x: i32,
-    /// Region Z from the target file name.
-    region_z: i32,
-    /// Global X of local column 0 (checked).
-    base_x: i32,
-    /// Global Z of local column 0 (checked).
-    base_z: i32,
+    /// Region identity and global chunk-column origin.
+    loc: RegionLoc,
     /// Timestamp written for every present chunk.
     timestamp: u32,
     /// Final destination (never written before commit).
@@ -64,14 +57,11 @@ impl RegionFileWriter {
             .and_then(|n| n.to_str())
             .unwrap_or_default();
         let (region_x, region_z) = parse_region_name(name)?;
-        let (base_x, base_z) = base_coords(region_x, region_z)?;
+        let loc = RegionLoc::new(region_x, region_z)?;
         Ok(Self {
             dim,
             kind,
-            region_x,
-            region_z,
-            base_x,
-            base_z,
+            loc,
             timestamp,
             target: target.to_path_buf(),
             staged: BTreeMap::new(),
@@ -80,21 +70,7 @@ impl RegionFileWriter {
 
     /// Header slot for `coord`, rejecting foreign coordinates.
     fn slot_of(&self, coord: &ChunkCoord) -> Result<u32, McaError> {
-        let wrong = || McaError::WrongRegion {
-            region_x: self.region_x,
-            region_z: self.region_z,
-            x: coord.x,
-            z: coord.z,
-        };
-        if coord.dim != self.dim || coord.kind != self.kind {
-            return Err(wrong());
-        }
-        let dx = coord.x.checked_sub(self.base_x).ok_or_else(wrong)?;
-        let dz = coord.z.checked_sub(self.base_z).ok_or_else(wrong)?;
-        if !(0..ROW_WIDTH as i32).contains(&dx) || !(0..ROW_WIDTH as i32).contains(&dz) {
-            return Err(wrong());
-        }
-        Ok(dx as u32 + ROW_WIDTH * dz as u32)
+        self.loc.slot_of(self.dim, self.kind, coord)
     }
 
     /// Assemble the full file image (header + packed sectors).
