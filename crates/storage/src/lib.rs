@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 //! CAS blob files and SQLite MVCC metadata.
 //!
 //! Rationale: immutable blobs live as plain files (`blobs/ab/cdef...`)

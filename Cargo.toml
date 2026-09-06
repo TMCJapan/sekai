@@ -23,10 +23,14 @@ missing_errors_doc = "allow"
 
 [workspace.dependencies]
 sekai-core = { path = "crates/core" }
+sekai-engine = { path = "crates/engine" }
 sekai-mca = { path = "crates/mca" }
 sekai-storage = { path = "crates/storage" }
 
+anyhow = "1"
 blake3 = "1"
+chrono = "0.4"
+clap = { version = "4", features = ["derive"] }
 fastnbt = "2"
 flate2 = "1"
 lz4-java-wrc = "0.2"

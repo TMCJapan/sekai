@@ -1,3 +1,5 @@
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
 //! NBT decoding, decompression, and volatile diff views.
 //!
 //! Rationale: chunk payloads arrive exactly as stored in `.mca` sectors
