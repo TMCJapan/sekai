@@ -97,7 +97,7 @@ impl FileCas {
             {
                 let shard = dest.parent().map(Path::to_path_buf).unwrap_or_default();
                 let dir = fs::File::open(&shard).map_err(io(shard.clone()))?;
-                dir.sync_all().map_err(io(shard.clone()))?;
+                dir.sync_all().map_err(io(shard))?;
             }
             Ok(())
         };
