@@ -139,7 +139,7 @@ impl FileCas {
     /// Unlink the blob under `hash`; `false` when already absent.
     ///
     /// The shard directory is fsynced after the unlink so a crash never
-    /// resurrects the blob.
+    /// resurrects the blob (Unix-only; see `put`).
     pub fn remove(&mut self, hash: &BlobHash) -> Result<bool, StorageError> {
         let path = self.path_of(hash);
         match fs::remove_file(&path) {
@@ -149,10 +149,17 @@ impl FileCas {
                 return Err(StorageError::Io { path, source });
             }
         }
-        let io = |path: PathBuf| move |source: std::io::Error| StorageError::Io { path, source };
-        let shard = path.parent().map(Path::to_path_buf).unwrap_or_default();
-        let dir = fs::File::open(&shard).map_err(io(shard.clone()))?;
-        dir.sync_all().map_err(io(shard))?;
+        // Persist the unlink itself. Unix-only: opening a directory
+        // with `File::open` fails on Windows (ERROR_ACCESS_DENIED),
+        // and std offers no directory-fsync equivalent there.
+        #[cfg(unix)]
+        {
+            let io =
+                |path: PathBuf| move |source: std::io::Error| StorageError::Io { path, source };
+            let shard = path.parent().map(Path::to_path_buf).unwrap_or_default();
+            let dir = fs::File::open(&shard).map_err(io(shard.clone()))?;
+            dir.sync_all().map_err(io(shard))?;
+        }
         Ok(true)
     }
 
