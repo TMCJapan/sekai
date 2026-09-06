@@ -19,7 +19,12 @@ use sekai_core::{BlobHash, ChunkCoord, DiffHash, Snapshot, SnapshotId};
 use crate::error::StorageError;
 
 /// Schema version managed by this binary (`PRAGMA user_version`).
-pub const SCHEMA_VERSION: i64 = 1;
+///
+/// Version 2 adds the derived `region_state` fingerprint cache for
+/// incremental snapshots. Version 1 stores are rejected (recreate them):
+/// the project is pre-release, so history migration is out of scope and a
+/// loud version gate replaces it.
+pub const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA: &str = "
 CREATE TABLE snapshots(
@@ -38,6 +43,20 @@ CREATE TABLE chunk_history(
 );
 CREATE INDEX idx_history_coord
     ON chunk_history(dim, kind, cx, cz, snapshot_id);
+-- Derived per-region fingerprints (see `region.rs`): which snapshot last
+-- ingested each file and what the file looked like. Rebuilt lazily by the
+-- next backup when wiped, so it never needs data migration.
+CREATE TABLE region_state(
+    dim INTEGER NOT NULL,
+    kind INTEGER NOT NULL,
+    rx INTEGER NOT NULL,
+    rz INTEGER NOT NULL,
+    mtime_ms INTEGER NULL,
+    size INTEGER NOT NULL,
+    header_hash BLOB NOT NULL,
+    snapshot_id INTEGER NOT NULL REFERENCES snapshots(id),
+    PRIMARY KEY(dim, kind, rx, rz)
+);
 ";
 
 /// One chunk fact for [`SqliteMeta::apply_snapshot`].
@@ -82,7 +101,7 @@ impl SqliteMeta {
         let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         if version == 0 {
             conn.execute_batch(SCHEMA)?;
-            conn.execute_batch("PRAGMA user_version=1")?;
+            conn.execute_batch("PRAGMA user_version=2")?;
         } else if version != SCHEMA_VERSION {
             return Err(StorageError::UnsupportedSchema {
                 found: version,
@@ -102,6 +121,28 @@ impl SqliteMeta {
         created_at_ms: u64,
         entries: &[SnapshotEntry],
     ) -> Result<SnapshotId, StorageError> {
+        Ok(self
+            .apply_snapshot_incremental(created_at_ms, entries, None, &[], &[])?
+            .id)
+    }
+
+    /// Record a snapshot, carrying unchanged regions from `carry_from`.
+    ///
+    /// `entries` holds freshly ingested chunks and tombstones; `carry_from`
+    /// names the previous snapshot plus the regions whose rows copy over via
+    /// `INSERT ... SELECT`. `fingerprints` refreshes the derived
+    /// `region_state` for ingested files and `removed` drops state for files
+    /// gone from disk, all inside the same transaction so state and history
+    /// stay consistent. Carried regions must be disjoint from `entries`;
+    /// overlap aborts on the primary key instead of merging silently.
+    pub fn apply_snapshot_incremental(
+        &mut self,
+        created_at_ms: u64,
+        entries: &[SnapshotEntry],
+        carry_from: Option<(SnapshotId, &[crate::RegionKey])>,
+        fingerprints: &[crate::RegionFingerprint],
+        removed: &[crate::RegionKey],
+    ) -> Result<ApplyOutcome, StorageError> {
         let tx = self.conn.transaction()?;
         tx.execute(
             "INSERT INTO snapshots(created_at_ms) VALUES (?)",
@@ -127,9 +168,37 @@ impl SqliteMeta {
             ])?;
         }
         drop(stmt);
+        let carried_chunks = if let Some((prev, keys)) = carry_from {
+            crate::region::carry_region_chunks(&tx, id, prev, keys)?
+        } else {
+            0usize
+        };
+        crate::region::insert_region_states(&tx, id, fingerprints)?;
+        crate::region::delete_region_states(&tx, removed)?;
         tx.commit()?;
-        Ok(id)
+        Ok(ApplyOutcome { id, carried_chunks })
     }
+
+    /// Load every stored region fingerprint (for skip decisions in `engine`).
+    pub fn load_region_states(&self) -> Result<Vec<crate::RegionStateEntry>, StorageError> {
+        crate::region::load_region_states(&self.conn)
+    }
+
+    /// Wipe derived region fingerprints; the next backup repopulates them.
+    ///
+    /// Recovery seam for the derived-state invariant (see `region.rs`).
+    pub fn reset_region_state(&mut self) -> Result<(), StorageError> {
+        crate::region::clear_region_states(&self.conn)
+    }
+}
+
+/// Outcome of [`SqliteMeta::apply_snapshot_incremental`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ApplyOutcome {
+    /// Newly recorded snapshot ID.
+    pub id: SnapshotId,
+    /// History rows carried over from the previous snapshot.
+    pub carried_chunks: usize,
 }
 
 /// Shared INSERT text for history rows (batched and single-row paths).

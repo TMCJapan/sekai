@@ -12,7 +12,9 @@
 mod cas;
 mod error;
 mod meta;
+mod region;
 
 pub use cas::FileCas;
 pub use error::StorageError;
-pub use meta::{SnapshotEntry, SqliteMeta};
+pub use meta::{ApplyOutcome, SnapshotEntry, SqliteMeta};
+pub use region::{RegionFingerprint, RegionKey, RegionStateEntry};
