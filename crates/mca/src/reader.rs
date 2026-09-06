@@ -10,12 +10,11 @@
 use std::fs;
 use std::path::Path;
 
-use sekai_core::{ChunkCoord, Dimension, RawChunk, RegionKind};
+use sekai_core::{Dimension, RawChunk, RegionKind};
 
 use crate::error::McaError;
 use crate::region::{
-    FIRST_DATA_SECTOR, ROW_WIDTH, SECTOR_LEN, TABLE_ENTRIES, base_coords, check_image_len,
-    parse_region_name,
+    FIRST_DATA_SECTOR, RegionLoc, SECTOR_LEN, TABLE_ENTRIES, check_image_len, parse_region_name,
 };
 
 /// Parsed `.mca` image plus its global namespace.
@@ -25,14 +24,8 @@ pub struct RegionFile {
     dim: Dimension,
     /// Region family (`region`/`entities`/`poi`, from the caller).
     kind: RegionKind,
-    /// Region X from the file name.
-    region_x: i32,
-    /// Region Z from the file name.
-    region_z: i32,
-    /// Global X of local column 0 (`region_x * 32`, checked).
-    base_x: i32,
-    /// Global Z of local column 0 (`region_z * 32`, checked).
-    base_z: i32,
+    /// Region identity and global chunk-column origin.
+    loc: RegionLoc,
     /// Whole file image.
     bytes: Vec<u8>,
 }
@@ -74,14 +67,11 @@ impl RegionFile {
         region_z: i32,
     ) -> Result<Self, McaError> {
         check_image_len(bytes.len() as u64)?;
-        let (base_x, base_z) = base_coords(region_x, region_z)?;
+        let loc = RegionLoc::new(region_x, region_z)?;
         Ok(Self {
             dim,
             kind,
-            region_x,
-            region_z,
-            base_x,
-            base_z,
+            loc,
             bytes,
         })
     }
@@ -98,12 +88,12 @@ impl RegionFile {
 
     /// Region X from the file name.
     pub fn region_x(&self) -> i32 {
-        self.region_x
+        self.loc.region_x()
     }
 
     /// Region Z from the file name.
     pub fn region_z(&self) -> i32 {
-        self.region_z
+        self.loc.region_z()
     }
 
     /// Raw file image (for tests and inspection tooling).
@@ -186,14 +176,7 @@ impl sekai_core::RegionReader for RegionFile {
                     index,
                     len: len as u32,
                 })?;
-            // `base_x/base_z + 31` was validated at construction, so these
-            // additions cannot wrap.
-            let coord = ChunkCoord::new(
-                self.dim,
-                self.kind,
-                self.base_x + (index % ROW_WIDTH) as i32,
-                self.base_z + (index / ROW_WIDTH) as i32,
-            );
+            let coord = self.loc.coord_at(self.dim, self.kind, index);
             if !visit(RawChunk::new(coord, payload)) {
                 break;
             }
@@ -210,7 +193,7 @@ pub(crate) fn entry_of(offset: u32, sectors: u32) -> [u8; 4] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sekai_core::RegionReader as _;
+    use sekai_core::{ChunkCoord, RegionReader as _};
 
     /// Minimal valid image: header only, no chunks.
     fn header_only() -> Vec<u8> {
