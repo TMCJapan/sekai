@@ -6,6 +6,10 @@
 //! silently snapshotting a torn world. Timestamps are informational only
 //! and ignored; absence is simply skipped and becomes a tombstone in
 //! `engine`.
+//!
+//! One exception is a zero-length image: servers can leave behind `0`-byte
+//! `r.<x>.<z>.mca` placeholders for not-yet-generated regions. Those carry
+//! no chunks and are treated as empty regions rather than corruption.
 
 use std::fs;
 use std::path::Path;
@@ -143,6 +147,10 @@ impl sekai_core::RegionReader for RegionFile {
     where
         F: FnMut(RawChunk<'_>) -> bool,
     {
+        // Zero-length placeholder: no header, no chunks.
+        if self.bytes.is_empty() {
+            return Ok(());
+        }
         let total_sectors = self.bytes.len() as u64 / SECTOR_LEN;
         for index in 0..TABLE_ENTRIES {
             let (offset, count) = self.entry(index)?;
@@ -238,6 +246,21 @@ mod tests {
             0,
         )
         .expect("header-only image must parse");
+        let mut count = 0;
+        f.visit_chunks(|_| {
+            count += 1;
+            true
+        })
+        .expect("visit must succeed");
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn zero_length_image_is_empty_region() {
+        // `0`-byte placeholders for not-yet-generated regions carry no chunks.
+        let f = RegionFile::from_bytes(Vec::new(), Dimension::OVERWORLD, RegionKind::REGION, 0, 0)
+            .expect("empty image must parse");
+        assert!(f.image().is_empty());
         let mut count = 0;
         f.visit_chunks(|_| {
             count += 1;

@@ -145,6 +145,16 @@ fn open_reads_names_from_disk() {
 }
 
 #[test]
+fn open_treats_zero_length_as_empty_region() {
+    let dir = ScratchDir::new();
+    let target = dir.region("r.0.0.mca");
+    fs::write(&target, Vec::new()).unwrap();
+    let region = RegionFile::open(&target, Dimension::OVERWORLD, RegionKind::REGION).unwrap();
+    assert!(region.image().is_empty());
+    assert!(collect(&region).is_empty());
+}
+
+#[test]
 fn second_commit_drops_unstaged_chunks() {
     let dir = ScratchDir::new();
     let target = dir.region("r.0.0.mca");

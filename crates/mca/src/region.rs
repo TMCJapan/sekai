@@ -137,7 +137,15 @@ pub fn base_coords(region_x: i32, region_z: i32) -> Result<(i32, i32), McaError>
 }
 
 /// Validate total image length; returns the sector count.
+///
+/// A zero-length image is accepted as an empty region placeholder: vanilla
+/// servers can leave behind `0`-byte `r.<x>.<z>.mca` files for
+/// not-yet-generated regions, and they carry no chunks. Any other
+/// short/misaligned length remains a hard error.
 pub const fn check_image_len(len: u64) -> Result<u64, McaError> {
+    if len == 0 {
+        return Ok(0);
+    }
     if len < HEADER_LEN {
         return Err(McaError::TruncatedFile { len });
     }
@@ -215,8 +223,10 @@ mod tests {
 
     #[test]
     fn validates_image_lengths() {
+        // Zero-length placeholder for not-yet-generated regions.
+        assert_eq!(check_image_len(0).expect("empty image must validate"), 0);
         assert!(matches!(
-            check_image_len(0),
+            check_image_len(1),
             Err(McaError::TruncatedFile { .. })
         ));
         assert!(matches!(
