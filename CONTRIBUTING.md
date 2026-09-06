@@ -85,3 +85,45 @@ cargo build -p sekai-cli --release
 * **Unit Tests**: Place in `src/` alongside the code. Ensure coverage for edge cases (corrupted headers, unexpected NBT structures, zero-length chunks).
 * **Integration Tests**: Place in `tests/` directories within crates. Test atomic operations (e.g., MCA writes, rollbacks) using synthetic binary fixtures.
 
+## Collaboration Workflow
+
+File bugs, features, and performance reports with the issue templates in
+`.github/ISSUE_TEMPLATE/` (English only). For backup-path performance
+reports, include `backup --timing` output from a release build
+(`--timing`/`--timing-json` only exist on `backup`; rollback/GC reports
+describe reproduction and measured wall-clock instead); questions belong in
+Discussions, not issues.
+
+### Branching
+
+Branch from `main` using one of these prefixes:
+
+* `feature/<scope>`: new user-facing capability (e.g., `feature/gc-cli`).
+* `perf/<scope>`: measured speedup with before/after numbers (`backup --timing`/`--timing-json` for backup-path changes, wall-clock + reproduction otherwise).
+* `fix/<scope>`: bug correction.
+* `refactor/<scope>`, `docs/<scope>`, `test/<scope>`: no behavior change.
+* `build/<scope>`, `ci/<scope>`, `chore/<scope>`: tooling, CI, or routine maintenance without runtime behavior change.
+
+### Commits
+
+Write [Conventional Commits](https://www.conventionalcommits.org/):
+
+* Format: `<type>(<scope>): <summary>` (e.g., `feat(engine): carry unchanged regions via INSERT ... SELECT`).
+* Types: `feat`, `fix`, `perf`, `refactor`, `test`, `docs`, `build`, `ci`, `chore`.
+* Scope is the crate or area (`core`, `nbt`, `mca`, `storage`, `engine`, `cli`, `docs`, `ci`).
+* Summaries are imperative, lowercase, without a trailing period.
+
+### Storage Schema Changes
+
+`meta.sqlite` is versioned with `PRAGMA user_version` (`SCHEMA_VERSION` in
+`crates/storage/src/meta.rs`).
+
+* Bump the version for any schema change and add a test pinning the version
+  gate (old stores fail loudly with `UnsupportedSchema`). Fresh stores
+  derive `user_version` from `SCHEMA_VERSION`, so bumping the constant is
+  sufficient.
+* The project is pre-release: old stores are recreated, not migrated. Never
+  silently reinterpret an unknown version.
+* Derived state (e.g., `region_state`) must degrade gracefully: wiping it may
+  cost one slow backup, never correctness. Cover that path with a test.
+

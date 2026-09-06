@@ -1,0 +1,53 @@
+name: Feature request
+description: Propose a new capability or CLI surface. Questions go to Discussions.
+title: "[feature]: "
+labels: ["type:feature"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Proposals must fit the invariants in `AGENTS.md` and `ARCHITECTURE.md`.
+        Features that cannot satisfy them are rejected.
+  - type: textarea
+    id: motivation
+    attributes:
+      label: Motivation
+      description: What task is impossible or painful today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: Concrete API, CLI shape, or schema change (commands, flags, tables).
+    validations:
+      required: true
+  - type: textarea
+    id: invariants
+    attributes:
+      label: Invariant fit
+      description: >
+        Explain fit for each: core crate purity (no_std, zero dependencies),
+        atomic file I/O, byte-perfect rollback, boundary separation (no server
+        orchestration in libraries), rebuildable derived state, dry-run before
+        any destructive operation.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches and why they fall short.
+    validations:
+      required: false
+  - type: dropdown
+    id: schema
+    attributes:
+      label: Storage schema change
+      description: Does the proposal change `meta.sqlite` (new tables, columns, version bump)?
+      options:
+        - No
+        - Yes, additive derived state only
+        - Yes, single source of truth changes
+    validations:
+      required: true
