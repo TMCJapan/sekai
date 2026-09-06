@@ -18,7 +18,11 @@ use crate::region::{
 };
 
 /// Parsed `.mca` image plus its global namespace.
-#[derive(Debug, Clone)]
+///
+/// The image is owned exclusively and only handed out as borrows, so
+/// multi-megabyte copies stay explicit: `Clone` is deliberately absent
+/// (use `image().to_vec()` when a copy is really needed).
+#[derive(Debug)]
 pub struct RegionFile {
     /// Dimension namespace (from the caller, not the file).
     dim: Dimension,
