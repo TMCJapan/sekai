@@ -153,17 +153,19 @@ fn format_time(created_at_ms: u64) -> String {
 /// regions by `open + ingest` so a few changed regions stand out.
 fn print_timing_table(timings: &sekai_engine::BackupTimings) {
     println!(
-        "timing total={}ms discover={}ms universe={}ms open={}ms ingest={}ms (hash={}ms cas={}ms) db={}ms files={} cas_checked={}",
+        "timing total={}ms discover={}ms universe={}ms fp={}ms open={}ms ingest={}ms (hash={}ms cas={}ms) db={}ms ingested={} skipped={} carried={}",
         timings.total.as_millis(),
         timings.discover.as_millis(),
         timings.universe_load.as_millis(),
+        timings.fingerprint.as_millis(),
         timings.region_open.as_millis(),
         timings.ingest.as_millis(),
         timings.hash.as_millis(),
         timings.cas_put.as_millis(),
         timings.db_apply.as_millis(),
         timings.regions.len(),
-        timings.cas_checked,
+        timings.skipped_regions,
+        timings.carried_chunks,
     );
     let mut slowest: Vec<&sekai_engine::RegionTiming> = timings.regions.iter().collect();
     slowest.sort_by_key(|r| std::cmp::Reverse((r.open + r.ingest).as_micros()));
@@ -191,18 +193,21 @@ fn backup_json(
     let mut out = String::from("{");
     let _ = write!(
         out,
-        "\"snapshot\":{},\"chunks\":{},\"new_blobs\":{},\"tombstones\":{},\"total_ms\":{}",
+        "\"snapshot\":{},\"chunks\":{},\"new_blobs\":{},\"tombstones\":{},\"skipped_regions\":{},\"carried_chunks\":{},\"total_ms\":{}",
         report.snapshot.raw(),
         report.chunks,
         report.new_blobs,
         report.tombstones,
+        report.skipped_regions,
+        report.carried_chunks,
         timings.total.as_millis(),
     );
     let _ = write!(
         out,
-        ",\"phases\":{{\"discover_ms\":{},\"universe_load_ms\":{},\"region_open_ms\":{},\"ingest_ms\":{},\"hash_ms\":{},\"cas_put_ms\":{},\"db_apply_ms\":{}}}",
+        ",\"phases\":{{\"discover_ms\":{},\"universe_load_ms\":{},\"fingerprint_ms\":{},\"region_open_ms\":{},\"ingest_ms\":{},\"hash_ms\":{},\"cas_put_ms\":{},\"db_apply_ms\":{}}}",
         timings.discover.as_millis(),
         timings.universe_load.as_millis(),
+        timings.fingerprint.as_millis(),
         timings.region_open.as_millis(),
         timings.ingest.as_millis(),
         timings.hash.as_millis(),
