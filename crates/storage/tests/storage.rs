@@ -377,6 +377,19 @@ fn fingerprint_match_requires_all_signals() {
 }
 
 #[test]
+fn fresh_store_records_schema_version() {
+    use sekai_storage::SCHEMA_VERSION;
+    let dir = ScratchDir::new();
+    let db = dir.path.join("meta.sqlite");
+    SqliteMeta::open(&db).unwrap();
+    let version: i64 = rusqlite::Connection::open(&db)
+        .unwrap()
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(version, SCHEMA_VERSION);
+}
+
+#[test]
 fn version_one_stores_are_rejected_for_recreate() {
     let dir = ScratchDir::new();
     let db = dir.path.join("meta.sqlite");

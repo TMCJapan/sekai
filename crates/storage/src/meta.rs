@@ -106,7 +106,7 @@ impl SqliteMeta {
         let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
         if version == 0 {
             conn.execute_batch(SCHEMA)?;
-            conn.execute_batch("PRAGMA user_version=2")?;
+            conn.execute_batch(&format!("PRAGMA user_version={SCHEMA_VERSION}"))?;
         } else if version != SCHEMA_VERSION {
             return Err(StorageError::UnsupportedSchema {
                 found: version,

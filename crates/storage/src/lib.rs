@@ -16,5 +16,5 @@ mod region;
 
 pub use cas::FileCas;
 pub use error::StorageError;
-pub use meta::{ApplyOutcome, SnapshotEntry, SqliteMeta};
+pub use meta::{ApplyOutcome, SCHEMA_VERSION, SnapshotEntry, SqliteMeta};
 pub use region::{RegionFingerprint, RegionKey, RegionStateEntry};
