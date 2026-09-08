@@ -1,5 +1,7 @@
 # Sekai
 
+*Read this in [日本語](README_ja.md).*
+
 Save the current state of the world as a snapshot and roll back to any of them quickly.
 
 Chunk-level deduplicated backups for Minecraft Java region files (`.mca`).
