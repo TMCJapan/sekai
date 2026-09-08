@@ -15,11 +15,11 @@ To guarantee pure, deterministic domain logic, `crates/core` is strictly **`no_s
 # Data & Hashing Model
 
 ## Two-Layer Hashing Architecture
-To guarantee byte-perfect rollback while avoiding false-positive changes from non-essential tags (e.g., `LastUpdate`), hashing is split into two distinct layers:
+To reproduce the exact raw payloads captured for each history entry while avoiding false-positive changes from non-essential tags (e.g., `LastUpdate`), hashing is split into two distinct layers:
 
 - `blob_hash` (CAS Key):
   - Hash computed over the exact raw byte payload (as read from the MCA file).
-  - Serves as the immutable key in the CAS blob store. Ensures 100% byte-perfect restoration.
+  - Serves as the immutable key in the CAS blob store. It identifies the exact raw payload captured for a history entry: rollback reproduces those captured bytes verbatim, including volatile tags (e.g., `LastUpdate`) exactly as they were at capture time — so rolling back also rewinds ignored tags to the snapshot's capture point.
 - `diff_hash` (Volatile Diff View):
   - Hash computed from uncompressed NBT payload with non-essential tags excluded (treated as absent, which is change-detection-equivalent to zero-clearing while staying type-agnostic).
   - The digest runs over a canonical encoding (compound keys sorted, big-endian scalars, UTF-8 strings), never over re-serialized NBT bytes, so it is independent of on-disk key order and compression codec.

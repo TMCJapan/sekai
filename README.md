@@ -6,7 +6,9 @@ Save the current state of the world as a snapshot and roll back to any of them q
 
 Chunk-level deduplicated backups for Minecraft Java region files (`.mca`).
 Snapshots share identical chunk payloads via content-addressed storage, and
-rollback rebuilds region files byte-identically and atomically.
+rollback rebuilds region files from the snapshot's captured payloads,
+verbatim and atomically (volatile tags such as `LastUpdate` are rewound
+to their capture-time values).
 
 ## Installation
 

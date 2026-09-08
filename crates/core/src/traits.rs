@@ -145,7 +145,9 @@ pub struct RawChunk<'a> {
     pub coord: ChunkCoord,
     /// Exact stored payload: compression-type byte + compressed data.
     ///
-    /// Preserved verbatim into CAS so rollback is byte-perfect.
+    /// Preserved verbatim into CAS so rollback reproduces the exact raw
+    /// payload captured for the history entry (volatile tags included,
+    /// as of capture time).
     pub payload: &'a [u8],
 }
 

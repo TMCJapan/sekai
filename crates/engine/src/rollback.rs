@@ -1,7 +1,9 @@
-//! Rollback: rebuild world files byte-identically from one snapshot.
+//! Rollback: rebuild world files from one snapshot's captured payloads.
 //!
 //! Rationale: rollback is strict - after it returns, the world matches the
-//! snapshot exactly. Region files are rebuilt wholesale from CAS blobs
+//! snapshot's captured raw payloads exactly (volatile tags such as
+//! `LastUpdate` are rewound to their capture-time values along with
+//! everything else). Region files are rebuilt wholesale from CAS blobs
 //! (never patched), so on-disk chunks unknown to the snapshot (created
 //! later) vanish along with post-snapshot regions, and all-tombstone
 //! regions delete their file instead of leaving a header-only shell.

@@ -6,7 +6,7 @@
 //! type + body` payloads) is the only format knowledge in the workspace
 //! besides NBT. This crate owns both directions - parsing into
 //! [`sekai_core::RawChunk`] views and rebuilding files from exact CAS bytes -
-//! so byte-perfect rollback never depends on ad-hoc format code in
+//! so reproducing captured payloads never depends on ad-hoc format code in
 //! `engine`. Live files are never mutated in place: writers always swap via
 //! same-directory temp file + `rename`.
 
