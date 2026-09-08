@@ -60,6 +60,6 @@ body:
     id: invariants
     attributes:
       label: Safety invariants affected
-      description: Which invariant from AGENTS.md is violated, if any (core purity, atomic I/O, byte-perfect rollback, derived state, dry-run before GC)?
+      description: Which invariant from CONTRIBUTING.md is violated, if any (core purity, atomic I/O, captured-payload rollback, derived state, dry-run before GC)?
     validations:
       required: false
