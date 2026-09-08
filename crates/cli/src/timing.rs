@@ -2,10 +2,10 @@
 //!
 //! Rationale: diagnosing slow backups needs per-phase numbers without
 //! changing the backup contract. Timings are collected with
-//! `std::time::Instant` (engine is a `std` crate; `core` stays `no_std`)
-//! and returned alongside the report, so the normal path pays only a
-//! handful of cheap clock reads. JSON rendering is the CLI's job; this
-//! module only carries `Duration`s.
+//! `std::time::Instant` (composition is a `std` concern; `core` stays
+//! `no_std`) and returned alongside the report, so the normal path pays
+//! only a handful of cheap clock reads. JSON rendering is the binary's job;
+//! this module only carries `Duration`s.
 
 use std::path::PathBuf;
 use std::time::Duration;

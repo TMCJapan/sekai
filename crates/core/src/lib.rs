@@ -3,18 +3,15 @@
 
 extern crate alloc;
 
-pub mod coords;
-pub mod error;
-pub mod hash;
-pub mod history;
-pub mod snapshot;
-pub mod traits;
+pub mod domain;
+pub mod port;
+pub mod usecase;
 
-pub use coords::{ChunkCoord, Dimension, RegionKind};
-pub use error::CoreError;
-pub use hash::{BlobHash, DiffHash};
-pub use history::ChunkHistoryEntry;
-pub use snapshot::{Snapshot, SnapshotId};
-pub use traits::{
+pub use domain::{
+    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, CoreError, DiffHash, Dimension, GcPlan,
+    RegionFingerprint, RegionKey, RegionKind, RegionStateEntry, Snapshot, SnapshotEntry,
+    SnapshotId,
+};
+pub use port::{
     BlobHasher, BlobStore, DiffHasher, MetaStore, Normalizer, RawChunk, RegionReader, RegionWriter,
 };

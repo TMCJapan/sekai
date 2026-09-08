@@ -13,7 +13,9 @@ use std::io::Read as _;
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
-use crate::error::EngineError;
+use sekai_core::{RegionFingerprint, RegionKey};
+
+use crate::error::McaError;
 
 /// First bytes of a region file covered by the header hash.
 ///
@@ -21,20 +23,6 @@ use crate::error::EngineError;
 /// only the location table feeds the fingerprint, so timestamp-only
 /// rewrites keep matching while chunk add/remove/relocate always mismatches.
 pub const HEADER_HASH_LEN: usize = 4096;
-
-/// Cheap identity of one region file on disk.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FileFingerprint {
-    /// File size in bytes.
-    pub size: u64,
-    /// Last modification time as Unix millis, when the platform provides it.
-    ///
-    /// Read through `std::fs::Metadata::modified`, the portable seam over
-    /// Linux, Windows, and macOS. `None` forces ingest downstream.
-    pub mtime_ms: Option<u64>,
-    /// Blake3 of the first [`HEADER_HASH_LEN`] file bytes.
-    pub header_hash: [u8; 32],
-}
 
 /// Last modification time as Unix millis, or `None` when unavailable.
 ///
@@ -55,8 +43,8 @@ pub fn file_mtime_ms(path: &Path) -> Option<u64> {
 /// header bytes from another. Only `fstat` on the open handle plus the first
 /// [`HEADER_HASH_LEN`] bytes are touched; short files (including
 /// zero-length placeholders) hash whatever bytes exist.
-pub fn fingerprint_file(path: &Path) -> Result<FileFingerprint, EngineError> {
-    let io = |source: std::io::Error| EngineError::Io {
+pub fn fingerprint_file(path: &Path, key: RegionKey) -> Result<RegionFingerprint, McaError> {
+    let io = |source: std::io::Error| McaError::Io {
         path: path.to_path_buf(),
         source,
     };
@@ -79,7 +67,8 @@ pub fn fingerprint_file(path: &Path) -> Result<FileFingerprint, EngineError> {
         }
     }
     let digest = blake3::hash(&header[..read]);
-    Ok(FileFingerprint {
+    Ok(RegionFingerprint {
+        key,
         size,
         mtime_ms,
         header_hash: *digest.as_bytes(),

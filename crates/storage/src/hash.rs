@@ -3,7 +3,9 @@
 //! Rationale: `core` defines the `BlobHasher`/`DiffHasher` shapes without
 //! naming an algorithm; this single `blake3`-backed type fills both. One
 //! struct for both layers is deliberate - the layers differ in *what* is
-//! fed (raw bytes vs canonical NBT), never in the digest function.
+//! fed (raw bytes vs canonical NBT), never in the digest function. It lives
+//! in `storage` because the blob layer addresses CAS keys, which `storage`
+//! owns.
 
 use sekai_core::{BlobHash, DiffHash};
 

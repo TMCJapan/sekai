@@ -1,7 +1,7 @@
 //! End-to-end diff-view guarantees through the `core::Normalizer` trait.
 //!
 //! Rationale: these tests pin the properties future phases rely on -
-//! `engine` must observe identical `DiffHash` for identical game state no
+//! consumers must observe identical `DiffHash` for identical game state no
 //! matter the on-disk key order or compression codec, while `LastUpdate`
 //! churn alone must never surface as a change.
 

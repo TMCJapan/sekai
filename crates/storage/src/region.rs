@@ -9,82 +9,11 @@
 //! wrong data, and the following run is incremental again.
 
 use rusqlite::{Connection, params};
-use sekai_core::{Dimension, RegionKind, SnapshotId};
+use sekai_core::{
+    Dimension, RegionFingerprint, RegionKey, RegionKind, RegionStateEntry, SnapshotId,
+};
 
 use crate::error::StorageError;
-
-/// Identity of one region file within its namespace.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct RegionKey {
-    /// Dimension namespace.
-    pub dim: Dimension,
-    /// Region family.
-    pub kind: RegionKind,
-    /// Region X from the file name.
-    pub rx: i32,
-    /// Region Z from the file name.
-    pub rz: i32,
-}
-
-impl RegionKey {
-    /// Construct a region identity.
-    #[must_use]
-    pub const fn new(dim: Dimension, kind: RegionKind, rx: i32, rz: i32) -> Self {
-        Self { dim, kind, rx, rz }
-    }
-}
-
-/// Freshly observed file fingerprint, staged for `region_state` upsert.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RegionFingerprint {
-    /// Which file this fingerprint describes.
-    pub key: RegionKey,
-    /// Last modification time as Unix millis (`None` when unavailable).
-    pub mtime_ms: Option<u64>,
-    /// File size in bytes.
-    pub size: u64,
-    /// Blake3 of the file's location-table sector (first 4 KiB).
-    pub header_hash: [u8; 32],
-}
-
-/// Stored fingerprint of the snapshot that last ingested the file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RegionStateEntry {
-    /// Which file this state describes.
-    pub key: RegionKey,
-    /// Last modification time as Unix millis (`None` when unavailable).
-    pub mtime_ms: Option<u64>,
-    /// File size in bytes.
-    pub size: u64,
-    /// Blake3 of the file's location-table sector (first 4 KiB).
-    pub header_hash: [u8; 32],
-    /// Snapshot that last confirmed this fingerprint (ingested, or carried
-    /// over by a fingerprint match).
-    pub snapshot_id: SnapshotId,
-}
-
-impl RegionFingerprint {
-    /// Whether the file can skip ingestion against stored state.
-    ///
-    /// All three signals must agree, and a missing `mtime` on either side
-    /// forces ingest: silently trusting a clock the platform cannot provide
-    /// would risk stale snapshots, so the fail-safe direction is to redo
-    /// the work. A same-size in-place payload rewrite that keeps the
-    /// location table unchanged inside one `mtime` granularity tick still
-    /// slips through; filesystems with coarse timestamps (e.g. FAT with 2 s
-    /// granularity) widen that window, so callers must quiesce the server
-    /// before snapshotting.
-    #[must_use]
-    pub fn matches_state(&self, state: &RegionStateEntry) -> bool {
-        if self.key != state.key {
-            return false;
-        }
-        if self.mtime_ms != state.mtime_ms || self.mtime_ms.is_none() {
-            return false;
-        }
-        self.size == state.size && self.header_hash == state.header_hash
-    }
-}
 
 /// Load every stored region fingerprint.
 pub fn load_region_states(conn: &Connection) -> Result<Vec<RegionStateEntry>, StorageError> {

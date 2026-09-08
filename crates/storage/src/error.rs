@@ -1,6 +1,6 @@
 //! Error type for blob and metadata persistence.
 //!
-//! Rationale: CAS and SQLite failures share one enum so `engine` handles a
+//! Rationale: CAS and SQLite failures share one enum so callers handle a
 //! single error type across the write path. Every variant names the object
 //! at fault (blob hex, file path, schema version) instead of burying it in
 //! a string.

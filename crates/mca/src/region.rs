@@ -27,7 +27,7 @@ pub const MAX_SECTOR_OFFSET: u64 = 0xFF_FFFF;
 
 /// Parse `r.<x>.<z>.mca` file names into region coordinates.
 ///
-/// Shared by `engine` discovery so the naming rule lives in exactly one
+/// Shared by world discovery so the naming rule lives in exactly one
 /// place: whatever this accepts, both reader and writer accept.
 pub fn parse_region_name(file_name: &str) -> Result<(i32, i32), McaError> {
     let bad = || McaError::BadFilename {
