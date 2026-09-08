@@ -21,6 +21,31 @@ Keep dependencies strictly unidirectional:
 The CLI assembles concrete adapters and executes `core` use cases; adapters
 implement `core` ports. `core` depends on nothing.
 
+## Safety Invariants
+
+These hold for every change. The PR template asks for confirmation; explain
+any exception in the PR body.
+
+* **`core` purity**: `crates/core` stays `no_std` with zero external
+  dependencies. I/O, SQLite, and NBT/codec work live behind `core` ports
+  and are implemented in the outer crates.
+* **Atomic file I/O**: never overwrite `.mca` files in place. Write to a
+  temporary file in the same directory as the target and swap via atomic
+  `rename`.
+* **Captured-payload rollback**: store raw chunk payloads verbatim in CAS;
+  normalization feeds diff views only, never stored blobs. Rollback
+  reproduces the exact bytes captured for the snapshot, including volatile
+  tags (e.g. `LastUpdate`) as of capture time — it rewinds them to the
+  snapshot, it does not preserve their live values.
+* **No server orchestration in libraries**: `save-off`/`save-all`, process
+  control, and scheduling belong to the caller/CLI layer, never to library
+  crates.
+* **Rebuildable derived state**: caches like `region_state` are derived;
+  wiping them must cost at most a full ingest on the next backup, never
+  wrong data.
+* **Two-phase destructive operations**: GC and similar destructive
+  operations keep a dry-run/plan phase separate from apply/execution.
+
 # Development Guidelines
 
 ## Tech Stack & Tooling
