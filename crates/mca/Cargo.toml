@@ -9,4 +9,5 @@ workspace = true
 
 [dependencies]
 sekai-core.workspace = true
+blake3.workspace = true
 thiserror.workspace = true

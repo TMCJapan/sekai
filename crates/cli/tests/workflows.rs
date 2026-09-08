@@ -13,10 +13,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use sekai_cli::{Error, backup, rollback};
+use sekai_core::usecase::gc::{gc_apply, gc_plan};
 use sekai_core::{
     BlobHash, BlobStore as _, ChunkCoord, Dimension, MetaStore as _, RegionKind, RegionReader as _,
 };
-use sekai_engine::{EngineError, Store, backup, discover, gc_apply, gc_plan, rollback};
+use sekai_mca::discover;
+use sekai_storage::Store;
 
 static DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -27,7 +30,7 @@ struct Scratch {
 impl Scratch {
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!(
-            "sekai-engine-test-{}-{}",
+            "sekai-cli-test-{}-{}",
             std::process::id(),
             DIR_COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
@@ -185,7 +188,7 @@ fn rollback_rejects_unknown_snapshot() {
     backup(&world, &mut store).unwrap();
 
     let err = rollback(&world, &mut store, sekai_core::SnapshotId(999)).unwrap_err();
-    assert!(matches!(err, EngineError::UnknownSnapshot { id: 999 }));
+    assert!(matches!(err, Error::UnknownSnapshot { id: 999 }));
 }
 
 #[test]
@@ -258,7 +261,7 @@ fn backup_rejects_missing_world() {
     let scratch = Scratch::new();
     let mut store = Store::open(&scratch.store()).unwrap();
     let err = backup(&scratch.root.join("nope"), &mut store).unwrap_err();
-    assert!(matches!(err, EngineError::Io { .. }));
+    assert!(matches!(err, Error::Mca(sekai_mca::McaError::Io { .. })));
 }
 
 #[test]
@@ -305,12 +308,13 @@ fn gc_reclaims_only_orphans() {
     assert!(store.cas_mut().put(&orphan, b"orphan").unwrap());
 
     // Plan is read-only and names exactly the orphan.
-    let plan = gc_plan(&store).unwrap();
+    let plan = gc_plan(store.cas(), store.meta()).unwrap();
     assert_eq!(plan.orphans(), &[orphan]);
     assert_eq!(plan.examined(), 2);
     assert!(store.cas().contains(&orphan).unwrap());
 
-    let report = gc_apply(&mut store, &plan).unwrap();
+    let (cas, meta) = store.cas_and_meta();
+    let report = gc_apply(cas, meta, &plan).unwrap();
     assert_eq!(report.candidates, 1);
     assert_eq!(report.orphans, 1);
     assert_eq!(report.removed, 1);
@@ -324,12 +328,13 @@ fn gc_reclaims_only_orphans() {
         .unwrap()
         .unwrap();
     assert!(store.cas().contains(&row.blob.unwrap()).unwrap());
-    assert!(gc_plan(&store).unwrap().is_empty());
+    assert!(gc_plan(store.cas(), store.meta()).unwrap().is_empty());
 }
 
 #[test]
 fn backup_with_metrics_matches_plain_backup() {
-    use sekai_engine::{backup_with_metrics, scan_world};
+    use sekai_cli::backup_with_metrics;
+    use sekai_mca::scan_world;
     let scratch = Scratch::new();
     let world = scratch.world();
     write_region(

@@ -11,12 +11,15 @@
 //! Crash posture: `PRAGMA journal_mode=WAL, synchronous=FULL` plus one
 //! SQLite transaction per snapshot batch (`apply_snapshot`), so a torn
 //! backup never leaves a half-recorded snapshot behind. The CAS-before-DB
-//! half of the ordering is `engine`'s responsibility.
+//! half of the ordering is the backup caller's responsibility.
 
 use std::path::Path;
 
 use rusqlite::{Connection, OptionalExtension as _, params};
-use sekai_core::{BlobHash, ChunkCoord, DiffHash, Snapshot, SnapshotId};
+use sekai_core::{
+    ApplyOutcome, BlobHash, ChunkCoord, DiffHash, RegionFingerprint, RegionKey, RegionStateEntry,
+    Snapshot, SnapshotEntry, SnapshotId,
+};
 
 use crate::error::StorageError;
 
@@ -63,26 +66,6 @@ CREATE TABLE region_state(
 );
 ";
 
-/// One chunk fact for [`SqliteMeta::apply_snapshot`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SnapshotEntry {
-    /// Which chunk this fact describes.
-    pub coord: ChunkCoord,
-    /// Exact CAS key, or `None` for a tombstone.
-    pub blob: Option<BlobHash>,
-    /// Cached volatile hash, or `None` when not computed (backup always
-    /// records `None` today; the column only reserves the cache).
-    pub diff: Option<DiffHash>,
-}
-
-impl SnapshotEntry {
-    /// Construct a chunk fact.
-    #[must_use]
-    pub const fn new(coord: ChunkCoord, blob: Option<BlobHash>, diff: Option<DiffHash>) -> Self {
-        Self { coord, blob, diff }
-    }
-}
-
 /// SQLite-backed MVCC metadata.
 #[derive(Debug)]
 pub struct SqliteMeta {
@@ -94,7 +77,7 @@ impl SqliteMeta {
     /// Open (creating and migrating) the database at `path`.
     ///
     /// The parent directory must already exist; this type never creates it
-    /// (directory layout is `engine`'s concern). `":memory:"` works for
+    /// (directory layout is `Store`'s concern). `":memory:"` works for
     /// tests.
     pub fn open(path: &Path) -> Result<Self, StorageError> {
         let conn = Connection::open(path)?;
@@ -118,7 +101,7 @@ impl SqliteMeta {
 
     /// Record a whole snapshot atomically; returns its new ID.
     ///
-    /// This is the write path `engine` uses: all rows land in one
+    /// This is the backup write path: all rows land in one
     /// transaction, so a crash records either the full snapshot or none of
     /// it. Blobs must already be flushed to CAS before calling.
     pub fn apply_snapshot(
@@ -145,9 +128,9 @@ impl SqliteMeta {
         &mut self,
         created_at_ms: u64,
         entries: &[SnapshotEntry],
-        carry_from: Option<(SnapshotId, &[crate::RegionKey])>,
-        fingerprints: &[crate::RegionFingerprint],
-        removed: &[crate::RegionKey],
+        carry_from: Option<(SnapshotId, &[RegionKey])>,
+        fingerprints: &[RegionFingerprint],
+        removed: &[RegionKey],
     ) -> Result<ApplyOutcome, StorageError> {
         let tx = self.conn.transaction()?;
         tx.execute(
@@ -190,8 +173,8 @@ impl SqliteMeta {
         Ok(ApplyOutcome { id, carried_chunks })
     }
 
-    /// Load every stored region fingerprint (for skip decisions in `engine`).
-    pub fn load_region_states(&self) -> Result<Vec<crate::RegionStateEntry>, StorageError> {
+    /// Load every stored region fingerprint (for skip decisions in backup).
+    pub fn load_region_states(&self) -> Result<Vec<RegionStateEntry>, StorageError> {
         crate::region::load_region_states(&self.conn)
     }
 
@@ -201,15 +184,6 @@ impl SqliteMeta {
     pub fn reset_region_state(&mut self) -> Result<(), StorageError> {
         crate::region::clear_region_states(&self.conn)
     }
-}
-
-/// Outcome of [`SqliteMeta::apply_snapshot_incremental`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ApplyOutcome {
-    /// Newly recorded snapshot ID.
-    pub id: SnapshotId,
-    /// History rows carried over from the previous snapshot.
-    pub carried_chunks: usize,
 }
 
 /// Shared INSERT text for history rows (batched and single-row paths).
@@ -422,5 +396,27 @@ impl sekai_core::MetaStore for SqliteMeta {
             }
         }
         Ok(())
+    }
+
+    fn load_region_states(&self) -> Result<Vec<sekai_core::RegionStateEntry>, Self::Error> {
+        Self::load_region_states(self)
+    }
+
+    fn apply_snapshot_incremental(
+        &mut self,
+        created_at_ms: u64,
+        entries: &[SnapshotEntry],
+        carry_from: Option<(SnapshotId, &[RegionKey])>,
+        fingerprints: &[RegionFingerprint],
+        removed: &[RegionKey],
+    ) -> Result<ApplyOutcome, Self::Error> {
+        Self::apply_snapshot_incremental(
+            self,
+            created_at_ms,
+            entries,
+            carry_from,
+            fingerprints,
+            removed,
+        )
     }
 }

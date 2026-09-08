@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use sekai_core::{Dimension, RegionKind, RegionReader as _};
 
 use crate::discover::discover;
-use crate::error::EngineError;
+use crate::error::McaError;
 use crate::fingerprint::{HEADER_HASH_LEN, file_mtime_ms};
 
 /// One region file observed on disk.
@@ -39,10 +39,10 @@ pub struct RegionScanEntry {
 }
 
 /// Scan every region file under `world` without writing anything.
-pub fn scan_world(world: &Path) -> Result<Vec<RegionScanEntry>, EngineError> {
+pub fn scan_world(world: &Path) -> Result<Vec<RegionScanEntry>, McaError> {
     let mut out = Vec::new();
     for region in discover(world)? {
-        let bytes = fs::read(&region.path).map_err(|source| EngineError::Io {
+        let bytes = fs::read(&region.path).map_err(|source| McaError::Io {
             path: region.path.clone(),
             source,
         })?;
@@ -83,18 +83,16 @@ fn count_chunks(
     kind: RegionKind,
     region_x: i32,
     region_z: i32,
-) -> Result<usize, EngineError> {
+) -> Result<usize, McaError> {
     if bytes.is_empty() {
         return Ok(0);
     }
-    let file = sekai_mca::RegionFile::from_bytes(bytes.to_vec(), dim, kind, region_x, region_z)
-        .map_err(EngineError::Mca)?;
+    let file = crate::RegionFile::from_bytes(bytes.to_vec(), dim, kind, region_x, region_z)?;
     // Only the count matters here; coordinates are already validated.
     let mut chunks = 0usize;
     file.visit_chunks(|_| {
         chunks += 1;
         true
-    })
-    .map_err(EngineError::Mca)?;
+    })?;
     Ok(chunks)
 }

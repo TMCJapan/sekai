@@ -4,8 +4,8 @@
 //! files, inconsistent location entries, and out-of-range lengths are all
 //! hard errors). A backup tool must fail loudly on damage rather than
 //! silently snapshotting a torn world. Timestamps are informational only
-//! and ignored; absence is simply skipped and becomes a tombstone in
-//! `engine`.
+//! and ignored; absence is simply skipped and becomes a tombstone at the
+//! use-case layer.
 //!
 //! One exception is a zero-length image: servers can leave behind `0`-byte
 //! `r.<x>.<z>.mca` placeholders for not-yet-generated regions. Those carry
@@ -47,7 +47,7 @@ impl RegionFile {
     /// math below stay pure and fs-free.
     ///
     /// Coordinates come from the `r.<x>.<z>.mca` file name; `dim`/`kind`
-    /// come from the caller (directory layout is `engine`'s concern).
+    /// come from the caller (world layout is the caller's concern).
     pub fn open(path: &Path, dim: Dimension, kind: RegionKind) -> Result<Self, McaError> {
         let bytes = fs::read(path).map_err(|source| McaError::Io {
             path: path.to_path_buf(),

@@ -6,7 +6,7 @@
 
 ## Affected crates
 
-<!-- e.g. `engine`, `storage`. Mark `core` explicitly when touched. -->
+<!-- e.g. `storage`, `mca`. Mark `core` explicitly when touched. -->
 
 - [ ] `core` is untouched (or: why the change belongs in `core`)
 - [ ] No storage schema change (or: `user_version` bumped, see below)

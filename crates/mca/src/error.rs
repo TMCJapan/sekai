@@ -8,6 +8,8 @@
 use std::io;
 use std::path::PathBuf;
 
+use sekai_core::{Dimension, RegionKind};
+
 /// Failures while reading or rewriting `.mca` files.
 #[derive(Debug, thiserror::Error)]
 pub enum McaError {
@@ -103,5 +105,22 @@ pub enum McaError {
         x: i32,
         /// Staged chunk Z.
         z: i32,
+    },
+
+    /// No directory mapping exists for this coordinate's namespace.
+    ///
+    /// Vanilla namespaces are always mappable; this fires for hashed
+    /// custom dimensions whose on-disk file is gone (the hash is one-way).
+    #[error("cannot derive region path for dim {dim}, kind {kind}, r.{region_x}.{region_z}",
+        dim = .dim.raw(), kind = .kind.raw())]
+    UnknownRegionPath {
+        /// Dimension namespace code.
+        dim: Dimension,
+        /// Region family code.
+        kind: RegionKind,
+        /// Region X.
+        region_x: i32,
+        /// Region Z.
+        region_z: i32,
     },
 }
