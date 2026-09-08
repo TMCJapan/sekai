@@ -1,5 +1,3 @@
-# Pull Request
-
 ## What changed
 
 <!-- One paragraph: behavior change, not file list. -->
@@ -11,16 +9,11 @@
 - [ ] `core` is untouched (or: why the change belongs in `core`)
 - [ ] No storage schema change (or: `user_version` bumped, see below)
 
-## Invariant checklist
+## Safety invariants
 
-<!-- From AGENTS.md. Check every box or explain the exception. -->
+<!-- See CONTRIBUTING.md "Safety invariants". Confirm they hold, or explain the exception. -->
 
-- [ ] `core` stays `no_std` with zero dependencies
-- [ ] No in-place `.mca` mutation (same-dir temp + atomic rename)
-- [ ] Byte-perfect rollback preserved (raw payloads in CAS, normalization only for views)
-- [ ] No server orchestration inside libraries (CLI/caller layer only)
-- [ ] Derived state stays rebuildable
-- [ ] Destructive operations keep a dry-run / apply split
+- [ ] Invariants hold (or: exception explained below)
 
 ## Verification
 
