@@ -9,7 +9,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::error::CoreError;
+use super::error::CoreError;
 
 /// Immutable CAS key: Blake3 over the exact raw chunk payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

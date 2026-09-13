@@ -6,9 +6,9 @@
 //! stale data behind. `diff` is an optional cached view that must always
 //! be recomputable from blobs and is never trusted for restores.
 
-use crate::coords::ChunkCoord;
-use crate::hash::{BlobHash, DiffHash};
-use crate::snapshot::SnapshotId;
+use super::coords::ChunkCoord;
+use super::hash::{BlobHash, DiffHash};
+use super::snapshot::SnapshotId;
 
 /// State of one chunk at one snapshot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

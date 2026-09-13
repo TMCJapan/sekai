@@ -4,7 +4,6 @@ members = [
   "crates/core",
   "crates/cli",
   "crates/nbt",
-  "crates/engine",
   "crates/mca",
   "crates/storage",
 ]
@@ -23,7 +22,6 @@ missing_errors_doc = "allow"
 
 [workspace.dependencies]
 sekai-core = { path = "crates/core" }
-sekai-engine = { path = "crates/engine" }
 sekai-mca = { path = "crates/mca" }
 sekai-storage = { path = "crates/storage" }
 

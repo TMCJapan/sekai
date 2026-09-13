@@ -511,8 +511,9 @@ dependencies = [
  "chrono",
  "clap",
  "sekai-core",
- "sekai-engine",
  "sekai-mca",
+ "sekai-storage",
+ "thiserror",
 ]
 
 [[package]]
@@ -520,20 +521,10 @@ name = "sekai-core"
 version = "0.1.0"
 
 [[package]]
-name = "sekai-engine"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "sekai-core",
- "sekai-mca",
- "sekai-storage",
- "thiserror",
-]
-
-[[package]]
 name = "sekai-mca"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "sekai-core",
  "thiserror",
 ]
@@ -555,6 +546,7 @@ dependencies = [
 name = "sekai-storage"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "rusqlite",
  "sekai-core",
  "thiserror",

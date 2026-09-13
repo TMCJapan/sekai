@@ -1,6 +1,6 @@
 //! Persistence contract: CAS files and SQLite history across reopens.
 //!
-//! Rationale: these tests pin what `engine` relies on - blobs land at the
+//! Rationale: these tests pin what backup relies on - blobs land at the
 //! documented fanout path and survive process restart, snapshots batch
 //! atomically, tombstones round-trip as `NULL`, and a foreign schema
 //! version fails loudly instead of misreading.
@@ -15,7 +15,8 @@ use sekai_core::{
     BlobHash, BlobStore as _, ChunkCoord, DiffHash, Dimension, MetaStore as _, RegionKind,
     SnapshotId,
 };
-use sekai_storage::{FileCas, SnapshotEntry, SqliteMeta, StorageError};
+use sekai_core::{RegionFingerprint, RegionKey, RegionStateEntry, SnapshotEntry};
+use sekai_storage::{FileCas, SqliteMeta, StorageError};
 
 static DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -258,8 +259,6 @@ fn cas_remove_and_visit_blobs() {
     .unwrap();
     assert_eq!(rest, vec![b]);
 }
-
-use sekai_storage::{RegionFingerprint, RegionKey, RegionStateEntry};
 
 const fn stored_state() -> RegionStateEntry {
     RegionStateEntry {

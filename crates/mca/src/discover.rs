@@ -14,10 +14,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use sekai_core::{BlobHasher as _, Dimension, RegionKind};
+use sekai_core::{Dimension, RegionKind};
 
-use crate::error::EngineError;
-use crate::hash::Blake3Hasher;
+use crate::error::McaError;
 
 /// One region file found on disk with its global namespace.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,11 +65,8 @@ const KIND_DIRS: [(RegionKind, &str); 3] = [
 /// documented); same path always yields the same code, so history stays
 /// continuous across runs and machines.
 fn custom_dim_id(relative: &str) -> Dimension {
-    // Routed through the crate's hasher seam (not `blake3::hash` directly)
-    // so the digest construction has a single owner.
-    let mut hasher = Blake3Hasher::new();
-    hasher.update(relative.as_bytes());
-    let bytes = hasher.finalize().as_bytes();
+    let digest = blake3::hash(relative.as_bytes());
+    let bytes = digest.as_bytes();
     let id = i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
     if id == Dimension::OVERWORLD.raw()
         || id == Dimension::NETHER.raw()
@@ -82,12 +78,12 @@ fn custom_dim_id(relative: &str) -> Dimension {
 }
 
 /// Read a directory, skipping it when absent; other errors propagate.
-fn read_dir_opt(dir: &Path) -> Result<Vec<fs::DirEntry>, EngineError> {
+fn read_dir_opt(dir: &Path) -> Result<Vec<fs::DirEntry>, McaError> {
     match fs::read_dir(dir) {
         Ok(iter) => {
             let mut out = Vec::new();
             for entry in iter {
-                out.push(entry.map_err(|source| EngineError::Io {
+                out.push(entry.map_err(|source| McaError::Io {
                     path: dir.to_path_buf(),
                     source,
                 })?);
@@ -95,7 +91,7 @@ fn read_dir_opt(dir: &Path) -> Result<Vec<fs::DirEntry>, EngineError> {
             Ok(out)
         }
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(source) => Err(EngineError::Io {
+        Err(source) => Err(McaError::Io {
             path: dir.to_path_buf(),
             source,
         }),
@@ -108,13 +104,13 @@ fn scan_dim_root(
     dim: Dimension,
     found: &mut BTreeMap<(Dimension, RegionKind, i32, i32), RegionRef>,
     overwrite: bool,
-) -> Result<(), EngineError> {
+) -> Result<(), McaError> {
     for (kind, kind_dir) in KIND_DIRS {
         for entry in read_dir_opt(&root.join(kind_dir))? {
             let path = entry.path();
             if !entry
                 .file_type()
-                .map_err(|source| EngineError::Io {
+                .map_err(|source| McaError::Io {
                     path: path.clone(),
                     source,
                 })?
@@ -124,7 +120,7 @@ fn scan_dim_root(
             }
             let name = entry.file_name();
             let name = name.to_str().unwrap_or_default();
-            let Ok((region_x, region_z)) = sekai_mca::parse_region_name(name) else {
+            let Ok((region_x, region_z)) = crate::parse_region_name(name) else {
                 // Foreign files (temp leftovers, etc.) are not our concern.
                 continue;
             };
@@ -147,7 +143,7 @@ fn scan_dim_root(
 }
 
 /// Legacy candidate roots: vanilla triple plus Bukkit-outer nesting.
-fn legacy_roots(world: &Path) -> Result<Vec<(PathBuf, Dimension)>, EngineError> {
+fn legacy_roots(world: &Path) -> Result<Vec<(PathBuf, Dimension)>, McaError> {
     let mut roots = vec![
         (world.to_path_buf(), Dimension::OVERWORLD),
         (world.join("DIM-1"), Dimension::NETHER),
@@ -157,7 +153,7 @@ fn legacy_roots(world: &Path) -> Result<Vec<(PathBuf, Dimension)>, EngineError> 
     for entry in read_dir_opt(world)? {
         if !entry
             .file_type()
-            .map_err(|source| EngineError::Io {
+            .map_err(|source| McaError::Io {
                 path: entry.path(),
                 source,
             })?
@@ -182,12 +178,12 @@ fn legacy_roots(world: &Path) -> Result<Vec<(PathBuf, Dimension)>, EngineError> 
 fn scan_dimensions(
     world: &Path,
     found: &mut BTreeMap<(Dimension, RegionKind, i32, i32), RegionRef>,
-) -> Result<(), EngineError> {
+) -> Result<(), McaError> {
     let dims = world.join("dimensions");
     for ns in read_dir_opt(&dims)? {
         if !ns
             .file_type()
-            .map_err(|source| EngineError::Io {
+            .map_err(|source| McaError::Io {
                 path: ns.path(),
                 source,
             })?
@@ -200,7 +196,7 @@ fn scan_dimensions(
         for name in read_dir_opt(&ns.path())? {
             if !name
                 .file_type()
-                .map_err(|source| EngineError::Io {
+                .map_err(|source| McaError::Io {
                     path: name.path(),
                     source,
                 })?
@@ -227,9 +223,9 @@ fn scan_dimensions(
 ///
 /// Missing world root is an error; missing candidate subdirectories are
 /// simply skipped.
-pub fn discover(world: &Path) -> Result<Vec<RegionRef>, EngineError> {
+pub fn discover(world: &Path) -> Result<Vec<RegionRef>, McaError> {
     if !world.is_dir() {
-        return Err(EngineError::Io {
+        return Err(McaError::Io {
             path: world.to_path_buf(),
             source: std::io::Error::new(std::io::ErrorKind::NotFound, "world directory not found"),
         });
@@ -245,7 +241,7 @@ pub fn discover(world: &Path) -> Result<Vec<RegionRef>, EngineError> {
 /// Derive the canonical path for a region under `flavor`.
 ///
 /// Only vanilla namespaces are derivable; hashed custom dimensions are
-/// one-way, so their missing files surface [`EngineError::UnknownRegionPath`].
+/// one-way, so their missing files surface [`McaError::UnknownRegionPath`].
 pub fn derive_path(
     world: &Path,
     flavor: LayoutFlavor,
@@ -253,8 +249,8 @@ pub fn derive_path(
     kind: RegionKind,
     region_x: i32,
     region_z: i32,
-) -> Result<PathBuf, EngineError> {
-    let unknown = || EngineError::UnknownRegionPath {
+) -> Result<PathBuf, McaError> {
+    let unknown = || McaError::UnknownRegionPath {
         dim,
         kind,
         region_x,
@@ -352,7 +348,7 @@ mod tests {
                 0,
                 0
             ),
-            Err(EngineError::UnknownRegionPath { .. })
+            Err(McaError::UnknownRegionPath { .. })
         ));
         assert!(matches!(
             derive_path(
@@ -363,7 +359,7 @@ mod tests {
                 0,
                 0
             ),
-            Err(EngineError::UnknownRegionPath { .. })
+            Err(McaError::UnknownRegionPath { .. })
         ));
     }
 }

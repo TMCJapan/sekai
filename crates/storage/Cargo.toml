@@ -9,5 +9,6 @@ workspace = true
 
 [dependencies]
 sekai-core.workspace = true
-thiserror.workspace = true
+blake3.workspace = true
 rusqlite.workspace = true
+thiserror.workspace = true

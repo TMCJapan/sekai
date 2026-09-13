@@ -80,8 +80,8 @@ fn main() -> anyhow::Result<()> {
     }
 }
 
-fn open_store(store: &Path) -> anyhow::Result<sekai_engine::Store> {
-    sekai_engine::Store::open(store)
+fn open_store(store: &Path) -> anyhow::Result<sekai_storage::Store> {
+    sekai_storage::Store::open(store)
         .with_context(|| format!("cannot open store at {}", store.display()))
 }
 
@@ -92,7 +92,7 @@ fn run_backup(
     timing_json: bool,
 ) -> anyhow::Result<()> {
     let mut store = open_store(store_dir)?;
-    let (report, timings) = sekai_engine::backup_with_metrics(world, &mut store)
+    let (report, timings) = sekai_cli::backup_with_metrics(world, &mut store)
         .with_context(|| format!("backup of {} failed", world.display()))?;
     if timing_json {
         println!("{}", backup_json(&report, &timings));
@@ -114,7 +114,7 @@ fn run_backup(
 fn run_rollback(store_dir: &Path, world: &Path, snapshot: u64) -> anyhow::Result<()> {
     let mut store = open_store(store_dir)?;
     let id = sekai_core::SnapshotId(snapshot);
-    let report = sekai_engine::rollback(world, &mut store, id).with_context(|| {
+    let report = sekai_cli::rollback(world, &mut store, id).with_context(|| {
         format!(
             "rollback of {} to snapshot {snapshot} failed",
             world.display()
@@ -129,7 +129,7 @@ fn run_rollback(store_dir: &Path, world: &Path, snapshot: u64) -> anyhow::Result
 
 fn run_list(store_dir: &Path) -> anyhow::Result<()> {
     let store = open_store(store_dir)?;
-    for snapshot in sekai_engine::list_snapshots(&store)? {
+    for snapshot in sekai_cli::list_snapshots(&store)? {
         println!(
             "{}\t{}",
             snapshot.id.raw(),
@@ -151,7 +151,7 @@ fn format_time(created_at_ms: u64) -> String {
 /// Totals first (disjoint phases sum to roughly the wall total; `hash` and
 /// `cas` are the per-chunk split inside `ingest`), then the five slowest
 /// regions by `open + ingest` so a few changed regions stand out.
-fn print_timing_table(timings: &sekai_engine::BackupTimings) {
+fn print_timing_table(timings: &sekai_cli::BackupTimings) {
     println!(
         "timing total={}ms discover={}ms universe={}ms fp={}ms open={}ms ingest={}ms (hash={}ms cas={}ms) db={}ms ingested_files={} skipped_files={} carried_chunks={}",
         timings.total.as_millis(),
@@ -167,7 +167,7 @@ fn print_timing_table(timings: &sekai_engine::BackupTimings) {
         timings.skipped_regions,
         timings.carried_chunks,
     );
-    let mut slowest: Vec<&sekai_engine::RegionTiming> = timings.regions.iter().collect();
+    let mut slowest: Vec<&sekai_cli::RegionTiming> = timings.regions.iter().collect();
     slowest.sort_by_key(|r| std::cmp::Reverse((r.open + r.ingest).as_micros()));
     for region in slowest.iter().take(5) {
         println!(
@@ -185,10 +185,7 @@ fn print_timing_table(timings: &sekai_engine::BackupTimings) {
 
 /// Flat JSON for `backup --timing-json` (hand-rolled to avoid a serde
 /// dependency for one flag).
-fn backup_json(
-    report: &sekai_engine::BackupReport,
-    timings: &sekai_engine::BackupTimings,
-) -> String {
+fn backup_json(report: &sekai_cli::BackupReport, timings: &sekai_cli::BackupTimings) -> String {
     use std::fmt::Write as _;
     let mut out = String::from("{");
     let _ = write!(
@@ -236,7 +233,7 @@ fn backup_json(
 }
 
 fn run_debug_scan(world: &Path, json: bool) -> anyhow::Result<()> {
-    let entries = sekai_engine::scan_world(world)
+    let entries = sekai_mca::scan_world(world)
         .with_context(|| format!("scan of {} failed", world.display()))?;
     if json {
         println!("{}", scan_json(&entries));
@@ -271,7 +268,7 @@ fn run_debug_scan(world: &Path, json: bool) -> anyhow::Result<()> {
 
 /// Flat JSON array for `debug scan --json` (hand-rolled to avoid a serde
 /// dependency for one flag).
-fn scan_json(entries: &[sekai_engine::RegionScanEntry]) -> String {
+fn scan_json(entries: &[sekai_mca::RegionScanEntry]) -> String {
     use std::fmt::Write as _;
     let mut out = String::from("[");
     for (index, entry) in entries.iter().enumerate() {
@@ -393,7 +390,7 @@ mod tests {
 
         run_backup(&store, &root.join("world"), false, false).expect("backup works");
         let opened = open_store(&store).expect("store opens");
-        let snapshots = sekai_engine::list_snapshots(&opened).expect("list works");
+        let snapshots = sekai_cli::list_snapshots(&opened).expect("list works");
         assert_eq!(snapshots.len(), 1);
         run_rollback(&store, &root.join("world"), snapshots[0].id.raw()).expect("rollback works");
 
