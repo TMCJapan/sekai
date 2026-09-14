@@ -3,7 +3,12 @@ version = 2
 
 [licenses]
 version = 2
-allow = ["MIT", "Apache-2.0", "Unicode-3.0"]
+allow = ["MIT", "Apache-2.0", "Unicode-3.0", "Zlib"]
 
 [bans]
 multiple-versions = "warn"
+skip = [
+  { name = "cpufeatures", version = "0.2.17" },
+  { name = "hashbrown", version = "0.15.5" },
+  { name = "syn", version = "2.0.119" },
+]

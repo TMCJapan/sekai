@@ -132,23 +132,29 @@ Pure stays in `anvil`; fs moves to `world` (Phase 6):
 
 ## Phase 5 - `storage` (api + cas + sqlite module)
 
-- [ ] `api` module: async traits, `BackendKind`, URL parsing
-      (`sqlite://...`), `UnsupportedBackend` error, shared conformance test
-      suite for future backend modules.
-- [ ] `cas` module: file layout, same-dir temp + file fsync + batched
-      `sync_dirs` barrier, `fetch_into`/`remove`/`visit_blobs`.
-- [ ] `sqlite` module (sqlx, `backend-sqlite` feature): shared schema
-      (`snapshots`, `chunk_history`, `region_state`), `SCHEMA_VERSION` gate,
-      single-transaction `apply_snapshot_incremental` with the
-      `INSERT ... SELECT` carry optimization, WAL + `synchronous=FULL`.
-- [ ] `mysql` / `postgres` modules: stubs behind `backend-mysql` /
-      `backend-postgres` features implementing the trait with
-      `unimplemented!`/compile errors until scheduled.
-- [ ] Decide `Store` shape (generic `Store<M: MetaStore>` vs cfg-gated
-      backend enum); deferred to this phase, not Phase 1.
-- [ ] Verify: version-gate test, carry test, derived-state-wipe test,
-      torn-backup -> orphan-GC crash test, plus the backend feature matrix
-      (`--no-default-features --features backend-sqlite`).
+- [x] `api` module: `BackendKind`, URL parsing (`sqlite://...`, bare dirs),
+      `UnsupportedBackend` error, shared `StorageError`, generic
+      `Store<M, C>` + accessors. (Traits themselves live in `core`; `api`
+      re-exports them to avoid a package cycle.)
+- [x] `cas` module: file layout, same-dir temp + file fsync + batched
+      `sync_dirs` barrier, `fetch_into`/`remove`/`visit_blobs` (foreign and
+      temp names skipped). Blocking calls run inline per the port contract;
+      hot paths belong on a blocking pool at the app layer.
+- [x] `sqlite` module (sqlx, `backend-sqlite` feature): shared schema
+      (`snapshots`, `chunk_history`, `region_state`), `SCHEMA_VERSION = 3`
+      gate (continues pre-rewrite lineage so old stores fail loudly),
+      single-transaction `apply_snapshot_incremental` with per-region
+      `INSERT ... SELECT` carry (overlap aborts via PK conflict), WAL +
+      `synchronous=FULL`, single-writer pool, paged snapshot visits.
+- [x] `mysql` / `postgres` modules: stubs behind `backend-mysql` /
+      `backend-postgres` features; URLs naming them fail loudly until
+      scheduled (no `unimplemented!` panics).
+- [x] `Store` shape decided: generic `Store<M, C>` now, `SqliteStore` alias
+      for the concrete shape; generalizes to an enum with the 2nd backend.
+- [x] Verify: version-gate test, carry test, derived-state-wipe test,
+      torn-backup -> orphan-GC test, CAS foreign-name skipping, plus the
+      backend feature matrix (default, `--no-default-features`, stub
+      features). `deny.toml` gains `Zlib` (sqlx -> hashbrown -> foldhash).
 
 ## Phase 6 - `sekai-world` (std)
 
