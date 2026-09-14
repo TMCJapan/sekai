@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
-use sekai_app::{BackupOptions, BackupTimings, GcPlan, GcReport, GcTimings};
+use sekai_app::{
+    BackupOptions, BackupTimings, GcPlan, GcReport, GcTimings, RollbackReport, RollbackTimings,
+};
 
 /// Chunk-level deduplicated snapshots for Minecraft region files.
 #[derive(Debug, Parser)]
@@ -49,6 +51,12 @@ enum Command {
         world: PathBuf,
         /// Snapshot ID to restore (see `list`).
         snapshot: u64,
+        /// Print a per-phase timing breakdown after the report.
+        #[arg(long, conflicts_with = "timing_json")]
+        timing: bool,
+        /// Print report and timings as flat JSON instead of human text.
+        #[arg(long)]
+        timing_json: bool,
     },
     /// List recorded snapshots, oldest first.
     List,
@@ -96,7 +104,12 @@ async fn main() -> anyhow::Result<()> {
             with_diff,
             jobs,
         } => run_backup(&cli.store, &world, timing, timing_json, with_diff, jobs).await,
-        Command::Rollback { world, snapshot } => run_rollback(&cli.store, &world, snapshot).await,
+        Command::Rollback {
+            world,
+            snapshot,
+            timing,
+            timing_json,
+        } => run_rollback(&cli.store, &world, snapshot, timing, timing_json).await,
         Command::List => run_list(&cli.store).await,
         Command::Gc {
             dry_run,
@@ -145,9 +158,15 @@ async fn run_backup(
     Ok(())
 }
 
-async fn run_rollback(store: &str, world: &Path, snapshot: u64) -> anyhow::Result<()> {
+async fn run_rollback(
+    store: &str,
+    world: &Path,
+    snapshot: u64,
+    timing: bool,
+    timing_json: bool,
+) -> anyhow::Result<()> {
     let id = sekai_app::SnapshotId(snapshot);
-    let (report, _timings) = sekai_app::rollback(world, store, id)
+    let (report, timings) = sekai_app::rollback(world, store, id)
         .await
         .with_context(|| {
             format!(
@@ -155,10 +174,17 @@ async fn run_rollback(store: &str, world: &Path, snapshot: u64) -> anyhow::Resul
                 world.display()
             )
         })?;
+    if timing_json {
+        println!("{}", rollback_json(&report, &timings));
+        return Ok(());
+    }
     println!(
         "snapshot {snapshot} restored: {} files rewritten, {} files deleted, {} chunks restored",
         report.files_written, report.files_deleted, report.chunks_restored
     );
+    if timing {
+        print_rollback_timing_table(&timings);
+    }
     Ok(())
 }
 
@@ -251,6 +277,17 @@ fn print_timing_table(timings: &BackupTimings) {
     }
 }
 
+/// Human-readable phase table for `rollback --timing`.
+fn print_rollback_timing_table(timings: &RollbackTimings) {
+    println!(
+        "timing total={}ms plan={}ms discover={}ms rollback_files={}ms",
+        timings.total.as_millis(),
+        timings.plan.as_millis(),
+        timings.discover.as_millis(),
+        timings.rollback_files.as_millis(),
+    );
+}
+
 /// Human-readable phase table for `gc --timing`.
 fn print_gc_timing_table(timings: &GcTimings) {
     println!(
@@ -307,6 +344,29 @@ fn backup_json(report: &sekai_app::BackupReport, timings: &BackupTimings) -> Str
         );
     }
     out.push_str("]}");
+    out
+}
+
+/// Flat JSON for `rollback --timing-json`.
+fn rollback_json(report: &RollbackReport, timings: &RollbackTimings) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::from("{");
+    let _ = write!(
+        out,
+        "\"files_written\":{},\"files_deleted\":{},\"chunks_restored\":{},\"total_ms\":{}",
+        report.files_written,
+        report.files_deleted,
+        report.chunks_restored,
+        timings.total.as_millis(),
+    );
+    let _ = write!(
+        out,
+        ",\"phases\":{{\"plan_ms\":{},\"discover_ms\":{},\"rollback_files_ms\":{}}}",
+        timings.plan.as_millis(),
+        timings.discover.as_millis(),
+        timings.rollback_files.as_millis(),
+    );
+    out.push('}');
     out
 }
 
@@ -477,6 +537,28 @@ mod tests {
         // The two renderings are mutually exclusive.
         assert!(
             Cli::try_parse_from(["sekai", "backup", "--timing", "--timing-json", "world"]).is_err()
+        );
+
+        let cli = Cli::try_parse_from(["sekai", "rollback", "--timing", "w", "3"])
+            .expect("rollback --timing parses");
+        assert!(matches!(
+            cli.command,
+            Command::Rollback { timing: true, .. }
+        ));
+
+        let cli = Cli::try_parse_from(["sekai", "rollback", "--timing-json", "w", "3"])
+            .expect("rollback --timing-json parses");
+        assert!(matches!(
+            cli.command,
+            Command::Rollback {
+                timing_json: true,
+                ..
+            }
+        ));
+
+        assert!(
+            Cli::try_parse_from(["sekai", "rollback", "--timing", "--timing-json", "w", "3"])
+                .is_err()
         );
 
         let cli =
