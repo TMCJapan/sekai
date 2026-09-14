@@ -66,10 +66,10 @@ jobs:
         include:
           - name: no_std (thumbv7m-none-eabi)
             target: thumbv7m-none-eabi
-            packages: -p sekai-core
+            packages: -p sekai-core -p sekai-anvil -p sekai-nbt
           - name: wasm (wasm32-unknown-unknown)
             target: wasm32-unknown-unknown
-            packages: -p sekai-core -p sekai-nbt
+            packages: -p sekai-core -p sekai-anvil -p sekai-nbt
 
     steps:
       - name: Checkout repository
