@@ -10,3 +10,4 @@ workspace = true
 [dependencies]
 sekai-anvil.workspace = true
 sekai-core.workspace = true
+thiserror.workspace = true

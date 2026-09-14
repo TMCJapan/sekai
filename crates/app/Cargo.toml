@@ -17,3 +17,6 @@ backend-postgres = ["sekai-storage/backend-postgres"]
 sekai-core.workspace = true
 sekai-storage.workspace = true
 sekai-world.workspace = true
+
+[package.metadata.cargo-machete]
+ignored = ["sekai-core", "sekai-storage", "sekai-world"]

@@ -19,3 +19,6 @@ backend-postgres = ["sekai-app/backend-postgres"]
 
 [dependencies]
 sekai-app.workspace = true
+
+[package.metadata.cargo-machete]
+ignored = ["sekai-app"]

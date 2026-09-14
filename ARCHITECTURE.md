@@ -98,6 +98,31 @@ directly (no `anvil -> nbt` edge); `core`/`app` drives `anvil`'s
 decompressed raw NBT bytes into `nbt` so the layering stays acyclic and
 the hot path stays decode-free.
 
+## World Layouts
+
+Three server families share the `.mca` format but not the directory
+layout. Pass a server root for Bukkit-family servers or a single world
+folder for vanilla ones — the same path on every run.
+
+- Vanilla: one folder (`region/`, `DIM-1/`, `DIM1/`, and since 26.1
+  `dimensions/minecraft/<name>/`).
+- Bukkit-family (Bukkit/Spigot/Paper/Purpur, pre-26.1 layout): split
+  folders `<base>/`, `<base>_nether/DIM-1/`, `<base>_the_end/DIM1/`,
+  where `base` is `level-name` (`world` by default). Paper 26.1+
+  migrates to the vanilla layout.
+- Plugin worlds (Multiverse et al.): arbitrary folders, detected by
+  contents (`level.dat`, `DIM-1`/`DIM1` nesting, or kind directories
+  holding region files).
+
+Namespaces: the default trio and `minecraft/*` trees keep vanilla codes
+(derivable, history-stable, migration-continuous); every other folder
+hashes its root-relative path so distinct worlds never silently share
+coordinates. Trio detection runs on container roots only, so a nested
+folder can never steal the vanilla namespace. Missing files under
+non-derivable codes fail loudly (`UnknownRegionPath`); rollback restores
+those through their discovered folders, preferring same-dimension
+siblings over flavor derivation when folders moved since the backup.
+
 # Data & Hashing Model
 
 ## Two-Layer Hashing Architecture
