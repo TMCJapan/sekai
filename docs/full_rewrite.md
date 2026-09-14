@@ -116,19 +116,19 @@ Pure stays in `anvil`; fs moves to `world` (Phase 6):
 
 ## Phase 4 - `sekai-core` (API layer)
 
-- [ ] `domain` (coords, hashes, region, history, snapshot, gc) rewritten
-      from scratch against the frozen API list.
-- [ ] `hash_blob(&[u8]) -> BlobHash`; `nbt` bytes -> `DiffHash` wrapping.
-- [ ] Policy: `plan_backup` / `assemble` / `commit` (sync pure),
+- [x] `domain` (coords, hashes, region, history, snapshot, gc, error)
+      rewritten from scratch against the frozen API list.
+- [x] `hash_blob(&[u8]) -> BlobHash`; `diff_hash`/`diff_hash_v1` wrap `nbt`
+      bytes into `DiffHash`; `resolve_custom_dimension` wraps `anvil`
+      hashing with vanilla-code reservation.
+- [x] Policy: `plan_backup` / `assemble` / `commit` (sync pure),
       `plan_rollback`, `gc_plan` / `gc_apply`; DB-touching seams are
-      `async fn` (RPITIT, `Send`-bounded) over generic backends.
-- [ ] Delete old port traits (`RegionReader/Writer`, `Normalizer`,
-      `BlobHasher/DiffHasher`); keep only async `BlobStore`/`MetaStore`
-      usage via `storage::api` (same crate, no cycles: `storage -> core`).
-- [ ] `diff` path is opt-in (`with_diff`); default `stage_present` records
-      `diff: None`.
-- [ ] Verify: `cargo test -p sekai-core` with in-memory fake backends
-      (no `fs`, no SQLite).
+      desugared RPITIT (`-> impl Future + Send`) over generic backends.
+- [x] Only async `BlobStore`/`MetaStore` ports in `core`; chunk/diff work
+      is concrete (`anvil`/`nbt`), not traits. (`storage -> core`, no cycles.)
+- [x] `diff` path is opt-in; default `stage_present` records `diff: None`.
+- [x] Verify: `cargo test -p sekai-core` with in-memory fake backends
+      (no `fs`, no SQLite, no executor — noop-waker `block_on`).
 
 ## Phase 5 - `storage` (api + cas + sqlite module)
 
