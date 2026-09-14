@@ -1,0 +1,21 @@
+[package]
+name = "sekai-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "sekai"
+path = "src/main.rs"
+
+[features]
+default = ["backend-sqlite"]
+backend-sqlite = ["sekai-app/backend-sqlite"]
+backend-mysql = ["sekai-app/backend-mysql"]
+backend-postgres = ["sekai-app/backend-postgres"]
+
+[dependencies]
+sekai-app.workspace = true
