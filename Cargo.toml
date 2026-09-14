@@ -1,6 +1,14 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/cli", "crates/nbt", "crates/anvil", "crates/storage"]
+members = [
+  "crates/anvil",
+  "crates/nbt",
+  "crates/core",
+  "crates/storage",
+  "crates/world",
+  "crates/app",
+  "crates/cli",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -16,16 +24,8 @@ missing_errors_doc = "allow"
 
 [workspace.dependencies]
 sekai-anvil = { path = "crates/anvil" }
+sekai-app = { path = "crates/app" }
 sekai-core = { path = "crates/core" }
+sekai-nbt = { path = "crates/nbt" }
 sekai-storage = { path = "crates/storage" }
-
-anyhow = "1"
-blake3 = "1"
-chrono = "0.4"
-clap = { version = "4", features = ["derive"] }
-fastnbt = "2"
-flate2 = "1"
-lz4-java-wrc = "0.2"
-rusqlite = { version = "0.40", features = ["bundled"] }
-serde = { version = "1", features = ["derive"] }
-thiserror = "2"
+sekai-world = { path = "crates/world" }
