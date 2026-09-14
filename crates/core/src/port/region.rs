@@ -1,6 +1,6 @@
 //! Region chunk and NBT normalization ports.
 //!
-//! Rationale: `core` owns shapes and ordering guarantees while `mca` and
+//! Rationale: `core` owns shapes and ordering guarantees while `anvil` and
 //! `nbt` own I/O, codecs, and sector math. Traits use static dispatch
 //! (generics) and visitor callbacks (`FnMut(...) -> bool`) so hot paths
 //! avoid allocation and `dyn` overhead. Crash-consistency ordering (write
@@ -32,7 +32,7 @@ impl<'a> RawChunk<'a> {
     }
 }
 
-/// Read side of `.mca` files (implemented by `mca`).
+/// Read side of `.mca` files (implemented by `anvil`).
 pub trait RegionReader {
     /// Decode failure (truncated file, bad sector table, ...).
     type Error;
@@ -45,7 +45,7 @@ pub trait RegionReader {
         F: FnMut(RawChunk<'_>) -> bool;
 }
 
-/// Write side of `.mca` files (implemented by `mca`).
+/// Write side of `.mca` files (implemented by `anvil`).
 ///
 /// Implementations must buffer into a temp file in the *same directory* as
 /// the target (cross-mount `rename` safety) and only swap on [`commit`](RegionWriter::commit).

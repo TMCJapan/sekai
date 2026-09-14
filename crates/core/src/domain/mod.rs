@@ -2,7 +2,7 @@
 //!
 //! Rationale: everything here is pure data over chunk coordinates,
 //! identifiers, and byte/hash views. No SQLite, no filesystem, no CLI, no
-//! Anvil specifics: adapters in `storage`, `mca`, and `nbt` implement the
+//! Anvil specifics: adapters in `storage`, `anvil`, and `nbt` implement the
 //! [`port`](crate::port) traits over these shapes, and application use cases
 //! in [`usecase`](crate::usecase) orchestrate them.
 

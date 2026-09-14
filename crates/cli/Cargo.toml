@@ -13,7 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 sekai-core.workspace = true
-sekai-mca.workspace = true
+sekai-anvil.workspace = true
 sekai-storage.workspace = true
 anyhow.workspace = true
 chrono.workspace = true

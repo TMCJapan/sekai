@@ -6,7 +6,7 @@
 
 use sekai_core::{ChunkCoord, Dimension, RegionKind};
 
-use crate::error::McaError;
+use crate::error::AnvilError;
 
 /// Bytes per sector; files are whole multiples of this.
 pub const SECTOR_LEN: u64 = 4096;
@@ -29,8 +29,8 @@ pub const MAX_SECTOR_OFFSET: u64 = 0xFF_FFFF;
 ///
 /// Shared by world discovery so the naming rule lives in exactly one
 /// place: whatever this accepts, both reader and writer accept.
-pub fn parse_region_name(file_name: &str) -> Result<(i32, i32), McaError> {
-    let bad = || McaError::BadFilename {
+pub fn parse_region_name(file_name: &str) -> Result<(i32, i32), AnvilError> {
+    let bad = || AnvilError::BadFilename {
         name: file_name.to_string(),
     };
     let stem = file_name.strip_suffix(".mca").ok_or_else(bad)?;
@@ -48,7 +48,7 @@ pub fn parse_region_name(file_name: &str) -> Result<(i32, i32), McaError> {
 /// Rationale: reader and writer both tracked `region_x`/`region_z` and the
 /// derived `base_x`/`base_z` as four loose `i32`s. Grouping them keeps the
 /// two sides from drifting apart (single overflow-checked constructor) and
-/// gives coordinate mapping one home. Kept inside `mca` on purpose:
+/// gives coordinate mapping one home. Kept inside `anvil` on purpose:
 /// region-file addressing is an MCA layout detail, not workspace domain
 /// state, so it does not belong in `core::coords`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,7 +62,7 @@ pub struct RegionLoc {
 impl RegionLoc {
     /// Build from region coordinates, rejecting bases where `base + 31`
     /// would overflow `i32` (see [`base_coords`]).
-    pub fn new(region_x: i32, region_z: i32) -> Result<Self, McaError> {
+    pub fn new(region_x: i32, region_z: i32) -> Result<Self, AnvilError> {
         let (base_x, base_z) = base_coords(region_x, region_z)?;
         Ok(Self {
             region_x,
@@ -88,8 +88,8 @@ impl RegionLoc {
         dim: Dimension,
         kind: RegionKind,
         coord: &ChunkCoord,
-    ) -> Result<u32, McaError> {
-        let wrong = || McaError::WrongRegion {
+    ) -> Result<u32, AnvilError> {
+        let wrong = || AnvilError::WrongRegion {
             region_x: self.region_x,
             region_z: self.region_z,
             x: coord.x,
@@ -126,8 +126,8 @@ impl RegionLoc {
 ///
 /// Also rejects bases where `base + 31` would overflow, so per-chunk
 /// address math later cannot wrap.
-pub fn base_coords(region_x: i32, region_z: i32) -> Result<(i32, i32), McaError> {
-    let overflow = || McaError::CoordinateOverflow { region_x, region_z };
+pub fn base_coords(region_x: i32, region_z: i32) -> Result<(i32, i32), AnvilError> {
+    let overflow = || AnvilError::CoordinateOverflow { region_x, region_z };
     let base = |r: i32| {
         r.checked_mul(ROW_WIDTH.cast_signed())
             .and_then(|b| b.checked_add(ROW_WIDTH.cast_signed() - 1).map(|_| b))
@@ -142,25 +142,25 @@ pub fn base_coords(region_x: i32, region_z: i32) -> Result<(i32, i32), McaError>
 /// servers can leave behind `0`-byte `r.<x>.<z>.mca` files for
 /// not-yet-generated regions, and they carry no chunks. Any other
 /// short/misaligned length remains a hard error.
-pub const fn check_image_len(len: u64) -> Result<u64, McaError> {
+pub const fn check_image_len(len: u64) -> Result<u64, AnvilError> {
     if len == 0 {
         return Ok(0);
     }
     if len < HEADER_LEN {
-        return Err(McaError::TruncatedFile { len });
+        return Err(AnvilError::TruncatedFile { len });
     }
     if !len.is_multiple_of(SECTOR_LEN) {
-        return Err(McaError::MisalignedFile { len });
+        return Err(AnvilError::MisalignedFile { len });
     }
     Ok(len / SECTOR_LEN)
 }
 
 /// Sectors needed to store `payload_len` bytes plus the 4-byte prefix.
-pub const fn sectors_for(payload_len: usize) -> Result<u64, McaError> {
+pub const fn sectors_for(payload_len: usize) -> Result<u64, AnvilError> {
     let total = payload_len as u64 + 4;
     let sectors = total.div_ceil(SECTOR_LEN);
     if sectors > MAX_SECTORS_PER_CHUNK {
-        return Err(McaError::ChunkTooLarge { len: payload_len });
+        return Err(AnvilError::ChunkTooLarge { len: payload_len });
     }
     Ok(sectors)
 }
@@ -180,24 +180,24 @@ mod tests {
         assert!(parse_region_name("r.0.0.mcr").is_err());
         assert!(matches!(
             parse_region_name("r.0.mca"),
-            Err(McaError::BadFilename { .. })
+            Err(AnvilError::BadFilename { .. })
         ));
         assert!(matches!(
             parse_region_name("r.a.b.mca"),
-            Err(McaError::BadFilename { .. })
+            Err(AnvilError::BadFilename { .. })
         ));
         assert!(matches!(
             parse_region_name("x.0.0.mca"),
-            Err(McaError::BadFilename { .. })
+            Err(AnvilError::BadFilename { .. })
         ));
         assert!(matches!(
             parse_region_name("r.0.0.1.mca"),
-            Err(McaError::BadFilename { .. })
+            Err(AnvilError::BadFilename { .. })
         ));
         // Out-of-`i32` values are bad names, not coordinates.
         assert!(matches!(
             parse_region_name("r.99999999999.0.mca"),
-            Err(McaError::BadFilename { .. })
+            Err(AnvilError::BadFilename { .. })
         ));
     }
 
@@ -206,18 +206,18 @@ mod tests {
         assert!(base_coords(0, 0).is_ok());
         assert!(matches!(
             base_coords(i32::MAX, 0),
-            Err(McaError::CoordinateOverflow { .. })
+            Err(AnvilError::CoordinateOverflow { .. })
         ));
         // Base itself fits but base + 31 would wrap: 67_108_863 is the
         // largest valid region (base + 31 == i32::MAX exactly).
         assert!(base_coords(67_108_863, 0).is_ok());
         assert!(matches!(
             base_coords(67_108_864, 0),
-            Err(McaError::CoordinateOverflow { .. })
+            Err(AnvilError::CoordinateOverflow { .. })
         ));
         assert!(matches!(
             base_coords(0, i32::MIN),
-            Err(McaError::CoordinateOverflow { .. })
+            Err(AnvilError::CoordinateOverflow { .. })
         ));
     }
 
@@ -227,16 +227,16 @@ mod tests {
         assert_eq!(check_image_len(0).expect("empty image must validate"), 0);
         assert!(matches!(
             check_image_len(1),
-            Err(McaError::TruncatedFile { .. })
+            Err(AnvilError::TruncatedFile { .. })
         ));
         assert!(matches!(
             check_image_len(8191),
-            Err(McaError::TruncatedFile { .. })
+            Err(AnvilError::TruncatedFile { .. })
         ));
         assert_eq!(check_image_len(8192).expect("must validate"), 2);
         assert!(matches!(
             check_image_len(8193),
-            Err(McaError::MisalignedFile { .. })
+            Err(AnvilError::MisalignedFile { .. })
         ));
         assert_eq!(check_image_len(12288).expect("must validate"), 3);
     }
@@ -248,7 +248,7 @@ mod tests {
         assert_eq!(sectors_for(4093).expect("must size"), 2);
         assert!(matches!(
             sectors_for(255 * 4096),
-            Err(McaError::ChunkTooLarge { .. })
+            Err(AnvilError::ChunkTooLarge { .. })
         ));
     }
 

@@ -7,7 +7,7 @@ This project is organized as a Cargo workspace under `crates/`:
 └── crates
     ├── core        # Domain types, ports, and use cases (no_std, zero-dependency)
     ├── nbt         # Low-level NBT parser, decoder, and normalization views
-    ├── mca         # MCA region files, world discovery, fingerprints, scans
+    ├── anvil       # MCA region files, world discovery, fingerprints, scans
     ├── storage     # CAS blob store, SQLite metadata, store assembly, hashing
     └── cli         # Composition root (library) and command-line binary
 
@@ -16,7 +16,7 @@ This project is organized as a Cargo workspace under `crates/`:
 ## Dependency Flow
 
 Keep dependencies strictly unidirectional:
-`cli` → `storage` / `mca` / `nbt` → `core`
+`cli` → `storage` / `anvil` / `nbt` → `core`
 
 The CLI assembles concrete adapters and executes `core` use cases; adapters
 implement `core` ports. `core` depends on nothing.
@@ -54,7 +54,7 @@ any exception in the PR body.
 * **Core crate constraints**: `crates/core` must remain `no_std` with **zero external dependencies**.
 * **Portability targets**: CI lints the library crates on every push and pull request.
 * `no_std`: `core` must keep linting clean for `thumbv7m-none-eabi`.
-* `wasm`: `core` and `nbt` must keep linting clean for `wasm32-unknown-unknown`. Both are pure computation (domain types, decoding, hashing), so they stay usable from a browser/wasm sandbox. `mca`, `storage` and `cli` own file I/O and SQLite and are intentionally **not** wasm targets.
+* `wasm`: `core` and `nbt` must keep linting clean for `wasm32-unknown-unknown`. Both are pure computation (domain types, decoding, hashing), so they stay usable from a browser/wasm sandbox. `anvil`, `storage` and `cli` own file I/O and SQLite and are intentionally **not** wasm targets.
 * Neither target has a runner, so they are lint-only; the full workspace is linted **and** tested natively on Linux, macOS and Windows for both `x86_64` and `aarch64`.
 * **Release artifacts**: CI builds `sekai-cli` in release mode on all six native platforms. Each binary is uploaded as a workflow artifact named `sekai-<target triple>`; because the upload step zips its input and drops file modes, the artifact wraps a `sekai-<target triple>.tar.gz` that keeps the binary executable.
 
@@ -137,7 +137,7 @@ Write [Conventional Commits](https://www.conventionalcommits.org/):
 
 * Format: `<type>(<scope>): <summary>` (e.g., `feat(storage): carry unchanged regions via INSERT ... SELECT`).
 * Types: `feat`, `fix`, `perf`, `refactor`, `test`, `docs`, `build`, `ci`, `chore`.
-* Scope is the crate or area (`core`, `nbt`, `mca`, `storage`, `cli`, `docs`, `ci`).
+* Scope is the crate or area (`core`, `nbt`, `anvil`, `storage`, `cli`, `docs`, `ci`).
 * Summaries are imperative, lowercase, without a trailing period.
 
 ### Storage Schema Changes

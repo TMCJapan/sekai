@@ -24,7 +24,7 @@ pub enum Error {
 
     /// Region file failed to parse or rebuild.
     #[error("region file failed: {0}")]
-    Mca(#[from] sekai_mca::McaError),
+    Mca(#[from] sekai_anvil::AnvilError),
 
     /// Blob or metadata persistence failed.
     #[error("storage failed: {0}")]

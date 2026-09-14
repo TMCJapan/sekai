@@ -19,13 +19,13 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use sekai_anvil::{RegionFile, RegionRef, discover, fingerprint_file};
 use sekai_core::usecase::backup::{
     BackupReport, Observation, assemble, commit, hash_payload, plan_backup, stage_present,
 };
 use sekai_core::{
     ChunkCoord, RawChunk, RegionFingerprint, RegionKey, RegionReader as _, SnapshotEntry,
 };
-use sekai_mca::{RegionFile, RegionRef, discover, fingerprint_file};
 use sekai_storage::{Blake3Hasher, FileCas, Store};
 
 use crate::error::Error;

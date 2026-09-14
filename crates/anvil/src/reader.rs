@@ -16,7 +16,7 @@ use std::path::Path;
 
 use sekai_core::{Dimension, RawChunk, RegionKind};
 
-use crate::error::McaError;
+use crate::error::AnvilError;
 use crate::region::{
     FIRST_DATA_SECTOR, RegionLoc, SECTOR_LEN, TABLE_ENTRIES, check_image_len, parse_region_name,
 };
@@ -41,15 +41,15 @@ pub struct RegionFile {
 impl RegionFile {
     /// Load and validate a region file from disk.
     ///
-    /// This is the `std::fs` boundary of the crate: `mca` is the designated
+    /// This is the `std::fs` boundary of the crate: `anvil` is the designated
     /// file-I/O owner per `ARCHITECTURE.md`, so filesystem access lives in
     /// this thin wrapper while [`RegionFile::from_bytes`] and the sector
     /// math below stay pure and fs-free.
     ///
     /// Coordinates come from the `r.<x>.<z>.mca` file name; `dim`/`kind`
     /// come from the caller (world layout is the caller's concern).
-    pub fn open(path: &Path, dim: Dimension, kind: RegionKind) -> Result<Self, McaError> {
-        let bytes = fs::read(path).map_err(|source| McaError::Io {
+    pub fn open(path: &Path, dim: Dimension, kind: RegionKind) -> Result<Self, AnvilError> {
+        let bytes = fs::read(path).map_err(|source| AnvilError::Io {
             path: path.to_path_buf(),
             source,
         })?;
@@ -68,7 +68,7 @@ impl RegionFile {
         kind: RegionKind,
         region_x: i32,
         region_z: i32,
-    ) -> Result<Self, McaError> {
+    ) -> Result<Self, AnvilError> {
         Self::from_parts(bytes, dim, kind, region_x, region_z)
     }
 
@@ -78,7 +78,7 @@ impl RegionFile {
         kind: RegionKind,
         region_x: i32,
         region_z: i32,
-    ) -> Result<Self, McaError> {
+    ) -> Result<Self, AnvilError> {
         check_image_len(bytes.len() as u64)?;
         let loc = RegionLoc::new(region_x, region_z)?;
         Ok(Self {
@@ -120,7 +120,7 @@ impl RegionFile {
     }
 
     /// Decode one header slot into `(offset_sectors, count_sectors)`.
-    fn entry(&self, index: u32) -> Result<(u64, u64), McaError> {
+    fn entry(&self, index: u32) -> Result<(u64, u64), AnvilError> {
         // Header presence was validated at construction, so this slice is
         // provably in range; `get` keeps it panic-free regardless.
         let off = index as usize * 4;
@@ -130,7 +130,7 @@ impl RegionFile {
             .and_then(|s| s.try_into().ok())
             .map(u32::from_be_bytes);
         let Some(entry) = raw else {
-            return Err(McaError::CorruptEntry {
+            return Err(AnvilError::CorruptEntry {
                 index,
                 offset: 0,
                 sectors: 0,
@@ -141,7 +141,7 @@ impl RegionFile {
 }
 
 impl sekai_core::RegionReader for RegionFile {
-    type Error = McaError;
+    type Error = AnvilError;
 
     fn visit_chunks<F>(&self, mut visit: F) -> Result<(), Self::Error>
     where
@@ -160,14 +160,14 @@ impl sekai_core::RegionReader for RegionFile {
             // Sectors 0-1 are the header; a zero count with an offset (or
             // vice versa) can never address a payload.
             if offset < FIRST_DATA_SECTOR || count == 0 {
-                return Err(McaError::CorruptEntry {
+                return Err(AnvilError::CorruptEntry {
                     index,
                     offset: u32::try_from(offset).unwrap_or(u32::MAX),
                     sectors: u32::try_from(count).unwrap_or(u32::MAX),
                 });
             }
             if offset + count > total_sectors {
-                return Err(McaError::CorruptEntry {
+                return Err(AnvilError::CorruptEntry {
                     index,
                     offset: u32::try_from(offset).unwrap_or(u32::MAX),
                     sectors: u32::try_from(count).unwrap_or(u32::MAX),
@@ -175,38 +175,38 @@ impl sekai_core::RegionReader for RegionFile {
             }
             let base = offset * SECTOR_LEN;
             let base_usize =
-                usize::try_from(base).map_err(|_| McaError::CorruptChunk { index, len: 0 })?;
+                usize::try_from(base).map_err(|_| AnvilError::CorruptChunk { index, len: 0 })?;
             let base_end = base_usize
                 .checked_add(4)
-                .ok_or(McaError::CorruptChunk { index, len: 0 })?;
+                .ok_or(AnvilError::CorruptChunk { index, len: 0 })?;
             let len_raw = self
                 .bytes
                 .get(base_usize..base_end)
-                .ok_or(McaError::CorruptChunk { index, len: 0 })?;
+                .ok_or(AnvilError::CorruptChunk { index, len: 0 })?;
             let len = u64::from(u32::from_be_bytes([
                 len_raw[0], len_raw[1], len_raw[2], len_raw[3],
             ]));
             // Length covers the type byte plus body and must fit the
             // allocated sectors.
             if len < 1 || len + 4 > count * SECTOR_LEN {
-                return Err(McaError::CorruptChunk {
+                return Err(AnvilError::CorruptChunk {
                     index,
                     len: u32::try_from(len).unwrap_or(u32::MAX),
                 });
             }
             let start = base + 4;
             let start_usize =
-                usize::try_from(start).map_err(|_| McaError::CorruptChunk { index, len: 0 })?;
+                usize::try_from(start).map_err(|_| AnvilError::CorruptChunk { index, len: 0 })?;
             let end_usize = usize::try_from(start + len)
-                .map_err(|_| McaError::CorruptChunk { index, len: 0 })?;
+                .map_err(|_| AnvilError::CorruptChunk { index, len: 0 })?;
             let payload_len = u32::try_from(len).unwrap_or(u32::MAX);
-            let payload = self
-                .bytes
-                .get(start_usize..end_usize)
-                .ok_or(McaError::CorruptChunk {
-                    index,
-                    len: payload_len,
-                })?;
+            let payload =
+                self.bytes
+                    .get(start_usize..end_usize)
+                    .ok_or(AnvilError::CorruptChunk {
+                        index,
+                        len: payload_len,
+                    })?;
             let coord = self.loc.coord_at(self.dim, self.kind, index);
             if !visit(RawChunk::new(coord, payload)) {
                 break;
@@ -326,11 +326,11 @@ mod tests {
         // Truncated and misaligned.
         assert!(matches!(
             RegionFile::from_bytes(vec![0u8; 100], dim, kind, 0, 0),
-            Err(McaError::TruncatedFile { .. })
+            Err(AnvilError::TruncatedFile { .. })
         ));
         assert!(matches!(
             RegionFile::from_bytes(vec![0u8; 8193], dim, kind, 0, 0),
-            Err(McaError::MisalignedFile { .. })
+            Err(AnvilError::MisalignedFile { .. })
         ));
         // Entry pointing past EOF.
         let mut img = header_only();
@@ -339,7 +339,7 @@ mod tests {
         let f = RegionFile::from_bytes(img, dim, kind, 0, 0).expect("header parses");
         assert!(matches!(
             f.visit_chunks(|_| true),
-            Err(McaError::CorruptEntry { .. })
+            Err(AnvilError::CorruptEntry { .. })
         ));
         // Offset set but count zero.
         let mut img = header_only();
@@ -348,7 +348,7 @@ mod tests {
         let f = RegionFile::from_bytes(img, dim, kind, 0, 0).expect("header parses");
         assert!(matches!(
             f.visit_chunks(|_| true),
-            Err(McaError::CorruptEntry { .. })
+            Err(AnvilError::CorruptEntry { .. })
         ));
         // Declared length escaping the allocation.
         let mut img = header_only();
@@ -358,7 +358,7 @@ mod tests {
         let f = RegionFile::from_bytes(img, dim, kind, 0, 0).expect("header parses");
         assert!(matches!(
             f.visit_chunks(|_| true),
-            Err(McaError::CorruptChunk { .. })
+            Err(AnvilError::CorruptChunk { .. })
         ));
         // Zero length (no room for the type byte).
         let mut img = header_only();
@@ -368,7 +368,7 @@ mod tests {
         let f = RegionFile::from_bytes(img, dim, kind, 0, 0).expect("header parses");
         assert!(matches!(
             f.visit_chunks(|_| true),
-            Err(McaError::CorruptChunk { .. })
+            Err(AnvilError::CorruptChunk { .. })
         ));
     }
 
@@ -378,11 +378,11 @@ mod tests {
         let kind = RegionKind::REGION;
         assert!(matches!(
             RegionFile::open(Path::new("nope.mca"), dim, kind),
-            Err(McaError::Io { .. })
+            Err(AnvilError::Io { .. })
         ));
         assert!(matches!(
             RegionFile::from_bytes(header_only(), dim, kind, i32::MAX, 0),
-            Err(McaError::CoordinateOverflow { .. })
+            Err(AnvilError::CoordinateOverflow { .. })
         ));
     }
 }

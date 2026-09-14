@@ -15,7 +15,7 @@ use std::time::UNIX_EPOCH;
 
 use sekai_core::{RegionFingerprint, RegionKey};
 
-use crate::error::McaError;
+use crate::error::AnvilError;
 
 /// First bytes of a region file covered by the header hash.
 ///
@@ -43,8 +43,8 @@ pub fn file_mtime_ms(path: &Path) -> Option<u64> {
 /// header bytes from another. Only `fstat` on the open handle plus the first
 /// [`HEADER_HASH_LEN`] bytes are touched; short files (including
 /// zero-length placeholders) hash whatever bytes exist.
-pub fn fingerprint_file(path: &Path, key: RegionKey) -> Result<RegionFingerprint, McaError> {
-    let io = |source: std::io::Error| McaError::Io {
+pub fn fingerprint_file(path: &Path, key: RegionKey) -> Result<RegionFingerprint, AnvilError> {
+    let io = |source: std::io::Error| AnvilError::Io {
         path: path.to_path_buf(),
         source,
     };

@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use sekai_core::{Dimension, RegionKind};
 
-use crate::error::McaError;
+use crate::error::AnvilError;
 
 /// One region file found on disk with its global namespace.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,12 +78,12 @@ fn custom_dim_id(relative: &str) -> Dimension {
 }
 
 /// Read a directory, skipping it when absent; other errors propagate.
-fn read_dir_opt(dir: &Path) -> Result<Vec<fs::DirEntry>, McaError> {
+fn read_dir_opt(dir: &Path) -> Result<Vec<fs::DirEntry>, AnvilError> {
     match fs::read_dir(dir) {
         Ok(iter) => {
             let mut out = Vec::new();
             for entry in iter {
-                out.push(entry.map_err(|source| McaError::Io {
+                out.push(entry.map_err(|source| AnvilError::Io {
                     path: dir.to_path_buf(),
                     source,
                 })?);
@@ -91,7 +91,7 @@ fn read_dir_opt(dir: &Path) -> Result<Vec<fs::DirEntry>, McaError> {
             Ok(out)
         }
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(source) => Err(McaError::Io {
+        Err(source) => Err(AnvilError::Io {
             path: dir.to_path_buf(),
             source,
         }),
@@ -104,13 +104,13 @@ fn scan_dim_root(
     dim: Dimension,
     found: &mut BTreeMap<(Dimension, RegionKind, i32, i32), RegionRef>,
     overwrite: bool,
-) -> Result<(), McaError> {
+) -> Result<(), AnvilError> {
     for (kind, kind_dir) in KIND_DIRS {
         for entry in read_dir_opt(&root.join(kind_dir))? {
             let path = entry.path();
             if !entry
                 .file_type()
-                .map_err(|source| McaError::Io {
+                .map_err(|source| AnvilError::Io {
                     path: path.clone(),
                     source,
                 })?
@@ -143,7 +143,7 @@ fn scan_dim_root(
 }
 
 /// Legacy candidate roots: vanilla triple plus Bukkit-outer nesting.
-fn legacy_roots(world: &Path) -> Result<Vec<(PathBuf, Dimension)>, McaError> {
+fn legacy_roots(world: &Path) -> Result<Vec<(PathBuf, Dimension)>, AnvilError> {
     let mut roots = vec![
         (world.to_path_buf(), Dimension::OVERWORLD),
         (world.join("DIM-1"), Dimension::NETHER),
@@ -153,7 +153,7 @@ fn legacy_roots(world: &Path) -> Result<Vec<(PathBuf, Dimension)>, McaError> {
     for entry in read_dir_opt(world)? {
         if !entry
             .file_type()
-            .map_err(|source| McaError::Io {
+            .map_err(|source| AnvilError::Io {
                 path: entry.path(),
                 source,
             })?
@@ -178,12 +178,12 @@ fn legacy_roots(world: &Path) -> Result<Vec<(PathBuf, Dimension)>, McaError> {
 fn scan_dimensions(
     world: &Path,
     found: &mut BTreeMap<(Dimension, RegionKind, i32, i32), RegionRef>,
-) -> Result<(), McaError> {
+) -> Result<(), AnvilError> {
     let dims = world.join("dimensions");
     for ns in read_dir_opt(&dims)? {
         if !ns
             .file_type()
-            .map_err(|source| McaError::Io {
+            .map_err(|source| AnvilError::Io {
                 path: ns.path(),
                 source,
             })?
@@ -196,7 +196,7 @@ fn scan_dimensions(
         for name in read_dir_opt(&ns.path())? {
             if !name
                 .file_type()
-                .map_err(|source| McaError::Io {
+                .map_err(|source| AnvilError::Io {
                     path: name.path(),
                     source,
                 })?
@@ -223,9 +223,9 @@ fn scan_dimensions(
 ///
 /// Missing world root is an error; missing candidate subdirectories are
 /// simply skipped.
-pub fn discover(world: &Path) -> Result<Vec<RegionRef>, McaError> {
+pub fn discover(world: &Path) -> Result<Vec<RegionRef>, AnvilError> {
     if !world.is_dir() {
-        return Err(McaError::Io {
+        return Err(AnvilError::Io {
             path: world.to_path_buf(),
             source: std::io::Error::new(std::io::ErrorKind::NotFound, "world directory not found"),
         });
@@ -241,7 +241,7 @@ pub fn discover(world: &Path) -> Result<Vec<RegionRef>, McaError> {
 /// Derive the canonical path for a region under `flavor`.
 ///
 /// Only vanilla namespaces are derivable; hashed custom dimensions are
-/// one-way, so their missing files surface [`McaError::UnknownRegionPath`].
+/// one-way, so their missing files surface [`AnvilError::UnknownRegionPath`].
 pub fn derive_path(
     world: &Path,
     flavor: LayoutFlavor,
@@ -249,8 +249,8 @@ pub fn derive_path(
     kind: RegionKind,
     region_x: i32,
     region_z: i32,
-) -> Result<PathBuf, McaError> {
-    let unknown = || McaError::UnknownRegionPath {
+) -> Result<PathBuf, AnvilError> {
+    let unknown = || AnvilError::UnknownRegionPath {
         dim,
         kind,
         region_x,
@@ -348,7 +348,7 @@ mod tests {
                 0,
                 0
             ),
-            Err(McaError::UnknownRegionPath { .. })
+            Err(AnvilError::UnknownRegionPath { .. })
         ));
         assert!(matches!(
             derive_path(
@@ -359,7 +359,7 @@ mod tests {
                 0,
                 0
             ),
-            Err(McaError::UnknownRegionPath { .. })
+            Err(AnvilError::UnknownRegionPath { .. })
         ));
     }
 }

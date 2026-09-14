@@ -12,7 +12,7 @@ use sekai_core::{Dimension, RegionKind};
 
 /// Failures while reading or rewriting `.mca` files.
 #[derive(Debug, thiserror::Error)]
-pub enum McaError {
+pub enum AnvilError {
     /// File-system operation failed.
     #[error("file I/O failed for {path}: {source}", path = path.display())]
     Io {

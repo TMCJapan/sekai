@@ -13,12 +13,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use sekai_anvil::discover;
 use sekai_cli::{Error, backup, rollback};
 use sekai_core::usecase::gc::{gc_apply, gc_plan};
 use sekai_core::{
     BlobHash, BlobStore as _, ChunkCoord, Dimension, MetaStore as _, RegionKind, RegionReader as _,
 };
-use sekai_mca::discover;
 use sekai_storage::Store;
 
 static DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -61,7 +61,7 @@ fn write_region(path: &Path, dim: Dimension, kind: RegionKind, chunks: &[(i32, i
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).unwrap();
     }
-    let mut w = sekai_mca::RegionFileWriter::create(path, dim, kind, 0x5EED).unwrap();
+    let mut w = sekai_anvil::RegionFileWriter::create(path, dim, kind, 0x5EED).unwrap();
     for (x, z, payload) in chunks {
         w.stage_chunk(&ChunkCoord::new(dim, kind, *x, *z), payload)
             .unwrap();
@@ -73,7 +73,7 @@ fn write_region(path: &Path, dim: Dimension, kind: RegionKind, chunks: &[(i32, i
 fn read_world(world: &Path) -> WorldState {
     let mut out = WorldState::new();
     for r in discover(world).unwrap() {
-        let file = sekai_mca::RegionFile::open(&r.path, r.dim, r.kind).unwrap();
+        let file = sekai_anvil::RegionFile::open(&r.path, r.dim, r.kind).unwrap();
         file.visit_chunks(|c| {
             out.insert(
                 (c.coord.dim, c.coord.kind, c.coord.x, c.coord.z),
@@ -261,7 +261,10 @@ fn backup_rejects_missing_world() {
     let scratch = Scratch::new();
     let mut store = Store::open(&scratch.store()).unwrap();
     let err = backup(&scratch.root.join("nope"), &mut store).unwrap_err();
-    assert!(matches!(err, Error::Mca(sekai_mca::McaError::Io { .. })));
+    assert!(matches!(
+        err,
+        Error::Mca(sekai_anvil::AnvilError::Io { .. })
+    ));
 }
 
 #[test]
@@ -333,8 +336,8 @@ fn gc_reclaims_only_orphans() {
 
 #[test]
 fn backup_with_metrics_matches_plain_backup() {
+    use sekai_anvil::scan_world;
     use sekai_cli::backup_with_metrics;
-    use sekai_mca::scan_world;
     let scratch = Scratch::new();
     let world = scratch.world();
     write_region(

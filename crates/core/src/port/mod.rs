@@ -1,6 +1,6 @@
 //! Boundary traits implemented by outer crates.
 //!
-//! Rationale: `core` owns shapes and ordering guarantees while `mca`,
+//! Rationale: `core` owns shapes and ordering guarantees while `anvil`,
 //! `nbt`, and `storage` own I/O, codecs, and SQLite. Each port covers one
 //! capability so concrete implementations stay substitutable without
 //! touching use-case logic.
