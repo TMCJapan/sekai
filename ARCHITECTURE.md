@@ -110,7 +110,7 @@ the hot path stays decode-free.
   non-essential tags excluded (treated as absent), over a canonical encoding
   (compound keys sorted, big-endian scalars, UTF-8 strings) - never over
   re-serialized NBT bytes, so it is independent of on-disk order and codec.
-  V1 rules exclude `LastUpdate`. Used only in-memory or as a cache column;
+  V1 rules exclude `LastUpdate` and `InhabitedTime`. Used only in-memory or as a cache column;
   never alters stored blobs.
 
 ## Chunk Codec Support

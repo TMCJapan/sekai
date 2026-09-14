@@ -1,5 +1,7 @@
 # Full Rewrite Plan
 
+> **Note**: This document is a temporary execution plan for the rewrite. **This file will be deleted once the rewrite is complete.**
+
 ## Background
 
 The pre-rewrite workspace (`core` zero-dependency port hub, `mca` mixing pure
@@ -61,8 +63,8 @@ shape: **spec-freeze -> delete -> rebuild from zero**.
 - [x] Recreate workspace members with final package names (`sekai-anvil`,
       `sekai-nbt`, `sekai-core`, `sekai-storage`, `sekai-world`,
       `sekai-app`, `sekai-cli`; `sekai-cli` keeps binary name `sekai`).
-- [x] Workspace `Cargo.toml`: resolver 3, edition 2024, shared lints
-      (`unwrap_used = deny`), storage backend features
+- [x] Workspace `Cargo.toml`: resolver 3, edition 2024, shared lints,
+      storage backend features
       (`default = ["backend-sqlite"]`, empty features until Phase 5 wires
       optional deps). Strip pre-rewrite deps (`rusqlite`, `fastnbt`,
       `flate2`, `lz4-java-wrc`); each phase adds only what it needs.
@@ -76,16 +78,16 @@ shape: **spec-freeze -> delete -> rebuild from zero**.
 Hand-rolled parser (reference the old `nbt` digest rules only, no
 `std`/fastnbt copy-paste):
 
-- [ ] `#![no_std] + extern crate alloc`; hand-written `NbtError`
+- [x] `#![no_std] + extern crate alloc`; hand-written `NbtError`
       (`Display`, no `thiserror`/`std::io::Error`).
-- [ ] Hand-rolled NBT parser over `&[u8]` raw NBT bytes (already
+- [x] Hand-rolled NBT parser over `&[u8]` raw NBT bytes (already
       decompressed by `anvil`) into an owned `Value` tree; serde data model
       only (`serde` with `default-features = false, features = ["alloc",
       "derive"]`). `fastnbt` is removed.
-- [ ] `diff_hash(&[u8], &[&str]) -> Result<[u8;32], NbtError>`,
-      `diff_hash_v1` (`["LastUpdate"]`).
-- [ ] Canonical digest rules preserved (sorted keys, BE scalars, UTF-8).
-- [ ] Verify: `cargo test -p sekai-nbt`; clippy on both
+- [x] `diff_hash(&[u8], &[&str]) -> Result<[u8;32], NbtError>`,
+      `diff_hash_v1` (ignores `["LastUpdate", "InhabitedTime"]`).
+- [x] Canonical digest rules preserved (sorted keys, BE scalars, UTF-8).
+- [x] Verify: `cargo test -p sekai-nbt`; clippy on both
       `thumbv7m-none-eabi` and `wasm32-unknown-unknown` with `-D warnings`.
 
 ## Phase 3 - `sekai-anvil` (pure/fs split)
@@ -178,8 +180,8 @@ Pure stays in `anvil`; fs moves to `world` (Phase 6):
       `cargo test --workspace`,
       `cargo test -p sekai-storage --no-default-features --features backend-sqlite`,
       `cargo deny`, `cargo machete`, release build.
-- [ ] Re-create `docs/` operational notes only if needed; this file stays
-      as the rewrite record.
+- [ ] Re-create `docs/` operational notes if needed.
+- [ ] Delete this rewrite plan file (`docs/full_rewrite.md`).
 
 ## Risks
 

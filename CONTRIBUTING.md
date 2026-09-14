@@ -92,10 +92,10 @@ any exception in the PR body.
   `no_std`-gated):
   * `anvil`: `miniz_oxide` (zlib/raw-inflate), `crc32fast` (gzip footer),
     `lz4_flex` block API (lz4-java stream bodies), `twox-hash` (lz4-java
-    block checksums). `lz4-java-wrc` and `flate2` are banned (hard-`std` /
-    private io traits — use the one-shot `alloc` APIs instead).
+    block checksums).
   * `nbt`: `serde` (`default-features = false, features = ["alloc",
-    "derive"]`) for the data model only.
+    "derive"]`) for the data model only, plus `blake3` with
+    `default-features = false` for the canonical digest.
   * `core`: `anvil` + `nbt` only, plus `blake3` with
     `default-features = false` for hashing.
 * **Async policy**: `async fn` in traits via RPITIT (return-position
