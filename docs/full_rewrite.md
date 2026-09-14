@@ -190,7 +190,7 @@ Pure stays in `anvil`; fs moves to `world` (Phase 6):
 
 - [ ] Update `README*.md` migration note (old port traits gone, new
       `app` entry points, backend URL format).
-- [ ] CI: fmt, workspace clippy, pure-crate cross-target clippy,
+- [x] CI: fmt, workspace clippy, pure-crate cross-target clippy,
       `cargo test --workspace`,
       `cargo test -p sekai-storage --no-default-features --features backend-sqlite`,
       `cargo deny`, `cargo machete`, release build.
