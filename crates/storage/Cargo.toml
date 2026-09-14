@@ -9,9 +9,14 @@ workspace = true
 
 [features]
 default = ["backend-sqlite"]
-backend-sqlite = []
+backend-sqlite = ["dep:sqlx"]
 backend-mysql = []
 backend-postgres = []
 
 [dependencies]
 sekai-core.workspace = true
+sqlx = { workspace = true, optional = true }
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
