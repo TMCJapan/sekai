@@ -94,22 +94,23 @@ Hand-rolled parser (reference the old `nbt` digest rules only, no
 
 Pure stays in `anvil`; fs moves to `world` (Phase 6):
 
-- [ ] Keep pure: sector constants, `parse_region_name`, `RegionLoc`,
+- [x] Keep pure: sector constants, `parse_region_name`, `RegionLoc`,
       `check_image_len`, `sectors_for`, `base_coords`,
-      `from_bytes` + `visit_chunks(F: FnMut(RawChunk)->bool)`,
-      `stage_chunk/stage_remove` + `image() -> Vec<u8>`,
-      `header_hash(&[u8]) -> [u8;32]`, `custom_dim_id(&str)`.
-- [ ] New: `compression_of(u8)` + `decompress_into(&[u8], &mut Vec<u8>)`
+      `from_bytes` + `visit_chunks`, staged builder + `image()`,
+      `header_hash(&[u8]) -> [u8;32]`, `custom_dimension_id(&str) -> i32`
+      (raw hash; vanilla-code reservation is `core`'s job in Phase 4).
+- [x] New: `compression_of(u8)` + `decompress_into(&[u8], &mut Vec<u8>)`
       (sector payload -> raw NBT bytes). Gzip/zlib via `miniz_oxide` +
       `crc32fast`; lz4-java stream via hand-rolled framing + `lz4_flex`
       block API + `twox-hash` checksums. All codec errors (`UnknownCompression`, `CustomCompression`,
       `ExternalBody`, decompression failures) live here.
-- [ ] Decompression output is DoS-capped (`*_with_limit` variants).
-- [ ] Drop from `anvil`: `open`, `swap`, `discover`, fd-based
-      `fingerprint_file`, `scan_world`, `McaError::Io`.
-- [ ] Pure error enum only (no `PathBuf`/`io::Error`).
-- [ ] Boundary types are plain (`i32`, `&[u8]`, `[u8;32]`); `core` wraps.
-- [ ] Verify: unit tests for damaged images/overflow/padding, all four
+- [x] Decompression output is DoS-capped (`*_with_limit` variants plus a
+      total-output bound for multi-block streams).
+- [x] Drop from `anvil`: `open`, `swap`, `discover`, fd-based
+      `fingerprint_file`, `scan_world`, path-carrying I/O errors.
+- [x] Pure error enum only (no `PathBuf`/`io::Error`).
+- [x] Boundary types are plain (`i32`, `&[u8]`, `[u8;32]`); `core` wraps.
+- [x] Verify: unit tests for damaged images/overflow/padding, all four
       codecs round-trip, corrupt-codec rejection + both cross-target
       clippy runs.
 

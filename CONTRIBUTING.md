@@ -92,7 +92,8 @@ any exception in the PR body.
   `no_std`-gated):
   * `anvil`: `miniz_oxide` (zlib/raw-inflate), `crc32fast` (gzip footer),
     `lz4_flex` block API (lz4-java stream bodies), `twox-hash` (lz4-java
-    block checksums).
+    block checksums), `blake3` (header/dimension digests, all with
+    `default-features = false`).
   * `nbt`: `serde` (`default-features = false, features = ["alloc",
     "derive"]`) for the data model only, plus `blake3` with
     `default-features = false` for the canonical digest.
