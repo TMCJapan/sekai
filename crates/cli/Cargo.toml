@@ -18,7 +18,11 @@ backend-mysql = ["sekai-app/backend-mysql"]
 backend-postgres = ["sekai-app/backend-postgres"]
 
 [dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+clap.workspace = true
 sekai-app.workspace = true
+tokio.workspace = true
 
 [package.metadata.cargo-machete]
 ignored = ["sekai-app"]

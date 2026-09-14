@@ -6,8 +6,8 @@ use alloc::vec::Vec;
 /// Read-only orphan candidates and scan statistics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GcPlan {
-    orphans: Vec<BlobHash>,
-    examined: usize,
+    pub orphans: Vec<BlobHash>,
+    pub examined: usize,
 }
 
 impl GcPlan {

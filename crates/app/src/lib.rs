@@ -1,4 +1,52 @@
 //! Composition/orchestration library for third parties.
 //!
 //! Assembles `core` policy over `world` observations and `storage` backends
-//! selected by URL.
+//! selected by URL. Threading, clocks, and timing live here because `core`
+//! is `no_std`; argument parsing and output formatting live in the `sekai`
+//! binary.
+
+mod backup;
+mod error;
+mod gc;
+mod rollback;
+
+pub use backup::{BackupOptions, BackupProgress, BackupTimings, RegionTiming, backup};
+pub use error::AppError;
+pub use gc::{GcTimings, gc, gc_apply, gc_plan};
+pub use rollback::{RollbackTimings, rollback};
+pub use sekai_core::{
+    BackupReport, GcPlan, GcReport, RegionKind, RollbackReport, Snapshot, SnapshotId,
+};
+pub use sekai_world::RegionScanEntry;
+
+/// List all snapshots in ID order (for `list` and pre-flight checks).
+pub async fn list_snapshots(store_url: &str) -> Result<Vec<Snapshot>, AppError> {
+    let store = open_store(store_url).await?;
+    Ok(sekai_core::usecase::snapshot::list_snapshots(store.meta()).await?)
+}
+
+/// Read-only inspection of every region file under `world`.
+///
+/// Never writes to the world or the store.
+pub fn scan(world: &std::path::Path) -> Result<Vec<RegionScanEntry>, AppError> {
+    Ok(sekai_world::scan_world(world)?)
+}
+
+/// Open the store named by `store_url`.
+///
+/// `sqlite://<dir>` (or a bare `<dir>`) opens a SQLite store; anything else
+/// fails loudly, including backends not compiled in.
+async fn open_store(store_url: &str) -> Result<sekai_storage::SqliteStore, AppError> {
+    let (kind, rest) = sekai_storage::parse_backend_url(store_url)?;
+    // `Sqlite` is currently the only variant; the pattern becomes
+    // refutable once stub backends land, and anything else fails below.
+    #[allow(irrefutable_let_patterns)]
+    #[cfg(feature = "backend-sqlite")]
+    if kind == sekai_storage::BackendKind::Sqlite {
+        return Ok(sekai_storage::open_sqlite(std::path::Path::new(rest)).await?);
+    }
+    Err(sekai_storage::StorageError::UnsupportedBackend {
+        url: store_url.to_owned(),
+    }
+    .into())
+}
