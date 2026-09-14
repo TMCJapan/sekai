@@ -30,7 +30,7 @@ jobs:
           - name: Checkout repository
             uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
           - name: Install cargo-deny and cargo-machete
-            uses: taiki-e/install-action@7b8d4719ee4aaa279bdf55df38dacb9ebfe12a6c
+            uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af
             with:
               tool: cargo-deny,cargo-machete
 
@@ -143,7 +143,7 @@ jobs:
       # After the cache step on purpose: `rust-cache` restores `~/.cargo/bin`,
       # which is where `install-action` drops the binary.
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@7b8d4719ee4aaa279bdf55df38dacb9ebfe12a6c
+        uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af
         with:
           tool: cargo-nextest
 
