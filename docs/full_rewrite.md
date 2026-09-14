@@ -58,17 +58,17 @@ shape: **spec-freeze -> delete -> rebuild from zero**.
 
 ## Phase 1 - Skeleton
 
-- [ ] Recreate workspace members with final package names (`sekai-anvil`,
+- [x] Recreate workspace members with final package names (`sekai-anvil`,
       `sekai-nbt`, `sekai-core`, `sekai-storage`, `sekai-world`,
       `sekai-app`, `sekai-cli`; `sekai-cli` keeps binary name `sekai`).
-- [ ] Workspace `Cargo.toml`: resolver 3, edition 2024, shared lints
+- [x] Workspace `Cargo.toml`: resolver 3, edition 2024, shared lints
       (`unwrap_used = deny`), storage backend features
       (`default = ["backend-sqlite"]`, empty features until Phase 5 wires
       optional deps). Strip pre-rewrite deps (`rusqlite`, `fastnbt`,
       `flate2`, `lz4-java-wrc`); each phase adds only what it needs.
-- [ ] `rust-toolchain.toml` keeps `thumbv7m-none-eabi` +
+- [x] `rust-toolchain.toml` keeps `thumbv7m-none-eabi` +
       `wasm32-unknown-unknown` targets.
-- [ ] Exit: `cargo metadata` resolves, `cargo fmt --check` passes on empty
+- [x] Exit: `cargo metadata` resolves, `cargo fmt --check` passes on empty
       crates.
 
 ## Phase 2 - `sekai-nbt` (pure, first: unblocks `core`)
