@@ -30,8 +30,8 @@ pub fn rollback(
     let plan = plan_rollback(store.meta(), snapshot)?;
     let timestamp = u32::try_from(plan.created_at_ms / 1000).unwrap_or(u32::MAX);
 
-    let flavor = sekai_mca::detect_flavor(world);
-    let discovered: BTreeMap<RegionKey, PathBuf> = sekai_mca::discover(world)?
+    let flavor = sekai_anvil::detect_flavor(world);
+    let discovered: BTreeMap<RegionKey, PathBuf> = sekai_anvil::discover(world)?
         .into_iter()
         .map(|r| {
             (
@@ -58,7 +58,7 @@ pub fn rollback(
                 // No rows and no file: nothing to do.
                 continue;
             }
-            sekai_mca::derive_path(world, flavor, key.dim, key.kind, key.rx, key.rz)?
+            sekai_anvil::derive_path(world, flavor, key.dim, key.kind, key.rx, key.rz)?
         };
         let Some(rows) = rows else {
             // Strict rollback: the snapshot knows nothing of this file,
@@ -74,7 +74,8 @@ pub fn rollback(
         {
             fs_create_dir(parent)?;
         }
-        let mut writer = sekai_mca::RegionFileWriter::create(&path, key.dim, key.kind, timestamp)?;
+        let mut writer =
+            sekai_anvil::RegionFileWriter::create(&path, key.dim, key.kind, timestamp)?;
         for (coord, hash) in rows {
             // Missing blob = corruption: abort, do not write partial worlds.
             sekai_core::BlobStore::fetch_into(store.cas(), hash, &mut blob_buf)?;

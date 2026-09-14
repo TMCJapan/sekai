@@ -1,12 +1,6 @@
 [workspace]
 resolver = "3"
-members = [
-  "crates/core",
-  "crates/cli",
-  "crates/nbt",
-  "crates/mca",
-  "crates/storage",
-]
+members = ["crates/core", "crates/cli", "crates/nbt", "crates/anvil", "crates/storage"]
 
 [workspace.package]
 version = "0.1.0"
@@ -21,8 +15,8 @@ expect_used = "warn"
 missing_errors_doc = "allow"
 
 [workspace.dependencies]
+sekai-anvil = { path = "crates/anvil" }
 sekai-core = { path = "crates/core" }
-sekai-mca = { path = "crates/mca" }
 sekai-storage = { path = "crates/storage" }
 
 anyhow = "1"

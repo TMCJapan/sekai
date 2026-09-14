@@ -504,14 +504,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
+name = "sekai-anvil"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "sekai-core",
+ "thiserror",
+]
+
+[[package]]
 name = "sekai-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "chrono",
  "clap",
+ "sekai-anvil",
  "sekai-core",
- "sekai-mca",
  "sekai-storage",
  "thiserror",
 ]
@@ -519,15 +528,6 @@ dependencies = [
 [[package]]
 name = "sekai-core"
 version = "0.1.0"
-
-[[package]]
-name = "sekai-mca"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "sekai-core",
- "thiserror",
-]
 
 [[package]]
 name = "sekai-nbt"

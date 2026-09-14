@@ -18,7 +18,7 @@ mod scan;
 mod writer;
 
 pub use discover::{LayoutFlavor, RegionRef, derive_path, detect_flavor, discover};
-pub use error::McaError;
+pub use error::AnvilError;
 pub use fingerprint::{HEADER_HASH_LEN, file_mtime_ms, fingerprint_file};
 pub use reader::RegionFile;
 pub use region::parse_region_name;

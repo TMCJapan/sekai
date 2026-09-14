@@ -9,9 +9,9 @@ A Chunk-level deduplicated backup and rollback tool for Minecraft region files (
 
 ## Core Abstraction & Isolation Policy
 To guarantee pure, deterministic domain logic, `crates/core` is strictly **`no_std` and zero-dependency**.
-- **I/O & Persistence Isolation**: Storage engines (CAS/SQLite in `storage`) and File I/O (`mca`) implement traits defined in `core`.
-- **Codec Isolation**: NBT parsing, normalization, and Gzip decompression/compression are delegated to `nbt` and `mca`, driven by application use cases in `core`. `core` only works with abstract chunk coordinates, identifiers, and byte/hash views.
-- **Crate Layout**: `core` holds `domain` (coordinates, hashes, history, region identity), `port` (storage/chunk/normalizer traits), and `usecase` (backup, rollback, GC, snapshot orchestration). `storage`, `mca`, and `nbt` implement the ports; the `cli` library is the composition root (threading, filesystem walks, clocks) and the binary only parses arguments and formats output.
+- **I/O & Persistence Isolation**: Storage engines (CAS/SQLite in `storage`) and File I/O (`anvil`) implement traits defined in `core`.
+- **Codec Isolation**: NBT parsing, normalization, and Gzip decompression/compression are delegated to `nbt` and `anvil`, driven by application use cases in `core`. `core` only works with abstract chunk coordinates, identifiers, and byte/hash views.
+- **Crate Layout**: `core` holds `domain` (coordinates, hashes, history, region identity), `port` (storage/chunk/normalizer traits), and `usecase` (backup, rollback, GC, snapshot orchestration). `storage`, `anvil`, and `nbt` implement the ports; the `cli` library is the composition root (threading, filesystem walks, clocks) and the binary only parses arguments and formats output.
 
 # Data & Hashing Model
 

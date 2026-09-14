@@ -233,7 +233,7 @@ fn backup_json(report: &sekai_cli::BackupReport, timings: &sekai_cli::BackupTimi
 }
 
 fn run_debug_scan(world: &Path, json: bool) -> anyhow::Result<()> {
-    let entries = sekai_mca::scan_world(world)
+    let entries = sekai_anvil::scan_world(world)
         .with_context(|| format!("scan of {} failed", world.display()))?;
     if json {
         println!("{}", scan_json(&entries));
@@ -268,7 +268,7 @@ fn run_debug_scan(world: &Path, json: bool) -> anyhow::Result<()> {
 
 /// Flat JSON array for `debug scan --json` (hand-rolled to avoid a serde
 /// dependency for one flag).
-fn scan_json(entries: &[sekai_mca::RegionScanEntry]) -> String {
+fn scan_json(entries: &[sekai_anvil::RegionScanEntry]) -> String {
     use std::fmt::Write as _;
     let mut out = String::from("[");
     for (index, entry) in entries.iter().enumerate() {
@@ -400,9 +400,13 @@ mod tests {
     /// Minimal one-chunk region for the smoke test.
     fn write_region(path: &Path) {
         use sekai_core::{ChunkCoord, Dimension, RegionKind, RegionWriter as _};
-        let mut writer =
-            sekai_mca::RegionFileWriter::create(path, Dimension::OVERWORLD, RegionKind::REGION, 0)
-                .expect("writer creates");
+        let mut writer = sekai_anvil::RegionFileWriter::create(
+            path,
+            Dimension::OVERWORLD,
+            RegionKind::REGION,
+            0,
+        )
+        .expect("writer creates");
         writer
             .stage_chunk(
                 &ChunkCoord::new(Dimension::OVERWORLD, RegionKind::REGION, 0, 0),

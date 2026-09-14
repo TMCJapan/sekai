@@ -2,7 +2,7 @@
 //! use cases.
 //!
 //! Rationale: the CLI assembles implementations (`storage` blobs and
-//! metadata, `mca` region files) and executes [`core`](sekai_core)
+//! metadata, `anvil` region files) and executes [`core`](sekai_core)
 //! orchestration. Policy (what to ingest, carry, tombstone, restore, or
 //! reclaim) lives in `core`; threading, filesystem walks, clocks, and
 //! timing collection live here because `core` is `no_std`.

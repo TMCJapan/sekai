@@ -10,8 +10,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use sekai_anvil::{AnvilError, RegionFile, RegionFileWriter};
 use sekai_core::{ChunkCoord, Dimension, RegionKind, RegionReader as _, RegionWriter as _};
-use sekai_mca::{McaError, RegionFile, RegionFileWriter};
 
 static DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -23,7 +23,7 @@ struct ScratchDir {
 impl ScratchDir {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
-            "sekai-mca-test-{}-{}",
+            "sekai-anvil-test-{}-{}",
             std::process::id(),
             DIR_COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
@@ -135,12 +135,12 @@ fn open_reads_names_from_disk() {
     fs::write(&odd, vec![0u8; 8192]).unwrap();
     assert!(matches!(
         RegionFile::open(&odd, Dimension::OVERWORLD, RegionKind::REGION),
-        Err(McaError::BadFilename { .. })
+        Err(AnvilError::BadFilename { .. })
     ));
     // Missing file surfaces path-carrying I/O errors.
     let missing = dir.region("r.9.9.mca");
     let err = RegionFile::open(&missing, Dimension::OVERWORLD, RegionKind::REGION).unwrap_err();
-    assert!(matches!(err, McaError::Io { .. }));
+    assert!(matches!(err, AnvilError::Io { .. }));
     assert!(format!("{err}").contains("r.9.9.mca"));
 }
 

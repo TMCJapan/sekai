@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use sekai_core::{ChunkCoord, Dimension, RegionKind};
 
-use crate::error::McaError;
+use crate::error::AnvilError;
 use crate::region::{
     HEADER_LEN, MAX_SECTOR_OFFSET, RegionLoc, SECTOR_LEN, parse_region_name, sectors_for,
 };
@@ -55,7 +55,7 @@ impl RegionFileWriter {
         dim: Dimension,
         kind: RegionKind,
         timestamp: u32,
-    ) -> Result<Self, McaError> {
+    ) -> Result<Self, AnvilError> {
         let name = target
             .file_name()
             .and_then(|n| n.to_str())
@@ -73,13 +73,13 @@ impl RegionFileWriter {
     }
 
     /// Header slot for `coord`, rejecting foreign coordinates.
-    fn slot_of(&self, coord: &ChunkCoord) -> Result<u32, McaError> {
+    fn slot_of(&self, coord: &ChunkCoord) -> Result<u32, AnvilError> {
         self.loc.slot_of(self.dim, self.kind, coord)
     }
 
     /// Assemble the full file image (header + packed sectors).
-    fn image(&self) -> Result<Vec<u8>, McaError> {
-        let header_len = usize::try_from(HEADER_LEN).map_err(|_| McaError::ImageTooLarge {
+    fn image(&self) -> Result<Vec<u8>, AnvilError> {
+        let header_len = usize::try_from(HEADER_LEN).map_err(|_| AnvilError::ImageTooLarge {
             sectors: HEADER_LEN,
         })?;
         let mut img = vec![0u8; header_len];
@@ -87,24 +87,24 @@ impl RegionFileWriter {
         for (index, payload) in &self.staged {
             let sectors = sectors_for(payload.len())?;
             if offset > MAX_SECTOR_OFFSET {
-                return Err(McaError::ImageTooLarge { sectors: offset });
+                return Err(AnvilError::ImageTooLarge { sectors: offset });
             }
             let offset_u32 =
-                u32::try_from(offset).map_err(|_| McaError::ImageTooLarge { sectors: offset })?;
-            let sectors_u32 =
-                u32::try_from(sectors).map_err(|_| McaError::ImageTooLarge { sectors: offset })?;
+                u32::try_from(offset).map_err(|_| AnvilError::ImageTooLarge { sectors: offset })?;
+            let sectors_u32 = u32::try_from(sectors)
+                .map_err(|_| AnvilError::ImageTooLarge { sectors: offset })?;
             let entry = (offset_u32 << 8) | sectors_u32;
             let at = *index as usize * 4;
             img[at..at + 4].copy_from_slice(&entry.to_be_bytes());
             let ts_at = header_len / 2 + *index as usize * 4;
             img[ts_at..ts_at + 4].copy_from_slice(&self.timestamp.to_be_bytes());
             let payload_len_u32 = u32::try_from(payload.len())
-                .map_err(|_| McaError::ChunkTooLarge { len: payload.len() })?;
+                .map_err(|_| AnvilError::ChunkTooLarge { len: payload.len() })?;
             img.extend_from_slice(&payload_len_u32.to_be_bytes());
             img.extend_from_slice(payload);
             let pad = sectors * SECTOR_LEN - (payload.len() as u64 + 4);
             let pad_usize =
-                usize::try_from(pad).map_err(|_| McaError::ImageTooLarge { sectors: offset })?;
+                usize::try_from(pad).map_err(|_| AnvilError::ImageTooLarge { sectors: offset })?;
             img.extend(std::iter::repeat_n(0, pad_usize));
             offset += sectors;
         }
@@ -112,8 +112,8 @@ impl RegionFileWriter {
     }
 
     /// Swap `img` into place via same-directory temp + fsync + rename.
-    fn swap(&self, img: &[u8]) -> Result<(), McaError> {
-        let io = |path: PathBuf| move |source: std::io::Error| McaError::Io { path, source };
+    fn swap(&self, img: &[u8]) -> Result<(), AnvilError> {
+        let io = |path: PathBuf| move |source: std::io::Error| AnvilError::Io { path, source };
         let parent = self
             .target
             .parent()
@@ -129,7 +129,7 @@ impl RegionFileWriter {
             std::process::id(),
             TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
-        let write = || -> Result<(), McaError> {
+        let write = || -> Result<(), AnvilError> {
             use std::io::Write as _;
             let mut f = fs::File::create(&tmp).map_err(io(tmp.clone()))?;
             f.write_all(img).map_err(io(tmp.clone()))?;
@@ -155,11 +155,11 @@ impl RegionFileWriter {
 }
 
 impl sekai_core::RegionWriter for RegionFileWriter {
-    type Error = McaError;
+    type Error = AnvilError;
 
     fn stage_chunk(&mut self, coord: &ChunkCoord, payload: &[u8]) -> Result<(), Self::Error> {
         if payload.is_empty() {
-            return Err(McaError::EmptyPayload);
+            return Err(AnvilError::EmptyPayload);
         }
         let index = self.slot_of(coord)?;
         // Fail early on oversized payloads, not at commit time.
@@ -210,7 +210,7 @@ mod tests {
                 RegionKind::REGION,
                 0
             ),
-            Err(McaError::BadFilename { .. })
+            Err(AnvilError::BadFilename { .. })
         ));
     }
 
@@ -230,26 +230,26 @@ mod tests {
         let mut w = writer();
         assert!(matches!(
             w.stage_chunk(&coord(32, 0), &[1]),
-            Err(McaError::WrongRegion { .. })
+            Err(AnvilError::WrongRegion { .. })
         ));
         assert!(matches!(
             w.stage_chunk(&coord(-1, 0), &[1]),
-            Err(McaError::WrongRegion { .. })
+            Err(AnvilError::WrongRegion { .. })
         ));
         assert!(matches!(
             w.stage_chunk(
                 &ChunkCoord::new(Dimension::NETHER, RegionKind::REGION, 0, 0),
                 &[1]
             ),
-            Err(McaError::WrongRegion { .. })
+            Err(AnvilError::WrongRegion { .. })
         ));
         assert!(matches!(
             w.stage_chunk(&coord(0, 0), &[]),
-            Err(McaError::EmptyPayload)
+            Err(AnvilError::EmptyPayload)
         ));
         assert!(matches!(
             w.stage_chunk(&coord(0, 0), &vec![0u8; 255 * 4096]),
-            Err(McaError::ChunkTooLarge { .. })
+            Err(AnvilError::ChunkTooLarge { .. })
         ));
     }
 
