@@ -1,0 +1,19 @@
+[package]
+name = "sekai-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["backend-sqlite"]
+backend-sqlite = ["sekai-storage/backend-sqlite"]
+backend-mysql = ["sekai-storage/backend-mysql"]
+backend-postgres = ["sekai-storage/backend-postgres"]
+
+[dependencies]
+sekai-core.workspace = true
+sekai-storage.workspace = true
+sekai-world.workspace = true

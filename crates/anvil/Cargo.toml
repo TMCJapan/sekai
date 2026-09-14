@@ -1,0 +1,10 @@
+[package]
+name = "sekai-anvil"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
