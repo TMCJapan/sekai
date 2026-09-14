@@ -69,7 +69,11 @@ impl FileCas {
     /// renamed over the destination (concurrent readers never see a torn
     /// blob). The rename itself is persisted by the next `sync` call, which
     /// must precede any metadata commit referencing the blob.
-    fn put_blob(&mut self, hash: &BlobHash, payload: &[u8]) -> Result<bool, StorageError> {
+    ///
+    /// Synchronous building block for blocking contexts (e.g.
+    /// `spawn_blocking` ingest workers); async callers use the
+    /// [`BlobStore`](sekai_core::BlobStore) trait method instead.
+    pub fn put_blob(&mut self, hash: &BlobHash, payload: &[u8]) -> Result<bool, StorageError> {
         let dest = self.path_of(hash);
         if dest.exists() {
             return Ok(false);
@@ -119,7 +123,10 @@ impl FileCas {
     }
 
     /// Load the blob into `out`, clearing it first.
-    fn fetch_blob(&self, hash: &BlobHash, out: &mut Vec<u8>) -> Result<(), StorageError> {
+    ///
+    /// Synchronous building block for blocking contexts; async callers use
+    /// the [`BlobStore`](sekai_core::BlobStore) trait method instead.
+    pub fn fetch_blob(&self, hash: &BlobHash, out: &mut Vec<u8>) -> Result<(), StorageError> {
         out.clear();
         let path = self.path_of(hash);
         let mut f = match std::fs::File::open(&path) {

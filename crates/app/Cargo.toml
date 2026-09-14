@@ -14,9 +14,13 @@ backend-mysql = ["sekai-storage/backend-mysql"]
 backend-postgres = ["sekai-storage/backend-postgres"]
 
 [dependencies]
+sekai-anvil.workspace = true
 sekai-core.workspace = true
+sekai-nbt.workspace = true
 sekai-storage.workspace = true
 sekai-world.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
 
 [package.metadata.cargo-machete]
 ignored = ["sekai-core", "sekai-storage", "sekai-world"]

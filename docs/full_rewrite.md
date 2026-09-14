@@ -174,16 +174,16 @@ Pure stays in `anvil`; fs moves to `world` (Phase 6):
 
 ## Phase 7 - `sekai-app` + `sekai` bin
 
-- [ ] `app::backup(world, store_url, BackupOptions{concurrency,with_diff}, progress)`
+- [x] `app::backup(world, store_url, BackupOptions{concurrency,with_diff}, progress)`
       and `app::rollback`, `app::list_snapshots`; tokio parallelism
       (`spawn_blocking` for ingest), wall clocks, `BackupTimings`.
-- [ ] Crash order enforced at call sites: `cas.sync()` before DB commit;
+- [x] Crash order enforced at call sites: `cas.sync()` before DB commit;
       missing CAS blob aborts loudly (no partial worlds).
-- [ ] `strict` rollback semantics preserved (post-snapshot files removed,
+- [x] `strict` rollback semantics preserved (post-snapshot files removed,
       all-tombstone regions deleted, not shelled).
-- [ ] `sekai` bin: clap only (`backup --timing/--timing-json`, `rollback`,
+- [x] `sekai` bin: clap only (`backup --timing/--timing-json`, `rollback`,
       `list`, `debug scan` human/JSON). No logic.
-- [ ] Verify: `tempdir` + file-CAS + SQLite round-trip
+- [x] Verify: `tempdir` + file-CAS + SQLite round-trip
       (backup -> list -> rollback), timing smoke tests.
 
 ## Phase 8 - Docs, CI, Release
