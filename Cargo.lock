@@ -143,6 +143,7 @@ dependencies = [
 name = "sekai-core"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "sekai-anvil",
  "sekai-nbt",
 ]
