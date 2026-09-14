@@ -122,17 +122,17 @@ impl SqliteMeta {
     }
 }
 
-/// Fallible `i64` → `i32` narrowing for SQLite integer columns.
+/// Fallible `i64` -> `i32` narrowing for SQLite integer columns.
 fn i64_to_i32(value: i64, column: &'static str) -> Result<i32, StorageError> {
     i32::try_from(value).map_err(|_| StorageError::InvalidHistoryValue { column, value })
 }
 
-/// Fallible `i64` → `u64` widening for SQLite timestamp/size columns.
+/// Fallible `i64` -> `u64` widening for SQLite timestamp/size columns.
 fn i64_to_u64(value: i64, column: &'static str) -> Result<u64, StorageError> {
     u64::try_from(value).map_err(|_| StorageError::InvalidHistoryValue { column, value })
 }
 
-/// Fallible `i64` row ID → domain `SnapshotId`.
+/// Fallible `i64` row ID -> domain `SnapshotId`.
 fn snapshot_id_from_i64(id: i64) -> Result<SnapshotId, StorageError> {
     i64_to_u64(id, "id").map(SnapshotId)
 }

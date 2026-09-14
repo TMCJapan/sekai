@@ -727,6 +727,7 @@ version = "0.1.0"
 dependencies = [
  "sekai-anvil",
  "sekai-core",
+ "thiserror",
 ]
 
 [[package]]

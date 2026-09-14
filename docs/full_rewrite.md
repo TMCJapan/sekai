@@ -158,12 +158,19 @@ Pure stays in `anvil`; fs moves to `world` (Phase 6):
 
 ## Phase 6 - `sekai-world` (std)
 
-- [ ] `discover`, `derive_path`, `detect_flavor`, `fingerprint_file`
+- [x] `discover`, `derive_path`, `detect_flavor`, `fingerprint_file`
       (fd `size/mtime` + `anvil::header_hash`), `scan_world`,
       `open_image`, `atomic_swap` (same-dir temp + fsync + rename + unix
-      dir fsync, cleanup on failure).
-- [ ] Verify: discovery fixture tests (legacy/Bukkit/new layouts),
-      fingerprint match/mismatch tests, swap atomicity tests.
+      dir fsync, parent creation, cleanup on failure).
+- [x] Bukkit-family flavors: `LayoutFlavor::Bukkit { base }` for
+      `<base>/` + `<base>_nether/DIM-1/` + `<base>_the_end/DIM1`
+      (custom `level-name` supported); non-default world folders hash
+      root-relative paths so same-environment worlds never collide;
+      trio detection gated on container roots; 26.1 vanilla trees map to
+      vanilla codes in every folder for migration continuity.
+- [x] Verify: discovery fixture tests (legacy/Bukkit/new layouts + custom
+      dims + collision order), fingerprint stability/sensitivity tests,
+      scan tests, swap atomicity tests (11 integration tests).
 
 ## Phase 7 - `sekai-app` + `sekai` bin
 
