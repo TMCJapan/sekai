@@ -164,7 +164,7 @@ fn is_world_folder(dir: &Path) -> Result<bool, WorldError> {
 }
 
 /// Whether `dir` is itself a world folder root: `level.dat` or a kind
-/// directory holding parseable region files (no `DIM-1` nesting test — a
+/// directory holding parseable region files (no `DIM-1` nesting test - a
 /// bare `DIM-1` holder is a container, and claiming it as a world would
 /// hide the trio logic from `discover`).
 fn is_top_world_folder(dir: &Path) -> Result<bool, WorldError> {
@@ -293,7 +293,7 @@ fn scan_dimensions(
 ///
 /// Missing world root is an error; missing candidate subdirectories are
 /// simply skipped. Pass a server root for Bukkit-family servers (all world
-/// folders are found) or a single world folder for vanilla ones — but the
+/// folders are found) or a single world folder for vanilla ones - but the
 /// same path on every run, since non-default namespaces hash
 /// root-relative paths.
 pub fn discover(world: &Path) -> Result<Vec<RegionRef>, WorldError> {
@@ -406,7 +406,7 @@ const fn kind_dir(kind: RegionKind) -> Option<&'static str> {
 /// Only vanilla namespaces are derivable; hashed custom dimensions are
 /// one-way, so their missing files surface [`WorldError::UnknownRegionPath`].
 /// Rollback prefers discovered folders for those and only derives when the
-/// file is absent — and must prefer same-dimension siblings over flavor
+/// file is absent - and must prefer same-dimension siblings over flavor
 /// derivation whenever any exist, since folders may have moved since the
 /// backup (e.g. across a 26.1 migration).
 pub fn derive_path(

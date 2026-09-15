@@ -64,9 +64,11 @@ impl SqliteMeta {
             .await?;
         if version == 0 {
             sqlx::query(SCHEMA).execute(&pool).await?;
-            sqlx::query(&format!("PRAGMA user_version={SCHEMA_VERSION}"))
-                .execute(&pool)
-                .await?;
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "PRAGMA user_version = {SCHEMA_VERSION}"
+            )))
+            .execute(&pool)
+            .await?;
         } else if version != SCHEMA_VERSION {
             return Err(StorageError::UnsupportedSchema {
                 found: version,
