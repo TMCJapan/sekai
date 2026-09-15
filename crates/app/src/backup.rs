@@ -347,8 +347,6 @@ fn partition_groups(mut changed: Vec<Changed>, workers: usize) -> Vec<Vec<Change
 
 /// Ingest one worker's group with a private CAS handle, then sync its shards.
 ///
-/// Ingest one worker's group with a private CAS handle, then sync its shards.
-///
 /// Returns the per-file outcomes plus the shard-sync time so the caller can
 /// account it under `cas` (the durability bucket).
 fn ingest_group(
