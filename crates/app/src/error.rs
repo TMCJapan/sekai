@@ -18,6 +18,27 @@ pub enum AppError {
     /// Garbage collection failed.
     #[error("{0}")]
     Gc(sekai_core::GcError<sekai_storage::StorageError, sekai_storage::StorageError>),
+    /// NBT parsing or diff operation failed.
+    #[error(transparent)]
+    Nbt(#[from] sekai_nbt::NbtError),
+    /// Snapshot operation failed.
+    #[error("{0}")]
+    Snapshot(sekai_core::usecase::snapshot::SnapshotError<sekai_storage::StorageError>),
+    /// Chunk was not found in the specified snapshot.
+    #[error("chunk {coord:?} not found in snapshot {snapshot_id:?}")]
+    ChunkNotFoundInSnapshot {
+        snapshot_id: sekai_core::SnapshotId,
+        coord: sekai_core::ChunkCoord,
+    },
+    /// Chunk was not found in the world filesystem.
+    #[error("chunk {coord:?} not found in world")]
+    ChunkNotFoundInWorld { coord: sekai_core::ChunkCoord },
+    /// No snapshots exist in the store.
+    #[error("no snapshots found in store")]
+    NoSnapshots,
+    /// I/O operation failed.
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
     /// System clock went backwards or overflowed.
     #[error("system clock error: {0}")]
     Clock(#[from] std::time::SystemTimeError),

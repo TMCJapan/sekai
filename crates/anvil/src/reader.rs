@@ -94,6 +94,33 @@ impl RegionImage {
         Ok(())
     }
 
+    /// Returns the stored raw payload for a single chunk at global coordinates `(x, z)`.
+    ///
+    /// Returns `Ok(None)` if the chunk coordinate is outside this region or if the
+    /// chunk has not been generated (is empty).
+    pub fn chunk_payload(&self, x: i32, z: i32) -> Result<Option<&[u8]>, AnvilError> {
+        let Ok(index) = self.loc.slot_of(x, z) else {
+            return Ok(None);
+        };
+
+        let (offset, count) = self.entry(index)?;
+        if offset == 0 && count == 0 {
+            return Ok(None);
+        }
+
+        let total_sectors = self.bytes.len() as u64 / SECTOR_LEN;
+        let end = offset
+            .checked_add(count)
+            .ok_or_else(|| Self::corrupt_entry(index, offset, count))?;
+
+        if offset < FIRST_DATA_SECTOR || count == 0 || end > total_sectors {
+            return Err(Self::corrupt_entry(index, offset, count));
+        }
+
+        let payload = self.sector_payload(index, offset, count)?;
+        Ok(Some(payload))
+    }
+
     fn corrupt_entry(index: u32, offset: u64, count: u64) -> AnvilError {
         AnvilError::CorruptEntry {
             index,

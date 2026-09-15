@@ -6,23 +6,36 @@
 //! binary.
 
 mod backup;
+mod diff;
 mod error;
 mod gc;
 mod rollback;
 
 pub use backup::{BackupOptions, BackupProgress, BackupTimings, RegionTiming, backup};
+pub use diff::{diff_blobs, diff_chunk, diff_world_chunk};
 pub use error::AppError;
 pub use gc::{GcTimings, gc, gc_apply, gc_plan};
 pub use rollback::{RollbackTimings, rollback};
 pub use sekai_core::{
-    BackupReport, GcPlan, GcReport, RegionKind, RollbackReport, Snapshot, SnapshotId,
+    BackupReport, BlobHash, ChunkCoord, DEFAULT_IGNORED, Dimension, GcPlan, GcReport, NbtChange,
+    NbtDiffEntry, RegionKind, RollbackReport, Snapshot, SnapshotId,
 };
 pub use sekai_world::RegionScanEntry;
 
 /// List all snapshots in ID order (for `list` and pre-flight checks).
 pub async fn list_snapshots(store_url: &str) -> Result<Vec<Snapshot>, AppError> {
     let store = open_store(store_url).await?;
-    Ok(sekai_core::usecase::snapshot::list_snapshots(store.meta()).await?)
+    sekai_core::usecase::snapshot::list_snapshots(store.meta())
+        .await
+        .map_err(AppError::Snapshot)
+}
+
+pub async fn latest_snapshot_id(store_url: &str) -> Result<SnapshotId, AppError> {
+    let store = open_store(store_url).await?;
+    sekai_core::usecase::snapshot::latest_snapshot_id(store.meta())
+        .await
+        .map_err(AppError::Snapshot)?
+        .ok_or(AppError::NoSnapshots)
 }
 
 /// Read-only inspection of every region file under `world`.

@@ -1,5 +1,20 @@
 //! Chunk coordinates and namespace identifiers.
 
+use core::fmt;
+use core::str::FromStr;
+
+/// Error returned when parsing an invalid named code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseCodeError(());
+
+impl fmt::Display for ParseCodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "invalid identifier or integer code")
+    }
+}
+
+impl core::error::Error for ParseCodeError {}
+
 /// Dimension namespace code. `0..=2` are reserved for vanilla dimensions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Dimension(i32);
@@ -23,6 +38,33 @@ impl Dimension {
     }
 }
 
+impl FromStr for Dimension {
+    type Err = ParseCodeError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "ow" | "overworld" | "0" => Ok(Self::OVERWORLD),
+            "ne" | "nether" | "the_nether" | "DIM-1" | "1" => Ok(Self::NETHER),
+            "end" | "the_end" | "DIM1" | "2" => Ok(Self::END),
+            other => other
+                .parse::<i32>()
+                .map(Self::new)
+                .map_err(|_| ParseCodeError(())),
+        }
+    }
+}
+
+impl fmt::Display for Dimension {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::OVERWORLD => write!(f, "overworld"),
+            Self::NETHER => write!(f, "nether"),
+            Self::END => write!(f, "end"),
+            other => write!(f, "{}", other.0),
+        }
+    }
+}
+
 /// Region family identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RegionKind(i32);
@@ -43,6 +85,33 @@ impl RegionKind {
     /// Raw code (for binary columns and directory names).
     pub const fn raw(self) -> i32 {
         self.0
+    }
+}
+
+impl FromStr for RegionKind {
+    type Err = ParseCodeError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "region" | "0" => Ok(Self::REGION),
+            "entities" | "1" => Ok(Self::ENTITIES),
+            "poi" | "2" => Ok(Self::POI),
+            other => other
+                .parse::<i32>()
+                .map(Self::new)
+                .map_err(|_| ParseCodeError(())),
+        }
+    }
+}
+
+impl fmt::Display for RegionKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::REGION => write!(f, "region"),
+            Self::ENTITIES => write!(f, "entities"),
+            Self::POI => write!(f, "poi"),
+            other => write!(f, "{}", other.0),
+        }
     }
 }
 

@@ -16,9 +16,13 @@ pub use domain::{
     SnapshotId, hash_blob, resolve_custom_dimension,
 };
 pub use port::{BlobStore, MetaStore};
+
+// sekai-nbt AST diff types
+pub use sekai_nbt::{DEFAULT_IGNORED, NbtChange, NbtDiffEntry};
+
 pub use usecase::{
-    Assembled, BackupReport, GcError, GcReport, Observation, Plan, Previous, RollbackError,
-    RollbackPlan, RollbackReport,
+    Assembled, BackupReport, DiffError, GcError, GcReport, Observation, Plan, Previous,
+    RollbackError, RollbackPlan, RollbackReport, diff_blobs, diff_blobs_v1,
 };
 
 /// Compute a volatile diff hash for decompressed chunk NBT.
@@ -29,6 +33,25 @@ pub fn diff_hash(raw_nbt: &[u8], ignore: &[&str]) -> Result<DiffHash, sekai_nbt:
 /// Compute a diff hash using the default ignore set.
 pub fn diff_hash_v1(raw_nbt: &[u8]) -> Result<DiffHash, sekai_nbt::NbtError> {
     sekai_nbt::diff_hash_v1(raw_nbt).map(DiffHash)
+}
+
+/// Compute structural diff entries between two raw decompressed NBT payloads.
+pub fn diff_nbt(
+    old_raw_nbt: &[u8],
+    new_raw_nbt: &[u8],
+    ignore: &[&str],
+) -> Result<alloc::vec::Vec<NbtDiffEntry>, sekai_nbt::NbtError> {
+    let old_val = sekai_nbt::parse(old_raw_nbt)?;
+    let new_val = sekai_nbt::parse(new_raw_nbt)?;
+    Ok(sekai_nbt::diff(&old_val, &new_val, ignore))
+}
+
+/// Compute structural diff entries using the default ignore set.
+pub fn diff_nbt_v1(
+    old_raw_nbt: &[u8],
+    new_raw_nbt: &[u8],
+) -> Result<alloc::vec::Vec<NbtDiffEntry>, sekai_nbt::NbtError> {
+    diff_nbt(old_raw_nbt, new_raw_nbt, DEFAULT_IGNORED)
 }
 
 #[cfg(test)]
@@ -47,6 +70,16 @@ mod tests {
             diff_hash(&same, &[]),
             "without ignores the volatile tag surfaces"
         );
+    }
+
+    #[test]
+    fn diff_nbt_wiring_computes_ast_diff() {
+        let old_raw = nbt_bytes(100, "minecraft:full");
+        let new_raw = nbt_bytes(100, "minecraft:empty");
+
+        let diffs = diff_nbt_v1(&old_raw, &new_raw).unwrap();
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].path, "Status");
     }
 
     /// Hand-built NBT: compound root with a `long` and a `string` entry.

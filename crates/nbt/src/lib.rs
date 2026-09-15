@@ -1,16 +1,18 @@
 //! Parse and hash already-decompressed NBT data.
 //!
 //! Chunk decompression is handled by `sekai-anvil`; this crate owns only NBT
-//! parsing and canonical diff hashing.
+//! parsing, canonical diff hashing, and NBT AST diffing.
 
 #![no_std]
 
 extern crate alloc;
 
+mod diff;
 mod error;
 mod normalize;
 mod parser;
 
+pub use diff::{NbtChange, NbtDiffEntry, diff};
 pub use error::NbtError;
 pub use normalize::DEFAULT_IGNORED;
 pub use parser::Value;
