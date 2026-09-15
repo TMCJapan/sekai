@@ -3,6 +3,7 @@
 use alloc::vec::Vec;
 use core::fmt;
 
+use sekai_anvil::AnvilError;
 use sekai_nbt::{DEFAULT_IGNORED, NbtDiffEntry, NbtError};
 
 use crate::domain::hash::BlobHash;
@@ -13,6 +14,8 @@ use crate::port::blob::BlobStore;
 pub enum DiffError<B> {
     /// Blob backend failure.
     Blob(B),
+    /// Sector decompression failure.
+    Anvil(AnvilError),
     /// NBT decoding failure.
     Nbt(NbtError),
 }
@@ -21,6 +24,7 @@ impl<B: fmt::Debug> fmt::Display for DiffError<B> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Blob(_) => write!(f, "blob store failed"),
+            Self::Anvil(e) => write!(f, "sector decompression failed: {e}"),
             Self::Nbt(e) => write!(f, "NBT decoding failed: {e}"),
         }
     }
@@ -33,20 +37,24 @@ pub async fn diff_blobs<B: BlobStore>(
     new_hash: &BlobHash,
     ignore: &[&str],
 ) -> Result<Vec<NbtDiffEntry>, DiffError<B::Error>> {
-    let mut old_raw = Vec::new();
-    let mut new_raw = Vec::new();
-
+    let mut old_payload = Vec::new();
+    let mut new_payload = Vec::new();
     blobs
-        .fetch_into(old_hash, &mut old_raw)
+        .fetch_into(old_hash, &mut old_payload)
         .await
         .map_err(DiffError::Blob)?;
     blobs
-        .fetch_into(new_hash, &mut new_raw)
+        .fetch_into(new_hash, &mut new_payload)
         .await
         .map_err(DiffError::Blob)?;
 
-    let old_val = sekai_nbt::parse(&old_raw).map_err(DiffError::Nbt)?;
-    let new_val = sekai_nbt::parse(&new_raw).map_err(DiffError::Nbt)?;
+    let mut old_nbt = Vec::new();
+    let mut new_nbt = Vec::new();
+    sekai_anvil::decompress_into(&old_payload, &mut old_nbt).map_err(DiffError::Anvil)?;
+    sekai_anvil::decompress_into(&new_payload, &mut new_nbt).map_err(DiffError::Anvil)?;
+
+    let old_val = sekai_nbt::parse(&old_nbt).map_err(DiffError::Nbt)?;
+    let new_val = sekai_nbt::parse(&new_nbt).map_err(DiffError::Nbt)?;
 
     Ok(sekai_nbt::diff(&old_val, &new_val, ignore))
 }
@@ -68,8 +76,10 @@ mod tests {
     use crate::domain::hash::hash_blob;
     use crate::support::{MemCas, block_on};
 
-    fn nbt_bytes(status: &str) -> Vec<u8> {
-        let mut out = alloc::vec![10, 0, 0, 8, 0, 6];
+    // Uncompressed (Type 3) sector payload framing + NBT bytes
+    fn framed_nbt_bytes(status: &str) -> Vec<u8> {
+        let mut out = alloc::vec![3]; // Type 3: Uncompressed
+        out.extend_from_slice(&[10, 0, 0, 8, 0, 6]);
         out.extend_from_slice(b"Status");
         let status_len = u16::try_from(status.len()).unwrap();
         out.extend_from_slice(&status_len.to_be_bytes());
@@ -81,8 +91,8 @@ mod tests {
     #[test]
     fn diffs_stored_blobs() {
         let mut cas = MemCas::default();
-        let raw_a = nbt_bytes("minecraft:full");
-        let raw_b = nbt_bytes("minecraft:empty");
+        let raw_a = framed_nbt_bytes("minecraft:full");
+        let raw_b = framed_nbt_bytes("minecraft:empty");
 
         let hash_a = hash_blob(&raw_a);
         let hash_b = hash_blob(&raw_b);
