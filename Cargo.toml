@@ -23,17 +23,26 @@ sekai-nbt = { path = "crates/nbt" }
 sekai-storage = { path = "crates/storage" }
 sekai-world = { path = "crates/world" }
 
-anyhow = "1"
-blake3 = { version = "1", default-features = false }
-chrono = "0.4"
-clap = { version = "4", features = ["derive"] }
-crc32fast = { version = "1", default-features = false }
-lz4_flex = { version = "0.11", default-features = false }
-miniz_oxide = { version = "0.9", default-features = false, features = ["with-alloc"] }
-serde = { version = "1", default-features = false, features = ["alloc", "derive"] }
-sqlx = { version = "0.8", default-features = false, features = ["sqlite", "runtime-tokio"] }
-thiserror = "2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+anyhow = { version = "1.0", default-features = false }
+blake3 = { version = "1.8.7", default-features = false }
+chrono = { version = "0.4.45", default-features = false, features = ["alloc"] }
+clap = { version = "4.6.7", default-features = false, features = [
+  "std",
+  "color",
+  "help",
+  "usage",
+  "error-context",
+  "suggestions",
+  "derive",
+] }
+crc32fast = { version = "1.5.2", default-features = false }
+lz4_flex = { version = "0.14.0", default-features = false }
+miniz_oxide = { version = "0.9.1", default-features = false, features = ["with-alloc"] }
+serde = { version = "1.0.229", default-features = false, features = ["alloc", "derive"] }
+serde_json = { version = "1.0.151", default-features = false, features = ["alloc"] }
+sqlx = { version = "0.9.0", default-features = false, features = ["sqlite", "runtime-tokio"] }
+thiserror = { version = "2.0.20", default-features = false }
+tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread"] }
 twox-hash = { version = "1", default-features = false }
 
 [workspace.lints.clippy]
