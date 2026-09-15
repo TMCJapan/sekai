@@ -403,7 +403,7 @@ fn print_gc_timing_table(timings: &GcTimings) {
 
 /// Flat JSON array for `diff --json`.
 fn diff_json(diffs: &[sekai_app::NbtDiffEntry]) -> String {
-    use std::fmt::Write as _;
+    use core::fmt::Write as _;
     let mut out = String::from("[");
     for (index, entry) in diffs.iter().enumerate() {
         if index > 0 {
@@ -439,7 +439,7 @@ fn diff_json(diffs: &[sekai_app::NbtDiffEntry]) -> String {
 
 /// Flat JSON for `backup --timing-json`.
 fn backup_json(report: &sekai_app::BackupReport, timings: &BackupTimings) -> String {
-    use std::fmt::Write as _;
+    use core::fmt::Write as _;
     let mut out = String::from("{");
     let _ = write!(
         out,
@@ -487,7 +487,7 @@ fn backup_json(report: &sekai_app::BackupReport, timings: &BackupTimings) -> Str
 
 /// Flat JSON for `rollback --timing-json`.
 fn rollback_json(report: &RollbackReport, timings: &RollbackTimings) -> String {
-    use std::fmt::Write as _;
+    use core::fmt::Write as _;
     let mut out = String::from("{");
     let _ = write!(
         out,
@@ -510,7 +510,7 @@ fn rollback_json(report: &RollbackReport, timings: &RollbackTimings) -> String {
 
 /// Flat JSON for `gc --timing-json`.
 fn gc_json(report: &GcReport, timings: &GcTimings) -> String {
-    use std::fmt::Write as _;
+    use core::fmt::Write as _;
     let mut out = String::from("{");
     let _ = write!(
         out,
@@ -532,7 +532,7 @@ fn gc_json(report: &GcReport, timings: &GcTimings) -> String {
 
 /// Flat JSON for `gc --dry-run --timing-json`.
 fn gc_plan_json(plan: &GcPlan) -> String {
-    use std::fmt::Write as _;
+    use core::fmt::Write as _;
     let mut out = String::from("{");
     let _ = write!(
         out,
@@ -588,7 +588,7 @@ fn run_debug_scan(world: &Path, json: bool) -> anyhow::Result<()> {
 
 /// Flat JSON array for `debug scan --json`.
 fn scan_json(entries: &[sekai_app::RegionScanEntry]) -> String {
-    use std::fmt::Write as _;
+    use core::fmt::Write as _;
     let mut out = String::from("[");
     for (index, entry) in entries.iter().enumerate() {
         if index > 0 {
@@ -629,7 +629,7 @@ fn kind_name(kind: RegionKind) -> &'static str {
 
 /// Minimal JSON string escaper for paths (quote, backslash, controls).
 fn json_escape(text: &str) -> String {
-    use std::fmt::Write as _;
+    use core::fmt::Write as _;
     let mut out = String::with_capacity(text.len());
     for ch in text.chars() {
         match ch {
