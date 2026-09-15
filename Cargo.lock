@@ -817,6 +817,8 @@ dependencies = [
  "chrono",
  "clap",
  "sekai-app",
+ "serde",
+ "serde_json",
  "tokio",
 ]
 
@@ -836,7 +838,6 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "sekai-util",
- "serde",
 ]
 
 [[package]]
