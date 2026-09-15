@@ -220,7 +220,7 @@ Branch from `main` using one of these prefixes:
 
 Write [Conventional Commits](https://www.conventionalcommits.org/):
 
-* Format: `<type>(<scope>): <summary>` (e.g., `feat(storage): carry unchanged regions via INSERT ... SELECT`).
+* Format: `<type>(<scope>): <summary>` (e.g., `feat(storage): count carried chunks via effective-rows query`).
 * Types: `feat`, `fix`, `perf`, `refactor`, `test`, `docs`, `build`, `ci`, `chore`.
 * Scope is the crate or area (`core`, `nbt`, `anvil`, `world`, `app`, `storage`, `cli`, `docs`, `ci`).
 * Summaries are imperative, lowercase, without a trailing period.

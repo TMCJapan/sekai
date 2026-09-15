@@ -195,6 +195,18 @@ Unchanged: per-coordinate (`dim`, `kind`, `chunk_x`, `chunk_z`) timelines;
 entries cover snapshot intervals `[S_i, S_{i+1})`; MVCC timeline, not a
 commit DAG.
 
+## Delta History Storage
+
+Snapshots store only fresh rows (ingested chunks plus tombstones).
+Unchanged chunks have no row at newer snapshots; reads resolve effective
+state through fallback - `lookup_chunk` returns the nearest row at or
+before the snapshot, `visit_snapshot_chunks` synthesizes one effective row
+per known coordinate. Carried regions advance only derived state
+(`region_state`), and their effective chunk count is aggregated for the
+report. Every backup therefore grows metadata with changes, not with
+universe size - an unchanged backup writes one snapshot row plus state
+bumps instead of a full row copy.
+
 ## Tombstones
 
 Missing chunks are explicit `NULL`-blob rows. Rollback onto tombstones

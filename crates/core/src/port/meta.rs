@@ -27,7 +27,8 @@ pub trait MetaStore {
         diff: Option<&DiffHash>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
-    /// Exact row for (`snapshot`, `coord`), or `None` when never recorded.
+    /// Effective row for (`snapshot`, `coord`): the nearest row at or
+    /// before `snapshot`, or `None` when never recorded.
     fn lookup_chunk(
         &self,
         snapshot: SnapshotId,
@@ -44,10 +45,9 @@ pub trait MetaStore {
     fn latest_snapshot(&self)
     -> impl Future<Output = Result<Option<Snapshot>, Self::Error>> + Send;
 
-    /// Visit every row of one snapshot. Return `false` to stop early.
-    ///
-    /// Visitor style keeps full-snapshot rollback streaming without
-    /// materializing all rows in memory.
+    /// Visit effective rows of one snapshot: exactly one row per
+    /// coordinate known at `snapshot` (the nearest row at or before it),
+    /// including tombstones. Return `false` to stop early.
     fn visit_snapshot_chunks<F>(
         &self,
         snapshot: SnapshotId,
@@ -69,11 +69,11 @@ pub trait MetaStore {
     /// Commit a snapshot and optionally carry unchanged regions.
     ///
     /// `entries` contains fresh rows and tombstones. `carry_from` identifies
-    /// regions copied from the previous snapshot. Fingerprints are refreshed
-    /// atomically; carried regions advance their snapshot state.
+    /// unchanged regions: backends advance their snapshot state and count
+    /// their effective chunks, but write no per-chunk rows for them (delta
+    /// storage). Fingerprints are refreshed atomically.
     ///
-    /// Carried regions must not overlap `entries`, and referenced blobs must
-    /// already be flushed to CAS.
+    /// Referenced blobs must already be flushed to CAS.
     fn apply_snapshot_incremental(
         &mut self,
         created_at_ms: u64,

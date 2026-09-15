@@ -17,13 +17,9 @@ use crate::api::{StorageError, Store, io_error};
 use crate::cas::FileCas;
 
 /// Managed schema version (`PRAGMA user_version`).
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 const SCHEMA: &str = include_str!("../schema/sqlite.sql");
-
-/// Rows per visitor page: rollback streams whole snapshots without
-/// materializing them.
-const PAGE_ROWS: i64 = 4096;
 
 /// SQLite-backed MVCC metadata.
 #[derive(Debug, Clone)]
@@ -232,15 +228,19 @@ impl sekai_core::MetaStore for SqliteMeta {
         snapshot: SnapshotId,
         coord: &ChunkCoord,
     ) -> Result<Option<ChunkHistoryEntry>, StorageError> {
+        // Nearest row at or before `snapshot`: unchanged chunks have no row
+        // at newer snapshots (delta storage). The coord index serves the
+        // point lookup.
         let row = sqlx::query(
             "SELECT snapshot_id, dim, kind, cx, cz, blob, diff FROM chunk_history
-             WHERE snapshot_id = ? AND dim = ? AND kind = ? AND cx = ? AND cz = ?",
+             WHERE dim = ? AND kind = ? AND cx = ? AND cz = ? AND snapshot_id <= ?
+             ORDER BY snapshot_id DESC LIMIT 1",
         )
-        .bind(snap_param(snapshot)?)
         .bind(i64::from(coord.dim.raw()))
         .bind(i64::from(coord.kind.raw()))
         .bind(i64::from(coord.x))
         .bind(i64::from(coord.z))
+        .bind(snap_param(snapshot)?)
         .fetch_optional(&self.pool)
         .await?;
         row.map(|row| decode_history(&row)).transpose()
@@ -283,30 +283,30 @@ impl sekai_core::MetaStore for SqliteMeta {
     where
         F: FnMut(&ChunkHistoryEntry) -> bool + Send,
     {
-        // Paging keeps large rollback reads bounded in memory.
-        let page_len = usize::try_from(PAGE_ROWS).unwrap_or(usize::MAX);
-        let mut offset = 0i64;
-        loop {
-            let rows = sqlx::query(
-                "SELECT snapshot_id, dim, kind, cx, cz, blob, diff FROM chunk_history
-                 WHERE snapshot_id = ? ORDER BY dim, kind, cx, cz LIMIT ? OFFSET ?",
-            )
-            .bind(snap_param(snapshot)?)
-            .bind(PAGE_ROWS)
-            .bind(offset)
-            .fetch_all(&self.pool)
-            .await?;
-            let count = rows.len();
-            for row in &rows {
-                if !visit(&decode_history(row)?) {
-                    return Ok(());
-                }
+        // Effective rows at `snapshot`: the newest row at or before it per
+        // coordinate, tombstones included. Window functions keep the query
+        // portable across backends. A single fetch beats paged window
+        // queries (which recompute the aggregation per page), and every
+        // caller materializes the full effective set anyway (rollback
+        // groups, GC sets, plan universes).
+        let rows = sqlx::query(
+            "SELECT dim, kind, cx, cz, blob, diff, snapshot_id FROM (
+               SELECT dim, kind, cx, cz, blob, diff, snapshot_id,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY dim, kind, cx, cz ORDER BY snapshot_id DESC
+                 ) AS rn
+               FROM chunk_history WHERE snapshot_id <= ?
+             ) WHERE rn = 1 ORDER BY dim, kind, cx, cz",
+        )
+        .bind(snap_param(snapshot)?)
+        .fetch_all(&self.pool)
+        .await?;
+        for row in &rows {
+            if !visit(&decode_history(row)?) {
+                break;
             }
-            if count < page_len {
-                return Ok(());
-            }
-            offset += PAGE_ROWS;
         }
+        Ok(())
     }
 
     async fn visit_snapshots<F>(&self, mut visit: F) -> Result<(), StorageError>
@@ -368,31 +368,43 @@ impl sekai_core::MetaStore for SqliteMeta {
         }
         let mut carried_chunks = 0usize;
         if let Some((prev, keys)) = carry_from {
-            // A carry overlapping a fresh entry is rejected by the primary key.
-            for key in keys {
-                let (x0, x1, z0, z1) = (
-                    i64::from(key.rx) * 32,
-                    i64::from(key.rx) * 32 + 31,
-                    i64::from(key.rz) * 32,
-                    i64::from(key.rz) * 32 + 31,
+            // Delta storage: carried regions contribute no rows. Their
+            // effective present chunks are counted for the report with the
+            // same newest-at-or-before semantics as reads; only derived
+            // state advances below.
+            if !keys.is_empty() {
+                // Region predicates are structural (fixed shape per region);
+                // all values stay bound parameters.
+                let mut qb = sqlx::QueryBuilder::new(
+                    "SELECT COUNT(*) FROM (
+                       SELECT ROW_NUMBER() OVER (
+                         PARTITION BY dim, kind, cx, cz ORDER BY snapshot_id DESC
+                       ) AS rn, blob
+                       FROM chunk_history WHERE snapshot_id <= ",
                 );
-                let result = sqlx::query(
-                    "INSERT INTO chunk_history (snapshot_id, dim, kind, cx, cz, blob, diff)
-                     SELECT ?, dim, kind, cx, cz, blob, diff FROM chunk_history
-                     WHERE snapshot_id = ? AND dim = ? AND kind = ?
-                       AND cx BETWEEN ? AND ? AND cz BETWEEN ? AND ?",
-                )
-                .bind(id)
-                .bind(snap_param(prev)?)
-                .bind(i64::from(key.dim.raw()))
-                .bind(i64::from(key.kind.raw()))
-                .bind(x0)
-                .bind(x1)
-                .bind(z0)
-                .bind(z1)
-                .execute(&mut *tx)
-                .await?;
-                carried_chunks += usize::try_from(result.rows_affected()).unwrap_or(usize::MAX);
+                qb.push_bind(snap_param(prev)?);
+                qb.push(" AND (");
+                for (i, key) in keys.iter().enumerate() {
+                    if i > 0 {
+                        qb.push(" OR ");
+                    }
+                    qb.push("(dim = ");
+                    qb.push_bind(i64::from(key.dim.raw()));
+                    qb.push(" AND kind = ");
+                    qb.push_bind(i64::from(key.kind.raw()));
+                    qb.push(" AND cx BETWEEN ");
+                    qb.push_bind(i64::from(key.rx) * 32);
+                    qb.push(" AND ");
+                    qb.push_bind(i64::from(key.rx) * 32 + 31);
+                    qb.push(" AND cz BETWEEN ");
+                    qb.push_bind(i64::from(key.rz) * 32);
+                    qb.push(" AND ");
+                    qb.push_bind(i64::from(key.rz) * 32 + 31);
+                    qb.push(")");
+                }
+                qb.push(")) WHERE rn = 1 AND blob IS NOT NULL");
+                let carried: i64 = qb.build_query_scalar().fetch_one(&mut *tx).await?;
+                carried_chunks = usize::try_from(carried).unwrap_or(usize::MAX);
             }
             for key in keys {
                 sqlx::query(
@@ -565,5 +577,79 @@ mod tests {
         let report = commit(&mut meta, &previous, &staged, 2_000).await.unwrap();
         assert_eq!(report.carried_chunks, 0);
         assert_eq!(report.skipped_regions, 0);
+    }
+
+    #[tokio::test]
+    async fn carry_writes_no_chunk_rows() {
+        use sekai_core::MetaStore as _;
+        let mut meta = memory_meta().await;
+        let key0 = RegionKey::new(Dimension::OVERWORLD, RegionKind::REGION, 0, 0);
+        let key1 = RegionKey::new(Dimension::OVERWORLD, RegionKind::REGION, 1, 0);
+        let fp = |key| RegionFingerprint {
+            key,
+            mtime_ms: Some(1),
+            size: 8192,
+            header_hash: [7; 32],
+        };
+        let c0 = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::REGION, 0, 0);
+        let c1 = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::REGION, 32, 0);
+        meta.apply_snapshot_incremental(
+            1_000,
+            &[
+                stage_present(c0, BlobHash([1; 32])),
+                stage_present(c1, BlobHash([2; 32])),
+            ],
+            None,
+            &[fp(key0), fp(key1)],
+            &[],
+        )
+        .await
+        .unwrap();
+
+        // Second backup: region 0 changes, region 1 carries.
+        let mut changed = fp(key0);
+        changed.size += 1;
+        let (previous, plan) = plan_backup(
+            &meta,
+            &[
+                Observation {
+                    key: key0,
+                    fingerprint: changed,
+                },
+                Observation {
+                    key: key1,
+                    fingerprint: fp(key1),
+                },
+            ],
+        )
+        .await
+        .unwrap();
+        let staged = assemble(
+            plan,
+            &previous,
+            vec![stage_present(c0, BlobHash([9; 32]))],
+            BTreeSet::from([c0]),
+            1,
+            vec![changed],
+        );
+        let report = commit(&mut meta, &previous, &staged, 2_000).await.unwrap();
+        assert_eq!(report.carried_chunks, 1);
+
+        // Physical rows at the new snapshot: the fresh entry only. The
+        // carried chunk stays readable through fallback.
+        let physical: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM chunk_history WHERE snapshot_id = ?")
+                .bind(snap_param(report.snapshot).unwrap())
+                .fetch_one(&meta.pool)
+                .await
+                .unwrap();
+        assert_eq!(physical, 1);
+        let kept = meta
+            .lookup_chunk(report.snapshot, &c1)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(kept.blob, Some(BlobHash([2; 32])));
+        assert_eq!(kept.snapshot, SnapshotId(1));
     }
 }
