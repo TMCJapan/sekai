@@ -1,4 +1,5 @@
 use crate::parser::Value;
+use sekai_util::DiffHash;
 
 pub const DEFAULT_IGNORED: &[&str] = &["InhabitedTime", "LastUpdate"];
 
@@ -12,10 +13,10 @@ impl Feed for blake3::Hasher {
     }
 }
 
-pub(crate) fn digest(ignored: &[&str], value: &Value) -> [u8; 32] {
+pub(crate) fn digest(ignored: &[&str], value: &Value) -> DiffHash {
     let mut hasher = blake3::Hasher::new();
     feed_value(&mut hasher, ignored, value);
-    *hasher.finalize().as_bytes()
+    DiffHash(*hasher.finalize().as_bytes())
 }
 
 /// Saturating length cast: real NBT already bounds these, so saturation is

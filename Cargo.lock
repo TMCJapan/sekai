@@ -792,6 +792,7 @@ dependencies = [
  "crc32fast",
  "lz4_flex",
  "miniz_oxide",
+ "sekai-util",
  "twox-hash",
 ]
 
@@ -826,6 +827,7 @@ dependencies = [
  "blake3",
  "sekai-anvil",
  "sekai-nbt",
+ "sekai-util",
 ]
 
 [[package]]
@@ -833,6 +835,7 @@ name = "sekai-nbt"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "sekai-util",
  "serde",
 ]
 
@@ -845,6 +848,10 @@ dependencies = [
  "thiserror",
  "tokio",
 ]
+
+[[package]]
+name = "sekai-util"
+version = "0.1.0"
 
 [[package]]
 name = "sekai-world"

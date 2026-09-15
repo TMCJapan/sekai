@@ -6,11 +6,8 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::fmt;
 
-use crate::domain::coords::ChunkCoord;
-use crate::domain::hash::BlobHash;
-use crate::domain::region::RegionKey;
-use crate::domain::snapshot::SnapshotId;
 use crate::port::meta::MetaStore;
+use sekai_util::{BlobHash, ChunkCoord, RegionKey, SnapshotId};
 
 /// Outcome of one rollback run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,9 +82,8 @@ pub async fn plan_rollback<M: MetaStore>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::coords::{Dimension, RegionKind};
-    use crate::domain::region::SnapshotEntry;
     use crate::support::{MemMeta, block_on};
+    use sekai_util::{Dimension, RegionKind, SnapshotEntry};
 
     const OVER: Dimension = Dimension::OVERWORLD;
     const REGION: RegionKind = RegionKind::REGION;

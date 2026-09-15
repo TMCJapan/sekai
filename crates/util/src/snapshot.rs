@@ -26,3 +26,18 @@ impl Snapshot {
         Self { id, created_at_ms }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_ids_and_metadata() {
+        let id = SnapshotId(7);
+        assert_eq!(id.raw(), 7);
+        let snapshot = Snapshot::new(id, 1_700_000_000_000);
+        assert_eq!(snapshot.id, id);
+        assert_eq!(snapshot.created_at_ms, 1_700_000_000_000);
+        assert!(SnapshotId(1) < SnapshotId(2));
+    }
+}

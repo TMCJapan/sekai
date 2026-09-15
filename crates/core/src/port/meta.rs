@@ -1,12 +1,11 @@
 //! MVCC metadata storage boundary.
 
-use crate::domain::history::ChunkHistoryEntry;
-use crate::domain::region::{
-    ApplyOutcome, RegionFingerprint, RegionKey, RegionStateEntry, SnapshotEntry,
-};
-use crate::domain::snapshot::{Snapshot, SnapshotId};
 use alloc::vec::Vec;
 use core::future::Future;
+use sekai_util::{
+    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, RegionFingerprint, RegionKey,
+    RegionStateEntry, Snapshot, SnapshotEntry, SnapshotId,
+};
 
 /// Snapshot metadata and per-chunk history storage.
 pub trait MetaStore {
@@ -23,16 +22,16 @@ pub trait MetaStore {
     fn record_chunk(
         &mut self,
         snapshot: SnapshotId,
-        coord: &crate::domain::coords::ChunkCoord,
-        blob: Option<&crate::domain::hash::BlobHash>,
-        diff: Option<&crate::domain::hash::DiffHash>,
+        coord: &ChunkCoord,
+        blob: Option<&BlobHash>,
+        diff: Option<&DiffHash>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// Exact row for (`snapshot`, `coord`), or `None` when never recorded.
     fn lookup_chunk(
         &self,
         snapshot: SnapshotId,
-        coord: &crate::domain::coords::ChunkCoord,
+        coord: &ChunkCoord,
     ) -> impl Future<Output = Result<Option<ChunkHistoryEntry>, Self::Error>> + Send;
 
     /// Snapshot metadata for `id`, or `None` when it does not exist.

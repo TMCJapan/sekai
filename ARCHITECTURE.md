@@ -20,12 +20,13 @@ software.
 ## Layer Architecture
 
 Dependencies point inward. `core` never depends on `world`, `storage`, or
-`app`; pure crates never depend on `core` at the package level.
+`app`; `util` is a dependency leaf (nothing in the workspace depends on
+anything through it).
 
 ```text
 sekai (bin, thin: clap parse + print + exit code)
   -> sekai-app (std + tokio: orchestration, parallelism, clocks, timing)
-    -> sekai-core (no_std + alloc: domain + use-case policy API)
+    -> sekai-core (no_std + alloc: use-case policy API over shared types)
       -> sekai-anvil (no_std + alloc: pure sector codec, decompress)
       -> sekai-nbt (no_std + alloc: pure parse/diff)
     -> sekai-world (std: filesystem owner - discover/fingerprint/scan/swap)
@@ -33,13 +34,17 @@ sekai (bin, thin: clap parse + print + exit code)
     -> sekai-storage (std + tokio: async MetaStore/BlobStore traits,
                       file CAS, and feature-gated DB backends)
       -> sekai-core
+sekai-util (no_std, zero-dependency: coordinates, hashes, history value
+  types) <- anvil, nbt, core (world/storage/app reach them through
+  `core` re-exports)
 ```
 
 | Crate | `std` | `async` | Role |
 |---|---|---|---|
-| `sekai-anvil` | `no_std` + `alloc` | no | Pure Anvil sector codec including decompression. `&[u8]` sector payload in, raw NBT bytes out; also builds `Vec<u8>` images. Compression framing is MCA spec knowledge, so it lives here. No `Path`, no `fs`. |
-| `sekai-nbt` | `no_std` + `alloc` | no | Pure `raw NBT bytes -> diff view`. Hand-rolled NBT parser (serde data model), tag filtering, canonical digest. Never sees compression. |
-| `sekai-core` | `no_std` + `alloc` | no (`async` only as trait bounds, see below) | Domain types + use-case policy API (`plan`/`assemble`/`commit`, `plan_rollback`, `gc plan`/`apply`). Depends on `anvil` + `nbt`. |
+| `sekai-util` | `no_std`, zero external dependencies | no | Shared value types: coordinates, hashes, region/history/snapshot/gc records, hex errors. Pure data plus total validation only. |
+| `sekai-anvil` | `no_std` + `alloc` | no | Pure Anvil sector codec including decompression. `&[u8]` sector payload in, raw NBT bytes out; also builds `Vec<u8>` images. Compression framing is MCA spec knowledge, so it lives here. No `Path`, no `fs`. Names custom dimensions with util `Dimension`. |
+| `sekai-nbt` | `no_std` + `alloc` | no | Pure `raw NBT bytes -> diff view`. Hand-rolled NBT parser (serde data model), tag filtering, canonical digest returning util `DiffHash`. Never sees compression. |
+| `sekai-core` | `no_std` + `alloc` | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_rollback`, `gc plan`/`apply`) plus composition helpers (`hash_blob`, `resolve_custom_dimension`, storage ports). Composes `anvil`/`nbt` over util types and re-exports them, so downstream paths stay stable. |
 | `sekai-storage` | `std` + tokio | yes (RPITIT) | Single crate: async `BlobStore`/`MetaStore` traits (`api` module), file CAS (`cas` module, `blobs/ab/cdef...` retained by design), and feature-gated DB backends (`sqlite` module ships; `mysql`/`postgres` modules reserved as stubs). Depends on `core`. Backend modules mirror the future split so extraction stays mechanical. |
 | `sekai-world` | `std` | yes (I/O) / sync pure helpers where trivial | Filesystem owner: world discovery, fingerprint observation, read-only scans, atomic swaps. |
 | `sekai-app` | `std` + tokio | yes | Composition/orchestration library for third parties: parallel ingest, clocks, timing, progress callbacks. |
@@ -57,20 +62,25 @@ sekai (bin, thin: clap parse + print + exit code)
   `core::plan_*`. This is dependency inversion: `core` owns the shapes,
   outer crates produce them.
 
-### Package-cycle rule for pure crates
+### Shared value types (`sekai-util`)
 
-`anvil` and `nbt` must not depend on the `sekai-core` package (otherwise
-`core -> anvil/nbt -> core` is a cycle). The boundary speaks plain data:
+Coordinates, hashes, and history records live in a zero-dependency leaf so
+`anvil` and `nbt` can name the same types as `core` without a package
+cycle (`core -> anvil/nbt -> core` is forbidden by Cargo). The boundary
+rules:
 
-- `anvil`: `&[u8]`, `i32` coordinates/codes, `Vec<u8>` images, `[u8; 32]`
-  header digests. Rich types (`ChunkCoord`, `Dimension`, `RegionKind`,
-  `BlobHash`) live in `core::domain`; `core` converts at the boundary.
-  Codec errors (`UnknownCompression`, `CustomCompression`, `ExternalBody`,
+- `util` holds pure data plus total validation only: no hashing backends,
+  no codecs, no ports, no orchestration. It depends on nothing.
+- `anvil`/`nbt` implement over util types (`Dimension` custom ids,
+  `DiffHash` digests); `core` composes them (`hash_blob`,
+  `resolve_custom_dimension`, storage ports, use cases).
+- `core` re-exports every util type at its root, so downstream paths
+  (`sekai_core::ChunkCoord`, ...) keep working; `world`/`storage`/`app`
+  continue to import through `core`.
+- Codec errors (`UnknownCompression`, `CustomCompression`, `ExternalBody`,
   decompression failures) are `anvil` errors: compression framing is MCA
-  spec knowledge.
-- `nbt`: `diff_hash(nbt_bytes: &[u8], ignore: &[&str]) -> Result<[u8; 32], NbtError>`;
-  `core` wraps the bytes into `DiffHash`. Input is always already-decompressed
-  raw NBT; `nbt` knows nothing of compression-type bytes or sector framing.
+  spec knowledge. `nbt` input is always already-decompressed raw NBT; it
+  knows nothing of compression-type bytes or sector framing.
 
 ## Data Flow
 

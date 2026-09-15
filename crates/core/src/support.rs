@@ -6,12 +6,11 @@ use core::future::Future;
 use core::pin::pin;
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
-use crate::domain::coords::ChunkCoord;
-use crate::domain::hash::{BlobHash, DiffHash};
-use crate::domain::history::ChunkHistoryEntry;
-use crate::domain::region::{ApplyOutcome, RegionFingerprint, RegionKey, RegionStateEntry};
-use crate::domain::snapshot::{Snapshot, SnapshotId};
 use crate::port::{BlobStore, MetaStore};
+use sekai_util::{
+    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, RegionFingerprint, RegionKey,
+    RegionStateEntry, Snapshot, SnapshotId,
+};
 
 /// Fake backend failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -136,7 +135,7 @@ impl MetaStore for MemMeta {
     async fn apply_snapshot_incremental(
         &mut self,
         created_at_ms: u64,
-        entries: &[crate::domain::region::SnapshotEntry],
+        entries: &[sekai_util::SnapshotEntry],
         carry_from: Option<(SnapshotId, &[RegionKey])>,
         fingerprints: &[RegionFingerprint],
         removed: &[RegionKey],

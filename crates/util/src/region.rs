@@ -1,8 +1,6 @@
 //! Region identities and incremental-backup fingerprints.
 
-use super::coords::{ChunkCoord, Dimension, RegionKind};
-use super::hash::{BlobHash, DiffHash};
-use super::snapshot::SnapshotId;
+use super::{BlobHash, ChunkCoord, DiffHash, Dimension, RegionKind, SnapshotId};
 
 /// Identity of one region file within its namespace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

@@ -2,10 +2,9 @@
 
 use core::fmt;
 
-use crate::SnapshotId;
-use crate::domain::snapshot::Snapshot;
 use crate::port::meta::MetaStore;
 use alloc::vec::Vec;
+use sekai_util::{Snapshot, SnapshotId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SnapshotError<M> {

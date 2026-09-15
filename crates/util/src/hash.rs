@@ -4,7 +4,7 @@
 
 use alloc::string::String;
 
-use super::error::CoreError;
+use super::error::HexError;
 
 /// Blake3 key for exact raw chunk payloads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -14,21 +14,16 @@ pub struct BlobHash(pub [u8; 32]);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DiffHash(pub [u8; 32]);
 
-/// Hash the exact raw chunk payload into its CAS key.
-pub fn hash_blob(payload: &[u8]) -> BlobHash {
-    BlobHash(*blake3::hash(payload).as_bytes())
-}
-
 /// Lowercase alphabet for CAS paths.
 const HEX: &[u8; 16] = b"0123456789abcdef";
 
 /// Decode one hexadecimal nibble.
-const fn decode_nibble(byte: u8) -> Result<u8, CoreError> {
+const fn decode_nibble(byte: u8) -> Result<u8, HexError> {
     match byte {
         b'0'..=b'9' => Ok(byte - b'0'),
         b'a'..=b'f' => Ok(byte - b'a' + 10),
         b'A'..=b'F' => Ok(byte - b'A' + 10),
-        other => Err(CoreError::BadHexChar(other)),
+        other => Err(HexError::BadHexChar(other)),
     }
 }
 
@@ -59,9 +54,9 @@ impl BlobHash {
     }
 
     /// Parse a 64-byte hexadecimal value.
-    pub fn from_hex(input: &[u8]) -> Result<Self, CoreError> {
+    pub fn from_hex(input: &[u8]) -> Result<Self, HexError> {
         if input.len() != 64 {
-            return Err(CoreError::BadHexLength(input.len()));
+            return Err(HexError::BadHexLength(input.len()));
         }
         let mut out = [0u8; 32];
         let mut i = 0;
@@ -88,14 +83,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn blob_hash_is_stable() {
-        assert_eq!(hash_blob(b"payload"), hash_blob(b"payload"));
-        assert_ne!(hash_blob(b"payload"), hash_blob(b"other"));
-    }
-
-    #[test]
     fn hex_round_trip() {
-        let h = hash_blob(b"payload");
+        let h = BlobHash([7; 32]);
         let hex = h.hex_into();
         assert_eq!(BlobHash::from_hex(&hex), Ok(h));
         let mut upper = hex;
@@ -108,9 +97,9 @@ mod tests {
 
     #[test]
     fn hex_rejects_bad_length_and_chars() {
-        assert_eq!(BlobHash::from_hex(b"abc"), Err(CoreError::BadHexLength(3)));
+        assert_eq!(BlobHash::from_hex(b"abc"), Err(HexError::BadHexLength(3)));
         let mut bad = [b'0'; 64];
         bad[0] = b'z';
-        assert_eq!(BlobHash::from_hex(&bad), Err(CoreError::BadHexChar(b'z')));
+        assert_eq!(BlobHash::from_hex(&bad), Err(HexError::BadHexChar(b'z')));
     }
 }

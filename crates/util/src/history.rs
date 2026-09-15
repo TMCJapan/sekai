@@ -1,8 +1,6 @@
 //! Per-chunk facts on the snapshot timeline.
 
-use super::coords::ChunkCoord;
-use super::hash::{BlobHash, DiffHash};
-use super::snapshot::SnapshotId;
+use super::{BlobHash, ChunkCoord, DiffHash, SnapshotId};
 
 /// History row for one snapshot and chunk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,5 +34,20 @@ impl ChunkHistoryEntry {
     /// Whether this row is a tombstone (chunk absent at this snapshot).
     pub const fn is_tombstone(self) -> bool {
         self.blob.is_none()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{ChunkCoord, Dimension, RegionKind, SnapshotId};
+
+    #[test]
+    fn tombstone_detection() {
+        let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::REGION, 0, 0);
+        let present = ChunkHistoryEntry::new(coord, SnapshotId(1), Some(BlobHash([1; 32])), None);
+        assert!(!present.is_tombstone());
+        let tomb = ChunkHistoryEntry::new(coord, SnapshotId(2), None, None);
+        assert!(tomb.is_tombstone());
     }
 }

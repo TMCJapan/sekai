@@ -11,3 +11,4 @@ workspace = true
 blake3.workspace = true
 sekai-anvil.workspace = true
 sekai-nbt.workspace = true
+sekai-util.workspace = true

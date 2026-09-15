@@ -6,10 +6,9 @@ use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use core::fmt;
 
-use crate::domain::gc::GcPlan;
-use crate::domain::hash::BlobHash;
 use crate::port::blob::BlobStore;
 use crate::port::meta::MetaStore;
+use sekai_util::{BlobHash, GcPlan, SnapshotId};
 
 /// Outcome of one [`gc_apply`] run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,7 +45,7 @@ pub async fn gc_plan<B: BlobStore, M: MetaStore>(
     meta: &M,
 ) -> Result<GcPlan, GcError<B::Error, M::Error>> {
     let mut referenced: BTreeSet<BlobHash> = BTreeSet::new();
-    let mut snapshots: Vec<crate::domain::snapshot::SnapshotId> = Vec::new();
+    let mut snapshots: Vec<SnapshotId> = Vec::new();
     meta.visit_snapshots(|snapshot| {
         snapshots.push(snapshot.id);
         true
@@ -108,15 +107,14 @@ pub async fn gc_apply<B: BlobStore, M: MetaStore>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::coords::{Dimension, RegionKind};
-    use crate::domain::region::SnapshotEntry;
     use crate::support::{MemCas, MemMeta, block_on};
+    use sekai_util::{ChunkCoord, Dimension, RegionKind, SnapshotEntry};
 
     const OVER: Dimension = Dimension::OVERWORLD;
     const REGION: RegionKind = RegionKind::REGION;
 
-    fn coord(x: i32, z: i32) -> crate::domain::coords::ChunkCoord {
-        crate::domain::coords::ChunkCoord::new(OVER, REGION, x, z)
+    fn coord(x: i32, z: i32) -> ChunkCoord {
+        ChunkCoord::new(OVER, REGION, x, z)
     }
 
     #[test]

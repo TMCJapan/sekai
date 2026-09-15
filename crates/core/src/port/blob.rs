@@ -5,9 +5,9 @@
 //! File-backed implementations perform short blocking filesystem calls
 //! inline; hot paths must run them under the runtime's blocking pool at
 //! the app layer.
-use crate::domain::hash::BlobHash;
 use alloc::vec::Vec;
 use core::future::Future;
+use sekai_util::BlobHash;
 
 /// Content-addressed blob storage.
 pub trait BlobStore {

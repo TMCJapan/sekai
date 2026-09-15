@@ -29,13 +29,11 @@
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
-use crate::domain::coords::ChunkCoord;
-use crate::domain::hash::BlobHash;
-use crate::domain::region::{
-    ApplyOutcome, RegionFingerprint, RegionKey, RegionStateEntry, SnapshotEntry,
-};
-use crate::domain::snapshot::{Snapshot, SnapshotId};
 use crate::port::meta::MetaStore;
+use sekai_util::{
+    ApplyOutcome, BlobHash, ChunkCoord, RegionFingerprint, RegionKey, RegionStateEntry, Snapshot,
+    SnapshotEntry, SnapshotId,
+};
 
 /// Outcome of one backup run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -236,9 +234,8 @@ pub async fn commit<M: MetaStore>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::coords::{Dimension, RegionKind};
-    use crate::domain::history::ChunkHistoryEntry;
     use crate::support::MemMeta;
+    use sekai_util::{ChunkHistoryEntry, Dimension, RegionKind};
 
     const OVER: Dimension = Dimension::OVERWORLD;
     const REGION: RegionKind = RegionKind::REGION;
