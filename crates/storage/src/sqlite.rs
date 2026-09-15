@@ -467,7 +467,7 @@ impl sekai_core::MetaStore for SqliteMeta {
 mod tests {
     use super::*;
     use sekai_core::{
-        RegionKind,
+        RegionKind, Scope,
         usecase::backup::{Observation, assemble, commit, plan_backup, stage_present},
     };
     use sqlx::ConnectOptions as _;
@@ -561,6 +561,7 @@ mod tests {
                 key,
                 fingerprint: fp,
             }],
+            Scope::World,
         )
         .await
         .unwrap();
@@ -573,6 +574,7 @@ mod tests {
             BTreeSet::from([coord]),
             0,
             vec![fp],
+            Scope::World,
         );
         let report = commit(&mut meta, &previous, &staged, 2_000).await.unwrap();
         assert_eq!(report.carried_chunks, 0);
@@ -621,6 +623,7 @@ mod tests {
                     fingerprint: fp(key1),
                 },
             ],
+            Scope::World,
         )
         .await
         .unwrap();
@@ -631,6 +634,7 @@ mod tests {
             BTreeSet::from([c0]),
             1,
             vec![changed],
+            Scope::World,
         );
         let report = commit(&mut meta, &previous, &staged, 2_000).await.unwrap();
         assert_eq!(report.carried_chunks, 1);

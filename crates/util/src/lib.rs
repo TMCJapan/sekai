@@ -10,6 +10,7 @@ pub mod hash;
 pub mod history;
 pub mod region;
 pub mod region_kind;
+pub mod scope;
 pub mod snapshot;
 
 pub use chunk_coord::ChunkCoord;
@@ -20,4 +21,5 @@ pub use hash::{BlobHash, DiffHash};
 pub use history::ChunkHistoryEntry;
 pub use region::{ApplyOutcome, RegionFingerprint, RegionKey, RegionStateEntry, SnapshotEntry};
 pub use region_kind::RegionKind;
+pub use scope::{OwnedScope, Scope};
 pub use snapshot::{Snapshot, SnapshotId};

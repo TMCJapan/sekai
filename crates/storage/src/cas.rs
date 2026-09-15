@@ -70,6 +70,12 @@ impl FileCas {
     /// blob). The rename itself is persisted by the next `sync` call, which
     /// must precede any metadata commit referencing the blob.
     ///
+    /// Concurrent puts of the same blob are safe: all writers fsync
+    /// complete files and exactly one rename wins; losers observe the
+    /// winner's identical bytes (content-addressed) and report deduplicated.
+    /// This matters on Windows, where renaming over an existing file fails
+    /// instead of atomically replacing it.
+    ///
     /// Synchronous building block for blocking contexts (e.g.
     /// `spawn_blocking` ingest workers); async callers use the
     /// [`BlobStore`](sekai_core::BlobStore) trait method instead.
@@ -85,21 +91,26 @@ impl FileCas {
             std::process::id(),
             TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
         ));
-        let write = || -> Result<(), StorageError> {
+        let write = || -> Result<bool, StorageError> {
             let mut f = std::fs::File::create(&tmp).map_err(io(tmp.clone()))?;
             f.write_all(payload).map_err(io(tmp.clone()))?;
             f.sync_all().map_err(io(tmp.clone()))?;
             drop(f);
-            std::fs::rename(&tmp, &dest).map_err(io(dest.clone()))?;
-            Ok(())
+            match std::fs::rename(&tmp, &dest) {
+                Ok(()) => Ok(true),
+                Err(_) if dest.exists() => Ok(false),
+                Err(source) => Err(io(dest.clone())(source)),
+            }
         };
         let result = write();
-        if result.is_err() {
+        if result.as_ref().is_ok_and(|is_new| !is_new) || result.is_err() {
             let _ = std::fs::remove_file(&tmp);
         }
-        result?;
-        self.pending_dir_sync.insert(hash.as_bytes()[0]);
-        Ok(true)
+        let is_new = result?;
+        if is_new {
+            self.pending_dir_sync.insert(hash.as_bytes()[0]);
+        }
+        Ok(is_new)
     }
 
     /// Persist pending shard-directory renames before metadata commit.
@@ -249,5 +260,61 @@ impl sekai_core::BlobStore for FileCas {
         F: FnMut(&BlobHash) -> bool + Send,
     {
         core::future::ready(Self::scan_blobs(self, visit))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Barrier;
+
+    fn temp_root(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "sekai-cas-{name}-{}-{}",
+            std::process::id(),
+            TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn concurrent_same_blob_put_never_errors() {
+        let root = temp_root("race");
+        let hash = BlobHash([9; 32]);
+        let payload = vec![7u8; 1024];
+        for _ in 0..25 {
+            let _ = std::fs::remove_dir_all(root.join("blobs"));
+            let barrier = Barrier::new(8);
+            let wins = std::thread::scope(|s| {
+                let handles: Vec<_> = (0..8)
+                    .map(|_| {
+                        s.spawn(|| {
+                            let mut cas = FileCas::open(&root).unwrap();
+                            barrier.wait();
+                            cas.put_blob(&hash, &payload)
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|handle| handle.join().unwrap().unwrap())
+                    .collect::<Vec<_>>()
+            });
+            // Every racer succeeds (losers deduplicate); at least one wrote.
+            // Note: on platforms where concurrent renames all succeed, more
+            // than one racer may report newly-written (`new_blobs` may
+            // overcount racing duplicates); the bytes are identical either
+            // way, so this stays a cosmetic inaccuracy, never corruption.
+            assert!(wins.iter().any(|win| *win));
+            let mut read_back = Vec::new();
+            FileCas::open(&root)
+                .unwrap()
+                .fetch_blob(&hash, &mut read_back)
+                .unwrap();
+            assert_eq!(read_back, payload);
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

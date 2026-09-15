@@ -31,8 +31,8 @@ use alloc::vec::Vec;
 
 use crate::port::meta::MetaStore;
 use sekai_util::{
-    ApplyOutcome, BlobHash, ChunkCoord, RegionFingerprint, RegionKey, RegionStateEntry, Snapshot,
-    SnapshotEntry, SnapshotId,
+    ApplyOutcome, BlobHash, ChunkCoord, RegionFingerprint, RegionKey, RegionStateEntry, Scope,
+    Snapshot, SnapshotEntry, SnapshotId,
 };
 
 /// Outcome of one backup run.
@@ -106,11 +106,14 @@ pub struct Assembled {
 
 /// Load prior state and classify observed regions as carried or ingested.
 ///
+/// Regions outside `scope` are ignored entirely: they are neither carried
+/// nor ingested, and their stored state rows are never marked removed.
 /// Callers must quiesce the source while fingerprinting; a concurrent rewrite
 /// after the match is not detected until a later backup.
 pub async fn plan_backup<M: MetaStore>(
     meta: &M,
     observed: &[Observation],
+    scope: Scope<'_>,
 ) -> Result<(Previous, Plan), M::Error> {
     let mut universe: BTreeSet<ChunkCoord> = BTreeSet::new();
     let snapshot = meta.latest_snapshot().await?;
@@ -137,6 +140,9 @@ pub async fn plan_backup<M: MetaStore>(
         discovered: BTreeSet::new(),
     };
     for obs in observed {
+        if !scope.matches_region(obs.key) {
+            continue;
+        }
         plan.discovered.insert(obs.key);
         if previous
             .states
@@ -149,7 +155,7 @@ pub async fn plan_backup<M: MetaStore>(
         }
     }
     for state in previous.states.values() {
-        if !plan.discovered.contains(&state.key) {
+        if scope.matches_region(state.key) && !plan.discovered.contains(&state.key) {
             plan.removed.push(state.key);
         }
     }
@@ -163,7 +169,9 @@ pub const fn stage_present(coord: ChunkCoord, hash: BlobHash) -> SnapshotEntry {
 
 /// Merge fresh rows with carried coordinates and tombstones.
 ///
-/// Previously known coordinates not present in the new scan become tombstones.
+/// Previously known coordinates inside `scope` but not present in the new
+/// scan become tombstones; out-of-scope coordinates keep resolving through
+/// fallback, so scoped backups never record spurious tombstones.
 pub fn assemble(
     plan: Plan,
     previous: &Previous,
@@ -171,11 +179,12 @@ pub fn assemble(
     mut present: BTreeSet<ChunkCoord>,
     new_blobs: usize,
     fingerprints: Vec<RegionFingerprint>,
+    scope: Scope<'_>,
 ) -> Assembled {
     if !plan.carries.is_empty() {
         let skipped: BTreeSet<RegionKey> = plan.carries.iter().copied().collect();
         for coord in &previous.universe {
-            if skipped.contains(&RegionKey::of(*coord)) {
+            if scope.contains(*coord) && skipped.contains(&RegionKey::of(*coord)) {
                 present.insert(*coord);
             }
         }
@@ -183,7 +192,7 @@ pub fn assemble(
     let mut entries = ingested_entries;
     let mut tombstones = 0usize;
     for coord in &previous.universe {
-        if !present.contains(coord) {
+        if scope.contains(*coord) && !present.contains(coord) {
             entries.push(SnapshotEntry::new(*coord, None, None));
             tombstones += 1;
         }
@@ -238,6 +247,7 @@ mod tests {
     use sekai_util::{ChunkHistoryEntry, Dimension, RegionKind};
 
     const OVER: Dimension = Dimension::OVERWORLD;
+    const NETHER: Dimension = Dimension::NETHER;
     const REGION: RegionKind = RegionKind::REGION;
 
     const fn key(rx: i32, rz: i32) -> RegionKey {
@@ -246,6 +256,14 @@ mod tests {
 
     const fn coord(x: i32, z: i32) -> ChunkCoord {
         ChunkCoord::new(OVER, REGION, x, z)
+    }
+
+    const fn nether_key(rx: i32, rz: i32) -> RegionKey {
+        RegionKey::new(NETHER, REGION, rx, rz)
+    }
+
+    const fn nether_coord(x: i32, z: i32) -> ChunkCoord {
+        ChunkCoord::new(NETHER, REGION, x, z)
     }
 
     fn fingerprint(key: RegionKey) -> RegionFingerprint {
@@ -264,7 +282,8 @@ mod tests {
             key: key(0, 0),
             fingerprint: fingerprint(key(0, 0)),
         }];
-        let (previous, plan) = crate::support::block_on(plan_backup(&meta, &observed)).unwrap();
+        let (previous, plan) =
+            crate::support::block_on(plan_backup(&meta, &observed, Scope::World)).unwrap();
         assert!(previous.snapshot.is_none());
         assert!(previous.universe.is_empty());
         assert!(plan.carries.is_empty());
@@ -301,7 +320,8 @@ mod tests {
                 fingerprint: fp1,
             },
         ];
-        let (previous, plan) = crate::support::block_on(plan_backup(&meta, &observed)).unwrap();
+        let (previous, plan) =
+            crate::support::block_on(plan_backup(&meta, &observed, Scope::World)).unwrap();
         assert_eq!(plan.carries, alloc::vec![key(1, 0)]);
         assert_eq!(plan.ingest, alloc::vec![key(0, 0)]);
         assert!(plan.removed.is_empty());
@@ -313,6 +333,7 @@ mod tests {
             BTreeSet::from([coord(0, 0)]),
             1,
             alloc::vec![changed],
+            Scope::World,
         );
         assert_eq!(staged.chunks, 2);
         assert_eq!(staged.tombstones, 0);
@@ -352,7 +373,8 @@ mod tests {
         .id;
         assert_eq!(s1, SnapshotId(1));
 
-        let (previous, plan) = crate::support::block_on(plan_backup(&meta, &[])).unwrap();
+        let (previous, plan) =
+            crate::support::block_on(plan_backup(&meta, &[], Scope::World)).unwrap();
         assert_eq!(plan.removed, alloc::vec![key(0, 0)]);
         let staged = assemble(
             plan,
@@ -361,6 +383,7 @@ mod tests {
             BTreeSet::new(),
             0,
             alloc::vec::Vec::new(),
+            Scope::World,
         );
         assert_eq!(staged.chunks, 0);
         assert_eq!(staged.tombstones, 2);
@@ -373,6 +396,118 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(tomb.is_tombstone());
+    }
+
+    #[test]
+    fn scoped_plan_ignores_out_of_scope_regions() {
+        let mut meta = MemMeta::default();
+        let fp_over = fingerprint(key(0, 0));
+        let fp_nether = RegionFingerprint {
+            key: nether_key(0, 0),
+            ..fingerprint(key(0, 0))
+        };
+        crate::support::block_on(meta.apply_snapshot_incremental(
+            1_000,
+            &[
+                stage_present(coord(0, 0), BlobHash([1; 32])),
+                stage_present(nether_coord(0, 0), BlobHash([2; 32])),
+            ],
+            None,
+            &[fp_over, fp_nether],
+            &[],
+        ))
+        .unwrap();
+
+        // Only the nether region is observed (overworld file deleted from
+        // disk), but the overworld scope sees neither ingest nor removal.
+        let observed = [Observation {
+            key: nether_key(0, 0),
+            fingerprint: fp_nether,
+        }];
+        let scope = Scope::Dimension(NETHER);
+        let (_, plan) = crate::support::block_on(plan_backup(&meta, &observed, scope)).unwrap();
+        assert_eq!(plan.carries, alloc::vec![nether_key(0, 0)]);
+        assert!(plan.ingest.is_empty());
+        assert!(plan.removed.is_empty());
+
+        // Out-of-scope observations never enter the plan at all.
+        let observed = [
+            Observation {
+                key: key(0, 0),
+                fingerprint: fp_over,
+            },
+            Observation {
+                key: nether_key(0, 0),
+                fingerprint: fp_nether,
+            },
+        ];
+        let (_, plan) =
+            crate::support::block_on(plan_backup(&meta, &observed, Scope::World)).unwrap();
+        assert_eq!(plan.carries, alloc::vec![key(0, 0), nether_key(0, 0)]);
+    }
+
+    #[test]
+    fn scoped_assemble_tombstones_only_in_scope() {
+        let mut meta = MemMeta::default();
+        let fp_nether = RegionFingerprint {
+            key: nether_key(0, 0),
+            ..fingerprint(key(0, 0))
+        };
+        crate::support::block_on(meta.apply_snapshot_incremental(
+            1_000,
+            &[
+                stage_present(coord(0, 0), BlobHash([1; 32])),
+                stage_present(coord(1, 0), BlobHash([2; 32])),
+                stage_present(nether_coord(0, 0), BlobHash([3; 32])),
+            ],
+            None,
+            &[fingerprint(key(0, 0)), fp_nether],
+            &[],
+        ))
+        .unwrap();
+
+        // Scoped backup of the overworld re-ingests its (changed) region:
+        // (1,0) is genuinely gone, the nether chunk is out of scope and
+        // must not become a tombstone.
+        let mut changed = fingerprint(key(0, 0));
+        changed.size += 1;
+        let observed = [Observation {
+            key: key(0, 0),
+            fingerprint: changed,
+        }];
+        let scope = Scope::Dimension(OVER);
+        let (previous, plan) =
+            crate::support::block_on(plan_backup(&meta, &observed, scope)).unwrap();
+        assert_eq!(plan.ingest, alloc::vec![key(0, 0)]);
+        assert!(plan.removed.is_empty());
+        let staged = assemble(
+            plan,
+            &previous,
+            alloc::vec![stage_present(coord(0, 0), BlobHash([9; 32]))],
+            BTreeSet::from([coord(0, 0)]),
+            1,
+            alloc::vec::Vec::new(),
+            scope,
+        );
+        assert_eq!(staged.tombstones, 1);
+        assert_eq!(staged.chunks, 1);
+        let tombstoned: alloc::vec::Vec<ChunkCoord> = staged
+            .entries
+            .iter()
+            .filter(|entry| entry.blob.is_none())
+            .map(|entry| entry.coord)
+            .collect();
+        assert_eq!(tombstoned, alloc::vec![coord(1, 0)]);
+
+        let report =
+            crate::support::block_on(commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        assert_eq!(report.tombstones, 1);
+        // The nether chunk still resolves through fallback, untouched.
+        let kept =
+            crate::support::block_on(meta.lookup_chunk(report.snapshot, &nether_coord(0, 0)))
+                .unwrap()
+                .unwrap();
+        assert_eq!(kept.blob, Some(BlobHash([3; 32])));
     }
 
     #[test]
