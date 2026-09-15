@@ -76,9 +76,13 @@ pub fn read_world_chunk_nbt(world: &Path, coord: &ChunkCoord) -> Result<Vec<u8>,
         .ok_or(AppError::ChunkNotFoundInWorld { coord: *coord })?;
 
     let bytes = sekai_world::open_image(&region_ref.path)?;
-    let image = sekai_anvil::RegionImage::from_bytes(bytes, rx, rz)?;
+    let failed = |source| AppError::RegionFailed {
+        path: region_ref.path.clone(),
+        source,
+    };
+    let image = sekai_anvil::RegionImage::from_bytes(bytes, rx, rz).map_err(&failed)?;
 
-    let payload = image.chunk_payload(coord.x, coord.z)?;
+    let payload = image.chunk_payload(coord.x, coord.z).map_err(&failed)?;
     let compressed = payload.ok_or(AppError::ChunkNotFoundInWorld { coord: *coord })?;
     let mut nbt = Vec::new();
     sekai_anvil::decompress_into(compressed, &mut nbt)?;

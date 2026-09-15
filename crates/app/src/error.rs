@@ -1,5 +1,7 @@
 //! Composition failures with their source attached.
 
+use std::path::PathBuf;
+
 /// Failures while backing up, rolling back, or listing snapshots.
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
@@ -12,6 +14,15 @@ pub enum AppError {
     /// Region image failed to parse or build.
     #[error(transparent)]
     Anvil(#[from] sekai_anvil::AnvilError),
+    /// Region file failed to parse, with the file attached for diagnosis.
+    #[error("failed to process region file {}: {source}", path.display())]
+    RegionFailed {
+        /// File involved.
+        path: PathBuf,
+        /// Underlying parse failure.
+        #[source]
+        source: sekai_anvil::AnvilError,
+    },
     /// Rollback plan could not be resolved.
     #[error("{0}")]
     Rollback(sekai_core::RollbackError<sekai_storage::StorageError>),

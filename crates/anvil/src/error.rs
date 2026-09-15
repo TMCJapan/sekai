@@ -15,9 +15,6 @@ pub enum AnvilError {
     /// Image is shorter than the 8 KiB header.
     TruncatedFile { len: u64 },
 
-    /// Image length is not a multiple of the 4 KiB sector size.
-    MisalignedFile { len: u64 },
-
     /// A location-table entry is invalid or points outside the image.
     CorruptEntry {
         index: u32,
@@ -83,13 +80,6 @@ impl fmt::Display for AnvilError {
 
             Self::TruncatedFile { len } => {
                 write!(f, "truncated region image: {len} bytes, need at least 8192")
-            }
-
-            Self::MisalignedFile { len } => {
-                write!(
-                    f,
-                    "misaligned region image: {len} bytes is not a multiple of 4096"
-                )
             }
 
             Self::CorruptEntry {

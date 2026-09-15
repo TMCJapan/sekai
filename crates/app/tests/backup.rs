@@ -357,3 +357,53 @@ async fn diff_world_chunk_with_snapshot() {
 
     cleanup(&root);
 }
+
+#[tokio::test]
+async fn backs_up_region_with_trailing_partial_sector() {
+    // Real files can carry a torn tail (e.g. 1034 sectors + 188 bytes)
+    // that vanilla opens fine; backup must accept it as long as every
+    // referenced run is intact.
+    let root = tempdir("partial-tail");
+    let world = root.join("world");
+    let store = root.join("store").to_string_lossy().into_owned();
+    let region = world.join("region/r.0.0.mca");
+    write_region(&region, &[(0, 0, vec![3, 1])]);
+
+    let mut bytes = std::fs::read(&region).unwrap();
+    bytes.extend_from_slice(&[0xAB; 188]);
+    assert_ne!(bytes.len() % 4096, 0);
+    std::fs::write(&region, &bytes).unwrap();
+
+    let (report, _) = sekai_app::backup(&world, &store, options(), |_| {})
+        .await
+        .unwrap();
+    assert_eq!(report.chunks, 1);
+    assert_eq!(report.new_blobs, 1);
+    assert_eq!(read_coords(&region), vec![(0, 0)]);
+    cleanup(&root);
+}
+
+#[tokio::test]
+async fn corrupt_region_names_its_file() {
+    // Genuine corruption still fails loudly, now naming the file.
+    let root = tempdir("corrupt-names-file");
+    let world = root.join("world");
+    let store = root.join("store").to_string_lossy().into_owned();
+    let region = world.join("region/r.0.0.mca");
+    write_region(&region, &[(0, 0, vec![3, 1])]);
+
+    // Point the only entry far past end of file.
+    let mut bytes = std::fs::read(&region).unwrap();
+    bytes[0..4].copy_from_slice(&((9u32 << 8 | 1).to_be_bytes()));
+    std::fs::write(&region, &bytes).unwrap();
+
+    let err = sekai_app::backup(&world, &store, options(), |_| {})
+        .await
+        .unwrap_err();
+    let message = format!("{err}");
+    assert!(
+        message.contains("r.0.0.mca"),
+        "error names the file: {message}"
+    );
+    cleanup(&root);
+}

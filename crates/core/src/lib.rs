@@ -17,7 +17,7 @@ pub use sekai_util::{
 };
 
 // sekai-nbt AST diff types
-pub use sekai_nbt::{DEFAULT_IGNORED, NbtChange, NbtDiffEntry};
+pub use sekai_nbt::{DEFAULT_IGNORED, NbtChange, NbtDiffEntry, Value as NbtValue};
 
 pub use usecase::{
     Assembled, BackupReport, DiffError, GcError, GcReport, Observation, Plan, Previous,

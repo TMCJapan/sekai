@@ -109,21 +109,19 @@ pub fn base_coords(region_x: i32, region_z: i32) -> Result<(i32, i32), AnvilErro
     ))
 }
 
-/// Validates an image length and returns its sector count.
-pub const fn check_image_len(len: u64) -> Result<u64, AnvilError> {
+/// Validates an image length.
+///
+/// Accepts empty images and anything at least as long as the 8 KiB header.
+pub const fn check_image_len(len: u64) -> Result<(), AnvilError> {
     if len == 0 {
-        return Ok(0);
+        return Ok(());
     }
 
     if len < HEADER_LEN {
         return Err(AnvilError::TruncatedFile { len });
     }
 
-    if !len.is_multiple_of(SECTOR_LEN) {
-        return Err(AnvilError::MisalignedFile { len });
-    }
-
-    Ok(len / SECTOR_LEN)
+    Ok(())
 }
 
 /// Returns the number of sectors required for a stored payload.
@@ -165,7 +163,7 @@ mod tests {
 
     #[test]
     fn validates_image_lengths() {
-        assert_eq!(check_image_len(0), Ok(0));
+        assert!(check_image_len(0).is_ok());
 
         assert!(matches!(
             check_image_len(1),
@@ -177,14 +175,11 @@ mod tests {
             Err(AnvilError::TruncatedFile { .. })
         ));
 
-        assert_eq!(check_image_len(8192), Ok(2));
-
-        assert!(matches!(
-            check_image_len(8193),
-            Err(AnvilError::MisalignedFile { .. })
-        ));
-
-        assert_eq!(check_image_len(12288), Ok(3));
+        // Header-only, sector-aligned, and trailing-partial-sector images
+        // are all accepted here; referenced runs are validated on visit.
+        assert!(check_image_len(8192).is_ok());
+        assert!(check_image_len(8193).is_ok());
+        assert!(check_image_len(12288 + 188).is_ok());
     }
 
     #[test]
