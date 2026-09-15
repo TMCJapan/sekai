@@ -13,6 +13,10 @@ use sekai_app::{
     RegionKind, RollbackReport, RollbackTimings, SnapshotId,
 };
 
+mod style;
+
+use style::{ColorChoice, Styler};
+
 /// Chunk-level deduplicated snapshots for Minecraft region files.
 #[derive(Debug, Parser)]
 #[command(name = "sekai", version, about)]
@@ -21,6 +25,10 @@ struct Cli {
     /// `sqlite://` explicitly if preferred.
     #[arg(long, global = true, default_value = "sekai-store")]
     store: String,
+
+    /// Colorize human output. JSON output is never colorized.
+    #[arg(long, global = true, value_enum, default_value_t = ColorChoice::Auto)]
+    color: ColorChoice,
 
     #[command(subcommand)]
     command: Command,
@@ -126,33 +134,69 @@ enum DebugCommand {
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
-    match cli.command {
+    let color = cli.color;
+    let style = Styler::new(color);
+    let result = match cli.command {
         Command::Backup {
             world,
             timing,
             timing_json,
             with_diff,
             jobs,
-        } => run_backup(&cli.store, &world, timing, timing_json, with_diff, jobs).await,
+        } => {
+            run_backup(
+                &cli.store,
+                &world,
+                timing,
+                timing_json,
+                with_diff,
+                jobs,
+                style,
+            )
+            .await
+        }
         Command::Rollback {
             world,
             snapshot,
             timing,
             timing_json,
-        } => run_rollback(&cli.store, &world, snapshot, timing, timing_json).await,
-        Command::List => run_list(&cli.store).await,
-        Command::Diff(args) => run_diff(&cli.store, args).await,
+        } => run_rollback(&cli.store, &world, snapshot, timing, timing_json, style).await,
+        Command::List => run_list(&cli.store, style).await,
+        Command::Diff(args) => run_diff(&cli.store, args, style).await,
         Command::Gc {
             dry_run,
             timing,
             timing_json,
-        } => run_gc(&cli.store, dry_run, timing, timing_json).await,
+        } => run_gc(&cli.store, dry_run, timing, timing_json, style).await,
         Command::Debug { debug } => match debug {
             DebugCommand::Scan { world, json } => run_debug_scan(&world, json),
         },
+    };
+    match result {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("{}", render_error(&err, Styler::new_stderr(color)));
+            std::process::ExitCode::FAILURE
+        }
     }
+}
+
+/// Render a runtime failure for stderr: red bold `error:` prefix plus the
+/// anyhow context chain. Mirrors clap's own parse-error look.
+fn render_error(err: &anyhow::Error, style: Styler) -> String {
+    let chain = format!("{err:?}");
+    let mut lines = chain.lines();
+    let mut out = lines.next().map_or_else(
+        || style.red_bold("error"),
+        |first| format!("{}: {first}", style.red_bold("error")),
+    );
+    for line in lines {
+        out.push('\n');
+        out.push_str(line);
+    }
+    out
 }
 
 const fn options(with_diff: bool, jobs: usize) -> BackupOptions {
@@ -170,6 +214,7 @@ async fn run_backup(
     timing_json: bool,
     with_diff: bool,
     jobs: usize,
+    style: Styler,
 ) -> anyhow::Result<()> {
     let (report, timings) = sekai_app::backup(world, store, options(with_diff, jobs), |_| {})
         .await
@@ -180,13 +225,13 @@ async fn run_backup(
     }
     println!(
         "snapshot {} recorded: {} chunks, {} new blobs, {} tombstones",
-        report.snapshot.raw(),
+        style.bold(&report.snapshot.raw().to_string()),
         report.chunks,
         report.new_blobs,
         report.tombstones
     );
     if timing {
-        print_timing_table(&timings);
+        print_timing_table(&timings, style);
     }
     Ok(())
 }
@@ -197,6 +242,7 @@ async fn run_rollback(
     snapshot: u64,
     timing: bool,
     timing_json: bool,
+    style: Styler,
 ) -> anyhow::Result<()> {
     let id = SnapshotId(snapshot);
     let (report, timings) = sekai_app::rollback(world, store, id)
@@ -212,20 +258,23 @@ async fn run_rollback(
         return Ok(());
     }
     println!(
-        "snapshot {snapshot} restored: {} files rewritten, {} files deleted, {} chunks restored",
-        report.files_written, report.files_deleted, report.chunks_restored
+        "snapshot {} restored: {} files rewritten, {} files deleted, {} chunks restored",
+        style.bold(&snapshot.to_string()),
+        report.files_written,
+        report.files_deleted,
+        report.chunks_restored
     );
     if timing {
-        print_rollback_timing_table(&timings);
+        print_rollback_timing_table(&timings, style);
     }
     Ok(())
 }
 
-async fn run_list(store: &str) -> anyhow::Result<()> {
+async fn run_list(store: &str, style: Styler) -> anyhow::Result<()> {
     for snapshot in sekai_app::list_snapshots(store).await? {
         println!(
             "{}\t{}",
-            snapshot.id.raw(),
+            style.bold(&snapshot.id.raw().to_string()),
             format_time(snapshot.created_at_ms)
         );
     }
@@ -240,6 +289,7 @@ fn render_diff_human(
     cz: i32,
     diffs: &[sekai_app::NbtDiffEntry],
     show_values: bool,
+    style: Styler,
 ) -> String {
     if diffs.is_empty() {
         return format!("No differences found for chunk ({cx}, {cz}).");
@@ -248,11 +298,12 @@ fn render_diff_human(
         .iter()
         .map(|entry| {
             let (op, detail) = match &entry.change {
-                NbtChange::Added(v) => ("+", show_values.then(|| format!("{v}"))),
-                NbtChange::Removed(v) => ("-", show_values.then(|| format!("{v}"))),
-                NbtChange::Modified { old, new } => {
-                    ("~", show_values.then(|| format!("{old} -> {new}")))
-                }
+                NbtChange::Added(v) => (style.green("+"), show_values.then(|| format!("{v}"))),
+                NbtChange::Removed(v) => (style.red("-"), show_values.then(|| format!("{v}"))),
+                NbtChange::Modified { old, new } => (
+                    style.yellow("~"),
+                    show_values.then(|| format!("{old} -> {new}")),
+                ),
             };
             detail.map_or_else(
                 || format!("{op} {}", entry.path),
@@ -274,7 +325,7 @@ fn truncate_value(rendered: &str) -> String {
     format!("{truncated}...")
 }
 
-async fn run_diff(store: &str, args: DiffArgs) -> anyhow::Result<()> {
+async fn run_diff(store: &str, args: DiffArgs, style: Styler) -> anyhow::Result<()> {
     let coord = ChunkCoord::new(args.dim, args.kind, args.cx, args.cz);
 
     let diffs = if let Some(world) = &args.world {
@@ -337,12 +388,18 @@ async fn run_diff(store: &str, args: DiffArgs) -> anyhow::Result<()> {
 
     println!(
         "{}",
-        render_diff_human(args.cx, args.cz, &diffs, args.show_values)
+        render_diff_human(args.cx, args.cz, &diffs, args.show_values, style)
     );
     Ok(())
 }
 
-async fn run_gc(store: &str, dry_run: bool, timing: bool, timing_json: bool) -> anyhow::Result<()> {
+async fn run_gc(
+    store: &str,
+    dry_run: bool,
+    timing: bool,
+    timing_json: bool,
+    style: Styler,
+) -> anyhow::Result<()> {
     if dry_run {
         let plan = sekai_app::gc_plan(store)
             .await
@@ -353,7 +410,7 @@ async fn run_gc(store: &str, dry_run: bool, timing: bool, timing_json: bool) -> 
         }
         println!(
             "gc plan created: {} orphan blobs (examined {})",
-            plan.orphans.len(),
+            highlight_count(style, plan.orphans.len()),
             plan.examined
         );
         return Ok(());
@@ -368,12 +425,24 @@ async fn run_gc(store: &str, dry_run: bool, timing: bool, timing_json: bool) -> 
     }
     println!(
         "gc completed: {} removed, {} orphans, {} candidates",
-        report.removed, report.orphans, report.candidates
+        highlight_count(style, report.removed),
+        report.orphans,
+        report.candidates
     );
     if timing {
-        print_gc_timing_table(&timings);
+        print_gc_timing_table(&timings, style);
     }
     Ok(())
+}
+
+/// Emphasize nonzero counts (work done or pending); zero stays plain.
+fn highlight_count(style: Styler, count: usize) -> String {
+    let text = count.to_string();
+    if count == 0 {
+        text
+    } else {
+        style.yellow(&text)
+    }
 }
 
 /// Unix millis to RFC 3339, falling back to the raw number when absurd.
@@ -384,56 +453,68 @@ fn format_time(created_at_ms: u64) -> String {
 }
 
 /// Human-readable phase table for `backup --timing`.
-fn print_timing_table(timings: &BackupTimings) {
+fn print_timing_table(timings: &BackupTimings, style: Styler) {
     println!(
-        "timing total={}ms discover={}ms universe={}ms fp={}ms open={}ms ingest={}ms (hash={}ms cas={}ms) db={}ms ingested_files={} skipped_files={} carried_chunks={}",
-        timings.total.as_millis(),
-        timings.discover.as_millis(),
-        timings.universe_load.as_millis(),
-        timings.fingerprint.as_millis(),
-        timings.region_open.as_millis(),
-        timings.ingest.as_millis(),
-        timings.hash.as_millis(),
-        timings.cas_put.as_millis(),
-        timings.db_apply.as_millis(),
-        timings.regions.len(),
-        timings.skipped_regions,
-        timings.carried_chunks,
+        "{}",
+        style.dim(&format!(
+            "timing total={}ms discover={}ms universe={}ms fp={}ms open={}ms ingest={}ms (hash={}ms cas={}ms) db={}ms ingested_files={} skipped_files={} carried_chunks={}",
+            timings.total.as_millis(),
+            timings.discover.as_millis(),
+            timings.universe_load.as_millis(),
+            timings.fingerprint.as_millis(),
+            timings.region_open.as_millis(),
+            timings.ingest.as_millis(),
+            timings.hash.as_millis(),
+            timings.cas_put.as_millis(),
+            timings.db_apply.as_millis(),
+            timings.regions.len(),
+            timings.skipped_regions,
+            timings.carried_chunks,
+        ))
     );
     let mut slowest: Vec<&sekai_app::RegionTiming> = timings.regions.iter().collect();
     slowest.sort_by_key(|r| std::cmp::Reverse((r.open + r.ingest).as_micros()));
     for region in slowest.iter().take(5) {
         println!(
-            "  {} chunks={} bytes={} open={}ms ingest={}ms (hash={}ms cas={}ms)",
-            region.path.display(),
-            region.chunks,
-            region.bytes,
-            region.open.as_millis(),
-            region.ingest.as_millis(),
-            region.hash.as_millis(),
-            region.cas.as_millis(),
+            "{}",
+            style.dim(&format!(
+                "  {} chunks={} bytes={} open={}ms ingest={}ms (hash={}ms cas={}ms)",
+                region.path.display(),
+                region.chunks,
+                region.bytes,
+                region.open.as_millis(),
+                region.ingest.as_millis(),
+                region.hash.as_millis(),
+                region.cas.as_millis(),
+            ))
         );
     }
 }
 
 /// Human-readable phase table for `rollback --timing`.
-fn print_rollback_timing_table(timings: &RollbackTimings) {
+fn print_rollback_timing_table(timings: &RollbackTimings, style: Styler) {
     println!(
-        "timing total={}ms plan={}ms discover={}ms rollback_files={}ms",
-        timings.total.as_millis(),
-        timings.plan.as_millis(),
-        timings.discover.as_millis(),
-        timings.rollback_files.as_millis(),
+        "{}",
+        style.dim(&format!(
+            "timing total={}ms plan={}ms discover={}ms rollback_files={}ms",
+            timings.total.as_millis(),
+            timings.plan.as_millis(),
+            timings.discover.as_millis(),
+            timings.rollback_files.as_millis(),
+        ))
     );
 }
 
 /// Human-readable phase table for `gc --timing`.
-fn print_gc_timing_table(timings: &GcTimings) {
+fn print_gc_timing_table(timings: &GcTimings, style: Styler) {
     println!(
-        "timing total={}ms plan={}ms apply={}ms",
-        timings.total.as_millis(),
-        timings.plan.as_millis(),
-        timings.apply.as_millis(),
+        "{}",
+        style.dim(&format!(
+            "timing total={}ms plan={}ms apply={}ms",
+            timings.total.as_millis(),
+            timings.plan.as_millis(),
+            timings.apply.as_millis(),
+        ))
     );
 }
 
@@ -868,7 +949,7 @@ mod tests {
     #[test]
     fn renders_diff_human_without_values() {
         assert_eq!(
-            render_diff_human(10, -5, &sample_diffs(), false),
+            render_diff_human(10, -5, &sample_diffs(), false, Styler::disabled()),
             "~ Status\n+ xPos\n- old_tag"
         );
     }
@@ -876,15 +957,23 @@ mod tests {
     #[test]
     fn renders_diff_human_with_values() {
         assert_eq!(
-            render_diff_human(10, -5, &sample_diffs(), true),
+            render_diff_human(10, -5, &sample_diffs(), true, Styler::disabled()),
             "~ Status: \"minecraft:full\" -> \"minecraft:empty\"\n+ xPos: 3\n- old_tag: 1b"
+        );
+    }
+
+    #[test]
+    fn renders_diff_human_styled() {
+        assert_eq!(
+            render_diff_human(10, -5, &sample_diffs(), false, Styler::enabled()),
+            "\x1b[33m~\x1b[0m Status\n\x1b[32m+\x1b[0m xPos\n\x1b[31m-\x1b[0m old_tag"
         );
     }
 
     #[test]
     fn renders_diff_human_empty() {
         assert_eq!(
-            render_diff_human(10, -5, &[], true),
+            render_diff_human(10, -5, &[], true, Styler::disabled()),
             "No differences found for chunk (10, -5)."
         );
     }
@@ -896,7 +985,7 @@ mod tests {
             path: "blob".to_owned(),
             change: NbtChange::Added(sekai_app::NbtValue::String(big)),
         }];
-        let rendered = render_diff_human(0, 0, &diffs, true);
+        let rendered = render_diff_human(0, 0, &diffs, true, Styler::disabled());
         assert!(rendered.starts_with("+ blob: \"xxx"));
         assert!(rendered.ends_with("..."));
         assert_eq!(
@@ -912,6 +1001,41 @@ mod tests {
         assert_eq!(
             diff_json(&sample_diffs()),
             r#"[{"path":"Status","type":"modified","old":"\"minecraft:full\"","new":"\"minecraft:empty\""},{"path":"xPos","type":"added","val":"3"},{"path":"old_tag","type":"removed","val":"1b"}]"#
+        );
+    }
+
+    #[test]
+    fn parses_color_flag() {
+        let cli = Cli::try_parse_from(["sekai", "backup", "world"]).expect("backup parses");
+        assert_eq!(cli.color, ColorChoice::Auto);
+
+        let cli = Cli::try_parse_from(["sekai", "--color=never", "list"]).expect("parses");
+        assert_eq!(cli.color, ColorChoice::Never);
+
+        let cli = Cli::try_parse_from(["sekai", "--color", "always", "list"]).expect("parses");
+        assert_eq!(cli.color, ColorChoice::Always);
+
+        assert!(Cli::try_parse_from(["sekai", "--color=maybe", "list"]).is_err());
+    }
+
+    #[test]
+    fn highlight_count_emphasizes_nonzero() {
+        let style = Styler::enabled();
+        assert_eq!(highlight_count(style, 0), "0");
+        assert_eq!(highlight_count(style, 7), "\x1b[33m7\x1b[0m");
+        assert_eq!(highlight_count(Styler::disabled(), 7), "7");
+    }
+
+    #[test]
+    fn renders_error_with_chain() {
+        let err = anyhow::anyhow!("torn tail at sector 1034").context("backup of /w failed");
+        assert_eq!(
+            render_error(&err, Styler::enabled()),
+            "\x1b[1;31merror\x1b[0m: backup of /w failed\n\nCaused by:\n    torn tail at sector 1034"
+        );
+        assert_eq!(
+            render_error(&err, Styler::disabled()),
+            "error: backup of /w failed\n\nCaused by:\n    torn tail at sector 1034"
         );
     }
 }
