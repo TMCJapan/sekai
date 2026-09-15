@@ -404,7 +404,11 @@ fn ingest_file(
     let bytes = sekai_world::open_image(&region.path)?;
     let open_elapsed = opened.elapsed();
     let file_bytes = bytes.len() as u64;
-    let image = sekai_anvil::RegionImage::from_bytes(bytes, region.region_x, region.region_z)?;
+    let image = sekai_anvil::RegionImage::from_bytes(bytes, region.region_x, region.region_z)
+        .map_err(|source| AppError::RegionFailed {
+            path: region.path.clone(),
+            source,
+        })?;
 
     let mut ignore_vec = Vec::new();
     let ignore: &[&str] = ignore_tags.map_or(sekai_nbt::DEFAULT_IGNORED, |tags| {
@@ -421,33 +425,38 @@ fn ingest_file(
     let mut hash_elapsed = Duration::ZERO;
     let mut cas_elapsed = Duration::ZERO;
     let ingested = Instant::now();
-    image.visit_chunks(|chunk| {
-        if failure.is_some() {
-            return false;
-        }
-        let mut ctx = ChunkIngestCtx {
-            region,
-            cas,
-            scratch: &mut scratch,
-            with_diff,
-            ignore,
-            entries: &mut entries,
-            present: &mut present,
-            new_blobs: &mut new_blobs,
-        };
-        match ingest_timed(chunk, &mut ctx) {
-            Ok((hash_dt, cas_dt)) => {
-                hash_elapsed += hash_dt;
-                cas_elapsed += cas_dt;
-                chunks += 1;
-            }
-            Err(err) => {
-                failure = Some(err);
+    image
+        .visit_chunks(|chunk| {
+            if failure.is_some() {
                 return false;
             }
-        }
-        true
-    })?;
+            let mut ctx = ChunkIngestCtx {
+                region,
+                cas,
+                scratch: &mut scratch,
+                with_diff,
+                ignore,
+                entries: &mut entries,
+                present: &mut present,
+                new_blobs: &mut new_blobs,
+            };
+            match ingest_timed(chunk, &mut ctx) {
+                Ok((hash_dt, cas_dt)) => {
+                    hash_elapsed += hash_dt;
+                    cas_elapsed += cas_dt;
+                    chunks += 1;
+                }
+                Err(err) => {
+                    failure = Some(err);
+                    return false;
+                }
+            }
+            true
+        })
+        .map_err(|source| AppError::RegionFailed {
+            path: region.path.clone(),
+            source,
+        })?;
     let ingest_elapsed = ingested.elapsed();
     if let Some(err) = failure {
         return Err(err);

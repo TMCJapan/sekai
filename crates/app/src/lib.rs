@@ -18,7 +18,7 @@ pub use gc::{GcTimings, gc, gc_apply, gc_plan};
 pub use rollback::{RollbackTimings, rollback};
 pub use sekai_core::{
     BackupReport, BlobHash, ChunkCoord, DEFAULT_IGNORED, Dimension, GcPlan, GcReport, NbtChange,
-    NbtDiffEntry, RegionKind, RollbackReport, Snapshot, SnapshotId,
+    NbtDiffEntry, NbtValue, RegionKind, RollbackReport, Snapshot, SnapshotId,
 };
 pub use sekai_world::RegionScanEntry;
 

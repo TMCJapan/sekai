@@ -61,7 +61,7 @@ impl RegionImage {
             return Ok(());
         }
 
-        let total_sectors = self.bytes.len() as u64 / SECTOR_LEN;
+        let file_len = self.bytes.len() as u64;
 
         for index in 0..TABLE_ENTRIES {
             let (offset, count) = self.entry(index)?;
@@ -74,11 +74,14 @@ impl RegionImage {
                 return Err(Self::corrupt_entry(index, offset, count));
             }
 
-            let end = offset
-                .checked_add(count)
+            // The run must at least start inside the file. Trailing partial
+            // sectors are tolerated (vanilla opens such files); exact byte
+            // bounds are validated when slicing the payload below.
+            let start = offset
+                .checked_mul(SECTOR_LEN)
                 .ok_or_else(|| Self::corrupt_entry(index, offset, count))?;
 
-            if end > total_sectors {
+            if start >= file_len {
                 return Err(Self::corrupt_entry(index, offset, count));
             }
 
@@ -108,12 +111,12 @@ impl RegionImage {
             return Ok(None);
         }
 
-        let total_sectors = self.bytes.len() as u64 / SECTOR_LEN;
-        let end = offset
-            .checked_add(count)
+        let file_len = self.bytes.len() as u64;
+        let start = offset
+            .checked_mul(SECTOR_LEN)
             .ok_or_else(|| Self::corrupt_entry(index, offset, count))?;
 
-        if offset < FIRST_DATA_SECTOR || count == 0 || end > total_sectors {
+        if offset < FIRST_DATA_SECTOR || count == 0 || start >= file_len {
             return Err(Self::corrupt_entry(index, offset, count));
         }
 
@@ -303,10 +306,19 @@ mod tests {
             Err(AnvilError::TruncatedFile { .. })
         ));
 
-        assert!(matches!(
-            RegionImage::from_bytes(alloc::vec![0; 8193], 0, 0,),
-            Err(AnvilError::MisalignedFile { .. })
-        ));
+        // A trailing partial sector is tolerated when unreferenced.
+        let image = RegionImage::from_bytes(alloc::vec![0; 8193], 0, 0).unwrap();
+
+        let mut count = 0;
+
+        image
+            .visit_chunks(|_| {
+                count += 1;
+                true
+            })
+            .unwrap();
+
+        assert_eq!(count, 0);
 
         let mut image = header_only();
 
@@ -364,6 +376,61 @@ mod tests {
         assert!(matches!(
             RegionImage::from_bytes(header_only(), i32::MAX, 0,),
             Err(AnvilError::CoordinateOverflow { .. })
+        ));
+    }
+
+    #[test]
+    fn tolerates_trailing_partial_sector_with_intact_chunks() {
+        // Mirrors real files with a torn tail (e.g. 1034 sectors + 188
+        // bytes): the referenced chunk reads fine, the tail is ignored.
+        let mut image = header_only();
+
+        image.extend_from_slice(&[0; 4096]);
+        image.extend_from_slice(&[0xAB; 188]);
+        image[0..4].copy_from_slice(&entry_of(2, 1));
+
+        let sector = 8192;
+
+        image[sector..sector + 4].copy_from_slice(&5u32.to_be_bytes());
+        image[sector + 4] = 2;
+        image[sector + 5..sector + 9].copy_from_slice(b"nbt!");
+
+        assert_eq!(image.len() % 4096, 188);
+
+        let image = RegionImage::from_bytes(image, 0, 0).unwrap();
+
+        let mut seen = Vec::new();
+
+        image
+            .visit_chunks(|chunk| {
+                seen.push(chunk.payload.to_vec());
+                true
+            })
+            .unwrap();
+
+        assert_eq!(seen, alloc::vec![[&[2u8] as &[_], b"nbt!"].concat()]);
+    }
+
+    #[test]
+    fn rejects_runs_starting_past_end_of_file() {
+        // Entry points at a sector whose start lies beyond the image,
+        // partial tail or not.
+        let mut image = header_only();
+
+        image.extend_from_slice(&[0; 4096]);
+        image.extend_from_slice(&[0xAB; 100]);
+        image[0..4].copy_from_slice(&entry_of(4, 1));
+
+        let image = RegionImage::from_bytes(image, 0, 0).unwrap();
+
+        assert!(matches!(
+            image.visit_chunks(|_| true),
+            Err(AnvilError::CorruptEntry { .. })
+        ));
+
+        assert!(matches!(
+            image.chunk_payload(0, 0),
+            Err(AnvilError::CorruptEntry { .. })
         ));
     }
 }

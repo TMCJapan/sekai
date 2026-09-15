@@ -265,8 +265,12 @@ object-store CAS swaps don't touch metadata code.
   **in the same directory as the target** + `fsync` + `rename`. In-place
   mutation is prohibited. `world::atomic_swap` is the single owner of this
   path; `anvil` only builds the `Vec<u8>` image.
-- **Sector alignment**: 4 KiB boundaries and header offset-table integrity
-  enforced in `anvil`; `world` never patches bytes.
+- **Sector alignment**: writes always land on 4 KiB boundaries with header
+  offset-table integrity. Reads tolerate trailing partial sectors (e.g. torn
+  tails from interrupted saves, which vanilla also opens): every referenced
+  sector run is validated against exact byte bounds instead, and genuinely
+  corrupt runs still fail loudly with the file path attached. `world` never
+  patches bytes.
 - **Crash consistency order**:
   - **Write path**: CAS blobs flushed + synced *before* DB metadata commit.
   - **GC delete path**: DB metadata commit *before* blob unlink (vacuous
