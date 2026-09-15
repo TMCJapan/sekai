@@ -37,11 +37,13 @@ shape: **spec-freeze -> delete -> rebuild from zero**.
    hand-rolled over the serde data model (`fastnbt` removed). `diff_hash`
    stays off the hot path (`with_diff` flag); `chunk_history.diff`
    remains an opt-in cache.
-4. **`core` is an API layer depending on `anvil` + `nbt`.** It owns domain
-   types + policy (`plan`/`assemble`/`commit`, `plan_rollback`,
-   `gc plan`/`apply`). `core` must **not** depend on `world`/`storage`/`app`
-   (would poison `no_std` and create a package cycle). Pure boundaries speak
-   plain data (`&[u8]`, `i32`, `[u8; 32]`); `core::domain` converts.
+4. **`core` is an API layer depending on `anvil` + `nbt`.** It owns
+   policy (`plan`/`assemble`/`commit`, `plan_rollback`, `gc plan`/`apply`)
+   plus composition helpers (`hash_blob`, `resolve_custom_dimension`,
+   storage ports). `core` must **not** depend on `world`/`storage`/`app`
+   (would poison `no_std` and create a package cycle). Shared value types
+   live in the zero-dependency `sekai-util` leaf so `anvil`/`nbt` name the
+   same types as `core`; `core` re-exports them at its root.
 5. **Storage: single crate, SQLite only now, modules ready for later.**
    `sekai-storage` owns async `BlobStore`/`MetaStore` traits (`api`
    module) + `BackendKind`/URL selection, the file CAS (`cas` module,

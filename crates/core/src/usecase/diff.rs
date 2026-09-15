@@ -6,8 +6,8 @@ use core::fmt;
 use sekai_anvil::AnvilError;
 use sekai_nbt::{DEFAULT_IGNORED, NbtDiffEntry, NbtError};
 
-use crate::domain::hash::BlobHash;
 use crate::port::blob::BlobStore;
+use sekai_util::BlobHash;
 
 /// Failures during chunk diff computation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,7 +73,7 @@ mod tests {
     use super::*;
     use sekai_nbt::NbtChange;
 
-    use crate::domain::hash::hash_blob;
+    use crate::hash_blob;
     use crate::support::{MemCas, block_on};
 
     // Uncompressed (Type 3) sector payload framing + NBT bytes
@@ -112,5 +112,50 @@ mod tests {
                 }
             }]
         );
+    }
+
+    #[test]
+    fn missing_blob_is_a_backend_error() {
+        let cas = MemCas::default();
+        let missing = hash_blob(b"never-stored");
+        let err = block_on(diff_blobs_v1(&cas, &missing, &missing)).unwrap_err();
+        assert!(matches!(err, DiffError::Blob(_)));
+    }
+
+    #[test]
+    fn undecodable_payload_is_a_codec_error() {
+        let mut cas = MemCas::default();
+        // Unknown compression type byte: anvil rejects before NBT sees it.
+        let bad_codec = alloc::vec![9u8, 0, 0];
+        let hash_bad = hash_blob(&bad_codec);
+        block_on(cas.put(&hash_bad, &bad_codec)).unwrap();
+        let good = framed_nbt_bytes("minecraft:full");
+        let hash_good = hash_blob(&good);
+        block_on(cas.put(&hash_good, &good)).unwrap();
+
+        let err = block_on(diff_blobs_v1(&cas, &hash_bad, &hash_good)).unwrap_err();
+        assert!(matches!(err, DiffError::Anvil(_)));
+    }
+
+    #[test]
+    fn corrupt_nbt_is_a_decode_error() {
+        let mut cas = MemCas::default();
+        // Type 3 framing with truncated NBT body.
+        let corrupt = alloc::vec![3u8, 10, 0];
+        let hash_corrupt = hash_blob(&corrupt);
+        block_on(cas.put(&hash_corrupt, &corrupt)).unwrap();
+        let good = framed_nbt_bytes("minecraft:full");
+        let hash_good = hash_blob(&good);
+        block_on(cas.put(&hash_good, &good)).unwrap();
+
+        let err = block_on(diff_blobs_v1(&cas, &hash_corrupt, &hash_good)).unwrap_err();
+        assert!(matches!(err, DiffError::Nbt(_)));
+    }
+
+    #[test]
+    fn diff_error_messages() {
+        use alloc::string::ToString;
+        let blob: DiffError<crate::support::MemError> = DiffError::Blob(crate::support::MemError);
+        assert_eq!(blob.to_string(), "blob store failed");
     }
 }

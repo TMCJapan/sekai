@@ -8,6 +8,7 @@ members = [
   "crates/world",
   "crates/app",
   "crates/cli",
+  "crates/util",
 ]
 
 [workspace.package]
@@ -21,6 +22,7 @@ sekai-app = { path = "crates/app" }
 sekai-core = { path = "crates/core" }
 sekai-nbt = { path = "crates/nbt" }
 sekai-storage = { path = "crates/storage" }
+sekai-util = { path = "crates/util" }
 sekai-world = { path = "crates/world" }
 
 anyhow = { version = "1.0", default-features = false }

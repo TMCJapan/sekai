@@ -6,7 +6,7 @@
 
 <!-- e.g. `storage`, `mca`. Mark `core` explicitly when touched. -->
 
-- [ ] `core`, `anvil`, `nbt` remain `no_std`
+- [ ] `util`, `core`, `anvil`, `nbt` remain `no_std`
 - [ ] No storage schema change (or: `user_version` bumped, see below)
 
 ## Safety invariants
@@ -17,15 +17,15 @@
 
 ## Verification
 
-<!-- Paste or link: fmt, clippy (incl. thumbv7m/wasm when core/nbt touched), tests.
-     For backup-path changes, paste `backup --timing` before/after (release build). -->
+<!-- Paste or link: fmt, clippy (incl. thumbv7m/wasm when util/core/nbt touched), tests.
+      For backup-path changes, paste `backup --timing` before/after (release build). -->
 
 ```text
 typos
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo check -p sekai-core -p sekai-anvil -p sekai-nbt --target thumbv7m-none-eabi --no-default-features
-cargo check -p sekai-core -p sekai-anvil -p sekai-nbt --target wasm32-unknown-unknown --no-default-features
+cargo check -p sekai-util -p sekai-core -p sekai-anvil -p sekai-nbt --target thumbv7m-none-eabi --no-default-features
+cargo check -p sekai-util -p sekai-core -p sekai-anvil -p sekai-nbt --target wasm32-unknown-unknown --no-default-features
 cargo test --workspace
 cargo deny check
 cargo machete

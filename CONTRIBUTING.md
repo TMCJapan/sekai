@@ -5,9 +5,10 @@ This project is organized as a Cargo workspace under `crates/`:
 ```text
 .
 └── crates
+    ├── util            # Shared value types: coordinates, hashes, history records (no_std, zero dependencies)
     ├── anvil           # Pure Anvil sector codec + decompression (no_std + alloc, ex-mca)
     ├── nbt             # Pure NBT parse/diff views over raw NBT bytes (no_std + alloc, hand-rolled parser)
-    ├── core            # Domain types + use-case policy API (no_std + alloc, depends on anvil + nbt)
+    ├── core            # Use-case policy API over shared types (no_std + alloc, depends on util/anvil/nbt)
     ├── storage         # Single crate (std + tokio): async traits (api), file CAS (cas),
     │                   # feature-gated DB backends (sqlite ships; mysql/postgres reserved stubs)
     ├── world           # Filesystem owner: discovery, fingerprints, scans, atomic swaps (std)
@@ -24,6 +25,7 @@ sekai (bin) -> app -> {core, world, storage}
 app -> core -> {anvil, nbt}
 world -> {anvil, core}
 storage -> core (its api module owns the async traits; backend modules implement them)
+{anvil, nbt, core} -> util (world/storage/app reach shared types through `core` re-exports)
 ```
 
 Rules:
@@ -31,10 +33,11 @@ Rules:
 * `core` never depends on `world`, `storage`, `app`, or the binary.
   `world` already depends on `core` types, so the reverse edge would be a
   Cargo package cycle.
-* `anvil` and `nbt` never depend on `core` at the package level (otherwise
-  `core -> anvil/nbt -> core` cycles). The pure boundary speaks plain data
-  (`&[u8]`, `i32` codes, `[u8; 32]` digests); `core::domain` owns the rich
-  types and converts at the boundary.
+* `util` is a dependency leaf: zero external dependencies, pure data plus
+  total validation only (no hashing backends, no codecs, no ports, no
+  orchestration). `anvil`/`nbt` name util types directly (`Dimension`
+  custom ids, `DiffHash` digests); `core` composes them and re-exports
+  every util type at its root so downstream paths stay stable.
 * `anvil` never calls `nbt`. `core`/`app` drives `anvil`'s decompressed raw
   NBT bytes into `nbt` (opt-in diff path), keeping the pure DAG acyclic and
   the backup hot path decode-free. Compression framing is MCA spec and lives
@@ -51,12 +54,13 @@ Rules:
 These hold for every change. The PR template asks for confirmation; explain
 any exception in the PR body.
 
-* **Pure-layer hygiene**: `anvil`, `nbt`, and `core` stay `no_std` + `alloc`.
+* **Pure-layer hygiene**: `util`, `anvil`, `nbt`, and `core` stay `no_std` + `alloc`.
   No `std::fs`, `Path`, `std::time`, `std::io::Error`, or `thiserror` there;
   hand-written `core::fmt::Display` error enums only. No `tokio`, no
   `async-trait` macro.
-* **`core` is an API layer, not a port hub**: it depends on the concrete
-  pure crates (`anvil`, `nbt`) for sector/diff logic. Pluggability lives at
+* **`core` is an API layer, not a port hub**: it composes the concrete
+  pure crates (`anvil`, `nbt`) over shared `util` types for sector/diff
+  logic, and re-exports every util type at its root. Pluggability lives at
   the `storage` async traits (`BlobStore`/`MetaStore`, `api` module) and at
   the `world` observation boundary - not at `RegionReader`/`Normalizer`-style
   traits.
@@ -86,18 +90,20 @@ any exception in the PR body.
 ## Tech Stack & Tooling
 
 * **Rust Edition**: 2024 (toolchain pinned in `rust-toolchain.toml`)
-* **Pure crates**: `anvil`, `nbt`, `core` must remain `no_std` + `alloc`
+* **Pure crates**: `util`, `anvil`, `nbt`, `core` must remain `no_std` + `alloc`
   with no `std`-only or async-runtime dependencies.
 * **Pure-crate dependency allowlist** (keep this list minimal and
   `no_std`-gated):
-  * `anvil`: `miniz_oxide` (zlib/raw-inflate), `crc32fast` (gzip footer),
+  * `util`: nothing. New dependencies need explicit justification.
+  * `anvil`: `sekai-util` (shared dimension codes), `miniz_oxide` (zlib/raw-inflate), `crc32fast` (gzip footer),
     `lz4_flex` block API (lz4-java stream bodies), `twox-hash` (lz4-java
     block checksums), `blake3` (header/dimension digests, all with
     `default-features = false`).
-  * `nbt`: `serde` (`default-features = false, features = ["alloc",
+  * `nbt`: `sekai-util` (shared `DiffHash`), `serde` (`default-features = false, features = ["alloc",
     "derive"]`) for the data model only, plus `blake3` with
     `default-features = false` for the canonical digest.
-  * `core`: `anvil` + `nbt` only, plus `blake3` with
+  * `core`: `sekai-util` (shared types, re-exported at the root) plus
+    `anvil` + `nbt` (concrete composition targets) plus `blake3` with
     `default-features = false` for hashing.
 * **Async policy**: `async fn` in traits via RPITIT (return-position
   `impl Future`, no `async-trait` macro, no boxing). All trait futures are
@@ -107,8 +113,8 @@ any exception in the PR body.
 * **Runtime**: tokio in `storage`, `world` (I/O parts), `app`, and the
   binary only.
 * **Portability targets**: CI lints the pure crates on every push and pull request.
-* `no_std`: `anvil`, `nbt`, `core` must keep linting clean for `thumbv7m-none-eabi`.
-* `wasm`: `anvil`, `nbt`, `core` must keep linting clean for `wasm32-unknown-unknown`.
+* `no_std`: `util`, `anvil`, `nbt`, `core` must keep linting clean for `thumbv7m-none-eabi`.
+* `wasm`: `util`, `anvil`, `nbt`, `core` must keep linting clean for `wasm32-unknown-unknown`.
   `world`, `storage`, `app`, and the binary own file I/O, sockets, and
   SQLite and are intentionally **not** wasm targets.
 * Neither target has a runner, so they are lint-only; the full workspace is
@@ -132,7 +138,7 @@ any exception in the PR body.
 * **Language**: Write all code comments, documentation, and commit messages in **English**.
 * **Comments**: Focus on rationale ("why", design trade-offs, `unsafe` safety specifications) rather than explaining obvious implementation details.
 * **Error Handling**:
-* For pure crates (`anvil`, `nbt`, `core`), use hand-written error types
+* For pure crates (`util`, `anvil`, `nbt`, `core`), use hand-written error types
   (`core::fmt::Display` without external dependencies).
 * For `std` library crates (`storage`, `world`, `app`), use `thiserror`.
 * For the binary, use `anyhow`.
@@ -157,10 +163,10 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 
 # Ensure the pure crates remain no_std
-cargo clippy -p sekai-anvil -p sekai-nbt -p sekai-core --target thumbv7m-none-eabi -- -D warnings
+cargo clippy -p sekai-util -p sekai-anvil -p sekai-nbt -p sekai-core --target thumbv7m-none-eabi -- -D warnings
 
 # Ensure the pure crates keep linting clean for wasm
-cargo clippy -p sekai-anvil -p sekai-nbt -p sekai-core --target wasm32-unknown-unknown -- -D warnings
+cargo clippy -p sekai-util -p sekai-anvil -p sekai-nbt -p sekai-core --target wasm32-unknown-unknown -- -D warnings
 
 # Run all unit and integration tests (default backend)
 cargo test --workspace

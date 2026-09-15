@@ -16,6 +16,7 @@ pub use diff::{NbtChange, NbtDiffEntry, diff};
 pub use error::NbtError;
 pub use normalize::DEFAULT_IGNORED;
 pub use parser::Value;
+use sekai_util::DiffHash;
 
 /// Parses a complete NBT document with a compound root.
 pub fn parse(raw_nbt: &[u8]) -> Result<Value, NbtError> {
@@ -25,12 +26,12 @@ pub fn parse(raw_nbt: &[u8]) -> Result<Value, NbtError> {
 /// Hashes NBT after excluding the specified tag names at every depth.
 ///
 /// The resulting hash is intended for change detection, not storage identity.
-pub fn diff_hash(raw_nbt: &[u8], ignore: &[&str]) -> Result<[u8; 32], NbtError> {
+pub fn diff_hash(raw_nbt: &[u8], ignore: &[&str]) -> Result<DiffHash, NbtError> {
     let value = parse(raw_nbt)?;
     Ok(normalize::digest(ignore, &value))
 }
 
 /// Hashes NBT using the default volatile-tag ignore set.
-pub fn diff_hash_v1(raw_nbt: &[u8]) -> Result<[u8; 32], NbtError> {
+pub fn diff_hash_v1(raw_nbt: &[u8]) -> Result<DiffHash, NbtError> {
     diff_hash(raw_nbt, DEFAULT_IGNORED)
 }
