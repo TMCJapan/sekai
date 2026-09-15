@@ -106,6 +106,9 @@ struct DiffArgs {
     /// Emit diff array as JSON instead of human text.
     #[arg(long)]
     json: bool,
+    /// Show concrete old/new values in human output (SNBT format).
+    #[arg(long)]
+    show_values: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -229,6 +232,48 @@ async fn run_list(store: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Human-readable diff lines. Values are SNBT, truncated per value so a
+/// single huge entry cannot flood the terminal; JSON output always carries
+/// full values.
+fn render_diff_human(
+    cx: i32,
+    cz: i32,
+    diffs: &[sekai_app::NbtDiffEntry],
+    show_values: bool,
+) -> String {
+    if diffs.is_empty() {
+        return format!("No differences found for chunk ({cx}, {cz}).");
+    }
+    diffs
+        .iter()
+        .map(|entry| {
+            let (op, detail) = match &entry.change {
+                NbtChange::Added(v) => ("+", show_values.then(|| format!("{v}"))),
+                NbtChange::Removed(v) => ("-", show_values.then(|| format!("{v}"))),
+                NbtChange::Modified { old, new } => {
+                    ("~", show_values.then(|| format!("{old} -> {new}")))
+                }
+            };
+            detail.map_or_else(
+                || format!("{op} {}", entry.path),
+                |detail| format!("{op} {}: {}", entry.path, truncate_value(&detail)),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Truncate a rendered value to [`MAX_VALUE_CHARS`] chars (char boundary),
+/// appending an ellipsis. Paths are never truncated.
+fn truncate_value(rendered: &str) -> String {
+    const MAX_VALUE_CHARS: usize = 500;
+    if rendered.chars().count() <= MAX_VALUE_CHARS {
+        return rendered.to_owned();
+    }
+    let truncated: String = rendered.chars().take(MAX_VALUE_CHARS).collect();
+    format!("{truncated}...")
+}
+
 async fn run_diff(store: &str, args: DiffArgs) -> anyhow::Result<()> {
     let coord = ChunkCoord::new(args.dim, args.kind, args.cx, args.cz);
 
@@ -290,19 +335,10 @@ async fn run_diff(store: &str, args: DiffArgs) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    if diffs.is_empty() {
-        println!("No differences found for chunk ({}, {}).", args.cx, args.cz);
-        return Ok(());
-    }
-
-    for entry in &diffs {
-        let op = match &entry.change {
-            NbtChange::Added(_) => "+",
-            NbtChange::Removed(_) => "-",
-            NbtChange::Modified { .. } => "~",
-        };
-        println!("{} {}", op, entry.path);
-    }
+    println!(
+        "{}",
+        render_diff_human(args.cx, args.cz, &diffs, args.show_values)
+    );
     Ok(())
 }
 
@@ -401,7 +437,7 @@ fn print_gc_timing_table(timings: &GcTimings) {
     );
 }
 
-/// Flat JSON array for `diff --json`.
+/// Flat JSON array for `diff --json`. Values are SNBT strings.
 fn diff_json(diffs: &[sekai_app::NbtDiffEntry]) -> String {
     use core::fmt::Write as _;
     let mut out = String::from("[");
@@ -412,18 +448,18 @@ fn diff_json(diffs: &[sekai_app::NbtDiffEntry]) -> String {
         let (change_type, details) = match &entry.change {
             NbtChange::Added(v) => (
                 "added",
-                format!("\"val\":\"{}\"", json_escape(&format!("{v:?}"))),
+                format!("\"val\":\"{}\"", json_escape(&format!("{v}"))),
             ),
             NbtChange::Removed(v) => (
                 "removed",
-                format!("\"val\":\"{}\"", json_escape(&format!("{v:?}"))),
+                format!("\"val\":\"{}\"", json_escape(&format!("{v}"))),
             ),
             NbtChange::Modified { old, new } => (
                 "modified",
                 format!(
                     "\"old\":\"{}\",\"new\":\"{}\"",
-                    json_escape(&format!("{old:?}")),
-                    json_escape(&format!("{new:?}"))
+                    json_escape(&format!("{old}")),
+                    json_escape(&format!("{new}"))
                 ),
             ),
         };
@@ -679,6 +715,7 @@ mod tests {
                 dim: Dimension::OVERWORLD,
                 kind: RegionKind::REGION,
                 json: false,
+                show_values: false,
             })
         ));
 
@@ -697,6 +734,27 @@ mod tests {
                 dim: Dimension::OVERWORLD,
                 kind: RegionKind::REGION,
                 json: false,
+                show_values: false,
+            })
+        ));
+
+        let cli = Cli::try_parse_from([
+            "sekai",
+            "diff",
+            "1",
+            "2",
+            "--cx",
+            "0",
+            "--cz",
+            "0",
+            "--show-values",
+        ])
+        .expect("diff --show-values parses");
+        assert!(matches!(
+            cli.command,
+            Command::Diff(DiffArgs {
+                show_values: true,
+                ..
             })
         ));
     }
@@ -785,5 +843,75 @@ mod tests {
     #[test]
     fn escapes_json_paths() {
         assert_eq!(json_escape("a\"b\\c"), "a\\\"b\\\\c");
+    }
+
+    fn sample_diffs() -> Vec<sekai_app::NbtDiffEntry> {
+        vec![
+            sekai_app::NbtDiffEntry {
+                path: "Status".to_owned(),
+                change: NbtChange::Modified {
+                    old: sekai_app::NbtValue::String("minecraft:full".to_owned()),
+                    new: sekai_app::NbtValue::String("minecraft:empty".to_owned()),
+                },
+            },
+            sekai_app::NbtDiffEntry {
+                path: "xPos".to_owned(),
+                change: NbtChange::Added(sekai_app::NbtValue::Int(3)),
+            },
+            sekai_app::NbtDiffEntry {
+                path: "old_tag".to_owned(),
+                change: NbtChange::Removed(sekai_app::NbtValue::Byte(1)),
+            },
+        ]
+    }
+
+    #[test]
+    fn renders_diff_human_without_values() {
+        assert_eq!(
+            render_diff_human(10, -5, &sample_diffs(), false),
+            "~ Status\n+ xPos\n- old_tag"
+        );
+    }
+
+    #[test]
+    fn renders_diff_human_with_values() {
+        assert_eq!(
+            render_diff_human(10, -5, &sample_diffs(), true),
+            "~ Status: \"minecraft:full\" -> \"minecraft:empty\"\n+ xPos: 3\n- old_tag: 1b"
+        );
+    }
+
+    #[test]
+    fn renders_diff_human_empty() {
+        assert_eq!(
+            render_diff_human(10, -5, &[], true),
+            "No differences found for chunk (10, -5)."
+        );
+    }
+
+    #[test]
+    fn truncates_huge_values() {
+        let big = "x".repeat(600);
+        let diffs = vec![sekai_app::NbtDiffEntry {
+            path: "blob".to_owned(),
+            change: NbtChange::Added(sekai_app::NbtValue::String(big)),
+        }];
+        let rendered = render_diff_human(0, 0, &diffs, true);
+        assert!(rendered.starts_with("+ blob: \"xxx"));
+        assert!(rendered.ends_with("..."));
+        assert_eq!(
+            rendered.chars().count(),
+            "+ blob: ".len() + 500 + "...".len()
+        );
+        // JSON output is never truncated.
+        assert!(diff_json(&diffs).contains(&"x".repeat(600)));
+    }
+
+    #[test]
+    fn renders_diff_json_with_snbt_values() {
+        assert_eq!(
+            diff_json(&sample_diffs()),
+            r#"[{"path":"Status","type":"modified","old":"\"minecraft:full\"","new":"\"minecraft:empty\""},{"path":"xPos","type":"added","val":"3"},{"path":"old_tag","type":"removed","val":"1b"}]"#
+        );
     }
 }
