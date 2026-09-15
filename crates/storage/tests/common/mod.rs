@@ -37,7 +37,7 @@ pub const fn fingerprint(key: RegionKey) -> RegionFingerprint {
 pub async fn snapshot_lifecycle<M>(meta: &mut M)
 where
     M: MetaStore,
-    M::Error: std::fmt::Debug,
+    M::Error: core::fmt::Debug,
 {
     assert!(meta.latest_snapshot().await.unwrap().is_none());
     let id = meta.create_snapshot(1_000).await.unwrap();
@@ -64,7 +64,7 @@ where
 pub async fn backup_carry<M>(meta: &mut M)
 where
     M: MetaStore,
-    M::Error: std::fmt::Debug,
+    M::Error: core::fmt::Debug,
 {
     let fp0 = fingerprint(key(0, 0));
     let fp1 = fingerprint(key(1, 0));
@@ -120,7 +120,7 @@ where
 pub async fn tombstones<M>(meta: &mut M)
 where
     M: MetaStore,
-    M::Error: std::fmt::Debug,
+    M::Error: core::fmt::Debug,
 {
     let fp = fingerprint(key(0, 0));
     meta.apply_snapshot_incremental(
@@ -152,7 +152,7 @@ where
 pub async fn cas_roundtrip<C>(cas: &mut C)
 where
     C: BlobStore,
-    C::Error: std::fmt::Debug,
+    C::Error: core::fmt::Debug,
 {
     let hash = sekai_core::hash_blob(b"payload");
     assert!(!cas.contains(&hash).await.unwrap());
@@ -183,9 +183,9 @@ where
 pub async fn torn_orphan_gc<M, C>(store: &mut sekai_storage::Store<M, C>)
 where
     M: MetaStore,
-    M::Error: std::fmt::Debug,
+    M::Error: core::fmt::Debug,
     C: BlobStore,
-    C::Error: std::fmt::Debug,
+    C::Error: core::fmt::Debug,
 {
     let live = sekai_core::hash_blob(b"live");
     let orphan = sekai_core::hash_blob(b"orphan");

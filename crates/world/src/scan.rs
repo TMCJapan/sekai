@@ -71,7 +71,7 @@ fn read_with_mtime(path: &Path) -> Result<(Vec<u8>, Option<u64>), WorldError> {
 }
 
 fn hex(bytes: &[u8; 32]) -> String {
-    use std::fmt::Write;
+    use core::fmt::Write;
     let mut out = String::with_capacity(64);
     for b in bytes {
         let _ = write!(out, "{b:02x}");
