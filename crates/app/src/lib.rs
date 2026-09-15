@@ -13,8 +13,8 @@ mod rollback;
 
 pub use backup::{BackupOptions, BackupProgress, BackupTimings, RegionTiming, backup};
 pub use diff::{
-    ChunkDiff, diff_blobs, diff_chunk, diff_chunks, diff_world_chunk, diff_world_chunks,
-    snapshot_chunk_coords, world_chunk_coords,
+    ChunkDiff, DiffTimings, diff_blobs, diff_chunk, diff_chunks, diff_world_chunk,
+    diff_world_chunks, snapshot_chunk_coords, world_chunk_coords,
 };
 pub use error::AppError;
 pub use gc::{GcTimings, gc, gc_apply, gc_plan};
@@ -24,7 +24,7 @@ pub use sekai_core::{
     NbtDiffEntry, NbtValue, OwnedScope, RegionKey, RegionKind, RollbackReport, Scope, Snapshot,
     SnapshotId,
 };
-pub use sekai_world::RegionScanEntry;
+pub use sekai_world::{RegionScanEntry, ScanTimings};
 
 /// List all snapshots in ID order (for `list` and pre-flight checks).
 pub async fn list_snapshots(store_url: &str) -> Result<Vec<Snapshot>, AppError> {
@@ -42,10 +42,11 @@ pub async fn latest_snapshot_id(store_url: &str) -> Result<SnapshotId, AppError>
         .ok_or(AppError::NoSnapshots)
 }
 
-/// Read-only inspection of every region file under `world`.
+/// Read-only inspection of every region file under `world`, additionally
+/// returning per-phase timings.
 ///
 /// Never writes to the world or the store.
-pub fn scan(world: &std::path::Path) -> Result<Vec<RegionScanEntry>, AppError> {
+pub fn scan(world: &std::path::Path) -> Result<(Vec<RegionScanEntry>, ScanTimings), AppError> {
     Ok(sekai_world::scan_world(world)?)
 }
 

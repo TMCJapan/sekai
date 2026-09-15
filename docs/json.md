@@ -17,9 +17,14 @@ carries the bare result only.
 | `backup` | report (+timings with `--timing`) | table + JSON block | regions list is timing detail, JSON-only |
 | `rollback` | report (+timings with `--timing`) | table + JSON block | |
 | `list` | snapshot array | n/a | no phases exist |
-| `diff` | single array, or grouped per coordinate (multi) | n/a | `--chunk`/`--region`/`--dimension` select chunks; one chunk keeps the single shape |
+| `diff` | single array, grouped array (multi), or timed object | table + JSON block | `--chunk`/`--region`/`--dimension` select chunks; one chunk keeps the single shape |
 | `gc` | report or dry-run plan (+timings with `--timing`, non-dry-run only) | table + JSON block | dry-run has no phase timings |
-| `debug scan` | entry array | n/a | |
+| `debug scan` | entry array (+timings with `--timing`) | table + JSON block | |
+
+Without `--timing`, `--json` emits the bare result. With `--timing`,
+reports that would be bare arrays (`diff`, `scan`) are promoted to an
+object holding the array (`diffs`/`entries`) plus the timing block;
+object reports (backup/rollback/gc) append the block in place.
 
 ## Envelope
 
@@ -126,6 +131,22 @@ chunks without differences:
 `--show-values` truncation does not apply here). `coord` uses raw
 integer `dim`/`kind` codes, matching `scan`.
 
+With `--timing` the array moves under `diffs` and the timing block is
+appended (single and grouped alike):
+
+```jsonc
+{
+  "diffs": [{"path": "xPos", "type": "added", "val": "3"}],
+  "total_ms": 12,
+  "phases": {"blob_fetch_ms": 5, "decompress_ms": 4, "diff_compute_ms": 2}
+}
+```
+
+`blob_fetch` covers snapshot lookup plus CAS fetch on both sides
+(world-side acquisition included); `decompress` both sides'
+decompression; `diff_compute` the AST diff. Snapshot-ID resolution and
+coordinate enumeration stay outside the measured phases.
+
 ### `gc`
 
 ```jsonc
@@ -161,6 +182,17 @@ Note: dry-run reports the orphan *count*, never the hashes.
 
 `dim`/`kind` are raw integer codes; `mtime_ms` is `null` when the
 platform cannot provide a timestamp.
+
+With `--timing` the array moves under `entries` and the timing block is
+appended:
+
+```jsonc
+{
+  "entries": [],
+  "total_ms": 30,
+  "phases": {"discover_ms": 1, "read_ms": 20, "parse_ms": 8}
+}
+```
 
 ## Compatibility promise
 

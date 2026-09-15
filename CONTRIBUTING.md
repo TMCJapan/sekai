@@ -200,10 +200,12 @@ cargo build -p sekai-cli --release
 ## Collaboration Workflow
 
 File bugs, features, and performance reports with the issue templates in
-`.github/ISSUE_TEMPLATE/` (English only). For backup-path performance
-reports, include `backup --timing` output from a release build
-(`--timing` exists on `backup`/`rollback`/`gc`; add `--json` for the
-machine-readable report); questions belong in
+`.github/ISSUE_TEMPLATE/` (English only). Performance reports must include
+the affected command's `--timing` output from a release build
+(`--timing` exists on `backup`/`rollback`/`gc`/`diff`/`debug scan`;
+for backup-path slowdowns prefer `--timing --json`, which alone carries
+the per-region breakdown); bug reports include it only for speed aspects,
+never for pure correctness bugs; questions belong in
 Discussions, not issues.
 
 ### Branching
@@ -211,7 +213,7 @@ Discussions, not issues.
 Branch from `main` using one of these prefixes:
 
 * `feature/<scope>`: new user-facing capability (e.g., `feature/gc-cli`).
-* `perf/<scope>`: measured speedup with before/after numbers (`backup --timing` for backup-path changes, wall-clock + reproduction otherwise).
+* `perf/<scope>`: measured speedup with before/after numbers (affected command's `--timing`; release build, reproduction steps included).
 * `fix/<scope>`: bug correction.
 * `refactor/<scope>`, `docs/<scope>`, `test/<scope>`: no behavior change.
 * `build/<scope>`, `ci/<scope>`, `chore/<scope>`: tooling, CI, or routine maintenance without runtime behavior change.

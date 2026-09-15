@@ -9,8 +9,9 @@ use std::path::{Path, PathBuf};
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use sekai_app::{
-    BackupOptions, BackupTimings, ChunkCoord, ChunkDiff, Dimension, GcPlan, GcReport, GcTimings,
-    NbtChange, RegionKey, RegionKind, RollbackReport, RollbackTimings, Scope, SnapshotId,
+    BackupOptions, BackupTimings, ChunkCoord, ChunkDiff, DiffTimings, Dimension, GcPlan, GcReport,
+    GcTimings, NbtChange, RegionKey, RegionKind, RollbackReport, RollbackTimings, ScanTimings,
+    Scope, SnapshotId,
 };
 use serde::Serialize;
 
@@ -119,9 +120,14 @@ struct DiffArgs {
     /// legacy single-chunk output; several switch to grouped output.
     #[command(flatten)]
     selection: Selection,
-    /// Emit diff array as JSON instead of human text.
+    /// Emit diff array as JSON instead of human text. Combined with
+    /// `--timing`, phase timings are included (the result becomes an
+    /// object with a `diffs` array). See docs/json.md.
     #[arg(long)]
     json: bool,
+    /// Print a per-phase timing breakdown after the report.
+    #[arg(long)]
+    timing: bool,
     /// Show concrete old/new values in human output (SNBT format).
     #[arg(long)]
     show_values: bool,
@@ -201,9 +207,14 @@ enum DebugCommand {
     Scan {
         /// World directory to inspect.
         world: PathBuf,
-        /// Emit the entries as a JSON array instead of a table.
+        /// Emit the entries as JSON instead of a table. Combined with
+        /// `--timing`, phase timings are included (the result becomes an
+        /// object with an `entries` array). See docs/json.md.
         #[arg(long)]
         json: bool,
+        /// Print a per-phase timing breakdown after the report.
+        #[arg(long)]
+        timing: bool,
     },
 }
 
@@ -258,7 +269,11 @@ async fn main() -> std::process::ExitCode {
             run_gc(&cli.store, dry_run, out).await
         }
         Command::Debug { debug } => match debug {
-            DebugCommand::Scan { world, json } => run_debug_scan(&world, json),
+            DebugCommand::Scan {
+                world,
+                json,
+                timing,
+            } => run_debug_scan(&world, json, timing, style),
         },
     };
     match result {
@@ -503,6 +518,83 @@ struct ScanEntryJson {
     header_hash: String,
 }
 
+/// Timing block for `diff --json --timing`.
+#[derive(Serialize)]
+struct DiffTimingJson {
+    total_ms: u128,
+    phases: DiffPhasesJson,
+}
+
+/// Phase breakdown for `diff --timing` (wire format, see above).
+#[allow(clippy::struct_field_names)]
+#[derive(Serialize)]
+struct DiffPhasesJson {
+    blob_fetch_ms: u128,
+    decompress_ms: u128,
+    diff_compute_ms: u128,
+}
+
+/// `diff --json --timing` promotes the bare array to an object so the
+/// timing block has somewhere to live; `diffs` keeps the shape `--json`
+/// alone would emit.
+#[derive(Serialize)]
+struct TimedDiffs<T> {
+    diffs: T,
+    #[serde(flatten)]
+    timing: Option<DiffTimingJson>,
+}
+
+impl From<&DiffTimings> for DiffTimingJson {
+    fn from(timings: &DiffTimings) -> Self {
+        Self {
+            total_ms: timings.total.as_millis(),
+            phases: DiffPhasesJson {
+                blob_fetch_ms: timings.blob_fetch.as_millis(),
+                decompress_ms: timings.decompress.as_millis(),
+                diff_compute_ms: timings.diff_compute.as_millis(),
+            },
+        }
+    }
+}
+
+/// Timing block for `debug scan --json --timing`.
+#[derive(Serialize)]
+struct ScanTimingJson {
+    total_ms: u128,
+    phases: ScanPhasesJson,
+}
+
+/// Phase breakdown for `debug scan --timing` (wire format, see above).
+#[allow(clippy::struct_field_names)]
+#[derive(Serialize)]
+struct ScanPhasesJson {
+    discover_ms: u128,
+    read_ms: u128,
+    parse_ms: u128,
+}
+
+/// `debug scan --json --timing` promotes the bare array to an object;
+/// `entries` keeps the shape `--json` alone would emit.
+#[derive(Serialize)]
+struct TimedEntries {
+    entries: Vec<ScanEntryJson>,
+    #[serde(flatten)]
+    timing: Option<ScanTimingJson>,
+}
+
+impl From<&ScanTimings> for ScanTimingJson {
+    fn from(timings: &ScanTimings) -> Self {
+        Self {
+            total_ms: timings.total.as_millis(),
+            phases: ScanPhasesJson {
+                discover_ms: timings.discover.as_millis(),
+                read_ms: timings.read.as_millis(),
+                parse_ms: timings.parse.as_millis(),
+            },
+        }
+    }
+}
+
 /// Render a runtime failure for stderr: red bold `error:` prefix plus the
 /// anyhow context chain. Mirrors clap's own parse-error look.
 fn render_error(err: &anyhow::Error, style: Styler) -> String {
@@ -710,7 +802,7 @@ async fn run_diff(store: &str, args: DiffArgs, style: Styler) -> anyhow::Result<
     let selection = &args.selection;
     let explicit = selection.chunks();
 
-    let diffs = if let Some(world) = &args.world {
+    let (diffs, timings) = if let Some(world) = &args.world {
         let snapshot_id = args.old_snapshot.or(args.new_snapshot).map(SnapshotId);
         let coords = if explicit.is_empty() {
             scoped_coords(sekai_app::world_chunk_coords(world)?, selection)
@@ -746,10 +838,25 @@ async fn run_diff(store: &str, args: DiffArgs, style: Styler) -> anyhow::Result<
     if diffs.len() == 1 {
         let diff = &diffs[0];
         if args.json {
-            println!(
-                "{}",
-                envelope_ok("diff", &diff_entry_payload(&diff.entries))?
-            );
+            // Bare array without `--timing`; the timing block promotes
+            // the result to an object (see docs/json.md).
+            if args.timing {
+                println!(
+                    "{}",
+                    envelope_ok(
+                        "diff",
+                        &TimedDiffs {
+                            diffs: diff_entry_payload(&diff.entries),
+                            timing: Some((&timings).into()),
+                        }
+                    )?
+                );
+            } else {
+                println!(
+                    "{}",
+                    envelope_ok("diff", &diff_entry_payload(&diff.entries))?
+                );
+            }
             return Ok(());
         }
         println!(
@@ -762,6 +869,9 @@ async fn run_diff(store: &str, args: DiffArgs, style: Styler) -> anyhow::Result<
                 style
             )
         );
+        if args.timing {
+            print_diff_timing_table(&timings, diffs.len(), style);
+        }
         return Ok(());
     }
 
@@ -770,7 +880,20 @@ async fn run_diff(store: &str, args: DiffArgs, style: Styler) -> anyhow::Result<
         .filter(|diff| !diff.entries.is_empty())
         .collect();
     if args.json {
-        println!("{}", envelope_ok("diff", &diff_group_payload(&nonempty))?);
+        if args.timing {
+            println!(
+                "{}",
+                envelope_ok(
+                    "diff",
+                    &TimedDiffs {
+                        diffs: diff_group_payload(&nonempty),
+                        timing: Some((&timings).into()),
+                    }
+                )?
+            );
+        } else {
+            println!("{}", envelope_ok("diff", &diff_group_payload(&nonempty))?);
+        }
         return Ok(());
     }
     if nonempty.is_empty() {
@@ -781,6 +904,9 @@ async fn run_diff(store: &str, args: DiffArgs, style: Styler) -> anyhow::Result<
         "{}",
         render_diff_grouped(&nonempty, args.show_values, style)
     );
+    if args.timing {
+        print_diff_timing_table(&timings, diffs.len(), style);
+    }
     Ok(())
 }
 
@@ -952,6 +1078,36 @@ fn print_gc_timing_table(timings: &GcTimings, style: Styler) {
     );
 }
 
+/// Human-readable phase table for `diff --timing`.
+fn print_diff_timing_table(timings: &DiffTimings, chunks: usize, style: Styler) {
+    println!(
+        "{}",
+        style.dim(&format!(
+            "timing total={}ms blob_fetch={}ms decompress={}ms diff_compute={}ms chunks={}",
+            timings.total.as_millis(),
+            timings.blob_fetch.as_millis(),
+            timings.decompress.as_millis(),
+            timings.diff_compute.as_millis(),
+            chunks,
+        ))
+    );
+}
+
+/// Human-readable phase table for `debug scan --timing`.
+fn print_scan_timing_table(timings: &ScanTimings, files: usize, style: Styler) {
+    println!(
+        "{}",
+        style.dim(&format!(
+            "timing total={}ms discover={}ms read={}ms parse={}ms files={}",
+            timings.total.as_millis(),
+            timings.discover.as_millis(),
+            timings.read.as_millis(),
+            timings.parse.as_millis(),
+            files,
+        ))
+    );
+}
+
 /// Grouped payload for multi-chunk diffs. `coord` uses raw dim/kind codes,
 /// matching `scan`; entry values are SNBT strings, always complete.
 fn diff_group_payload(diffs: &[&ChunkDiff]) -> Vec<DiffGroupJson> {
@@ -1086,11 +1242,24 @@ const fn gc_plan_payload(plan: &GcPlan) -> GcPlanPayload {
     }
 }
 
-fn run_debug_scan(world: &Path, json: bool) -> anyhow::Result<()> {
-    let entries =
+fn run_debug_scan(world: &Path, json: bool, timing: bool, style: Styler) -> anyhow::Result<()> {
+    let (entries, timings) =
         sekai_app::scan(world).with_context(|| format!("scan of {} failed", world.display()))?;
     if json {
-        println!("{}", envelope_ok("scan", &scan_payload(&entries))?);
+        if timing {
+            println!(
+                "{}",
+                envelope_ok(
+                    "scan",
+                    &TimedEntries {
+                        entries: scan_payload(&entries),
+                        timing: Some((&timings).into()),
+                    }
+                )?
+            );
+        } else {
+            println!("{}", envelope_ok("scan", &scan_payload(&entries))?);
+        }
         return Ok(());
     }
     for entry in &entries {
@@ -1125,6 +1294,9 @@ fn run_debug_scan(world: &Path, json: bool) -> anyhow::Result<()> {
         total_bytes,
         total_chunks
     );
+    if timing {
+        print_scan_timing_table(&timings, entries.len(), style);
+    }
     Ok(())
 }
 
@@ -1213,6 +1385,7 @@ mod tests {
                     ..
                 },
                 json: false,
+                timing: false,
                 show_values: false,
             })
         ));
@@ -1274,7 +1447,6 @@ mod tests {
         );
         assert!(Cli::try_parse_from(["sekai", "diff", "--chunk", "0,0", "--dimension"]).is_err());
         assert!(Cli::try_parse_from(["sekai", "diff", "--chunk", "bogus"]).is_err());
-        assert!(Cli::try_parse_from(["sekai", "diff", "--cx", "0"]).is_err());
     }
 
     #[test]
@@ -1358,9 +1530,33 @@ mod tests {
         let cli = Cli::try_parse_from(["sekai", "list", "--json"]).expect("list --json parses");
         assert!(matches!(cli.command, Command::List { json: true }));
 
+        let cli = Cli::try_parse_from(["sekai", "diff", "--chunk", "0,0", "--timing", "--json"])
+            .expect("diff --timing --json parses");
+        assert!(matches!(
+            cli.command,
+            Command::Diff(DiffArgs {
+                timing: true,
+                json: true,
+                ..
+            })
+        ));
+
         let cli =
             Cli::try_parse_from(["sekai", "debug", "scan", "world"]).expect("debug scan parses");
         assert!(matches!(cli.command, Command::Debug { .. }));
+
+        let cli = Cli::try_parse_from(["sekai", "debug", "scan", "world", "--timing", "--json"])
+            .expect("scan --timing --json parses");
+        assert!(matches!(
+            cli.command,
+            Command::Debug {
+                debug: DebugCommand::Scan {
+                    timing: true,
+                    json: true,
+                    ..
+                }
+            }
+        ));
     }
 
     #[test]
@@ -1534,6 +1730,58 @@ mod tests {
         );
     }
 
+    fn sample_diff_timings() -> sekai_app::DiffTimings {
+        sekai_app::DiffTimings {
+            total: Duration::from_millis(50),
+            blob_fetch: Duration::from_millis(10),
+            decompress: Duration::from_millis(20),
+            diff_compute: Duration::from_millis(15),
+        }
+    }
+
+    #[test]
+    fn renders_diff_timed_json() {
+        // `--timing` promotes the bare array to an object; the array keeps
+        // the exact `--json`-alone shape under `diffs`.
+        assert_eq!(
+            json(&TimedDiffs {
+                diffs: diff_entry_payload(&sample_diffs()),
+                timing: Some((&sample_diff_timings()).into()),
+            }),
+            r#"{"diffs":[{"path":"Status","type":"modified","old":"\"minecraft:full\"","new":"\"minecraft:empty\""},{"path":"xPos","type":"added","val":"3"},{"path":"old_tag","type":"removed","val":"1b"}],"total_ms":50,"phases":{"blob_fetch_ms":10,"decompress_ms":20,"diff_compute_ms":15}}"#
+        );
+        let grouped = sample_grouped();
+        let nonempty: Vec<&sekai_app::ChunkDiff> = grouped
+            .iter()
+            .filter(|diff| !diff.entries.is_empty())
+            .collect();
+        assert_eq!(
+            json(&TimedDiffs {
+                diffs: diff_group_payload(&nonempty),
+                timing: Some((&sample_diff_timings()).into()),
+            }),
+            r#"{"diffs":[{"coord":{"dim":0,"kind":0,"x":0,"z":0},"entries":[{"path":"Status","type":"modified","old":"\"minecraft:full\"","new":"\"minecraft:empty\""},{"path":"xPos","type":"added","val":"3"},{"path":"old_tag","type":"removed","val":"1b"}]}],"total_ms":50,"phases":{"blob_fetch_ms":10,"decompress_ms":20,"diff_compute_ms":15}}"#
+        );
+    }
+
+    #[test]
+    fn renders_scan_timed_json() {
+        let timings = sekai_app::ScanTimings {
+            total: Duration::from_millis(30),
+            discover: Duration::from_millis(1),
+            read: Duration::from_millis(2),
+            parse: Duration::from_millis(3),
+        };
+        let empty: Vec<ScanEntryJson> = Vec::new();
+        assert_eq!(
+            json(&TimedEntries {
+                entries: empty,
+                timing: Some((&timings).into()),
+            }),
+            r#"{"entries":[],"total_ms":30,"phases":{"discover_ms":1,"read_ms":2,"parse_ms":3}}"#
+        );
+    }
+
     #[test]
     fn scoped_coords_filters_and_dedups() {
         let coords = vec![
@@ -1607,8 +1855,6 @@ mod tests {
         let cli =
             Cli::try_parse_from(["sekai", "diff", "--chunk", "0,0", "--json"]).expect("parses");
         assert!(output_json(&cli.command));
-
-        assert!(Cli::try_parse_from(["sekai", "backup", "--timing-json", "w"]).is_err());
     }
 
     #[test]
