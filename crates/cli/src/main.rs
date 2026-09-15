@@ -12,6 +12,7 @@ use sekai_app::{
     BackupOptions, BackupTimings, ChunkCoord, ChunkDiff, Dimension, GcPlan, GcReport, GcTimings,
     NbtChange, RegionKey, RegionKind, RollbackReport, RollbackTimings, Scope, SnapshotId,
 };
+use serde::Serialize;
 
 mod style;
 
@@ -264,7 +265,15 @@ async fn main() -> std::process::ExitCode {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(err) => {
             if as_json {
-                println!("{}", envelope_err(command_name, &err));
+                // Envelope serialization is infallible for these shapes
+                // (strings, integers, and structs thereof); the human
+                // rendering is a last-resort fallback, never a second schema.
+                match envelope_err(command_name, &err) {
+                    Ok(doc) => println!("{doc}"),
+                    Err(_) => {
+                        eprintln!("{}", render_error(&err, Styler::new_stderr(cli.color)));
+                    }
+                }
             } else {
                 eprintln!("{}", render_error(&err, Styler::new_stderr(cli.color)));
             }
@@ -311,17 +320,187 @@ const fn output_json(command: &Command) -> bool {
 }
 
 /// JSON success envelope: exactly one JSON document on stdout.
-fn envelope_ok(command: &str, result_json: &str) -> String {
-    format!("{{\"command\":\"{command}\",\"status\":\"ok\",\"result\":{result_json}}}")
+#[derive(Serialize)]
+struct OkEnvelope<'a, T: ?Sized> {
+    command: &'a str,
+    status: &'a str,
+    result: &'a T,
+}
+
+fn envelope_ok<T: Serialize + ?Sized>(command: &str, result: &T) -> anyhow::Result<String> {
+    Ok(serde_json::to_string(&OkEnvelope {
+        command,
+        status: "ok",
+        result,
+    })?)
 }
 
 /// JSON error object: stdout stays exactly one JSON document.
 /// Callers must still check the exit code; `error` is only present here.
-fn envelope_err(command: &str, err: &anyhow::Error) -> String {
-    format!(
-        "{{\"command\":\"{command}\",\"status\":\"error\",\"error\":\"{}\"}}",
-        json_escape(&format!("{err:?}"))
-    )
+#[derive(Serialize)]
+struct ErrEnvelope<'a> {
+    command: &'a str,
+    status: &'a str,
+    error: String,
+}
+
+fn envelope_err(command: &str, err: &anyhow::Error) -> anyhow::Result<String> {
+    Ok(serde_json::to_string(&ErrEnvelope {
+        command,
+        status: "error",
+        error: format!("{err:?}"),
+    })?)
+}
+
+/// Machine-readable payloads (docs/json.md). DTOs, not domain types: the
+/// wire shape stays stable while domain structs evolve, durations convert
+/// to integer millis at construction, and paths lossy-render up front.
+/// Serde derives live only here; `no_std` crates never see `serde_json`.
+#[derive(Serialize)]
+struct BackupPayload {
+    snapshot: u64,
+    chunks: usize,
+    new_blobs: usize,
+    tombstones: usize,
+    skipped_regions: usize,
+    carried_chunks: usize,
+    #[serde(flatten)]
+    timing: Option<BackupTiming>,
+}
+
+#[derive(Serialize)]
+struct BackupTiming {
+    total_ms: u128,
+    phases: BackupPhases,
+    regions: Vec<RegionTimingJson>,
+}
+
+/// Phase breakdown for `backup --timing`. Field names are wire format
+/// (docs/json.md), hence the uniform `_ms` postfix.
+#[allow(clippy::struct_field_names)]
+#[derive(Serialize)]
+struct BackupPhases {
+    discover_ms: u128,
+    universe_load_ms: u128,
+    fingerprint_ms: u128,
+    region_open_ms: u128,
+    ingest_ms: u128,
+    hash_ms: u128,
+    cas_put_ms: u128,
+    db_apply_ms: u128,
+}
+
+#[derive(Serialize)]
+struct RegionTimingJson {
+    path: String,
+    bytes: u64,
+    chunks: usize,
+    open_ms: u128,
+    ingest_ms: u128,
+    hash_ms: u128,
+    cas_ms: u128,
+}
+
+#[derive(Serialize)]
+struct RollbackPayload {
+    files_written: usize,
+    files_deleted: usize,
+    chunks_restored: usize,
+    #[serde(flatten)]
+    timing: Option<RollbackTiming>,
+}
+
+#[derive(Serialize)]
+struct RollbackTiming {
+    total_ms: u128,
+    phases: RollbackPhases,
+}
+
+/// Phase breakdown for `rollback --timing` (wire format, see above).
+#[allow(clippy::struct_field_names)]
+#[derive(Serialize)]
+struct RollbackPhases {
+    plan_ms: u128,
+    discover_ms: u128,
+    rollback_files_ms: u128,
+}
+
+#[derive(Serialize)]
+struct GcPayload {
+    candidates: usize,
+    orphans: usize,
+    removed: usize,
+    #[serde(flatten)]
+    timing: Option<GcTiming>,
+}
+
+#[derive(Serialize)]
+struct GcTiming {
+    total_ms: u128,
+    phases: GcPhases,
+}
+
+/// Phase breakdown for `gc --timing` (wire format, see above).
+#[allow(clippy::struct_field_names)]
+#[derive(Serialize)]
+struct GcPhases {
+    plan_ms: u128,
+    apply_ms: u128,
+}
+
+#[derive(Serialize)]
+struct GcPlanPayload {
+    orphans: usize,
+    examined: usize,
+}
+
+#[derive(Serialize)]
+struct SnapshotJson {
+    id: u64,
+    created_at_ms: u64,
+}
+
+/// Diff entry with SNBT string values. Deliberately not the derived
+/// `Value` serialization (externally tagged): consumers read SNBT, so
+/// values render through `Display` here, exactly like human output.
+#[derive(Serialize)]
+struct DiffEntryJson {
+    path: String,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    val: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    old: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    new: Option<String>,
+}
+
+#[derive(Serialize)]
+struct CoordJson {
+    dim: i32,
+    kind: i32,
+    x: i32,
+    z: i32,
+}
+
+#[derive(Serialize)]
+struct DiffGroupJson {
+    coord: CoordJson,
+    entries: Vec<DiffEntryJson>,
+}
+
+#[derive(Serialize)]
+struct ScanEntryJson {
+    path: String,
+    dim: i32,
+    kind: i32,
+    region_x: i32,
+    region_z: i32,
+    size: u64,
+    mtime_ms: Option<u64>,
+    chunks: usize,
+    header_hash: String,
 }
 
 /// Render a runtime failure for stderr: red bold `error:` prefix plus the
@@ -373,7 +552,7 @@ async fn run_backup(
     if out.json {
         println!(
             "{}",
-            envelope_ok("backup", &backup_json(&report, &timings, out.timing))
+            envelope_ok("backup", &backup_payload(&report, &timings, out.timing))?
         );
         return Ok(());
     }
@@ -420,7 +599,7 @@ async fn run_rollback(
     if out.json {
         println!(
             "{}",
-            envelope_ok("rollback", &rollback_json(&report, &timings, out.timing))
+            envelope_ok("rollback", &rollback_payload(&report, &timings, out.timing))?
         );
         return Ok(());
     }
@@ -441,7 +620,7 @@ async fn run_rollback(
 async fn run_list(store: &str, json: bool, style: Styler) -> anyhow::Result<()> {
     let snapshots = sekai_app::list_snapshots(store).await?;
     if json {
-        println!("{}", envelope_ok("list", &list_json(&snapshots)));
+        println!("{}", envelope_ok("list", &list_payload(&snapshots))?);
         return Ok(());
     }
     for snapshot in &snapshots {
@@ -567,7 +746,10 @@ async fn run_diff(store: &str, args: DiffArgs, style: Styler) -> anyhow::Result<
     if diffs.len() == 1 {
         let diff = &diffs[0];
         if args.json {
-            println!("{}", envelope_ok("diff", &diff_json(&diff.entries)));
+            println!(
+                "{}",
+                envelope_ok("diff", &diff_entry_payload(&diff.entries))?
+            );
             return Ok(());
         }
         println!(
@@ -588,7 +770,7 @@ async fn run_diff(store: &str, args: DiffArgs, style: Styler) -> anyhow::Result<
         .filter(|diff| !diff.entries.is_empty())
         .collect();
     if args.json {
-        println!("{}", envelope_ok("diff", &diff_grouped_json(&nonempty)));
+        println!("{}", envelope_ok("diff", &diff_group_payload(&nonempty))?);
         return Ok(());
     }
     if nonempty.is_empty() {
@@ -654,7 +836,7 @@ async fn run_gc(store: &str, dry_run: bool, out: ReportOut) -> anyhow::Result<()
             .await
             .with_context(|| format!("gc plan for {store} failed"))?;
         if out.json {
-            println!("{}", envelope_ok("gc", &gc_plan_json(&plan)));
+            println!("{}", envelope_ok("gc", &gc_plan_payload(&plan))?);
             return Ok(());
         }
         println!(
@@ -671,7 +853,7 @@ async fn run_gc(store: &str, dry_run: bool, out: ReportOut) -> anyhow::Result<()
     if out.json {
         println!(
             "{}",
-            envelope_ok("gc", &gc_json(&report, &timings, out.timing))
+            envelope_ok("gc", &gc_payload(&report, &timings, out.timing))?
         );
         return Ok(());
     }
@@ -770,191 +952,145 @@ fn print_gc_timing_table(timings: &GcTimings, style: Styler) {
     );
 }
 
-/// Grouped JSON for multi-chunk diffs. `coord` uses raw dim/kind codes,
+/// Grouped payload for multi-chunk diffs. `coord` uses raw dim/kind codes,
 /// matching `scan`; entry values are SNBT strings, always complete.
-fn diff_grouped_json(diffs: &[&ChunkDiff]) -> String {
-    use core::fmt::Write as _;
-    let mut out = String::from("[");
-    for (index, diff) in diffs.iter().enumerate() {
-        if index > 0 {
-            out.push(',');
-        }
-        let coord = diff.coord;
-        let _ = write!(
-            out,
-            "{{\"coord\":{{\"dim\":{},\"kind\":{},\"x\":{},\"z\":{}}},\"entries\":{}}}",
-            coord.dim.raw(),
-            coord.kind.raw(),
-            coord.x,
-            coord.z,
-            diff_json(&diff.entries),
-        );
-    }
-    out.push(']');
-    out
+fn diff_group_payload(diffs: &[&ChunkDiff]) -> Vec<DiffGroupJson> {
+    diffs
+        .iter()
+        .map(|diff| DiffGroupJson {
+            coord: CoordJson {
+                dim: diff.coord.dim.raw(),
+                kind: diff.coord.kind.raw(),
+                x: diff.coord.x,
+                z: diff.coord.z,
+            },
+            entries: diff_entry_payload(&diff.entries),
+        })
+        .collect()
 }
 
-/// Flat JSON array for single-chunk `diff --json`. Values are SNBT strings.
-fn diff_json(diffs: &[sekai_app::NbtDiffEntry]) -> String {
-    use core::fmt::Write as _;
-    let mut out = String::from("[");
-    for (index, entry) in diffs.iter().enumerate() {
-        if index > 0 {
-            out.push(',');
-        }
-        let (change_type, details) = match &entry.change {
-            NbtChange::Added(v) => (
-                "added",
-                format!("\"val\":\"{}\"", json_escape(&format!("{v}"))),
-            ),
-            NbtChange::Removed(v) => (
-                "removed",
-                format!("\"val\":\"{}\"", json_escape(&format!("{v}"))),
-            ),
-            NbtChange::Modified { old, new } => (
-                "modified",
-                format!(
-                    "\"old\":\"{}\",\"new\":\"{}\"",
-                    json_escape(&format!("{old}")),
-                    json_escape(&format!("{new}"))
-                ),
-            ),
-        };
-        let _ = write!(
-            out,
-            "{{\"path\":\"{}\",\"type\":\"{change_type}\",{details}}}",
-            json_escape(&entry.path)
-        );
-    }
-    out.push(']');
-    out
+/// Payload for single-chunk `diff --json`. Values are SNBT strings.
+fn diff_entry_payload(diffs: &[sekai_app::NbtDiffEntry]) -> Vec<DiffEntryJson> {
+    diffs.iter().map(diff_entry_json).collect()
 }
 
-/// JSON report for `backup --json`. Without `--timing` this is the bare
-/// result; with `--timing` the `total_ms`/`phases`/`regions` block is
-/// appended, mirroring the human `--timing` table plus the full region list.
-fn backup_json(report: &sekai_app::BackupReport, timings: &BackupTimings, timing: bool) -> String {
-    use core::fmt::Write as _;
-    let mut out = String::from("{");
-    let _ = write!(
-        out,
-        "\"snapshot\":{},\"chunks\":{},\"new_blobs\":{},\"tombstones\":{},\"skipped_regions\":{},\"carried_chunks\":{}",
-        report.snapshot.raw(),
-        report.chunks,
-        report.new_blobs,
-        report.tombstones,
-        report.skipped_regions,
-        report.carried_chunks,
-    );
-    if !timing {
-        out.push('}');
-        return out;
+fn diff_entry_json(entry: &sekai_app::NbtDiffEntry) -> DiffEntryJson {
+    let (kind, val, old, new) = match &entry.change {
+        NbtChange::Added(v) => ("added", Some(format!("{v}")), None, None),
+        NbtChange::Removed(v) => ("removed", Some(format!("{v}")), None, None),
+        NbtChange::Modified { old, new } => (
+            "modified",
+            None,
+            Some(format!("{old}")),
+            Some(format!("{new}")),
+        ),
+    };
+    DiffEntryJson {
+        path: entry.path.clone(),
+        kind,
+        val,
+        old,
+        new,
     }
-    let _ = write!(out, ",\"total_ms\":{}", timings.total.as_millis());
-    let _ = write!(
-        out,
-        ",\"phases\":{{\"discover_ms\":{},\"universe_load_ms\":{},\"fingerprint_ms\":{},\"region_open_ms\":{},\"ingest_ms\":{},\"hash_ms\":{},\"cas_put_ms\":{},\"db_apply_ms\":{}}}",
-        timings.discover.as_millis(),
-        timings.universe_load.as_millis(),
-        timings.fingerprint.as_millis(),
-        timings.region_open.as_millis(),
-        timings.ingest.as_millis(),
-        timings.hash.as_millis(),
-        timings.cas_put.as_millis(),
-        timings.db_apply.as_millis(),
-    );
-    out.push_str(",\"regions\":[");
-    for (index, region) in timings.regions.iter().enumerate() {
-        if index > 0 {
-            out.push(',');
-        }
-        let _ = write!(
-            out,
-            "{{\"path\":\"{}\",\"bytes\":{},\"chunks\":{},\"open_ms\":{},\"ingest_ms\":{},\"hash_ms\":{},\"cas_ms\":{}}}",
-            json_escape(&region.path.to_string_lossy()),
-            region.bytes,
-            region.chunks,
-            region.open.as_millis(),
-            region.ingest.as_millis(),
-            region.hash.as_millis(),
-            region.cas.as_millis(),
-        );
-    }
-    out.push_str("]}");
-    out
 }
 
-/// JSON report for `rollback --json`; the timing block needs `--timing`.
-fn rollback_json(report: &RollbackReport, timings: &RollbackTimings, timing: bool) -> String {
-    use core::fmt::Write as _;
-    let mut out = String::from("{");
-    let _ = write!(
-        out,
-        "\"files_written\":{},\"files_deleted\":{},\"chunks_restored\":{}",
-        report.files_written, report.files_deleted, report.chunks_restored,
-    );
-    if !timing {
-        out.push('}');
-        return out;
+/// Payload for `backup --json`. Without `--timing` this is the bare
+/// result; with `--timing` the timing block is included, mirroring the
+/// human `--timing` table plus the full region list.
+fn backup_payload(
+    report: &sekai_app::BackupReport,
+    timings: &BackupTimings,
+    timing: bool,
+) -> BackupPayload {
+    BackupPayload {
+        snapshot: report.snapshot.raw(),
+        chunks: report.chunks,
+        new_blobs: report.new_blobs,
+        tombstones: report.tombstones,
+        skipped_regions: report.skipped_regions,
+        carried_chunks: report.carried_chunks,
+        timing: timing.then_some(BackupTiming {
+            total_ms: timings.total.as_millis(),
+            phases: BackupPhases {
+                discover_ms: timings.discover.as_millis(),
+                universe_load_ms: timings.universe_load.as_millis(),
+                fingerprint_ms: timings.fingerprint.as_millis(),
+                region_open_ms: timings.region_open.as_millis(),
+                ingest_ms: timings.ingest.as_millis(),
+                hash_ms: timings.hash.as_millis(),
+                cas_put_ms: timings.cas_put.as_millis(),
+                db_apply_ms: timings.db_apply.as_millis(),
+            },
+            regions: timings
+                .regions
+                .iter()
+                .map(|region| RegionTimingJson {
+                    path: region.path.to_string_lossy().into_owned(),
+                    bytes: region.bytes,
+                    chunks: region.chunks,
+                    open_ms: region.open.as_millis(),
+                    ingest_ms: region.ingest.as_millis(),
+                    hash_ms: region.hash.as_millis(),
+                    cas_ms: region.cas.as_millis(),
+                })
+                .collect(),
+        }),
     }
-    let _ = write!(out, ",\"total_ms\":{}", timings.total.as_millis());
-    let _ = write!(
-        out,
-        ",\"phases\":{{\"plan_ms\":{},\"discover_ms\":{},\"rollback_files_ms\":{}}}",
-        timings.plan.as_millis(),
-        timings.discover.as_millis(),
-        timings.rollback_files.as_millis(),
-    );
-    out.push('}');
-    out
 }
 
-/// JSON report for `gc --json`; the timing block needs `--timing`.
-/// The dry-run plan (`gc --dry-run --json`) has its own shape, see
-/// [`gc_plan_json`], since planning produces no phase timings.
-fn gc_json(report: &GcReport, timings: &GcTimings, timing: bool) -> String {
-    use core::fmt::Write as _;
-    let mut out = String::from("{");
-    let _ = write!(
-        out,
-        "\"candidates\":{},\"orphans\":{},\"removed\":{}",
-        report.candidates, report.orphans, report.removed,
-    );
-    if !timing {
-        out.push('}');
-        return out;
+/// Payload for `rollback --json`; the timing block needs `--timing`.
+fn rollback_payload(
+    report: &RollbackReport,
+    timings: &RollbackTimings,
+    timing: bool,
+) -> RollbackPayload {
+    RollbackPayload {
+        files_written: report.files_written,
+        files_deleted: report.files_deleted,
+        chunks_restored: report.chunks_restored,
+        timing: timing.then_some(RollbackTiming {
+            total_ms: timings.total.as_millis(),
+            phases: RollbackPhases {
+                plan_ms: timings.plan.as_millis(),
+                discover_ms: timings.discover.as_millis(),
+                rollback_files_ms: timings.rollback_files.as_millis(),
+            },
+        }),
     }
-    let _ = write!(out, ",\"total_ms\":{}", timings.total.as_millis());
-    let _ = write!(
-        out,
-        ",\"phases\":{{\"plan_ms\":{},\"apply_ms\":{}}}",
-        timings.plan.as_millis(),
-        timings.apply.as_millis(),
-    );
-    out.push('}');
-    out
 }
 
-/// JSON plan for `gc --dry-run --json`. No phase timings exist for a plan,
+/// Payload for `gc --json`; the timing block needs `--timing`.
+/// The dry-run plan has its own shape, see [`gc_plan_payload`], since
+/// planning produces no phase timings.
+fn gc_payload(report: &GcReport, timings: &GcTimings, timing: bool) -> GcPayload {
+    GcPayload {
+        candidates: report.candidates,
+        orphans: report.orphans,
+        removed: report.removed,
+        timing: timing.then_some(GcTiming {
+            total_ms: timings.total.as_millis(),
+            phases: GcPhases {
+                plan_ms: timings.plan.as_millis(),
+                apply_ms: timings.apply.as_millis(),
+            },
+        }),
+    }
+}
+
+/// Payload for `gc --dry-run --json`. No phase timings exist for a plan,
 /// so this shape never carries a timing block.
-fn gc_plan_json(plan: &GcPlan) -> String {
-    use core::fmt::Write as _;
-    let mut out = String::from("{");
-    let _ = write!(
-        out,
-        "\"orphans\":{},\"examined\":{}",
-        plan.orphans.len(),
-        plan.examined
-    );
-    out.push('}');
-    out
+const fn gc_plan_payload(plan: &GcPlan) -> GcPlanPayload {
+    GcPlanPayload {
+        orphans: plan.orphans.len(),
+        examined: plan.examined,
+    }
 }
 
 fn run_debug_scan(world: &Path, json: bool) -> anyhow::Result<()> {
     let entries =
         sekai_app::scan(world).with_context(|| format!("scan of {} failed", world.display()))?;
     if json {
-        println!("{}", envelope_ok("scan", &scan_json(&entries)));
+        println!("{}", envelope_ok("scan", &scan_payload(&entries))?);
         return Ok(());
     }
     for entry in &entries {
@@ -994,50 +1130,33 @@ fn run_debug_scan(world: &Path, json: bool) -> anyhow::Result<()> {
 
 /// Flat JSON array for `list --json`: snapshot IDs with raw
 /// millisecond timestamps (RFC 3339 rendering stays human-only).
-fn list_json(snapshots: &[sekai_app::Snapshot]) -> String {
-    use core::fmt::Write as _;
-    let mut out = String::from("[");
-    for (index, snapshot) in snapshots.iter().enumerate() {
-        if index > 0 {
-            out.push(',');
-        }
-        let _ = write!(
-            out,
-            "{{\"id\":{},\"created_at_ms\":{}}}",
-            snapshot.id.raw(),
-            snapshot.created_at_ms,
-        );
-    }
-    out.push(']');
-    out
+/// Payload for `list --json`: snapshot IDs with raw Unix millis.
+fn list_payload(snapshots: &[sekai_app::Snapshot]) -> Vec<SnapshotJson> {
+    snapshots
+        .iter()
+        .map(|snapshot| SnapshotJson {
+            id: snapshot.id.raw(),
+            created_at_ms: snapshot.created_at_ms,
+        })
+        .collect()
 }
 
-/// Flat JSON array for `debug scan --json`.
-fn scan_json(entries: &[sekai_app::RegionScanEntry]) -> String {
-    use core::fmt::Write as _;
-    let mut out = String::from("[");
-    for (index, entry) in entries.iter().enumerate() {
-        if index > 0 {
-            out.push(',');
-        }
-        let mtime = entry
-            .mtime_ms
-            .map_or_else(|| "null".to_owned(), |ms| ms.to_string());
-        let _ = write!(
-            out,
-            "{{\"path\":\"{}\",\"dim\":{},\"kind\":{},\"region_x\":{},\"region_z\":{},\"size\":{},\"mtime_ms\":{mtime},\"chunks\":{},\"header_hash\":\"{}\"}}",
-            json_escape(&entry.path.to_string_lossy()),
-            entry.dim.raw(),
-            entry.kind.raw(),
-            entry.region_x,
-            entry.region_z,
-            entry.file_bytes,
-            entry.chunks,
-            entry.header_hash,
-        );
-    }
-    out.push(']');
-    out
+/// Payload for `debug scan --json`.
+fn scan_payload(entries: &[sekai_app::RegionScanEntry]) -> Vec<ScanEntryJson> {
+    entries
+        .iter()
+        .map(|entry| ScanEntryJson {
+            path: entry.path.to_string_lossy().into_owned(),
+            dim: entry.dim.raw(),
+            kind: entry.kind.raw(),
+            region_x: entry.region_x,
+            region_z: entry.region_z,
+            size: entry.file_bytes,
+            mtime_ms: entry.mtime_ms,
+            chunks: entry.chunks,
+            header_hash: entry.header_hash.clone(),
+        })
+        .collect()
 }
 
 /// Short family name for a region kind (`region`/`entities`/`poi`).
@@ -1053,31 +1172,16 @@ fn kind_name(kind: RegionKind) -> &'static str {
     }
 }
 
-/// Minimal JSON string escaper for paths (quote, backslash, controls).
-fn json_escape(text: &str) -> String {
-    use core::fmt::Write as _;
-    let mut out = String::with_capacity(text.len());
-    for ch in text.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => {
-                let _ = write!(out, "\\u{:04x}", c as u32);
-            }
-            c => out.push(c),
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use core::time::Duration;
     use std::path::PathBuf;
+
+    /// Serialize a payload DTO, proving the exact wire bytes.
+    fn json<T: Serialize + ?Sized>(value: &T) -> String {
+        serde_json::to_string(value).unwrap()
+    }
 
     #[test]
     fn parses_subcommands() {
@@ -1303,8 +1407,13 @@ mod tests {
     }
 
     #[test]
-    fn escapes_json_paths() {
-        assert_eq!(json_escape("a\"b\\c"), "a\\\"b\\\\c");
+    fn escapes_json_strings_like_serde() {
+        // serde_json owns all string escaping now; pin parity for quotes,
+        // backslashes, C0 controls (lowercase `\u00xx`), and passthrough.
+        assert_eq!(json(&"a\"b\\c"), r#""a\"b\\c""#);
+        assert_eq!(json(&"a\nb\rc\td"), r#""a\nb\rc\td""#);
+        assert_eq!(json(&"a\x01b"), r#""a\u0001b""#);
+        assert_eq!(json(&"日本語~"), r#""日本語~""#);
     }
 
     fn sample_diffs() -> Vec<sekai_app::NbtDiffEntry> {
@@ -1374,13 +1483,13 @@ mod tests {
             "+ blob: ".len() + 500 + "...".len()
         );
         // JSON output is never truncated.
-        assert!(diff_json(&diffs).contains(&"x".repeat(600)));
+        assert!(json(&diff_entry_payload(&diffs)).contains(&"x".repeat(600)));
     }
 
     #[test]
     fn renders_diff_json_with_snbt_values() {
         assert_eq!(
-            diff_json(&sample_diffs()),
+            json(&diff_entry_payload(&sample_diffs())),
             r#"[{"path":"Status","type":"modified","old":"\"minecraft:full\"","new":"\"minecraft:empty\""},{"path":"xPos","type":"added","val":"3"},{"path":"old_tag","type":"removed","val":"1b"}]"#
         );
     }
@@ -1406,10 +1515,10 @@ mod tests {
             .filter(|diff| !diff.entries.is_empty())
             .collect();
         assert_eq!(
-            diff_grouped_json(&nonempty),
+            json(&diff_group_payload(&nonempty)),
             r#"[{"coord":{"dim":0,"kind":0,"x":0,"z":0},"entries":[{"path":"Status","type":"modified","old":"\"minecraft:full\"","new":"\"minecraft:empty\""},{"path":"xPos","type":"added","val":"3"},{"path":"old_tag","type":"removed","val":"1b"}]}]"#
         );
-        assert_eq!(diff_grouped_json(&[]), "[]");
+        assert_eq!(json(&diff_group_payload(&[])), "[]");
     }
 
     #[test]
@@ -1505,19 +1614,20 @@ mod tests {
     #[test]
     fn renders_json_envelopes() {
         assert_eq!(
-            envelope_ok("list", "[1,2]"),
+            envelope_ok("list", &serde_json::json!([1, 2])).unwrap(),
             r#"{"command":"list","status":"ok","result":[1,2]}"#
         );
         let err = anyhow::anyhow!("root cause").context("backup of /w failed");
         assert_eq!(
-            envelope_err("backup", &err),
+            envelope_err("backup", &err).unwrap(),
             r#"{"command":"backup","status":"error","error":"backup of /w failed\n\nCaused by:\n    root cause"}"#
         );
     }
 
     #[test]
     fn renders_list_json() {
-        assert_eq!(list_json(&[]), "[]");
+        let empty: Vec<sekai_app::Snapshot> = Vec::new();
+        assert_eq!(json(&list_payload(&empty)), "[]");
         let snapshots = vec![
             sekai_app::Snapshot {
                 id: sekai_app::SnapshotId(1),
@@ -1529,7 +1639,7 @@ mod tests {
             },
         ];
         assert_eq!(
-            list_json(&snapshots),
+            json(&list_payload(&snapshots)),
             r#"[{"id":1,"created_at_ms":1700000000000},{"id":2,"created_at_ms":1700000001000}]"#
         );
     }
@@ -1567,11 +1677,11 @@ mod tests {
             }],
         };
         assert_eq!(
-            backup_json(&backup_report, &backup_timings, false),
+            json(&backup_payload(&backup_report, &backup_timings, false)),
             r#"{"snapshot":3,"chunks":40,"new_blobs":2,"tombstones":0,"skipped_regions":1,"carried_chunks":8}"#
         );
         assert_eq!(
-            backup_json(&backup_report, &backup_timings, true),
+            json(&backup_payload(&backup_report, &backup_timings, true)),
             r#"{"snapshot":3,"chunks":40,"new_blobs":2,"tombstones":0,"skipped_regions":1,"carried_chunks":8,"total_ms":100,"phases":{"discover_ms":1,"universe_load_ms":2,"fingerprint_ms":3,"region_open_ms":4,"ingest_ms":50,"hash_ms":6,"cas_put_ms":7,"db_apply_ms":8},"regions":[{"path":"region/r.0.0.mca","bytes":100,"chunks":32,"open_ms":4,"ingest_ms":5,"hash_ms":6,"cas_ms":7}]}"#
         );
 
@@ -1587,11 +1697,15 @@ mod tests {
             rollback_files: Duration::from_millis(70),
         };
         assert_eq!(
-            rollback_json(&rollback_report, &rollback_timings, false),
+            json(&rollback_payload(
+                &rollback_report,
+                &rollback_timings,
+                false
+            )),
             r#"{"files_written":2,"files_deleted":1,"chunks_restored":40}"#
         );
         assert_eq!(
-            rollback_json(&rollback_report, &rollback_timings, true),
+            json(&rollback_payload(&rollback_report, &rollback_timings, true)),
             r#"{"files_written":2,"files_deleted":1,"chunks_restored":40,"total_ms":90,"phases":{"plan_ms":9,"discover_ms":8,"rollback_files_ms":70}}"#
         );
 
@@ -1606,11 +1720,11 @@ mod tests {
             apply: Duration::from_millis(10),
         };
         assert_eq!(
-            gc_json(&gc_report, &gc_timings, false),
+            json(&gc_payload(&gc_report, &gc_timings, false)),
             r#"{"candidates":5,"orphans":4,"removed":4}"#
         );
         assert_eq!(
-            gc_json(&gc_report, &gc_timings, true),
+            json(&gc_payload(&gc_report, &gc_timings, true)),
             r#"{"candidates":5,"orphans":4,"removed":4,"total_ms":30,"phases":{"plan_ms":20,"apply_ms":10}}"#
         );
     }

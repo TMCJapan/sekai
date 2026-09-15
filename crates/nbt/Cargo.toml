@@ -10,4 +10,3 @@ workspace = true
 [dependencies]
 blake3.workspace = true
 sekai-util.workspace = true
-serde.workspace = true

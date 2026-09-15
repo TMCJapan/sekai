@@ -2,7 +2,7 @@
 //!
 //! NBT is a small tag/length/value format, so a dependency-free
 //! recursive-descent parser keeps this crate `no_std` with a minimal
-//! dependency surface (serde for the data model only). Parsing is strict:
+//! dependency surface. Parsing is strict:
 //! truncated, overlong, mistyped, or trailing input is a loud error, never
 //! a silent partial value. Untrusted chunk payloads also bound two
 //! resources: nesting depth (stack) and allocation (every allocation is
@@ -10,12 +10,15 @@
 //! prefix fails with `UnexpectedEnd` before it can over-allocate).
 
 use alloc::{string::String, vec::Vec};
-use serde::Serialize;
 
 use crate::error::NbtError;
 
 /// Owned NBT value tree.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+///
+/// No `Serialize` impl by design: the derived form would be externally
+/// tagged, competing with the SNBT `Display` that machine-readable output
+/// actually uses (CLI serializes diff values as SNBT strings).
+#[derive(Debug, Clone, PartialEq)]
 pub enum Value {
     Byte(i8),
     Short(i16),
