@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use sekai_app::{
-    BackupOptions, BackupTimings, ChunkCoord, Dimension, GcPlan, GcReport, GcTimings, NbtChange,
-    RegionKind, RollbackReport, RollbackTimings, SnapshotId,
+    BackupOptions, BackupTimings, ChunkCoord, ChunkDiff, Dimension, GcPlan, GcReport, GcTimings,
+    NbtChange, RegionKey, RegionKind, RollbackReport, RollbackTimings, Scope, SnapshotId,
 };
 
 mod style;
@@ -54,6 +54,9 @@ enum Command {
         /// Ingest worker count. `0` means one per CPU.
         #[arg(long, default_value = "0")]
         jobs: usize,
+        /// World portion to record (default: whole world).
+        #[command(flatten)]
+        selection: Selection,
     },
     /// Rebuild the world from a snapshot, overwriting region files.
     Rollback {
@@ -68,6 +71,10 @@ enum Command {
         /// `--timing`, phase timings are included. See docs/json.md.
         #[arg(long)]
         json: bool,
+        /// World portion to rebuild (default: whole world). Files outside
+        /// the selection are never written, deleted, or otherwise touched.
+        #[command(flatten)]
+        selection: Selection,
     },
     /// List recorded snapshots, oldest first.
     List {
@@ -107,24 +114,82 @@ struct DiffArgs {
     old_snapshot: Option<u64>,
     /// Newer snapshot ID (if omitted, defaults to latest snapshot).
     new_snapshot: Option<u64>,
-    /// Chunk X coordinate.
-    #[arg(long, allow_hyphen_values = true)]
-    cx: i32,
-    /// Chunk Z coordinate.
-    #[arg(long, allow_hyphen_values = true)]
-    cz: i32,
-    /// Dimension string.
-    #[arg(long, default_value = "overworld")]
-    dim: Dimension,
-    /// Region kind string.
-    #[arg(long, default_value = "region")]
-    kind: RegionKind,
+    /// Chunks to compare (default: whole world). One chunk keeps the
+    /// legacy single-chunk output; several switch to grouped output.
+    #[command(flatten)]
+    selection: Selection,
     /// Emit diff array as JSON instead of human text.
     #[arg(long)]
     json: bool,
     /// Show concrete old/new values in human output (SNBT format).
     #[arg(long)]
     show_values: bool,
+}
+
+/// World-portion selection shared by backup, rollback, and diff.
+///
+/// Exactly one of `--chunk`, `--region`, `--dimension` may be given;
+/// none selects the whole world.
+#[derive(Debug, Clone, clap::Args)]
+struct Selection {
+    /// Dimension namespace for `--chunk`/`--region`, or the whole
+    /// dimension with `--dimension`.
+    #[arg(long, default_value = "overworld")]
+    dim: Dimension,
+    /// Region family for `--chunk`/`--region`.
+    #[arg(long, default_value = "region")]
+    kind: RegionKind,
+    /// Chunk `X,Z` in `--dim`/`--kind` (repeatable).
+    #[arg(long, value_name = "X,Z", allow_hyphen_values = true, conflicts_with_all = ["region", "dimension"])]
+    chunk: Vec<Xz>,
+    /// Region `RX,RZ` in `--dim`/`--kind`: every known chunk in the file.
+    #[arg(long, value_name = "RX,RZ", allow_hyphen_values = true, conflicts_with_all = ["chunk", "dimension"])]
+    region: Option<Xz>,
+    /// Whole `--dim` dimension, all region families.
+    #[arg(long, conflicts_with_all = ["chunk", "region"])]
+    dimension: bool,
+}
+
+/// `X,Z` coordinate pair for `--chunk` and `--region`.
+#[derive(Debug, Clone, Copy)]
+struct Xz {
+    x: i32,
+    z: i32,
+}
+
+impl std::str::FromStr for Xz {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (x, z) = s
+            .split_once(',')
+            .ok_or_else(|| format!("expected X,Z, got {s:?}"))?;
+        let parse = |part: &str, axis: char| {
+            part.trim()
+                .parse()
+                .map_err(|_| format!("invalid {axis} coordinate {part:?} in {s:?}, expected X,Z"))
+        };
+        Ok(Self {
+            x: parse(x, 'X')?,
+            z: parse(z, 'Z')?,
+        })
+    }
+}
+
+impl Selection {
+    /// Explicit chunk list in `--dim`/`--kind`.
+    fn chunks(&self) -> Vec<ChunkCoord> {
+        self.chunk
+            .iter()
+            .map(|xz| ChunkCoord::new(self.dim, self.kind, xz.x, xz.z))
+            .collect()
+    }
+
+    /// Region identity for `--region`, if given.
+    fn region_key(&self) -> Option<RegionKey> {
+        self.region
+            .map(|xz| RegionKey::new(self.dim, self.kind, xz.x, xz.z))
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -154,20 +219,43 @@ async fn main() -> std::process::ExitCode {
             json,
             with_diff,
             jobs,
-        } => run_backup(&cli.store, &world, timing, json, with_diff, jobs, style).await,
+            selection,
+        } => {
+            let out = ReportOut {
+                timing,
+                json,
+                style,
+            };
+            run_backup(&cli.store, &world, with_diff, jobs, selection, out).await
+        }
         Command::Rollback {
             world,
             snapshot,
             timing,
             json,
-        } => run_rollback(&cli.store, &world, snapshot, timing, json, style).await,
+            selection,
+        } => {
+            let out = ReportOut {
+                timing,
+                json,
+                style,
+            };
+            run_rollback(&cli.store, &world, snapshot, selection, out).await
+        }
         Command::List { json } => run_list(&cli.store, json, style).await,
         Command::Diff(args) => run_diff(&cli.store, args, style).await,
         Command::Gc {
             dry_run,
             timing,
             json,
-        } => run_gc(&cli.store, dry_run, timing, json, style).await,
+        } => {
+            let out = ReportOut {
+                timing,
+                json,
+                style,
+            };
+            run_gc(&cli.store, dry_run, out).await
+        }
         Command::Debug { debug } => match debug {
             DebugCommand::Scan { world, json } => run_debug_scan(&world, json),
         },
@@ -183,6 +271,14 @@ async fn main() -> std::process::ExitCode {
             std::process::ExitCode::FAILURE
         }
     }
+}
+
+/// Output controls shared by report commands (backup, rollback, gc).
+#[derive(Debug, Clone, Copy)]
+struct ReportOut {
+    timing: bool,
+    json: bool,
+    style: Styler,
 }
 
 /// Stable command name for JSON envelopes and error objects.
@@ -255,22 +351,33 @@ const fn options(with_diff: bool, jobs: usize) -> BackupOptions {
 async fn run_backup(
     store: &str,
     world: &Path,
-    timing: bool,
-    json: bool,
     with_diff: bool,
     jobs: usize,
-    style: Styler,
+    selection: Selection,
+    out: ReportOut,
 ) -> anyhow::Result<()> {
-    let (report, timings) = sekai_app::backup(world, store, options(with_diff, jobs), |_| {})
-        .await
-        .with_context(|| format!("backup of {} failed", world.display()))?;
-    if json {
+    let selected = selection.chunks();
+    let scope = if selection.dimension {
+        Scope::Dimension(selection.dim)
+    } else if let Some(key) = selection.region_key() {
+        Scope::Region(key)
+    } else if selected.is_empty() {
+        Scope::World
+    } else {
+        Scope::Chunks(&selected)
+    };
+    let (report, timings) =
+        sekai_app::backup(world, store, options(with_diff, jobs), scope, |_| {})
+            .await
+            .with_context(|| format!("backup of {} failed", world.display()))?;
+    if out.json {
         println!(
             "{}",
-            envelope_ok("backup", &backup_json(&report, &timings, timing))
+            envelope_ok("backup", &backup_json(&report, &timings, out.timing))
         );
         return Ok(());
     }
+    let style = out.style;
     println!(
         "snapshot {} recorded: {} chunks, {} new blobs, {} tombstones",
         style.bold(&report.snapshot.raw().to_string()),
@@ -278,7 +385,7 @@ async fn run_backup(
         report.new_blobs,
         report.tombstones
     );
-    if timing {
+    if out.timing {
         print_timing_table(&timings, style);
     }
     Ok(())
@@ -288,12 +395,21 @@ async fn run_rollback(
     store: &str,
     world: &Path,
     snapshot: u64,
-    timing: bool,
-    json: bool,
-    style: Styler,
+    selection: Selection,
+    out: ReportOut,
 ) -> anyhow::Result<()> {
     let id = SnapshotId(snapshot);
-    let (report, timings) = sekai_app::rollback(world, store, id)
+    let selected = selection.chunks();
+    let scope = if selection.dimension {
+        Scope::Dimension(selection.dim)
+    } else if let Some(key) = selection.region_key() {
+        Scope::Region(key)
+    } else if selected.is_empty() {
+        Scope::World
+    } else {
+        Scope::Chunks(&selected)
+    };
+    let (report, timings) = sekai_app::rollback(world, store, id, scope)
         .await
         .with_context(|| {
             format!(
@@ -301,13 +417,14 @@ async fn run_rollback(
                 world.display()
             )
         })?;
-    if json {
+    if out.json {
         println!(
             "{}",
-            envelope_ok("rollback", &rollback_json(&report, &timings, timing))
+            envelope_ok("rollback", &rollback_json(&report, &timings, out.timing))
         );
         return Ok(());
     }
+    let style = out.style;
     println!(
         "snapshot {} restored: {} files rewritten, {} files deleted, {} chunks restored",
         style.bold(&snapshot.to_string()),
@@ -315,7 +432,7 @@ async fn run_rollback(
         report.files_deleted,
         report.chunks_restored
     );
-    if timing {
+    if out.timing {
         print_rollback_timing_table(&timings, style);
     }
     Ok(())
@@ -350,6 +467,36 @@ fn render_diff_human(
     if diffs.is_empty() {
         return format!("No differences found for chunk ({cx}, {cz}).");
     }
+    render_diff_entries(diffs, show_values, style)
+}
+
+/// Human-readable diff sections for several chunks; callers omit chunks
+/// without entries, so every section is non-empty.
+fn render_diff_grouped(diffs: &[&ChunkDiff], show_values: bool, style: Styler) -> String {
+    diffs
+        .iter()
+        .map(|diff| {
+            let coord = diff.coord;
+            let header = format!(
+                "chunk {}/{} ({}, {}):",
+                coord.dim, coord.kind, coord.x, coord.z
+            );
+            format!(
+                "{}\n{}",
+                style.bold(&header),
+                render_diff_entries(&diff.entries, show_values, style)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// One diff entry per line, shared by single-chunk and grouped rendering.
+fn render_diff_entries(
+    diffs: &[sekai_app::NbtDiffEntry],
+    show_values: bool,
+    style: Styler,
+) -> String {
     diffs
         .iter()
         .map(|entry| {
@@ -370,8 +517,7 @@ fn render_diff_human(
         .join("\n")
 }
 
-/// Truncate a rendered value to [`MAX_VALUE_CHARS`] chars (char boundary),
-/// appending an ellipsis. Paths are never truncated.
+/// Truncate a rendered value. Paths are never truncated.
 fn truncate_value(rendered: &str) -> String {
     const MAX_VALUE_CHARS: usize = 500;
     if rendered.chars().count() <= MAX_VALUE_CHARS {
@@ -382,85 +528,132 @@ fn truncate_value(rendered: &str) -> String {
 }
 
 async fn run_diff(store: &str, args: DiffArgs, style: Styler) -> anyhow::Result<()> {
-    let coord = ChunkCoord::new(args.dim, args.kind, args.cx, args.cz);
+    let selection = &args.selection;
+    let explicit = selection.chunks();
 
     let diffs = if let Some(world) = &args.world {
         let snapshot_id = args.old_snapshot.or(args.new_snapshot).map(SnapshotId);
-        sekai_app::diff_world_chunk(world, store, snapshot_id, &coord, None)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to compute chunk diff for ({}, {}) between world state and snapshot",
-                    args.cx, args.cz
-                )
-            })?
-    } else {
-        let (old_id, new_id) = match (args.old_snapshot, args.new_snapshot) {
-            (Some(old), Some(new)) => (SnapshotId(old), SnapshotId(new)),
-            (Some(old), None) => {
-                let latest = sekai_app::latest_snapshot_id(store).await?;
-                (SnapshotId(old), latest)
-            }
-            (None, None) => {
-                let snapshots = sekai_app::list_snapshots(store).await?;
-                if snapshots.len() < 2 {
-                    anyhow::bail!(
-                        "at least 2 snapshots are required when snapshot IDs are omitted"
-                    );
-                }
-                let old = snapshots[snapshots.len() - 2].id;
-                let new = snapshots[snapshots.len() - 1].id;
-                (old, new)
-            }
-            (None, Some(new)) => {
-                let snapshots = sekai_app::list_snapshots(store).await?;
-                if snapshots.len() < 2 {
-                    anyhow::bail!(
-                        "at least 2 snapshots are required when snapshot IDs are omitted"
-                    );
-                }
-                let old = snapshots[snapshots.len() - 2].id;
-                (old, SnapshotId(new))
-            }
+        let coords = if explicit.is_empty() {
+            scoped_coords(sekai_app::world_chunk_coords(world)?, selection)
+        } else {
+            explicit
         };
-
-        sekai_app::diff_chunk(store, old_id, new_id, &coord, None)
+        sekai_app::diff_world_chunks(world, store, snapshot_id, &coords, None)
+            .await
+            .with_context(|| "failed to compute chunk diffs between world state and snapshot")?
+    } else {
+        let (old_id, new_id) =
+            resolve_snapshot_pair(store, args.old_snapshot, args.new_snapshot).await?;
+        let coords = if explicit.is_empty() {
+            let mut union = sekai_app::snapshot_chunk_coords(store, old_id).await?;
+            union.extend(sekai_app::snapshot_chunk_coords(store, new_id).await?);
+            scoped_coords(union, selection)
+        } else {
+            explicit
+        };
+        sekai_app::diff_chunks(store, old_id, new_id, &coords, None)
             .await
             .with_context(|| {
                 format!(
-                    "failed to compute chunk diff for ({}, {}) between snapshot {} and {}",
-                    args.cx,
-                    args.cz,
+                    "failed to compute chunk diffs between snapshot {} and {}",
                     old_id.raw(),
                     new_id.raw()
                 )
             })?
     };
 
-    if args.json {
-        println!("{}", envelope_ok("diff", &diff_json(&diffs)));
+    // Exactly one chunk keeps the legacy single-chunk output; several
+    // switch to grouped output with empty diffs omitted.
+    if diffs.len() == 1 {
+        let diff = &diffs[0];
+        if args.json {
+            println!("{}", envelope_ok("diff", &diff_json(&diff.entries)));
+            return Ok(());
+        }
+        println!(
+            "{}",
+            render_diff_human(
+                diff.coord.x,
+                diff.coord.z,
+                &diff.entries,
+                args.show_values,
+                style
+            )
+        );
         return Ok(());
     }
 
+    let nonempty: Vec<&ChunkDiff> = diffs
+        .iter()
+        .filter(|diff| !diff.entries.is_empty())
+        .collect();
+    if args.json {
+        println!("{}", envelope_ok("diff", &diff_grouped_json(&nonempty)));
+        return Ok(());
+    }
+    if nonempty.is_empty() {
+        println!("No differences found.");
+        return Ok(());
+    }
     println!(
         "{}",
-        render_diff_human(args.cx, args.cz, &diffs, args.show_values, style)
+        render_diff_grouped(&nonempty, args.show_values, style)
     );
     Ok(())
 }
 
-async fn run_gc(
+/// Resolve the snapshot pair, defaulting omitted IDs to latest/second-latest.
+async fn resolve_snapshot_pair(
     store: &str,
-    dry_run: bool,
-    timing: bool,
-    json: bool,
-    style: Styler,
-) -> anyhow::Result<()> {
+    old_snapshot: Option<u64>,
+    new_snapshot: Option<u64>,
+) -> anyhow::Result<(SnapshotId, SnapshotId)> {
+    match (old_snapshot, new_snapshot) {
+        (Some(old), Some(new)) => Ok((SnapshotId(old), SnapshotId(new))),
+        (Some(old), None) => {
+            let latest = sekai_app::latest_snapshot_id(store).await?;
+            Ok((SnapshotId(old), latest))
+        }
+        (None, None) => {
+            let snapshots = sekai_app::list_snapshots(store).await?;
+            if snapshots.len() < 2 {
+                anyhow::bail!("at least 2 snapshots are required when snapshot IDs are omitted");
+            }
+            let old = snapshots[snapshots.len() - 2].id;
+            let new = snapshots[snapshots.len() - 1].id;
+            Ok((old, new))
+        }
+        (None, Some(new)) => {
+            let snapshots = sekai_app::list_snapshots(store).await?;
+            if snapshots.len() < 2 {
+                anyhow::bail!("at least 2 snapshots are required when snapshot IDs are omitted");
+            }
+            let old = snapshots[snapshots.len() - 2].id;
+            Ok((old, SnapshotId(new)))
+        }
+    }
+}
+
+/// Keep coordinates inside `--region`/`--dimension` (explicit `--chunk`
+/// lists bypass this), sorted and deduplicated.
+fn scoped_coords(mut coords: Vec<ChunkCoord>, selection: &Selection) -> Vec<ChunkCoord> {
+    if let Some(key) = selection.region_key() {
+        coords.retain(|coord| RegionKey::of(*coord) == key);
+    } else if selection.dimension {
+        coords.retain(|coord| coord.dim == selection.dim);
+    }
+    coords.sort();
+    coords.dedup();
+    coords
+}
+
+async fn run_gc(store: &str, dry_run: bool, out: ReportOut) -> anyhow::Result<()> {
+    let style = out.style;
     if dry_run {
         let plan = sekai_app::gc_plan(store)
             .await
             .with_context(|| format!("gc plan for {store} failed"))?;
-        if json {
+        if out.json {
             println!("{}", envelope_ok("gc", &gc_plan_json(&plan)));
             return Ok(());
         }
@@ -475,8 +668,11 @@ async fn run_gc(
     let (report, timings) = sekai_app::gc(store)
         .await
         .with_context(|| format!("gc for {store} failed"))?;
-    if json {
-        println!("{}", envelope_ok("gc", &gc_json(&report, &timings, timing)));
+    if out.json {
+        println!(
+            "{}",
+            envelope_ok("gc", &gc_json(&report, &timings, out.timing))
+        );
         return Ok(());
     }
     println!(
@@ -485,7 +681,7 @@ async fn run_gc(
         report.orphans,
         report.candidates
     );
-    if timing {
+    if out.timing {
         print_gc_timing_table(&timings, style);
     }
     Ok(())
@@ -574,7 +770,31 @@ fn print_gc_timing_table(timings: &GcTimings, style: Styler) {
     );
 }
 
-/// Flat JSON array for `diff --json`. Values are SNBT strings.
+/// Grouped JSON for multi-chunk diffs. `coord` uses raw dim/kind codes,
+/// matching `scan`; entry values are SNBT strings, always complete.
+fn diff_grouped_json(diffs: &[&ChunkDiff]) -> String {
+    use core::fmt::Write as _;
+    let mut out = String::from("[");
+    for (index, diff) in diffs.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        let coord = diff.coord;
+        let _ = write!(
+            out,
+            "{{\"coord\":{{\"dim\":{},\"kind\":{},\"x\":{},\"z\":{}}},\"entries\":{}}}",
+            coord.dim.raw(),
+            coord.kind.raw(),
+            coord.x,
+            coord.z,
+            diff_json(&diff.entries),
+        );
+    }
+    out.push(']');
+    out
+}
+
+/// Flat JSON array for single-chunk `diff --json`. Values are SNBT strings.
 fn diff_json(diffs: &[sekai_app::NbtDiffEntry]) -> String {
     use core::fmt::Write as _;
     let mut out = String::from("[");
@@ -874,7 +1094,7 @@ mod tests {
 
     #[test]
     fn parses_diff_command() {
-        let cli = Cli::try_parse_from(["sekai", "diff", "1", "2", "--cx", "10", "--cz", "-5"])
+        let cli = Cli::try_parse_from(["sekai", "diff", "1", "2", "--chunk", "10,-5"])
             .expect("diff parses");
         assert!(matches!(
             cli.command,
@@ -882,46 +1102,40 @@ mod tests {
                 world: None,
                 old_snapshot: Some(1),
                 new_snapshot: Some(2),
-                cx: 10,
-                cz: -5,
-                dim: Dimension::OVERWORLD,
-                kind: RegionKind::REGION,
+                selection: Selection {
+                    chunk: _,
+                    region: None,
+                    dimension: false,
+                    ..
+                },
                 json: false,
                 show_values: false,
             })
         ));
+        if let Command::Diff(args) = &cli.command {
+            assert_eq!(args.selection.chunks().len(), 1);
+            assert_eq!(args.selection.chunks()[0].x, 10);
+        } else {
+            panic!("expected diff");
+        }
 
-        let cli = Cli::try_parse_from([
-            "sekai", "diff", "--world", "world", "--cx", "10", "--cz", "-5",
-        ])
-        .expect("diff with world parses");
+        let cli = Cli::try_parse_from(["sekai", "diff", "--world", "world", "--chunk", "10,-5"])
+            .expect("diff with world parses");
         assert!(matches!(
             cli.command,
             Command::Diff(DiffArgs {
                 world: Some(_),
                 old_snapshot: None,
                 new_snapshot: None,
-                cx: 10,
-                cz: -5,
-                dim: Dimension::OVERWORLD,
-                kind: RegionKind::REGION,
                 json: false,
                 show_values: false,
+                ..
             })
         ));
 
-        let cli = Cli::try_parse_from([
-            "sekai",
-            "diff",
-            "1",
-            "2",
-            "--cx",
-            "0",
-            "--cz",
-            "0",
-            "--show-values",
-        ])
-        .expect("diff --show-values parses");
+        let cli =
+            Cli::try_parse_from(["sekai", "diff", "1", "2", "--chunk", "0,0", "--show-values"])
+                .expect("diff --show-values parses");
         assert!(matches!(
             cli.command,
             Command::Diff(DiffArgs {
@@ -929,6 +1143,82 @@ mod tests {
                 ..
             })
         ));
+
+        // Multi-chunk repeats, region/dimension selectors, mutual exclusion.
+        let cli = Cli::try_parse_from(["sekai", "diff", "--chunk", "0,0", "--chunk", "1,-1"])
+            .expect("repeated --chunk parses");
+        if let Command::Diff(args) = &cli.command {
+            assert_eq!(args.selection.chunks().len(), 2);
+        } else {
+            panic!("expected diff");
+        }
+        let cli = Cli::try_parse_from(["sekai", "diff", "--region", "0,0"]).expect("region parses");
+        assert!(matches!(
+            cli.command,
+            Command::Diff(DiffArgs {
+                selection: Selection {
+                    region: Some(_),
+                    dimension: false,
+                    ..
+                },
+                ..
+            })
+        ));
+        assert!(Cli::try_parse_from(["sekai", "diff", "--region", "0,0", "--dimension"]).is_err());
+        assert!(
+            Cli::try_parse_from(["sekai", "diff", "--chunk", "0,0", "--region", "0,0"]).is_err()
+        );
+        assert!(Cli::try_parse_from(["sekai", "diff", "--chunk", "0,0", "--dimension"]).is_err());
+        assert!(Cli::try_parse_from(["sekai", "diff", "--chunk", "bogus"]).is_err());
+        assert!(Cli::try_parse_from(["sekai", "diff", "--cx", "0"]).is_err());
+    }
+
+    #[test]
+    fn parses_selection_for_backup_and_rollback() {
+        let cli = Cli::try_parse_from(["sekai", "backup", "--dimension", "--dim", "nether", "w"])
+            .expect("backup --dimension parses");
+        assert!(matches!(
+            cli.command,
+            Command::Backup {
+                selection: Selection {
+                    dimension: true,
+                    dim: Dimension::NETHER,
+                    ..
+                },
+                ..
+            }
+        ));
+
+        let cli = Cli::try_parse_from(["sekai", "rollback", "w", "3", "--region", "1,-1"])
+            .expect("rollback --region parses");
+        assert!(matches!(
+            cli.command,
+            Command::Rollback {
+                snapshot: 3,
+                selection: Selection {
+                    region: Some(_),
+                    ..
+                },
+                ..
+            }
+        ));
+
+        assert!(
+            Cli::try_parse_from(["sekai", "backup", "w", "--region", "0,0", "--dimension"])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn parses_xz_pairs() {
+        assert!(matches!(
+            "10,-5".parse::<Xz>().expect("parses"),
+            Xz { x: 10, z: -5 }
+        ));
+        assert!("bogus".parse::<Xz>().is_err());
+        assert!("1".parse::<Xz>().is_err());
+        assert!("1,2,3".parse::<Xz>().is_err());
+        assert!("a,b".parse::<Xz>().is_err());
     }
 
     #[test]
@@ -1095,6 +1385,87 @@ mod tests {
         );
     }
 
+    fn sample_grouped() -> Vec<sekai_app::ChunkDiff> {
+        vec![
+            sekai_app::ChunkDiff {
+                coord: ChunkCoord::new(Dimension::OVERWORLD, RegionKind::REGION, 0, 0),
+                entries: sample_diffs(),
+            },
+            sekai_app::ChunkDiff {
+                coord: ChunkCoord::new(Dimension::NETHER, RegionKind::REGION, 5, -3),
+                entries: Vec::new(),
+            },
+        ]
+    }
+
+    #[test]
+    fn renders_diff_grouped_json() {
+        let grouped = sample_grouped();
+        let nonempty: Vec<&sekai_app::ChunkDiff> = grouped
+            .iter()
+            .filter(|diff| !diff.entries.is_empty())
+            .collect();
+        assert_eq!(
+            diff_grouped_json(&nonempty),
+            r#"[{"coord":{"dim":0,"kind":0,"x":0,"z":0},"entries":[{"path":"Status","type":"modified","old":"\"minecraft:full\"","new":"\"minecraft:empty\""},{"path":"xPos","type":"added","val":"3"},{"path":"old_tag","type":"removed","val":"1b"}]}]"#
+        );
+        assert_eq!(diff_grouped_json(&[]), "[]");
+    }
+
+    #[test]
+    fn renders_diff_grouped_human() {
+        let grouped = sample_grouped();
+        let nonempty: Vec<&sekai_app::ChunkDiff> = grouped
+            .iter()
+            .filter(|diff| !diff.entries.is_empty())
+            .collect();
+        assert_eq!(
+            render_diff_grouped(&nonempty, false, Styler::disabled()),
+            "chunk overworld/region (0, 0):\n~ Status\n+ xPos\n- old_tag"
+        );
+    }
+
+    #[test]
+    fn scoped_coords_filters_and_dedups() {
+        let coords = vec![
+            ChunkCoord::new(Dimension::OVERWORLD, RegionKind::REGION, 0, 0),
+            ChunkCoord::new(Dimension::OVERWORLD, RegionKind::REGION, 0, 0),
+            ChunkCoord::new(Dimension::OVERWORLD, RegionKind::REGION, 33, 0),
+            ChunkCoord::new(Dimension::NETHER, RegionKind::REGION, 0, 0),
+        ];
+        let region = Selection {
+            dim: Dimension::OVERWORLD,
+            kind: RegionKind::REGION,
+            chunk: Vec::new(),
+            region: Some(Xz { x: 0, z: 0 }),
+            dimension: false,
+        };
+        assert_eq!(
+            scoped_coords(coords.clone(), &region),
+            vec![ChunkCoord::new(
+                Dimension::OVERWORLD,
+                RegionKind::REGION,
+                0,
+                0
+            )]
+        );
+        let dimension = Selection {
+            dim: Dimension::NETHER,
+            dimension: true,
+            ..region.clone()
+        };
+        assert_eq!(
+            scoped_coords(coords.clone(), &dimension),
+            vec![ChunkCoord::new(Dimension::NETHER, RegionKind::REGION, 0, 0)]
+        );
+        let world = Selection {
+            region: None,
+            dimension: false,
+            ..region
+        };
+        assert_eq!(scoped_coords(coords, &world).len(), 3);
+    }
+
     #[test]
     fn parses_color_flag() {
         let cli = Cli::try_parse_from(["sekai", "backup", "world"]).expect("backup parses");
@@ -1121,11 +1492,11 @@ mod tests {
         let cli = Cli::try_parse_from(["sekai", "backup", "w"]).expect("parses");
         assert!(!output_json(&cli.command));
 
-        let cli = Cli::try_parse_from(["sekai", "diff", "--cx", "0", "--cz", "0"]).expect("parses");
+        let cli = Cli::try_parse_from(["sekai", "diff", "--chunk", "0,0"]).expect("parses");
         assert!(!output_json(&cli.command));
 
-        let cli = Cli::try_parse_from(["sekai", "diff", "--cx", "0", "--cz", "0", "--json"])
-            .expect("parses");
+        let cli =
+            Cli::try_parse_from(["sekai", "diff", "--chunk", "0,0", "--json"]).expect("parses");
         assert!(output_json(&cli.command));
 
         assert!(Cli::try_parse_from(["sekai", "backup", "--timing-json", "w"]).is_err());

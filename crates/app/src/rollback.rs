@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use sekai_core::{BlobHash, ChunkCoord, RegionKey, RollbackReport, SnapshotId};
+use sekai_core::{BlobHash, ChunkCoord, RegionKey, RollbackReport, Scope, SnapshotId};
 use sekai_storage::FileCas;
 use sekai_world::LayoutFlavor;
 
@@ -35,10 +35,14 @@ pub struct RollbackTimings {
 
 /// Rebuild `world` from `snapshot` in the store at `store_url`, returning
 /// execution report and per-phase timings.
+///
+/// Only `scope` is rebuilt: region files outside the scope are never
+/// written, deleted, or otherwise touched.
 pub async fn rollback(
     world: &Path,
     store_url: &str,
     snapshot: SnapshotId,
+    scope: Scope<'_>,
 ) -> Result<(RollbackReport, RollbackTimings), AppError> {
     let total_started = Instant::now();
     let store = super::open_store(store_url).await?;
@@ -52,10 +56,15 @@ pub async fn rollback(
 
     let timestamp = u32::try_from(plan.created_at_ms / 1000).unwrap_or(u32::MAX);
 
+    // Scope before the blocking pass: out-of-scope regions are dropped
+    // from both sides, so the file pass below cannot tell they exist.
+    let mut groups = plan.groups;
+    groups.retain(|key, _| scope.matches_region(*key));
+
     let discover_started = Instant::now();
     let flavor = sekai_world::detect_flavor(world)?;
     let world_buf = world.to_path_buf();
-    let discovered: BTreeMap<RegionKey, PathBuf> = tokio::task::spawn_blocking(move || {
+    let mut discovered: BTreeMap<RegionKey, PathBuf> = tokio::task::spawn_blocking(move || {
         sekai_world::discover(&world_buf).map(|regions| {
             regions
                 .into_iter()
@@ -70,9 +79,10 @@ pub async fn rollback(
     })
     .await??;
     let discover_dt = discover_started.elapsed();
+    discovered.retain(|key, _| scope.matches_region(*key));
 
     let job = RollbackJob {
-        groups: plan.groups,
+        groups,
         cas: store.cas().clone(),
         world: world.to_path_buf(),
         flavor,

@@ -17,7 +17,7 @@ carries the bare result only.
 | `backup` | report (+timings with `--timing`) | table + JSON block | regions list is timing detail, JSON-only |
 | `rollback` | report (+timings with `--timing`) | table + JSON block | |
 | `list` | snapshot array | n/a | no phases exist |
-| `diff` | diff array | n/a | |
+| `diff` | single array, or grouped per coordinate (multi) | n/a | `--chunk`/`--region`/`--dimension` select chunks; one chunk keeps the single shape |
 | `gc` | report or dry-run plan (+timings with `--timing`, non-dry-run only) | table + JSON block | dry-run has no phase timings |
 | `debug scan` | entry array | n/a | |
 
@@ -99,6 +99,8 @@ Timestamps are raw Unix millis (RFC 3339 rendering stays human-only).
 
 ### `diff`
 
+Single chunk (`--chunk X,Z` once):
+
 ```jsonc
 [
   {"path": "Status", "type": "modified", "old": "\"full\"", "new": "\"empty\""},
@@ -107,9 +109,22 @@ Timestamps are raw Unix millis (RFC 3339 rendering stays human-only).
 ]
 ```
 
+Several chunks (`--chunk` repeated, `--region`, `--dimension`, or no
+selection for the whole world) group entries per coordinate, omitting
+chunks without differences:
+
+```jsonc
+[
+  {"coord": {"dim": 0, "kind": 0, "x": 1, "z": 2}, "entries": [
+    {"path": "Status", "type": "modified", "old": "\"full\"", "new": "\"empty\""}
+  ]}
+]
+```
+
 `type` is `added` (`val`), `removed` (`val`), or `modified`
 (`old`+`new`). Values are SNBT strings, always complete (human
-`--show-values` truncation does not apply here).
+`--show-values` truncation does not apply here). `coord` uses raw
+integer `dim`/`kind` codes, matching `scan`.
 
 ### `gc`
 

@@ -12,8 +12,8 @@ pub mod usecase;
 pub use port::{BlobStore, MetaStore};
 pub use sekai_util::{
     ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, Dimension, GcPlan, HexError,
-    RegionFingerprint, RegionKey, RegionKind, RegionStateEntry, Snapshot, SnapshotEntry,
-    SnapshotId,
+    OwnedScope, RegionFingerprint, RegionKey, RegionKind, RegionStateEntry, Scope, Snapshot,
+    SnapshotEntry, SnapshotId,
 };
 
 // sekai-nbt AST diff types

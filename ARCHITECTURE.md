@@ -213,6 +213,24 @@ Missing chunks are explicit `NULL`-blob rows. Rollback onto tombstones
 removes sectors (fully tombstoned regions delete the file rather than
 leaving a header-only shell).
 
+## Scoped Operations
+
+Backup, rollback, and diff accept a scope: whole world (default), one
+dimension (`--dimension`), one region file (`--region RX,RZ`), or an
+explicit chunk list (`--chunk X,Z`, repeatable; `--dim`/`--kind` qualify
+`--chunk`/`--region`). The scope is a filter, not a partition:
+
+- Scoped backup ingests, carries, and tombstones only inside the scope.
+  Out-of-scope coordinates record no rows and no tombstones, resolving
+  through fallback from earlier snapshots; stored state rows outside the
+  scope are never marked removed. A scoped backup therefore reads as the
+  truth for its scope only - a file deleted inside the scope tombstones
+  its chunks, while anything outside is untouched.
+- Scoped rollback rebuilds and deletes only inside the scope; files
+  outside are never written, deleted, or otherwise touched.
+- Multi-chunk diff resolves coordinates from the snapshots (or world
+  state) filtered by the scope and omits chunks without differences.
+
 ## Single Source of Truth vs Derived State
 
 - **Source of truth**: metadata history (`snapshots`, `chunk_history`) in the

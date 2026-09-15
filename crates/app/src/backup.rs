@@ -18,7 +18,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sekai_core::{
-    BackupReport, ChunkCoord, Observation, RegionFingerprint, RegionKey, SnapshotEntry,
+    BackupReport, ChunkCoord, Observation, OwnedScope, RegionFingerprint, RegionKey, Scope,
+    SnapshotEntry,
 };
 use sekai_storage::FileCas;
 use sekai_world::RegionRef;
@@ -117,12 +118,15 @@ struct FileOutcome {
 /// Scan `world` and record it as a new snapshot in the store at
 /// `store_url`, additionally returning per-phase timings.
 ///
+/// Only `scope` is ingested: out-of-scope coordinates record no rows and
+/// no tombstones, resolving through fallback from earlier snapshots.
 /// `progress` fires as changed files complete. The report is identical
 /// with or without timings.
 pub async fn backup(
     world: &Path,
     store_url: &str,
     options: BackupOptions,
+    scope: Scope<'_>,
     progress: impl Fn(BackupProgress) + Send,
 ) -> Result<(BackupReport, BackupTimings), AppError> {
     let total = Instant::now();
@@ -138,7 +142,8 @@ pub async fn backup(
 
     let universe_started = Instant::now();
     let (previous, plan) =
-        sekai_core::usecase::backup::plan_backup(store.meta(), &observed.observations).await?;
+        sekai_core::usecase::backup::plan_backup(store.meta(), &observed.observations, scope)
+            .await?;
     let universe_load = universe_started.elapsed();
 
     let mut files: HashMap<RegionKey, Changed> = HashMap::with_capacity(observed.regions.len());
@@ -157,7 +162,14 @@ pub async fn backup(
         }
     }
 
-    let walk = ingest_changed(changed, store.cas().root(), &options, progress).await?;
+    let walk = ingest_changed(
+        changed,
+        store.cas().root(),
+        &options,
+        scope.into(),
+        progress,
+    )
+    .await?;
 
     let staged = sekai_core::usecase::backup::assemble(
         plan,
@@ -166,6 +178,7 @@ pub async fn backup(
         walk.present.into_iter().collect(),
         walk.new_blobs,
         walk.fingerprints,
+        scope,
     );
 
     let now_ms = now_ms()?;
@@ -267,6 +280,7 @@ async fn ingest_changed(
     changed: Vec<Changed>,
     cas_root: &Path,
     options: &BackupOptions,
+    scope: OwnedScope,
     progress: impl Fn(BackupProgress) + Send,
 ) -> Result<RegionWalk, AppError> {
     let mut walk = RegionWalk {
@@ -299,8 +313,9 @@ async fn ingest_changed(
         let cas_root = cas_root.to_path_buf();
         let with_diff = options.with_diff;
         let ignore_tags = options.ignore_tags.clone();
+        let scope = scope.clone();
         set.spawn_blocking(move || {
-            ingest_group(group, &cas_root, with_diff, ignore_tags.as_deref())
+            ingest_group(group, &cas_root, with_diff, ignore_tags.as_deref(), &scope)
         });
     }
     while let Some(outcome) = set.join_next().await {
@@ -354,11 +369,12 @@ fn ingest_group(
     cas_root: &Path,
     with_diff: bool,
     ignore_tags: Option<&[String]>,
+    scope: &OwnedScope,
 ) -> Result<(Vec<FileOutcome>, Duration), AppError> {
     let mut cas = FileCas::open(cas_root)?;
     let mut outcomes = Vec::with_capacity(group.len());
     for (region, observed) in group {
-        let outcome = ingest_file(&region, observed, &mut cas, with_diff, ignore_tags)?;
+        let outcome = ingest_file(&region, observed, &mut cas, with_diff, ignore_tags, scope)?;
         outcomes.push(outcome);
     }
     // Barrier for this worker's shards; the join orders all barriers
@@ -383,6 +399,7 @@ fn merge_outcome(walk: &mut RegionWalk, outcome: FileOutcome) {
 
 struct ChunkIngestCtx<'a> {
     region: &'a RegionRef,
+    scope: &'a OwnedScope,
     cas: &'a mut FileCas,
     scratch: &'a mut Vec<u8>,
     with_diff: bool,
@@ -393,12 +410,15 @@ struct ChunkIngestCtx<'a> {
 }
 
 /// Read, hash, and store one changed region file, staging its rows.
+/// Chunks outside `scope` are skipped before hashing: their history stays
+/// untouched and fallback keeps resolving them.
 fn ingest_file(
     region: &RegionRef,
     observed: RegionFingerprint,
     cas: &mut FileCas,
     with_diff: bool,
     ignore_tags: Option<&[String]>,
+    scope: &OwnedScope,
 ) -> Result<FileOutcome, AppError> {
     let opened = Instant::now();
     let bytes = sekai_world::open_image(&region.path)?;
@@ -432,6 +452,7 @@ fn ingest_file(
             }
             let mut ctx = ChunkIngestCtx {
                 region,
+                scope,
                 cas,
                 scratch: &mut scratch,
                 with_diff,
@@ -488,6 +509,9 @@ fn ingest_timed(
     ctx: &mut ChunkIngestCtx<'_>,
 ) -> Result<(Duration, Duration), AppError> {
     let coord = ChunkCoord::new(ctx.region.dim, ctx.region.kind, chunk.x, chunk.z);
+    if !ctx.scope.contains(coord) {
+        return Ok((Duration::ZERO, Duration::ZERO));
+    }
     let hash_started = Instant::now();
     let hash = sekai_core::hash_blob(chunk.payload);
     // Diff failures degrade to "not computed": the blob itself is intact
