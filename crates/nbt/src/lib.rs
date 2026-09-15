@@ -8,6 +8,7 @@
 extern crate alloc;
 
 mod diff;
+mod display;
 mod error;
 mod normalize;
 mod parser;
