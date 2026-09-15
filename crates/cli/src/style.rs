@@ -15,7 +15,7 @@ pub enum ColorChoice {
 /// Decoupled styling switch.
 ///
 /// Construct once per process (`Styler::new` reads the environment and
-/// probes stdout); pass by reference into render functions.
+/// probes stdout); pass by value (`Copy`) into render functions.
 #[derive(Debug, Clone, Copy)]
 pub struct Styler {
     enabled: bool,
