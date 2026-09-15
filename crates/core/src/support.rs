@@ -16,6 +16,26 @@ use sekai_util::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemError;
 
+/// Effective rows at `snapshot`: exactly one row per coordinate known then
+/// (nearest row at or before it, tombstones included), ordered by
+/// coordinate. Mirrors the backend GROUP BY query.
+fn effective_at(rows: &[ChunkHistoryEntry], snapshot: SnapshotId) -> Vec<ChunkHistoryEntry> {
+    let mut latest: BTreeMap<ChunkCoord, ChunkHistoryEntry> = BTreeMap::new();
+    for row in rows {
+        if row.snapshot <= snapshot {
+            latest
+                .entry(row.coord)
+                .and_modify(|kept| {
+                    if row.snapshot > kept.snapshot {
+                        *kept = *row;
+                    }
+                })
+                .or_insert(*row);
+        }
+    }
+    latest.into_values().collect()
+}
+
 /// Drive an immediately-ready future without an executor.
 ///
 /// Only valid for futures that never pend (like the fakes below); a
@@ -80,10 +100,13 @@ impl MetaStore for MemMeta {
         snapshot: SnapshotId,
         coord: &ChunkCoord,
     ) -> impl Future<Output = Result<Option<ChunkHistoryEntry>, MemError>> + Send {
+        // Nearest row at or before `snapshot` (delta storage: unchanged
+        // chunks have no row at newer snapshots).
         core::future::ready(Ok(self
             .rows
             .iter()
-            .find(|row| row.snapshot == snapshot && row.coord == *coord)
+            .filter(|row| row.snapshot <= snapshot && row.coord == *coord)
+            .max_by_key(|row| row.snapshot)
             .copied()))
     }
 
@@ -106,8 +129,8 @@ impl MetaStore for MemMeta {
     where
         F: FnMut(&ChunkHistoryEntry) -> bool + Send,
     {
-        for row in &self.rows {
-            if row.snapshot == snapshot && !visit(row) {
+        for row in effective_at(&self.rows, snapshot) {
+            if !visit(&row) {
                 break;
             }
         }
@@ -149,16 +172,16 @@ impl MetaStore for MemMeta {
                 entry.diff,
             ));
         }
+        // Delta storage: carried regions contribute no rows. Their
+        // effective chunks are counted from the previous snapshot for the
+        // report; only derived state advances.
         let mut carried_chunks = 0usize;
         if let Some((prev, keys)) = carry_from {
-            let owned: Vec<ChunkHistoryEntry> = self
-                .rows
-                .iter()
-                .filter(|row| row.snapshot == prev && keys.contains(&RegionKey::of(row.coord)))
-                .map(|row| ChunkHistoryEntry::new(row.coord, id, row.blob, row.diff))
-                .collect();
-            carried_chunks = owned.len();
-            self.rows.extend(owned);
+            for row in effective_at(&self.rows, prev) {
+                if row.blob.is_some() && keys.contains(&RegionKey::of(row.coord)) {
+                    carried_chunks += 1;
+                }
+            }
             for key in keys {
                 for state in &mut self.states {
                     if state.key == *key {

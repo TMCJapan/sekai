@@ -5,11 +5,11 @@
 //!
 //! Unchanged region files skip ingestion entirely: each file carries a
 //! `(mtime, size, header hash)` fingerprint in derived state, and a file
-//! matching all three signals keeps its previous history rows via the
-//! port's carry seam instead of a per-chunk loop. Tombstones keep history
-//! total without a global chunk census: the known universe is exactly the
-//! coordinate set of the latest snapshot, so every snapshot re-records
-//! every known coordinate (present, carried, or tombstone).
+//! matching all three signals contributes no new rows - its previous rows
+//! stay readable through fallback instead of being copied. Tombstones keep history total without a global
+//! chunk census: the known universe is exactly the effective coordinate set
+//! of the latest snapshot, so every snapshot records fresh rows only for
+//! ingested chunks plus tombstones for vanished coordinates.
 //!
 //! The orchestration is split so concrete adapters (parallelism,
 //! filesystem, clocks, timing) stay outside `core`:
