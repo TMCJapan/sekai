@@ -42,11 +42,12 @@ enum Command {
         /// For Bukkit-family servers, pass the server root instead.
         world: PathBuf,
         /// Print a per-phase timing breakdown after the report.
-        #[arg(long, conflicts_with = "timing_json")]
-        timing: bool,
-        /// Print report and timings as flat JSON instead of human text.
         #[arg(long)]
-        timing_json: bool,
+        timing: bool,
+        /// Emit report as JSON instead of human text. Combined with
+        /// `--timing`, phase timings are included. See docs/json.md.
+        #[arg(long)]
+        json: bool,
         /// Derive volatile diff views alongside blobs.
         #[arg(long)]
         with_diff: bool,
@@ -61,14 +62,20 @@ enum Command {
         /// Snapshot ID to restore (see `list`).
         snapshot: u64,
         /// Print a per-phase timing breakdown after the report.
-        #[arg(long, conflicts_with = "timing_json")]
-        timing: bool,
-        /// Print report and timings as flat JSON instead of human text.
         #[arg(long)]
-        timing_json: bool,
+        timing: bool,
+        /// Emit report as JSON instead of human text. Combined with
+        /// `--timing`, phase timings are included. See docs/json.md.
+        #[arg(long)]
+        json: bool,
     },
     /// List recorded snapshots, oldest first.
-    List,
+    List {
+        /// Emit snapshot list as JSON instead of human text.
+        /// See docs/json.md.
+        #[arg(long)]
+        json: bool,
+    },
     /// Compare chunk NBT AST between two snapshots or between world state and a snapshot.
     Diff(DiffArgs),
     /// Garbage collect unreferenced orphan blobs from the store.
@@ -77,11 +84,12 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
         /// Print a per-phase timing breakdown after the report.
-        #[arg(long, conflicts_with = "timing_json")]
-        timing: bool,
-        /// Print report and timings as flat JSON instead of human text.
         #[arg(long)]
-        timing_json: bool,
+        timing: bool,
+        /// Emit report as JSON instead of human text. Combined with
+        /// `--timing`, phase timings are included. See docs/json.md.
+        #[arg(long)]
+        json: bool,
     },
     /// Read-only inspection helpers (never write to world or store).
     Debug {
@@ -136,40 +144,30 @@ enum DebugCommand {
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
-    let color = cli.color;
-    let style = Styler::new(color);
+    let style = Styler::new(cli.color);
+    let command_name = command_name(&cli.command);
+    let as_json = output_json(&cli.command);
     let result = match cli.command {
         Command::Backup {
             world,
             timing,
-            timing_json,
+            json,
             with_diff,
             jobs,
-        } => {
-            run_backup(
-                &cli.store,
-                &world,
-                timing,
-                timing_json,
-                with_diff,
-                jobs,
-                style,
-            )
-            .await
-        }
+        } => run_backup(&cli.store, &world, timing, json, with_diff, jobs, style).await,
         Command::Rollback {
             world,
             snapshot,
             timing,
-            timing_json,
-        } => run_rollback(&cli.store, &world, snapshot, timing, timing_json, style).await,
-        Command::List => run_list(&cli.store, style).await,
+            json,
+        } => run_rollback(&cli.store, &world, snapshot, timing, json, style).await,
+        Command::List { json } => run_list(&cli.store, json, style).await,
         Command::Diff(args) => run_diff(&cli.store, args, style).await,
         Command::Gc {
             dry_run,
             timing,
-            timing_json,
-        } => run_gc(&cli.store, dry_run, timing, timing_json, style).await,
+            json,
+        } => run_gc(&cli.store, dry_run, timing, json, style).await,
         Command::Debug { debug } => match debug {
             DebugCommand::Scan { world, json } => run_debug_scan(&world, json),
         },
@@ -177,10 +175,57 @@ async fn main() -> std::process::ExitCode {
     match result {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(err) => {
-            eprintln!("{}", render_error(&err, Styler::new_stderr(color)));
+            if as_json {
+                println!("{}", envelope_err(command_name, &err));
+            } else {
+                eprintln!("{}", render_error(&err, Styler::new_stderr(cli.color)));
+            }
             std::process::ExitCode::FAILURE
         }
     }
+}
+
+/// Stable command name for JSON envelopes and error objects.
+const fn command_name(command: &Command) -> &'static str {
+    match command {
+        Command::Backup { .. } => "backup",
+        Command::Rollback { .. } => "rollback",
+        Command::List { .. } => "list",
+        Command::Diff(_) => "diff",
+        Command::Gc { .. } => "gc",
+        Command::Debug { debug } => match debug {
+            DebugCommand::Scan { .. } => "scan",
+        },
+    }
+}
+
+/// Whether the command runs in JSON mode (`--json`). Errors serialize as
+/// an envelope on stdout instead of styled text on stderr.
+const fn output_json(command: &Command) -> bool {
+    match command {
+        Command::Backup { json, .. }
+        | Command::Rollback { json, .. }
+        | Command::List { json, .. }
+        | Command::Gc { json, .. } => *json,
+        Command::Diff(args) => args.json,
+        Command::Debug { debug } => match debug {
+            DebugCommand::Scan { json, .. } => *json,
+        },
+    }
+}
+
+/// JSON success envelope: exactly one JSON document on stdout.
+fn envelope_ok(command: &str, result_json: &str) -> String {
+    format!("{{\"command\":\"{command}\",\"status\":\"ok\",\"result\":{result_json}}}")
+}
+
+/// JSON error object: stdout stays exactly one JSON document.
+/// Callers must still check the exit code; `error` is only present here.
+fn envelope_err(command: &str, err: &anyhow::Error) -> String {
+    format!(
+        "{{\"command\":\"{command}\",\"status\":\"error\",\"error\":\"{}\"}}",
+        json_escape(&format!("{err:?}"))
+    )
 }
 
 /// Render a runtime failure for stderr: red bold `error:` prefix plus the
@@ -211,7 +256,7 @@ async fn run_backup(
     store: &str,
     world: &Path,
     timing: bool,
-    timing_json: bool,
+    json: bool,
     with_diff: bool,
     jobs: usize,
     style: Styler,
@@ -219,8 +264,11 @@ async fn run_backup(
     let (report, timings) = sekai_app::backup(world, store, options(with_diff, jobs), |_| {})
         .await
         .with_context(|| format!("backup of {} failed", world.display()))?;
-    if timing_json {
-        println!("{}", backup_json(&report, &timings));
+    if json {
+        println!(
+            "{}",
+            envelope_ok("backup", &backup_json(&report, &timings, timing))
+        );
         return Ok(());
     }
     println!(
@@ -241,7 +289,7 @@ async fn run_rollback(
     world: &Path,
     snapshot: u64,
     timing: bool,
-    timing_json: bool,
+    json: bool,
     style: Styler,
 ) -> anyhow::Result<()> {
     let id = SnapshotId(snapshot);
@@ -253,8 +301,11 @@ async fn run_rollback(
                 world.display()
             )
         })?;
-    if timing_json {
-        println!("{}", rollback_json(&report, &timings));
+    if json {
+        println!(
+            "{}",
+            envelope_ok("rollback", &rollback_json(&report, &timings, timing))
+        );
         return Ok(());
     }
     println!(
@@ -270,8 +321,13 @@ async fn run_rollback(
     Ok(())
 }
 
-async fn run_list(store: &str, style: Styler) -> anyhow::Result<()> {
-    for snapshot in sekai_app::list_snapshots(store).await? {
+async fn run_list(store: &str, json: bool, style: Styler) -> anyhow::Result<()> {
+    let snapshots = sekai_app::list_snapshots(store).await?;
+    if json {
+        println!("{}", envelope_ok("list", &list_json(&snapshots)));
+        return Ok(());
+    }
+    for snapshot in &snapshots {
         println!(
             "{}\t{}",
             style.bold(&snapshot.id.raw().to_string()),
@@ -382,7 +438,7 @@ async fn run_diff(store: &str, args: DiffArgs, style: Styler) -> anyhow::Result<
     };
 
     if args.json {
-        println!("{}", diff_json(&diffs));
+        println!("{}", envelope_ok("diff", &diff_json(&diffs)));
         return Ok(());
     }
 
@@ -397,15 +453,15 @@ async fn run_gc(
     store: &str,
     dry_run: bool,
     timing: bool,
-    timing_json: bool,
+    json: bool,
     style: Styler,
 ) -> anyhow::Result<()> {
     if dry_run {
         let plan = sekai_app::gc_plan(store)
             .await
             .with_context(|| format!("gc plan for {store} failed"))?;
-        if timing_json {
-            println!("{}", gc_plan_json(&plan));
+        if json {
+            println!("{}", envelope_ok("gc", &gc_plan_json(&plan)));
             return Ok(());
         }
         println!(
@@ -419,8 +475,8 @@ async fn run_gc(
     let (report, timings) = sekai_app::gc(store)
         .await
         .with_context(|| format!("gc for {store} failed"))?;
-    if timing_json {
-        println!("{}", gc_json(&report, &timings));
+    if json {
+        println!("{}", envelope_ok("gc", &gc_json(&report, &timings, timing)));
         return Ok(());
     }
     println!(
@@ -554,21 +610,27 @@ fn diff_json(diffs: &[sekai_app::NbtDiffEntry]) -> String {
     out
 }
 
-/// Flat JSON for `backup --timing-json`.
-fn backup_json(report: &sekai_app::BackupReport, timings: &BackupTimings) -> String {
+/// JSON report for `backup --json`. Without `--timing` this is the bare
+/// result; with `--timing` the `total_ms`/`phases`/`regions` block is
+/// appended, mirroring the human `--timing` table plus the full region list.
+fn backup_json(report: &sekai_app::BackupReport, timings: &BackupTimings, timing: bool) -> String {
     use core::fmt::Write as _;
     let mut out = String::from("{");
     let _ = write!(
         out,
-        "\"snapshot\":{},\"chunks\":{},\"new_blobs\":{},\"tombstones\":{},\"skipped_regions\":{},\"carried_chunks\":{},\"total_ms\":{}",
+        "\"snapshot\":{},\"chunks\":{},\"new_blobs\":{},\"tombstones\":{},\"skipped_regions\":{},\"carried_chunks\":{}",
         report.snapshot.raw(),
         report.chunks,
         report.new_blobs,
         report.tombstones,
         report.skipped_regions,
         report.carried_chunks,
-        timings.total.as_millis(),
     );
+    if !timing {
+        out.push('}');
+        return out;
+    }
+    let _ = write!(out, ",\"total_ms\":{}", timings.total.as_millis());
     let _ = write!(
         out,
         ",\"phases\":{{\"discover_ms\":{},\"universe_load_ms\":{},\"fingerprint_ms\":{},\"region_open_ms\":{},\"ingest_ms\":{},\"hash_ms\":{},\"cas_put_ms\":{},\"db_apply_ms\":{}}}",
@@ -602,18 +664,20 @@ fn backup_json(report: &sekai_app::BackupReport, timings: &BackupTimings) -> Str
     out
 }
 
-/// Flat JSON for `rollback --timing-json`.
-fn rollback_json(report: &RollbackReport, timings: &RollbackTimings) -> String {
+/// JSON report for `rollback --json`; the timing block needs `--timing`.
+fn rollback_json(report: &RollbackReport, timings: &RollbackTimings, timing: bool) -> String {
     use core::fmt::Write as _;
     let mut out = String::from("{");
     let _ = write!(
         out,
-        "\"files_written\":{},\"files_deleted\":{},\"chunks_restored\":{},\"total_ms\":{}",
-        report.files_written,
-        report.files_deleted,
-        report.chunks_restored,
-        timings.total.as_millis(),
+        "\"files_written\":{},\"files_deleted\":{},\"chunks_restored\":{}",
+        report.files_written, report.files_deleted, report.chunks_restored,
     );
+    if !timing {
+        out.push('}');
+        return out;
+    }
+    let _ = write!(out, ",\"total_ms\":{}", timings.total.as_millis());
     let _ = write!(
         out,
         ",\"phases\":{{\"plan_ms\":{},\"discover_ms\":{},\"rollback_files_ms\":{}}}",
@@ -625,18 +689,22 @@ fn rollback_json(report: &RollbackReport, timings: &RollbackTimings) -> String {
     out
 }
 
-/// Flat JSON for `gc --timing-json`.
-fn gc_json(report: &GcReport, timings: &GcTimings) -> String {
+/// JSON report for `gc --json`; the timing block needs `--timing`.
+/// The dry-run plan (`gc --dry-run --json`) has its own shape, see
+/// [`gc_plan_json`], since planning produces no phase timings.
+fn gc_json(report: &GcReport, timings: &GcTimings, timing: bool) -> String {
     use core::fmt::Write as _;
     let mut out = String::from("{");
     let _ = write!(
         out,
-        "\"candidates\":{},\"orphans\":{},\"removed\":{},\"total_ms\":{}",
-        report.candidates,
-        report.orphans,
-        report.removed,
-        timings.total.as_millis(),
+        "\"candidates\":{},\"orphans\":{},\"removed\":{}",
+        report.candidates, report.orphans, report.removed,
     );
+    if !timing {
+        out.push('}');
+        return out;
+    }
+    let _ = write!(out, ",\"total_ms\":{}", timings.total.as_millis());
     let _ = write!(
         out,
         ",\"phases\":{{\"plan_ms\":{},\"apply_ms\":{}}}",
@@ -647,7 +715,8 @@ fn gc_json(report: &GcReport, timings: &GcTimings) -> String {
     out
 }
 
-/// Flat JSON for `gc --dry-run --timing-json`.
+/// JSON plan for `gc --dry-run --json`. No phase timings exist for a plan,
+/// so this shape never carries a timing block.
 fn gc_plan_json(plan: &GcPlan) -> String {
     use core::fmt::Write as _;
     let mut out = String::from("{");
@@ -665,7 +734,7 @@ fn run_debug_scan(world: &Path, json: bool) -> anyhow::Result<()> {
     let entries =
         sekai_app::scan(world).with_context(|| format!("scan of {} failed", world.display()))?;
     if json {
-        println!("{}", scan_json(&entries));
+        println!("{}", envelope_ok("scan", &scan_json(&entries)));
         return Ok(());
     }
     for entry in &entries {
@@ -701,6 +770,26 @@ fn run_debug_scan(world: &Path, json: bool) -> anyhow::Result<()> {
         total_chunks
     );
     Ok(())
+}
+
+/// Flat JSON array for `list --json`: snapshot IDs with raw
+/// millisecond timestamps (RFC 3339 rendering stays human-only).
+fn list_json(snapshots: &[sekai_app::Snapshot]) -> String {
+    use core::fmt::Write as _;
+    let mut out = String::from("[");
+    for (index, snapshot) in snapshots.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        let _ = write!(
+            out,
+            "{{\"id\":{},\"created_at_ms\":{}}}",
+            snapshot.id.raw(),
+            snapshot.created_at_ms,
+        );
+    }
+    out.push(']');
+    out
 }
 
 /// Flat JSON array for `debug scan --json`.
@@ -767,6 +856,8 @@ fn json_escape(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::time::Duration;
+    use std::path::PathBuf;
 
     #[test]
     fn parses_subcommands() {
@@ -846,20 +937,18 @@ mod tests {
             .expect("backup --timing parses");
         assert!(matches!(cli.command, Command::Backup { timing: true, .. }));
 
-        let cli = Cli::try_parse_from(["sekai", "backup", "--timing-json", "world"])
-            .expect("backup --timing-json parses");
+        // `--timing` and `--json` are orthogonal: the JSON report carries
+        // the timing block when both are set.
+        let cli = Cli::try_parse_from(["sekai", "backup", "--timing", "--json", "world"])
+            .expect("backup --timing --json parses");
         assert!(matches!(
             cli.command,
             Command::Backup {
-                timing_json: true,
+                timing: true,
+                json: true,
                 ..
             }
         ));
-
-        // The two renderings are mutually exclusive.
-        assert!(
-            Cli::try_parse_from(["sekai", "backup", "--timing", "--timing-json", "world"]).is_err()
-        );
 
         let cli = Cli::try_parse_from(["sekai", "rollback", "--timing", "w", "3"])
             .expect("rollback --timing parses");
@@ -868,20 +957,12 @@ mod tests {
             Command::Rollback { timing: true, .. }
         ));
 
-        let cli = Cli::try_parse_from(["sekai", "rollback", "--timing-json", "w", "3"])
-            .expect("rollback --timing-json parses");
-        assert!(matches!(
-            cli.command,
-            Command::Rollback {
-                timing_json: true,
-                ..
-            }
-        ));
+        let cli = Cli::try_parse_from(["sekai", "rollback", "--json", "w", "3"])
+            .expect("rollback --json parses");
+        assert!(matches!(cli.command, Command::Rollback { json: true, .. }));
 
-        assert!(
-            Cli::try_parse_from(["sekai", "rollback", "--timing", "--timing-json", "w", "3"])
-                .is_err()
-        );
+        let cli = Cli::try_parse_from(["sekai", "list", "--json"]).expect("list --json parses");
+        assert!(matches!(cli.command, Command::List { json: true }));
 
         let cli =
             Cli::try_parse_from(["sekai", "debug", "scan", "world"]).expect("debug scan parses");
@@ -896,22 +977,32 @@ mod tests {
             Command::Gc {
                 dry_run: false,
                 timing: false,
-                timing_json: false
+                json: false
             }
         ));
 
-        let cli = Cli::try_parse_from(["sekai", "gc", "--dry-run", "--timing-json"])
-            .expect("gc --dry-run --timing-json parses");
+        let cli = Cli::try_parse_from(["sekai", "gc", "--dry-run", "--json"])
+            .expect("gc --dry-run --json parses");
         assert!(matches!(
             cli.command,
             Command::Gc {
                 dry_run: true,
-                timing_json: true,
+                json: true,
                 ..
             }
         ));
 
-        assert!(Cli::try_parse_from(["sekai", "gc", "--timing", "--timing-json"]).is_err());
+        // `--timing` and `--json` compose; no exclusivity between them.
+        let cli = Cli::try_parse_from(["sekai", "gc", "--timing", "--json"])
+            .expect("gc --timing --json parses");
+        assert!(matches!(
+            cli.command,
+            Command::Gc {
+                timing: true,
+                json: true,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -1016,6 +1107,141 @@ mod tests {
         assert_eq!(cli.color, ColorChoice::Always);
 
         assert!(Cli::try_parse_from(["sekai", "--color=maybe", "list"]).is_err());
+    }
+
+    #[test]
+    fn reports_json_mode_per_command() {
+        // JSON is per-command; a bare list is human, `--json` is machine.
+        let cli = Cli::try_parse_from(["sekai", "list"]).expect("parses");
+        assert!(!output_json(&cli.command));
+
+        let cli = Cli::try_parse_from(["sekai", "list", "--json"]).expect("parses");
+        assert!(output_json(&cli.command));
+
+        let cli = Cli::try_parse_from(["sekai", "backup", "w"]).expect("parses");
+        assert!(!output_json(&cli.command));
+
+        let cli = Cli::try_parse_from(["sekai", "diff", "--cx", "0", "--cz", "0"]).expect("parses");
+        assert!(!output_json(&cli.command));
+
+        let cli = Cli::try_parse_from(["sekai", "diff", "--cx", "0", "--cz", "0", "--json"])
+            .expect("parses");
+        assert!(output_json(&cli.command));
+
+        assert!(Cli::try_parse_from(["sekai", "backup", "--timing-json", "w"]).is_err());
+    }
+
+    #[test]
+    fn renders_json_envelopes() {
+        assert_eq!(
+            envelope_ok("list", "[1,2]"),
+            r#"{"command":"list","status":"ok","result":[1,2]}"#
+        );
+        let err = anyhow::anyhow!("root cause").context("backup of /w failed");
+        assert_eq!(
+            envelope_err("backup", &err),
+            r#"{"command":"backup","status":"error","error":"backup of /w failed\n\nCaused by:\n    root cause"}"#
+        );
+    }
+
+    #[test]
+    fn renders_list_json() {
+        assert_eq!(list_json(&[]), "[]");
+        let snapshots = vec![
+            sekai_app::Snapshot {
+                id: sekai_app::SnapshotId(1),
+                created_at_ms: 1_700_000_000_000,
+            },
+            sekai_app::Snapshot {
+                id: sekai_app::SnapshotId(2),
+                created_at_ms: 1_700_000_001_000,
+            },
+        ];
+        assert_eq!(
+            list_json(&snapshots),
+            r#"[{"id":1,"created_at_ms":1700000000000},{"id":2,"created_at_ms":1700000001000}]"#
+        );
+    }
+
+    #[test]
+    fn renders_report_json_without_and_with_timings() {
+        let backup_report = sekai_app::BackupReport {
+            snapshot: sekai_app::SnapshotId(3),
+            chunks: 40,
+            new_blobs: 2,
+            tombstones: 0,
+            skipped_regions: 1,
+            carried_chunks: 8,
+        };
+        let backup_timings = BackupTimings {
+            total: Duration::from_millis(100),
+            discover: Duration::from_millis(1),
+            universe_load: Duration::from_millis(2),
+            fingerprint: Duration::from_millis(3),
+            region_open: Duration::from_millis(4),
+            ingest: Duration::from_millis(50),
+            hash: Duration::from_millis(6),
+            cas_put: Duration::from_millis(7),
+            db_apply: Duration::from_millis(8),
+            skipped_regions: 1,
+            carried_chunks: 8,
+            regions: vec![sekai_app::RegionTiming {
+                path: PathBuf::from("region/r.0.0.mca"),
+                bytes: 100,
+                chunks: 32,
+                open: Duration::from_millis(4),
+                ingest: Duration::from_millis(5),
+                hash: Duration::from_millis(6),
+                cas: Duration::from_millis(7),
+            }],
+        };
+        assert_eq!(
+            backup_json(&backup_report, &backup_timings, false),
+            r#"{"snapshot":3,"chunks":40,"new_blobs":2,"tombstones":0,"skipped_regions":1,"carried_chunks":8}"#
+        );
+        assert_eq!(
+            backup_json(&backup_report, &backup_timings, true),
+            r#"{"snapshot":3,"chunks":40,"new_blobs":2,"tombstones":0,"skipped_regions":1,"carried_chunks":8,"total_ms":100,"phases":{"discover_ms":1,"universe_load_ms":2,"fingerprint_ms":3,"region_open_ms":4,"ingest_ms":50,"hash_ms":6,"cas_put_ms":7,"db_apply_ms":8},"regions":[{"path":"region/r.0.0.mca","bytes":100,"chunks":32,"open_ms":4,"ingest_ms":5,"hash_ms":6,"cas_ms":7}]}"#
+        );
+
+        let rollback_report = RollbackReport {
+            files_written: 2,
+            files_deleted: 1,
+            chunks_restored: 40,
+        };
+        let rollback_timings = RollbackTimings {
+            total: Duration::from_millis(90),
+            plan: Duration::from_millis(9),
+            discover: Duration::from_millis(8),
+            rollback_files: Duration::from_millis(70),
+        };
+        assert_eq!(
+            rollback_json(&rollback_report, &rollback_timings, false),
+            r#"{"files_written":2,"files_deleted":1,"chunks_restored":40}"#
+        );
+        assert_eq!(
+            rollback_json(&rollback_report, &rollback_timings, true),
+            r#"{"files_written":2,"files_deleted":1,"chunks_restored":40,"total_ms":90,"phases":{"plan_ms":9,"discover_ms":8,"rollback_files_ms":70}}"#
+        );
+
+        let gc_report = GcReport {
+            candidates: 5,
+            orphans: 4,
+            removed: 4,
+        };
+        let gc_timings = GcTimings {
+            total: Duration::from_millis(30),
+            plan: Duration::from_millis(20),
+            apply: Duration::from_millis(10),
+        };
+        assert_eq!(
+            gc_json(&gc_report, &gc_timings, false),
+            r#"{"candidates":5,"orphans":4,"removed":4}"#
+        );
+        assert_eq!(
+            gc_json(&gc_report, &gc_timings, true),
+            r#"{"candidates":5,"orphans":4,"removed":4,"total_ms":30,"phases":{"plan_ms":20,"apply_ms":10}}"#
+        );
     }
 
     #[test]

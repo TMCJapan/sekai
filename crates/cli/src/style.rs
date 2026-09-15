@@ -48,7 +48,7 @@ impl Styler {
         Self { enabled: true }
     }
 
-    /// Styling unconditionally off (tests, `--porcelain` plumbing).
+    /// Styling unconditionally off (tests, JSON mode).
     #[cfg(test)]
     pub const fn disabled() -> Self {
         Self { enabled: false }
