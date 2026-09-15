@@ -18,7 +18,8 @@
 ## Verification
 
 <!-- Paste or link: fmt, clippy (incl. thumbv7m/wasm when util/core/nbt touched), tests.
-      For backup-path changes, paste `backup --timing` before/after (release build). -->
+      For perf-labeled or hot-path changes, paste the affected command's
+      `--timing` before/after (release build). -->
 
 ```text
 typos

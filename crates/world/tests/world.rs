@@ -350,7 +350,7 @@ fn scan_counts_chunks_without_writing() {
     write(&world.join("region/r.0.0.mca"), &one_chunk_image());
     write(&world.join("region/r.1.0.mca"), &[0u8; 8192]);
     write(&world.join("region/r.2.0.mca"), &[]);
-    let mut entries = scan_world(&world).unwrap();
+    let (mut entries, timings) = scan_world(&world).unwrap();
     entries.sort_by_key(|e| e.region_x);
     assert_eq!(entries.len(), 3);
     assert_eq!(entries[0].chunks, 1);
@@ -359,6 +359,7 @@ fn scan_counts_chunks_without_writing() {
     assert_eq!(entries[1].chunks, 0);
     assert_eq!(entries[2].chunks, 0);
     assert_eq!(entries[2].file_bytes, 0);
+    assert!(timings.total >= timings.discover + timings.read + timings.parse);
     cleanup(&world);
 }
 

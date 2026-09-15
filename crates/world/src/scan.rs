@@ -3,10 +3,11 @@
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use sekai_core::{Dimension, RegionKind};
 
-use crate::discover::discover;
+use crate::discover::{RegionRef, discover};
 use crate::error::WorldError;
 use crate::fingerprint::HEADER_HASH_LEN;
 
@@ -24,35 +25,72 @@ pub struct RegionScanEntry {
     pub header_hash: String,
 }
 
+/// Per-phase timings for [`scan_world`]. Informational only; never
+/// changes scan semantics.
+#[derive(Debug, Clone, Default)]
+pub struct ScanTimings {
+    /// Wall-clock total.
+    pub total: Duration,
+    /// Region file discovery.
+    pub discover: Duration,
+    /// File reads (plus mtime observation).
+    pub read: Duration,
+    /// Header hashing and chunk counting.
+    pub parse: Duration,
+}
+
 /// Scan every region file under `world` without writing anything.
 ///
 /// A single corrupt or unreadable region does not abort the whole scan;
 /// that entry is skipped so healthy regions remain inspectable.
-pub fn scan_world(world: &Path) -> Result<Vec<RegionScanEntry>, WorldError> {
+pub fn scan_world(world: &Path) -> Result<(Vec<RegionScanEntry>, ScanTimings), WorldError> {
+    let total_started = Instant::now();
+    let discover_started = Instant::now();
+    let regions = discover(world)?;
+    let discover = discover_started.elapsed();
+    let mut read = Duration::ZERO;
+    let mut parse = Duration::ZERO;
     let mut out = Vec::new();
-    for region in discover(world)? {
-        let Ok((bytes, mtime_ms)) = read_with_mtime(&region.path) else {
+    for region in regions {
+        let read_started = Instant::now();
+        let outcome = read_with_mtime(&region.path);
+        read += read_started.elapsed();
+        let Ok((bytes, mtime_ms)) = outcome else {
             continue;
         };
-        let file_bytes = bytes.len() as u64;
-        let header_len = bytes.len().min(HEADER_HASH_LEN);
-        let header_hash = hex(&sekai_anvil::header_hash(&bytes[..header_len]));
-        let Ok(chunks) = count_chunks(&bytes, region.region_x, region.region_z) else {
-            continue;
-        };
-        out.push(RegionScanEntry {
-            path: region.path,
-            dim: region.dim,
-            kind: region.kind,
-            region_x: region.region_x,
-            region_z: region.region_z,
-            file_bytes,
-            mtime_ms,
-            chunks,
-            header_hash,
-        });
+        let parse_started = Instant::now();
+        let entry = parse_entry(&region, &bytes, mtime_ms);
+        parse += parse_started.elapsed();
+        if let Some(entry) = entry {
+            out.push(entry);
+        }
     }
-    Ok(out)
+    let timings = ScanTimings {
+        total: total_started.elapsed(),
+        discover,
+        read,
+        parse,
+    };
+    Ok((out, timings))
+}
+
+/// Hash one file's header and count its chunks; `None` skips corrupt files.
+fn parse_entry(region: &RegionRef, bytes: &[u8], mtime_ms: Option<u64>) -> Option<RegionScanEntry> {
+    let file_bytes = bytes.len() as u64;
+    let header_len = bytes.len().min(HEADER_HASH_LEN);
+    let header_hash = hex(&sekai_anvil::header_hash(&bytes[..header_len]));
+    let chunks = count_chunks(bytes, region.region_x, region.region_z).ok()?;
+    Some(RegionScanEntry {
+        path: region.path.clone(),
+        dim: region.dim,
+        kind: region.kind,
+        region_x: region.region_x,
+        region_z: region.region_z,
+        file_bytes,
+        mtime_ms,
+        chunks,
+        header_hash,
+    })
 }
 
 fn read_with_mtime(path: &Path) -> Result<(Vec<u8>, Option<u64>), WorldError> {

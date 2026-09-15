@@ -43,8 +43,8 @@ body:
   - type: textarea
     id: timing
     attributes:
-      label: Timing output (for slow or wrong backups)
-      description: Paste `backup --timing` output when the issue involves backup behavior or speed.
+      label: Timing output (speed aspects only)
+      description: "Paste the affected command's `--timing` output from a release build when the issue involves speed. Omit for pure correctness bugs: timing adds no signal there."
       render: text
     validations:
       required: false
