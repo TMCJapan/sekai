@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 use anyhow::Context as _;
 use clap::{Parser, Subcommand};
 use sekai_app::{
-    BackupOptions, BackupTimings, GcPlan, GcReport, GcTimings, RollbackReport, RollbackTimings,
+    BackupOptions, BackupTimings, ChunkCoord, Dimension, GcPlan, GcReport, GcTimings, NbtChange,
+    RegionKind, RollbackReport, RollbackTimings, SnapshotId,
 };
 
 /// Chunk-level deduplicated snapshots for Minecraft region files.
@@ -60,6 +61,8 @@ enum Command {
     },
     /// List recorded snapshots, oldest first.
     List,
+    /// Compare chunk NBT AST between two snapshots or between world state and a snapshot.
+    Diff(DiffArgs),
     /// Garbage collect unreferenced orphan blobs from the store.
     Gc {
         /// Inspect store and build plan without unlinking orphan blobs.
@@ -77,6 +80,32 @@ enum Command {
         #[command(subcommand)]
         debug: DebugCommand,
     },
+}
+
+#[derive(Debug, clap::Args)]
+struct DiffArgs {
+    /// World directory to compare against snapshot (if specified).
+    #[arg(long)]
+    world: Option<PathBuf>,
+    /// Older snapshot ID (if omitted when comparing snapshots, defaults to second-latest).
+    old_snapshot: Option<u64>,
+    /// Newer snapshot ID (if omitted, defaults to latest snapshot).
+    new_snapshot: Option<u64>,
+    /// Chunk X coordinate.
+    #[arg(long, allow_hyphen_values = true)]
+    cx: i32,
+    /// Chunk Z coordinate.
+    #[arg(long, allow_hyphen_values = true)]
+    cz: i32,
+    /// Dimension string.
+    #[arg(long, default_value = "overworld")]
+    dim: Dimension,
+    /// Region kind string.
+    #[arg(long, default_value = "region")]
+    kind: RegionKind,
+    /// Emit diff array as JSON instead of human text.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Debug, Subcommand)]
@@ -111,6 +140,7 @@ async fn main() -> anyhow::Result<()> {
             timing_json,
         } => run_rollback(&cli.store, &world, snapshot, timing, timing_json).await,
         Command::List => run_list(&cli.store).await,
+        Command::Diff(args) => run_diff(&cli.store, args).await,
         Command::Gc {
             dry_run,
             timing,
@@ -165,7 +195,7 @@ async fn run_rollback(
     timing: bool,
     timing_json: bool,
 ) -> anyhow::Result<()> {
-    let id = sekai_app::SnapshotId(snapshot);
+    let id = SnapshotId(snapshot);
     let (report, timings) = sekai_app::rollback(world, store, id)
         .await
         .with_context(|| {
@@ -195,6 +225,83 @@ async fn run_list(store: &str) -> anyhow::Result<()> {
             snapshot.id.raw(),
             format_time(snapshot.created_at_ms)
         );
+    }
+    Ok(())
+}
+
+async fn run_diff(store: &str, args: DiffArgs) -> anyhow::Result<()> {
+    let coord = ChunkCoord::new(args.dim, args.kind, args.cx, args.cz);
+
+    let diffs = if let Some(world) = &args.world {
+        let snapshot_id = args.old_snapshot.or(args.new_snapshot).map(SnapshotId);
+        sekai_app::diff_world_chunk(world, store, snapshot_id, &coord, None)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to compute chunk diff for ({}, {}) between world state and snapshot",
+                    args.cx, args.cz
+                )
+            })?
+    } else {
+        let (old_id, new_id) = match (args.old_snapshot, args.new_snapshot) {
+            (Some(old), Some(new)) => (SnapshotId(old), SnapshotId(new)),
+            (Some(old), None) => {
+                let latest = sekai_app::latest_snapshot_id(store).await?;
+                (SnapshotId(old), latest)
+            }
+            (None, None) => {
+                let snapshots = sekai_app::list_snapshots(store).await?;
+                if snapshots.len() < 2 {
+                    anyhow::bail!(
+                        "at least 2 snapshots are required when snapshot IDs are omitted"
+                    );
+                }
+                let old = snapshots[snapshots.len() - 2].id;
+                let new = snapshots[snapshots.len() - 1].id;
+                (old, new)
+            }
+            (None, Some(new)) => {
+                let snapshots = sekai_app::list_snapshots(store).await?;
+                if snapshots.len() < 2 {
+                    anyhow::bail!(
+                        "at least 2 snapshots are required when snapshot IDs are omitted"
+                    );
+                }
+                let old = snapshots[snapshots.len() - 2].id;
+                (old, SnapshotId(new))
+            }
+        };
+
+        sekai_app::diff_chunk(store, old_id, new_id, &coord, None)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to compute chunk diff for ({}, {}) between snapshot {} and {}",
+                    args.cx,
+                    args.cz,
+                    old_id.raw(),
+                    new_id.raw()
+                )
+            })?
+    };
+
+    if args.json {
+        println!("{}", diff_json(&diffs));
+        return Ok(());
+    }
+
+    if diffs.is_empty() {
+        println!("No differences found for chunk ({}, {}).", args.cx, args.cz);
+        return Ok(());
+    }
+
+    for entry in &diffs {
+        let op = match &entry.change {
+            NbtChange::Added(_) => "+",
+            NbtChange::Removed(_) => "-",
+            NbtChange::Modified { .. } => "~",
+        };
+        println!("{} {}", op, entry.path);
     }
     Ok(())
 }
@@ -241,10 +348,6 @@ fn format_time(created_at_ms: u64) -> String {
 }
 
 /// Human-readable phase table for `backup --timing`.
-///
-/// Totals first (disjoint phases sum to roughly the wall total; `hash` and
-/// `cas` are the per-chunk split inside `ingest`), then the five slowest
-/// regions by `open + ingest` so a few changed regions stand out.
 fn print_timing_table(timings: &BackupTimings) {
     println!(
         "timing total={}ms discover={}ms universe={}ms fp={}ms open={}ms ingest={}ms (hash={}ms cas={}ms) db={}ms ingested_files={} skipped_files={} carried_chunks={}",
@@ -298,8 +401,43 @@ fn print_gc_timing_table(timings: &GcTimings) {
     );
 }
 
-/// Flat JSON for `backup --timing-json` (hand-rolled to avoid a serde
-/// dependency for one flag).
+/// Flat JSON array for `diff --json`.
+fn diff_json(diffs: &[sekai_app::NbtDiffEntry]) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::from("[");
+    for (index, entry) in diffs.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        let (change_type, details) = match &entry.change {
+            NbtChange::Added(v) => (
+                "added",
+                format!("\"val\":\"{}\"", json_escape(&format!("{v:?}"))),
+            ),
+            NbtChange::Removed(v) => (
+                "removed",
+                format!("\"val\":\"{}\"", json_escape(&format!("{v:?}"))),
+            ),
+            NbtChange::Modified { old, new } => (
+                "modified",
+                format!(
+                    "\"old\":\"{}\",\"new\":\"{}\"",
+                    json_escape(&format!("{old:?}")),
+                    json_escape(&format!("{new:?}"))
+                ),
+            ),
+        };
+        let _ = write!(
+            out,
+            "{{\"path\":\"{}\",\"type\":\"{change_type}\",{details}}}",
+            json_escape(&entry.path)
+        );
+    }
+    out.push(']');
+    out
+}
+
+/// Flat JSON for `backup --timing-json`.
 fn backup_json(report: &sekai_app::BackupReport, timings: &BackupTimings) -> String {
     use std::fmt::Write as _;
     let mut out = String::from("{");
@@ -414,6 +552,14 @@ fn run_debug_scan(world: &Path, json: bool) -> anyhow::Result<()> {
         return Ok(());
     }
     for entry in &entries {
+        let short_hash = entry
+            .header_hash
+            .char_indices()
+            .nth(12)
+            .map_or(entry.header_hash.as_str(), |(idx, _)| {
+                &entry.header_hash[..idx]
+            });
+
         println!(
             "{} dim={} kind={} region=r.{}.{} size={} mtime={} chunks={} header={}",
             entry.path.display(),
@@ -426,7 +572,7 @@ fn run_debug_scan(world: &Path, json: bool) -> anyhow::Result<()> {
                 .mtime_ms
                 .map_or_else(|| "n/a".to_owned(), |ms| ms.to_string()),
             entry.chunks,
-            entry.header_hash.get(..12).unwrap_or(&entry.header_hash),
+            short_hash,
         );
     }
     let total_bytes: u64 = entries.iter().map(|e| e.file_bytes).sum();
@@ -440,7 +586,7 @@ fn run_debug_scan(world: &Path, json: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Flat JSON array for `debug scan --json` (hand-rolled, see `backup_json`).
+/// Flat JSON array for `debug scan --json`.
 fn scan_json(entries: &[sekai_app::RegionScanEntry]) -> String {
     use std::fmt::Write as _;
     let mut out = String::from("[");
@@ -469,12 +615,12 @@ fn scan_json(entries: &[sekai_app::RegionScanEntry]) -> String {
 }
 
 /// Short family name for a region kind (`region`/`entities`/`poi`).
-fn kind_name(kind: sekai_app::RegionKind) -> &'static str {
-    if kind == sekai_app::RegionKind::REGION {
+fn kind_name(kind: RegionKind) -> &'static str {
+    if kind == RegionKind::REGION {
         "region"
-    } else if kind == sekai_app::RegionKind::ENTITIES {
+    } else if kind == RegionKind::ENTITIES {
         "entities"
-    } else if kind == sekai_app::RegionKind::POI {
+    } else if kind == RegionKind::POI {
         "poi"
     } else {
         "unknown"
@@ -516,6 +662,43 @@ mod tests {
         assert!(matches!(cli.command, Command::Rollback { snapshot: 3, .. }));
 
         assert!(Cli::try_parse_from(["sekai", "rollback", "w"]).is_err());
+    }
+
+    #[test]
+    fn parses_diff_command() {
+        let cli = Cli::try_parse_from(["sekai", "diff", "1", "2", "--cx", "10", "--cz", "-5"])
+            .expect("diff parses");
+        assert!(matches!(
+            cli.command,
+            Command::Diff(DiffArgs {
+                world: None,
+                old_snapshot: Some(1),
+                new_snapshot: Some(2),
+                cx: 10,
+                cz: -5,
+                dim: Dimension::OVERWORLD,
+                kind: RegionKind::REGION,
+                json: false,
+            })
+        ));
+
+        let cli = Cli::try_parse_from([
+            "sekai", "diff", "--world", "world", "--cx", "10", "--cz", "-5",
+        ])
+        .expect("diff with world parses");
+        assert!(matches!(
+            cli.command,
+            Command::Diff(DiffArgs {
+                world: Some(_),
+                old_snapshot: None,
+                new_snapshot: None,
+                cx: 10,
+                cz: -5,
+                dim: Dimension::OVERWORLD,
+                kind: RegionKind::REGION,
+                json: false,
+            })
+        ));
     }
 
     #[test]

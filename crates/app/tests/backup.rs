@@ -263,3 +263,97 @@ async fn gc_runs_and_returns_timings() {
     assert!(timings.total >= timings.plan + timings.apply);
     cleanup(&root);
 }
+
+#[tokio::test]
+async fn diff_chunk_between_snapshots() {
+    fn build_nbt(status: &str) -> Vec<u8> {
+        let mut nbt = vec![10, 0, 0, 8, 0, 6]; // TAG_Compound(""), TAG_String("Status")
+        nbt.extend_from_slice(b"Status");
+        let len = u16::try_from(status.len()).unwrap();
+        nbt.extend_from_slice(&len.to_be_bytes());
+        nbt.extend_from_slice(status.as_bytes());
+        nbt.push(0); // TAG_End
+
+        let mut payload = vec![3]; // Uncompressed header byte
+        payload.extend(nbt);
+        payload
+    }
+
+    let root = tempdir("diff_chunk");
+    let world = root.join("world");
+    let store = root.join("store").to_string_lossy().into_owned();
+    let region = world.join("region/r.0.0.mca");
+
+    write_region(&region, &[(0, 0, build_nbt("minecraft:full"))]);
+    sekai_app::backup(&world, &store, options(), |_| {})
+        .await
+        .unwrap();
+
+    write_region(&region, &[(0, 0, build_nbt("minecraft:empty"))]);
+    sekai_app::backup(&world, &store, options(), |_| {})
+        .await
+        .unwrap();
+
+    let snapshots = sekai_app::list_snapshots(&store).await.unwrap();
+    assert_eq!(snapshots.len(), 2);
+
+    let coord = sekai_core::ChunkCoord::new(
+        sekai_core::Dimension::OVERWORLD,
+        sekai_core::RegionKind::REGION,
+        0,
+        0,
+    );
+
+    let diffs = sekai_app::diff_chunk(&store, snapshots[0].id, snapshots[1].id, &coord, None)
+        .await
+        .unwrap();
+
+    assert_eq!(diffs.len(), 1);
+    assert_eq!(diffs[0].path, "Status");
+
+    cleanup(&root);
+}
+
+#[tokio::test]
+async fn diff_world_chunk_with_snapshot() {
+    fn build_nbt(status: &str) -> Vec<u8> {
+        let mut nbt = vec![10, 0, 0, 8, 0, 6]; // TAG_Compound(""), TAG_String("Status")
+        nbt.extend_from_slice(b"Status");
+        let len = u16::try_from(status.len()).unwrap();
+        nbt.extend_from_slice(&len.to_be_bytes());
+        nbt.extend_from_slice(status.as_bytes());
+        nbt.push(0); // TAG_End
+
+        let mut payload = vec![3]; // Uncompressed header byte
+        payload.extend(nbt);
+        payload
+    }
+
+    let root = tempdir("diff_world_chunk");
+    let world = root.join("world");
+    let store = root.join("store").to_string_lossy().into_owned();
+    let region = world.join("region/r.0.0.mca");
+
+    write_region(&region, &[(0, 0, build_nbt("minecraft:full"))]);
+    sekai_app::backup(&world, &store, options(), |_| {})
+        .await
+        .unwrap();
+
+    write_region(&region, &[(0, 0, build_nbt("minecraft:empty"))]);
+
+    let coord = sekai_core::ChunkCoord::new(
+        sekai_core::Dimension::OVERWORLD,
+        sekai_core::RegionKind::REGION,
+        0,
+        0,
+    );
+
+    let diffs = sekai_app::diff_world_chunk(&world, &store, None, &coord, None)
+        .await
+        .unwrap();
+
+    assert_eq!(diffs.len(), 1);
+    assert_eq!(diffs[0].path, "Status");
+
+    cleanup(&root);
+}
