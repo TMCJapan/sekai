@@ -117,10 +117,15 @@ async fn backup_list_rollback_round_trip() {
     assert_eq!(report2.skipped_regions, 1);
 
     // Roll back to the first snapshot: the changed chunk reverts.
-    let (rolled, _rollback_timings) =
-        sekai_app::rollback(&world, &store, snapshots[0].id, sekai_app::Scope::World)
-            .await
-            .unwrap();
+    let (rolled, _rollback_timings) = sekai_app::rollback(
+        &world,
+        &store,
+        snapshots[0].id,
+        sekai_app::Scope::World,
+        |_| {},
+    )
+    .await
+    .unwrap();
     assert_eq!(rolled.files_written, 2);
     assert_eq!(rolled.chunks_restored, 3);
     let coords = read_coords(&region);
@@ -251,6 +256,7 @@ async fn scoped_rollback_leaves_other_dimensions_untouched() {
         &store,
         snapshots[0].id,
         Scope::dimension(Dimension::OVERWORLD),
+        |_| {},
     )
     .await
     .unwrap();
@@ -266,6 +272,7 @@ async fn scoped_rollback_leaves_other_dimensions_untouched() {
         &store,
         snapshots[0].id,
         Scope::dimension(Dimension::NETHER),
+        |_| {},
     )
     .await
     .unwrap();
@@ -282,6 +289,7 @@ async fn scoped_rollback_leaves_other_dimensions_untouched() {
         &store,
         snapshots[0].id,
         Scope::dimension(Dimension::OVERWORLD),
+        |_| {},
     )
     .await
     .unwrap();
@@ -312,9 +320,15 @@ async fn strict_rollback_removes_post_snapshot_files() {
     assert_eq!(snapshots.len(), 2);
 
     // Snapshot 2: all-tombstone region deleted (not shelled), new chunk kept.
-    let (rolled, _) = sekai_app::rollback(&world, &store, snapshots[1].id, sekai_app::Scope::World)
-        .await
-        .unwrap();
+    let (rolled, _) = sekai_app::rollback(
+        &world,
+        &store,
+        snapshots[1].id,
+        sekai_app::Scope::World,
+        |_| {},
+    )
+    .await
+    .unwrap();
     assert_eq!(rolled.files_written, 1);
     assert_eq!(rolled.files_deleted, 1);
     assert_eq!(rolled.chunks_restored, 1);
@@ -322,9 +336,15 @@ async fn strict_rollback_removes_post_snapshot_files() {
     assert_eq!(read_coords(&added), vec![(32, 0)]);
 
     // Snapshot 1: original chunk rebuilt, post-snapshot file removed.
-    let (rolled, _) = sekai_app::rollback(&world, &store, snapshots[0].id, sekai_app::Scope::World)
-        .await
-        .unwrap();
+    let (rolled, _) = sekai_app::rollback(
+        &world,
+        &store,
+        snapshots[0].id,
+        sekai_app::Scope::World,
+        |_| {},
+    )
+    .await
+    .unwrap();
     assert_eq!(rolled.files_written, 1);
     assert_eq!(rolled.files_deleted, 1);
     assert_eq!(read_coords(&kept), vec![(0, 0)]);
@@ -428,7 +448,8 @@ async fn errors_surface_loudly() {
             &root.join("world"),
             &store,
             SnapshotId(99),
-            sekai_app::Scope::World
+            sekai_app::Scope::World,
+            |_| {}
         )
         .await
         .is_err()
@@ -450,10 +471,92 @@ async fn gc_runs_and_returns_timings() {
     let plan = sekai_app::gc_plan(&store).await.unwrap();
     assert_eq!(plan.len(), 0);
 
-    let (report, timings) = sekai_app::gc(&store).await.unwrap();
+    let (report, timings) = sekai_app::gc(&store, |_| {}).await.unwrap();
     assert_eq!(report.candidates, 0);
     assert_eq!(report.removed, 0);
     assert!(timings.total >= timings.plan + timings.apply);
+    cleanup(&root);
+}
+
+#[tokio::test]
+async fn progress_events_cover_rollback_diff_and_gc() {
+    use sekai_app::{DiffProgress, GcProgress, RollbackProgress};
+    use std::sync::{Arc, Mutex};
+    let root = tempdir("progress-events");
+    let world = root.join("world");
+    let store = root.join("store").to_string_lossy().into_owned();
+    write_region(
+        &world.join("region/r.0.0.mca"),
+        &[(0, 0, build_status_nbt("minecraft:full"))],
+    );
+    write_region(
+        &world.join("region/r.1.0.mca"),
+        &[(32, 0, build_status_nbt("minecraft:full"))],
+    );
+
+    sekai_app::backup(&world, &store, options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+    let snapshots = sekai_app::list_snapshots(&store).await.unwrap();
+
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&events);
+    sekai_app::rollback(
+        &world,
+        &store,
+        snapshots[0].id,
+        sekai_app::Scope::World,
+        move |p: RollbackProgress| {
+            seen.lock().unwrap().push((p.files_done, p.files_total));
+        },
+    )
+    .await
+    .unwrap();
+    {
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(events.iter().all(|&(_, total)| total == 2));
+        assert_eq!(events.last().unwrap().0, 2);
+    }
+
+    let coord = sekai_app::ChunkCoord::new(
+        sekai_app::Dimension::OVERWORLD,
+        sekai_app::RegionKind::REGION,
+        0,
+        0,
+    );
+    let seen_diff = Arc::new(Mutex::new(Vec::new()));
+    let seen_clone = Arc::clone(&seen_diff);
+    let (diffs, _) = sekai_app::diff_chunks(
+        &store,
+        snapshots[0].id,
+        snapshots[0].id,
+        &[coord],
+        None,
+        move |p: DiffProgress| {
+            seen_clone
+                .lock()
+                .unwrap()
+                .push((p.chunks_done, p.chunks_total));
+        },
+    )
+    .await
+    .unwrap();
+    assert!(diffs.iter().all(|diff| diff.entries.is_empty()));
+    assert_eq!(&*seen_diff.lock().unwrap(), &[(1, 1)]);
+
+    let seen_gc = Arc::new(Mutex::new(Vec::new()));
+    let seen_clone = Arc::clone(&seen_gc);
+    let (report, _) = sekai_app::gc(&store, move |p: GcProgress| {
+        seen_clone
+            .lock()
+            .unwrap()
+            .push((p.blobs_done, p.blobs_total));
+    })
+    .await
+    .unwrap();
+    assert_eq!(report.candidates, 0);
+    assert!(seen_gc.lock().unwrap().is_empty());
     cleanup(&root);
 }
 
@@ -743,10 +846,15 @@ async fn all_kinds_round_trip() {
         assert_eq!(diffs.len(), 1, "kind {}", kind_dir(kind));
         assert_eq!(diffs[0].path, "Status");
 
-        let (rolled, _) =
-            sekai_app::rollback(&world, &store, snapshots[0].id, sekai_app::Scope::World)
-                .await
-                .unwrap();
+        let (rolled, _) = sekai_app::rollback(
+            &world,
+            &store,
+            snapshots[0].id,
+            sekai_app::Scope::World,
+            |_| {},
+        )
+        .await
+        .unwrap();
         assert_eq!(rolled.chunks_restored, 1);
         cleanup(&root);
     }
@@ -852,10 +960,16 @@ async fn real_world_corpus_round_trip() {
             .filter(|coord| coord.kind == kind)
             .collect::<Vec<_>>();
         assert!(!coords.is_empty(), "kind {kind:?} has chunks");
-        let (diffs, _) =
-            sekai_app::diff_chunks(&store, snapshots[0].id, snapshots[0].id, &coords, None)
-                .await
-                .unwrap();
+        let (diffs, _) = sekai_app::diff_chunks(
+            &store,
+            snapshots[0].id,
+            snapshots[0].id,
+            &coords,
+            None,
+            |_| {},
+        )
+        .await
+        .unwrap();
         assert!(diffs.iter().all(|diff| diff.entries.is_empty()));
     }
 
@@ -870,9 +984,15 @@ async fn real_world_corpus_round_trip() {
             (path, chunks)
         })
         .collect();
-    let (rolled, _) = sekai_app::rollback(&world, &store, snapshots[0].id, sekai_app::Scope::World)
-        .await
-        .unwrap();
+    let (rolled, _) = sekai_app::rollback(
+        &world,
+        &store,
+        snapshots[0].id,
+        sekai_app::Scope::World,
+        |_| {},
+    )
+    .await
+    .unwrap();
     assert_eq!(rolled.chunks_restored, REAL_WORLD_CHUNKS_COUNT);
     for (path, chunks) in &before {
         assert_eq!(&chunk_map(path), chunks, "{path:?} restored");

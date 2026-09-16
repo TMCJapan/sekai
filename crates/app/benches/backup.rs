@@ -3,29 +3,12 @@
 #[path = "common.rs"]
 mod common;
 
-use common::{MEDIUM, SMALL, generate};
+use common::{MEDIUM, SMALL, generate, options, runtime, tempdir};
 use criterion::{Criterion, criterion_group, criterion_main};
-use sekai_app::{BackupOptions, Scope};
-
-fn options() -> BackupOptions {
-    BackupOptions {
-        concurrency: 0,
-        ..BackupOptions::default()
-    }
-}
-
-fn tempdir(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("sekai-bench-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir works");
-    dir
-}
+use sekai_app::Scope;
 
 fn benches(c: &mut Criterion) {
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .expect("runtime builds");
+    let rt = runtime();
 
     c.bench_function("backup/small-full", |b| {
         b.iter(|| {

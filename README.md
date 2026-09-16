@@ -47,7 +47,9 @@ sekai debug scan ./world
 
 Every command accepts `--json` for a single-document machine-readable
 report, and every command except `list` accepts `--timing` for a
-per-phase breakdown (combine both for timed JSON). Backup, rollback,
+per-phase breakdown (combine both for timed JSON). `backup`, `rollback`,
+`diff`, and `gc` also take `--progress` for a stderr progress bar
+(refused with `--json`). Backup, rollback,
 and diff accept a scope: repeatable `--in DIM[:x,z|x0,z0..x1,z1]`,
 `--region DIM:RX,RZ`, and repeatable `--kind` (empty means all);
 nothing selected means the whole world. See `docs/json.md` for the

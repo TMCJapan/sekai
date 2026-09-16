@@ -6,6 +6,7 @@ use serde::Serialize;
 use std::path::Path;
 
 use super::ReportOut;
+use super::progress::{finish_progress, progress_bar, report_progress};
 use crate::cli::Selection;
 use crate::envelope::envelope_ok;
 use crate::style::Styler;
@@ -23,14 +24,24 @@ pub async fn run(
     world: &Path,
     with_diff: bool,
     jobs: usize,
+    progress: bool,
     selection: &Selection,
     out: ReportOut,
 ) -> anyhow::Result<()> {
     let scope = selection.owned_scope();
+    let bar = progress_bar(progress);
     let (report, timings) =
-        sekai_app::backup(world, store, options(with_diff, jobs), scope, |_| {})
-            .await
-            .with_context(|| format!("backup of {} failed", world.display()))?;
+        sekai_app::backup(world, store, options(with_diff, jobs), scope, |update| {
+            report_progress(
+                bar.as_ref(),
+                update.files_done,
+                update.files_total,
+                format!("files {} chunks", update.chunks_done),
+            );
+        })
+        .await
+        .with_context(|| format!("backup of {} failed", world.display()))?;
+    finish_progress(bar.as_ref());
     if out.json {
         println!(
             "{}",

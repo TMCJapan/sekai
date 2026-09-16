@@ -217,7 +217,7 @@ where
     let plan = gc_plan(store.cas(), store.meta()).await.unwrap();
     assert_eq!(plan.orphans(), &[orphan]);
     let (cas, meta) = store.cas_and_meta();
-    let report = gc_apply(cas, meta, &plan).await.unwrap();
+    let report = gc_apply(cas, meta, &plan, |_, _| {}).await.unwrap();
     assert_eq!(report.removed, 1);
     assert!(store.cas().contains(&live).await.unwrap());
     assert!(!store.cas().contains(&orphan).await.unwrap());

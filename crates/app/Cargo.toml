@@ -26,6 +26,18 @@ tokio.workspace = true
 name = "backup"
 harness = false
 
+[[bench]]
+name = "rollback"
+harness = false
+
+[[bench]]
+name = "diff"
+harness = false
+
+[[bench]]
+name = "gc_scan"
+harness = false
+
 [dev-dependencies]
 criterion.workspace = true
 miniz_oxide.workspace = true

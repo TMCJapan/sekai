@@ -38,6 +38,10 @@ pub enum Command {
         /// Ingest worker count. `0` means one per CPU.
         #[arg(long, default_value = "0")]
         jobs: usize,
+        /// Show a progress bar on stderr. Refused with `--json`, and
+        /// silent without a stderr TTY.
+        #[arg(long, conflicts_with = "json")]
+        progress: bool,
         /// World portion to record (default: whole world).
         #[command(flatten)]
         selection: Selection,
@@ -51,6 +55,10 @@ pub enum Command {
         /// Human or JSON rendering plus optional phase timings.
         #[command(flatten)]
         output: TimingArgs,
+        /// Show a progress bar on stderr. Refused with `--json`, and
+        /// silent without a stderr TTY.
+        #[arg(long, conflicts_with = "json")]
+        progress: bool,
         /// World portion to rebuild (default: whole world). Files outside
         /// the selection are never written, deleted, or otherwise touched.
         #[command(flatten)]
@@ -73,6 +81,10 @@ pub enum Command {
         /// Human or JSON rendering plus optional phase timings.
         #[command(flatten)]
         output: TimingArgs,
+        /// Show a progress bar on stderr. Refused with `--json`, and
+        /// silent without a stderr TTY.
+        #[arg(long, conflicts_with = "json")]
+        progress: bool,
     },
     /// Read-only inspection helpers (never write to world or store).
     Debug {
@@ -141,6 +153,10 @@ pub struct DiffArgs {
     /// Human or JSON rendering plus optional phase timings.
     #[command(flatten)]
     pub output: TimingArgs,
+    /// Show a progress bar on stderr. Refused with `--json`, and
+    /// silent without a stderr TTY.
+    #[arg(long, conflicts_with = "json")]
+    pub progress: bool,
     /// Show concrete old/new values in human output (SNBT format).
     #[arg(long)]
     pub show_values: bool,

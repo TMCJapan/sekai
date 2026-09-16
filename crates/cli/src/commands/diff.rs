@@ -7,6 +7,7 @@ use super::diff_render::{
     TimedDiffs, diff_entry_payload, diff_group_payload, print_diff_timing_table,
     render_diff_grouped, render_diff_human,
 };
+use super::progress::{finish_progress, progress_bar, report_progress};
 use crate::cli::DiffArgs;
 use crate::envelope::envelope_ok;
 use crate::style::Styler;
@@ -30,25 +31,41 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
         coords.append(&mut enumerated);
     }
     let coords = scoped_coords(coords, &scope);
+    let bar = progress_bar(args.progress);
 
     let (diffs, timings) = if let Some(world) = &args.world {
         let snapshot_id = args.old_snapshot.or(args.new_snapshot).map(SnapshotId);
-        sekai_app::diff_world_chunks(world, store, snapshot_id, &coords, None)
-            .await
-            .with_context(|| "failed to compute chunk diffs between world state and snapshot")?
+        sekai_app::diff_world_chunks(world, store, snapshot_id, &coords, None, |update| {
+            report_progress(
+                bar.as_ref(),
+                update.chunks_done,
+                update.chunks_total,
+                "chunks",
+            );
+        })
+        .await
+        .with_context(|| "failed to compute chunk diffs between world state and snapshot")?
     } else {
         let (old_id, new_id) =
             resolve_snapshot_pair(store, args.old_snapshot, args.new_snapshot).await?;
-        sekai_app::diff_chunks(store, old_id, new_id, &coords, None)
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to compute chunk diffs between snapshot {} and {}",
-                    old_id.raw(),
-                    new_id.raw()
-                )
-            })?
+        sekai_app::diff_chunks(store, old_id, new_id, &coords, None, |update| {
+            report_progress(
+                bar.as_ref(),
+                update.chunks_done,
+                update.chunks_total,
+                "chunks",
+            );
+        })
+        .await
+        .with_context(|| {
+            format!(
+                "failed to compute chunk diffs between snapshot {} and {}",
+                old_id.raw(),
+                new_id.raw()
+            )
+        })?
     };
+    finish_progress(bar.as_ref());
 
     if diffs.len() == 1 {
         let diff = &diffs[0];

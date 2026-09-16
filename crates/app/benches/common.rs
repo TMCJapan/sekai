@@ -72,6 +72,8 @@ pub const SMALL: WorldSpec = WorldSpec {
 };
 
 /// Medium shape: 8 dense regions, exercises ingest phases.
+// Shared per bench target via `#[path]`; not every target uses it.
+#[allow(dead_code)]
 pub const MEDIUM: WorldSpec = WorldSpec {
     regions: 8,
     density_permille: 900,
@@ -121,4 +123,54 @@ pub fn generate(world: &Path, spec: &WorldSpec) {
         let image = builder.image().expect("image assembles");
         std::fs::write(dir.join(format!("r.{r}.0.mca")), image).expect("write works");
     }
+}
+
+/// Fresh temp dir for one benchmark setup.
+pub fn tempdir(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("sekai-bench-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("mkdir works");
+    dir
+}
+
+/// Default bench options (workers follow CPU count).
+pub fn options() -> sekai_app::BackupOptions {
+    sekai_app::BackupOptions {
+        concurrency: 0,
+        ..sekai_app::BackupOptions::default()
+    }
+}
+
+/// Multi-threaded runtime shared by async benches.
+pub fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("runtime builds")
+}
+
+/// Copy the checked-in real-data corpus into a temp world. Never points
+/// at the repo files themselves (rollback rewrites region files).
+/// Unused by the backup benches, which generate seeded worlds instead.
+#[allow(dead_code)]
+pub fn corpus_world() -> std::path::PathBuf {
+    fn copy_dir(src: &std::path::Path, dst: &std::path::Path) {
+        std::fs::create_dir_all(dst).expect("mkdir works");
+        for entry in std::fs::read_dir(src).expect("read works") {
+            let entry = entry.expect("entry works");
+            let target = dst.join(entry.file_name());
+            if entry.file_type().expect("type works").is_dir() {
+                copy_dir(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), &target).expect("copy works");
+            }
+        }
+    }
+    let root = tempdir("corpus");
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    copy_dir(
+        &manifest.join("..").join("..").join("test-world"),
+        &root.join("world"),
+    );
+    root.join("world")
 }

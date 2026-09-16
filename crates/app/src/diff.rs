@@ -80,6 +80,15 @@ fn decompress_chunk(compressed: &[u8]) -> Result<Vec<u8>, AppError> {
     Ok(nbt)
 }
 
+/// Per-chunk progress report for the `progress` callback.
+#[derive(Debug, Clone, Copy)]
+pub struct DiffProgress {
+    /// Chunks diffed so far.
+    pub chunks_done: usize,
+    /// Chunks to diff in total.
+    pub chunks_total: usize,
+}
+
 /// Compute AST diff for a chunk coordinate between two snapshots in `store_url`.
 pub async fn diff_chunk(
     store_url: &str,
@@ -88,7 +97,15 @@ pub async fn diff_chunk(
     coord: &ChunkCoord,
     ignore: Option<&[&str]>,
 ) -> Result<Vec<NbtDiffEntry>, AppError> {
-    let (diffs, _) = diff_chunks(store_url, old_snapshot, new_snapshot, &[*coord], ignore).await?;
+    let (diffs, _) = diff_chunks(
+        store_url,
+        old_snapshot,
+        new_snapshot,
+        &[*coord],
+        ignore,
+        |_| {},
+    )
+    .await?;
     Ok(diffs
         .into_iter()
         .next()
@@ -116,13 +133,15 @@ pub async fn diff_chunks(
     new_snapshot: SnapshotId,
     coords: &[ChunkCoord],
     ignore: Option<&[&str]>,
+    progress: impl FnMut(DiffProgress) + Send,
 ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
     let total_started = Instant::now();
     let store = super::open_store(store_url).await?;
     let ignore_set = ignore.unwrap_or(DEFAULT_IGNORED);
     let mut timings = DiffTimings::default();
+    let mut progress = progress;
     let mut out = Vec::with_capacity(coords.len());
-    for coord in coords {
+    for (index, coord) in coords.iter().enumerate() {
         let started = Instant::now();
         let old_compressed = snapshot_chunk_compressed(&store, old_snapshot, coord).await?;
         let new_compressed = snapshot_chunk_compressed(&store, new_snapshot, coord).await?;
@@ -134,6 +153,10 @@ pub async fn diff_chunks(
         let started = Instant::now();
         let entries = diff_nbt(&old_nbt, &new_nbt, ignore_set)?;
         timings.diff_compute += started.elapsed();
+        progress(DiffProgress {
+            chunks_done: index + 1,
+            chunks_total: coords.len(),
+        });
         out.push(ChunkDiff {
             coord: *coord,
             entries,
@@ -222,7 +245,8 @@ pub async fn diff_world_chunk(
     coord: &ChunkCoord,
     ignore: Option<&[&str]>,
 ) -> Result<Vec<NbtDiffEntry>, AppError> {
-    let (diffs, _) = diff_world_chunks(world, store_url, snapshot, &[*coord], ignore).await?;
+    let (diffs, _) =
+        diff_world_chunks(world, store_url, snapshot, &[*coord], ignore, |_| {}).await?;
     Ok(diffs
         .into_iter()
         .next()
@@ -242,6 +266,7 @@ pub async fn diff_world_chunks(
     snapshot: Option<SnapshotId>,
     coords: &[ChunkCoord],
     ignore: Option<&[&str]>,
+    progress: impl FnMut(DiffProgress) + Send,
 ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
     let total_started = Instant::now();
     let snapshot_id = if let Some(id) = snapshot {
@@ -253,8 +278,9 @@ pub async fn diff_world_chunks(
     let store = super::open_store(store_url).await?;
     let ignore_set = ignore.unwrap_or(DEFAULT_IGNORED);
     let mut timings = DiffTimings::default();
+    let mut progress = progress;
     let mut out = Vec::with_capacity(coords.len());
-    for coord in coords {
+    for (index, coord) in coords.iter().enumerate() {
         let started = Instant::now();
         let snapshot_compressed = snapshot_chunk_compressed(&store, snapshot_id, coord).await?;
         let world_compressed = read_world_chunk_compressed(world, coord)?;
@@ -266,6 +292,10 @@ pub async fn diff_world_chunks(
         let started = Instant::now();
         let entries = diff_nbt(&snapshot_nbt, &world_nbt, ignore_set)?;
         timings.diff_compute += started.elapsed();
+        progress(DiffProgress {
+            chunks_done: index + 1,
+            chunks_total: coords.len(),
+        });
         out.push(ChunkDiff {
             coord: *coord,
             entries,

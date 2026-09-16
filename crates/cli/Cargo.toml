@@ -21,6 +21,7 @@ backend-postgres = ["sekai-app/backend-postgres"]
 anyhow.workspace = true
 chrono.workspace = true
 clap.workspace = true
+indicatif.workspace = true
 sekai-app.workspace = true
 serde.workspace = true
 serde_json.workspace = true

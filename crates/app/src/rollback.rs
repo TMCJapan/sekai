@@ -33,16 +33,30 @@ pub struct RollbackTimings {
     pub rollback_files: Duration,
 }
 
+/// Per-file progress report for the `progress` callback.
+#[derive(Debug, Clone, Copy)]
+pub struct RollbackProgress {
+    /// Files fully rebuilt so far.
+    pub files_done: usize,
+    /// Region files to rebuild in total.
+    pub files_total: usize,
+    /// Chunks restored so far.
+    pub chunks_done: usize,
+}
+
 /// Rebuild `world` from `snapshot` in the store at `store_url`, returning
 /// execution report and per-phase timings.
 ///
 /// Only `scope` is rebuilt: region files outside the scope are never
-/// written, deleted, or otherwise touched.
+/// written, deleted, or otherwise touched. `progress` fires as files
+/// complete; it must be `'static` because the file pass runs on a
+/// blocking pool (pass a `move` closure owning its state).
 pub async fn rollback(
     world: &Path,
     store_url: &str,
     snapshot: SnapshotId,
     scope: Scope,
+    progress: impl Fn(RollbackProgress) + Send + 'static,
 ) -> Result<(RollbackReport, RollbackTimings), AppError> {
     let total_started = Instant::now();
     let store = super::open_store(store_url).await?;
@@ -90,7 +104,8 @@ pub async fn rollback(
     };
 
     let files_started = Instant::now();
-    let report = tokio::task::spawn_blocking(move || rollback_files(job, timestamp)).await??;
+    let report =
+        tokio::task::spawn_blocking(move || rollback_files(job, timestamp, progress)).await??;
     let files_dt = files_started.elapsed();
 
     let timings = RollbackTimings {
@@ -115,7 +130,11 @@ struct RollbackJob {
 /// Rebuild every region file: present rows from CAS blobs, tombstones and
 /// post-snapshot files deleted. Blocking: file reads, writes, and swaps
 /// belong on a blocking pool, never on an async worker.
-fn rollback_files(job: RollbackJob, timestamp: u32) -> Result<RollbackReport, AppError> {
+fn rollback_files(
+    job: RollbackJob,
+    timestamp: u32,
+    progress: impl Fn(RollbackProgress),
+) -> Result<RollbackReport, AppError> {
     let RollbackJob {
         groups,
         cas,
@@ -130,6 +149,16 @@ fn rollback_files(job: RollbackJob, timestamp: u32) -> Result<RollbackReport, Ap
         files_written: 0,
         files_deleted: 0,
         chunks_restored: 0,
+    };
+    let files_total = keys.len();
+    let mut files_done = 0usize;
+    let mut progressed = |report: &RollbackReport| {
+        files_done += 1;
+        progress(RollbackProgress {
+            files_done,
+            files_total,
+            chunks_done: report.chunks_restored,
+        });
     };
     let mut blob_buf = Vec::new();
     for key in keys {
@@ -151,6 +180,7 @@ fn rollback_files(job: RollbackJob, timestamp: u32) -> Result<RollbackReport, Ap
                 })?;
                 report.files_deleted += 1;
             }
+            progressed(&report);
             continue;
         };
         let mut writer = sekai_anvil::RegionBuilder::new(key.rx, key.rz, timestamp)?;
@@ -162,6 +192,7 @@ fn rollback_files(job: RollbackJob, timestamp: u32) -> Result<RollbackReport, Ap
         }
         sekai_world::atomic_swap(&path, &writer.image()?)?;
         report.files_written += 1;
+        progressed(&report);
     }
     Ok(report)
 }

@@ -6,6 +6,7 @@ mod diff;
 mod diff_render;
 mod gc;
 mod list;
+mod progress;
 mod rollback;
 
 use crate::cli::{Cli, Command, DebugCommand, TimingArgs};
@@ -38,6 +39,7 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
             output,
             with_diff,
             jobs,
+            progress,
             selection,
         } => {
             backup::run(
@@ -45,6 +47,7 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
                 world,
                 *with_diff,
                 *jobs,
+                *progress,
                 selection,
                 ReportOut::of(*output, style),
             )
@@ -54,12 +57,14 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
             world,
             snapshot,
             output,
+            progress,
             selection,
         } => {
             rollback::run(
                 &cli.store,
                 world,
                 *snapshot,
+                *progress,
                 selection,
                 ReportOut::of(*output, style),
             )
@@ -67,8 +72,18 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
         }
         Command::List { json } => list::run(&cli.store, *json, style).await,
         Command::Diff(args) => diff::run(&cli.store, args, style).await,
-        Command::Gc { dry_run, output } => {
-            gc::run(&cli.store, *dry_run, ReportOut::of(*output, style)).await
+        Command::Gc {
+            dry_run,
+            output,
+            progress,
+        } => {
+            gc::run(
+                &cli.store,
+                *dry_run,
+                *progress,
+                ReportOut::of(*output, style),
+            )
+            .await
         }
         Command::Debug { debug } => match debug {
             DebugCommand::Scan { world, output } => debug::run_scan(world, *output, style),

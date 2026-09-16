@@ -19,6 +19,51 @@ fn parses_subcommands() {
 }
 
 #[test]
+fn parses_progress_flag() {
+    let cli = Cli::try_parse_from(["sekai", "backup", "world", "--progress"])
+        .expect("backup --progress parses");
+    assert!(matches!(
+        cli.command,
+        Command::Backup { progress: true, .. }
+    ));
+
+    let cli = Cli::try_parse_from(["sekai", "backup", "world"]).expect("backup parses");
+    assert!(matches!(
+        cli.command,
+        Command::Backup {
+            progress: false,
+            ..
+        }
+    ));
+
+    // Progress is human-only: refuses `--json` loudly instead of
+    // polluting the machine-readable contract.
+    assert!(Cli::try_parse_from(["sekai", "backup", "world", "--progress", "--json"]).is_err());
+    assert!(Cli::try_parse_from(["sekai", "backup", "world", "--json", "--progress"]).is_err());
+
+    for args in [
+        vec!["sekai", "rollback", "w", "3", "--progress"],
+        vec!["sekai", "gc", "--progress"],
+        vec!["sekai", "diff", "--in", "overworld:0,0", "--progress"],
+    ] {
+        Cli::try_parse_from(args).expect("progress parses");
+    }
+    assert!(Cli::try_parse_from(["sekai", "rollback", "w", "3", "--progress", "--json"]).is_err());
+    assert!(Cli::try_parse_from(["sekai", "gc", "--progress", "--json"]).is_err());
+    assert!(
+        Cli::try_parse_from([
+            "sekai",
+            "diff",
+            "--in",
+            "overworld:0,0",
+            "--progress",
+            "--json"
+        ])
+        .is_err()
+    );
+}
+
+#[test]
 fn parses_diff_command() {
     let cli = Cli::try_parse_from(["sekai", "diff", "1", "2", "--in", "overworld:10,-5"])
         .expect("diff parses");
@@ -326,6 +371,7 @@ fn parses_gc_command() {
                 timing: false,
                 json: false,
             },
+            progress: false,
         }
     ));
 

@@ -6,6 +6,7 @@ use serde::Serialize;
 use std::path::Path;
 
 use super::ReportOut;
+use super::progress::{finish_progress, progress_bar, report_progress};
 use crate::cli::Selection;
 use crate::envelope::envelope_ok;
 use crate::style::Styler;
@@ -14,19 +15,30 @@ pub async fn run(
     store: &str,
     world: &Path,
     snapshot: u64,
+    progress: bool,
     selection: &Selection,
     out: ReportOut,
 ) -> anyhow::Result<()> {
     let id = SnapshotId(snapshot);
     let scope = selection.owned_scope();
-    let (report, timings) = sekai_app::rollback(world, store, id, scope)
-        .await
-        .with_context(|| {
-            format!(
-                "rollback of {} to snapshot {snapshot} failed",
-                world.display()
-            )
-        })?;
+    let bar = progress_bar(progress);
+    let owned = bar.clone();
+    let (report, timings) = sekai_app::rollback(world, store, id, scope, move |update| {
+        report_progress(
+            owned.as_ref(),
+            update.files_done,
+            update.files_total,
+            format!("files {} chunks", update.chunks_done),
+        );
+    })
+    .await
+    .with_context(|| {
+        format!(
+            "rollback of {} to snapshot {snapshot} failed",
+            world.display()
+        )
+    })?;
+    finish_progress(bar.as_ref());
     if out.json {
         println!(
             "{}",

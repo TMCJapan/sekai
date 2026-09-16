@@ -13,12 +13,12 @@ mod rollback;
 
 pub use backup::{BackupOptions, BackupProgress, BackupTimings, RegionTiming, backup};
 pub use diff::{
-    ChunkDiff, DiffTimings, diff_blobs, diff_chunk, diff_chunks, diff_world_chunk,
+    ChunkDiff, DiffProgress, DiffTimings, diff_blobs, diff_chunk, diff_chunks, diff_world_chunk,
     diff_world_chunks, snapshot_chunk_coords, world_chunk_coords,
 };
 pub use error::AppError;
-pub use gc::{GcTimings, gc, gc_apply, gc_plan};
-pub use rollback::{RollbackTimings, rollback};
+pub use gc::{GcProgress, GcTimings, gc, gc_apply, gc_plan};
+pub use rollback::{RollbackProgress, RollbackTimings, rollback};
 pub use sekai_core::{
     Area, BackupReport, BlobHash, ChunkCoord, DEFAULT_IGNORED, Dimension, GcPlan, GcReport,
     NbtChange, NbtDiffEntry, NbtValue, Rect, RegionKey, RegionKind, RollbackReport, Scope,

@@ -79,23 +79,29 @@ pub async fn gc_plan<B: BlobStore, M: MetaStore>(
 }
 
 /// Remove candidates that are still unreferenced after a fresh scan.
+///
+/// `progress` fires per examined candidate as `(done, total)`.
 pub async fn gc_apply<B: BlobStore, M: MetaStore>(
     blobs: &mut B,
     meta: &M,
     plan: &GcPlan,
+    mut progress: impl FnMut(usize, usize) + Send,
 ) -> Result<GcReport, GcError<B::Error, M::Error>> {
     let fresh = gc_plan(&*blobs, meta).await?;
     let still_orphan: BTreeSet<BlobHash> = fresh.into_orphans().into_iter().collect();
     let mut orphans = 0usize;
     let mut removed = 0usize;
+    let mut done = 0usize;
+    let total = plan.len();
     for hash in plan.orphans() {
-        if !still_orphan.contains(hash) {
-            continue;
+        if still_orphan.contains(hash) {
+            orphans += 1;
+            if blobs.remove(hash).await.map_err(GcError::Blob)? {
+                removed += 1;
+            }
         }
-        orphans += 1;
-        if blobs.remove(hash).await.map_err(GcError::Blob)? {
-            removed += 1;
-        }
+        done += 1;
+        progress(done, total);
     }
     Ok(GcReport {
         candidates: plan.len(),
@@ -138,7 +144,7 @@ mod tests {
         assert_eq!(plan.orphans(), &[orphan]);
         assert_eq!(plan.examined(), 2);
 
-        let report = block_on(gc_apply(&mut cas, &meta, &plan)).unwrap();
+        let report = block_on(gc_apply(&mut cas, &meta, &plan, |_, _| {})).unwrap();
         assert_eq!(
             report,
             GcReport {

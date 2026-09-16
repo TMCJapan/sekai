@@ -22,17 +22,36 @@ before/after on the same machine, never across machines.
 | `hash/4KiB` | 1.37 µs |
 | `hash/1MiB` | 253 µs |
 
-## Integration (`cargo bench -p sekai-app --bench backup`)
+## Integration (`cargo bench -p sekai-app`)
 
 Seeded worlds from `crates/app/benches/common.rs` (`SMALL`: 2 regions,
 10% density, 512 B payloads; `MEDIUM`: 8 regions, 90% density, 2 KiB
-payloads). Fresh temp store per iteration.
+payloads) plus the checked-in `test-world/` corpus (1189 chunks).
+Fresh temp store per iteration, except `-incremental` and the
+read-only flows.
 
-| Bench | Median |
-|---|---|
-| `backup/small-full` | 14.7 ms |
-| `backup/small-incremental` | 2.8 ms |
-| `backup/medium-full` | 484 ms |
+| Bench | Median | Notes |
+|---|---|---|
+| `backup/small-full` | 14.7 ms | fresh store |
+| `backup/small-incremental` | 2.8 ms | second backup, no changes |
+| `backup/medium-full` | 484 ms | fresh store |
+| `rollback/small` | 3.3 ms | ~200 chunks rewrite |
+| `rollback/corpus` | 19.0 ms | 1189 chunks rewrite |
+| `diff/small-all` | 72.6 ms | ~200 chunks, self-diff; per-chunk CAS opens dominate |
+| `diff/corpus-all` | 655 ms | 1189 chunks, self-diff |
+| `gc-plan/small` | 2.1 ms | read-only plan, repeatable |
+| `scan/corpus` | 8.2 ms | read-only, 10 MiB world |
+
+Rule-of-thumb estimates per subcommand (same machine class):
+
+- `backup` full: ~500 ms for ~7K chunks; dominated by `db_apply`
+  (WAL Full + per-blob fsync). Incremental no-change runs near
+  `universe_load` cost.
+- `rollback`: rewrite-bound, ~15–20 ms per 1K chunks.
+- `diff`: ~0.5 ms per chunk, dominated by per-chunk CAS file opens
+  (batching opportunity, untracked).
+- `gc plan`: a few ms at small scale; grows with history length.
+- `debug scan`: disk-read bound, ~1 ms per MiB here.
 
 ## World-level measurement
 

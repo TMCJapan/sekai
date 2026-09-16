@@ -17,6 +17,15 @@ pub struct GcTimings {
     pub apply: Duration,
 }
 
+/// Per-blob progress report for the `progress` callback.
+#[derive(Debug, Clone, Copy)]
+pub struct GcProgress {
+    /// Orphan candidates examined so far.
+    pub blobs_done: usize,
+    /// Orphan candidates in total.
+    pub blobs_total: usize,
+}
+
 /// Inspect store and return a plan of unreferenced orphan blobs.
 pub async fn gc_plan(store_url: &str) -> Result<GcPlan, AppError> {
     let store = super::open_store(store_url).await?;
@@ -27,15 +36,26 @@ pub async fn gc_plan(store_url: &str) -> Result<GcPlan, AppError> {
 }
 
 /// Execute a garbage collection plan, removing orphan blobs.
-pub async fn gc_apply(store_url: &str, plan: &GcPlan) -> Result<(GcReport, GcTimings), AppError> {
+/// `progress` fires per examined orphan candidate.
+pub async fn gc_apply(
+    store_url: &str,
+    plan: &GcPlan,
+    progress: impl FnMut(GcProgress) + Send,
+) -> Result<(GcReport, GcTimings), AppError> {
     let total_started = Instant::now();
     let mut store = super::open_store(store_url).await?;
 
     let apply_started = Instant::now();
     let (cas, meta) = store.cas_and_meta();
-    let report = sekai_core::usecase::gc::gc_apply(cas, meta, plan)
-        .await
-        .map_err(AppError::Gc)?;
+    let mut progress = progress;
+    let report = sekai_core::usecase::gc::gc_apply(cas, meta, plan, |done, total| {
+        progress(GcProgress {
+            blobs_done: done,
+            blobs_total: total,
+        });
+    })
+    .await
+    .map_err(AppError::Gc)?;
     let apply_dt = apply_started.elapsed();
 
     let timings = GcTimings {
@@ -48,7 +68,11 @@ pub async fn gc_apply(store_url: &str, plan: &GcPlan) -> Result<(GcReport, GcTim
 }
 
 /// Run garbage collection plan and apply in a single pass.
-pub async fn gc(store_url: &str) -> Result<(GcReport, GcTimings), AppError> {
+/// `progress` fires per examined orphan candidate during apply.
+pub async fn gc(
+    store_url: &str,
+    progress: impl FnMut(GcProgress) + Send,
+) -> Result<(GcReport, GcTimings), AppError> {
     let total_started = Instant::now();
     let mut store = super::open_store(store_url).await?;
 
@@ -60,9 +84,15 @@ pub async fn gc(store_url: &str) -> Result<(GcReport, GcTimings), AppError> {
 
     let apply_started = Instant::now();
     let (cas, meta) = store.cas_and_meta();
-    let report = sekai_core::usecase::gc::gc_apply(cas, meta, &plan)
-        .await
-        .map_err(AppError::Gc)?;
+    let mut progress = progress;
+    let report = sekai_core::usecase::gc::gc_apply(cas, meta, &plan, |done, total| {
+        progress(GcProgress {
+            blobs_done: done,
+            blobs_total: total,
+        });
+    })
+    .await
+    .map_err(AppError::Gc)?;
     let apply_dt = apply_started.elapsed();
 
     let timings = GcTimings {
