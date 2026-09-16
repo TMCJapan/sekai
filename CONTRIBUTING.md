@@ -99,9 +99,11 @@ any exception in the PR body.
     `lz4_flex` block API (lz4-java stream bodies), `twox-hash` (lz4-java
     block checksums), `blake3` (header/dimension digests, all with
     `default-features = false`).
-  * `nbt`: `sekai-util` (shared `DiffHash`), `serde` (`default-features = false, features = ["alloc",
-    "derive"]`) for the data model only, plus `blake3` with
-    `default-features = false` for the canonical digest.
+  * `nbt`: `sekai-util` (shared `DiffHash`) plus `blake3` with
+    `default-features = false` for the canonical digest. No `serde`:
+    the `Value` data model has deliberately no `Serialize` impl
+    (derived output would be externally tagged, competing with the
+    SNBT `Display` that machine-readable output uses).
   * `core`: `sekai-util` (shared types, re-exported at the root) plus
     `anvil` + `nbt` (concrete composition targets) plus `blake3` with
     `default-features = false` for hashing.

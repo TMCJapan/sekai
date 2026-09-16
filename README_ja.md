@@ -16,6 +16,7 @@ Minecraft Java 版のリージョンファイル (`.mca`) を対象とした、�
 
 ```sh
 cargo install --path ./crates/cli
+
 ```
 
 ## 使い方
@@ -30,10 +31,19 @@ sekai --store ./sekai-store list
 
 # スナップショット 1 からワールドを再構築する (リージョンファイルを上書きする)
 sekai --store ./sekai-store rollback ./world 1
+
 ```
 
+> [!Note]
+> すべてのスナップショットとストレージのフル二次バックアップを作成したい場合は、
+> `--store` で指定したディレクトリ全体を外部の場所へコピーまたはアーカイブしてください。
+
 `sekai` はサーバープロセスには一切干渉しません。セーブの制御は呼び出し側の責任です。
-レガシー形式 (`region/`、`DIM-1/`、`DIM1/`) と新形式
-(`dimensions/minecraft/...`) のいずれのワールド構成も自動的に検出されます。
+
+Bukkit 系のサーバー（Spigot、Paper、Purpur など）ではサーバーのルートディレクトリを、
+Vanilla の場合は単一のワールドディレクトリを指定して実行してください。Sekai は
+Vanilla の構成 (`region/`, `DIM-1/`, `DIM1/`, `dimensions/minecraft/...`)、
+26.1 より前の分割型 Bukkit 構成、およびカスタムプラグインのワールドフォルダを自動的に検出します。
+
 設計については `ARCHITECTURE.md` を、開発上のガイドラインについては
 `CONTRIBUTING.md` を参照してください。
