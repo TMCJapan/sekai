@@ -58,7 +58,6 @@ async fn open_store(store_url: &str) -> Result<sekai_storage::SqliteStore, AppEr
     let (kind, rest) = sekai_storage::parse_backend_url(store_url)?;
     // `Sqlite` is currently the only variant; the pattern becomes
     // refutable once stub backends land, and anything else fails below.
-    #[allow(irrefutable_let_patterns)]
     #[cfg(feature = "backend-sqlite")]
     if kind == sekai_storage::BackendKind::Sqlite {
         return Ok(sekai_storage::open_sqlite(std::path::Path::new(rest)).await?);
