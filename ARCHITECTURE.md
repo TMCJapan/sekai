@@ -43,9 +43,9 @@ sekai-util (no_std, zero-dependency: coordinates, hashes, history value
 |---|---|---|---|
 | `sekai-util` | `no_std`, zero external dependencies | no | Shared value types: coordinates, hashes, region/history/snapshot/gc records, hex errors. Pure data plus total validation only. |
 | `sekai-anvil` | `no_std` + `alloc` | no | Pure Anvil sector codec including decompression. `&[u8]` sector payload in, raw NBT bytes out; also builds `Vec<u8>` images. Compression framing is MCA spec knowledge, so it lives here. No `Path`, no `fs`. Names custom dimensions with util `Dimension`. |
-| `sekai-nbt` | `no_std` + `alloc` | no | Pure `raw NBT bytes -> diff view`. Hand-rolled NBT parser (serde data model), tag filtering, canonical digest returning util `DiffHash`. Never sees compression. |
+| `sekai-nbt` | `no_std` + `alloc` | no | Pure `raw NBT bytes -> diff view`. Hand-rolled NBT parser (no `Serialize` by design; output uses SNBT), tag filtering, canonical digest returning util `DiffHash`. Never sees compression. |
 | `sekai-core` | `no_std` + `alloc` | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_rollback`, `gc plan`/`apply`) plus composition helpers (`hash_blob`, `resolve_custom_dimension`, storage ports). Composes `anvil`/`nbt` over util types and re-exports them, so downstream paths stay stable. |
-| `sekai-storage` | `std` + tokio | yes (RPITIT) | Single crate: async `BlobStore`/`MetaStore` traits (`api` module), file CAS (`cas` module, `blobs/ab/cdef...` retained by design), and feature-gated DB backends (`sqlite` module ships; `mysql`/`postgres` modules reserved as stubs). Depends on `core`. Backend modules mirror the future split so extraction stays mechanical. |
+| `sekai-storage` | `std` + tokio | yes (RPITIT) | Single crate: async `BlobStore`/`MetaStore` traits (owned by `core::port`, re-exported from the `api` module), file CAS (`cas` module, `blobs/ab/cdef...` retained by design), and feature-gated DB backends (`sqlite` module ships; `mysql`/`postgres` modules reserved as stubs). Depends on `core`. Backend modules mirror the future split so extraction stays mechanical. |
 | `sekai-world` | `std` | yes (I/O) / sync pure helpers where trivial | Filesystem owner: world discovery, fingerprint observation, read-only scans, atomic swaps. |
 | `sekai-app` | `std` + tokio | yes | Composition/orchestration library for third parties: parallel ingest, clocks, timing, progress callbacks. |
 | `sekai` bin (`sekai-cli` package) | `std` + tokio | yes | Thin clap wrapper over `sekai-app`. No logic. Binary name stays `sekai`; package name stays `sekai-cli` so existing CI/artifact names keep working. |
@@ -154,12 +154,12 @@ Region sectors frame payloads as compression-type byte + body. Supported
 vanilla codecs are `1` (Gzip), `2` (Zlib), `3` (Uncompressed), and `4` (LZ4
 since 24w04a, lz4-java `LZ4BlockOutputStream` framing — not standard LZ4).
 Decompression lives in `sekai-anvil`: the framing byte is MCA spec
-knowledge, so `anvil` exposes `decompress(payload) -> raw NBT bytes` and
+knowledge, so `anvil` exposes `decompress_into(payload, &mut out)` and
 owns all codec errors — type `127` surfaces as `CustomCompression`,
 `>= 128` (external `c.<x>.<z>.mcc` body) as `ExternalBody`, anything else
 as `UnknownCompression`. `sekai-nbt` only ever receives already-decompressed
-raw NBT bytes and parses them with a hand-rolled `no_std` parser (serde data
-model). Backup ingests raw sector payloads opaquely into CAS;
+raw NBT bytes and parses them with a hand-rolled `no_std` parser (no
+`Serialize` by design). Backup ingests raw sector payloads opaquely into CAS;
 unsupported codecs surface only when the raw NBT view is derived for
 diffing, never as ingest failures.
 
@@ -252,8 +252,9 @@ scope is a filter, not a partition:
 
 ## Trait/Impl Split (single crate, feature-gated modules)
 
-- `sekai-storage` is a single crate. Its `api` module owns the async
-  `BlobStore`/`MetaStore` traits (RPITIT, `Send` bounds for tokio) plus
+- `sekai-storage` is a single crate. The async `BlobStore`/`MetaStore`
+  traits (RPITIT, `Send` bounds for tokio) are owned by `core::port` and
+  re-exported from storage's `api` module, which additionally owns
   `BackendKind` and URL-based selection (`sqlite://...`, `mysql://...`,
   `postgres://...`).
 - DB backends are modules behind cargo features: `sqlite` (sqlx, ships in

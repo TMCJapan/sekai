@@ -24,7 +24,7 @@ Keep dependencies strictly unidirectional (inward):
 sekai (bin) -> app -> {core, world, storage}
 app -> core -> {anvil, nbt}
 world -> {anvil, core}
-storage -> core (its api module owns the async traits; backend modules implement them)
+storage -> core (whose `port` module owns the async traits; backend modules implement them)
 {anvil, nbt, core} -> util (world/storage/app reach shared types through `core` re-exports)
 ```
 
@@ -58,12 +58,12 @@ any exception in the PR body.
   No `std::fs`, `Path`, `std::time`, `std::io::Error`, or `thiserror` there;
   hand-written `core::fmt::Display` error enums only. No `tokio`, no
   `async-trait` macro.
-* **`core` is an API layer, not a port hub**: it composes the concrete
+* **`core` is an API layer and the port hub**: it composes the concrete
   pure crates (`anvil`, `nbt`) over shared `util` types for sector/diff
-  logic, and re-exports every util type at its root. Pluggability lives at
-  the `storage` async traits (`BlobStore`/`MetaStore`, `api` module) and at
-  the `world` observation boundary - not at `RegionReader`/`Normalizer`-style
-  traits.
+  logic, re-exports every util type at its root, and owns the async
+  `BlobStore`/`MetaStore` ports (`port` module, RPITIT). Pluggability lives
+  at those ports (implemented by `storage` backends) and at the `world`
+  observation boundary - not at `RegionReader`/`Normalizer`-style traits.
 * **`core` never touches the filesystem**: `world` produces `Observation` /
   `RegionFingerprint`; `app` feeds them into `core::plan_*`.
 * **Atomic file I/O**: never overwrite `.mca` files in place. `anvil` builds
@@ -225,6 +225,16 @@ Branch from `main` using one of these prefixes:
 * `fix/<scope>`: bug correction.
 * `refactor/<scope>`, `docs/<scope>`, `test/<scope>`: no behavior change.
 * `build/<scope>`, `ci/<scope>`, `chore/<scope>`: tooling, CI, or routine maintenance without runtime behavior change.
+
+### Architecture Decision Records
+
+Record lasting design decisions in `docs/adr/` as `NNNN-kebab-case-title.md`
+(start from `template.md`). Required for: new dependencies, schema
+changes, output-contract changes, and performance-relevant architecture
+calls. Routine refactors, bug fixes, and test-only changes do not need
+one. Each ADR has Status (`Proposed`/`Accepted`/`Superseded`), Context,
+Decision, and Consequences; keep it short and link follow-ups instead
+of expanding scope.
 
 ### Commits
 

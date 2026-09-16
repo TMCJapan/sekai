@@ -33,7 +33,25 @@ sekai --store ./sekai-store list
 # Rebuild the world from snapshot 1 (overwrites region files)
 sekai --store ./sekai-store rollback ./world 1
 
+# Compare chunk NBT between snapshots 1 and 2
+sekai --store ./sekai-store diff 1 2 --in overworld:0,0
+
+# Preview unreferenced blobs, then collect them
+sekai --store ./sekai-store gc --dry-run
+sekai --store ./sekai-store gc
+
+# Inspect region files without touching anything
+sekai debug scan ./world
+
 ```
+
+Every command accepts `--json` for a single-document machine-readable
+report, and every command except `list` accepts `--timing` for a
+per-phase breakdown (combine both for timed JSON). Backup, rollback,
+and diff accept a scope: repeatable `--in DIM[:x,z|x0,z0..x1,z1]`,
+`--region DIM:RX,RZ`, and repeatable `--kind` (empty means all);
+nothing selected means the whole world. See `docs/json.md` for the
+output contract.
 
 > [!Note]
 > If you want to perform a full secondary backup of all your snapshots and storage, 

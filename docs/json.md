@@ -205,6 +205,6 @@ appended:
 
 Field names and value shapes above are stable within a major release.
 Additive fields may appear; existing fields keep their types. Golden
-tests in `crates/cli/src/main.rs` pin every envelope and payload shape
+tests across `crates/cli/src/commands/` pin every envelope and payload shape
 (both bare and timing-augmented); changing them requires updating both
 the tests and this document.
