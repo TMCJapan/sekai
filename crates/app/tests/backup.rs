@@ -468,8 +468,9 @@ async fn gc_runs_and_returns_timings() {
         .await
         .unwrap();
 
-    let plan = sekai_app::gc_plan(&store).await.unwrap();
+    let (plan, plan_timings) = sekai_app::gc_plan(&store).await.unwrap();
     assert_eq!(plan.len(), 0);
+    assert_eq!(plan_timings.apply, std::time::Duration::ZERO);
 
     let (report, timings) = sekai_app::gc(&store, |_| {}).await.unwrap();
     assert_eq!(report.candidates, 0);

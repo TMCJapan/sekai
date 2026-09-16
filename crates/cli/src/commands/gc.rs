@@ -12,11 +12,14 @@ use crate::style::Styler;
 pub async fn run(store: &str, dry_run: bool, progress: bool, out: ReportOut) -> anyhow::Result<()> {
     let style = out.style;
     if dry_run {
-        let plan = sekai_app::gc_plan(store)
+        let (plan, timings) = sekai_app::gc_plan(store)
             .await
             .with_context(|| format!("gc plan for {store} failed"))?;
         if out.json {
-            println!("{}", envelope_ok("gc", &gc_plan_payload(&plan))?);
+            println!(
+                "{}",
+                envelope_ok("gc", &gc_plan_payload(&plan, &timings, out.timing))?
+            );
             return Ok(());
         }
         println!(
@@ -24,6 +27,9 @@ pub async fn run(store: &str, dry_run: bool, progress: bool, out: ReportOut) -> 
             highlight_count(style, plan.orphans.len()),
             plan.examined
         );
+        if out.timing {
+            print_gc_timing_table(&timings, style);
+        }
         return Ok(());
     }
 
@@ -79,6 +85,8 @@ struct GcPhases {
 struct GcPlanPayload {
     orphans: usize,
     examined: usize,
+    #[serde(flatten)]
+    timing: Option<GcTiming>,
 }
 
 fn gc_payload(report: &GcReport, timings: &GcTimings, timing: bool) -> GcPayload {
@@ -96,10 +104,17 @@ fn gc_payload(report: &GcReport, timings: &GcTimings, timing: bool) -> GcPayload
     }
 }
 
-const fn gc_plan_payload(plan: &GcPlan) -> GcPlanPayload {
+fn gc_plan_payload(plan: &GcPlan, timings: &GcTimings, timing: bool) -> GcPlanPayload {
     GcPlanPayload {
         orphans: plan.orphans.len(),
         examined: plan.examined,
+        timing: timing.then_some(GcTiming {
+            total_ms: timings.total.as_millis(),
+            phases: GcPhases {
+                plan_ms: timings.plan.as_millis(),
+                apply_ms: timings.apply.as_millis(),
+            },
+        }),
     }
 }
 
@@ -158,6 +173,26 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&payload_timed).unwrap(),
             r#"{"candidates":5,"orphans":4,"removed":4,"total_ms":30,"phases":{"plan_ms":20,"apply_ms":10}}"#
+        );
+    }
+
+    #[test]
+    fn renders_gc_plan_payload() {
+        let plan = GcPlan::new(vec![sekai_app::BlobHash([1; 32])], 10);
+        let timings = GcTimings {
+            total: Duration::from_millis(20),
+            plan: Duration::from_millis(20),
+            apply: Duration::ZERO,
+        };
+        let payload = gc_plan_payload(&plan, &timings, false);
+        assert_eq!(
+            serde_json::to_string(&payload).unwrap(),
+            r#"{"orphans":1,"examined":10}"#
+        );
+        let payload_timed = gc_plan_payload(&plan, &timings, true);
+        assert_eq!(
+            serde_json::to_string(&payload_timed).unwrap(),
+            r#"{"orphans":1,"examined":10,"total_ms":20,"phases":{"plan_ms":20,"apply_ms":0}}"#
         );
     }
 }

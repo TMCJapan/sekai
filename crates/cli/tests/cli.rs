@@ -398,6 +398,13 @@ fn parses_gc_command() {
             ..
         }
     ));
+
+    Cli::try_parse_from(["sekai", "gc", "--dry-run", "--timing", "--json"])
+        .expect("gc --dry-run --timing --json parses");
+    assert!(
+        Cli::try_parse_from(["sekai", "gc", "--dry-run", "--progress"]).is_err(),
+        "gc --dry-run --progress is refused"
+    );
 }
 
 #[test]

@@ -26,13 +26,23 @@ pub struct GcProgress {
     pub blobs_total: usize,
 }
 
-/// Inspect store and return a plan of unreferenced orphan blobs.
-pub async fn gc_plan(store_url: &str) -> Result<GcPlan, AppError> {
+/// Inspect store and return a plan of unreferenced orphan blobs,
+/// additionally returning per-phase timings (`apply` is zero: dry-run
+/// never unlinks).
+pub async fn gc_plan(store_url: &str) -> Result<(GcPlan, GcTimings), AppError> {
+    let total_started = Instant::now();
     let store = super::open_store(store_url).await?;
+    let plan_started = Instant::now();
     let plan = sekai_core::usecase::gc::gc_plan(store.cas(), store.meta())
         .await
         .map_err(AppError::Gc)?;
-    Ok(plan)
+    let plan_dt = plan_started.elapsed();
+    let timings = GcTimings {
+        total: total_started.elapsed(),
+        plan: plan_dt,
+        apply: Duration::ZERO,
+    };
+    Ok((plan, timings))
 }
 
 /// Execute a garbage collection plan, removing orphan blobs.

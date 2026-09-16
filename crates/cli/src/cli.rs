@@ -82,8 +82,9 @@ pub enum Command {
         #[command(flatten)]
         output: TimingArgs,
         /// Show a progress bar on stderr. Refused with `--json`, and
-        /// silent without a stderr TTY.
-        #[arg(long, conflicts_with = "json")]
+        /// silent without a stderr TTY. Refused with `--dry-run`, which
+        /// has no apply phase to report progress for.
+        #[arg(long, conflicts_with_all = ["json", "dry_run"])]
         progress: bool,
     },
     /// Read-only inspection helpers (never write to world or store).

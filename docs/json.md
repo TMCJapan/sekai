@@ -18,7 +18,7 @@ carries the bare result only.
 | `rollback` | report (+timings with `--timing`) | table + JSON block | |
 | `list` | snapshot array | n/a | no phases exist |
 | `diff` | single array, grouped array (multi), or timed object | table + JSON block | `--in`/`--region` select chunks; one chunk keeps the single shape |
-| `gc` | report or dry-run plan (+timings with `--timing`, non-dry-run only) | table + JSON block | dry-run has no phase timings |
+| `gc` | report or dry-run plan (+timings with `--timing`) | table + JSON block | dry-run timings carry `plan_ms`; `apply_ms` is `0` |
 | `debug scan` | entry array (+timings with `--timing`) | table + JSON block | |
 
 Without `--timing`, `--json` emits the bare result. With `--timing`,
@@ -165,11 +165,20 @@ coordinate enumeration stay outside the measured phases.
 
 The `total_ms`/`phases` block appears only with `--timing`.
 
-Dry-run (`gc --dry-run --json`); planning produces no phase timings,
-so no timing block exists:
+Dry-run (`gc --dry-run --json`):
 
 ```jsonc
 {"orphans": 4, "examined": 100}
+```
+
+With `--timing` the plan timing block is appended (`apply_ms` is
+always `0`: dry-run never unlinks):
+
+```jsonc
+{
+  "orphans": 4, "examined": 100, "total_ms": 20,
+  "phases": {"plan_ms": 20, "apply_ms": 0}
+}
 ```
 
 Note: dry-run reports the orphan *count*, never the hashes.
