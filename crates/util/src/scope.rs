@@ -72,6 +72,17 @@ impl From<Scope<'_>> for OwnedScope {
     }
 }
 
+impl<'a> From<&'a OwnedScope> for Scope<'a> {
+    fn from(scope: &'a OwnedScope) -> Self {
+        match scope {
+            OwnedScope::World => Self::World,
+            OwnedScope::Dimension(dim) => Self::Dimension(*dim),
+            OwnedScope::Region(key) => Self::Region(*key),
+            OwnedScope::Chunks(chunks) => Self::Chunks(chunks),
+        }
+    }
+}
+
 impl OwnedScope {
     /// Whether a chunk coordinate falls inside the scope.
     pub fn contains(&self, coord: ChunkCoord) -> bool {
