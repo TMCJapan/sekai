@@ -155,12 +155,11 @@ pub async fn backup(
         files.insert(obs.key, (region, obs.fingerprint));
     }
     // Changed files in discovery order; carries need no file access.
-    let mut changed: Vec<Changed> = Vec::with_capacity(plan.ingest.len());
-    for key in &plan.ingest {
-        if let Some(entry) = files.remove(key) {
-            changed.push(entry);
-        }
-    }
+    let changed: Vec<Changed> = plan
+        .ingest
+        .iter()
+        .filter_map(|key| files.remove(key))
+        .collect();
 
     let walk = ingest_changed(
         changed,
@@ -246,6 +245,7 @@ fn observe(world: &Path) -> Result<Observed, AppError> {
 }
 
 /// Staged result of walking all discovered regions.
+#[derive(Default)]
 struct RegionWalk {
     /// Fresh history rows (ingested chunks; tombstones join at assembly).
     entries: Vec<SnapshotEntry>,
@@ -284,15 +284,8 @@ async fn ingest_changed(
     progress: impl Fn(BackupProgress) + Send,
 ) -> Result<RegionWalk, AppError> {
     let mut walk = RegionWalk {
-        entries: Vec::new(),
-        present: HashSet::new(),
-        new_blobs: 0,
-        fingerprints: Vec::new(),
-        region_open: Duration::ZERO,
-        ingest: Duration::ZERO,
-        hash: Duration::ZERO,
-        cas: Duration::ZERO,
         timings: Vec::with_capacity(changed.len()),
+        ..Default::default()
     };
     if changed.is_empty() {
         return Ok(walk);
@@ -347,12 +340,11 @@ fn partition_groups(mut changed: Vec<Changed>, workers: usize) -> Vec<Vec<Change
     groups.resize_with(workers, Vec::new);
     let mut loads = vec![0u64; workers];
     for item in changed {
-        let mut lightest = 0usize;
-        for (index, load) in loads.iter().enumerate() {
-            if *load < loads[lightest] {
-                lightest = index;
-            }
-        }
+        let lightest = loads
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, load)| *load)
+            .map_or(0, |(index, _)| index);
         loads[lightest] += item.1.size;
         groups[lightest].push(item);
     }
@@ -384,7 +376,6 @@ fn ingest_group(
     Ok((outcomes, sync_started.elapsed()))
 }
 
-/// Fold one file's staged rows into the walk.
 fn merge_outcome(walk: &mut RegionWalk, outcome: FileOutcome) {
     walk.entries.extend(outcome.entries);
     walk.present.extend(outcome.present);
@@ -533,7 +524,6 @@ fn ingest_timed(
     Ok((hash_elapsed, cas_elapsed))
 }
 
-/// Wall-clock now as Unix millis.
 fn now_ms() -> Result<u64, AppError> {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

@@ -24,12 +24,8 @@ pub enum HexError {
 impl fmt::Display for HexError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::BadHexLength(len) => {
-                write!(f, "invalid hash hex length: {len}, expected 64")
-            }
-            Self::BadHexChar(byte) => {
-                write!(f, "invalid hex character: {byte:#04X}")
-            }
+            Self::BadHexLength(len) => write!(f, "invalid hash hex length: {len}, expected 64"),
+            Self::BadHexChar(byte) => write!(f, "invalid hex character: {byte:#04X}"),
         }
     }
 }

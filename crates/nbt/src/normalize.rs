@@ -8,6 +8,7 @@ pub(crate) trait Feed {
 }
 
 impl Feed for blake3::Hasher {
+    // Inherent `Hasher::update`, not trait recursion.
     fn update(&mut self, data: &[u8]) {
         self.update(data);
     }

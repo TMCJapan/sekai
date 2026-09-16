@@ -57,15 +57,9 @@ pub fn decompress_into(payload: &[u8], out: &mut Vec<u8>) -> Result<Compression,
 
             out.extend_from_slice(body);
         }
-        Compression::Zlib => {
-            *out = inflate_zlib_capped(body)?;
-        }
-        Compression::Gzip => {
-            gunzip_capped(body, out)?;
-        }
-        Compression::Lz4 => {
-            unlz4(body, out)?;
-        }
+        Compression::Zlib => *out = inflate_zlib_capped(body)?,
+        Compression::Gzip => gunzip_capped(body, out)?,
+        Compression::Lz4 => unlz4(body, out)?,
     }
 
     Ok(codec)

@@ -14,7 +14,7 @@ pub enum NbtChange {
 /// A single diff entry containing the path and the change.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NbtDiffEntry {
-    // NBT path (e.g. "Status", "sections[0].Y", "TileEntities[2].id")
+    /// NBT path (e.g. `"Status"`, `"sections[0].Y"`, `"TileEntities[2].id"`).
     pub path: String,
     pub change: NbtChange,
 }
@@ -37,7 +37,6 @@ fn diff_values(old: &Value, new: &Value, path: &str, ignore: &[&str], out: &mut 
         (Value::Compound(old_entries), Value::Compound(new_entries)) => {
             diff_compounds(old_entries, new_entries, path, ignore, out);
         }
-
         (Value::List(old_items), Value::List(new_items)) => {
             diff_lists(old_items, new_items, path, ignore, out);
         }

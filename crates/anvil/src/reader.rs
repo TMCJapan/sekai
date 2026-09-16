@@ -10,10 +10,8 @@ use crate::region::{FIRST_DATA_SECTOR, RegionLoc, SECTOR_LEN, TABLE_ENTRIES};
 pub struct Chunk<'a> {
     /// Global chunk X coordinate.
     pub x: i32,
-
     /// Global chunk Z coordinate.
     pub z: i32,
-
     /// Stored compression byte followed by the compressed body.
     pub payload: &'a [u8],
 }

@@ -1,15 +1,25 @@
+//! Errors produced while parsing NBT data.
+
 use core::fmt;
 
 /// Errors produced while parsing NBT data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NbtError {
+    /// Input was empty; a compound root tag is required.
     EmptyInput,
+    /// Input ended mid-value.
     UnexpectedEnd,
+    /// Tag id outside `1..=12`.
     UnknownTag(u8),
+    /// String bytes are not valid modified UTF-8.
     InvalidString,
+    /// Root tag is not a compound (`10`).
     UnexpectedRoot(u8),
+    /// Bytes remain after the root value.
     TrailingData(usize),
+    /// Nesting exceeds the recursion bound.
     TooDeeplyNested,
+    /// Negative or overflowing length prefix.
     InvalidLength(i32),
 }
 
@@ -26,15 +36,9 @@ impl fmt::Display for NbtError {
                     "unexpected NBT root tag id: {tag}, expected compound (10)"
                 )
             }
-            Self::TrailingData(len) => {
-                write!(f, "trailing {len} bytes after NBT root value")
-            }
-            Self::TooDeeplyNested => {
-                write!(f, "NBT nesting exceeds the recursion bound")
-            }
-            Self::InvalidLength(len) => {
-                write!(f, "invalid NBT length prefix: {len}")
-            }
+            Self::TrailingData(len) => write!(f, "trailing {len} bytes after NBT root value"),
+            Self::TooDeeplyNested => write!(f, "NBT nesting exceeds the recursion bound"),
+            Self::InvalidLength(len) => write!(f, "invalid NBT length prefix: {len}"),
         }
     }
 }

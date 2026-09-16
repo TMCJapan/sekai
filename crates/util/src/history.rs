@@ -40,7 +40,7 @@ impl ChunkHistoryEntry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ChunkCoord, Dimension, RegionKind, SnapshotId};
+    use crate::{Dimension, RegionKind};
 
     #[test]
     fn tombstone_detection() {

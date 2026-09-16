@@ -6,7 +6,9 @@ use alloc::vec::Vec;
 /// Read-only orphan candidates and scan statistics.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GcPlan {
+    /// Hashes safe to unlink.
     pub orphans: Vec<BlobHash>,
+    /// Blob count examined while planning.
     pub examined: usize,
 }
 

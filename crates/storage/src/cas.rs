@@ -70,11 +70,13 @@ impl FileCas {
     /// blob). The rename itself is persisted by the next `sync` call, which
     /// must precede any metadata commit referencing the blob.
     ///
-    /// Concurrent puts of the same blob are safe: all writers fsync
-    /// complete files and exactly one rename wins; losers observe the
-    /// winner's identical bytes (content-addressed) and report deduplicated.
-    /// This matters on Windows, where renaming over an existing file fails
-    /// instead of atomically replacing it.
+    /// Concurrent puts of the same blob are safe: every writer fsyncs a
+    /// complete file, so the stored bytes are identical whichever rename
+    /// lands (content-addressed). Racers that observe the winner report
+    /// deduplicated instead of erroring; on Windows, where renaming over
+    /// an existing file fails, that loser path is what saves the backup.
+    /// (`new_blobs` accounting may overcount racing duplicates on
+    /// platforms where every rename succeeds; cosmetic only.)
     ///
     /// Synchronous building block for blocking contexts (e.g.
     /// `spawn_blocking` ingest workers); async callers use the
@@ -103,7 +105,7 @@ impl FileCas {
             }
         };
         let result = write();
-        if result.as_ref().is_ok_and(|is_new| !is_new) || result.is_err() {
+        if !matches!(result, Ok(true)) {
             let _ = std::fs::remove_file(&tmp);
         }
         let is_new = result?;

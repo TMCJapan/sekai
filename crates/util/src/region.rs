@@ -63,13 +63,11 @@ impl RegionFingerprint {
     /// would risk stale snapshots, so the fail-safe direction is to redo
     /// the work.
     pub fn matches_state(&self, state: &RegionStateEntry) -> bool {
-        if self.key != state.key {
-            return false;
-        }
-        if self.mtime_ms != state.mtime_ms || self.mtime_ms.is_none() {
-            return false;
-        }
-        self.size == state.size && self.header_hash == state.header_hash
+        self.key == state.key
+            && self.mtime_ms == state.mtime_ms
+            && self.mtime_ms.is_some()
+            && self.size == state.size
+            && self.header_hash == state.header_hash
     }
 }
 

@@ -152,10 +152,10 @@ impl<'a> Cursor<'a> {
 }
 
 const fn check_depth(depth: usize) -> Result<(), NbtError> {
-    if depth >= MAX_DEPTH {
-        Err(NbtError::TooDeeplyNested)
-    } else {
+    if depth < MAX_DEPTH {
         Ok(())
+    } else {
+        Err(NbtError::TooDeeplyNested)
     }
 }
 
@@ -286,11 +286,6 @@ fn parse_payload(cursor: &mut Cursor<'_>, tag: u8, depth: usize) -> Result<Value
 
 fn read_len(cursor: &mut Cursor<'_>) -> Result<usize, NbtError> {
     let len = cursor.read_i32()?;
-
-    if len < 0 {
-        return Err(NbtError::InvalidLength(len));
-    }
-
     usize::try_from(len).map_err(|_| NbtError::InvalidLength(len))
 }
 

@@ -1,8 +1,8 @@
-//! Backup/rollback/diff scope
+//! Backup/rollback/diff scope: whole world, one dimension, one region,
+//! or an explicit chunk list.
 //!
-//! Whole world, one dimension, or an explicit chunk list. Borrowed slices
-//! keep the caller-owned selection without copying; region membership for
-//! chunk lists is derived per query.
+//! Borrowed slices keep the caller-owned selection without copying; region
+//! membership for chunk lists is derived per query.
 
 use alloc::vec::Vec;
 
@@ -159,21 +159,22 @@ mod tests {
 
     #[test]
     fn owned_scope_mirrors_borrowed() {
+        let over_origin = ChunkCoord::new(OVER, REGION, 0, 0);
+        let nether_far = ChunkCoord::new(NETHER, REGION, 5, 5);
+        let nether_key = RegionKey::new(NETHER, REGION, 0, 0);
         for scope in [
             Scope::World,
             Scope::Dimension(NETHER),
             Scope::Region(RegionKey::new(OVER, REGION, 0, 0)),
-            Scope::Chunks(&[ChunkCoord::new(OVER, REGION, 0, 0)]),
+            Scope::Chunks(&[over_origin]),
         ] {
             let owned = OwnedScope::from(scope);
-            let coord = ChunkCoord::new(NETHER, REGION, 5, 5);
-            assert_eq!(owned.contains(coord), scope.contains(coord));
+            assert_eq!(owned.contains(nether_far), scope.contains(nether_far));
+            assert_eq!(owned.contains(over_origin), scope.contains(over_origin));
             assert_eq!(
-                owned.contains(ChunkCoord::new(OVER, REGION, 0, 0)),
-                scope.contains(ChunkCoord::new(OVER, REGION, 0, 0))
+                owned.matches_region(nether_key),
+                scope.matches_region(nether_key)
             );
-            let key = RegionKey::new(NETHER, REGION, 0, 0);
-            assert_eq!(owned.matches_region(key), scope.matches_region(key));
         }
     }
 }

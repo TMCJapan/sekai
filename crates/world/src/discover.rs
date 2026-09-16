@@ -154,13 +154,7 @@ fn scan_dim_root(
 /// Whether `dir` looks like a world folder: `level.dat`, `DIM-1`/`DIM1`
 /// nesting, or a kind directory holding parseable region files.
 fn is_world_folder(dir: &Path) -> Result<bool, WorldError> {
-    if is_top_world_folder(dir)? {
-        return Ok(true);
-    }
-    if dir.join("DIM-1").is_dir() || dir.join("DIM1").is_dir() {
-        return Ok(true);
-    }
-    Ok(false)
+    Ok(is_top_world_folder(dir)? || dir.join("DIM-1").is_dir() || dir.join("DIM1").is_dir())
 }
 
 /// Whether `dir` is itself a world folder root: `level.dat` or a kind
@@ -344,16 +338,13 @@ pub fn discover(world: &Path) -> Result<Vec<RegionRef>, WorldError> {
         scan_dimensions(&over.join("dimensions"), base, &mut found)?;
     }
     // Other world folders: hashed namespaces, never colliding silently.
-    let trio: [String; 3] = base.as_ref().map_or_else(
-        || [String::new(), String::new(), String::new()],
-        |base| {
-            [
-                base.clone(),
-                format!("{base}_nether"),
-                format!("{base}_the_end"),
-            ]
-        },
-    );
+    let trio: [String; 3] = base.as_ref().map_or_else(Default::default, |base| {
+        [
+            base.clone(),
+            format!("{base}_nether"),
+            format!("{base}_the_end"),
+        ]
+    });
     for entry in read_dir_opt(world)? {
         if !is_dir(&entry)? {
             continue;

@@ -14,14 +14,23 @@ use crate::fingerprint::HEADER_HASH_LEN;
 /// One region file observed on disk.
 #[derive(Debug, Clone)]
 pub struct RegionScanEntry {
+    /// Full file path.
     pub path: PathBuf,
+    /// Dimension namespace.
     pub dim: Dimension,
+    /// Region family.
     pub kind: RegionKind,
+    /// Region X from the file name.
     pub region_x: i32,
+    /// Region Z from the file name.
     pub region_z: i32,
+    /// File size in bytes.
     pub file_bytes: u64,
+    /// Last modification time as Unix millis (`None` when unavailable).
     pub mtime_ms: Option<u64>,
+    /// Chunks present in the file.
     pub chunks: usize,
+    /// Hex header hash.
     pub header_hash: String,
 }
 
@@ -61,9 +70,7 @@ pub fn scan_world(world: &Path) -> Result<(Vec<RegionScanEntry>, ScanTimings), W
         let parse_started = Instant::now();
         let entry = parse_entry(&region, &bytes, mtime_ms);
         parse += parse_started.elapsed();
-        if let Some(entry) = entry {
-            out.push(entry);
-        }
+        out.extend(entry);
     }
     let timings = ScanTimings {
         total: total_started.elapsed(),

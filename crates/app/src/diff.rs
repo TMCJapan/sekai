@@ -39,14 +39,10 @@ pub async fn diff_blobs(
     store.cas().fetch_blob(old_hash, &mut old_compressed)?;
     store.cas().fetch_blob(new_hash, &mut new_compressed)?;
 
-    let mut old_nbt = Vec::new();
-    let mut new_nbt = Vec::new();
+    let old_nbt = decompress_chunk(&old_compressed)?;
+    let new_nbt = decompress_chunk(&new_compressed)?;
 
-    sekai_anvil::decompress_into(&old_compressed, &mut old_nbt)?;
-    sekai_anvil::decompress_into(&new_compressed, &mut new_nbt)?;
-
-    let diffs = diff_nbt(&old_nbt, &new_nbt, ignore_set)?;
-    Ok(diffs)
+    Ok(diff_nbt(&old_nbt, &new_nbt, ignore_set)?)
 }
 
 /// Fetch raw (still compressed) chunk payload directly from a world directory.
@@ -189,17 +185,16 @@ async fn snapshot_chunk_compressed(
     snapshot_id: SnapshotId,
     coord: &ChunkCoord,
 ) -> Result<Vec<u8>, AppError> {
-    let entry = store.meta().lookup_chunk(snapshot_id, coord).await?.ok_or(
-        AppError::ChunkNotFoundInSnapshot {
-            snapshot_id,
-            coord: *coord,
-        },
-    )?;
-
-    let hash = entry.blob.ok_or(AppError::ChunkNotFoundInSnapshot {
+    let missing = || AppError::ChunkNotFoundInSnapshot {
         snapshot_id,
         coord: *coord,
-    })?;
+    };
+    let entry = store
+        .meta()
+        .lookup_chunk(snapshot_id, coord)
+        .await?
+        .ok_or_else(missing)?;
+    let hash = entry.blob.ok_or_else(missing)?;
 
     let mut compressed = Vec::new();
     store.cas().fetch_blob(&hash, &mut compressed)?;
@@ -238,9 +233,10 @@ pub async fn diff_world_chunks(
     ignore: Option<&[&str]>,
 ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
     let total_started = Instant::now();
-    let snapshot_id = match snapshot {
-        Some(id) => id,
-        None => super::latest_snapshot_id(store_url).await?,
+    let snapshot_id = if let Some(id) = snapshot {
+        id
+    } else {
+        super::latest_snapshot_id(store_url).await?
     };
 
     let store = super::open_store(store_url).await?;

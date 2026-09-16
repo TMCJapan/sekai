@@ -29,14 +29,9 @@ impl fmt::Display for Value {
             }
             Self::Compound(entries) => {
                 write!(f, "{{")?;
-                let mut first = true;
-                for (key, value) in entries {
-                    if !first {
-                        write!(f, ", ")?;
-                    }
-                    first = false;
-                    write!(f, "{}: {value}", Key(key))?;
-                }
+                join(f, entries.iter(), |f, (key, value)| {
+                    write!(f, "{}: {value}", Key(key))
+                })?;
                 write!(f, "}}")
             }
             Self::IntArray(items) => {
@@ -119,7 +114,7 @@ impl fmt::Display for Key<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::string::{String, ToString};
+    use alloc::string::String;
     use alloc::vec;
 
     fn rendered(value: &Value) -> String {
