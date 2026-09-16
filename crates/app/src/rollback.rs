@@ -42,7 +42,7 @@ pub async fn rollback(
     world: &Path,
     store_url: &str,
     snapshot: SnapshotId,
-    scope: Scope<'_>,
+    scope: Scope,
 ) -> Result<(RollbackReport, RollbackTimings), AppError> {
     let total_started = Instant::now();
     let store = super::open_store(store_url).await?;

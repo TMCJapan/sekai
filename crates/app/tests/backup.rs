@@ -144,7 +144,7 @@ async fn scoped_backup_records_no_spurious_tombstones() {
         &world,
         &store,
         options(),
-        Scope::Dimension(Dimension::OVERWORLD),
+        Scope::dimension(Dimension::OVERWORLD),
         |_| {},
     )
     .await
@@ -173,7 +173,7 @@ async fn scoped_backup_records_no_spurious_tombstones() {
         &world,
         &store,
         options(),
-        Scope::Dimension(Dimension::OVERWORLD),
+        Scope::dimension(Dimension::OVERWORLD),
         |_| {},
     )
     .await
@@ -231,7 +231,7 @@ async fn scoped_rollback_leaves_other_dimensions_untouched() {
         &world,
         &store,
         snapshots[0].id,
-        Scope::Dimension(Dimension::OVERWORLD),
+        Scope::dimension(Dimension::OVERWORLD),
     )
     .await
     .unwrap();
@@ -246,7 +246,7 @@ async fn scoped_rollback_leaves_other_dimensions_untouched() {
         &world,
         &store,
         snapshots[0].id,
-        Scope::Dimension(Dimension::NETHER),
+        Scope::dimension(Dimension::NETHER),
     )
     .await
     .unwrap();
@@ -262,7 +262,7 @@ async fn scoped_rollback_leaves_other_dimensions_untouched() {
         &world,
         &store,
         snapshots[0].id,
-        Scope::Dimension(Dimension::OVERWORLD),
+        Scope::dimension(Dimension::OVERWORLD),
     )
     .await
     .unwrap();
@@ -731,4 +731,59 @@ async fn all_kinds_round_trip() {
         assert_eq!(rolled.chunks_restored, 1);
         cleanup(&root);
     }
+}
+
+#[tokio::test]
+async fn rect_and_kind_scopes_limit_ingest() {
+    use sekai_app::{Area, Dimension, Rect, RegionKind, Scope};
+    let root = tempdir("rect-kind");
+    let world = root.join("world");
+    let store = root.join("store").to_string_lossy().into_owned();
+    write_region(
+        &world.join("region/r.0.0.mca"),
+        &[(0, 0, build_status_nbt("a")), (1, 0, build_status_nbt("b"))],
+    );
+    write_region(
+        &world.join("region/r.1.0.mca"),
+        &[(32, 0, build_status_nbt("c"))],
+    );
+    write_region(
+        &world.join("entities/r.0.0.mca"),
+        &[(0, 0, build_status_nbt("d"))],
+    );
+
+    sekai_app::backup(&world, &store, options(), Scope::World, |_| {})
+        .await
+        .unwrap();
+
+    // Rectangle over (0,0)-(1,0), region kind only: (32,0) and entities
+    // stay out with no tombstones.
+    let rect = Scope::Select {
+        kinds: vec![RegionKind::REGION],
+        areas: vec![(Dimension::OVERWORLD, Area::Rect(Rect::new(0, 0, 1, 0)))],
+    };
+    let (report, _) = sekai_app::backup(&world, &store, options(), rect, |_| {})
+        .await
+        .unwrap();
+    assert_eq!(report.chunks, 2);
+    assert_eq!(report.tombstones, 0);
+
+    // Kind filter alone: entities across the whole overworld.
+    let entities = Scope::Select {
+        kinds: vec![RegionKind::ENTITIES],
+        areas: vec![(Dimension::OVERWORLD, Area::All)],
+    };
+    let (report, _) = sekai_app::backup(&world, &store, options(), entities, |_| {})
+        .await
+        .unwrap();
+    assert_eq!(report.chunks, 1);
+    assert_eq!(report.tombstones, 0);
+
+    // A following full backup is quiet: nothing spurious was recorded.
+    let (full, _) = sekai_app::backup(&world, &store, options(), Scope::World, |_| {})
+        .await
+        .unwrap();
+    assert_eq!(full.tombstones, 0);
+    assert_eq!(full.new_blobs, 0);
+    cleanup(&root);
 }

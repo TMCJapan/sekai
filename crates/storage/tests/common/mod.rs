@@ -93,7 +93,7 @@ where
             fingerprint: fp1,
         },
     ];
-    let (previous, plan) = plan_backup(&*meta, &observed, Scope::World).await.unwrap();
+    let (previous, plan) = plan_backup(&*meta, &observed, &Scope::World).await.unwrap();
     assert_eq!(plan.carries, vec![key(1, 0)]);
     assert_eq!(plan.ingest, vec![key(0, 0)]);
 
@@ -104,7 +104,7 @@ where
         BTreeSet::from([coord(0, 0)]),
         1,
         vec![changed],
-        Scope::World,
+        &Scope::World,
     );
     let report = commit(meta, &previous, &staged, 2_000).await.unwrap();
     assert_eq!(report.carried_chunks, 1);
@@ -133,7 +133,7 @@ where
     )
     .await
     .unwrap();
-    let (previous, plan) = plan_backup(&*meta, &[], Scope::World).await.unwrap();
+    let (previous, plan) = plan_backup(&*meta, &[], &Scope::World).await.unwrap();
     assert_eq!(plan.removed, vec![key(0, 0)]);
     let staged = assemble(
         plan,
@@ -142,7 +142,7 @@ where
         BTreeSet::new(),
         0,
         Vec::new(),
-        Scope::World,
+        &Scope::World,
     );
     assert_eq!(staged.tombstones, 1);
     let report = commit(meta, &previous, &staged, 2_000).await.unwrap();

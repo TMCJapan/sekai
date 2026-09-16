@@ -18,8 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sekai_core::{
-    BackupReport, ChunkCoord, Observation, OwnedScope, RegionFingerprint, RegionKey, Scope,
-    SnapshotEntry,
+    BackupReport, ChunkCoord, Observation, RegionFingerprint, RegionKey, Scope, SnapshotEntry,
 };
 use sekai_storage::FileCas;
 use sekai_world::RegionRef;
@@ -126,7 +125,7 @@ pub async fn backup(
     world: &Path,
     store_url: &str,
     options: BackupOptions,
-    scope: Scope<'_>,
+    scope: Scope,
     progress: impl Fn(BackupProgress) + Send,
 ) -> Result<(BackupReport, BackupTimings), AppError> {
     let total = Instant::now();
@@ -142,7 +141,7 @@ pub async fn backup(
 
     let universe_started = Instant::now();
     let (previous, plan) =
-        sekai_core::usecase::backup::plan_backup(store.meta(), &observed.observations, scope)
+        sekai_core::usecase::backup::plan_backup(store.meta(), &observed.observations, &scope)
             .await?;
     let universe_load = universe_started.elapsed();
 
@@ -165,7 +164,7 @@ pub async fn backup(
         changed,
         store.cas().root(),
         &options,
-        scope.into(),
+        scope.clone(),
         progress,
     )
     .await?;
@@ -177,7 +176,7 @@ pub async fn backup(
         walk.present.into_iter().collect(),
         walk.new_blobs,
         walk.fingerprints,
-        scope,
+        &scope,
     );
 
     let now_ms = now_ms()?;
@@ -280,7 +279,7 @@ async fn ingest_changed(
     changed: Vec<Changed>,
     cas_root: &Path,
     options: &BackupOptions,
-    scope: OwnedScope,
+    scope: Scope,
     progress: impl Fn(BackupProgress) + Send,
 ) -> Result<RegionWalk, AppError> {
     let mut walk = RegionWalk {
@@ -361,7 +360,7 @@ fn ingest_group(
     cas_root: &Path,
     with_diff: bool,
     ignore_tags: Option<&[String]>,
-    scope: &OwnedScope,
+    scope: &Scope,
 ) -> Result<(Vec<FileOutcome>, Duration), AppError> {
     let mut cas = FileCas::open(cas_root)?;
     let mut outcomes = Vec::with_capacity(group.len());
@@ -390,7 +389,7 @@ fn merge_outcome(walk: &mut RegionWalk, outcome: FileOutcome) {
 
 struct ChunkIngestCtx<'a> {
     region: &'a RegionRef,
-    scope: &'a OwnedScope,
+    scope: &'a Scope,
     cas: &'a mut FileCas,
     scratch: &'a mut Vec<u8>,
     with_diff: bool,
@@ -409,7 +408,7 @@ fn ingest_file(
     cas: &mut FileCas,
     with_diff: bool,
     ignore_tags: Option<&[String]>,
-    scope: &OwnedScope,
+    scope: &Scope,
 ) -> Result<FileOutcome, AppError> {
     let opened = Instant::now();
     let bytes = sekai_world::open_image(&region.path)?;

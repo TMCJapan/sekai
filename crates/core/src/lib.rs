@@ -11,8 +11,8 @@ pub mod usecase;
 
 pub use port::{BlobStore, MetaStore};
 pub use sekai_util::{
-    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, Dimension, GcPlan, HexError,
-    OwnedScope, RegionFingerprint, RegionKey, RegionKind, RegionStateEntry, Scope, Snapshot,
+    ApplyOutcome, Area, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, Dimension, GcPlan,
+    HexError, Rect, RegionFingerprint, RegionKey, RegionKind, RegionStateEntry, Scope, Snapshot,
     SnapshotEntry, SnapshotId,
 };
 

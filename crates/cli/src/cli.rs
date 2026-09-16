@@ -2,7 +2,7 @@
 
 use crate::style::ColorChoice;
 use clap::{Parser, Subcommand};
-use sekai_app::{ChunkCoord, Dimension, OwnedScope, RegionKey, RegionKind};
+use sekai_app::{Area, ChunkCoord, Dimension, Rect, RegionKind, Scope};
 use std::path::PathBuf;
 
 /// Chunk-level deduplicated snapshots for Minecraft region files.
@@ -148,85 +148,200 @@ pub struct DiffArgs {
 
 /// World-portion selection shared by backup, rollback, and diff.
 ///
-/// Exactly one of `--chunk`, `--region`, `--dimension` may be given;
-/// none selects the whole world.
+/// Each `--in` picks one dimension whole, one chunk, or one rectangle;
+/// `--region` is shorthand for a region-aligned rectangle. Entries compose
+/// by union; unlisted dimensions are out. No `--in`/`--region` selects the
+/// whole world. `--kind` applies to every selected area.
 #[derive(Debug, Clone, clap::Args)]
 pub struct Selection {
-    /// Dimension namespace for `--chunk`/`--region`, or the whole
-    /// dimension with `--dimension`.
-    #[arg(long, default_value = "overworld")]
-    pub dim: Dimension,
-    /// Region family for `--chunk`/`--region`.
-    #[arg(long, default_value = "region")]
-    pub kind: RegionKind,
-    /// Chunk `X,Z` in `--dim`/`--kind` (repeatable).
-    #[arg(long, value_name = "X,Z", allow_hyphen_values = true, conflicts_with_all = ["region", "dimension"])]
-    pub chunk: Vec<Xz>,
-    /// Region `RX,RZ` in `--dim`/`--kind`: every known chunk in the file.
-    #[arg(long, value_name = "RX,RZ", allow_hyphen_values = true, conflicts_with_all = ["chunk", "dimension"])]
-    pub region: Option<Xz>,
-    /// Whole `--dim` dimension, all region families.
-    #[arg(long, conflicts_with_all = ["chunk", "region"])]
-    pub dimension: bool,
+    /// Dimension area: `DIM` (whole), `DIM:x,z` (chunk), or
+    /// `DIM:x0,z0..x1,z1` (rectangle, inclusive). Repeatable.
+    #[arg(
+        long = "in",
+        value_name = "DIM[:X,Z|X0,Z0..X1,Z1]",
+        allow_hyphen_values = true
+    )]
+    pub areas: Vec<AreaSpec>,
+    /// Region `DIM:RX,RZ`: every chunk of the file (rectangle sugar).
+    /// Repeatable, additive with `--in`.
+    #[arg(long, value_name = "DIM:RX,RZ", allow_hyphen_values = true)]
+    pub region: Vec<RegionSpec>,
+    /// Region families applied to every selected area. Empty means all.
+    #[arg(long)]
+    pub kind: Vec<RegionKind>,
 }
 
 impl Selection {
-    /// Explicit chunk list in `--dim`/`--kind`.
-    pub fn chunks(&self) -> Vec<ChunkCoord> {
-        self.chunk
+    /// Region kinds covered: explicit set, or all when unlisted.
+    pub fn kinds(&self) -> Vec<RegionKind> {
+        if self.kind.is_empty() {
+            Scope::all_kinds()
+        } else {
+            let mut kinds = self.kind.clone();
+            kinds.sort();
+            kinds.dedup();
+            kinds
+        }
+    }
+
+    /// Explicit chunk coordinates from `--in DIM:x,z`, expanded across
+    /// `--kind` (grouped by dimension upstream of scope building).
+    pub fn explicit_chunks(&self) -> Vec<ChunkCoord> {
+        let kinds = self.kinds();
+        self.areas
             .iter()
-            .map(|xz| ChunkCoord::new(self.dim, self.kind, xz.x, xz.z))
+            .filter_map(|spec| match spec.area {
+                DimArea::Chunk(xz) => Some((spec.dim, xz)),
+                _ => None,
+            })
+            .flat_map(|(dim, xz)| {
+                kinds
+                    .iter()
+                    .map(move |kind| ChunkCoord::new(dim, *kind, xz.x, xz.z))
+            })
             .collect()
     }
 
-    /// Region identity for `--region`, if given.
-    pub fn region_key(&self) -> Option<RegionKey> {
-        self.region
-            .map(|xz| RegionKey::new(self.dim, self.kind, xz.x, xz.z))
+    /// Whether the selection holds whole-dimension or rectangle areas
+    /// (including `--region`), which need coordinate enumeration.
+    pub fn has_broad_areas(&self) -> bool {
+        self.areas
+            .iter()
+            .any(|spec| !matches!(spec.area, DimArea::Chunk(_)))
+            || !self.region.is_empty()
     }
 
-    /// Owned scope for this selection; convert to the borrowed form at
-    /// `app` call sites. Empty means the whole world.
-    pub fn owned_scope(&self) -> OwnedScope {
-        if self.dimension {
-            OwnedScope::Dimension(self.dim)
-        } else if let Some(key) = self.region_key() {
-            OwnedScope::Region(key)
-        } else {
-            let chunks = self.chunks();
-            if chunks.is_empty() {
-                OwnedScope::World
-            } else {
-                OwnedScope::Chunks(chunks)
+    /// Owned scope for this selection. Empty means the whole world.
+    pub fn owned_scope(&self) -> Scope {
+        if self.areas.is_empty() && self.region.is_empty() {
+            return Scope::World;
+        }
+        let kinds = self.kinds();
+        let mut chunks: std::collections::BTreeMap<Dimension, Vec<ChunkCoord>> =
+            std::collections::BTreeMap::new();
+        let mut areas: Vec<(Dimension, Area)> = Vec::new();
+        for spec in &self.areas {
+            match spec.area {
+                DimArea::All => areas.push((spec.dim, Area::All)),
+                DimArea::Rect(rect) => areas.push((spec.dim, Area::Rect(rect))),
+                DimArea::Chunk(xz) => {
+                    for kind in &kinds {
+                        chunks
+                            .entry(spec.dim)
+                            .or_default()
+                            .push(ChunkCoord::new(spec.dim, *kind, xz.x, xz.z));
+                    }
+                }
             }
         }
+        for region in &self.region {
+            areas.push((
+                region.dim,
+                Area::Rect(Rect::region(region.at.x, region.at.z)),
+            ));
+        }
+        for (dim, coords) in chunks {
+            areas.push((dim, Area::Chunks(coords)));
+        }
+        Scope::Select { kinds, areas }
     }
 }
 
-/// `X,Z` coordinate pair for `--chunk` and `--region`.
+/// One `--in` area: whole dimension, single chunk, or rectangle.
+#[derive(Debug, Clone, Copy)]
+pub struct AreaSpec {
+    /// Selected dimension.
+    pub dim: Dimension,
+    /// Whole, chunk, or rectangle within it.
+    pub area: DimArea,
+}
+
+/// Area shape within one dimension.
+#[derive(Debug, Clone, Copy)]
+pub enum DimArea {
+    /// Every chunk of the dimension.
+    All,
+    /// Single chunk.
+    Chunk(Xz),
+    /// Inclusive rectangle.
+    Rect(Rect),
+}
+
+impl std::str::FromStr for AreaSpec {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (dim, rest) = match s.split_once(':') {
+            Some((dim, rest)) => (
+                dim.parse::<Dimension>().map_err(|_| {
+                    format!("invalid dimension {dim:?} in {s:?}, expected DIM[:X,Z|X0,Z0..X1,Z1]")
+                })?,
+                rest,
+            ),
+            None => (
+                s.parse::<Dimension>().map_err(|_| {
+                    format!("invalid dimension {s:?}, expected DIM[:X,Z|X0,Z0..X1,Z1]")
+                })?,
+                "",
+            ),
+        };
+        let area = if rest.is_empty() {
+            DimArea::All
+        } else if let Some((first, second)) = rest.split_once("..") {
+            let from = parse_pair(first, s)?;
+            let to = parse_pair(second, s)?;
+            DimArea::Rect(Rect::new(from.x, from.z, to.x, to.z))
+        } else {
+            DimArea::Chunk(parse_pair(rest, s)?)
+        };
+        Ok(Self { dim, area })
+    }
+}
+
+/// One `--region DIM:RX,RZ` entry.
+#[derive(Debug, Clone, Copy)]
+pub struct RegionSpec {
+    /// Selected dimension.
+    pub dim: Dimension,
+    /// Region coordinates.
+    pub at: Xz,
+}
+
+impl std::str::FromStr for RegionSpec {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (dim, rest) = s
+            .split_once(':')
+            .ok_or_else(|| format!("expected DIM:RX,RZ, got {s:?}"))?;
+        Ok(Self {
+            dim: dim
+                .parse::<Dimension>()
+                .map_err(|_| format!("invalid dimension {dim:?} in {s:?}, expected DIM:RX,RZ"))?,
+            at: parse_pair(rest, s)?,
+        })
+    }
+}
+
+fn parse_pair(s: &str, whole: &str) -> Result<Xz, String> {
+    let (x, z) = s
+        .split_once(',')
+        .ok_or_else(|| format!("expected X,Z in {whole:?}"))?;
+    Ok(Xz {
+        x: x.trim()
+            .parse()
+            .map_err(|_| format!("invalid X coordinate {x:?} in {whole:?}, expected X,Z"))?,
+        z: z.trim()
+            .parse()
+            .map_err(|_| format!("invalid Z coordinate {z:?} in {whole:?}, expected X,Z"))?,
+    })
+}
+
+/// `X,Z` coordinate pair inside `--in` and `--region` specs.
 #[derive(Debug, Clone, Copy)]
 pub struct Xz {
     pub x: i32,
     pub z: i32,
-}
-
-impl std::str::FromStr for Xz {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (x, z) = s
-            .split_once(',')
-            .ok_or_else(|| format!("expected X,Z, got {s:?}"))?;
-        let parse = |part: &str, axis: char| {
-            part.trim()
-                .parse()
-                .map_err(|_| format!("invalid {axis} coordinate {part:?} in {s:?}, expected X,Z"))
-        };
-        Ok(Self {
-            x: parse(x, 'X')?,
-            z: parse(z, 'Z')?,
-        })
-    }
 }
 
 #[derive(Debug, Subcommand)]

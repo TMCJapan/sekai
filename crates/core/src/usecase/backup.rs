@@ -113,7 +113,7 @@ pub struct Assembled {
 pub async fn plan_backup<M: MetaStore>(
     meta: &M,
     observed: &[Observation],
-    scope: Scope<'_>,
+    scope: &Scope,
 ) -> Result<(Previous, Plan), M::Error> {
     let mut universe: BTreeSet<ChunkCoord> = BTreeSet::new();
     let snapshot = meta.latest_snapshot().await?;
@@ -179,7 +179,7 @@ pub fn assemble(
     mut present: BTreeSet<ChunkCoord>,
     new_blobs: usize,
     fingerprints: Vec<RegionFingerprint>,
-    scope: Scope<'_>,
+    scope: &Scope,
 ) -> Assembled {
     if !plan.carries.is_empty() {
         let skipped: BTreeSet<RegionKey> = plan.carries.iter().copied().collect();
@@ -283,7 +283,7 @@ mod tests {
             fingerprint: fingerprint(key(0, 0)),
         }];
         let (previous, plan) =
-            crate::support::block_on(plan_backup(&meta, &observed, Scope::World)).unwrap();
+            crate::support::block_on(plan_backup(&meta, &observed, &Scope::World)).unwrap();
         assert!(previous.snapshot.is_none());
         assert!(previous.universe.is_empty());
         assert!(plan.carries.is_empty());
@@ -321,7 +321,7 @@ mod tests {
             },
         ];
         let (previous, plan) =
-            crate::support::block_on(plan_backup(&meta, &observed, Scope::World)).unwrap();
+            crate::support::block_on(plan_backup(&meta, &observed, &Scope::World)).unwrap();
         assert_eq!(plan.carries, alloc::vec![key(1, 0)]);
         assert_eq!(plan.ingest, alloc::vec![key(0, 0)]);
         assert!(plan.removed.is_empty());
@@ -333,7 +333,7 @@ mod tests {
             BTreeSet::from([coord(0, 0)]),
             1,
             alloc::vec![changed],
-            Scope::World,
+            &Scope::World,
         );
         assert_eq!(staged.chunks, 2);
         assert_eq!(staged.tombstones, 0);
@@ -374,7 +374,7 @@ mod tests {
         assert_eq!(s1, SnapshotId(1));
 
         let (previous, plan) =
-            crate::support::block_on(plan_backup(&meta, &[], Scope::World)).unwrap();
+            crate::support::block_on(plan_backup(&meta, &[], &Scope::World)).unwrap();
         assert_eq!(plan.removed, alloc::vec![key(0, 0)]);
         let staged = assemble(
             plan,
@@ -383,7 +383,7 @@ mod tests {
             BTreeSet::new(),
             0,
             alloc::vec::Vec::new(),
-            Scope::World,
+            &Scope::World,
         );
         assert_eq!(staged.chunks, 0);
         assert_eq!(staged.tombstones, 2);
@@ -424,8 +424,8 @@ mod tests {
             key: nether_key(0, 0),
             fingerprint: fp_nether,
         }];
-        let scope = Scope::Dimension(NETHER);
-        let (_, plan) = crate::support::block_on(plan_backup(&meta, &observed, scope)).unwrap();
+        let scope = Scope::dimension(NETHER);
+        let (_, plan) = crate::support::block_on(plan_backup(&meta, &observed, &scope)).unwrap();
         assert_eq!(plan.carries, alloc::vec![nether_key(0, 0)]);
         assert!(plan.ingest.is_empty());
         assert!(plan.removed.is_empty());
@@ -442,7 +442,7 @@ mod tests {
             },
         ];
         let (_, plan) =
-            crate::support::block_on(plan_backup(&meta, &observed, Scope::World)).unwrap();
+            crate::support::block_on(plan_backup(&meta, &observed, &Scope::World)).unwrap();
         assert_eq!(plan.carries, alloc::vec![key(0, 0), nether_key(0, 0)]);
     }
 
@@ -475,9 +475,9 @@ mod tests {
             key: key(0, 0),
             fingerprint: changed,
         }];
-        let scope = Scope::Dimension(OVER);
+        let scope = Scope::dimension(OVER);
         let (previous, plan) =
-            crate::support::block_on(plan_backup(&meta, &observed, scope)).unwrap();
+            crate::support::block_on(plan_backup(&meta, &observed, &scope)).unwrap();
         assert_eq!(plan.ingest, alloc::vec![key(0, 0)]);
         assert!(plan.removed.is_empty());
         let staged = assemble(
@@ -487,7 +487,7 @@ mod tests {
             BTreeSet::from([coord(0, 0)]),
             1,
             alloc::vec::Vec::new(),
-            scope,
+            &scope,
         );
         assert_eq!(staged.tombstones, 1);
         assert_eq!(staged.chunks, 1);

@@ -1,7 +1,7 @@
 use clap::Parser as _;
 use sekai_app::Dimension;
 use sekai_cli::{
-    cli::{Cli, Command, DebugCommand, DiffArgs, Selection, TimingArgs, Xz},
+    cli::{Cli, Command, DebugCommand, DiffArgs, Selection, TimingArgs},
     style::ColorChoice,
 };
 
@@ -20,35 +20,40 @@ fn parses_subcommands() {
 
 #[test]
 fn parses_diff_command() {
-    let cli =
-        Cli::try_parse_from(["sekai", "diff", "1", "2", "--chunk", "10,-5"]).expect("diff parses");
+    let cli = Cli::try_parse_from(["sekai", "diff", "1", "2", "--in", "overworld:10,-5"])
+        .expect("diff parses");
     assert!(matches!(
         cli.command,
         Command::Diff(DiffArgs {
             world: None,
             old_snapshot: Some(1),
             new_snapshot: Some(2),
-            selection: Selection {
-                region: None,
-                dimension: false,
-                ..
-            },
             output: TimingArgs {
                 timing: false,
                 json: false,
             },
             show_values: false,
+            ..
         })
     ));
     if let Command::Diff(args) = &cli.command {
-        assert_eq!(args.selection.chunks().len(), 1);
-        assert_eq!(args.selection.chunks()[0].x, 10);
+        // Default kinds cover all three families.
+        assert_eq!(args.selection.explicit_chunks().len(), 3);
     } else {
         panic!("expected diff");
     }
 
-    let cli = Cli::try_parse_from(["sekai", "diff", "--world", "world", "--chunk", "10,-5"])
-        .expect("diff with world parses");
+    let cli = Cli::try_parse_from([
+        "sekai",
+        "diff",
+        "--world",
+        "world",
+        "--in",
+        "overworld:10,-5",
+        "--kind",
+        "region",
+    ])
+    .expect("diff with world parses");
     assert!(matches!(
         cli.command,
         Command::Diff(DiffArgs {
@@ -63,9 +68,24 @@ fn parses_diff_command() {
             ..
         })
     ));
+    if let Command::Diff(args) = &cli.command {
+        let chunks = args.selection.explicit_chunks();
+        assert_eq!(chunks.len(), 1);
+        assert_eq!((chunks[0].x, chunks[0].z), (10, -5));
+    } else {
+        panic!("expected diff");
+    }
 
-    let cli = Cli::try_parse_from(["sekai", "diff", "1", "2", "--chunk", "0,0", "--show-values"])
-        .expect("diff --show-values parses");
+    let cli = Cli::try_parse_from([
+        "sekai",
+        "diff",
+        "1",
+        "2",
+        "--in",
+        "overworld:0,0",
+        "--show-values",
+    ])
+    .expect("diff --show-values parses");
     assert!(matches!(
         cli.command,
         Command::Diff(DiffArgs {
@@ -74,107 +94,138 @@ fn parses_diff_command() {
         })
     ));
 
-    let cli = Cli::try_parse_from(["sekai", "diff", "--chunk", "0,0", "--chunk", "1,-1"])
-        .expect("repeated --chunk parses");
+    // Repeated areas compose by union; `--region` is additive, not exclusive.
+    let cli = Cli::try_parse_from([
+        "sekai",
+        "diff",
+        "--in",
+        "overworld:0,0",
+        "--in",
+        "nether",
+        "--region",
+        "overworld:1,0",
+        "--kind",
+        "region",
+    ])
+    .expect("repeated areas parse");
     if let Command::Diff(args) = &cli.command {
-        assert_eq!(args.selection.chunks().len(), 2);
+        assert!(args.selection.has_broad_areas());
+        assert_eq!(args.selection.explicit_chunks().len(), 1);
+        let scope = args.selection.owned_scope();
+        assert!(matches!(scope, sekai_app::Scope::Select { .. }));
     } else {
         panic!("expected diff");
     }
-    let cli = Cli::try_parse_from(["sekai", "diff", "--region", "0,0"]).expect("region parses");
-    assert!(matches!(
-        cli.command,
-        Command::Diff(DiffArgs {
-            selection: Selection {
-                region: Some(_),
-                dimension: false,
-                ..
-            },
-            ..
-        })
-    ));
-    assert!(Cli::try_parse_from(["sekai", "diff", "--region", "0,0", "--dimension"]).is_err());
-    assert!(Cli::try_parse_from(["sekai", "diff", "--chunk", "0,0", "--region", "0,0"]).is_err());
-    assert!(Cli::try_parse_from(["sekai", "diff", "--chunk", "0,0", "--dimension"]).is_err());
-    assert!(Cli::try_parse_from(["sekai", "diff", "--chunk", "bogus"]).is_err());
+
+    // Removed flags fail loudly.
+    assert!(Cli::try_parse_from(["sekai", "diff", "--cx", "0"]).is_err());
+    assert!(Cli::try_parse_from(["sekai", "diff", "--dimension"]).is_err());
+    assert!(Cli::try_parse_from(["sekai", "backup", "w", "--dim", "nether"]).is_err());
+    assert!(Cli::try_parse_from(["sekai", "diff", "--in", "bogus"]).is_err());
+    assert!(Cli::try_parse_from(["sekai", "diff", "--in", "overworld:bogus"]).is_err());
+    assert!(Cli::try_parse_from(["sekai", "diff", "--in", "overworld:1,2,3"]).is_err());
+    assert!(Cli::try_parse_from(["sekai", "diff", "--region", "0,0"]).is_err());
+}
+
+#[test]
+fn parses_area_specs() {
+    use sekai_cli::cli::{AreaSpec, DimArea, RegionSpec};
+
+    let whole: AreaSpec = "nether".parse().expect("whole parses");
+    assert_eq!(whole.dim, Dimension::NETHER);
+    assert!(matches!(whole.area, DimArea::All));
+
+    let chunk: AreaSpec = "overworld:10,-5".parse().expect("chunk parses");
+    assert!(matches!(chunk.area, DimArea::Chunk(_)));
+
+    let rect: AreaSpec = "overworld:31,5..0,-3".parse().expect("rect parses");
+    if let DimArea::Rect(rect) = rect.area {
+        assert_eq!((rect.x0, rect.z0, rect.x1, rect.z1), (0, -3, 31, 5));
+    } else {
+        panic!("expected rect");
+    }
+
+    let region: RegionSpec = "overworld:1,-1".parse().expect("region parses");
+    assert_eq!(region.dim, Dimension::OVERWORLD);
+
+    assert!("overworld:1,2,3".parse::<AreaSpec>().is_err());
+    assert!("overworld:1..2".parse::<AreaSpec>().is_err());
+    assert!("bogus:1,2".parse::<AreaSpec>().is_err());
+    assert!("1,2".parse::<AreaSpec>().is_err());
+    assert!("0,0".parse::<RegionSpec>().is_err());
 }
 
 #[test]
 fn parses_selection_for_backup_and_rollback() {
-    let cli = Cli::try_parse_from(["sekai", "backup", "--dimension", "--dim", "nether", "w"])
-        .expect("backup --dimension parses");
-    assert!(matches!(
-        cli.command,
-        Command::Backup {
-            selection: Selection {
-                dimension: true,
-                dim: Dimension::NETHER,
-                ..
-            },
-            ..
-        }
-    ));
+    let cli = Cli::try_parse_from(["sekai", "backup", "--in", "nether", "w"])
+        .expect("backup --in parses");
+    assert!(matches!(cli.command, Command::Backup { .. }));
+    if let Command::Backup { selection, .. } = &cli.command {
+        assert!(selection.has_broad_areas());
+        assert!(selection.explicit_chunks().is_empty());
+    } else {
+        panic!("expected backup");
+    }
 
-    let cli = Cli::try_parse_from(["sekai", "rollback", "w", "3", "--region", "1,-1"])
+    let cli = Cli::try_parse_from(["sekai", "rollback", "w", "3", "--region", "nether:1,-1"])
         .expect("rollback --region parses");
-    assert!(matches!(
-        cli.command,
-        Command::Rollback {
-            snapshot: 3,
-            selection: Selection {
-                region: Some(_),
-                ..
-            },
-            ..
-        }
-    ));
+    assert!(matches!(cli.command, Command::Rollback { snapshot: 3, .. }));
 
+    // `--in` and `--region` compose; kinds are repeatable.
     assert!(
-        Cli::try_parse_from(["sekai", "backup", "w", "--region", "0,0", "--dimension"]).is_err()
+        Cli::try_parse_from([
+            "sekai",
+            "backup",
+            "w",
+            "--region",
+            "nether:0,0",
+            "--in",
+            "nether"
+        ])
+        .is_ok()
     );
+    let cli = Cli::try_parse_from([
+        "sekai", "backup", "w", "--kind", "region", "--kind", "entities",
+    ])
+    .expect("repeatable --kind parses");
+    if let Command::Backup { selection, .. } = &cli.command {
+        assert_eq!(selection.kinds().len(), 2);
+    } else {
+        panic!("expected backup");
+    }
 }
 
 #[test]
 fn selection_owned_scope_round_trips() {
-    use sekai_app::{OwnedScope, Scope};
-    use sekai_cli::cli::Xz;
+    use sekai_app::Scope;
 
     let base = Selection {
-        dim: Dimension::OVERWORLD,
-        kind: sekai_app::RegionKind::REGION,
-        chunk: Vec::new(),
-        region: None,
-        dimension: false,
+        areas: Vec::new(),
+        region: Vec::new(),
+        kind: Vec::new(),
     };
-    assert_eq!(base.owned_scope(), OwnedScope::World);
+    assert_eq!(base.owned_scope(), Scope::World);
     let dim = Selection {
-        dim: Dimension::NETHER,
-        dimension: true,
+        areas: vec!["nether".parse().unwrap()],
         ..base.clone()
     };
-    assert_eq!(dim.owned_scope(), OwnedScope::Dimension(Dimension::NETHER));
+    let scope = dim.owned_scope();
+    assert!(matches!(scope, Scope::Select { .. }));
     let chunks = Selection {
-        chunk: vec![Xz { x: 1, z: -2 }],
+        areas: vec!["overworld:1,-2".parse().unwrap()],
+        kind: vec![sekai_app::RegionKind::REGION],
         ..base
     };
-    let owned = chunks.owned_scope();
+    let scope = chunks.owned_scope();
     let coord =
         sekai_app::ChunkCoord::new(Dimension::OVERWORLD, sekai_app::RegionKind::REGION, 1, -2);
-    assert!(owned.contains(coord));
-    let borrowed = Scope::from(&owned);
-    assert!(borrowed.contains(coord));
-}
-
-#[test]
-fn parses_xz_pairs() {
-    assert!(matches!(
-        "10,-5".parse::<Xz>().expect("parses"),
-        Xz { x: 10, z: -5 }
-    ));
-    assert!("bogus".parse::<Xz>().is_err());
-    assert!("1".parse::<Xz>().is_err());
-    assert!("1,2,3".parse::<Xz>().is_err());
-    assert!("a,b".parse::<Xz>().is_err());
+    assert!(scope.contains(coord));
+    assert!(!scope.contains(sekai_app::ChunkCoord::new(
+        Dimension::OVERWORLD,
+        sekai_app::RegionKind::REGION,
+        2,
+        -2
+    )));
 }
 
 #[test]
@@ -225,8 +276,15 @@ fn parses_timing_and_debug_scan() {
     let cli = Cli::try_parse_from(["sekai", "list", "--json"]).expect("list --json parses");
     assert!(matches!(cli.command, Command::List { json: true }));
 
-    let cli = Cli::try_parse_from(["sekai", "diff", "--chunk", "0,0", "--timing", "--json"])
-        .expect("diff --timing --json parses");
+    let cli = Cli::try_parse_from([
+        "sekai",
+        "diff",
+        "--in",
+        "overworld:0,0",
+        "--timing",
+        "--json",
+    ])
+    .expect("diff --timing --json parses");
     assert!(matches!(
         cli.command,
         Command::Diff(DiffArgs {
@@ -321,9 +379,10 @@ fn reports_json_mode_per_command() {
     let cli = Cli::try_parse_from(["sekai", "backup", "w"]).expect("parses");
     assert!(!cli.command.output_json());
 
-    let cli = Cli::try_parse_from(["sekai", "diff", "--chunk", "0,0"]).expect("parses");
+    let cli = Cli::try_parse_from(["sekai", "diff", "--in", "overworld:0,0"]).expect("parses");
     assert!(!cli.command.output_json());
 
-    let cli = Cli::try_parse_from(["sekai", "diff", "--chunk", "0,0", "--json"]).expect("parses");
+    let cli =
+        Cli::try_parse_from(["sekai", "diff", "--in", "overworld:0,0", "--json"]).expect("parses");
     assert!(cli.command.output_json());
 }

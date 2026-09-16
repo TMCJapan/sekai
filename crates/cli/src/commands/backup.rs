@@ -27,15 +27,10 @@ pub async fn run(
     out: ReportOut,
 ) -> anyhow::Result<()> {
     let scope = selection.owned_scope();
-    let (report, timings) = sekai_app::backup(
-        world,
-        store,
-        options(with_diff, jobs),
-        (&scope).into(),
-        |_| {},
-    )
-    .await
-    .with_context(|| format!("backup of {} failed", world.display()))?;
+    let (report, timings) =
+        sekai_app::backup(world, store, options(with_diff, jobs), scope, |_| {})
+            .await
+            .with_context(|| format!("backup of {} failed", world.display()))?;
     if out.json {
         println!(
             "{}",

@@ -1,40 +1,44 @@
 //! Diff subcommand execution, DTOs, and coordination.
 
 use anyhow::Context as _;
-use sekai_app::{ChunkCoord, ChunkDiff, RegionKey, SnapshotId};
+use sekai_app::{ChunkCoord, ChunkDiff, Scope, SnapshotId};
 
 use super::diff_render::{
     TimedDiffs, diff_entry_payload, diff_group_payload, print_diff_timing_table,
     render_diff_grouped, render_diff_human,
 };
-use crate::cli::{DiffArgs, Selection};
+use crate::cli::DiffArgs;
 use crate::envelope::envelope_ok;
 use crate::style::Styler;
 
 pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<()> {
     let selection = &args.selection;
-    let explicit = selection.chunks();
+    let scope = selection.owned_scope();
+    let mut coords = selection.explicit_chunks();
+    // Broad areas (whole dimensions, rectangles) and empty selections
+    // resolve through enumeration; explicit chunks join the union.
+    if selection.has_broad_areas() || coords.is_empty() {
+        let mut enumerated = if let Some(world) = &args.world {
+            sekai_app::world_chunk_coords(world)?
+        } else {
+            let (old_id, new_id) =
+                resolve_snapshot_pair(store, args.old_snapshot, args.new_snapshot).await?;
+            let mut union = sekai_app::snapshot_chunk_coords(store, old_id).await?;
+            union.extend(sekai_app::snapshot_chunk_coords(store, new_id).await?);
+            union
+        };
+        coords.append(&mut enumerated);
+    }
+    let coords = scoped_coords(coords, &scope);
 
     let (diffs, timings) = if let Some(world) = &args.world {
         let snapshot_id = args.old_snapshot.or(args.new_snapshot).map(SnapshotId);
-        let coords = if explicit.is_empty() {
-            scoped_coords(sekai_app::world_chunk_coords(world)?, selection)
-        } else {
-            explicit
-        };
         sekai_app::diff_world_chunks(world, store, snapshot_id, &coords, None)
             .await
             .with_context(|| "failed to compute chunk diffs between world state and snapshot")?
     } else {
         let (old_id, new_id) =
             resolve_snapshot_pair(store, args.old_snapshot, args.new_snapshot).await?;
-        let coords = if explicit.is_empty() {
-            let mut union = sekai_app::snapshot_chunk_coords(store, old_id).await?;
-            union.extend(sekai_app::snapshot_chunk_coords(store, new_id).await?);
-            scoped_coords(union, selection)
-        } else {
-            explicit
-        };
         sekai_app::diff_chunks(store, old_id, new_id, &coords, None)
             .await
             .with_context(|| {
@@ -142,12 +146,8 @@ async fn resolve_snapshot_pair(
     }
 }
 
-fn scoped_coords(mut coords: Vec<ChunkCoord>, selection: &Selection) -> Vec<ChunkCoord> {
-    if let Some(key) = selection.region_key() {
-        coords.retain(|coord| RegionKey::of(*coord) == key);
-    } else if selection.dimension {
-        coords.retain(|coord| coord.dim == selection.dim);
-    }
+fn scoped_coords(mut coords: Vec<ChunkCoord>, scope: &Scope) -> Vec<ChunkCoord> {
+    coords.retain(|coord| scope.contains(*coord));
     coords.sort();
     coords.dedup();
     coords

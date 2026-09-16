@@ -561,7 +561,7 @@ mod tests {
                 key,
                 fingerprint: fp,
             }],
-            Scope::World,
+            &Scope::World,
         )
         .await
         .unwrap();
@@ -574,7 +574,7 @@ mod tests {
             BTreeSet::from([coord]),
             0,
             vec![fp],
-            Scope::World,
+            &Scope::World,
         );
         let report = commit(&mut meta, &previous, &staged, 2_000).await.unwrap();
         assert_eq!(report.carried_chunks, 0);
@@ -623,7 +623,7 @@ mod tests {
                     fingerprint: fp(key1),
                 },
             ],
-            Scope::World,
+            &Scope::World,
         )
         .await
         .unwrap();
@@ -634,7 +634,7 @@ mod tests {
             BTreeSet::from([c0]),
             1,
             vec![changed],
-            Scope::World,
+            &Scope::World,
         );
         let report = commit(&mut meta, &previous, &staged, 2_000).await.unwrap();
         assert_eq!(report.carried_chunks, 1);

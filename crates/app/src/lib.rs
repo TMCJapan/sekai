@@ -20,9 +20,9 @@ pub use error::AppError;
 pub use gc::{GcTimings, gc, gc_apply, gc_plan};
 pub use rollback::{RollbackTimings, rollback};
 pub use sekai_core::{
-    BackupReport, BlobHash, ChunkCoord, DEFAULT_IGNORED, Dimension, GcPlan, GcReport, NbtChange,
-    NbtDiffEntry, NbtValue, OwnedScope, RegionKey, RegionKind, RollbackReport, Scope, Snapshot,
-    SnapshotId,
+    Area, BackupReport, BlobHash, ChunkCoord, DEFAULT_IGNORED, Dimension, GcPlan, GcReport,
+    NbtChange, NbtDiffEntry, NbtValue, Rect, RegionKey, RegionKind, RollbackReport, Scope,
+    Snapshot, SnapshotId,
 };
 pub use sekai_world::{RegionScanEntry, ScanTimings};
 

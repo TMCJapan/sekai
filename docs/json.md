@@ -17,7 +17,7 @@ carries the bare result only.
 | `backup` | report (+timings with `--timing`) | table + JSON block | regions list is timing detail, JSON-only |
 | `rollback` | report (+timings with `--timing`) | table + JSON block | |
 | `list` | snapshot array | n/a | no phases exist |
-| `diff` | single array, grouped array (multi), or timed object | table + JSON block | `--chunk`/`--region`/`--dimension` select chunks; one chunk keeps the single shape |
+| `diff` | single array, grouped array (multi), or timed object | table + JSON block | `--in`/`--region` select chunks; one chunk keeps the single shape |
 | `gc` | report or dry-run plan (+timings with `--timing`, non-dry-run only) | table + JSON block | dry-run has no phase timings |
 | `debug scan` | entry array (+timings with `--timing`) | table + JSON block | |
 
@@ -104,7 +104,7 @@ Timestamps are raw Unix millis (RFC 3339 rendering stays human-only).
 
 ### `diff`
 
-Single chunk (`--chunk X,Z` once):
+Single chunk (one `--in DIM:x,z` selection):
 
 ```jsonc
 [
@@ -114,9 +114,10 @@ Single chunk (`--chunk X,Z` once):
 ]
 ```
 
-Several chunks (`--chunk` repeated, `--region`, `--dimension`, or no
+Several chunks (repeated `--in`, `--region`, or no
 selection for the whole world) group entries per coordinate, omitting
-chunks without differences:
+chunks without differences. Rectangle selections expand fully with no
+size cap: a huge rectangle enumerates every chunk inside it.
 
 ```jsonc
 [

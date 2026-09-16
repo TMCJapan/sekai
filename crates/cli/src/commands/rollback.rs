@@ -19,7 +19,7 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let id = SnapshotId(snapshot);
     let scope = selection.owned_scope();
-    let (report, timings) = sekai_app::rollback(world, store, id, (&scope).into())
+    let (report, timings) = sekai_app::rollback(world, store, id, scope)
         .await
         .with_context(|| {
             format!(

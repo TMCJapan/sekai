@@ -21,5 +21,5 @@ pub use hash::{BlobHash, DiffHash};
 pub use history::ChunkHistoryEntry;
 pub use region::{ApplyOutcome, RegionFingerprint, RegionKey, RegionStateEntry, SnapshotEntry};
 pub use region_kind::RegionKind;
-pub use scope::{OwnedScope, Scope};
+pub use scope::{Area, Rect, Scope};
 pub use snapshot::{Snapshot, SnapshotId};
