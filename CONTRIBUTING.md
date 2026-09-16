@@ -193,11 +193,17 @@ cargo build -p sekai-cli --release
 ## Testing Standards
 
 * **Unit Tests**: Place in `src/` alongside the code. Ensure coverage for edge cases (corrupted headers, unexpected NBT structures, zero-length chunks).
-* **Integration Tests**: Place in `tests/` directories within crates. Test atomic operations (e.g., MCA writes, rollbacks) using synthetic binary fixtures. Crash-order tests (torn backup leaves orphans, never dangling references) are mandatory for `app`/`world`/`storage` changes.
+* **Integration Tests**: Place in `tests/` directories within crates. Test atomic operations (e.g., MCA writes, rollbacks) using synthetic binary fixtures. The `test-world/` corpus (small real-data region files, see its README for provenance) is the exception: copy it into a temp dir first, never mutate it in place. Crash-order tests (torn backup leaves orphans, never dangling references) are mandatory for `app`/`world`/`storage` changes.
 * **Backend tests**: the `sqlite` module must cover the version gate
   (`UnsupportedSchema`), the incremental-carry path, and derived-state
   wipe recovery. Future backend modules must run the same suite via the
   shared `api` conformance tests.
+* **Benchmarks**: micro benches live beside their crates (`cargo bench -p
+  sekai-anvil -p sekai-nbt -p sekai-core`); integration flows in
+  `crates/app/benches` (seeded worlds from `benches/common.rs`, `cargo
+  bench -p sekai-app --bench backup`). Record new baselines in
+  `docs/benchmarks.md` when a `perf` change lands. The `bench.yaml`
+  workflow runs on schedule only, never as a merge gate.
 
 ## Collaboration Workflow
 
