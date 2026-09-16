@@ -46,17 +46,21 @@ pub async fn diff_blobs(
 }
 
 /// Fetch raw (still compressed) chunk payload directly from a world directory.
-fn read_world_chunk_compressed(world: &Path, coord: &ChunkCoord) -> Result<Vec<u8>, AppError> {
+/// Returns `None` when the region file or chunk entry is absent; corrupt
+/// files still fail loudly.
+fn read_world_chunk_compressed(
+    world: &Path,
+    coord: &ChunkCoord,
+) -> Result<Option<Vec<u8>>, AppError> {
     let rx = coord.region_x();
     let rz = coord.region_z();
 
     let regions = sekai_world::discover(world)?;
-    let region_ref = regions
-        .into_iter()
-        .find(|r| {
-            r.dim == coord.dim && r.kind == coord.kind && r.region_x == rx && r.region_z == rz
-        })
-        .ok_or(AppError::ChunkNotFoundInWorld { coord: *coord })?;
+    let Some(region_ref) = regions.into_iter().find(|r| {
+        r.dim == coord.dim && r.kind == coord.kind && r.region_x == rx && r.region_z == rz
+    }) else {
+        return Ok(None);
+    };
 
     let bytes = sekai_world::open_image(&region_ref.path)?;
     let failed = |source| AppError::RegionFailed {
@@ -66,8 +70,7 @@ fn read_world_chunk_compressed(world: &Path, coord: &ChunkCoord) -> Result<Vec<u
     let image = sekai_anvil::RegionImage::from_bytes(bytes, rx, rz).map_err(&failed)?;
 
     let payload = image.chunk_payload(coord.x, coord.z).map_err(&failed)?;
-    let compressed = payload.ok_or(AppError::ChunkNotFoundInWorld { coord: *coord })?;
-    Ok(compressed.to_vec())
+    Ok(payload.map(<[u8]>::to_vec))
 }
 
 /// Decompress one raw chunk payload into NBT bytes.
@@ -104,8 +107,9 @@ pub struct ChunkDiff {
 /// Compute AST diffs for explicit chunk coordinates.
 ///
 /// Compares two snapshots in `store_url`, additionally returning
-/// per-phase timings. Coordinates unknown to either snapshot resolve
-/// through fallback; tombstoned sides error like the single-chunk API.
+/// per-phase timings. A chunk absent (or tombstoned) on a side diffs as an
+/// empty compound there: absent on both sides yields no entries, present on
+/// one side reports whole-value Added/Removed entries.
 pub async fn diff_chunks(
     store_url: &str,
     old_snapshot: SnapshotId,
@@ -124,8 +128,8 @@ pub async fn diff_chunks(
         let new_compressed = snapshot_chunk_compressed(&store, new_snapshot, coord).await?;
         timings.blob_fetch += started.elapsed();
         let started = Instant::now();
-        let old_nbt = decompress_chunk(&old_compressed)?;
-        let new_nbt = decompress_chunk(&new_compressed)?;
+        let old_nbt = decompress_or_empty(old_compressed)?;
+        let new_nbt = decompress_or_empty(new_compressed)?;
         timings.decompress += started.elapsed();
         let started = Instant::now();
         let entries = diff_nbt(&old_nbt, &new_nbt, ignore_set)?;
@@ -180,25 +184,32 @@ pub fn world_chunk_coords(world: &Path) -> Result<Vec<ChunkCoord>, AppError> {
 }
 
 /// Fetch raw (still compressed) chunk payload for a snapshot from an open store.
+/// Returns `None` when the chunk is unknown there or tombstoned; a present
+/// blob missing from CAS still fails as corruption.
 async fn snapshot_chunk_compressed(
     store: &sekai_storage::SqliteStore,
     snapshot_id: SnapshotId,
     coord: &ChunkCoord,
-) -> Result<Vec<u8>, AppError> {
-    let missing = || AppError::ChunkNotFoundInSnapshot {
-        snapshot_id,
-        coord: *coord,
+) -> Result<Option<Vec<u8>>, AppError> {
+    let Some(entry) = store.meta().lookup_chunk(snapshot_id, coord).await? else {
+        return Ok(None);
     };
-    let entry = store
-        .meta()
-        .lookup_chunk(snapshot_id, coord)
-        .await?
-        .ok_or_else(missing)?;
-    let hash = entry.blob.ok_or_else(missing)?;
+    let Some(hash) = entry.blob else {
+        return Ok(None);
+    };
 
     let mut compressed = Vec::new();
     store.cas().fetch_blob(&hash, &mut compressed)?;
-    Ok(compressed)
+    Ok(Some(compressed))
+}
+
+/// Empty root compound: the NBT a missing chunk diffs as. Absent on both
+/// sides yields no entries; present on one side reports whole-value
+/// Added/Removed entries for every leaf.
+const EMPTY_COMPOUND: [u8; 4] = [10, 0, 0, 0];
+
+fn decompress_or_empty(compressed: Option<Vec<u8>>) -> Result<Vec<u8>, AppError> {
+    compressed.map_or_else(|| Ok(EMPTY_COMPOUND.to_vec()), |c| decompress_chunk(&c))
 }
 
 /// Compute AST diff for a chunk coordinate between current world state and a snapshot in `store_url`.
@@ -249,8 +260,8 @@ pub async fn diff_world_chunks(
         let world_compressed = read_world_chunk_compressed(world, coord)?;
         timings.blob_fetch += started.elapsed();
         let started = Instant::now();
-        let snapshot_nbt = decompress_chunk(&snapshot_compressed)?;
-        let world_nbt = decompress_chunk(&world_compressed)?;
+        let snapshot_nbt = decompress_or_empty(snapshot_compressed)?;
+        let world_nbt = decompress_or_empty(world_compressed)?;
         timings.decompress += started.elapsed();
         let started = Instant::now();
         let entries = diff_nbt(&snapshot_nbt, &world_nbt, ignore_set)?;

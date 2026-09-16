@@ -35,15 +35,6 @@ pub enum AppError {
     /// Snapshot operation failed.
     #[error("{0}")]
     Snapshot(sekai_core::usecase::snapshot::SnapshotError<sekai_storage::StorageError>),
-    /// Chunk was not found in the specified snapshot.
-    #[error("chunk {coord:?} not found in snapshot {snapshot_id:?}")]
-    ChunkNotFoundInSnapshot {
-        snapshot_id: sekai_core::SnapshotId,
-        coord: sekai_core::ChunkCoord,
-    },
-    /// Chunk was not found in the world filesystem.
-    #[error("chunk {coord:?} not found in world")]
-    ChunkNotFoundInWorld { coord: sekai_core::ChunkCoord },
     /// No snapshots exist in the store.
     #[error("no snapshots found in store")]
     NoSnapshots,

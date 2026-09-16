@@ -131,6 +131,12 @@ chunks without differences:
 `--show-values` truncation does not apply here). `coord` uses raw
 integer `dim`/`kind` codes, matching `scan`.
 
+A chunk absent (or tombstoned) on a side diffs as an empty compound
+there: absent on both sides yields no entries, present on one side
+reports whole-value `added`/`removed` entries for every leaf. Missing
+coordinates are never errors (sparse `entities`/`poi` diff empty);
+only corrupt payloads and missing blobs fail loudly.
+
 With `--timing` the array moves under `diffs` and the timing block is
 appended (single and grouped alike):
 

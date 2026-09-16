@@ -83,6 +83,8 @@ async fn backup_list_rollback_round_trip() {
     assert_eq!(snapshots.len(), 1);
 
     // Change one chunk, add nothing: the untouched file carries over.
+    // (Tick separation as below: same-size rewrite, millisecond mtime.)
+    std::thread::sleep(std::time::Duration::from_millis(5));
     write_region(
         &region,
         &[(0, 0, vec![3, 9, 9, 9]), (1, 0, vec![3, 4, 5, 6])],
@@ -461,6 +463,9 @@ async fn diff_chunk_between_snapshots() {
         .await
         .unwrap();
 
+    // Same millisecond-tick hazard as below: separate ticks so the
+    // same-size rewrite is observed instead of carried.
+    std::thread::sleep(std::time::Duration::from_millis(5));
     write_region(&region, &[(0, 0, build_nbt("minecraft:empty"))]);
     sekai_app::backup(&world, &store, options(), sekai_app::Scope::World, |_| {})
         .await
@@ -578,4 +583,152 @@ async fn corrupt_region_names_its_file() {
         "error names the file: {message}"
     );
     cleanup(&root);
+}
+
+fn build_status_nbt(status: &str) -> Vec<u8> {
+    let mut nbt = vec![10, 0, 0, 8, 0, 6]; // TAG_Compound(""), TAG_String("Status")
+    nbt.extend_from_slice(b"Status");
+    let len = u16::try_from(status.len()).unwrap();
+    nbt.extend_from_slice(&len.to_be_bytes());
+    nbt.extend_from_slice(status.as_bytes());
+    nbt.push(0); // TAG_End
+
+    let mut payload = vec![3]; // Uncompressed header byte
+    payload.extend(nbt);
+    payload
+}
+
+fn kind_dir(kind: sekai_app::RegionKind) -> &'static str {
+    if kind == sekai_app::RegionKind::ENTITIES {
+        "entities"
+    } else if kind == sekai_app::RegionKind::POI {
+        "poi"
+    } else {
+        "region"
+    }
+}
+
+#[tokio::test]
+async fn sparse_entities_chunk_diffs_empty_without_error() {
+    use sekai_app::{ChunkCoord, Dimension, RegionKind};
+    let root = tempdir("sparse-entities");
+    let world = root.join("world");
+    let store = root.join("store").to_string_lossy().into_owned();
+    // Dense terrain only; no entities/poi files at all.
+    write_region(
+        &world.join("region/r.0.0.mca"),
+        &[(0, 0, build_status_nbt("minecraft:full"))],
+    );
+
+    sekai_app::backup(&world, &store, options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+    let snapshots = sekai_app::list_snapshots(&store).await.unwrap();
+
+    // The sparse kinds have no (0,0): previously a loud error, now empty.
+    for kind in [RegionKind::ENTITIES, RegionKind::POI] {
+        let coord = ChunkCoord::new(Dimension::OVERWORLD, kind, 0, 0);
+        let diffs = sekai_app::diff_chunk(&store, snapshots[0].id, snapshots[0].id, &coord, None)
+            .await
+            .unwrap();
+        assert!(diffs.is_empty());
+        let world_diffs = sekai_app::diff_world_chunk(&world, &store, None, &coord, None)
+            .await
+            .unwrap();
+        assert!(world_diffs.is_empty());
+    }
+    cleanup(&root);
+}
+
+#[tokio::test]
+async fn created_and_deleted_chunks_diff_as_added_removed() {
+    use sekai_app::{ChunkCoord, Dimension, RegionKind};
+    let root = tempdir("created-deleted");
+    let world = root.join("world");
+    let store = root.join("store").to_string_lossy().into_owned();
+    let entities = world.join("entities/r.0.0.mca");
+    let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::ENTITIES, 0, 0);
+
+    // S1: no entities chunk.
+    write_region(
+        &world.join("region/r.0.0.mca"),
+        &[(0, 0, build_status_nbt("minecraft:full"))],
+    );
+    sekai_app::backup(&world, &store, options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+
+    // S2: entities chunk appears.
+    write_region(&entities, &[(0, 0, build_status_nbt("minecraft:full"))]);
+    sekai_app::backup(&world, &store, options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+    let snapshots = sekai_app::list_snapshots(&store).await.unwrap();
+
+    let diffs = sekai_app::diff_chunk(&store, snapshots[0].id, snapshots[1].id, &coord, None)
+        .await
+        .unwrap();
+    assert!(!diffs.is_empty());
+    assert!(
+        diffs
+            .iter()
+            .all(|entry| matches!(entry.change, sekai_core::NbtChange::Added(_)))
+    );
+
+    // S3: entities chunk vanishes again.
+    std::fs::remove_file(&entities).unwrap();
+    sekai_app::backup(&world, &store, options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+    let snapshots = sekai_app::list_snapshots(&store).await.unwrap();
+    let diffs = sekai_app::diff_chunk(&store, snapshots[1].id, snapshots[2].id, &coord, None)
+        .await
+        .unwrap();
+    assert!(!diffs.is_empty());
+    assert!(
+        diffs
+            .iter()
+            .all(|entry| matches!(entry.change, sekai_core::NbtChange::Removed(_)))
+    );
+    cleanup(&root);
+}
+
+#[tokio::test]
+async fn all_kinds_round_trip() {
+    use sekai_app::{ChunkCoord, Dimension, RegionKind};
+    for kind in [RegionKind::REGION, RegionKind::ENTITIES, RegionKind::POI] {
+        let root = tempdir(&format!("kind-{}", kind_dir(kind)));
+        let world = root.join("world");
+        let store = root.join("store").to_string_lossy().into_owned();
+        let file = world.join(format!("{}/r.0.0.mca", kind_dir(kind)));
+        let coord = ChunkCoord::new(Dimension::OVERWORLD, kind, 0, 0);
+
+        write_region(&file, &[(0, 0, build_status_nbt("minecraft:full"))]);
+        sekai_app::backup(&world, &store, options(), sekai_app::Scope::World, |_| {})
+            .await
+            .unwrap();
+
+        // Fingerprints compare mtime at millisecond resolution; tiny worlds
+        // back up within one tick, and same-size/same-header files would
+        // wrongly carry. Separate the ticks so the rewrite is observed.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        write_region(&file, &[(0, 0, build_status_nbt("minecraft:empty"))]);
+        sekai_app::backup(&world, &store, options(), sekai_app::Scope::World, |_| {})
+            .await
+            .unwrap();
+        let snapshots = sekai_app::list_snapshots(&store).await.unwrap();
+
+        let diffs = sekai_app::diff_chunk(&store, snapshots[0].id, snapshots[1].id, &coord, None)
+            .await
+            .unwrap();
+        assert_eq!(diffs.len(), 1, "kind {}", kind_dir(kind));
+        assert_eq!(diffs[0].path, "Status");
+
+        let (rolled, _) =
+            sekai_app::rollback(&world, &store, snapshots[0].id, sekai_app::Scope::World)
+                .await
+                .unwrap();
+        assert_eq!(rolled.chunks_restored, 1);
+        cleanup(&root);
+    }
 }
