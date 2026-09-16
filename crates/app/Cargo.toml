@@ -22,5 +22,13 @@ sekai-world.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 
+[[bench]]
+name = "backup"
+harness = false
+
+[dev-dependencies]
+criterion.workspace = true
+miniz_oxide.workspace = true
+
 [package.metadata.cargo-machete]
 ignored = ["sekai-core", "sekai-storage", "sekai-world"]

@@ -51,6 +51,25 @@ fn read_coords(path: &Path) -> Vec<(i32, i32)> {
     coords
 }
 
+/// Chunk payloads keyed by coordinate, for comparing rebuilt files
+/// (rollback rewrites layout, so raw bytes differ).
+type ChunkMap = std::collections::BTreeMap<(i32, i32), Vec<u8>>;
+
+fn chunk_map(path: &Path) -> ChunkMap {
+    let name = path.file_name().unwrap().to_str().unwrap();
+    let (rx, rz) = sekai_anvil::parse_region_name(name).unwrap();
+    let bytes = std::fs::read(path).unwrap();
+    let image = sekai_anvil::RegionImage::from_bytes(bytes, rx, rz).unwrap();
+    let mut map = ChunkMap::new();
+    image
+        .visit_chunks(|chunk| {
+            map.insert((chunk.x, chunk.z), chunk.payload.to_vec());
+            true
+        })
+        .unwrap();
+    map
+}
+
 fn options() -> BackupOptions {
     BackupOptions {
         concurrency: 2,
@@ -785,5 +804,78 @@ async fn rect_and_kind_scopes_limit_ingest() {
         .unwrap();
     assert_eq!(full.tombstones, 0);
     assert_eq!(full.new_blobs, 0);
+    cleanup(&root);
+}
+
+fn corpus_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("test-world")
+}
+
+fn copy_dir(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).unwrap();
+    for entry in std::fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let target = dst.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), &target).unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+async fn real_world_corpus_round_trip() {
+    use sekai_app::RegionKind;
+    const REAL_WORLD_CHUNKS_COUNT: usize = 1024 + 151 + 14;
+
+    let root = tempdir("corpus");
+    let world = root.join("world");
+    copy_dir(&corpus_path(), &world);
+    let store = root.join("store").to_string_lossy().into_owned();
+
+    let (report, _) = sekai_app::backup(&world, &store, options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+    assert_eq!(report.chunks, 1024 + 151 + 14);
+    assert_eq!(report.tombstones, 0);
+
+    // Real NBT in every kind decodes: self-diffs are empty, not errors.
+    let snapshots = sekai_app::list_snapshots(&store).await.unwrap();
+    for kind in [RegionKind::REGION, RegionKind::ENTITIES, RegionKind::POI] {
+        let coords = sekai_app::world_chunk_coords(&world)
+            .unwrap()
+            .into_iter()
+            .filter(|coord| coord.kind == kind)
+            .collect::<Vec<_>>();
+        assert!(!coords.is_empty(), "kind {kind:?} has chunks");
+        let (diffs, _) =
+            sekai_app::diff_chunks(&store, snapshots[0].id, snapshots[0].id, &coords, None)
+                .await
+                .unwrap();
+        assert!(diffs.iter().all(|diff| diff.entries.is_empty()));
+    }
+
+    // Rollback restores chunk contents (rebuilt files differ in layout,
+    // so compare payloads, not raw bytes).
+    let before: Vec<(PathBuf, ChunkMap)> = ["region", "entities", "poi"]
+        .iter()
+        .flat_map(|kind| std::fs::read_dir(world.join(kind)).unwrap())
+        .map(|entry| {
+            let path = entry.unwrap().path();
+            let chunks = chunk_map(&path);
+            (path, chunks)
+        })
+        .collect();
+    let (rolled, _) = sekai_app::rollback(&world, &store, snapshots[0].id, sekai_app::Scope::World)
+        .await
+        .unwrap();
+    assert_eq!(rolled.chunks_restored, REAL_WORLD_CHUNKS_COUNT);
+    for (path, chunks) in &before {
+        assert_eq!(&chunk_map(path), chunks, "{path:?} restored");
+    }
     cleanup(&root);
 }

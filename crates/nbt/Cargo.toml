@@ -10,3 +10,10 @@ workspace = true
 [dependencies]
 blake3.workspace = true
 sekai-util.workspace = true
+
+[[bench]]
+name = "nbt"
+harness = false
+
+[dev-dependencies]
+criterion.workspace = true
