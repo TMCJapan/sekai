@@ -1,0 +1,1 @@
+test-world/*/*.mca filter=lfs diff=lfs merge=lfs -text
