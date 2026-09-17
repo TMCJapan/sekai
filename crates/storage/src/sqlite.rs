@@ -403,6 +403,29 @@ impl sekai_core::MetaStore for SqliteMeta {
         Ok(())
     }
 
+    async fn visit_fresh_rows<F>(
+        &self,
+        snapshot: SnapshotId,
+        mut visit: F,
+    ) -> Result<(), StorageError>
+    where
+        F: FnMut(&ChunkHistoryEntry) -> bool + Send,
+    {
+        let rows = sqlx::query(
+            "SELECT snapshot_id, dim, kind, cx, cz, blob, diff FROM chunk_history
+             WHERE snapshot_id = ?",
+        )
+        .bind(snap_param(snapshot)?)
+        .fetch_all(&self.pool)
+        .await?;
+        for row in &rows {
+            if !visit(&decode_history(row)?) {
+                break;
+            }
+        }
+        Ok(())
+    }
+
     async fn apply_snapshot_incremental(
         &mut self,
         created_at_ms: u64,

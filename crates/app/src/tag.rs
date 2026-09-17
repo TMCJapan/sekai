@@ -65,3 +65,14 @@ pub async fn resolve_snapshot_ref(store_url: &str, raw: &str) -> Result<Snapshot
         .await
         .map_err(AppError::SnapshotRef)
 }
+
+/// Count fresh and effective rows for one snapshot.
+pub async fn snapshot_stats(
+    store_url: &str,
+    snapshot: SnapshotId,
+) -> Result<sekai_core::SnapshotStats, AppError> {
+    let store = super::open_store(store_url).await?;
+    sekai_core::usecase::snapshot::snapshot_stats(store.meta(), snapshot)
+        .await
+        .map_err(AppError::Snapshot)
+}

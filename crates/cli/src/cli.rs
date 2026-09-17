@@ -91,6 +91,9 @@ pub enum Command {
         /// See docs/json.md.
         #[arg(long)]
         json: bool,
+        /// Include per-snapshot change statistics.
+        #[arg(long)]
+        stat: bool,
     },
     /// Rebuild a snapshot into a fresh directory (never touches the live world).
     Export {
@@ -184,7 +187,7 @@ impl Command {
             | Self::Rollback { output, .. }
             | Self::Export { output, .. }
             | Self::Gc { output, .. } => output.json,
-            Self::List { json } | Self::Tag { json, .. } => *json,
+            Self::List { json, .. } | Self::Tag { json, .. } => *json,
             Self::Diff(args) => args.output.json,
             Self::Debug { debug } => match debug {
                 DebugCommand::Scan { output, .. } => output.json,

@@ -151,6 +151,22 @@ impl MetaStore for MemMeta {
         core::future::ready(Ok(()))
     }
 
+    fn visit_fresh_rows<F>(
+        &self,
+        snapshot: SnapshotId,
+        mut visit: F,
+    ) -> impl Future<Output = Result<(), MemError>> + Send
+    where
+        F: FnMut(&ChunkHistoryEntry) -> bool + Send,
+    {
+        for row in self.rows.iter().filter(|row| row.snapshot == snapshot) {
+            if !visit(row) {
+                break;
+            }
+        }
+        core::future::ready(Ok(()))
+    }
+
     fn load_region_states(
         &self,
     ) -> impl Future<Output = Result<Vec<RegionStateEntry>, MemError>> + Send {

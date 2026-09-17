@@ -473,7 +473,16 @@ fn parses_timing_and_debug_scan() {
     );
 
     let cli = Cli::try_parse_from(["sekai", "list", "--json"]).expect("list --json parses");
-    assert!(matches!(cli.command, Command::List { json: true }));
+    assert!(matches!(cli.command, Command::List { json: true, .. }));
+
+    let cli = Cli::try_parse_from(["sekai", "list", "--stat"]).expect("list --stat parses");
+    assert!(matches!(
+        cli.command,
+        Command::List {
+            json: false,
+            stat: true
+        }
+    ));
 
     let cli = Cli::try_parse_from([
         "sekai",

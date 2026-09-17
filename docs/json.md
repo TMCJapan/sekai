@@ -16,7 +16,7 @@ carries the bare result only.
 |---|---|---|---|
 | `backup` | report (+timings with `--timing`) | table + JSON block | regions list is timing detail, JSON-only |
 | `rollback` | report (+timings with `--timing`) | table + JSON block | |
-| `list` | snapshot array | n/a | no phases exist |
+| `list` | snapshot array (+stats with `--stat`) | n/a | no phases exist |
 | `export` | report (+timings with `--timing`) | table + JSON block | |
 | `tag` | record, deletion record, or tag array | n/a | no phases exist |
 | `diff` | single array, grouped array (multi), or timed object | table + JSON block | `--in`/`--region` select chunks; one chunk keeps the single shape |
@@ -122,6 +122,16 @@ The `total_ms`/`phases` block appears only with `--timing`.
 
 Timestamps are raw Unix millis (RFC 3339 rendering stays human-only).
 `tags` names the tags pointing at each snapshot, in name order.
+
+With `--stat`, per-snapshot change statistics are appended in place:
+
+```jsonc
+[{"id": 1, "created_at_ms": 1700000000000, "tags": [], "fresh_chunks": 2, "fresh_tombstones": 0, "new_blobs": 1, "effective_chunks": 2}]
+```
+
+`fresh_chunks`/`fresh_tombstones` count rows introduced at the
+snapshot, `new_blobs` their distinct blobs, and `effective_chunks` the
+live chunks after fallback.
 
 ### `tag`
 
