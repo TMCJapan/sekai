@@ -22,12 +22,13 @@ carries the bare result only.
 | `tag` | record, deletion record, or tag array | n/a | no phases exist |
 | `diff` | single array, grouped array (multi), or timed object | table + JSON block | `--in`/`--region` select chunks; one chunk keeps the single shape |
 | `gc` | report or dry-run plan (+timings with `--timing`) | table + JSON block | dry-run timings carry `plan_ms`; `apply_ms` is `0` |
+| `prune` | report or dry-run plan (+timings with `--timing`) | table + JSON block | dry-run lists IDs; blobs are never unlinked, run `gc` after |
 | `debug scan` | entry array (+timings with `--timing`) | table + JSON block | |
 
 Without `--timing`, `--json` emits the bare result. With `--timing`,
 reports that would be bare arrays (`diff`, `scan`) are promoted to an
 object holding the array (`diffs`/`entries`) plus the timing block;
-object reports (backup/status/rollback/export/gc) append the block in place.
+object reports (backup/status/rollback/export/gc/prune) append the block in place.
 
 ## Envelope
 
@@ -40,7 +41,7 @@ Every invocation prints exactly one JSON object to stdout:
 {"command": "<name>", "status": "error", "error": "<full context chain>"}
 ```
 
-`command` is one of `backup`, `status`, `rollback`, `list`, `export`, `tag`, `diff`, `gc`, `scan`.
+`command` is one of `backup`, `status`, `rollback`, `list`, `export`, `tag`, `prune`, `diff`, `gc`, `scan`.
 The error string is the full anyhow context chain (outermost message
 first, then `Caused by:` lines), JSON-escaped.
 
@@ -249,6 +250,30 @@ always `0`: dry-run never unlinks):
 ```
 
 Note: dry-run reports the orphan *count*, never the hashes.
+
+### `prune`
+
+```jsonc
+{
+  "pruned": 2, "rows_folded": 5, "rows_dropped": 3, "total_ms": 30,
+  "phases": {"plan_ms": 20, "apply_ms": 8}
+}
+```
+
+The `total_ms`/`phases` block appears only with `--timing`.
+
+Dry-run (`prune --dry-run --json`) lists snapshot IDs instead;
+`--timing` appends the plan timing block (`apply_ms` is always `0`):
+
+```jsonc
+{
+  "delete": [1, 2], "retained": [3, 4], "total_ms": 20,
+  "phases": {"plan_ms": 20, "apply_ms": 0}
+}
+```
+
+Pruning never unlinks blobs: dereferenced payloads stay in CAS until
+the next `gc`.
 
 ### `scan` (`debug scan`)
 

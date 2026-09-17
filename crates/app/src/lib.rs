@@ -10,6 +10,7 @@ mod diff;
 mod error;
 mod export;
 mod gc;
+mod prune;
 mod rollback;
 mod tag;
 
@@ -24,14 +25,15 @@ pub use diff::{
 pub use error::AppError;
 pub use export::{ExportOptions, ExportProgress, ExportReport, ExportTimings, export};
 pub use gc::{GcProgress, GcTimings, gc, gc_apply, gc_plan};
+pub use prune::{PruneProgress, PruneTimings, prune, prune_apply, prune_plan};
 pub use rollback::{
     MissingBlobPolicy, MissingFilePolicy, RollbackOptions, RollbackProgress, RollbackTimings,
     rollback,
 };
 pub use sekai_core::{
     Area, BackupReport, BlobHash, ChunkCoord, DEFAULT_IGNORED, Dimension, GcPlan, GcReport,
-    NbtChange, NbtDiffEntry, NbtValue, Rect, RegionKey, RegionKind, RollbackReport, Scope,
-    Snapshot, SnapshotId, SnapshotStats, SnapshotTag, TagName,
+    NbtChange, NbtDiffEntry, NbtValue, PrunePlan, PruneReport, Rect, RegionKey, RegionKind,
+    RollbackReport, Scope, Snapshot, SnapshotId, SnapshotStats, SnapshotTag, TagName,
 };
 pub use sekai_world::{LayoutFlavor, RegionScanEntry, ScanTimings};
 pub use tag::{create_tag, delete_tag, list_tags, resolve_snapshot_ref, snapshot_stats};

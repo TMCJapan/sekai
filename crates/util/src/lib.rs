@@ -20,7 +20,9 @@ pub use error::{HexError, ParseCodeError, TagNameError};
 pub use gc::GcPlan;
 pub use hash::{BlobHash, DiffHash};
 pub use history::ChunkHistoryEntry;
-pub use region::{ApplyOutcome, RegionFingerprint, RegionKey, RegionStateEntry, SnapshotEntry};
+pub use region::{
+    ApplyOutcome, FoldOutcome, RegionFingerprint, RegionKey, RegionStateEntry, SnapshotEntry,
+};
 pub use region_kind::RegionKind;
 pub use scope::{Area, Rect, Scope};
 pub use snapshot::{Snapshot, SnapshotId, SnapshotTag};

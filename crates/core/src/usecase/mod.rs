@@ -8,11 +8,13 @@
 pub mod backup;
 pub mod diff;
 pub mod gc;
+pub mod prune;
 pub mod rollback;
 pub mod snapshot;
 
 pub use backup::{Assembled, BackupReport, Observation, Plan, Previous};
 pub use diff::{DiffError, diff_blobs, diff_blobs_v1};
 pub use gc::{GcError, GcReport};
+pub use prune::{PruneError, PrunePlan, PruneReport, prune_apply, prune_plan, select_retained};
 pub use rollback::{RollbackError, RollbackPlan, RollbackReport};
 pub use snapshot::{ResolveError, SnapshotError, SnapshotStats, resolve_snapshot_ref};

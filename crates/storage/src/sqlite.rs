@@ -6,8 +6,8 @@
 use std::path::Path;
 
 use sekai_core::{
-    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, Dimension, MetaStore,
-    RegionFingerprint, RegionKey, RegionKind, RegionStateEntry, Snapshot, SnapshotEntry,
+    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, Dimension, FoldOutcome,
+    MetaStore, RegionFingerprint, RegionKey, RegionKind, RegionStateEntry, Snapshot, SnapshotEntry,
     SnapshotId, SnapshotTag, TagName,
 };
 use sqlx::Row as _;
@@ -424,6 +424,53 @@ impl sekai_core::MetaStore for SqliteMeta {
             }
         }
         Ok(())
+    }
+
+    async fn retire_snapshot(
+        &mut self,
+        from: SnapshotId,
+        into: SnapshotId,
+    ) -> Result<FoldOutcome, StorageError> {
+        let from = snap_param(from)?;
+        let into = snap_param(into)?;
+        let mut tx = self.pool.begin().await?;
+        // Rows already superseded at or before the successor vanish;
+        // survivors move onto it. Tags follow the snapshot row by cascade.
+        // Positional convention below: `?1` is always the retired
+        // snapshot, `?2` the successor.
+        let dropped = sqlx::query(
+            "DELETE FROM chunk_history WHERE snapshot_id = ?1
+             AND (dim, kind, cx, cz) IN (
+                 SELECT dim, kind, cx, cz FROM chunk_history
+                 WHERE snapshot_id > ?1 AND snapshot_id <= ?2
+             )",
+        )
+        .bind(from)
+        .bind(into)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        let folded =
+            sqlx::query("UPDATE chunk_history SET snapshot_id = ?2 WHERE snapshot_id = ?1")
+                .bind(from)
+                .bind(into)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
+        sqlx::query("UPDATE region_state SET snapshot_id = ?2 WHERE snapshot_id = ?1")
+            .bind(from)
+            .bind(into)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM snapshots WHERE id = ?")
+            .bind(from)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(FoldOutcome {
+            folded: usize::try_from(folded).unwrap_or(usize::MAX),
+            dropped: usize::try_from(dropped).unwrap_or(usize::MAX),
+        })
     }
 
     async fn apply_snapshot_incremental(

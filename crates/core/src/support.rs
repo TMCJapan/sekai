@@ -8,8 +8,8 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use crate::port::{BlobStore, MetaStore};
 use sekai_util::{
-    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, RegionFingerprint, RegionKey,
-    RegionStateEntry, Snapshot, SnapshotId, SnapshotTag, TagName,
+    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, FoldOutcome,
+    RegionFingerprint, RegionKey, RegionStateEntry, Snapshot, SnapshotId, SnapshotTag, TagName,
 };
 
 /// Fake backend failure.
@@ -265,6 +265,42 @@ impl MetaStore for MemMeta {
             }
         }
         core::future::ready(Ok(()))
+    }
+
+    fn retire_snapshot(
+        &mut self,
+        from: SnapshotId,
+        into: SnapshotId,
+    ) -> impl Future<Output = Result<FoldOutcome, MemError>> + Send {
+        let mut folded = 0usize;
+        let mut dropped = 0usize;
+        let mut kept: Vec<ChunkHistoryEntry> = Vec::new();
+        for row in &self.rows {
+            if row.snapshot != from {
+                kept.push(*row);
+                continue;
+            }
+            let superseded = self.rows.iter().any(|other| {
+                other.coord == row.coord && other.snapshot > from && other.snapshot <= into
+            });
+            if superseded {
+                dropped += 1;
+            } else {
+                let mut moved = *row;
+                moved.snapshot = into;
+                kept.push(moved);
+                folded += 1;
+            }
+        }
+        self.rows = kept;
+        for state in &mut self.states {
+            if state.snapshot_id == from {
+                state.snapshot_id = into;
+            }
+        }
+        self.snapshots.retain(|snapshot| snapshot.id != from);
+        self.tags.retain(|_, tag| tag.snapshot != from);
+        core::future::ready(Ok(FoldOutcome { folded, dropped }))
     }
 }
 

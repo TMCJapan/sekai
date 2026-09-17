@@ -159,6 +159,27 @@ pub enum Command {
     },
     /// Compare chunk NBT AST between two snapshots or between world state and a snapshot.
     Diff(DiffArgs),
+    /// Delete old snapshots, folding their rows into retained ones.
+    /// At least one of `--keep-last` / `--before` is required.
+    Prune {
+        /// Keep the newest N snapshots.
+        #[arg(long, required_unless_present = "before")]
+        keep_last: Option<u64>,
+        /// Retain this snapshot and everything newer (`<id>` or `@tag`).
+        #[arg(long, required_unless_present = "keep_last")]
+        before: Option<String>,
+        /// Show what would be deleted without deleting anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Human or JSON rendering plus optional phase timings.
+        #[command(flatten)]
+        output: TimingArgs,
+        /// Show a progress bar on stderr. Refused with `--json`, and
+        /// silent without a stderr TTY. Refused with `--dry-run`, which
+        /// has no apply phase to report progress for.
+        #[arg(long, conflicts_with_all = ["json", "dry_run"])]
+        progress: bool,
+    },
     /// Garbage collect unreferenced orphan blobs from the store.
     Gc {
         /// Inspect store and build plan without unlinking orphan blobs.
@@ -190,6 +211,7 @@ impl Command {
             Self::List { .. } => "list",
             Self::Export { .. } => "export",
             Self::Tag { .. } => "tag",
+            Self::Prune { .. } => "prune",
             Self::Diff(_) => "diff",
             Self::Gc { .. } => "gc",
             Self::Debug { debug } => match debug {
@@ -206,6 +228,7 @@ impl Command {
             | Self::Status { output, .. }
             | Self::Rollback { output, .. }
             | Self::Export { output, .. }
+            | Self::Prune { output, .. }
             | Self::Gc { output, .. } => output.json,
             Self::List { json, .. } | Self::Tag { json, .. } => *json,
             Self::Diff(args) => args.output.json,
