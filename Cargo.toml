@@ -1,31 +1,97 @@
 [workspace]
 resolver = "3"
-members = ["crates/core", "crates/cli", "crates/nbt", "crates/anvil", "crates/storage"]
+members = [
+  "crates/anvil",
+  "crates/nbt",
+  "crates/core",
+  "crates/storage",
+  "crates/world",
+  "crates/app",
+  "crates/cli",
+  "crates/util",
+]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 
-[workspace.lints.clippy]
-pedantic = { level = "warn", priority = -1 }
-nursery = { level = "warn", priority = -1 }
-unwrap_used = "deny"
-expect_used = "warn"
-missing_errors_doc = "allow"
-
 [workspace.dependencies]
 sekai-anvil = { path = "crates/anvil" }
+sekai-app = { path = "crates/app" }
 sekai-core = { path = "crates/core" }
+sekai-nbt = { path = "crates/nbt" }
 sekai-storage = { path = "crates/storage" }
+sekai-util = { path = "crates/util" }
+sekai-world = { path = "crates/world" }
 
-anyhow = "1"
-blake3 = "1"
-chrono = "0.4"
-clap = { version = "4", features = ["derive"] }
-fastnbt = "2"
-flate2 = "1"
-lz4-java-wrc = "0.2"
-rusqlite = { version = "0.40", features = ["bundled"] }
-serde = { version = "1", features = ["derive"] }
-thiserror = "2"
+anyhow = { version = "1.0", default-features = false }
+blake3 = { version = "1.8.7", default-features = false }
+chrono = { version = "0.4.45", default-features = false, features = ["alloc"] }
+clap = { version = "4.6.7", default-features = false, features = [
+  "std",
+  "color",
+  "help",
+  "usage",
+  "error-context",
+  "suggestions",
+  "derive",
+] }
+crc32fast = { version = "1.5.2", default-features = false }
+criterion = { version = "0.5", default-features = false }
+indicatif = { version = "0.18" }
+lz4_flex = { version = "0.14.0", default-features = false }
+miniz_oxide = { version = "0.9.1", default-features = false, features = ["with-alloc"] }
+serde = { version = "1.0.229", default-features = false, features = ["alloc", "derive"] }
+serde_json = { version = "1.0.151", default-features = false, features = ["alloc"] }
+sqlx = { version = "0.9.0", default-features = false, features = ["sqlite", "runtime-tokio"] }
+thiserror = { version = "2.0.20", default-features = false }
+tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread"] }
+twox-hash = { version = "1", default-features = false }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+
+redundant_clone = "warn"
+needless_collect = "warn"
+large_enum_variant = "warn"
+large_types_passed_by_value = "warn"
+trivially_copy_pass_by_ref = "warn"
+needless_pass_by_value = "warn"
+ptr_arg = "warn"
+manual_memcpy = "warn"
+manual_slice_fill = "warn"
+iter_count = "warn"
+bytes_count_to_len = "warn"
+unnecessary_to_owned = "warn"
+implicit_clone = "warn"
+# Ban `<&str>.to_string()` in favor of the more explicit `.to_owned()`; the redundant
+# `String::to_string()` case is already covered by `implicit_clone` (clippy retired
+# `string_to_string`), and `&&str`/`Display`-machinery misuse by `inefficient_to_string`.
+str_to_string = "warn"
+# Further `restriction`-group allocation lints (not in any preset group, opted in individually):
+# `format_push_string` bans `s.push_str(&format!(..))` (an intermediate `String` alloc; prefer
+# `write!`), `rc_buffer` bans `Rc<String>`/`Rc<Vec<T>>` (double indirection; prefer `Rc<str>`/
+# `Rc<[T]>`), and `string_add`/`string_add_assign` ban `String + &str` allocation via `+`.
+format_push_string = "warn"
+rc_buffer = "warn"
+string_add = "warn"
+string_add_assign = "warn"
+
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+
+module_name_repetitions = "allow"
+future_not_send = "allow"
+# `pub(crate)` in a private module is a deliberate crate-internal intent marker; the nursery lint
+# that flags it as redundant would erase that signal, so keep it off.
+redundant_pub_crate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+missing_safety_doc = "allow"
+must_use_candidate = "allow"
+similar_names = "allow"
+too_many_lines = "allow"

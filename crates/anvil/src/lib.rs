@@ -1,26 +1,27 @@
-//! Region (`.mca`) file reading and atomic rewriting.
+//! `no_std` Anvil region-image codec.
 //!
-//! Rationale: the MCA sector layout (8 KiB header, 4 KiB sectors, `length +
-//! type + body` payloads) is the only format knowledge in the workspace
-//! besides NBT. This crate owns both directions - parsing into
-//! [`sekai_core::RawChunk`] views and rebuilding files from exact CAS bytes -
-//! plus world-layout discovery (finding every `.mca` and naming its
-//! namespace), cheap file fingerprints for incremental snapshots, and
-//! read-only inspection scans. Live files are never mutated in place:
-//! writers always swap via same-directory temp file + `rename`.
+//! Provides strict `.mca` parsing, chunk decompression, region-coordinate
+//! mapping, hashing helpers, and rebuilding of region images.
+//!
+//! Filesystem access is intentionally outside this crate.
 
-mod discover;
+#![no_std]
+
+extern crate alloc;
+
+mod codec;
 mod error;
-mod fingerprint;
+mod hash;
 mod reader;
 mod region;
-mod scan;
 mod writer;
 
-pub use discover::{LayoutFlavor, RegionRef, derive_path, detect_flavor, discover};
+pub use codec::{Compression, compression_of, decompress_into};
 pub use error::AnvilError;
-pub use fingerprint::{HEADER_HASH_LEN, file_mtime_ms, fingerprint_file};
-pub use reader::RegionFile;
-pub use region::parse_region_name;
-pub use scan::{RegionScanEntry, scan_world};
-pub use writer::RegionFileWriter;
+pub use hash::{custom_dimension_id, header_hash};
+pub use reader::{Chunk, RegionImage};
+pub use region::{
+    FIRST_DATA_SECTOR, HEADER_LEN, MAX_SECTOR_OFFSET, MAX_SECTORS_PER_CHUNK, ROW_WIDTH, RegionLoc,
+    SECTOR_LEN, TABLE_ENTRIES, base_coords, check_image_len, parse_region_name, sectors_for,
+};
+pub use writer::RegionBuilder;

@@ -1,0 +1,41 @@
+name: Bench
+
+# Never a merge gate: numbers are machine-dependent. Scheduled and manual
+# runs for trend observation; compare before/after on the same runner.
+on:
+  schedule:
+    - cron: "0 4 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Keep in sync with `rust-toolchain.toml`.
+  RUST_TOOLCHAIN: 1.98.0
+
+jobs:
+  bench:
+    name: Criterion benches
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Run micro benches
+        run: cargo bench -p sekai-anvil -p sekai-nbt -p sekai-core
+
+      - name: Run integration benches
+        run: cargo bench -p sekai-app --bench backup
+
+      - name: Upload criterion output
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64b3a6b815192ec16
+        with:
+          name: criterion-${{ github.sha }}
+          path: target/criterion

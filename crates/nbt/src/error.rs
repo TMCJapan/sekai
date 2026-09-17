@@ -1,46 +1,46 @@
-//! Error type for NBT decoding and normalization.
-//!
-//! Rationale: this crate performs I/O-adjacent work (decompression) and
-//! codec work, so a `thiserror` enum carries each failure with its source.
-//! Pure validation that needs no source uses unit variants.
+//! Errors produced while parsing NBT data.
 
-/// Failures while deriving views from raw chunk payloads.
-#[derive(Debug, thiserror::Error)]
+use core::fmt;
+
+/// Errors produced while parsing NBT data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NbtError {
-    /// Payload was empty; at minimum the compression-type byte is required.
-    #[error("empty chunk payload: missing compression-type byte")]
-    EmptyPayload,
-
-    /// First byte was not 1 (Gzip), 2 (Zlib), 3 (Uncompressed), or 4 (LZ4),
-    /// and neither a custom (127) nor an external-body (>= 128) marker.
-    #[error("unknown compression type: {0}")]
-    UnknownCompression(u8),
-
-    /// Type `>= 128`: the chunk body lives in an external `c.<x>.<z>.mcc`
-    /// file rather than the region file, so the payload handed here was
-    /// likely incorrectly sliced by the caller.
-    #[error("external chunk body (type {0}): payload lives in c.<x>.<z>.mcc, not the region file")]
-    ExternalBody(u8),
-
-    /// Type `127`: third-party custom codec (namespaced id follows).
-    ///
-    /// Out of scope: only vanilla codecs 1-4 are supported.
-    #[error("custom compression (type 127) from third-party servers is unsupported")]
-    CustomCompression,
-
-    /// Gzip stream failed to decode.
-    #[error("gzip decode failed")]
-    Gzip(#[source] std::io::Error),
-
-    /// Zlib stream failed to decode.
-    #[error("zlib decode failed")]
-    Zlib(#[source] std::io::Error),
-
-    /// LZ4 (lz4-java block stream) failed to decode.
-    #[error("lz4 decode failed")]
-    Lz4(#[source] std::io::Error),
-
-    /// Decompressed bytes were not valid NBT.
-    #[error("nbt decode failed")]
-    NbtDecode(#[from] fastnbt::error::Error),
+    /// Input was empty; a compound root tag is required.
+    EmptyInput,
+    /// Input ended mid-value.
+    UnexpectedEnd,
+    /// Tag id outside `1..=12`.
+    UnknownTag(u8),
+    /// String bytes are not valid modified UTF-8.
+    InvalidString,
+    /// Root tag is not a compound (`10`).
+    UnexpectedRoot(u8),
+    /// Bytes remain after the root value.
+    TrailingData(usize),
+    /// Nesting exceeds the recursion bound.
+    TooDeeplyNested,
+    /// Negative or overflowing length prefix.
+    InvalidLength(i32),
 }
+
+impl fmt::Display for NbtError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyInput => write!(f, "empty NBT input: missing root tag"),
+            Self::UnexpectedEnd => write!(f, "truncated NBT input"),
+            Self::UnknownTag(tag) => write!(f, "unknown NBT tag id: {tag}"),
+            Self::InvalidString => write!(f, "invalid modified UTF-8 in NBT string"),
+            Self::UnexpectedRoot(tag) => {
+                write!(
+                    f,
+                    "unexpected NBT root tag id: {tag}, expected compound (10)"
+                )
+            }
+            Self::TrailingData(len) => write!(f, "trailing {len} bytes after NBT root value"),
+            Self::TooDeeplyNested => write!(f, "NBT nesting exceeds the recursion bound"),
+            Self::InvalidLength(len) => write!(f, "invalid NBT length prefix: {len}"),
+        }
+    }
+}
+
+impl core::error::Error for NbtError {}

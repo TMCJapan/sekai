@@ -7,9 +7,9 @@ body:
     attributes:
       value: |
         For backup-path slowdowns, include `backup --timing` output measured
-        with a release build. Debug builds are not comparable. Rollback/GC
-        reports have no `--timing` flag: describe reproduction and measured
-        wall-clock instead.
+        with a release build. Debug builds are not comparable. Rollback, GC,
+        diff, and `debug scan` also accept `--timing`; add `--json` for the
+        machine-readable report.
   - type: input
     id: version
     attributes:
@@ -22,10 +22,10 @@ body:
     id: timing
     attributes:
       label: Timing output
-      description: Paste full `backup --timing` (or `--timing-json`) output for backup-path slowdowns; for rollback/GC paste measured wall-clock and reproduction steps.
+      description: "Required. Paste the affected command's `--timing` output from a release build (for backup-path slowdowns prefer `backup --timing --json`: only JSON carries the per-region breakdown). If the command cannot complete, write N/A and explain instead."
       render: text
     validations:
-      required: false
+      required: true
   - type: textarea
     id: conditions
     attributes:

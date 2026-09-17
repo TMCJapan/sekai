@@ -1,21 +1,14 @@
-//! Garbage collection over abstract ports.
+//! Garbage collection over blob and metadata ports.
 //!
-//! Rationale: blobs are immutable and global, so orphans only arise from
-//! torn backups (CAS flushed, metadata never committed). Collection splits
-//! into a pure [`gc_plan`] (read-only candidate list, safe to preview or
-//! discard) and [`gc_apply`] (physical unlink). [`gc_apply`] re-verifies
-//! each candidate against fresh metadata before removing, so a blob
-//! referenced after planning is never deleted. No metadata rows are
-//! touched: orphans are unreferenced by definition, and snapshot pruning
-//! does not exist yet.
-
+//! Planning is read-only; applying re-checks candidates against fresh
+//! metadata before removal.
 use alloc::collections::BTreeSet;
+use alloc::vec::Vec;
 use core::fmt;
 
-use crate::domain::gc::GcPlan;
-use crate::domain::hash::BlobHash;
 use crate::port::blob::BlobStore;
 use crate::port::meta::MetaStore;
+use sekai_util::{BlobHash, GcPlan, SnapshotId};
 
 /// Outcome of one [`gc_apply`] run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,37 +39,31 @@ impl<B: fmt::Debug, M: fmt::Debug> fmt::Display for GcError<B, M> {
     }
 }
 
-/// Collect orphan blobs: stored in CAS but referenced by no history row.
-///
-/// Pure read: touches nothing on disk. Scope is global (all snapshots,
-/// dimensions, and chunks), matching the global CAS deduplication.
-pub fn gc_plan<B: BlobStore, M: MetaStore>(
+/// Find CAS blobs that are not referenced by any snapshot history row.
+pub async fn gc_plan<B: BlobStore, M: MetaStore>(
     blobs: &B,
     meta: &M,
 ) -> Result<GcPlan, GcError<B::Error, M::Error>> {
     let mut referenced: BTreeSet<BlobHash> = BTreeSet::new();
-    let mut failure: Option<M::Error> = None;
+    let mut snapshots: Vec<SnapshotId> = Vec::new();
     meta.visit_snapshots(|snapshot| {
-        if failure.is_some() {
-            return false;
-        }
-        if let Err(err) = meta.visit_snapshot_chunks(snapshot.id, |entry| {
+        snapshots.push(snapshot.id);
+        true
+    })
+    .await
+    .map_err(GcError::Meta)?;
+    for id in snapshots {
+        meta.visit_snapshot_chunks(id, |entry| {
             if let Some(blob) = entry.blob {
                 referenced.insert(blob);
             }
             true
-        }) {
-            failure = Some(err);
-            return false;
-        }
-        true
-    })
-    .map_err(GcError::Meta)?;
-    if let Some(err) = failure {
-        return Err(GcError::Meta(err));
+        })
+        .await
+        .map_err(GcError::Meta)?;
     }
 
-    let mut orphans = alloc::vec::Vec::new();
+    let mut orphans = Vec::new();
     let mut examined = 0usize;
     blobs
         .visit_blobs(|hash| {
@@ -86,35 +73,87 @@ pub fn gc_plan<B: BlobStore, M: MetaStore>(
             }
             true
         })
+        .await
         .map_err(GcError::Blob)?;
     Ok(GcPlan::new(orphans, examined))
 }
 
-/// Unlink the blobs a [`GcPlan`] still finds orphan.
+/// Remove candidates that are still unreferenced after a fresh scan.
 ///
-/// Each candidate is re-verified against fresh metadata first: candidates
-/// referenced after planning are skipped, never deleted.
-pub fn gc_apply<B: BlobStore, M: MetaStore>(
+/// `progress` fires per examined candidate as `(done, total)`.
+pub async fn gc_apply<B: BlobStore, M: MetaStore>(
     blobs: &mut B,
     meta: &M,
     plan: &GcPlan,
+    mut progress: impl FnMut(usize, usize) + Send,
 ) -> Result<GcReport, GcError<B::Error, M::Error>> {
-    let fresh = gc_plan(&*blobs, meta)?;
+    let fresh = gc_plan(&*blobs, meta).await?;
     let still_orphan: BTreeSet<BlobHash> = fresh.into_orphans().into_iter().collect();
     let mut orphans = 0usize;
     let mut removed = 0usize;
+    let mut done = 0usize;
+    let total = plan.len();
     for hash in plan.orphans() {
-        if !still_orphan.contains(hash) {
-            continue;
+        if still_orphan.contains(hash) {
+            orphans += 1;
+            if blobs.remove(hash).await.map_err(GcError::Blob)? {
+                removed += 1;
+            }
         }
-        orphans += 1;
-        if blobs.remove(hash).map_err(GcError::Blob)? {
-            removed += 1;
-        }
+        done += 1;
+        progress(done, total);
     }
     Ok(GcReport {
         candidates: plan.len(),
         orphans,
         removed,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::support::{MemCas, MemMeta, block_on};
+    use sekai_util::{ChunkCoord, Dimension, RegionKind, SnapshotEntry};
+
+    const OVER: Dimension = Dimension::OVERWORLD;
+    const REGION: RegionKind = RegionKind::REGION;
+
+    fn coord(x: i32, z: i32) -> ChunkCoord {
+        ChunkCoord::new(OVER, REGION, x, z)
+    }
+
+    #[test]
+    fn reclaims_only_true_orphans() {
+        let mut meta = MemMeta::default();
+        let mut cas = MemCas::default();
+        let live = BlobHash([1; 32]);
+        let orphan = BlobHash([2; 32]);
+        block_on(cas.put(&live, b"live")).unwrap();
+        block_on(cas.put(&orphan, b"orphan")).unwrap();
+        block_on(meta.apply_snapshot_incremental(
+            1_000,
+            &[SnapshotEntry::new(coord(0, 0), Some(live), None)],
+            None,
+            &[],
+            &[],
+        ))
+        .unwrap();
+
+        let plan = block_on(gc_plan(&cas, &meta)).unwrap();
+        assert_eq!(plan.orphans(), &[orphan]);
+        assert_eq!(plan.examined(), 2);
+
+        let report = block_on(gc_apply(&mut cas, &meta, &plan, |_, _| {})).unwrap();
+        assert_eq!(
+            report,
+            GcReport {
+                candidates: 1,
+                orphans: 1,
+                removed: 1,
+            }
+        );
+        assert!(block_on(cas.contains(&live)).unwrap());
+        assert!(!block_on(cas.contains(&orphan)).unwrap());
+    }
 }

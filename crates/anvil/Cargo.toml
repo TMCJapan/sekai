@@ -8,6 +8,16 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-sekai-core.workspace = true
 blake3.workspace = true
-thiserror.workspace = true
+crc32fast.workspace = true
+lz4_flex.workspace = true
+miniz_oxide.workspace = true
+sekai-util.workspace = true
+twox-hash.workspace = true
+
+[[bench]]
+name = "codec"
+harness = false
+
+[dev-dependencies]
+criterion.workspace = true

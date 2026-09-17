@@ -1,126 +1,133 @@
-//! Error type for region file decoding and atomic rewriting.
-//!
-//! Rationale: every corruption shape gets its own variant with the numbers
-//! attached (entry index, offsets, lengths) so operators can tell damage
-//! apart from unsupported setups at a glance. File-system failures carry
-//! the affected path.
+//! Errors produced while parsing or rebuilding Anvil region images.
 
-use std::io;
-use std::path::PathBuf;
+use alloc::string::String;
+use core::fmt;
 
-use sekai_core::{Dimension, RegionKind};
-
-/// Failures while reading or rewriting `.mca` files.
-#[derive(Debug, thiserror::Error)]
+/// Errors produced while reading or rebuilding `.mca` images.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AnvilError {
-    /// File-system operation failed.
-    #[error("file I/O failed for {path}: {source}", path = path.display())]
-    Io {
-        /// File (or directory, for fsync) involved.
-        path: PathBuf,
-        /// Underlying OS error.
-        #[source]
-        source: io::Error,
-    },
-
     /// File name was not `r.<x>.<z>.mca`.
-    #[error("bad region file name (expected r.<x>.<z>.mca): {name}")]
-    BadFilename {
-        /// Offending file name.
-        name: String,
-    },
+    BadFilename { name: String },
 
-    /// Region coordinates cannot address chunk columns in `i32`.
-    #[error("region coordinates out of range: r.{region_x}.{region_z}")]
-    CoordinateOverflow {
-        /// Parsed region X.
-        region_x: i32,
-        /// Parsed region Z.
-        region_z: i32,
-    },
+    /// Region coordinates cannot address all 32 chunk columns.
+    CoordinateOverflow { region_x: i32, region_z: i32 },
 
-    /// File is smaller than the 8 KiB header.
-    #[error("truncated region file: {len} bytes, need at least 8192")]
-    TruncatedFile {
-        /// Observed file length.
-        len: u64,
-    },
+    /// Image is shorter than the 8 KiB header.
+    TruncatedFile { len: u64 },
 
-    /// File length is not a multiple of the 4 KiB sector size.
-    #[error("misaligned region file: {len} bytes is not a multiple of 4096")]
-    MisalignedFile {
-        /// Observed file length.
-        len: u64,
-    },
-
-    /// Location-table entry is internally inconsistent or out of range.
-    #[error("corrupt location entry {index}: offset {offset} sectors, {sectors} sectors")]
+    /// A location-table entry is invalid or points outside the image.
     CorruptEntry {
-        /// Header slot `0..1024`.
         index: u32,
-        /// Sector offset from the entry.
         offset: u32,
-        /// Sector count from the entry.
         sectors: u32,
     },
 
-    /// Length prefix disagrees with the allocated sectors or is zero.
-    #[error("corrupt chunk payload at entry {index}: declared length {len}")]
-    CorruptChunk {
-        /// Header slot `0..1024`.
-        index: u32,
-        /// Declared payload length (type byte + body).
-        len: u32,
-    },
+    /// A chunk length prefix is invalid for its allocated sectors.
+    CorruptChunk { index: u32, len: u32 },
 
-    /// Staged payload was empty (the compression-type byte is mandatory).
-    #[error("empty chunk payload: missing compression-type byte")]
+    /// A chunk payload has no compression-type byte.
     EmptyPayload,
 
-    /// Payload needs more than the 255 addressable sectors (~1 MiB).
-    ///
-    /// Larger-than-sector-file chunks (external `c.<x>.<z>.mcc` storage)
-    /// are out of scope.
-    #[error("chunk payload too large: {len} bytes need more than 255 sectors")]
-    ChunkTooLarge {
-        /// Staged payload length.
-        len: usize,
-    },
+    /// A chunk would require more than the 255 addressable sectors.
+    ChunkTooLarge { len: usize },
 
-    /// Packed image would exceed the 24-bit sector-offset range.
-    #[error("region image too large: {sectors} sectors exceed the offset range")]
-    ImageTooLarge {
-        /// Total sectors the staged chunks would need.
-        sectors: u64,
-    },
+    /// The rebuilt image exceeds the 24-bit sector-offset range.
+    ImageTooLarge { sectors: u64 },
 
-    /// Staged coordinate belongs to a different region file.
-    #[error("chunk ({x}, {z}) does not belong to r.{region_x}.{region_z}")]
+    /// A chunk coordinate does not belong to the selected region.
     WrongRegion {
-        /// Region X of this file.
         region_x: i32,
-        /// Region Z of this file.
         region_z: i32,
-        /// Staged chunk X.
         x: i32,
-        /// Staged chunk Z.
         z: i32,
     },
 
-    /// No directory mapping exists for this coordinate's namespace.
-    ///
-    /// Vanilla namespaces are always mappable; this fires for hashed
-    /// custom dimensions whose on-disk file is gone (the hash is one-way).
-    #[error("cannot derive region path for dim {dim}, kind {kind}, r.{region_x}.{region_z}",
-        dim = .dim.raw(), kind = .kind.raw())]
-    UnknownRegionPath {
-        /// Dimension namespace code.
-        dim: Dimension,
-        /// Region family code.
-        kind: RegionKind,
-        /// Region X.
-        region_x: i32,
-        /// Region Z.
-        region_z: i32,
-    },
+    /// The compression type is not recognized.
+    UnknownCompression(u8),
+
+    /// Type `127`: third-party custom compression.
+    CustomCompression,
+
+    /// Type `>= 128`: chunk data is stored in an external `.mcc` file.
+    ExternalBody(u8),
+
+    /// Gzip framing or decompression failed.
+    Gzip,
+
+    /// Zlib decompression failed.
+    Zlib,
+
+    /// LZ4-Java framing, decompression, or checksum validation failed.
+    Lz4,
+
+    /// Decompressed output exceeded the decoder safety limit.
+    OutputTooLarge,
 }
+
+impl fmt::Display for AnvilError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BadFilename { name } => {
+                write!(f, "bad region file name (expected r.<x>.<z>.mca): {name}")
+            }
+            Self::CoordinateOverflow { region_x, region_z } => {
+                write!(
+                    f,
+                    "region coordinates out of range: r.{region_x}.{region_z}"
+                )
+            }
+            Self::TruncatedFile { len } => {
+                write!(f, "truncated region image: {len} bytes, need at least 8192")
+            }
+            Self::CorruptEntry {
+                index,
+                offset,
+                sectors,
+            } => write!(
+                f,
+                "corrupt location entry {index}: offset {offset} sectors, {sectors} sectors"
+            ),
+            Self::CorruptChunk { index, len } => write!(
+                f,
+                "corrupt chunk payload at entry {index}: declared length {len}"
+            ),
+            Self::EmptyPayload => {
+                write!(f, "empty chunk payload: missing compression-type byte")
+            }
+            Self::ChunkTooLarge { len } => write!(
+                f,
+                "chunk payload too large: {len} bytes need more than 255 sectors"
+            ),
+            Self::ImageTooLarge { sectors } => write!(
+                f,
+                "region image too large: {sectors} sectors exceed the offset range"
+            ),
+            Self::WrongRegion {
+                region_x,
+                region_z,
+                x,
+                z,
+            } => write!(
+                f,
+                "chunk ({x}, {z}) does not belong to r.{region_x}.{region_z}"
+            ),
+            Self::UnknownCompression(byte) => write!(f, "unknown compression type: {byte}"),
+            Self::CustomCompression => write!(
+                f,
+                "custom compression (type 127) from third-party servers is unsupported"
+            ),
+            Self::ExternalBody(byte) => write!(
+                f,
+                "external chunk body (type {byte}): payload lives in c.<x>.<z>.mcc, not the region file"
+            ),
+            Self::Gzip => write!(f, "gzip decode failed"),
+            Self::Zlib => write!(f, "zlib decode failed"),
+            Self::Lz4 => write!(f, "lz4 decode failed"),
+            Self::OutputTooLarge => {
+                write!(f, "decompressed output exceeded the safety bound")
+            }
+        }
+    }
+}
+
+impl core::error::Error for AnvilError {}

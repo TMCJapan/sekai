@@ -1,0 +1,46 @@
+[package]
+name = "sekai-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["backend-sqlite"]
+backend-sqlite = ["sekai-storage/backend-sqlite"]
+backend-mysql = ["sekai-storage/backend-mysql"]
+backend-postgres = ["sekai-storage/backend-postgres"]
+
+[dependencies]
+sekai-anvil.workspace = true
+sekai-core.workspace = true
+sekai-nbt.workspace = true
+sekai-storage.workspace = true
+sekai-world.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[[bench]]
+name = "backup"
+harness = false
+
+[[bench]]
+name = "rollback"
+harness = false
+
+[[bench]]
+name = "diff"
+harness = false
+
+[[bench]]
+name = "gc_scan"
+harness = false
+
+[dev-dependencies]
+criterion.workspace = true
+miniz_oxide.workspace = true
+
+[package.metadata.cargo-machete]
+ignored = ["sekai-core", "sekai-storage", "sekai-world"]

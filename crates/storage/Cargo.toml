@@ -7,8 +7,16 @@ license.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["backend-sqlite"]
+backend-sqlite = ["dep:sqlx"]
+backend-mysql = []
+backend-postgres = []
+
 [dependencies]
 sekai-core.workspace = true
-blake3.workspace = true
-rusqlite.workspace = true
+sqlx = { workspace = true, optional = true }
 thiserror.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true

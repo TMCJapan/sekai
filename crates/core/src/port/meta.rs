@@ -1,78 +1,79 @@
-//! MVCC metadata port over snapshots and per-chunk history.
-//!
-//! Rationale: history rows are plain facts; interval semantics emerge from
-//! snapshot order. The incremental-commit seam
-//! ([`MetaStore::apply_snapshot_incremental`]) keeps the carry optimization
-//! (one indexed `INSERT ... SELECT` per unchanged region instead of a
-//! per-chunk loop) behind the port, so use cases never issue SQL while the
-//! SQLite layout stays an adapter detail.
+//! MVCC metadata storage boundary.
 
-use crate::domain::history::ChunkHistoryEntry;
-use crate::domain::region::{
-    ApplyOutcome, RegionFingerprint, RegionKey, RegionStateEntry, SnapshotEntry,
+use alloc::vec::Vec;
+use core::future::Future;
+use sekai_util::{
+    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, RegionFingerprint, RegionKey,
+    RegionStateEntry, Snapshot, SnapshotEntry, SnapshotId,
 };
-use crate::domain::snapshot::{Snapshot, SnapshotId};
 
-/// MVCC metadata over snapshots and per-chunk history (by `storage`).
+/// Snapshot metadata and per-chunk history storage.
 pub trait MetaStore {
-    /// Backend failure (SQLite errors, constraint violations, ...).
+    /// Backend failure (query errors, constraint violations, ...).
     type Error;
 
     /// Append a snapshot; IDs are monotone increasing.
-    fn create_snapshot(&mut self, created_at_ms: u64) -> Result<SnapshotId, Self::Error>;
+    fn create_snapshot(
+        &mut self,
+        created_at_ms: u64,
+    ) -> impl Future<Output = Result<SnapshotId, Self::Error>> + Send;
 
     /// Record one chunk's state at `snapshot`. `blob = None` is a tombstone.
     fn record_chunk(
         &mut self,
         snapshot: SnapshotId,
-        coord: &crate::domain::coords::ChunkCoord,
-        blob: Option<&crate::domain::hash::BlobHash>,
-        diff: Option<&crate::domain::hash::DiffHash>,
-    ) -> Result<(), Self::Error>;
+        coord: &ChunkCoord,
+        blob: Option<&BlobHash>,
+        diff: Option<&DiffHash>,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
-    /// Exact row for (`snapshot`, `coord`), or `None` when never recorded.
+    /// Effective row for (`snapshot`, `coord`): the nearest row at or
+    /// before `snapshot`, or `None` when never recorded.
     fn lookup_chunk(
         &self,
         snapshot: SnapshotId,
-        coord: &crate::domain::coords::ChunkCoord,
-    ) -> Result<Option<ChunkHistoryEntry>, Self::Error>;
+        coord: &ChunkCoord,
+    ) -> impl Future<Output = Result<Option<ChunkHistoryEntry>, Self::Error>> + Send;
 
     /// Snapshot metadata for `id`, or `None` when it does not exist.
-    ///
-    /// Point query behind the seam so callers never scan the full timeline
-    /// to resolve one snapshot.
-    fn lookup_snapshot(&self, id: SnapshotId) -> Result<Option<Snapshot>, Self::Error>;
+    fn lookup_snapshot(
+        &self,
+        id: SnapshotId,
+    ) -> impl Future<Output = Result<Option<Snapshot>, Self::Error>> + Send;
 
     /// Highest-ID snapshot, or `None` when no backup has run yet.
-    fn latest_snapshot(&self) -> Result<Option<Snapshot>, Self::Error>;
+    fn latest_snapshot(&self)
+    -> impl Future<Output = Result<Option<Snapshot>, Self::Error>> + Send;
 
-    /// Visit every row of one snapshot. Return `false` to stop early.
-    ///
-    /// Visitor style keeps full-snapshot rollback streaming without
-    /// materializing all rows (1024+ per region file) in memory.
-    fn visit_snapshot_chunks<F>(&self, snapshot: SnapshotId, visit: F) -> Result<(), Self::Error>
+    /// Visit effective rows of one snapshot: exactly one row per
+    /// coordinate known at `snapshot` (the nearest row at or before it),
+    /// including tombstones. Return `false` to stop early.
+    fn visit_snapshot_chunks<F>(
+        &self,
+        snapshot: SnapshotId,
+        visit: F,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send
     where
-        F: FnMut(&ChunkHistoryEntry) -> bool;
+        F: FnMut(&ChunkHistoryEntry) -> bool + Send;
 
     /// Visit snapshots in ID order. Return `false` to stop early.
-    fn visit_snapshots<F>(&self, visit: F) -> Result<(), Self::Error>
+    fn visit_snapshots<F>(&self, visit: F) -> impl Future<Output = Result<(), Self::Error>> + Send
     where
-        F: FnMut(&Snapshot) -> bool;
+        F: FnMut(&Snapshot) -> bool + Send;
 
     /// Load every stored region fingerprint (for skip decisions in backup).
-    fn load_region_states(&self) -> Result<alloc::vec::Vec<RegionStateEntry>, Self::Error>;
+    fn load_region_states(
+        &self,
+    ) -> impl Future<Output = Result<Vec<RegionStateEntry>, Self::Error>> + Send;
 
-    /// Record a snapshot, carrying unchanged regions from `carry_from`.
+    /// Commit a snapshot and optionally carry unchanged regions.
     ///
-    /// `entries` holds freshly ingested chunks and tombstones; `carry_from`
-    /// names the previous snapshot plus the regions whose rows copy over.
-    /// `fingerprints` refreshes the derived state for ingested files,
-    /// carried keys keep their fingerprints but advance to the new
-    /// snapshot, and `removed` drops state for files gone from disk, all
-    /// atomically so state and history stay consistent. Carried regions
-    /// must be disjoint from `entries`; overlap aborts loudly instead of
-    /// merging silently. Blobs must already be flushed to CAS before
-    /// calling.
+    /// `entries` contains fresh rows and tombstones. `carry_from` identifies
+    /// unchanged regions: backends advance their snapshot state and count
+    /// their effective chunks, but write no per-chunk rows for them (delta
+    /// storage). Fingerprints are refreshed atomically.
+    ///
+    /// Referenced blobs must already be flushed to CAS.
     fn apply_snapshot_incremental(
         &mut self,
         created_at_ms: u64,
@@ -80,5 +81,5 @@ pub trait MetaStore {
         carry_from: Option<(SnapshotId, &[RegionKey])>,
         fingerprints: &[RegionFingerprint],
         removed: &[RegionKey],
-    ) -> Result<ApplyOutcome, Self::Error>;
+    ) -> impl Future<Output = Result<ApplyOutcome, Self::Error>> + Send;
 }

@@ -8,12 +8,12 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-sekai-core.workspace = true
-thiserror.workspace = true
 blake3.workspace = true
-fastnbt.workspace = true
-flate2.workspace = true
-lz4-java-wrc.workspace = true
+sekai-util.workspace = true
+
+[[bench]]
+name = "nbt"
+harness = false
 
 [dev-dependencies]
-serde.workspace = true
+criterion.workspace = true

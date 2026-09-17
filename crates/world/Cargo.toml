@@ -1,0 +1,13 @@
+[package]
+name = "sekai-world"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+sekai-anvil.workspace = true
+sekai-core.workspace = true
+thiserror.workspace = true

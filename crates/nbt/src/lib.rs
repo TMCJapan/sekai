@@ -1,17 +1,38 @@
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
-
-//! NBT decoding, decompression, and volatile diff views.
+//! Parse and hash already-decompressed NBT data.
 //!
-//! Rationale: chunk payloads arrive exactly as stored in `.mca` sectors
-//! (compression-type byte followed by compressed data) and are preserved
-//! verbatim into CAS by other crates. This crate only derives ephemeral
-//! views: it decompresses, parses, and feeds a canonical digest into
-//! [`sekai_core::DiffHasher`] output without ever mutating stored bytes.
+//! Chunk decompression is handled by `sekai-anvil`; this crate owns only NBT
+//! parsing, canonical diff hashing, and NBT AST diffing.
 
-mod codec;
+#![no_std]
+
+extern crate alloc;
+
+mod diff;
+mod display;
 mod error;
 mod normalize;
+mod parser;
 
-pub use codec::{Compression, decompress_into, parse_value};
+pub use diff::{NbtChange, NbtDiffEntry, diff};
 pub use error::NbtError;
-pub use normalize::NbtNormalizer;
+pub use normalize::DEFAULT_IGNORED;
+pub use parser::Value;
+use sekai_util::DiffHash;
+
+/// Parses a complete NBT document with a compound root.
+pub fn parse(raw_nbt: &[u8]) -> Result<Value, NbtError> {
+    parser::parse_root(raw_nbt)
+}
+
+/// Hashes NBT after excluding the specified tag names at every depth.
+///
+/// The resulting hash is intended for change detection, not storage identity.
+pub fn diff_hash(raw_nbt: &[u8], ignore: &[&str]) -> Result<DiffHash, NbtError> {
+    let value = parse(raw_nbt)?;
+    Ok(normalize::digest(ignore, &value))
+}
+
+/// Hashes NBT using the default volatile-tag ignore set.
+pub fn diff_hash_v1(raw_nbt: &[u8]) -> Result<DiffHash, NbtError> {
+    diff_hash(raw_nbt, DEFAULT_IGNORED)
+}

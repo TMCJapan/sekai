@@ -1,25 +1,35 @@
-//! Composition root: concrete backup and rollback entry points over core
-//! use cases.
+//! Library interface for the `sekai` CLI application.
 //!
-//! Rationale: the CLI assembles implementations (`storage` blobs and
-//! metadata, `anvil` region files) and executes [`core`](sekai_core)
-//! orchestration. Policy (what to ingest, carry, tombstone, restore, or
-//! reclaim) lives in `core`; threading, filesystem walks, clocks, and
-//! timing collection live here because `core` is `no_std`.
+//! Argument parsing and output formatting components over `sekai-app`.
 
-mod backup;
-mod error;
-mod rollback;
-mod timing;
+pub mod cli;
+pub mod commands;
+pub mod envelope;
+pub mod style;
 
-pub use backup::{backup, backup_with_metrics};
-pub use error::Error;
-pub use rollback::rollback;
-pub use sekai_core::usecase::backup::BackupReport;
-pub use sekai_core::usecase::rollback::RollbackReport;
-pub use timing::{BackupTimings, RegionTiming};
+use cli::Cli;
+use envelope::{envelope_err, render_error};
+use style::Styler;
 
-/// List all snapshots in ID order (for `list` and pre-flight checks).
-pub fn list_snapshots(store: &sekai_storage::Store) -> Result<Vec<sekai_core::Snapshot>, Error> {
-    Ok(sekai_core::usecase::snapshot::list_snapshots(store.meta())?)
+/// Executes the CLI application pipeline using the provided options.
+pub async fn run_app(cli: &Cli) -> std::process::ExitCode {
+    let command_name = cli.command.name();
+    let as_json = cli.command.output_json();
+
+    match commands::run(cli).await {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(err) => {
+            if as_json {
+                match envelope_err(command_name, &err) {
+                    Ok(doc) => println!("{doc}"),
+                    Err(_) => {
+                        eprintln!("{}", render_error(&err, Styler::new_stderr(cli.color)));
+                    }
+                }
+            } else {
+                eprintln!("{}", render_error(&err, Styler::new_stderr(cli.color)));
+            }
+            std::process::ExitCode::FAILURE
+        }
+    }
 }

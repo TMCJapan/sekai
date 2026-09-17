@@ -1,283 +1,264 @@
-//! Write side: rebuild `.mca` files from exact payloads, atomically.
-//!
-//! Rationale: rollback reconstructs whole region files from CAS blobs, so
-//! the writer packs staged payloads into a fresh image (header recomputed,
-//! chunks in slot order) and swaps it into place via same-directory temp
-//! file + `fsync` + `rename`. The target is never touched until the swap,
-//! and a torn temp file can never be mistaken for a region (its suffix is
-//! not `.mca`). Timestamps are uniform per file (caller-provided, normally
-//! the snapshot time); absent slots read zero.
+//! Write-side construction of fresh `.mca` images.
 
-use std::collections::BTreeMap;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-
-use sekai_core::{ChunkCoord, Dimension, RegionKind};
+use alloc::vec::Vec;
 
 use crate::error::AnvilError;
 use crate::region::{
-    HEADER_LEN, MAX_SECTOR_OFFSET, RegionLoc, SECTOR_LEN, parse_region_name, sectors_for,
+    FIRST_DATA_SECTOR, HEADER_LEN, MAX_SECTOR_OFFSET, RegionLoc, SECTOR_LEN, sectors_for,
 };
 
-/// Monotonic temp-file disambiguator within this process.
-static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-/// Pending region rewrite; finalize with [`commit`](sekai_core::RegionWriter::commit).
 #[derive(Debug)]
-pub struct RegionFileWriter {
-    /// Dimension namespace (staged coords must match).
-    dim: Dimension,
-    /// Region family (staged coords must match).
-    kind: RegionKind,
-    /// Region identity and global chunk-column origin.
-    loc: RegionLoc,
-    /// Timestamp written for every present chunk.
-    timestamp: u32,
-    /// Final destination (never written before commit).
-    target: PathBuf,
-    /// Payloads by header slot, packed in slot order at commit.
-    staged: BTreeMap<u32, Vec<u8>>,
+struct StagedChunk {
+    slot: u32,
+    payload: Vec<u8>,
 }
 
-impl RegionFileWriter {
-    /// Prepare a rewrite of `target` (`r.<x>.<z>.mca`).
-    ///
-    /// Filesystem access is confined to `swap` (like [`crate::RegionFile::open`],
-    /// this only parses the target name); staging and image assembly below
-    /// are pure in-memory operations.
-    ///
-    /// Nothing is created on disk yet; `timestamp` fills the timestamp
-    /// table for staged chunks. Bad target names fail here so a typo can
-    /// never silently map chunks into the wrong region.
-    pub fn create(
-        target: &Path,
-        dim: Dimension,
-        kind: RegionKind,
-        timestamp: u32,
-    ) -> Result<Self, AnvilError> {
-        let name = target
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default();
-        let (region_x, region_z) = parse_region_name(name)?;
-        let loc = RegionLoc::new(region_x, region_z)?;
+/// Builder for a complete region image.
+#[derive(Debug)]
+pub struct RegionBuilder {
+    loc: RegionLoc,
+    timestamp: u32,
+    staged: Vec<StagedChunk>,
+}
+
+impl RegionBuilder {
+    /// Creates an empty builder for one region.
+    pub fn new(region_x: i32, region_z: i32, timestamp: u32) -> Result<Self, AnvilError> {
         Ok(Self {
-            dim,
-            kind,
-            loc,
+            loc: RegionLoc::new(region_x, region_z)?,
             timestamp,
-            target: target.to_path_buf(),
-            staged: BTreeMap::new(),
+            staged: Vec::new(),
         })
     }
 
-    /// Header slot for `coord`, rejecting foreign coordinates.
-    fn slot_of(&self, coord: &ChunkCoord) -> Result<u32, AnvilError> {
-        self.loc.slot_of(self.dim, self.kind, coord)
+    pub const fn region_x(&self) -> i32 {
+        self.loc.region_x()
     }
 
-    /// Assemble the full file image (header + packed sectors).
-    fn image(&self) -> Result<Vec<u8>, AnvilError> {
-        let header_len = usize::try_from(HEADER_LEN).map_err(|_| AnvilError::ImageTooLarge {
-            sectors: HEADER_LEN,
-        })?;
-        let mut img = vec![0u8; header_len];
-        let mut offset: u64 = HEADER_LEN / SECTOR_LEN;
-        for (index, payload) in &self.staged {
-            let sectors = sectors_for(payload.len())?;
-            if offset > MAX_SECTOR_OFFSET {
-                return Err(AnvilError::ImageTooLarge { sectors: offset });
-            }
-            let offset_u32 =
-                u32::try_from(offset).map_err(|_| AnvilError::ImageTooLarge { sectors: offset })?;
-            let sectors_u32 = u32::try_from(sectors)
-                .map_err(|_| AnvilError::ImageTooLarge { sectors: offset })?;
-            let entry = (offset_u32 << 8) | sectors_u32;
-            let at = *index as usize * 4;
-            img[at..at + 4].copy_from_slice(&entry.to_be_bytes());
-            let ts_at = header_len / 2 + *index as usize * 4;
-            img[ts_at..ts_at + 4].copy_from_slice(&self.timestamp.to_be_bytes());
-            let payload_len_u32 = u32::try_from(payload.len())
-                .map_err(|_| AnvilError::ChunkTooLarge { len: payload.len() })?;
-            img.extend_from_slice(&payload_len_u32.to_be_bytes());
-            img.extend_from_slice(payload);
-            let pad = sectors * SECTOR_LEN - (payload.len() as u64 + 4);
-            let pad_usize =
-                usize::try_from(pad).map_err(|_| AnvilError::ImageTooLarge { sectors: offset })?;
-            img.extend(std::iter::repeat_n(0, pad_usize));
-            offset += sectors;
-        }
-        Ok(img)
+    pub const fn region_z(&self) -> i32 {
+        self.loc.region_z()
     }
 
-    /// Swap `img` into place via same-directory temp + fsync + rename.
-    fn swap(&self, img: &[u8]) -> Result<(), AnvilError> {
-        let io = |path: PathBuf| move |source: std::io::Error| AnvilError::Io { path, source };
-        let parent = self
-            .target
-            .parent()
-            .filter(|p| !p.as_os_str().is_empty())
-            .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-        let file_name = self
-            .target
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("region.mca");
-        let tmp = parent.join(format!(
-            "{file_name}.tmp-{}-{}",
-            std::process::id(),
-            TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        let write = || -> Result<(), AnvilError> {
-            use std::io::Write as _;
-            let mut f = fs::File::create(&tmp).map_err(io(tmp.clone()))?;
-            f.write_all(img).map_err(io(tmp.clone()))?;
-            f.sync_all().map_err(io(tmp.clone()))?;
-            drop(f);
-            fs::rename(&tmp, &self.target).map_err(io(self.target.clone()))?;
-            // Persist the rename itself. Unix-only: opening a directory
-            // with `File::open` fails on Windows (ERROR_ACCESS_DENIED),
-            // and std offers no directory-fsync equivalent there.
-            #[cfg(unix)]
-            {
-                let dir = fs::File::open(&parent).map_err(io(parent.clone()))?;
-                dir.sync_all().map_err(io(parent.clone()))?;
-            }
-            Ok(())
-        };
-        let result = write();
-        if result.is_err() {
-            let _ = fs::remove_file(&tmp);
-        }
-        result
-    }
-}
-
-impl sekai_core::RegionWriter for RegionFileWriter {
-    type Error = AnvilError;
-
-    fn stage_chunk(&mut self, coord: &ChunkCoord, payload: &[u8]) -> Result<(), Self::Error> {
+    /// Adds or replaces a stored chunk payload.
+    pub fn stage_chunk(&mut self, x: i32, z: i32, payload: &[u8]) -> Result<(), AnvilError> {
         if payload.is_empty() {
             return Err(AnvilError::EmptyPayload);
         }
-        let index = self.slot_of(coord)?;
-        // Fail early on oversized payloads, not at commit time.
+
         sectors_for(payload.len())?;
-        self.staged.insert(index, payload.to_vec());
+
+        let slot = self.loc.slot_of(x, z)?;
+
+        match self.staged.binary_search_by_key(&slot, |chunk| chunk.slot) {
+            Ok(index) => {
+                self.staged[index].payload = payload.to_vec();
+            }
+
+            Err(index) => {
+                self.staged.insert(
+                    index,
+                    StagedChunk {
+                        slot,
+                        payload: payload.to_vec(),
+                    },
+                );
+            }
+        }
+
         Ok(())
     }
 
-    fn stage_remove(&mut self, coord: &ChunkCoord) -> Result<(), Self::Error> {
-        let index = self.slot_of(coord)?;
-        self.staged.remove(&index);
+    /// Removes a previously staged chunk.
+    pub fn remove_chunk(&mut self, x: i32, z: i32) -> Result<(), AnvilError> {
+        let slot = self.loc.slot_of(x, z)?;
+
+        if let Ok(index) = self.staged.binary_search_by_key(&slot, |chunk| chunk.slot) {
+            self.staged.remove(index);
+        }
+
         Ok(())
     }
 
-    fn commit(self) -> Result<(), Self::Error> {
-        let img = self.image()?;
-        self.swap(&img)
+    /// Assembles the complete `.mca` image.
+    pub fn image(&self) -> Result<Vec<u8>, AnvilError> {
+        let header_len =
+            usize::try_from(HEADER_LEN).map_err(|_| AnvilError::ImageTooLarge { sectors: 0 })?;
+
+        let sector_len =
+            usize::try_from(SECTOR_LEN).map_err(|_| AnvilError::ImageTooLarge { sectors: 0 })?;
+
+        let mut image = alloc::vec![0; header_len];
+
+        let mut offset = FIRST_DATA_SECTOR;
+
+        for chunk in &self.staged {
+            let sectors = sectors_for(chunk.payload.len())?;
+
+            if offset > MAX_SECTOR_OFFSET {
+                return Err(AnvilError::ImageTooLarge { sectors: offset });
+            }
+
+            let offset_u32 =
+                u32::try_from(offset).map_err(|_| AnvilError::ImageTooLarge { sectors: offset })?;
+
+            let sectors_u32 = u32::try_from(sectors)
+                .map_err(|_| AnvilError::ImageTooLarge { sectors: offset })?;
+
+            let entry = (offset_u32 << 8) | sectors_u32;
+
+            let entry_at = usize::try_from(chunk.slot)
+                .map_err(|_| AnvilError::ImageTooLarge { sectors: offset })?
+                * 4;
+
+            image[entry_at..entry_at + 4].copy_from_slice(&entry.to_be_bytes());
+
+            let timestamp_at = sector_len + entry_at;
+
+            image[timestamp_at..timestamp_at + 4].copy_from_slice(&self.timestamp.to_be_bytes());
+
+            let payload_len =
+                u32::try_from(chunk.payload.len()).map_err(|_| AnvilError::ChunkTooLarge {
+                    len: chunk.payload.len(),
+                })?;
+
+            image.extend_from_slice(&payload_len.to_be_bytes());
+            image.extend_from_slice(&chunk.payload);
+
+            let allocation = sectors * SECTOR_LEN;
+
+            let stored_len =
+                u64::try_from(chunk.payload.len()).map_err(|_| AnvilError::ChunkTooLarge {
+                    len: chunk.payload.len(),
+                })? + 4;
+
+            let padding = usize::try_from(allocation - stored_len)
+                .map_err(|_| AnvilError::ImageTooLarge { sectors: offset })?;
+
+            image.extend(core::iter::repeat_n(0, padding));
+
+            offset += sectors;
+        }
+
+        Ok(image)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
     use crate::reader::entry_of;
-    use sekai_core::{RegionKind, RegionWriter as _};
 
-    fn writer() -> RegionFileWriter {
-        RegionFileWriter::create(
-            Path::new("/tmp/r.0.0.mca"),
-            Dimension::OVERWORLD,
-            RegionKind::REGION,
-            0x1234_5678,
-        )
-        .expect("test writer target must parse")
-    }
-
-    fn coord(x: i32, z: i32) -> ChunkCoord {
-        ChunkCoord::new(Dimension::OVERWORLD, RegionKind::REGION, x, z)
-    }
-
-    #[test]
-    fn create_rejects_bad_target_names() {
-        assert!(matches!(
-            RegionFileWriter::create(
-                Path::new("/tmp/oops.mca"),
-                Dimension::OVERWORLD,
-                RegionKind::REGION,
-                0
-            ),
-            Err(AnvilError::BadFilename { .. })
-        ));
+    fn builder() -> RegionBuilder {
+        RegionBuilder::new(0, 0, 0x1234_5678).unwrap()
     }
 
     #[test]
     fn stages_and_forgets() {
-        let mut w = writer();
-        w.stage_chunk(&coord(1, 2), &[2, 9, 9]).expect("stage");
-        assert_eq!(w.staged.len(), 1);
-        w.stage_remove(&coord(1, 2)).expect("remove");
-        assert!(w.staged.is_empty());
-        // Removing an absent chunk is a no-op (idempotent tombstones).
-        w.stage_remove(&coord(1, 2)).expect("repeat remove");
+        let mut builder = builder();
+
+        builder.stage_chunk(1, 2, &[2, 9, 9]).unwrap();
+
+        builder.remove_chunk(1, 2).unwrap();
+
+        builder.remove_chunk(1, 2).unwrap();
+
+        assert_eq!(builder.image().unwrap().len(), 8192);
     }
 
     #[test]
-    fn rejects_foreign_and_empty_and_huge() {
-        let mut w = writer();
+    fn stages_replace_existing_payload() {
+        let mut builder = builder();
+
+        builder.stage_chunk(0, 0, &[2, 1]).unwrap();
+
+        builder.stage_chunk(0, 0, &[2, 2, 3]).unwrap();
+
+        let image = builder.image().unwrap();
+
+        assert_eq!(&image[8192..8196], &3u32.to_be_bytes());
+        assert_eq!(&image[8196..8199], &[2, 2, 3]);
+    }
+
+    #[test]
+    fn rejects_foreign_empty_and_huge() {
+        let mut builder = builder();
+
         assert!(matches!(
-            w.stage_chunk(&coord(32, 0), &[1]),
+            builder.stage_chunk(32, 0, &[1]),
             Err(AnvilError::WrongRegion { .. })
         ));
+
         assert!(matches!(
-            w.stage_chunk(&coord(-1, 0), &[1]),
+            builder.stage_chunk(-1, 0, &[1]),
             Err(AnvilError::WrongRegion { .. })
         ));
+
         assert!(matches!(
-            w.stage_chunk(
-                &ChunkCoord::new(Dimension::NETHER, RegionKind::REGION, 0, 0),
-                &[1]
-            ),
-            Err(AnvilError::WrongRegion { .. })
-        ));
-        assert!(matches!(
-            w.stage_chunk(&coord(0, 0), &[]),
+            builder.stage_chunk(0, 0, &[]),
             Err(AnvilError::EmptyPayload)
         ));
+
         assert!(matches!(
-            w.stage_chunk(&coord(0, 0), &vec![0u8; 255 * 4096]),
+            builder.stage_chunk(0, 0, &alloc::vec![0; 255 * 4096]),
             Err(AnvilError::ChunkTooLarge { .. })
         ));
+
+        assert!(matches!(
+            RegionBuilder::new(i32::MAX, 0, 0),
+            Err(AnvilError::CoordinateOverflow { .. })
+        ));
+    }
+
+    #[test]
+    fn keeps_chunks_in_slot_order() {
+        let mut builder = builder();
+
+        builder.stage_chunk(1, 1, &[3, 1]).unwrap();
+
+        builder.stage_chunk(0, 0, &[3, 0]).unwrap();
+
+        let image = builder.image().unwrap();
+
+        assert_eq!(&image[0..4], &entry_of(2, 1));
+
+        assert_eq!(&image[132..136], &entry_of(3, 1));
     }
 
     #[test]
     fn packs_image_with_header_and_padding() {
-        let mut w = writer();
-        // Slot 0: 1 sector; slot 33 (lx=1, lz=1): spills into 2 sectors.
-        w.stage_chunk(&coord(0, 0), &[2, 7]).expect("stage");
-        let big = vec![5u8; 4093];
-        w.stage_chunk(&coord(1, 1), &big).expect("stage big");
-        let img = w.image().expect("image builds");
-        // Slot 0 -> offset 2, 1 sector; slot 33 -> offset 3, 2 sectors.
-        assert_eq!(&img[0..4], &entry_of(2, 1));
-        assert_eq!(&img[33 * 4..33 * 4 + 4], &entry_of(3, 2));
-        // Timestamps: present slots carry the writer stamp, others zero.
-        assert_eq!(&img[4096..4100], &0x1234_5678u32.to_be_bytes());
+        let mut builder = builder();
+
+        builder.stage_chunk(0, 0, &[2, 7]).unwrap();
+
+        let big = alloc::vec![5u8; 4093];
+
+        builder.stage_chunk(1, 1, &big).unwrap();
+
+        let image = builder.image().unwrap();
+
+        assert_eq!(&image[0..4], &entry_of(2, 1));
+
+        assert_eq!(&image[33 * 4..33 * 4 + 4], &entry_of(3, 2));
+
+        assert_eq!(&image[4096..4100], &0x1234_5678u32.to_be_bytes());
+
         assert_eq!(
-            &img[4096 + 33 * 4..4096 + 33 * 4 + 4],
+            &image[4096 + 33 * 4..4096 + 33 * 4 + 4],
             &0x1234_5678u32.to_be_bytes()
         );
-        assert_eq!(&img[4096 + 4..4096 + 8], &[0u8; 4]);
-        // Payload framing: length prefix equals the staged payload length
-        // (the type byte is part of the payload, not the prefix).
-        assert_eq!(&img[8192..8196], &2u32.to_be_bytes());
-        assert_eq!(&img[8196..8198], &[2u8, 7u8]);
+
+        assert_eq!(&image[4096 + 4..4096 + 8], &[0; 4]);
+
+        assert_eq!(&image[8192..8196], &2u32.to_be_bytes());
+
+        assert_eq!(&image[8196..8198], &[2, 7]);
+
         let second = 8192 + 4096;
-        assert_eq!(&img[second..second + 4], &4093u32.to_be_bytes());
-        assert!(img.len().is_multiple_of(4096));
-        assert_eq!(img.len(), 8192 + 4096 + 8192);
+
+        assert_eq!(&image[second..second + 4], &4093u32.to_be_bytes());
+
+        assert!(image.len().is_multiple_of(4096));
+
+        assert_eq!(image.len(), 8192 + 4096 + 8192);
     }
 }

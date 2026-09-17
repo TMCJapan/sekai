@@ -1,25 +1,13 @@
-//! Rollback planning: resolve one snapshot's captured payloads.
+//! Rollback planning for exact snapshot restoration.
 //!
-//! Rationale: rollback is strict - after it returns, the world matches the
-//! snapshot's captured raw payloads exactly (volatile tags such as
-//! `LastUpdate` are rewound to their capture-time values along with
-//! everything else). This module resolves *what* must be restored (present
-//! rows grouped by region file); the concrete adapter rebuilds files from
-//! CAS blobs (never patched), removes files unknown to the snapshot, and
-//! deletes rather than shells files whose rows are all tombstones. A blob
-//! missing from CAS aborts loudly: that is corruption, and writing a
-//! partial world would be worse than writing none.
-
+//! The plan contains present payloads grouped by region. Adapters rebuild
+//! files from CAS blobs; missing blobs are treated as corruption.
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::fmt;
 
-use super::backup::region_key_of;
-use crate::domain::coords::ChunkCoord;
-use crate::domain::hash::BlobHash;
-use crate::domain::region::RegionKey;
-use crate::domain::snapshot::SnapshotId;
 use crate::port::meta::MetaStore;
+use sekai_util::{BlobHash, ChunkCoord, RegionKey, SnapshotId};
 
 /// Outcome of one rollback run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,8 +25,13 @@ pub struct RollbackReport {
 pub struct RollbackPlan {
     /// Snapshot creation time (unix millis, informational only).
     pub created_at_ms: u64,
-    /// Present rows grouped by region file.
+    /// Present rows grouped by region.
     pub groups: BTreeMap<RegionKey, Vec<(ChunkCoord, BlobHash)>>,
+    /// Tombstoned coordinates grouped by region. Regions absent from both
+    /// `groups` and `tombstones` are unknown to the snapshot (created
+    /// afterwards); regions in `tombstones` but not `groups` are fully
+    /// tombstoned. Adapters need the distinction to apply keep-policies.
+    pub tombstones: BTreeMap<RegionKey, Vec<ChunkCoord>>,
 }
 
 /// Failures while resolving a rollback plan.
@@ -62,32 +55,90 @@ impl<M: fmt::Debug> fmt::Display for RollbackError<M> {
     }
 }
 
-/// Resolve the present rows of `snapshot` grouped by region file.
-///
-/// Tombstones contribute no rows: the adapter deletes files with no group
-/// (post-snapshot files and fully tombstoned regions alike).
-pub fn plan_rollback<M: MetaStore>(
+/// Resolve present snapshot rows grouped by region.
+pub async fn plan_rollback<M: MetaStore>(
     meta: &M,
     snapshot: SnapshotId,
 ) -> Result<RollbackPlan, RollbackError<M::Error>> {
     let created_at_ms = meta
         .lookup_snapshot(snapshot)
+        .await
         .map_err(RollbackError::Meta)?
         .map(|s| s.created_at_ms)
         .ok_or(RollbackError::UnknownSnapshot { id: snapshot.0 })?;
     let mut groups: BTreeMap<RegionKey, Vec<(ChunkCoord, BlobHash)>> = BTreeMap::new();
+    let mut tombstones: BTreeMap<RegionKey, Vec<ChunkCoord>> = BTreeMap::new();
     meta.visit_snapshot_chunks(snapshot, |entry| {
         if let Some(blob) = entry.blob {
             groups
-                .entry(region_key_of(entry.coord))
+                .entry(RegionKey::of(entry.coord))
                 .or_default()
                 .push((entry.coord, blob));
+        } else {
+            tombstones
+                .entry(RegionKey::of(entry.coord))
+                .or_default()
+                .push(entry.coord);
         }
         true
     })
+    .await
     .map_err(RollbackError::Meta)?;
     Ok(RollbackPlan {
         created_at_ms,
         groups,
+        tombstones,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::support::{MemMeta, block_on};
+    use sekai_util::{Dimension, RegionKind, SnapshotEntry};
+
+    const OVER: Dimension = Dimension::OVERWORLD;
+    const REGION: RegionKind = RegionKind::REGION;
+
+    #[test]
+    fn resolves_present_rows_grouped_by_region() {
+        let mut meta = MemMeta::default();
+        let a = ChunkCoord::new(OVER, REGION, 0, 0);
+        let b = ChunkCoord::new(OVER, REGION, 1, 0);
+        let gone = ChunkCoord::new(OVER, REGION, 2, 0);
+        let id = block_on(meta.apply_snapshot_incremental(
+            1_000,
+            &[
+                SnapshotEntry::new(a, Some(BlobHash([1; 32])), None),
+                SnapshotEntry::new(b, Some(BlobHash([2; 32])), None),
+                SnapshotEntry::new(gone, None, None),
+            ],
+            None,
+            &[],
+            &[],
+        ))
+        .unwrap()
+        .id;
+
+        let plan = block_on(plan_rollback(&meta, id)).unwrap();
+        assert_eq!(plan.created_at_ms, 1_000);
+        assert_eq!(plan.groups.len(), 1);
+        let rows = &plan.groups[&RegionKey::new(OVER, REGION, 0, 0)];
+        assert_eq!(rows.len(), 2);
+        assert!(rows.contains(&(a, BlobHash([1; 32]))));
+        assert!(rows.contains(&(b, BlobHash([2; 32]))));
+        assert_eq!(
+            plan.tombstones[&RegionKey::new(OVER, REGION, 0, 0)],
+            alloc::vec![gone]
+        );
+    }
+
+    #[test]
+    fn unknown_snapshot_is_an_error() {
+        let meta = MemMeta::default();
+        assert_eq!(
+            block_on(plan_rollback(&meta, SnapshotId(7))),
+            Err(RollbackError::UnknownSnapshot { id: 7 })
+        );
+    }
 }

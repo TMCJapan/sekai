@@ -1,25 +1,23 @@
 //! Incremental world backup over abstract ports.
 //!
-//! Rationale: backup never parses NBT - the CAS key runs over raw sector
-//! bytes, so the hot path is read + hash + store with zero decoding.
 //! Change detection (`diff`) is deliberately not computed here; parsing
 //! every chunk would multiply scan cost for data no consumer reads yet.
 //!
 //! Unchanged region files skip ingestion entirely: each file carries a
 //! `(mtime, size, header hash)` fingerprint in derived state, and a file
-//! matching all three signals keeps its previous history rows via the
-//! port's carry seam instead of a per-chunk loop. Tombstones keep history
-//! total without a global chunk census: the known universe is exactly the
-//! coordinate set of the latest snapshot, so every snapshot re-records
-//! every known coordinate (present, carried, or tombstone).
+//! matching all three signals contributes no new rows - its previous rows
+//! stay readable through fallback instead of being copied. Tombstones avoid
+//! a global chunk census: the known universe is exactly the effective
+//! coordinate set of the latest snapshot, so every snapshot records fresh
+//! rows only for ingested chunks plus tombstones for vanished coordinates.
 //!
-//! The orchestration is split so concrete adapters (threading, filesystem,
-//! clocks, timing) stay outside `core`:
+//! The orchestration is split so concrete adapters (parallelism,
+//! filesystem, clocks, timing) stay outside `core`:
 //!
 //! ```text
-//! plan_backup   read previous state, decide carry vs ingest (pure policy)
+//! plan_backup   read previous state, decide carry vs ingest (policy)
 //!   -> adapter ingests changed regions (hash + CAS put per chunk)
-//! assemble      merge ingested rows, carried presence, and tombstones (pure)
+//! assemble      merge ingested rows, carried presence, tombstones (pure)
 //!   -> adapter flushes CAS (durability barrier before metadata)
 //! commit        record the snapshot atomically (single metadata batch)
 //! ```
@@ -31,14 +29,11 @@
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
-use crate::domain::coords::ChunkCoord;
-use crate::domain::hash::BlobHash;
-use crate::domain::region::{
-    ApplyOutcome, RegionFingerprint, RegionKey, RegionStateEntry, SnapshotEntry,
-};
-use crate::domain::snapshot::{Snapshot, SnapshotId};
-use crate::port::hash::BlobHasher;
 use crate::port::meta::MetaStore;
+use sekai_util::{
+    ApplyOutcome, BlobHash, ChunkCoord, RegionFingerprint, RegionKey, RegionStateEntry, Scope,
+    Snapshot, SnapshotEntry, SnapshotId,
+};
 
 /// Outcome of one backup run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,30 +104,28 @@ pub struct Assembled {
     pub removed: Vec<RegionKey>,
 }
 
-/// Load the previous snapshot's coordinates and region fingerprints, then
-/// decide per observed region whether its rows carry over or it needs
-/// ingestion.
+/// Load prior state and classify observed regions as carried or ingested.
 ///
-/// Fingerprint and ingest open the file separately, and a carried file is
-/// not re-read before the commit: a concurrent rewrite after the
-/// fingerprint match is silently missed by this snapshot (the next run
-/// mismatches and re-ingests). Callers must quiesce the server before
-/// snapshotting. Unchanged files skip read/hash/CAS; their rows carry over
-/// at commit time.
-pub fn plan_backup<M: MetaStore>(
+/// Regions outside `scope` are ignored entirely: they are neither carried
+/// nor ingested, and their stored state rows are never marked removed.
+/// Callers must quiesce the source while fingerprinting; a concurrent rewrite
+/// after the match is not detected until a later backup.
+pub async fn plan_backup<M: MetaStore>(
     meta: &M,
     observed: &[Observation],
+    scope: &Scope,
 ) -> Result<(Previous, Plan), M::Error> {
     let mut universe: BTreeSet<ChunkCoord> = BTreeSet::new();
-    let snapshot = meta.latest_snapshot()?;
+    let snapshot = meta.latest_snapshot().await?;
     if let Some(latest) = snapshot {
         meta.visit_snapshot_chunks(latest.id, |entry| {
             universe.insert(entry.coord);
             true
-        })?;
+        })
+        .await?;
     }
     let mut states: BTreeMap<RegionKey, RegionStateEntry> = BTreeMap::new();
-    for state in meta.load_region_states()? {
+    for state in meta.load_region_states().await? {
         states.insert(state.key, state);
     }
     let previous = Previous {
@@ -147,6 +140,9 @@ pub fn plan_backup<M: MetaStore>(
         discovered: BTreeSet::new(),
     };
     for obs in observed {
+        if !scope.matches_region(obs.key) {
+            continue;
+        }
         plan.discovered.insert(obs.key);
         if previous
             .states
@@ -159,40 +155,23 @@ pub fn plan_backup<M: MetaStore>(
         }
     }
     for state in previous.states.values() {
-        if !plan.discovered.contains(&state.key) {
+        if scope.matches_region(state.key) && !plan.discovered.contains(&state.key) {
             plan.removed.push(state.key);
         }
     }
     Ok((previous, plan))
 }
 
-/// Hash one raw chunk payload into its persistent CAS key.
-///
-/// The payload is hashed exactly as read from the `.mca` sector, including
-/// its compression framing.
-#[must_use]
-pub fn hash_payload<H: BlobHasher>(payload: &[u8]) -> BlobHash {
-    let mut hasher = H::new();
-    hasher.update(payload);
-    hasher.finalize()
-}
-
-/// Stage the history row for one ingested chunk.
-///
-/// The volatile `diff` view is deliberately not computed: parsing every
-/// chunk would multiply scan cost for a cache no consumer reads yet.
-#[must_use]
+/// Stage an ingested chunk without computing its volatile diff hash.
 pub const fn stage_present(coord: ChunkCoord, hash: BlobHash) -> SnapshotEntry {
     SnapshotEntry::new(coord, Some(hash), None)
 }
 
-/// Merge ingested rows with carried presence and tombstones.
+/// Merge fresh rows with carried coordinates and tombstones.
 ///
-/// Coordinates under carried regions were fingerprint-matched, so their
-/// rows carry over verbatim; every previously known coordinate that is
-/// neither ingested nor carried becomes a tombstone. Consumes the plan:
-/// assembly is the plan's single use.
-#[must_use]
+/// Previously known coordinates inside `scope` but not present in the new
+/// scan become tombstones; out-of-scope coordinates keep resolving through
+/// fallback, so scoped backups never record spurious tombstones.
 pub fn assemble(
     plan: Plan,
     previous: &Previous,
@@ -200,11 +179,12 @@ pub fn assemble(
     mut present: BTreeSet<ChunkCoord>,
     new_blobs: usize,
     fingerprints: Vec<RegionFingerprint>,
+    scope: &Scope,
 ) -> Assembled {
     if !plan.carries.is_empty() {
         let skipped: BTreeSet<RegionKey> = plan.carries.iter().copied().collect();
         for coord in &previous.universe {
-            if skipped.contains(&region_key_of(*coord)) {
+            if scope.contains(*coord) && skipped.contains(&RegionKey::of(*coord)) {
                 present.insert(*coord);
             }
         }
@@ -212,7 +192,7 @@ pub fn assemble(
     let mut entries = ingested_entries;
     let mut tombstones = 0usize;
     for coord in &previous.universe {
-        if !present.contains(coord) {
+        if scope.contains(*coord) && !present.contains(coord) {
             entries.push(SnapshotEntry::new(*coord, None, None));
             tombstones += 1;
         }
@@ -228,13 +208,11 @@ pub fn assemble(
     }
 }
 
-/// Record the assembled rows as one snapshot.
+/// Commit assembled rows as one snapshot.
 ///
-/// The caller must have flushed CAS (the port's `sync` barrier) before
-/// invoking this: file data is fsynced per blob, and the barrier is what
-/// makes every referenced blob crash-durable ahead of this single metadata
-/// batch.
-pub fn commit<M: MetaStore>(
+/// CAS must be synced first so every referenced blob is durable before the
+/// metadata transaction is committed.
+pub async fn commit<M: MetaStore>(
     meta: &mut M,
     previous: &Previous,
     staged: &Assembled,
@@ -243,13 +221,15 @@ pub fn commit<M: MetaStore>(
     let carry_from = previous
         .snapshot
         .map(|snapshot| (snapshot.id, staged.carries.as_slice()));
-    let outcome: ApplyOutcome = meta.apply_snapshot_incremental(
-        created_at_ms,
-        &staged.entries,
-        carry_from,
-        &staged.fingerprints,
-        &staged.removed,
-    )?;
+    let outcome: ApplyOutcome = meta
+        .apply_snapshot_incremental(
+            created_at_ms,
+            &staged.entries,
+            carry_from,
+            &staged.fingerprints,
+            &staged.removed,
+        )
+        .await?;
     Ok(BackupReport {
         snapshot: outcome.id,
         chunks: staged.chunks,
@@ -260,165 +240,14 @@ pub fn commit<M: MetaStore>(
     })
 }
 
-/// Region identity owning a chunk coordinate.
-pub(crate) const fn region_key_of(coord: ChunkCoord) -> RegionKey {
-    RegionKey::new(coord.dim, coord.kind, coord.region_x(), coord.region_z())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::coords::{Dimension, RegionKind};
-    use crate::domain::history::ChunkHistoryEntry;
-
-    /// Minimal in-memory [`MetaStore`] behind the backup seam.
-    #[derive(Debug, Default)]
-    struct MemMeta {
-        snapshots: Vec<Snapshot>,
-        rows: Vec<ChunkHistoryEntry>,
-        states: Vec<RegionStateEntry>,
-    }
-
-    #[derive(Debug, Clone, PartialEq, Eq)]
-    struct MemError;
-
-    impl MetaStore for MemMeta {
-        type Error = MemError;
-
-        fn create_snapshot(&mut self, created_at_ms: u64) -> Result<SnapshotId, MemError> {
-            let id = SnapshotId(self.snapshots.len() as u64 + 1);
-            self.snapshots.push(Snapshot::new(id, created_at_ms));
-            Ok(id)
-        }
-
-        fn record_chunk(
-            &mut self,
-            snapshot: SnapshotId,
-            coord: &ChunkCoord,
-            blob: Option<&BlobHash>,
-            diff: Option<&crate::domain::hash::DiffHash>,
-        ) -> Result<(), MemError> {
-            self.rows.push(ChunkHistoryEntry::new(
-                *coord,
-                snapshot,
-                blob.copied(),
-                diff.copied(),
-            ));
-            Ok(())
-        }
-
-        fn lookup_chunk(
-            &self,
-            snapshot: SnapshotId,
-            coord: &ChunkCoord,
-        ) -> Result<Option<ChunkHistoryEntry>, MemError> {
-            Ok(self
-                .rows
-                .iter()
-                .find(|row| row.snapshot == snapshot && row.coord == *coord)
-                .copied())
-        }
-
-        fn lookup_snapshot(&self, id: SnapshotId) -> Result<Option<Snapshot>, MemError> {
-            Ok(self.snapshots.iter().find(|s| s.id == id).copied())
-        }
-
-        fn latest_snapshot(&self) -> Result<Option<Snapshot>, MemError> {
-            Ok(self.snapshots.last().copied())
-        }
-
-        fn visit_snapshot_chunks<F>(
-            &self,
-            snapshot: SnapshotId,
-            mut visit: F,
-        ) -> Result<(), MemError>
-        where
-            F: FnMut(&ChunkHistoryEntry) -> bool,
-        {
-            for row in &self.rows {
-                if row.snapshot == snapshot && !visit(row) {
-                    break;
-                }
-            }
-            Ok(())
-        }
-
-        fn visit_snapshots<F>(&self, mut visit: F) -> Result<(), MemError>
-        where
-            F: FnMut(&Snapshot) -> bool,
-        {
-            for snapshot in &self.snapshots {
-                if !visit(snapshot) {
-                    break;
-                }
-            }
-            Ok(())
-        }
-
-        fn load_region_states(&self) -> Result<Vec<RegionStateEntry>, MemError> {
-            Ok(self.states.clone())
-        }
-
-        fn apply_snapshot_incremental(
-            &mut self,
-            created_at_ms: u64,
-            entries: &[SnapshotEntry],
-            carry_from: Option<(SnapshotId, &[RegionKey])>,
-            fingerprints: &[RegionFingerprint],
-            removed: &[RegionKey],
-        ) -> Result<ApplyOutcome, MemError> {
-            let id = self.create_snapshot(created_at_ms)?;
-            for entry in entries {
-                self.rows.push(ChunkHistoryEntry::new(
-                    entry.coord,
-                    id,
-                    entry.blob,
-                    entry.diff,
-                ));
-            }
-            let mut carried_chunks = 0usize;
-            if let Some((prev, keys)) = carry_from {
-                let owned: Vec<ChunkHistoryEntry> = self
-                    .rows
-                    .iter()
-                    .filter(|row| row.snapshot == prev && keys.contains(&region_key_of(row.coord)))
-                    .map(|row| ChunkHistoryEntry::new(row.coord, id, row.blob, row.diff))
-                    .collect();
-                carried_chunks = owned.len();
-                self.rows.extend(owned);
-                for key in keys {
-                    for state in &mut self.states {
-                        if state.key == *key {
-                            state.snapshot_id = id;
-                        }
-                    }
-                }
-            }
-            for fp in fingerprints {
-                if let Some(state) = self.states.iter_mut().find(|s| s.key == fp.key) {
-                    *state = RegionStateEntry {
-                        key: fp.key,
-                        mtime_ms: fp.mtime_ms,
-                        size: fp.size,
-                        header_hash: fp.header_hash,
-                        snapshot_id: id,
-                    };
-                } else {
-                    self.states.push(RegionStateEntry {
-                        key: fp.key,
-                        mtime_ms: fp.mtime_ms,
-                        size: fp.size,
-                        header_hash: fp.header_hash,
-                        snapshot_id: id,
-                    });
-                }
-            }
-            self.states.retain(|state| !removed.contains(&state.key));
-            Ok(ApplyOutcome { id, carried_chunks })
-        }
-    }
+    use crate::support::MemMeta;
+    use sekai_util::{ChunkHistoryEntry, Dimension, RegionKind};
 
     const OVER: Dimension = Dimension::OVERWORLD;
+    const NETHER: Dimension = Dimension::NETHER;
     const REGION: RegionKind = RegionKind::REGION;
 
     const fn key(rx: i32, rz: i32) -> RegionKey {
@@ -427,6 +256,14 @@ mod tests {
 
     const fn coord(x: i32, z: i32) -> ChunkCoord {
         ChunkCoord::new(OVER, REGION, x, z)
+    }
+
+    const fn nether_key(rx: i32, rz: i32) -> RegionKey {
+        RegionKey::new(NETHER, REGION, rx, rz)
+    }
+
+    const fn nether_coord(x: i32, z: i32) -> ChunkCoord {
+        ChunkCoord::new(NETHER, REGION, x, z)
     }
 
     fn fingerprint(key: RegionKey) -> RegionFingerprint {
@@ -445,7 +282,8 @@ mod tests {
             key: key(0, 0),
             fingerprint: fingerprint(key(0, 0)),
         }];
-        let (previous, plan) = plan_backup(&meta, &observed).expect("plan must succeed");
+        let (previous, plan) =
+            crate::support::block_on(plan_backup(&meta, &observed, &Scope::World)).unwrap();
         assert!(previous.snapshot.is_none());
         assert!(previous.universe.is_empty());
         assert!(plan.carries.is_empty());
@@ -458,7 +296,7 @@ mod tests {
         let mut meta = MemMeta::default();
         let fp0 = fingerprint(key(0, 0));
         let fp1 = fingerprint(key(1, 0));
-        meta.apply_snapshot_incremental(
+        crate::support::block_on(meta.apply_snapshot_incremental(
             1_000,
             &[
                 stage_present(coord(0, 0), BlobHash([1; 32])),
@@ -467,11 +305,9 @@ mod tests {
             None,
             &[fp0, fp1],
             &[],
-        )
-        .expect("seed must succeed");
+        ))
+        .unwrap();
 
-        // Region (0, 0) changed (size signal differs): ingest. Region (1, 0)
-        // matches: carry.
         let mut changed = fp0;
         changed.size += 1;
         let observed = [
@@ -484,13 +320,12 @@ mod tests {
                 fingerprint: fp1,
             },
         ];
-        let (previous, plan) = plan_backup(&meta, &observed).expect("plan must succeed");
+        let (previous, plan) =
+            crate::support::block_on(plan_backup(&meta, &observed, &Scope::World)).unwrap();
         assert_eq!(plan.carries, alloc::vec![key(1, 0)]);
         assert_eq!(plan.ingest, alloc::vec![key(0, 0)]);
         assert!(plan.removed.is_empty());
 
-        // Re-ingested chunk gets the new blob; the carried chunk keeps its
-        // blob without re-ingest.
         let staged = assemble(
             plan,
             &previous,
@@ -498,49 +333,48 @@ mod tests {
             BTreeSet::from([coord(0, 0)]),
             1,
             alloc::vec![changed],
+            &Scope::World,
         );
         assert_eq!(staged.chunks, 2);
         assert_eq!(staged.tombstones, 0);
 
-        let report = commit(&mut meta, &previous, &staged, 2_000).expect("commit must succeed");
+        let report =
+            crate::support::block_on(commit(&mut meta, &previous, &staged, 2_000)).unwrap();
         assert_eq!(report.chunks, 2);
         assert_eq!(report.new_blobs, 1);
         assert_eq!(report.skipped_regions, 1);
         assert_eq!(report.carried_chunks, 1);
         assert_eq!(report.tombstones, 0);
 
-        let got = meta
-            .lookup_chunk(report.snapshot, &coord(0, 0))
-            .expect("lookup must succeed")
-            .expect("row must exist");
+        let got = crate::support::block_on(meta.lookup_chunk(report.snapshot, &coord(0, 0)))
+            .unwrap()
+            .unwrap();
         assert_eq!(got.blob, Some(BlobHash([9; 32])));
-        let kept = meta
-            .lookup_chunk(report.snapshot, &coord(32, 0))
-            .expect("lookup must succeed")
-            .expect("row must exist");
+        let kept = crate::support::block_on(meta.lookup_chunk(report.snapshot, &coord(32, 0)))
+            .unwrap()
+            .unwrap();
         assert_eq!(kept.blob, Some(BlobHash([2; 32])));
     }
 
     #[test]
     fn missing_coordinates_become_tombstones_and_states_drop() {
         let mut meta = MemMeta::default();
-        let s1 = meta
-            .apply_snapshot_incremental(
-                1_000,
-                &[
-                    stage_present(coord(0, 0), BlobHash([1; 32])),
-                    stage_present(coord(1, 0), BlobHash([2; 32])),
-                ],
-                None,
-                &[fingerprint(key(0, 0))],
-                &[],
-            )
-            .expect("seed must succeed")
-            .id;
+        let s1 = crate::support::block_on(meta.apply_snapshot_incremental(
+            1_000,
+            &[
+                stage_present(coord(0, 0), BlobHash([1; 32])),
+                stage_present(coord(1, 0), BlobHash([2; 32])),
+            ],
+            None,
+            &[fingerprint(key(0, 0))],
+            &[],
+        ))
+        .unwrap()
+        .id;
         assert_eq!(s1, SnapshotId(1));
 
-        // Region file gone from disk: removed state, tombstones for both.
-        let (previous, plan) = plan_backup(&meta, &[]).expect("plan must succeed");
+        let (previous, plan) =
+            crate::support::block_on(plan_backup(&meta, &[], &Scope::World)).unwrap();
         assert_eq!(plan.removed, alloc::vec![key(0, 0)]);
         let staged = assemble(
             plan,
@@ -549,17 +383,155 @@ mod tests {
             BTreeSet::new(),
             0,
             alloc::vec::Vec::new(),
+            &Scope::World,
         );
         assert_eq!(staged.chunks, 0);
         assert_eq!(staged.tombstones, 2);
 
-        let report = commit(&mut meta, &previous, &staged, 2_000).expect("commit must succeed");
+        let report =
+            crate::support::block_on(commit(&mut meta, &previous, &staged, 2_000)).unwrap();
         assert_eq!(report.tombstones, 2);
         assert!(meta.states.is_empty());
-        let tomb = meta
-            .lookup_chunk(report.snapshot, &coord(0, 0))
-            .expect("lookup must succeed")
-            .expect("row must exist");
+        let tomb = crate::support::block_on(meta.lookup_chunk(report.snapshot, &coord(0, 0)))
+            .unwrap()
+            .unwrap();
         assert!(tomb.is_tombstone());
+    }
+
+    #[test]
+    fn scoped_plan_ignores_out_of_scope_regions() {
+        let mut meta = MemMeta::default();
+        let fp_over = fingerprint(key(0, 0));
+        let fp_nether = RegionFingerprint {
+            key: nether_key(0, 0),
+            ..fingerprint(key(0, 0))
+        };
+        crate::support::block_on(meta.apply_snapshot_incremental(
+            1_000,
+            &[
+                stage_present(coord(0, 0), BlobHash([1; 32])),
+                stage_present(nether_coord(0, 0), BlobHash([2; 32])),
+            ],
+            None,
+            &[fp_over, fp_nether],
+            &[],
+        ))
+        .unwrap();
+
+        // Only the nether region is observed (overworld file deleted from
+        // disk), but the overworld scope sees neither ingest nor removal.
+        let observed = [Observation {
+            key: nether_key(0, 0),
+            fingerprint: fp_nether,
+        }];
+        let scope = Scope::dimension(NETHER);
+        let (_, plan) = crate::support::block_on(plan_backup(&meta, &observed, &scope)).unwrap();
+        assert_eq!(plan.carries, alloc::vec![nether_key(0, 0)]);
+        assert!(plan.ingest.is_empty());
+        assert!(plan.removed.is_empty());
+
+        // Out-of-scope observations never enter the plan at all.
+        let observed = [
+            Observation {
+                key: key(0, 0),
+                fingerprint: fp_over,
+            },
+            Observation {
+                key: nether_key(0, 0),
+                fingerprint: fp_nether,
+            },
+        ];
+        let (_, plan) =
+            crate::support::block_on(plan_backup(&meta, &observed, &Scope::World)).unwrap();
+        assert_eq!(plan.carries, alloc::vec![key(0, 0), nether_key(0, 0)]);
+    }
+
+    #[test]
+    fn scoped_assemble_tombstones_only_in_scope() {
+        let mut meta = MemMeta::default();
+        let fp_nether = RegionFingerprint {
+            key: nether_key(0, 0),
+            ..fingerprint(key(0, 0))
+        };
+        crate::support::block_on(meta.apply_snapshot_incremental(
+            1_000,
+            &[
+                stage_present(coord(0, 0), BlobHash([1; 32])),
+                stage_present(coord(1, 0), BlobHash([2; 32])),
+                stage_present(nether_coord(0, 0), BlobHash([3; 32])),
+            ],
+            None,
+            &[fingerprint(key(0, 0)), fp_nether],
+            &[],
+        ))
+        .unwrap();
+
+        // Scoped backup of the overworld re-ingests its (changed) region:
+        // (1,0) is genuinely gone, the nether chunk is out of scope and
+        // must not become a tombstone.
+        let mut changed = fingerprint(key(0, 0));
+        changed.size += 1;
+        let observed = [Observation {
+            key: key(0, 0),
+            fingerprint: changed,
+        }];
+        let scope = Scope::dimension(OVER);
+        let (previous, plan) =
+            crate::support::block_on(plan_backup(&meta, &observed, &scope)).unwrap();
+        assert_eq!(plan.ingest, alloc::vec![key(0, 0)]);
+        assert!(plan.removed.is_empty());
+        let staged = assemble(
+            plan,
+            &previous,
+            alloc::vec![stage_present(coord(0, 0), BlobHash([9; 32]))],
+            BTreeSet::from([coord(0, 0)]),
+            1,
+            alloc::vec::Vec::new(),
+            &scope,
+        );
+        assert_eq!(staged.tombstones, 1);
+        assert_eq!(staged.chunks, 1);
+        let tombstoned: alloc::vec::Vec<ChunkCoord> = staged
+            .entries
+            .iter()
+            .filter(|entry| entry.blob.is_none())
+            .map(|entry| entry.coord)
+            .collect();
+        assert_eq!(tombstoned, alloc::vec![coord(1, 0)]);
+
+        let report =
+            crate::support::block_on(commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        assert_eq!(report.tombstones, 1);
+        // The nether chunk still resolves through fallback, untouched.
+        let kept =
+            crate::support::block_on(meta.lookup_chunk(report.snapshot, &nether_coord(0, 0)))
+                .unwrap()
+                .unwrap();
+        assert_eq!(kept.blob, Some(BlobHash([3; 32])));
+    }
+
+    #[test]
+    fn mem_meta_satisfies_lookup_contract() {
+        let mut meta = MemMeta::default();
+        let id = crate::support::block_on(meta.create_snapshot(5)).unwrap();
+        crate::support::block_on(meta.record_chunk(
+            id,
+            &coord(0, 0),
+            Some(&BlobHash([3; 32])),
+            None,
+        ))
+        .unwrap();
+        let row = crate::support::block_on(meta.lookup_chunk(id, &coord(0, 0)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            row,
+            ChunkHistoryEntry::new(coord(0, 0), id, Some(BlobHash([3; 32])), None)
+        );
+        assert!(
+            crate::support::block_on(meta.lookup_snapshot(SnapshotId(999)))
+                .unwrap()
+                .is_none()
+        );
     }
 }

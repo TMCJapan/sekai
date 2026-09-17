@@ -11,11 +11,21 @@ workspace = true
 name = "sekai"
 path = "src/main.rs"
 
+[features]
+default = ["backend-sqlite"]
+backend-sqlite = ["sekai-app/backend-sqlite"]
+backend-mysql = ["sekai-app/backend-mysql"]
+backend-postgres = ["sekai-app/backend-postgres"]
+
 [dependencies]
-sekai-core.workspace = true
-sekai-anvil.workspace = true
-sekai-storage.workspace = true
 anyhow.workspace = true
 chrono.workspace = true
 clap.workspace = true
-thiserror.workspace = true
+indicatif.workspace = true
+sekai-app.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+
+[package.metadata.cargo-machete]
+ignored = ["sekai-app"]

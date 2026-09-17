@@ -1,23 +1,22 @@
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
-
-//! CAS blob files and SQLite MVCC metadata.
+//! Content-addressed blob storage and MVCC metadata.
 //!
-//! Rationale: immutable blobs live as plain files (`blobs/ab/cdef...`)
-//! while history lives in SQLite. The two stores are deliberately separate
-//! types sharing one error enum: crash-consistency ordering (blobs flushed
-//! before metadata references them) is the backup caller's job, and keeping
-//! the types split makes that ordering visible at the call site instead of
-//! hiding it inside one opaque "database".
+//! Backend modules are feature-gated; SQLite is the implemented backend.
 
-mod cas;
-mod error;
-mod hash;
-mod meta;
-mod region;
-mod store;
+/// Async `BlobStore`/`MetaStore` traits, `BackendKind`, URL selection.
+pub mod api;
+/// File CAS (`blobs/ab/cdef...`).
+pub mod cas;
+/// Reserved MySQL backend stub.
+#[cfg(feature = "backend-mysql")]
+pub mod mysql;
+/// Reserved Postgres backend stub.
+#[cfg(feature = "backend-postgres")]
+pub mod postgres;
+/// SQLite backend (sqlx).
+#[cfg(feature = "backend-sqlite")]
+pub mod sqlite;
 
+pub use api::{BackendKind, BlobStore, MetaStore, StorageError, Store, parse_backend_url};
 pub use cas::FileCas;
-pub use error::StorageError;
-pub use hash::Blake3Hasher;
-pub use meta::{SCHEMA_VERSION, SqliteMeta};
-pub use store::Store;
+#[cfg(feature = "backend-sqlite")]
+pub use sqlite::{SqliteMeta, SqliteStore, open_sqlite};

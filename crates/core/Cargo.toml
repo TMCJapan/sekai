@@ -8,3 +8,14 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+blake3.workspace = true
+sekai-anvil.workspace = true
+sekai-nbt.workspace = true
+sekai-util.workspace = true
+
+[[bench]]
+name = "hash"
+harness = false
+
+[dev-dependencies]
+criterion.workspace = true
