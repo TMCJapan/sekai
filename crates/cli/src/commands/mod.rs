@@ -9,6 +9,7 @@ mod gc;
 mod list;
 mod progress;
 mod rollback;
+mod status;
 mod tag;
 
 use crate::cli::{Cli, Command, DebugCommand, TimingArgs};
@@ -48,6 +49,23 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
                 &cli.store,
                 world,
                 *with_diff,
+                *jobs,
+                *progress,
+                selection,
+                ReportOut::of(*output, style),
+            )
+            .await
+        }
+        Command::Status {
+            world,
+            output,
+            progress,
+            selection,
+            jobs,
+        } => {
+            status::run(
+                &cli.store,
+                world,
                 *jobs,
                 *progress,
                 selection,

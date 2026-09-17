@@ -8,6 +8,7 @@
 - [概念](concepts.md)
 - [対象範囲選択](scope.md)
 - [バックアップ](commands/backup.md)
+- [ステータス](commands/status.md)
 - [ロールバック](commands/rollback.md)
 - [エクスポート](commands/export.md)
 - [タグ](commands/tags.md)
