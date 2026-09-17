@@ -3,6 +3,10 @@ name = "sekai-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Policy core for Sekai, a deduplicated Minecraft world backup tool"
+keywords = ["minecraft", "backup"]
 
 [lints]
 workspace = true

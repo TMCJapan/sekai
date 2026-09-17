@@ -3,6 +3,10 @@ name = "sekai-nbt"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Pure no_std NBT parser and diff views used by Sekai"
+keywords = ["minecraft", "nbt"]
 
 [lints]
 workspace = true

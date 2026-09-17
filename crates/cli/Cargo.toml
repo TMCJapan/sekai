@@ -3,6 +3,10 @@ name = "sekai-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Sekai: deduplicated backups and rollback for Minecraft worlds"
+keywords = ["minecraft", "backup"]
 
 [lints]
 workspace = true

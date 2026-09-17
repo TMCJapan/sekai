@@ -3,6 +3,10 @@ name = "sekai-world"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Minecraft world filesystem access for Sekai"
+keywords = ["minecraft", "backup"]
 
 [lints]
 workspace = true

@@ -15,15 +15,17 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
+homepage = "https://github.com/TMCJapan/sekai"
+repository = "https://github.com/TMCJapan/sekai"
 
 [workspace.dependencies]
-sekai-anvil = { path = "crates/anvil" }
-sekai-app = { path = "crates/app" }
-sekai-core = { path = "crates/core" }
-sekai-nbt = { path = "crates/nbt" }
-sekai-storage = { path = "crates/storage" }
-sekai-util = { path = "crates/util" }
-sekai-world = { path = "crates/world" }
+sekai-anvil = { version = "0.1.0", path = "crates/anvil" }
+sekai-app = { version = "0.1.0", path = "crates/app" }
+sekai-core = { version = "0.1.0", path = "crates/core" }
+sekai-nbt = { version = "0.1.0", path = "crates/nbt" }
+sekai-storage = { version = "0.1.0", path = "crates/storage" }
+sekai-util = { version = "0.1.0", path = "crates/util" }
+sekai-world = { version = "0.1.0", path = "crates/world" }
 
 anyhow = { version = "1.0", default-features = false }
 blake3 = { version = "1.8.7", default-features = false }

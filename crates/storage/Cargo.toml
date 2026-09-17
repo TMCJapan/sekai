@@ -3,6 +3,10 @@ name = "sekai-storage"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "Content-addressed and metadata storage backends for Sekai"
+keywords = ["minecraft", "backup", "storage"]
 
 [lints]
 workspace = true
