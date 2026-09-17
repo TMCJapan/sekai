@@ -1,0 +1,21 @@
+name: Build and package CLI
+description: >-
+  Build the `sekai` binary in release mode for one target triple and
+  package it as a tarball (the upload step zips its input and drops
+  file modes, so the tarball keeps the binary executable).
+
+inputs:
+  target:
+    description: Rust target triple to build for
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Build CLI (release)
+      shell: bash
+      run: cargo build -p sekai-cli --release --target ${{ inputs.target }}
+
+    - name: Package CLI
+      shell: bash
+      run: tar -czf sekai-${{ inputs.target }}.tar.gz -C target/${{ inputs.target }}/release sekai${{ runner.os == 'Windows' && '.exe' || '' }}

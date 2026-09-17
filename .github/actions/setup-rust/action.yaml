@@ -1,0 +1,35 @@
+name: Setup Rust toolchain and cache
+description: >-
+  Install a Rust toolchain (with optional targets and components) and
+  configure cargo caching. Callers without compilation steps (lint-only
+  jobs) keep their toolchain step inline instead of using this action.
+  Empty `targets`/`components` behave as absent.
+
+inputs:
+  toolchain:
+    description: Rust toolchain version
+    required: true
+  targets:
+    description: Additional rustup targets (comma-separated, may be empty)
+    required: true
+  components:
+    description: Additional rustup components (comma-separated, may be empty)
+    required: true
+  cache-key:
+    description: rust-cache key suffix
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+      with:
+        toolchain: ${{ inputs.toolchain }}
+        targets: ${{ inputs.targets }}
+        components: ${{ inputs.components }}
+
+    - name: Cache cargo registry & build artifacts
+      uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
+      with:
+        key: ${{ inputs.cache-key }}

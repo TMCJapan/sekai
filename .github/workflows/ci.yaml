@@ -75,17 +75,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+      - name: Setup Rust toolchain and cache
+        uses: ./.github/actions/setup-rust
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
           components: clippy
-
-      - name: Cache cargo registry & build artifacts
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
-        with:
-          key: ${{ matrix.target }}
+          cache-key: ${{ matrix.target }}
 
       # `--all-targets` is deliberately omitted: test and bench harnesses pull
       # in `std`, which these targets do not provide.
@@ -126,19 +122,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+      # Keyed apart from `dist`: this job only ever fills the dev profile, and
+      # a cache shared with the release build would thrash on every run.
+      - name: Setup Rust toolchain and cache
+        uses: ./.github/actions/setup-rust
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
           components: clippy
-
-      # Keyed apart from `dist`: this job only ever fills the dev profile, and
-      # a cache shared with the release build would thrash on every run.
-      - name: Cache cargo registry & build artifacts
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
-        with:
-          key: test-${{ matrix.target }}
+          cache-key: test-${{ matrix.target }}
 
       # After the cache step on purpose: `rust-cache` restores `~/.cargo/bin`,
       # which is where `install-action` drops the binary.
@@ -233,25 +225,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+      - name: Setup Rust toolchain and cache
+        uses: ./.github/actions/setup-rust
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: ${{ matrix.target }}
+          components: ""
+          cache-key: dist-${{ matrix.target }}
 
-      - name: Cache cargo registry & build artifacts
-        uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
+      - name: Build and package CLI
+        uses: ./.github/actions/package-cli
         with:
-          key: dist-${{ matrix.target }}
-
-      - name: Build CLI (release)
-        run: cargo build -p sekai-cli --release --target ${{ matrix.target }}
-
-      # Artifacts are zipped by the upload action, which drops file modes, so
-      # the binary is tarred first to keep it executable after download.
-      - name: Package CLI
-        shell: bash
-        run: tar -czf sekai-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release sekai${{ runner.os == 'Windows' && '.exe' || '' }}
+          target: ${{ matrix.target }}
 
       - name: Upload CLI
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

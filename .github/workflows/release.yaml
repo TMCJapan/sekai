@@ -1,0 +1,226 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to (re-)release, e.g. v0.1.0'
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Keep in sync with `rust-toolchain.toml`.
+  RUST_TOOLCHAIN: 1.98.0
+
+jobs:
+  check-tag:
+    name: Check tag matches package version
+    runs-on: ubuntu-latest
+
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      is_prerelease: ${{ steps.resolve.outputs.is_prerelease }}
+
+    steps:
+      - name: Resolve tag
+        id: resolve
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          case "$TAG" in
+            *-rc*) echo "is_prerelease=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "is_prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ steps.resolve.outputs.tag }}
+
+      # The tag, the workspace version, and the seven internal path
+      # dependencies must move together; publishing depends on it.
+      - name: Check version consistency
+        run: |
+          TAG="${{ steps.resolve.outputs.tag }}"
+          BASE="${TAG#v}"
+          BASE="${BASE%%-*}"
+          VER=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          test "$BASE" = "$VER" || {
+            echo "tag $TAG does not match workspace version $VER"
+            exit 1
+          }
+          N=$(grep -c "version = \"$VER\", path" Cargo.toml)
+          test "$N" = "7" || {
+            echo "expected 7 internal dependencies at $VER, found $N"
+            exit 1
+          }
+
+  test:
+    name: Gate (clippy + tests)
+    needs: check-tag
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.check-tag.outputs.tag }}
+
+      - name: Setup Rust toolchain and cache
+        uses: ./.github/actions/setup-rust
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ""
+          components: clippy
+          cache-key: release-test
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+  dist:
+    name: CLI / ${{ matrix.name }}
+    needs: check-tag
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      # Keep in sync with the `test` matrix in ci.yaml.
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - name: macos-x64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+          - name: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - name: windows-arm64
+            os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.check-tag.outputs.tag }}
+
+      - name: Setup Rust toolchain and cache
+        uses: ./.github/actions/setup-rust
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+          components: ""
+          cache-key: release-${{ matrix.target }}
+
+      - name: Build and package CLI
+        uses: ./.github/actions/package-cli
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Upload CLI
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: sekai-${{ matrix.target }}
+          path: sekai-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+
+  github-release:
+    name: GitHub Release
+    needs: [check-tag, test, dist]
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download CLI artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: sekai-*
+          merge-multiple: true
+          path: artifacts
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.check-tag.outputs.tag }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # Re-run: attach rebuilt tarballs to the existing release.
+            gh release upload "$TAG" --clobber artifacts/*.tar.gz
+          elif [ "${{ needs.check-tag.outputs.is_prerelease }}" = "true" ]; then
+            gh release create "$TAG" --title "$TAG" --generate-notes --prerelease artifacts/*.tar.gz
+          else
+            gh release create "$TAG" --title "$TAG" --generate-notes artifacts/*.tar.gz
+          fi
+
+  crates:
+    name: Publish to crates.io
+    needs: [check-tag, test]
+    if: needs.check-tag.outputs.is_prerelease != 'true'
+    runs-on: ubuntu-latest
+
+    # Trusted publishing (OIDC): no registry token stored. Each crate
+    # needs its trusted publisher configured on crates.io once.
+    permissions:
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.check-tag.outputs.tag }}
+
+      - name: Setup Rust toolchain and cache
+        uses: ./.github/actions/setup-rust
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ""
+          components: ""
+          cache-key: release-crates
+
+      # Dependency order matters: each crate must be on the index before
+      # its dependents publish. Already-published versions are skipped so
+      # re-runs resume instead of failing.
+      - name: Publish crates in dependency order
+        run: |
+          VER=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          for crate in sekai-util sekai-anvil sekai-nbt sekai-core sekai-storage sekai-world sekai-app sekai-cli; do
+            if curl -fsSL "https://crates.io/api/v1/crates/$crate/$VER" -o /dev/null; then
+              echo "$crate $VER already published, skipping"
+              continue
+            fi
+            published=false
+            for attempt in 1 2 3 4 5 6; do
+              if cargo publish -p "$crate"; then
+                published=true
+                break
+              fi
+              echo "publish of $crate failed (attempt $attempt), waiting for the index"
+              sleep 60
+            done
+            if [ "$published" != "true" ]; then
+              echo "publish of $crate failed after 6 attempts"
+              exit 1
+            fi
+          done
