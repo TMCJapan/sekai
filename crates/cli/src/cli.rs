@@ -63,6 +63,27 @@ pub enum Command {
         /// the selection are never written, deleted, or otherwise touched.
         #[command(flatten)]
         selection: Selection,
+        /// Keep region files unknown to the snapshot instead of deleting
+        /// them (files created after the snapshot).
+        #[arg(long)]
+        keep_post_snapshot_files: bool,
+        /// Keep live bytes for chunks unknown to the snapshot (created
+        /// afterwards inside a snapshot-known region) instead of dropping
+        /// them.
+        #[arg(long)]
+        keep_post_snapshot_chunks: bool,
+        /// Keep live bytes for snapshot-tombstoned chunks instead of
+        /// removing them. Fully tombstoned region files are left alone
+        /// rather than deleted.
+        #[arg(long)]
+        keep_tombstoned_chunks: bool,
+        /// How to handle a snapshot blob missing from CAS.
+        #[arg(long, value_enum, default_value_t = OnMissingBlob::Abort)]
+        on_missing_blob: OnMissingBlob,
+        /// Where to rebuild a snapshot-known region whose file is missing
+        /// on disk.
+        #[arg(long, value_enum, default_value_t = OnMissingFile::SiblingFirst)]
+        on_missing_file: OnMissingFile,
     },
     /// List recorded snapshots, oldest first.
     List {
@@ -136,6 +157,26 @@ pub struct TimingArgs {
     /// `--timing`, phase timings are included. See docs/json.md.
     #[arg(long)]
     pub json: bool,
+}
+
+/// What to do when a snapshot blob is absent from CAS.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum OnMissingBlob {
+    /// Abort loudly (a missing blob is corruption).
+    Abort,
+    /// Skip the chunk, leaving it out of the rebuilt file.
+    SkipChunk,
+}
+
+/// Where to rebuild a snapshot-known region whose file is missing on disk.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum OnMissingFile {
+    /// Prefer a same-dimension sibling's directory, then the derived path.
+    SiblingFirst,
+    /// Always use the layout-derived path.
+    DerivedOnly,
+    /// Fail loudly instead of guessing a location.
+    Error,
 }
 
 #[derive(Debug, clap::Args)]

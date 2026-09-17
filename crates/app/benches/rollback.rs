@@ -31,6 +31,7 @@ fn benches(c: &mut Criterion) {
                 &world,
                 &store,
                 snapshots[0].id,
+                sekai_app::RollbackOptions::default(),
                 Scope::World,
                 |_| {},
             ))
@@ -59,6 +60,7 @@ fn benches(c: &mut Criterion) {
                 &world,
                 &store,
                 snapshots[0].id,
+                sekai_app::RollbackOptions::default(),
                 Scope::World,
                 |_| {},
             ))

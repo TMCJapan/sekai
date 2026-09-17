@@ -4,11 +4,13 @@
 //! from the [`core`](sekai_core::usecase::rollback) plan; what stays here
 //! is mechanics `core` cannot own: world-layout discovery, path
 //! derivation, and the atomic MCA rewrite itself. Region files are rebuilt
-//! wholesale from CAS blobs (never patched), so on-disk chunks unknown to
-//! the snapshot (created later) vanish along with post-snapshot regions,
-//! and all-tombstone regions delete their file instead of leaving a
-//! header-only shell. A blob missing from CAS aborts loudly: that is
-//! corruption, and writing a partial world would be worse than writing none.
+//! wholesale from CAS blobs (never patched). Under the default
+//! [`RollbackOptions`] on-disk chunks unknown to the snapshot (created
+//! later) vanish along with post-snapshot regions, all-tombstone regions
+//! delete their file instead of leaving a header-only shell, and a blob
+//! missing from CAS aborts loudly: that is corruption, and writing a
+//! partial world would be worse than writing none. Keep-policies in
+//! [`RollbackOptions`] relax each of those strict behaviors explicitly.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -44,6 +46,50 @@ pub struct RollbackProgress {
     pub chunks_done: usize,
 }
 
+/// What to do when a snapshot blob is absent from CAS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MissingBlobPolicy {
+    /// Abort loudly: a missing blob is corruption, and writing a partial
+    /// world would be worse than writing none.
+    #[default]
+    Abort,
+    /// Skip the chunk, leaving it out of the rebuilt file.
+    SkipChunk,
+}
+
+/// Where to rebuild a snapshot-known region whose file is missing on disk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MissingFilePolicy {
+    /// Prefer a same-dimension sibling's directory, falling back to the
+    /// layout-derived path.
+    #[default]
+    SiblingFirst,
+    /// Always use the layout-derived path, ignoring siblings.
+    DerivedOnly,
+    /// Fail loudly instead of guessing a location.
+    Error,
+}
+
+/// Rollback restore policy. `Default` is strict: snapshot-unknown files
+/// are deleted, tombstoned chunks vanish, missing blobs abort, and
+/// missing files resolve sibling-first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RollbackOptions {
+    /// Keep region files unknown to the snapshot instead of deleting them.
+    pub keep_post_snapshot_files: bool,
+    /// Keep live bytes for chunks unknown to the snapshot (created
+    /// afterwards inside a snapshot-known region) instead of dropping them.
+    pub keep_post_snapshot_chunks: bool,
+    /// Keep live bytes for snapshot-tombstoned chunks instead of removing
+    /// them. Fully tombstoned region files are left alone rather than
+    /// deleted.
+    pub keep_tombstoned_chunks: bool,
+    /// How to handle a snapshot blob missing from CAS.
+    pub on_missing_blob: MissingBlobPolicy,
+    /// Where to rebuild a snapshot-known region whose file is missing.
+    pub on_missing_file: MissingFilePolicy,
+}
+
 /// Rebuild `world` from `snapshot` in the store at `store_url`, returning
 /// execution report and per-phase timings.
 ///
@@ -55,6 +101,7 @@ pub async fn rollback(
     world: &Path,
     store_url: &str,
     snapshot: SnapshotId,
+    options: RollbackOptions,
     scope: Scope,
     progress: impl Fn(RollbackProgress) + Send + 'static,
 ) -> Result<(RollbackReport, RollbackTimings), AppError> {
@@ -74,6 +121,8 @@ pub async fn rollback(
     // from both sides, so the file pass below cannot tell they exist.
     let mut groups = plan.groups;
     groups.retain(|key, _| scope.matches_region(*key));
+    let mut tombstones = plan.tombstones;
+    tombstones.retain(|key, _| scope.matches_region(*key));
 
     let discover_started = Instant::now();
     let flavor = sekai_world::detect_flavor(world)?;
@@ -97,6 +146,8 @@ pub async fn rollback(
 
     let job = RollbackJob {
         groups,
+        tombstones,
+        options,
         cas: store.cas().clone(),
         world: world.to_path_buf(),
         flavor,
@@ -121,6 +172,8 @@ pub async fn rollback(
 /// Everything one rollback file pass needs, owned for the blocking task.
 struct RollbackJob {
     groups: BTreeMap<RegionKey, Vec<(ChunkCoord, BlobHash)>>,
+    tombstones: BTreeMap<RegionKey, Vec<ChunkCoord>>,
+    options: RollbackOptions,
     cas: FileCas,
     world: PathBuf,
     flavor: LayoutFlavor,
@@ -128,8 +181,9 @@ struct RollbackJob {
 }
 
 /// Rebuild every region file: present rows from CAS blobs, tombstones and
-/// post-snapshot files deleted. Blocking: file reads, writes, and swaps
-/// belong on a blocking pool, never on an async worker.
+/// post-snapshot files deleted unless kept by [`RollbackOptions`].
+/// Blocking: file reads, writes, and swaps belong on a blocking pool,
+/// never on an async worker.
 fn rollback_files(
     job: RollbackJob,
     timestamp: u32,
@@ -137,6 +191,8 @@ fn rollback_files(
 ) -> Result<RollbackReport, AppError> {
     let RollbackJob {
         groups,
+        tombstones,
+        options,
         cas,
         world,
         flavor,
@@ -144,6 +200,7 @@ fn rollback_files(
     } = job;
     let mut keys: BTreeSet<RegionKey> = discovered.keys().copied().collect();
     keys.extend(groups.keys().copied());
+    keys.extend(tombstones.keys().copied());
 
     let mut report = RollbackReport {
         files_written: 0,
@@ -163,17 +220,26 @@ fn rollback_files(
     let mut blob_buf = Vec::new();
     for key in keys {
         let rows = groups.get(&key);
+        let tombs = tombstones.get(&key);
         let path = match discovered.get(&key) {
             Some(path) => path.clone(),
             None => match rows {
                 None => continue, // No rows and no file: nothing to do.
-                Some(_) => sibling_or_derived(&discovered, &world, &flavor, &key)?,
+                Some(_) => {
+                    resolve_target(&discovered, &world, &flavor, &key, options.on_missing_file)?
+                }
             },
         };
         let Some(rows) = rows else {
-            // Strict rollback: the snapshot knows nothing of this file,
-            // so it was created afterwards - remove it.
-            if path.exists() {
+            // No present rows: either fully tombstoned at the snapshot or
+            // created afterwards. Keep-policies leave the live file alone;
+            // strict rollback deletes it.
+            let keep = if tombs.is_some() {
+                options.keep_tombstoned_chunks
+            } else {
+                options.keep_post_snapshot_files
+            };
+            if !keep && path.exists() {
                 std::fs::remove_file(&path).map_err(|source| sekai_world::WorldError::Io {
                     path: path.clone(),
                     source,
@@ -184,17 +250,109 @@ fn rollback_files(
             continue;
         };
         let mut writer = sekai_anvil::RegionBuilder::new(key.rx, key.rz, timestamp)?;
+        let mut restored: BTreeSet<(i32, i32)> = BTreeSet::new();
         for (coord, hash) in rows {
-            // Missing blob = corruption: abort, do not write partial worlds.
-            cas.fetch_blob(hash, &mut blob_buf)?;
+            match cas.fetch_blob(hash, &mut blob_buf) {
+                Ok(()) => {}
+                Err(sekai_storage::StorageError::BlobMissing { .. })
+                    if options.on_missing_blob == MissingBlobPolicy::SkipChunk =>
+                {
+                    continue;
+                }
+                Err(source) => return Err(source.into()),
+            }
             writer.stage_chunk(coord.x, coord.z, &blob_buf)?;
+            restored.insert((coord.x, coord.z));
             report.chunks_restored += 1;
+        }
+        if options.keep_post_snapshot_chunks || options.keep_tombstoned_chunks {
+            merge_live_chunks(&path, &key, &restored, tombs, options, &mut writer)?;
         }
         sekai_world::atomic_swap(&path, &writer.image()?)?;
         report.files_written += 1;
         progressed(&report);
     }
     Ok(report)
+}
+
+/// Merge live on-disk chunks that the snapshot does not restore into
+/// `writer`: tombstoned coordinates under `keep_tombstoned_chunks`,
+/// snapshot-unknown ones under `keep_post_snapshot_chunks`. Missing live
+/// files contribute nothing; corrupt ones fail loudly.
+#[allow(clippy::too_many_arguments)]
+fn merge_live_chunks(
+    path: &Path,
+    key: &RegionKey,
+    restored: &BTreeSet<(i32, i32)>,
+    tombs: Option<&Vec<ChunkCoord>>,
+    options: RollbackOptions,
+    writer: &mut sekai_anvil::RegionBuilder,
+) -> Result<(), AppError> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let bytes = std::fs::read(path).map_err(|source| sekai_world::WorldError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let image = sekai_anvil::RegionImage::from_bytes(bytes, key.rx, key.rz).map_err(|source| {
+        AppError::RegionFailed {
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    let tombed: BTreeSet<(i32, i32)> = tombs
+        .map(|coords| coords.iter().map(|c| (c.x, c.z)).collect())
+        .unwrap_or_default();
+    let mut failed = None;
+    image
+        .visit_chunks(|chunk| {
+            if restored.contains(&(chunk.x, chunk.z)) {
+                return true;
+            }
+            let keep = if tombed.contains(&(chunk.x, chunk.z)) {
+                options.keep_tombstoned_chunks
+            } else {
+                options.keep_post_snapshot_chunks
+            };
+            if keep && let Err(source) = writer.stage_chunk(chunk.x, chunk.z, chunk.payload) {
+                failed = Some(source);
+                return false;
+            }
+            true
+        })
+        .map_err(|source| AppError::RegionFailed {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    if let Some(source) = failed {
+        return Err(AppError::Anvil(source));
+    }
+    Ok(())
+}
+
+/// Target path for a snapshot-known region whose file is missing on disk,
+/// per [`MissingFilePolicy`].
+fn resolve_target(
+    discovered: &BTreeMap<RegionKey, PathBuf>,
+    world: &Path,
+    flavor: &LayoutFlavor,
+    key: &RegionKey,
+    policy: MissingFilePolicy,
+) -> Result<PathBuf, AppError> {
+    match policy {
+        MissingFilePolicy::Error => Err(sekai_world::WorldError::UnknownRegionPath {
+            dim: key.dim.raw(),
+            kind: key.kind.raw(),
+            region_x: key.rx,
+            region_z: key.rz,
+        }
+        .into()),
+        MissingFilePolicy::DerivedOnly => Ok(sekai_world::derive_path(
+            world, flavor, key.dim, key.kind, key.rx, key.rz,
+        )?),
+        MissingFilePolicy::SiblingFirst => sibling_or_derived(discovered, world, flavor, key),
+    }
 }
 
 /// Target path for a snapshot-known region whose file is missing on disk.

@@ -7,9 +7,34 @@ use std::path::Path;
 
 use super::ReportOut;
 use super::progress::{finish_progress, progress_bar, report_progress};
-use crate::cli::Selection;
+use crate::cli::{OnMissingBlob, OnMissingFile, Selection};
 use crate::envelope::envelope_ok;
 use crate::style::Styler;
+
+pub struct RollbackFlags {
+    pub keep_post_snapshot_files: bool,
+    pub keep_post_snapshot_chunks: bool,
+    pub keep_tombstoned_chunks: bool,
+    pub on_missing_blob: OnMissingBlob,
+    pub on_missing_file: OnMissingFile,
+}
+
+const fn map_options(flags: &RollbackFlags) -> sekai_app::RollbackOptions {
+    sekai_app::RollbackOptions {
+        keep_post_snapshot_files: flags.keep_post_snapshot_files,
+        keep_post_snapshot_chunks: flags.keep_post_snapshot_chunks,
+        keep_tombstoned_chunks: flags.keep_tombstoned_chunks,
+        on_missing_blob: match flags.on_missing_blob {
+            OnMissingBlob::Abort => sekai_app::MissingBlobPolicy::Abort,
+            OnMissingBlob::SkipChunk => sekai_app::MissingBlobPolicy::SkipChunk,
+        },
+        on_missing_file: match flags.on_missing_file {
+            OnMissingFile::SiblingFirst => sekai_app::MissingFilePolicy::SiblingFirst,
+            OnMissingFile::DerivedOnly => sekai_app::MissingFilePolicy::DerivedOnly,
+            OnMissingFile::Error => sekai_app::MissingFilePolicy::Error,
+        },
+    }
+}
 
 pub async fn run(
     store: &str,
@@ -17,13 +42,15 @@ pub async fn run(
     snapshot: u64,
     progress: bool,
     selection: &Selection,
+    flags: &RollbackFlags,
     out: ReportOut,
 ) -> anyhow::Result<()> {
     let id = SnapshotId(snapshot);
     let scope = selection.owned_scope();
+    let options = map_options(flags);
     let bar = progress_bar(progress);
     let owned = bar.clone();
-    let (report, timings) = sekai_app::rollback(world, store, id, scope, move |update| {
+    let (report, timings) = sekai_app::rollback(world, store, id, options, scope, move |update| {
         report_progress(
             owned.as_ref(),
             update.files_done,
@@ -143,6 +170,36 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&payload_timed).unwrap(),
             r#"{"files_written":2,"files_deleted":1,"chunks_restored":40,"total_ms":90,"phases":{"plan_ms":9,"discover_ms":8,"rollback_files_ms":70}}"#
+        );
+    }
+
+    #[test]
+    fn maps_strategy_flags_to_options() {
+        let strict = RollbackFlags {
+            keep_post_snapshot_files: false,
+            keep_post_snapshot_chunks: false,
+            keep_tombstoned_chunks: false,
+            on_missing_blob: OnMissingBlob::Abort,
+            on_missing_file: OnMissingFile::SiblingFirst,
+        };
+        assert_eq!(map_options(&strict), sekai_app::RollbackOptions::default());
+
+        let lenient = RollbackFlags {
+            keep_post_snapshot_files: true,
+            keep_post_snapshot_chunks: true,
+            keep_tombstoned_chunks: true,
+            on_missing_blob: OnMissingBlob::SkipChunk,
+            on_missing_file: OnMissingFile::Error,
+        };
+        assert_eq!(
+            map_options(&lenient),
+            sekai_app::RollbackOptions {
+                keep_post_snapshot_files: true,
+                keep_post_snapshot_chunks: true,
+                keep_tombstoned_chunks: true,
+                on_missing_blob: sekai_app::MissingBlobPolicy::SkipChunk,
+                on_missing_file: sekai_app::MissingFilePolicy::Error,
+            }
         );
     }
 }

@@ -1,7 +1,9 @@
 use clap::Parser as _;
 use sekai_app::Dimension;
 use sekai_cli::{
-    cli::{Cli, Command, DebugCommand, DiffArgs, Selection, TimingArgs},
+    cli::{
+        Cli, Command, DebugCommand, DiffArgs, OnMissingBlob, OnMissingFile, Selection, TimingArgs,
+    },
     style::ColorChoice,
 };
 
@@ -317,6 +319,51 @@ fn parses_timing_and_debug_scan() {
             ..
         }
     ));
+
+    let cli =
+        Cli::try_parse_from(["sekai", "rollback", "w", "3"]).expect("rollback defaults parse");
+    assert!(matches!(
+        cli.command,
+        Command::Rollback {
+            keep_post_snapshot_files: false,
+            keep_post_snapshot_chunks: false,
+            keep_tombstoned_chunks: false,
+            on_missing_blob: OnMissingBlob::Abort,
+            on_missing_file: OnMissingFile::SiblingFirst,
+            ..
+        }
+    ));
+
+    let cli = Cli::try_parse_from([
+        "sekai",
+        "rollback",
+        "w",
+        "3",
+        "--keep-post-snapshot-files",
+        "--keep-post-snapshot-chunks",
+        "--keep-tombstoned-chunks",
+        "--on-missing-blob",
+        "skip-chunk",
+        "--on-missing-file",
+        "error",
+    ])
+    .expect("rollback strategy flags parse");
+    assert!(matches!(
+        cli.command,
+        Command::Rollback {
+            keep_post_snapshot_files: true,
+            keep_post_snapshot_chunks: true,
+            keep_tombstoned_chunks: true,
+            on_missing_blob: OnMissingBlob::SkipChunk,
+            on_missing_file: OnMissingFile::Error,
+            ..
+        }
+    ));
+    assert!(
+        Cli::try_parse_from(["sekai", "rollback", "w", "3", "--on-missing-blob", "ignore"])
+            .is_err(),
+        "unknown missing-blob policy is refused"
+    );
 
     let cli = Cli::try_parse_from(["sekai", "list", "--json"]).expect("list --json parses");
     assert!(matches!(cli.command, Command::List { json: true }));

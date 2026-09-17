@@ -121,6 +121,7 @@ async fn backup_list_rollback_round_trip() {
         &world,
         &store,
         snapshots[0].id,
+        sekai_app::RollbackOptions::default(),
         sekai_app::Scope::World,
         |_| {},
     )
@@ -255,6 +256,7 @@ async fn scoped_rollback_leaves_other_dimensions_untouched() {
         &world,
         &store,
         snapshots[0].id,
+        sekai_app::RollbackOptions::default(),
         Scope::dimension(Dimension::OVERWORLD),
         |_| {},
     )
@@ -271,6 +273,7 @@ async fn scoped_rollback_leaves_other_dimensions_untouched() {
         &world,
         &store,
         snapshots[0].id,
+        sekai_app::RollbackOptions::default(),
         Scope::dimension(Dimension::NETHER),
         |_| {},
     )
@@ -288,6 +291,7 @@ async fn scoped_rollback_leaves_other_dimensions_untouched() {
         &world,
         &store,
         snapshots[0].id,
+        sekai_app::RollbackOptions::default(),
         Scope::dimension(Dimension::OVERWORLD),
         |_| {},
     )
@@ -324,6 +328,7 @@ async fn strict_rollback_removes_post_snapshot_files() {
         &world,
         &store,
         snapshots[1].id,
+        sekai_app::RollbackOptions::default(),
         sekai_app::Scope::World,
         |_| {},
     )
@@ -340,6 +345,7 @@ async fn strict_rollback_removes_post_snapshot_files() {
         &world,
         &store,
         snapshots[0].id,
+        sekai_app::RollbackOptions::default(),
         sekai_app::Scope::World,
         |_| {},
     )
@@ -349,6 +355,303 @@ async fn strict_rollback_removes_post_snapshot_files() {
     assert_eq!(rolled.files_deleted, 1);
     assert_eq!(read_coords(&kept), vec![(0, 0)]);
     assert!(!added.exists());
+    cleanup(&root);
+}
+
+#[tokio::test]
+async fn keep_options_preserve_post_snapshot_data() {
+    use sekai_app::RollbackOptions;
+    let root = tempdir("keep-post");
+    let world = root.join("world");
+    let store = root.join("store").to_string_lossy().into_owned();
+    let known = world.join("region/r.0.0.mca");
+    write_region(&known, &[(0, 0, vec![3, 1])]);
+
+    sekai_app::backup(&world, &store, options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+    let snapshots = sekai_app::list_snapshots(&store).await.unwrap();
+
+    // Afterwards: a new chunk inside the known region plus a new file.
+    let added = world.join("region/r.1.0.mca");
+    write_region(&known, &[(0, 0, vec![3, 1]), (1, 0, vec![3, 2])]);
+    write_region(&added, &[(32, 0, vec![3, 3])]);
+
+    let keep = RollbackOptions {
+        keep_post_snapshot_files: true,
+        keep_post_snapshot_chunks: true,
+        ..RollbackOptions::default()
+    };
+    let (rolled, _) = sekai_app::rollback(
+        &world,
+        &store,
+        snapshots[0].id,
+        keep,
+        sekai_app::Scope::World,
+        |_| {},
+    )
+    .await
+    .unwrap();
+    assert_eq!(rolled.files_written, 1);
+    assert_eq!(rolled.files_deleted, 0);
+    assert_eq!(rolled.chunks_restored, 1);
+    let map = chunk_map(&known);
+    assert_eq!(map.get(&(0, 0)), Some(&vec![3, 1]));
+    assert_eq!(map.get(&(1, 0)), Some(&vec![3, 2]));
+    assert_eq!(read_coords(&added), vec![(32, 0)]);
+    cleanup(&root);
+}
+
+#[tokio::test]
+async fn keep_tombstoned_chunks_preserves_live_bytes() {
+    use sekai_app::RollbackOptions;
+    let root = tempdir("keep-tomb");
+    let world = root.join("world");
+    let store = root.join("store").to_string_lossy().into_owned();
+    let region = world.join("region/r.0.0.mca");
+    write_region(&region, &[(0, 0, vec![3, 1]), (1, 0, vec![3, 2])]);
+
+    sekai_app::backup(&world, &store, options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+    // Delete one chunk: the second snapshot tombstones it.
+    write_region(&region, &[(0, 0, vec![3, 1])]);
+    sekai_app::backup(&world, &store, options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+    let snapshots = sekai_app::list_snapshots(&store).await.unwrap();
+    assert_eq!(snapshots.len(), 2);
+
+    // Diverge live: change the kept chunk, recreate the deleted one.
+    write_region(&region, &[(0, 0, vec![3, 9]), (1, 0, vec![3, 8])]);
+
+    // Strict rollback drops the tombstoned chunk and reverts the rest.
+    let (rolled, _) = sekai_app::rollback(
+        &world,
+        &store,
+        snapshots[1].id,
+        sekai_app::RollbackOptions::default(),
+        sekai_app::Scope::World,
+        |_| {},
+    )
+    .await
+    .unwrap();
+    assert_eq!(rolled.chunks_restored, 1);
+    assert_eq!(read_coords(&region), vec![(0, 0)]);
+    assert_eq!(chunk_map(&region)[&(0, 0)], vec![3, 1]);
+
+    // Keep rollback preserves the live bytes of the tombstoned chunk.
+    write_region(&region, &[(0, 0, vec![3, 9]), (1, 0, vec![3, 8])]);
+    let keep = RollbackOptions {
+        keep_tombstoned_chunks: true,
+        ..RollbackOptions::default()
+    };
+    let (rolled, _) = sekai_app::rollback(
+        &world,
+        &store,
+        snapshots[1].id,
+        keep,
+        sekai_app::Scope::World,
+        |_| {},
+    )
+    .await
+    .unwrap();
+    assert_eq!(rolled.chunks_restored, 1);
+    let map = chunk_map(&region);
+    assert_eq!(map[&(0, 0)], vec![3, 1]);
+    assert_eq!(map[&(1, 0)], vec![3, 8]);
+    cleanup(&root);
+}
+
+#[tokio::test]
+async fn keep_tombstoned_chunks_leaves_fully_tombstoned_files() {
+    use sekai_app::RollbackOptions;
+    let root = tempdir("keep-tomb-file");
+    let world = root.join("world");
+    let store = root.join("store").to_string_lossy().into_owned();
+    let region = world.join("region/r.0.0.mca");
+    write_region(&region, &[(0, 0, vec![3, 1])]);
+
+    sekai_app::backup(&world, &store, options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+    // Empty the region: the second snapshot tombstones its only chunk.
+    write_region(&region, &[]);
+    sekai_app::backup(&world, &store, options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+    let snapshots = sekai_app::list_snapshots(&store).await.unwrap();
+
+    // Live recreates the chunk afterwards.
+    write_region(&region, &[(0, 0, vec![3, 7])]);
+    let keep = RollbackOptions {
+        keep_tombstoned_chunks: true,
+        ..RollbackOptions::default()
+    };
+    let (rolled, _) = sekai_app::rollback(
+        &world,
+        &store,
+        snapshots[1].id,
+        keep,
+        sekai_app::Scope::World,
+        |_| {},
+    )
+    .await
+    .unwrap();
+    assert_eq!(rolled.files_written, 0);
+    assert_eq!(rolled.files_deleted, 0);
+    assert_eq!(read_coords(&region), vec![(0, 0)]);
+
+    // Strict rollback deletes the fully tombstoned file.
+    let (rolled, _) = sekai_app::rollback(
+        &world,
+        &store,
+        snapshots[1].id,
+        sekai_app::RollbackOptions::default(),
+        sekai_app::Scope::World,
+        |_| {},
+    )
+    .await
+    .unwrap();
+    assert_eq!(rolled.files_deleted, 1);
+    assert!(!region.exists());
+    cleanup(&root);
+}
+
+#[tokio::test]
+async fn missing_blob_abort_is_default_and_skip_recovers() {
+    use sekai_app::{MissingBlobPolicy, RollbackOptions};
+    let root = tempdir("missing-blob");
+    let world = root.join("world");
+    let store_dir = root.join("store");
+    let store = store_dir.to_string_lossy().into_owned();
+    let region = world.join("region/r.0.0.mca");
+    write_region(&region, &[(0, 0, vec![3, 1])]);
+
+    sekai_app::backup(&world, &store, options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+    let snapshots = sekai_app::list_snapshots(&store).await.unwrap();
+
+    // Corrupt the CAS by unlinking every stored blob.
+    let mut blobs = Vec::new();
+    let mut dirs = vec![store_dir.join("blobs")];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else {
+                blobs.push(path);
+            }
+        }
+    }
+    assert!(!blobs.is_empty());
+    for blob in &blobs {
+        std::fs::remove_file(blob).unwrap();
+    }
+
+    // Default policy aborts loudly, leaving the live file alone.
+    assert!(
+        sekai_app::rollback(
+            &world,
+            &store,
+            snapshots[0].id,
+            sekai_app::RollbackOptions::default(),
+            sekai_app::Scope::World,
+            |_| {},
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(read_coords(&region), vec![(0, 0)]);
+
+    // Skip policy rebuilds the file without the missing chunk.
+    let skip = RollbackOptions {
+        on_missing_blob: MissingBlobPolicy::SkipChunk,
+        ..RollbackOptions::default()
+    };
+    let (rolled, _) = sekai_app::rollback(
+        &world,
+        &store,
+        snapshots[0].id,
+        skip,
+        sekai_app::Scope::World,
+        |_| {},
+    )
+    .await
+    .unwrap();
+    assert_eq!(rolled.files_written, 1);
+    assert_eq!(rolled.chunks_restored, 0);
+    assert!(read_coords(&region).is_empty());
+    cleanup(&root);
+}
+
+#[tokio::test]
+async fn missing_file_error_policy_refuses_to_guess() {
+    use sekai_app::{MissingFilePolicy, RollbackOptions};
+    let root = tempdir("missing-file");
+    let world = root.join("world");
+    let store = root.join("store").to_string_lossy().into_owned();
+    let region = world.join("region/r.0.0.mca");
+    write_region(&region, &[(0, 0, vec![3, 1])]);
+
+    sekai_app::backup(&world, &store, options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+    let snapshots = sekai_app::list_snapshots(&store).await.unwrap();
+    std::fs::remove_file(&region).unwrap();
+
+    // Default policy recreates the file at the derived path.
+    let (rolled, _) = sekai_app::rollback(
+        &world,
+        &store,
+        snapshots[0].id,
+        sekai_app::RollbackOptions::default(),
+        sekai_app::Scope::World,
+        |_| {},
+    )
+    .await
+    .unwrap();
+    assert_eq!(rolled.files_written, 1);
+    assert_eq!(read_coords(&region), vec![(0, 0)]);
+
+    // Error policy fails loudly instead.
+    std::fs::remove_file(&region).unwrap();
+    let strict = RollbackOptions {
+        on_missing_file: MissingFilePolicy::Error,
+        ..RollbackOptions::default()
+    };
+    assert!(
+        sekai_app::rollback(
+            &world,
+            &store,
+            snapshots[0].id,
+            strict,
+            sekai_app::Scope::World,
+            |_| {},
+        )
+        .await
+        .is_err()
+    );
+
+    // Derived-only policy recreates without consulting siblings.
+    let derived = RollbackOptions {
+        on_missing_file: MissingFilePolicy::DerivedOnly,
+        ..RollbackOptions::default()
+    };
+    let (rolled, _) = sekai_app::rollback(
+        &world,
+        &store,
+        snapshots[0].id,
+        derived,
+        sekai_app::Scope::World,
+        |_| {},
+    )
+    .await
+    .unwrap();
+    assert_eq!(rolled.files_written, 1);
+    assert_eq!(read_coords(&region), vec![(0, 0)]);
     cleanup(&root);
 }
 
@@ -448,6 +751,7 @@ async fn errors_surface_loudly() {
             &root.join("world"),
             &store,
             SnapshotId(99),
+            sekai_app::RollbackOptions::default(),
             sekai_app::Scope::World,
             |_| {}
         )
@@ -506,6 +810,7 @@ async fn progress_events_cover_rollback_diff_and_gc() {
         &world,
         &store,
         snapshots[0].id,
+        sekai_app::RollbackOptions::default(),
         sekai_app::Scope::World,
         move |p: RollbackProgress| {
             seen.lock().unwrap().push((p.files_done, p.files_total));
@@ -851,6 +1156,7 @@ async fn all_kinds_round_trip() {
             &world,
             &store,
             snapshots[0].id,
+            sekai_app::RollbackOptions::default(),
             sekai_app::Scope::World,
             |_| {},
         )
@@ -989,6 +1295,7 @@ async fn real_world_corpus_round_trip() {
         &world,
         &store,
         snapshots[0].id,
+        sekai_app::RollbackOptions::default(),
         sekai_app::Scope::World,
         |_| {},
     )

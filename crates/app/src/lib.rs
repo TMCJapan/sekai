@@ -18,7 +18,10 @@ pub use diff::{
 };
 pub use error::AppError;
 pub use gc::{GcProgress, GcTimings, gc, gc_apply, gc_plan};
-pub use rollback::{RollbackProgress, RollbackTimings, rollback};
+pub use rollback::{
+    MissingBlobPolicy, MissingFilePolicy, RollbackOptions, RollbackProgress, RollbackTimings,
+    rollback,
+};
 pub use sekai_core::{
     Area, BackupReport, BlobHash, ChunkCoord, DEFAULT_IGNORED, Dimension, GcPlan, GcReport,
     NbtChange, NbtDiffEntry, NbtValue, Rect, RegionKey, RegionKind, RollbackReport, Scope,

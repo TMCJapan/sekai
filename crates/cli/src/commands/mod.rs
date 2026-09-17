@@ -59,6 +59,11 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
             output,
             progress,
             selection,
+            keep_post_snapshot_files,
+            keep_post_snapshot_chunks,
+            keep_tombstoned_chunks,
+            on_missing_blob,
+            on_missing_file,
         } => {
             rollback::run(
                 &cli.store,
@@ -66,6 +71,13 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
                 *snapshot,
                 *progress,
                 selection,
+                &rollback::RollbackFlags {
+                    keep_post_snapshot_files: *keep_post_snapshot_files,
+                    keep_post_snapshot_chunks: *keep_post_snapshot_chunks,
+                    keep_tombstoned_chunks: *keep_tombstoned_chunks,
+                    on_missing_blob: *on_missing_blob,
+                    on_missing_file: *on_missing_file,
+                },
                 ReportOut::of(*output, style),
             )
             .await

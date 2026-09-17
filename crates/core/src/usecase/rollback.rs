@@ -27,6 +27,11 @@ pub struct RollbackPlan {
     pub created_at_ms: u64,
     /// Present rows grouped by region.
     pub groups: BTreeMap<RegionKey, Vec<(ChunkCoord, BlobHash)>>,
+    /// Tombstoned coordinates grouped by region. Regions absent from both
+    /// `groups` and `tombstones` are unknown to the snapshot (created
+    /// afterwards); regions in `tombstones` but not `groups` are fully
+    /// tombstoned. Adapters need the distinction to apply keep-policies.
+    pub tombstones: BTreeMap<RegionKey, Vec<ChunkCoord>>,
 }
 
 /// Failures while resolving a rollback plan.
@@ -62,12 +67,18 @@ pub async fn plan_rollback<M: MetaStore>(
         .map(|s| s.created_at_ms)
         .ok_or(RollbackError::UnknownSnapshot { id: snapshot.0 })?;
     let mut groups: BTreeMap<RegionKey, Vec<(ChunkCoord, BlobHash)>> = BTreeMap::new();
+    let mut tombstones: BTreeMap<RegionKey, Vec<ChunkCoord>> = BTreeMap::new();
     meta.visit_snapshot_chunks(snapshot, |entry| {
         if let Some(blob) = entry.blob {
             groups
                 .entry(RegionKey::of(entry.coord))
                 .or_default()
                 .push((entry.coord, blob));
+        } else {
+            tombstones
+                .entry(RegionKey::of(entry.coord))
+                .or_default()
+                .push(entry.coord);
         }
         true
     })
@@ -76,6 +87,7 @@ pub async fn plan_rollback<M: MetaStore>(
     Ok(RollbackPlan {
         created_at_ms,
         groups,
+        tombstones,
     })
 }
 
@@ -115,6 +127,10 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert!(rows.contains(&(a, BlobHash([1; 32]))));
         assert!(rows.contains(&(b, BlobHash([2; 32]))));
+        assert_eq!(
+            plan.tombstones[&RegionKey::new(OVER, REGION, 0, 0)],
+            alloc::vec![gone]
+        );
     }
 
     #[test]

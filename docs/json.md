@@ -94,6 +94,12 @@ With `--timing` the `total_ms`/`phases`/`regions` block is appended:
 
 The `total_ms`/`phases` block appears only with `--timing`.
 
+Restore strategy flags (`--keep-post-snapshot-files`,
+`--keep-post-snapshot-chunks`, `--keep-tombstoned-chunks`,
+`--on-missing-blob`, `--on-missing-file`) change what is written or
+deleted, so the counts reflect the applied policy; the payload shape is
+unchanged.
+
 ### `list`
 
 ```jsonc
