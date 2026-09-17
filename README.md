@@ -12,8 +12,18 @@ to their capture-time values).
 
 ## Installation
 
-Rust toolchain is required to build this project.
-Clone the repository and run:
+Prebuilt binaries are attached to each
+[GitHub Release](https://github.com/TMCJapan/sekai/releases)
+(`sekai-<target triple>.tar.gz`). Alternatively, with a Rust toolchain
+installed:
+
+```sh
+cargo install sekai-cli
+
+```
+
+The installed binary is named `sekai`. To build from a checkout instead
+(for development):
 
 ```sh
 cargo install --path ./crates/cli
@@ -27,6 +37,9 @@ cargo install --path ./crates/cli
 # `save-off`, `save-all`, then `save-on` afterwards)
 sekai --store ./sekai-store backup ./world
 
+# Preview what a backup would record, without writing anything
+sekai --store ./sekai-store status ./world
+
 # List snapshots
 sekai --store ./sekai-store list
 
@@ -36,8 +49,15 @@ sekai --store ./sekai-store rollback ./world 1
 # Compare chunk NBT between snapshots 1 and 2
 sekai --store ./sekai-store diff 1 2 --in overworld:0,0
 
+# Name snapshot 2 for later reference
+sekai --store ./sekai-store tag stable 2
+
 # Preview unreferenced blobs, then collect them
 sekai --store ./sekai-store gc --dry-run
+sekai --store ./sekai-store gc
+
+# Delete old snapshots (keep newest 10), then reclaim their blobs
+sekai --store ./sekai-store prune --keep-last 10
 sekai --store ./sekai-store gc
 
 # Rebuild snapshot 1 into a fresh directory (live world untouched)
@@ -49,11 +69,12 @@ sekai debug scan ./world
 ```
 
 Every command accepts `--json` for a single-document machine-readable
-report, and every command except `list` accepts `--timing` for a
-per-phase breakdown (combine both for timed JSON). `backup`, `rollback`,
-`diff`, and `gc` also take `--progress` for a stderr progress bar
-(refused with `--json`). Backup, rollback,
-and diff accept a scope: repeatable `--in DIM[:x,z|x0,z0..x1,z1]`,
+report, and every command except `list` and `tag` accepts `--timing`
+for a per-phase breakdown (combine both for timed JSON). `backup`,
+`status`, `rollback`, `diff`, `export`, `gc`, and `prune` also take
+`--progress` for a stderr progress bar (refused with `--json`).
+Backup, status, rollback, diff,
+and export accept a scope: repeatable `--in DIM[:x,z|x0,z0..x1,z1]`,
 `--region DIM:RX,RZ`, and repeatable `--kind` (empty means all);
 nothing selected means the whole world. See `docs/json.md` for the
 output contract.

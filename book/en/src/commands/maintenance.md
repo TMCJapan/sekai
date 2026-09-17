@@ -12,8 +12,8 @@ runs both in one invocation. `gc --dry-run` prints the plan only, and
 combines with `--timing` (the plan phase is measured; `apply_ms` is `0`)
 but not with `--progress`, which has no apply phase to report.
 
-There is no snapshot pruning yet: GC only removes orphan blobs, never
-metadata.
+GC removes only orphan blobs, never metadata; snapshot deletion is
+`prune` (fold-into-next-retained, then `gc` to reclaim).
 
 ## Pruning snapshots
 

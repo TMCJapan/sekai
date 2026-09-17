@@ -246,7 +246,9 @@ scope is a filter, not a partition:
   global CAS dedup.
 - **Two-phase safety**: `gc plan` (read-only candidates) then `gc apply`
   (re-verified unlink). No metadata writes in the orphan-only scope.
-- Snapshot pruning does not exist yet.
+- **Snapshot pruning** (`prune`): oldest-first fold into the next
+  retained snapshot, then delete. Pruning dereferences blobs only;
+  `gc` reclaims them afterwards.
 
 # Storage Backends
 
@@ -306,8 +308,10 @@ object-store CAS swaps don't touch metadata code.
   patches bytes.
 - **Crash consistency order**:
   - **Write path**: CAS blobs flushed + synced *before* DB metadata commit.
-  - **GC delete path**: DB metadata commit *before* blob unlink (vacuous
-    until snapshot pruning lands; orphan-only GC does no metadata writes).
+  - **GC delete path**: DB metadata commit *before* blob unlink.
+  - **Prune path**: each snapshot's fold (row restamp/drop, state
+    repoint, snapshot delete) commits atomically; blobs unlink only in
+    a later `gc`.
 - **No server orchestration in libraries**: `save-off`/`save-all`,
   scheduling, and process control belong to callers, never to `core`,
   `anvil`, `nbt`, `storage`, `world`, or `app` internals.
