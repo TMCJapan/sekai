@@ -265,7 +265,7 @@ pub async fn backup(
 ///
 /// Only `scope` is previewed. `progress` fires as changed files
 /// complete. Staged rows are assembled exactly as backup would, then
-/// counted instead of committed — so counts match a subsequent backup
+/// counted instead of committed - so counts match a subsequent backup
 /// unless the world changes in between.
 pub async fn status(
     world: &Path,
