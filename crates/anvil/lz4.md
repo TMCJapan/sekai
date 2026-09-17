@@ -37,15 +37,15 @@ Only levels `0..=15` are valid.
 
 The decoder rejects:
 
-* invalid magic
-* unsupported methods
-* inconsistent compressed/decompressed lengths
-* raw blocks whose compressed and decompressed lengths differ
-* blocks exceeding the level-specific size limit
-* truncated block bodies
-* decompression failures
-* output exceeding the global decoder limit
-* invalid checksums
+- invalid magic
+- unsupported methods
+- inconsistent compressed/decompressed lengths
+- raw blocks whose compressed and decompressed lengths differ
+- blocks exceeding the level-specific size limit
+- truncated block bodies
+- decompression failures
+- output exceeding the global decoder limit
+- invalid checksums
 
 A zero-length block terminates the stream and must have a zero checksum.
 

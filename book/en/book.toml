@@ -1,0 +1,5 @@
+[book]
+title = "Sekai User Guide"
+authors = ["Sekai contributors"]
+language = "en"
+src = "src"

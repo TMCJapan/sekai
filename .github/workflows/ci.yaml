@@ -155,6 +155,22 @@ jobs:
       - name: Test
         run: cargo nextest run --workspace --target ${{ matrix.target }}
 
+  docs:
+    name: User guide (mdbook)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Install mdbook
+        uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af
+        with:
+          tool: mdbook
+
+      - name: Build user guide (en/ja)
+        run: mdbook build book/en && mdbook build book/ja
+
   # Intentionally not gated on `test`: waiting would give back exactly the wall
   # clock the split was meant to save, and a red run is already flagged as red.
   dist:
