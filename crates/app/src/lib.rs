@@ -8,6 +8,7 @@
 mod backup;
 mod diff;
 mod error;
+mod export;
 mod gc;
 mod rollback;
 
@@ -17,6 +18,7 @@ pub use diff::{
     diff_world_chunks, snapshot_chunk_coords, world_chunk_coords,
 };
 pub use error::AppError;
+pub use export::{ExportOptions, ExportProgress, ExportReport, ExportTimings, export};
 pub use gc::{GcProgress, GcTimings, gc, gc_apply, gc_plan};
 pub use rollback::{
     MissingBlobPolicy, MissingFilePolicy, RollbackOptions, RollbackProgress, RollbackTimings,
@@ -27,7 +29,7 @@ pub use sekai_core::{
     NbtChange, NbtDiffEntry, NbtValue, Rect, RegionKey, RegionKind, RollbackReport, Scope,
     Snapshot, SnapshotId,
 };
-pub use sekai_world::{RegionScanEntry, ScanTimings};
+pub use sekai_world::{LayoutFlavor, RegionScanEntry, ScanTimings};
 
 /// List all snapshots in ID order (for `list` and pre-flight checks).
 pub async fn list_snapshots(store_url: &str) -> Result<Vec<Snapshot>, AppError> {

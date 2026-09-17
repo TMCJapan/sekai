@@ -40,6 +40,9 @@ sekai --store ./sekai-store diff 1 2 --in overworld:0,0
 sekai --store ./sekai-store gc --dry-run
 sekai --store ./sekai-store gc
 
+# Rebuild snapshot 1 into a fresh directory (live world untouched)
+sekai --store ./sekai-store export 1 ./restored
+
 # Inspect region files without touching anything
 sekai debug scan ./world
 
@@ -67,5 +70,6 @@ or a single world directory (for Vanilla). Sekai automatically detects
 Vanilla layouts (`region/`, `DIM-1/`, `DIM1/`, `dimensions/minecraft/...`),
 pre-26.1 split Bukkit layouts, and custom plugin world folders.
 
-See `ARCHITECTURE.md` for the design and `CONTRIBUTING.md` for development
-guidelines.
+See `ARCHITECTURE.md` for the design, `CONTRIBUTING.md` for development
+guidelines, and the user guide (`book/en`, `book/ja`) for operations.
+Machine-readable output is specified in `docs/json.md`.

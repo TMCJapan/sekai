@@ -2,7 +2,8 @@ use clap::Parser as _;
 use sekai_app::Dimension;
 use sekai_cli::{
     cli::{
-        Cli, Command, DebugCommand, DiffArgs, OnMissingBlob, OnMissingFile, Selection, TimingArgs,
+        Cli, Command, DebugCommand, DiffArgs, ExportFlavor, OnMissingBlob, OnMissingFile,
+        Selection, TimingArgs,
     },
     style::ColorChoice,
 };
@@ -365,6 +366,54 @@ fn parses_timing_and_debug_scan() {
         "unknown missing-blob policy is refused"
     );
 
+    let cli = Cli::try_parse_from(["sekai", "export", "3", "out"]).expect("export parses");
+    assert!(matches!(
+        cli.command,
+        Command::Export {
+            snapshot: 3,
+            flavor: ExportFlavor::Legacy,
+            on_missing_blob: OnMissingBlob::Abort,
+            output: TimingArgs {
+                timing: false,
+                json: false,
+            },
+            ..
+        }
+    ));
+
+    let cli = Cli::try_parse_from([
+        "sekai",
+        "export",
+        "3",
+        "out",
+        "--flavor",
+        "bukkit",
+        "--base",
+        "myworld",
+        "--on-missing-blob",
+        "skip-chunk",
+        "--timing",
+        "--json",
+    ])
+    .expect("export options parse");
+    assert!(matches!(
+        cli.command,
+        Command::Export {
+            snapshot: 3,
+            flavor: ExportFlavor::Bukkit,
+            on_missing_blob: OnMissingBlob::SkipChunk,
+            output: TimingArgs {
+                timing: true,
+                json: true,
+            },
+            ..
+        }
+    ));
+    assert!(
+        Cli::try_parse_from(["sekai", "export", "3", "out", "--flavor", "tarball"]).is_err(),
+        "unknown export flavor is refused"
+    );
+
     let cli = Cli::try_parse_from(["sekai", "list", "--json"]).expect("list --json parses");
     assert!(matches!(cli.command, Command::List { json: true }));
 
@@ -485,4 +534,11 @@ fn reports_json_mode_per_command() {
     let cli =
         Cli::try_parse_from(["sekai", "diff", "--in", "overworld:0,0", "--json"]).expect("parses");
     assert!(cli.command.output_json());
+
+    let cli = Cli::try_parse_from(["sekai", "export", "3", "out"]).expect("parses");
+    assert!(!cli.command.output_json());
+
+    let cli = Cli::try_parse_from(["sekai", "export", "3", "out", "--json"]).expect("parses");
+    assert!(cli.command.output_json());
+    assert_eq!(cli.command.name(), "export");
 }

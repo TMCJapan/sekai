@@ -17,6 +17,7 @@ carries the bare result only.
 | `backup` | report (+timings with `--timing`) | table + JSON block | regions list is timing detail, JSON-only |
 | `rollback` | report (+timings with `--timing`) | table + JSON block | |
 | `list` | snapshot array | n/a | no phases exist |
+| `export` | report (+timings with `--timing`) | table + JSON block | |
 | `diff` | single array, grouped array (multi), or timed object | table + JSON block | `--in`/`--region` select chunks; one chunk keeps the single shape |
 | `gc` | report or dry-run plan (+timings with `--timing`) | table + JSON block | dry-run timings carry `plan_ms`; `apply_ms` is `0` |
 | `debug scan` | entry array (+timings with `--timing`) | table + JSON block | |
@@ -24,7 +25,7 @@ carries the bare result only.
 Without `--timing`, `--json` emits the bare result. With `--timing`,
 reports that would be bare arrays (`diff`, `scan`) are promoted to an
 object holding the array (`diffs`/`entries`) plus the timing block;
-object reports (backup/rollback/gc) append the block in place.
+object reports (backup/rollback/export/gc) append the block in place.
 
 ## Envelope
 
@@ -37,7 +38,7 @@ Every invocation prints exactly one JSON object to stdout:
 {"command": "<name>", "status": "error", "error": "<full context chain>"}
 ```
 
-`command` is one of `backup`, `rollback`, `list`, `diff`, `gc`, `scan`.
+`command` is one of `backup`, `rollback`, `list`, `export`, `diff`, `gc`, `scan`.
 The error string is the full anyhow context chain (outermost message
 first, then `Caused by:` lines), JSON-escaped.
 
@@ -99,6 +100,18 @@ Restore strategy flags (`--keep-post-snapshot-files`,
 `--on-missing-blob`, `--on-missing-file`) change what is written or
 deleted, so the counts reflect the applied policy; the payload shape is
 unchanged.
+
+### `export`
+
+```jsonc
+{
+  "files_written": 2, "chunks_restored": 90,
+  "total_ms": 200,
+  "phases": {"plan_ms": 50, "export_files_ms": 140}
+}
+```
+
+The `total_ms`/`phases` block appears only with `--timing`.
 
 ### `list`
 

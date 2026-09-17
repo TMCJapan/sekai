@@ -92,6 +92,33 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Rebuild a snapshot into a fresh directory (never touches the live world).
+    Export {
+        /// Snapshot ID to export (see `list`).
+        snapshot: u64,
+        /// Directory to rebuild the snapshot into (created when missing;
+        /// must otherwise be empty).
+        out: PathBuf,
+        /// Directory layout for the rebuilt world.
+        #[arg(long, value_enum, default_value_t = ExportFlavor::Legacy)]
+        flavor: ExportFlavor,
+        /// Overworld folder name for `--flavor bukkit` (the `level-name`).
+        #[arg(long, default_value = "world")]
+        base: String,
+        /// How to handle a snapshot blob missing from CAS.
+        #[arg(long, value_enum, default_value_t = OnMissingBlob::Abort)]
+        on_missing_blob: OnMissingBlob,
+        /// World portion to export (default: whole world).
+        #[command(flatten)]
+        selection: Selection,
+        /// Human or JSON rendering plus optional phase timings.
+        #[command(flatten)]
+        output: TimingArgs,
+        /// Show a progress bar on stderr. Refused with `--json`, and
+        /// silent without a stderr TTY.
+        #[arg(long, conflicts_with = "json")]
+        progress: bool,
+    },
     /// Compare chunk NBT AST between two snapshots or between world state and a snapshot.
     Diff(DiffArgs),
     /// Garbage collect unreferenced orphan blobs from the store.
@@ -122,6 +149,7 @@ impl Command {
             Self::Backup { .. } => "backup",
             Self::Rollback { .. } => "rollback",
             Self::List { .. } => "list",
+            Self::Export { .. } => "export",
             Self::Diff(_) => "diff",
             Self::Gc { .. } => "gc",
             Self::Debug { debug } => match debug {
@@ -136,6 +164,7 @@ impl Command {
         match self {
             Self::Backup { output, .. }
             | Self::Rollback { output, .. }
+            | Self::Export { output, .. }
             | Self::Gc { output, .. } => output.json,
             Self::List { json } => *json,
             Self::Diff(args) => args.output.json,
@@ -177,6 +206,18 @@ pub enum OnMissingFile {
     DerivedOnly,
     /// Fail loudly instead of guessing a location.
     Error,
+}
+
+/// Directory layout for `export` output.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum ExportFlavor {
+    /// Single world folder (`region/`, `DIM-1/`, `DIM1/`).
+    Legacy,
+    /// Modern layout (`dimensions/minecraft/<name>/`, since 26.1).
+    New,
+    /// Bukkit-family split folders (`<base>/`, `<base>_nether/DIM-1/`,
+    /// `<base>_the_end/DIM1/`).
+    Bukkit,
 }
 
 #[derive(Debug, clap::Args)]

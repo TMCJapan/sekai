@@ -4,6 +4,7 @@ mod backup;
 mod debug;
 mod diff;
 mod diff_render;
+mod export;
 mod gc;
 mod list;
 mod progress;
@@ -83,6 +84,31 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
             .await
         }
         Command::List { json } => list::run(&cli.store, *json, style).await,
+        Command::Export {
+            snapshot,
+            out,
+            flavor,
+            base,
+            on_missing_blob,
+            selection,
+            output,
+            progress,
+        } => {
+            export::run(
+                &cli.store,
+                *snapshot,
+                out,
+                *progress,
+                selection,
+                &export::ExportFlags {
+                    flavor: *flavor,
+                    base: base.clone(),
+                    on_missing_blob: *on_missing_blob,
+                },
+                ReportOut::of(*output, style),
+            )
+            .await
+        }
         Command::Diff(args) => diff::run(&cli.store, args, style).await,
         Command::Gc {
             dry_run,
