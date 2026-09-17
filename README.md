@@ -71,5 +71,7 @@ Vanilla layouts (`region/`, `DIM-1/`, `DIM1/`, `dimensions/minecraft/...`),
 pre-26.1 split Bukkit layouts, and custom plugin world folders.
 
 See `ARCHITECTURE.md` for the design, `CONTRIBUTING.md` for development
-guidelines, and the user guide (`book/en`, `book/ja`) for operations.
+guidelines, and the user guide
+([English](https://tmcjapan.github.io/sekai/en/),
+[日本語](https://tmcjapan.github.io/sekai/ja/)) for operations.
 Machine-readable output is specified in `docs/json.md`.

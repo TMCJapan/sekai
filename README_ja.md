@@ -58,5 +58,5 @@ sekai debug scan ./world
 
 サーバーのルートディレクトリ（Spigot、Paper、Purpur などの Bukkit 系）または単一のワールドディレクトリ（Vanilla）を指定して実行します。Sekai は Vanilla のレイアウト（`region/`, `DIM-1/`, `DIM1/`, `dimensions/minecraft/...`）、26.1 より前の分割 Bukkit レイアウト、およびカスタムプラグインのワールドフォルダを自動検出します。
 
-設計思想については `ARCHITECTURE.md` を、開発ガイドラインについては `CONTRIBUTING.md` を、詳しい運用方法についてはユーザーガイド（`book/en`、`book/ja`）を参照してください。機械読取可能な出力の仕様は `docs/json.md` に記載されています。
+設計思想については `ARCHITECTURE.md` を、開発ガイドラインについては `CONTRIBUTING.md` を、詳しい運用方法についてはユーザーガイド（[English](https://tmcjapan.github.io/sekai/en/)、[日本語](https://tmcjapan.github.io/sekai/ja/)）を参照してください。機械読取可能な出力の仕様は `docs/json.md` に記載されています。
 
