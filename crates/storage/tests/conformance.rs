@@ -57,6 +57,14 @@ async fn sqlite_tombstones() {
 }
 
 #[tokio::test]
+async fn sqlite_tags() {
+    let dir = tempdir("tags");
+    let mut store = open(&dir).await;
+    common::tags(store.meta_mut()).await;
+    cleanup(&dir);
+}
+
+#[tokio::test]
 async fn sqlite_cas_roundtrip() {
     let dir = tempdir("cas");
     let mut store = open(&dir).await;

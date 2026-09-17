@@ -9,6 +9,7 @@ mod gc;
 mod list;
 mod progress;
 mod rollback;
+mod tag;
 
 use crate::cli::{Cli, Command, DebugCommand, TimingArgs};
 use crate::style::Styler;
@@ -69,7 +70,7 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
             rollback::run(
                 &cli.store,
                 world,
-                *snapshot,
+                snapshot,
                 *progress,
                 selection,
                 &rollback::RollbackFlags {
@@ -84,6 +85,24 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
             .await
         }
         Command::List { json } => list::run(&cli.store, *json, style).await,
+        Command::Tag {
+            name,
+            snapshot,
+            delete,
+            force,
+            json,
+        } => {
+            tag::run(
+                &cli.store,
+                name.clone(),
+                snapshot.clone(),
+                *delete,
+                *force,
+                *json,
+                style,
+            )
+            .await
+        }
         Command::Export {
             snapshot,
             out,
@@ -96,7 +115,7 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
         } => {
             export::run(
                 &cli.store,
-                *snapshot,
+                snapshot,
                 out,
                 *progress,
                 selection,

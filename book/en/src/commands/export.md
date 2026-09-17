@@ -7,6 +7,7 @@ sekai --store ./sekai-store export 1 ./restored
 Rebuilds a snapshot into a fresh directory. Unlike rollback, the live
 world is never touched — export shares the rollback restore set but
 writes every file under the output directory at its layout-derived path.
+The snapshot argument accepts `<id>` or `@tag` (see [Tags](tags.md)).
 
 - The output directory is created when missing and must otherwise be
   empty; anything else fails loudly so export can never clobber data.

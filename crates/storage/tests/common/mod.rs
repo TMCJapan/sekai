@@ -4,7 +4,7 @@
 
 use sekai_core::{
     BlobHash, BlobStore, ChunkCoord, Dimension, MetaStore, Observation, RegionFingerprint,
-    RegionKey, RegionKind, Scope, SnapshotEntry, SnapshotId,
+    RegionKey, RegionKind, Scope, SnapshotEntry, SnapshotId, SnapshotTag, TagName,
     usecase::{
         backup::{assemble, commit, plan_backup, stage_present},
         gc::{gc_apply, gc_plan},
@@ -58,6 +58,48 @@ where
         .await
         .unwrap();
     assert_eq!(listed.len(), 1);
+}
+
+/// Tag CRUD plus name-ordered visits and ref resolution.
+pub async fn tags<M>(meta: &mut M)
+where
+    M: MetaStore,
+    M::Error: core::fmt::Debug,
+{
+    let first = meta.create_snapshot(1_000).await.unwrap();
+    let second = meta.create_snapshot(2_000).await.unwrap();
+    let zeta = TagName::parse("zeta").unwrap();
+    let alpha = TagName::parse("alpha").unwrap();
+    meta.tag_snapshot(&zeta, first, 1_500).await.unwrap();
+    meta.tag_snapshot(&alpha, second, 2_500).await.unwrap();
+
+    let record = meta.lookup_tag(&alpha).await.unwrap().unwrap();
+    assert_eq!(record, SnapshotTag::new(alpha.clone(), second, 2_500));
+    assert!(
+        meta.lookup_tag(&TagName::parse("missing").unwrap())
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    let mut seen = Vec::new();
+    meta.visit_tags(|tag| {
+        seen.push(tag.name.as_str().to_owned());
+        true
+    })
+    .await
+    .unwrap();
+    assert_eq!(seen, ["alpha", "zeta"]);
+
+    assert_eq!(
+        sekai_core::usecase::snapshot::resolve_snapshot_ref(&*meta, "@zeta")
+            .await
+            .unwrap(),
+        first
+    );
+
+    assert!(meta.untag(&alpha).await.unwrap());
+    assert!(!meta.untag(&alpha).await.unwrap());
 }
 
 /// Fingerprint carry: unchanged regions skip ingest, changed ones re-ingest.

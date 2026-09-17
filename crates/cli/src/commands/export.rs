@@ -38,15 +38,16 @@ const fn map_options(on_missing_blob: OnMissingBlob) -> sekai_app::ExportOptions
 
 pub async fn run(
     store: &str,
-    snapshot: u64,
+    snapshot: &str,
     out_dir: &Path,
     progress: bool,
     selection: &Selection,
     flags: &ExportFlags,
     out: ReportOut,
 ) -> anyhow::Result<()> {
-    use sekai_app::SnapshotId;
-    let id = SnapshotId(snapshot);
+    let id = sekai_app::resolve_snapshot_ref(store, snapshot)
+        .await
+        .with_context(|| format!("snapshot {snapshot:?} failed to resolve"))?;
     let scope = selection.owned_scope();
     let flavor = map_flavor(flags);
     let options = map_options(flags.on_missing_blob);
@@ -64,7 +65,7 @@ pub async fn run(
         .await
         .with_context(|| {
             format!(
-                "export of snapshot {snapshot} to {} failed",
+                "export of snapshot {snapshot:?} to {} failed",
                 out_dir.display()
             )
         })?;
@@ -79,7 +80,7 @@ pub async fn run(
     let style = out.style;
     println!(
         "snapshot {} exported: {} files written, {} chunks restored",
-        style.bold(&snapshot.to_string()),
+        style.bold(&id.raw().to_string()),
         report.files_written,
         report.chunks_restored
     );

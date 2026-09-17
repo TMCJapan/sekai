@@ -2,7 +2,7 @@
 
 use crate::style::ColorChoice;
 use clap::{Parser, Subcommand};
-use sekai_app::{Area, ChunkCoord, Dimension, Rect, RegionKind, Scope};
+use sekai_app::{Area, ChunkCoord, Dimension, Rect, RegionKind, Scope, TagName};
 use std::path::PathBuf;
 
 /// Chunk-level deduplicated snapshots for Minecraft region files.
@@ -50,8 +50,8 @@ pub enum Command {
     Rollback {
         /// World directory to rebuild in place.
         world: PathBuf,
-        /// Snapshot ID to restore (see `list`).
-        snapshot: u64,
+        /// Snapshot reference to restore (`<id>` or `@tag`, see `list`).
+        snapshot: String,
         /// Human or JSON rendering plus optional phase timings.
         #[command(flatten)]
         output: TimingArgs,
@@ -94,8 +94,8 @@ pub enum Command {
     },
     /// Rebuild a snapshot into a fresh directory (never touches the live world).
     Export {
-        /// Snapshot ID to export (see `list`).
-        snapshot: u64,
+        /// Snapshot reference to export (`<id>` or `@tag`, see `list`).
+        snapshot: String,
         /// Directory to rebuild the snapshot into (created when missing;
         /// must otherwise be empty).
         out: PathBuf,
@@ -118,6 +118,23 @@ pub enum Command {
         /// silent without a stderr TTY.
         #[arg(long, conflicts_with = "json")]
         progress: bool,
+    },
+    /// Tag snapshots with human-readable names.
+    Tag {
+        /// Tag name (`[A-Za-z0-9._-]`, 1-64 bytes, not all digits).
+        /// Omitted with nothing else lists tags.
+        name: Option<TagName>,
+        /// Snapshot reference (`<id>` or `@tag`) to point at.
+        snapshot: Option<String>,
+        /// Delete the tag instead of creating it.
+        #[arg(long, short = 'd', conflicts_with_all = ["snapshot", "force"])]
+        delete: bool,
+        /// Move an existing tag instead of failing.
+        #[arg(long)]
+        force: bool,
+        /// Emit output as JSON instead of human text. See docs/json.md.
+        #[arg(long)]
+        json: bool,
     },
     /// Compare chunk NBT AST between two snapshots or between world state and a snapshot.
     Diff(DiffArgs),
@@ -150,6 +167,7 @@ impl Command {
             Self::Rollback { .. } => "rollback",
             Self::List { .. } => "list",
             Self::Export { .. } => "export",
+            Self::Tag { .. } => "tag",
             Self::Diff(_) => "diff",
             Self::Gc { .. } => "gc",
             Self::Debug { debug } => match debug {
@@ -166,7 +184,7 @@ impl Command {
             | Self::Rollback { output, .. }
             | Self::Export { output, .. }
             | Self::Gc { output, .. } => output.json,
-            Self::List { json } => *json,
+            Self::List { json } | Self::Tag { json, .. } => *json,
             Self::Diff(args) => args.output.json,
             Self::Debug { debug } => match debug {
                 DebugCommand::Scan { output, .. } => output.json,
@@ -225,10 +243,12 @@ pub struct DiffArgs {
     /// World directory to compare against snapshot (if specified).
     #[arg(long)]
     pub world: Option<PathBuf>,
-    /// Older snapshot ID (if omitted when comparing snapshots, defaults to second-latest).
-    pub old_snapshot: Option<u64>,
-    /// Newer snapshot ID (if omitted, defaults to latest snapshot).
-    pub new_snapshot: Option<u64>,
+    /// Older snapshot reference (`<id>` or `@tag`; if omitted when
+    /// comparing snapshots, defaults to second-latest).
+    pub old_snapshot: Option<String>,
+    /// Newer snapshot reference (`<id>` or `@tag`; if omitted, defaults
+    /// to latest snapshot).
+    pub new_snapshot: Option<String>,
     /// Chunks to compare (default: whole world). One chunk keeps the
     /// legacy single-chunk output; several switch to grouped output.
     #[command(flatten)]

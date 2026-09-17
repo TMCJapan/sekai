@@ -18,6 +18,7 @@ carries the bare result only.
 | `rollback` | report (+timings with `--timing`) | table + JSON block | |
 | `list` | snapshot array | n/a | no phases exist |
 | `export` | report (+timings with `--timing`) | table + JSON block | |
+| `tag` | record, deletion record, or tag array | n/a | no phases exist |
 | `diff` | single array, grouped array (multi), or timed object | table + JSON block | `--in`/`--region` select chunks; one chunk keeps the single shape |
 | `gc` | report or dry-run plan (+timings with `--timing`) | table + JSON block | dry-run timings carry `plan_ms`; `apply_ms` is `0` |
 | `debug scan` | entry array (+timings with `--timing`) | table + JSON block | |
@@ -38,7 +39,7 @@ Every invocation prints exactly one JSON object to stdout:
 {"command": "<name>", "status": "error", "error": "<full context chain>"}
 ```
 
-`command` is one of `backup`, `rollback`, `list`, `export`, `diff`, `gc`, `scan`.
+`command` is one of `backup`, `rollback`, `list`, `export`, `tag`, `diff`, `gc`, `scan`.
 The error string is the full anyhow context chain (outermost message
 first, then `Caused by:` lines), JSON-escaped.
 
@@ -116,10 +117,30 @@ The `total_ms`/`phases` block appears only with `--timing`.
 ### `list`
 
 ```jsonc
-[{"id": 1, "created_at_ms": 1700000000000}, {"id": 2, "created_at_ms": 1700000001000}]
+[{"id": 1, "created_at_ms": 1700000000000, "tags": []}, {"id": 2, "created_at_ms": 1700000001000, "tags": ["stable"]}]
 ```
 
 Timestamps are raw Unix millis (RFC 3339 rendering stays human-only).
+`tags` names the tags pointing at each snapshot, in name order.
+
+### `tag`
+
+Create (`tag <name> <snapshot>`) and delete (`tag -d <name>`) return
+the record:
+
+```jsonc
+{"name": "stable", "snapshot": 2, "created_at_ms": 1700000001000}
+```
+
+Deletion returns `{"name": "stable"}`. Bare `tag` lists all tags in
+name order:
+
+```jsonc
+[{"name": "stable", "snapshot": 2, "created_at_ms": 1700000001000}]
+```
+
+Snapshot arguments to `rollback`, `export`, and `diff` accept `<id>` or
+`@tag`; payloads always carry the resolved numeric ID.
 
 ### `diff`
 

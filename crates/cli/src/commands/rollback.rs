@@ -1,7 +1,7 @@
 //! Rollback subcommand execution, DTOs, and output rendering.
 
 use anyhow::Context as _;
-use sekai_app::{RollbackReport, RollbackTimings, SnapshotId};
+use sekai_app::{RollbackReport, RollbackTimings};
 use serde::Serialize;
 use std::path::Path;
 
@@ -39,13 +39,15 @@ const fn map_options(flags: &RollbackFlags) -> sekai_app::RollbackOptions {
 pub async fn run(
     store: &str,
     world: &Path,
-    snapshot: u64,
+    snapshot: &str,
     progress: bool,
     selection: &Selection,
     flags: &RollbackFlags,
     out: ReportOut,
 ) -> anyhow::Result<()> {
-    let id = SnapshotId(snapshot);
+    let id = sekai_app::resolve_snapshot_ref(store, snapshot)
+        .await
+        .with_context(|| format!("snapshot {snapshot:?} failed to resolve"))?;
     let scope = selection.owned_scope();
     let options = map_options(flags);
     let bar = progress_bar(progress);
@@ -61,7 +63,7 @@ pub async fn run(
     .await
     .with_context(|| {
         format!(
-            "rollback of {} to snapshot {snapshot} failed",
+            "rollback of {} to snapshot {snapshot:?} failed",
             world.display()
         )
     })?;
@@ -76,7 +78,7 @@ pub async fn run(
     let style = out.style;
     println!(
         "snapshot {} restored: {} files rewritten, {} files deleted, {} chunks restored",
-        style.bold(&snapshot.to_string()),
+        style.bold(&id.raw().to_string()),
         report.files_written,
         report.files_deleted,
         report.chunks_restored

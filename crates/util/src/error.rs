@@ -32,6 +32,32 @@ impl fmt::Display for HexError {
 
 impl core::error::Error for HexError {}
 
+/// Snapshot tag name validation failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TagNameError {
+    /// Name was empty.
+    Empty,
+    /// Name exceeded 64 bytes.
+    TooLong,
+    /// Name held a byte outside `[A-Za-z0-9._-]`.
+    BadChar(char),
+    /// Name consisted of digits alone (confusable with a snapshot ID).
+    Numeric,
+}
+
+impl fmt::Display for TagNameError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "tag name is empty"),
+            Self::TooLong => write!(f, "tag name exceeds 64 bytes"),
+            Self::BadChar(c) => write!(f, "tag name holds invalid character: {c:?}"),
+            Self::Numeric => write!(f, "tag name must not be all digits"),
+        }
+    }
+}
+
+impl core::error::Error for TagNameError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

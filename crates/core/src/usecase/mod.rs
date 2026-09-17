@@ -15,3 +15,4 @@ pub use backup::{Assembled, BackupReport, Observation, Plan, Previous};
 pub use diff::{DiffError, diff_blobs, diff_blobs_v1};
 pub use gc::{GcError, GcReport};
 pub use rollback::{RollbackError, RollbackPlan, RollbackReport};
+pub use snapshot::{ResolveError, SnapshotError, resolve_snapshot_ref};

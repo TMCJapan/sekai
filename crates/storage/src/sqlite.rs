@@ -8,7 +8,7 @@ use std::path::Path;
 use sekai_core::{
     ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, Dimension, MetaStore,
     RegionFingerprint, RegionKey, RegionKind, RegionStateEntry, Snapshot, SnapshotEntry,
-    SnapshotId,
+    SnapshotId, SnapshotTag, TagName,
 };
 use sqlx::Row as _;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteSynchronous};
@@ -17,7 +17,7 @@ use crate::api::{StorageError, Store, io_error};
 use crate::cas::FileCas;
 
 /// Managed schema version (`PRAGMA user_version`).
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 const SCHEMA: &str = include_str!("../schema/sqlite.sql");
 
@@ -177,6 +177,22 @@ fn decode_state(row: &sqlx::sqlite::SqliteRow) -> Result<RegionStateEntry, Stora
     })
 }
 
+/// Decode one `snapshot_tags` row. Stored names always re-validate:
+/// anything else is corruption, never silent reinterpretation.
+fn decode_tag(row: &sqlx::sqlite::SqliteRow) -> Result<SnapshotTag, StorageError> {
+    let name_raw: String = row.try_get("name")?;
+    let name = TagName::parse(&name_raw).map_err(|_| StorageError::InvalidTagName {
+        name: name_raw.clone(),
+    })?;
+    let snapshot_raw: i64 = row.try_get("snapshot_id")?;
+    let snapshot = snapshot_id_from_i64(snapshot_raw)?;
+    Ok(SnapshotTag::new(
+        name,
+        snapshot,
+        millis_col(row, "created_at_ms")?,
+    ))
+}
+
 /// `SnapshotId` as an `INTEGER` bind parameter.
 fn snap_param(id: SnapshotId) -> Result<i64, StorageError> {
     i64::try_from(id.0).map_err(|_| StorageError::InvalidSnapshotId(id.0))
@@ -334,6 +350,57 @@ impl sekai_core::MetaStore for SqliteMeta {
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(decode_state).collect()
+    }
+
+    async fn tag_snapshot(
+        &mut self,
+        name: &TagName,
+        snapshot: SnapshotId,
+        created_at_ms: u64,
+    ) -> Result<(), StorageError> {
+        sqlx::query(
+            "INSERT INTO snapshot_tags (name, snapshot_id, created_at_ms) VALUES (?, ?, ?)",
+        )
+        .bind(name.as_str())
+        .bind(snap_param(snapshot)?)
+        .bind(millis_param(created_at_ms)?)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn untag(&mut self, name: &TagName) -> Result<bool, StorageError> {
+        let done = sqlx::query("DELETE FROM snapshot_tags WHERE name = ?")
+            .bind(name.as_str())
+            .execute(&self.pool)
+            .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn lookup_tag(&self, name: &TagName) -> Result<Option<SnapshotTag>, StorageError> {
+        let row = sqlx::query(
+            "SELECT name, snapshot_id, created_at_ms FROM snapshot_tags WHERE name = ?",
+        )
+        .bind(name.as_str())
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| decode_tag(&row)).transpose()
+    }
+
+    async fn visit_tags<F>(&self, mut visit: F) -> Result<(), StorageError>
+    where
+        F: FnMut(&SnapshotTag) -> bool + Send,
+    {
+        let rows =
+            sqlx::query("SELECT name, snapshot_id, created_at_ms FROM snapshot_tags ORDER BY name")
+                .fetch_all(&self.pool)
+                .await?;
+        for row in &rows {
+            if !visit(&decode_tag(row)?) {
+                break;
+            }
+        }
+        Ok(())
     }
 
     async fn apply_snapshot_incremental(
