@@ -38,7 +38,9 @@ pub enum StorageError {
     #[error("snapshot ID out of range: {0}")]
     InvalidSnapshotId(u64),
     /// Database schema version is not supported.
-    #[error("unsupported schema version: {found}, this binary supports {supported}")]
+    #[error(
+        "unsupported schema version: {found}, this binary supports {supported} (recreate the store; pre-release stores are not migrated)"
+    )]
     UnsupportedSchema { found: i64, supported: i64 },
     /// SQLite operation failed.
     #[cfg(feature = "backend-sqlite")]

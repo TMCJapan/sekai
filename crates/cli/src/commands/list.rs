@@ -24,6 +24,10 @@ pub async fn run(store: &str, json: bool, stat: bool, style: Styler) -> anyhow::
         );
         return Ok(());
     }
+    if snapshots.is_empty() {
+        eprintln!("no snapshots found in store");
+        return Ok(());
+    }
     for (index, snapshot) in snapshots.iter().enumerate() {
         let mut line = format!(
             "{}\t{}",

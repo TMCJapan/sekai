@@ -338,6 +338,30 @@ pub struct Selection {
 }
 
 impl Selection {
+    /// One-line human summary of the selected scope for pre-run echoes.
+    pub fn describe(&self) -> String {
+        if self.areas.is_empty() && self.region.is_empty() {
+            return "whole world".to_owned();
+        }
+        let mut parts = Vec::new();
+        if !self.areas.is_empty() {
+            parts.push(format!("{} area(s)", self.areas.len()));
+        }
+        if !self.region.is_empty() {
+            parts.push(format!("{} region(s)", self.region.len()));
+        }
+        if !self.kind.is_empty() {
+            let kinds = self
+                .kind
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            parts.push(format!("kinds {kinds}"));
+        }
+        parts.join(", ")
+    }
+
     /// Region kinds covered: explicit set, or all when unlisted.
     pub fn kinds(&self) -> Vec<RegionKind> {
         if self.kind.is_empty() {

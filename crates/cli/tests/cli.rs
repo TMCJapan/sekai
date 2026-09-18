@@ -317,6 +317,28 @@ fn selection_owned_scope_round_trips() {
 }
 
 #[test]
+fn selection_describe_summarizes() {
+    use sekai_cli::cli::Selection;
+
+    let base = Selection {
+        areas: Vec::new(),
+        region: Vec::new(),
+        kind: Vec::new(),
+    };
+    assert_eq!(base.describe(), "whole world");
+
+    let scoped = Selection {
+        areas: vec!["nether".parse().unwrap(), "overworld:1,-2".parse().unwrap()],
+        region: vec!["overworld:0,0".parse().unwrap()],
+        kind: vec![sekai_app::RegionKind::REGION, sekai_app::RegionKind::POI],
+    };
+    assert_eq!(
+        scoped.describe(),
+        "2 area(s), 1 region(s), kinds region,poi"
+    );
+}
+
+#[test]
 fn parses_timing_and_debug_scan() {
     let cli = Cli::try_parse_from(["sekai", "backup", "--timing", "world"])
         .expect("backup --timing parses");

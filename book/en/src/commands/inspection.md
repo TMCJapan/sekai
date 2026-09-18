@@ -13,7 +13,7 @@ sekai debug scan ./world
   (RFC 3339 rendering is human-output only). Tags pointing at each
   snapshot are shown alongside; see [Tags](tags.md). `--stat` appends
   per-snapshot change statistics (fresh/tombstone/new-blob/effective
-  counts).
+  counts). An empty store prints a note to stderr and exits 0.
 - `status` previews what a backup would record: the basis snapshot
   (`latest`, `null` when the store is empty), changed regions (new and
   deleted files split out), chunks that would be newly recorded,

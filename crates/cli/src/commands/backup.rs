@@ -19,6 +19,18 @@ const fn options(with_diff: bool, jobs: usize) -> BackupOptions {
     }
 }
 
+/// Whether the store directory already exists. Unknown URL schemes are
+/// treated as pre-existing so no note is printed for backends this
+/// helper cannot resolve to a path.
+fn store_preexists(store: &str) -> bool {
+    let path = match store.strip_prefix("sqlite://") {
+        Some(rest) => rest,
+        None if store.contains("://") => return true,
+        None => store,
+    };
+    std::path::Path::new(path).exists()
+}
+
 pub async fn run(
     store: &str,
     world: &Path,
@@ -29,6 +41,7 @@ pub async fn run(
     out: ReportOut,
 ) -> anyhow::Result<()> {
     let scope = selection.owned_scope();
+    let fresh_store = !store_preexists(store);
     let bar = progress_bar(progress);
     let (report, timings) =
         sekai_app::backup(world, store, options(with_diff, jobs), scope, |update| {
@@ -48,6 +61,9 @@ pub async fn run(
             envelope_ok("backup", &backup_payload(&report, &timings, out.timing))?
         );
         return Ok(());
+    }
+    if fresh_store {
+        eprintln!("store created at {store}");
     }
     let style = out.style;
     println!(
@@ -229,5 +245,18 @@ mod tests {
             serde_json::to_string(&payload_timed).unwrap(),
             r#"{"snapshot":3,"chunks":40,"new_blobs":2,"tombstones":0,"skipped_regions":1,"carried_chunks":8,"total_ms":100,"phases":{"discover_ms":1,"universe_load_ms":2,"fingerprint_ms":3,"region_open_ms":4,"ingest_ms":50,"hash_ms":6,"cas_put_ms":7,"db_apply_ms":8},"regions":[{"path":"region/r.0.0.mca","bytes":100,"chunks":32,"open_ms":4,"ingest_ms":5,"hash_ms":6,"cas_ms":7}]}"#
         );
+    }
+
+    #[test]
+    fn detects_preexisting_stores() {
+        assert!(store_preexists(std::env::temp_dir().to_str().unwrap()));
+        assert!(!store_preexists(
+            std::env::temp_dir()
+                .join("sekai-missing-store-9d3f2b1a")
+                .to_str()
+                .unwrap()
+        ));
+        assert!(!store_preexists("sqlite:///definitely/missing/store"));
+        assert!(store_preexists("mysql://user@localhost/store"));
     }
 }
