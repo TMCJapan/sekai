@@ -16,18 +16,25 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
     let selection = &args.selection;
     let scope = selection.owned_scope();
     let mut coords = selection.explicit_chunks();
+    let snapshot_pair = if args.world.is_none() {
+        Some(
+            resolve_snapshot_pair(store, args.old_snapshot.clone(), args.new_snapshot.clone())
+                .await?,
+        )
+    } else {
+        None
+    };
     // Broad areas (whole dimensions, rectangles) and empty selections
     // resolve through enumeration; explicit chunks join the union.
     if selection.has_broad_areas() || coords.is_empty() {
         let mut enumerated = if let Some(world) = &args.world {
             sekai_app::world_chunk_coords(world)?
-        } else {
-            let (old_id, new_id) =
-                resolve_snapshot_pair(store, args.old_snapshot.clone(), args.new_snapshot.clone())
-                    .await?;
+        } else if let Some((old_id, new_id)) = snapshot_pair {
             let mut union = sekai_app::snapshot_chunk_coords(store, old_id).await?;
             union.extend(sekai_app::snapshot_chunk_coords(store, new_id).await?);
             union
+        } else {
+            anyhow::bail!("internal error: snapshot pair missing for snapshot diff");
         };
         coords.append(&mut enumerated);
     }
@@ -59,9 +66,9 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
         .await
         .with_context(|| "failed to compute chunk diffs between world state and snapshot")?
     } else {
-        let (old_id, new_id) =
-            resolve_snapshot_pair(store, args.old_snapshot.clone(), args.new_snapshot.clone())
-                .await?;
+        let Some((old_id, new_id)) = snapshot_pair else {
+            anyhow::bail!("internal error: snapshot pair missing for snapshot diff");
+        };
         sekai_app::diff_chunks(store, old_id, new_id, &coords, None, |update| {
             report_progress(
                 bar.as_ref(),
