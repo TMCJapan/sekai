@@ -10,6 +10,7 @@
 - [バックアップ](commands/backup.md)
 - [ロールバック](commands/rollback.md)
 - [エクスポート](commands/export.md)
+- [タグ](commands/tags.md)
 - [メンテナンス](commands/maintenance.md)
 - [検証・検査](commands/inspection.md)
 - [自動化](automation.md)

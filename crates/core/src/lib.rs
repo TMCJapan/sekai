@@ -13,7 +13,7 @@ pub use port::{BlobStore, MetaStore};
 pub use sekai_util::{
     ApplyOutcome, Area, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, Dimension, GcPlan,
     HexError, Rect, RegionFingerprint, RegionKey, RegionKind, RegionStateEntry, Scope, Snapshot,
-    SnapshotEntry, SnapshotId,
+    SnapshotEntry, SnapshotId, SnapshotTag, TagName, TagNameError,
 };
 
 // sekai-nbt AST diff types

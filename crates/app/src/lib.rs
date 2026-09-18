@@ -11,6 +11,7 @@ mod error;
 mod export;
 mod gc;
 mod rollback;
+mod tag;
 
 pub use backup::{BackupOptions, BackupProgress, BackupTimings, RegionTiming, backup};
 pub use diff::{
@@ -27,9 +28,10 @@ pub use rollback::{
 pub use sekai_core::{
     Area, BackupReport, BlobHash, ChunkCoord, DEFAULT_IGNORED, Dimension, GcPlan, GcReport,
     NbtChange, NbtDiffEntry, NbtValue, Rect, RegionKey, RegionKind, RollbackReport, Scope,
-    Snapshot, SnapshotId,
+    Snapshot, SnapshotId, SnapshotTag, TagName,
 };
 pub use sekai_world::{LayoutFlavor, RegionScanEntry, ScanTimings};
+pub use tag::{create_tag, delete_tag, list_tags, resolve_snapshot_ref};
 
 /// List all snapshots in ID order (for `list` and pre-flight checks).
 pub async fn list_snapshots(store_url: &str) -> Result<Vec<Snapshot>, AppError> {

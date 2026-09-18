@@ -6,7 +6,8 @@ sekai --store ./sekai-store rollback ./world 1
 
 Rebuilds the world from a snapshot, overwriting region files atomically
 (temp file in the target directory + `fsync` + `rename`; in-place
-mutation never happens). Files are stamped with the snapshot time, and
+mutation never happens). The snapshot argument accepts `<id>` or `@tag`
+(see [Tags](tags.md)). Files are stamped with the snapshot time, and
 volatile tags are rewound to capture values.
 
 The default policy is strict:

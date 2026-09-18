@@ -10,6 +10,7 @@
 - [Backup](commands/backup.md)
 - [Rollback](commands/rollback.md)
 - [Export](commands/export.md)
+- [Tags](commands/tags.md)
 - [Maintenance](commands/maintenance.md)
 - [Inspection](commands/inspection.md)
 - [Automation](automation.md)

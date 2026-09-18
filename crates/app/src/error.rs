@@ -35,6 +35,15 @@ pub enum AppError {
     /// Snapshot operation failed.
     #[error("{0}")]
     Snapshot(sekai_core::usecase::snapshot::SnapshotError<sekai_storage::StorageError>),
+    /// Snapshot reference (`<id>` or `@tag`) could not be resolved.
+    #[error("{0}")]
+    SnapshotRef(sekai_core::usecase::snapshot::ResolveError<sekai_storage::StorageError>),
+    /// Tag name is already taken.
+    #[error("tag already exists: {name} (use --force to move it)")]
+    TagExists {
+        /// Conflicting tag name.
+        name: String,
+    },
     /// No snapshots exist in the store.
     #[error("no snapshots found in store")]
     NoSnapshots,

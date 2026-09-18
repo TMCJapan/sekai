@@ -9,7 +9,7 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use crate::port::{BlobStore, MetaStore};
 use sekai_util::{
     ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, RegionFingerprint, RegionKey,
-    RegionStateEntry, Snapshot, SnapshotId,
+    RegionStateEntry, Snapshot, SnapshotId, SnapshotTag, TagName,
 };
 
 /// Fake backend failure.
@@ -65,6 +65,8 @@ pub struct MemMeta {
     pub rows: Vec<ChunkHistoryEntry>,
     /// Derived region states.
     pub states: Vec<RegionStateEntry>,
+    /// Tags by name.
+    pub tags: BTreeMap<TagName, SnapshotTag>,
 }
 
 impl MetaStore for MemMeta {
@@ -206,6 +208,47 @@ impl MetaStore for MemMeta {
         }
         self.states.retain(|state| !removed.contains(&state.key));
         Ok(ApplyOutcome { id, carried_chunks })
+    }
+
+    fn tag_snapshot(
+        &mut self,
+        name: &TagName,
+        snapshot: SnapshotId,
+        created_at_ms: u64,
+    ) -> impl Future<Output = Result<(), MemError>> + Send {
+        // Mirrors the backend PRIMARY KEY: duplicates are rejected.
+        if self.tags.contains_key(name) {
+            return core::future::ready(Err(MemError));
+        }
+        self.tags.insert(
+            name.clone(),
+            SnapshotTag::new(name.clone(), snapshot, created_at_ms),
+        );
+        core::future::ready(Ok(()))
+    }
+
+    fn untag(&mut self, name: &TagName) -> impl Future<Output = Result<bool, MemError>> + Send {
+        core::future::ready(Ok(self.tags.remove(name).is_some()))
+    }
+
+    fn lookup_tag(
+        &self,
+        name: &TagName,
+    ) -> impl Future<Output = Result<Option<SnapshotTag>, MemError>> + Send {
+        core::future::ready(Ok(self.tags.get(name).cloned()))
+    }
+
+    fn visit_tags<F>(&self, mut visit: F) -> impl Future<Output = Result<(), MemError>> + Send
+    where
+        F: FnMut(&SnapshotTag) -> bool + Send,
+    {
+        // BTreeMap iteration is name order, matching the backend query.
+        for tag in self.tags.values() {
+            if !visit(tag) {
+                break;
+            }
+        }
+        core::future::ready(Ok(()))
     }
 }
 

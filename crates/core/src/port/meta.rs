@@ -4,7 +4,7 @@ use alloc::vec::Vec;
 use core::future::Future;
 use sekai_util::{
     ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, RegionFingerprint, RegionKey,
-    RegionStateEntry, Snapshot, SnapshotEntry, SnapshotId,
+    RegionStateEntry, Snapshot, SnapshotEntry, SnapshotId, SnapshotTag, TagName,
 };
 
 /// Snapshot metadata and per-chunk history storage.
@@ -82,4 +82,27 @@ pub trait MetaStore {
         fingerprints: &[RegionFingerprint],
         removed: &[RegionKey],
     ) -> impl Future<Output = Result<ApplyOutcome, Self::Error>> + Send;
+
+    /// Point `name` at `snapshot`. Duplicate names are a backend error;
+    /// callers check-then-insert when they need friendlier failures.
+    fn tag_snapshot(
+        &mut self,
+        name: &TagName,
+        snapshot: SnapshotId,
+        created_at_ms: u64,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// Remove `name`. Returns whether a tag was removed.
+    fn untag(&mut self, name: &TagName) -> impl Future<Output = Result<bool, Self::Error>> + Send;
+
+    /// Tag record for `name`, or `None` when it does not exist.
+    fn lookup_tag(
+        &self,
+        name: &TagName,
+    ) -> impl Future<Output = Result<Option<SnapshotTag>, Self::Error>> + Send;
+
+    /// Visit tags in name order. Return `false` to stop early.
+    fn visit_tags<F>(&self, visit: F) -> impl Future<Output = Result<(), Self::Error>> + Send
+    where
+        F: FnMut(&SnapshotTag) -> bool + Send;
 }
