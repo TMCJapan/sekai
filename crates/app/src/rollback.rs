@@ -342,8 +342,8 @@ fn resolve_target(
 ) -> Result<PathBuf, AppError> {
     match policy {
         MissingFilePolicy::Error => Err(sekai_world::WorldError::UnknownRegionPath {
-            dim: key.dim.raw(),
-            kind: key.kind.raw(),
+            dim: key.dim,
+            kind: key.kind,
             region_x: key.rx,
             region_z: key.rz,
         }
@@ -367,13 +367,7 @@ fn sibling_or_derived(
     flavor: &LayoutFlavor,
     key: &RegionKey,
 ) -> Result<PathBuf, AppError> {
-    if let Some(sibling) = discovered
-        .iter()
-        .find(|(k, _)| k.dim == key.dim && k.kind == key.kind)
-        .map(|(_, path)| path)
-    {
-        let mut path = sibling.clone();
-        path.set_file_name(format!("r.{}.{}.mca", key.rx, key.rz));
+    if let Some(path) = sekai_world::sibling_path(discovered, key) {
         return Ok(path);
     }
     Ok(sekai_world::derive_path(
