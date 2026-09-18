@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use sekai_core::{Dimension, RegionKind};
+use sekai_core::{Dimension, RegionKey, RegionKind};
 
 use crate::error::WorldError;
 
@@ -409,8 +409,8 @@ pub fn derive_path(
     region_z: i32,
 ) -> Result<PathBuf, WorldError> {
     let unknown = || WorldError::UnknownRegionPath {
-        dim: dim.raw(),
-        kind: kind.raw(),
+        dim,
+        kind,
         region_x,
         region_z,
     };
@@ -452,4 +452,19 @@ pub fn derive_path(
     path.push(kind_dir);
     path.push(format!("r.{region_x}.{region_z}.mca"));
     Ok(path)
+}
+
+/// Path for a missing region inside a live sibling's directory, if any.
+///
+/// Folders may have moved since the backup (e.g. across a 26.1 migration),
+/// so callers prefer this over flavor derivation whenever a same-dimension
+/// sibling exists. Returns `None` when no sibling is discovered.
+pub fn sibling_path(discovered: &BTreeMap<RegionKey, PathBuf>, key: &RegionKey) -> Option<PathBuf> {
+    let sibling = discovered
+        .iter()
+        .find(|(k, _)| k.dim == key.dim && k.kind == key.kind)
+        .map(|(_, path)| path)?;
+    let mut path = sibling.clone();
+    path.set_file_name(format!("r.{}.{}.mca", key.rx, key.rz));
+    Some(path)
 }

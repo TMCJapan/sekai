@@ -9,7 +9,7 @@ use sekai_core::{Dimension, RegionKind};
 
 use crate::discover::{RegionRef, discover};
 use crate::error::WorldError;
-use crate::fingerprint::HEADER_HASH_LEN;
+use crate::observation::{header_hash_of_prefix, hex_hash, mtime_ms_from_metadata};
 
 /// One region file observed on disk.
 #[derive(Debug, Clone)]
@@ -84,8 +84,7 @@ pub fn scan_world(world: &Path) -> Result<(Vec<RegionScanEntry>, ScanTimings), W
 /// Hash one file's header and count its chunks; `None` skips corrupt files.
 fn parse_entry(region: &RegionRef, bytes: &[u8], mtime_ms: Option<u64>) -> Option<RegionScanEntry> {
     let file_bytes = bytes.len() as u64;
-    let header_len = bytes.len().min(HEADER_HASH_LEN);
-    let header_hash = hex(&sekai_anvil::header_hash(&bytes[..header_len]));
+    let header_hash = hex_hash(&header_hash_of_prefix(bytes));
     let chunks = count_chunks(bytes, region.region_x, region.region_z).ok()?;
     Some(RegionScanEntry {
         path: region.path.clone(),
@@ -103,9 +102,7 @@ fn parse_entry(region: &RegionRef, bytes: &[u8], mtime_ms: Option<u64>) -> Optio
 fn read_with_mtime(path: &Path) -> Result<(Vec<u8>, Option<u64>), WorldError> {
     let mut file = File::open(path).map_err(|e| WorldError::io(path, e))?;
     let meta = file.metadata().ok();
-    let mtime_ms = meta
-        .as_ref()
-        .and_then(crate::fingerprint::mtime_ms_from_metadata);
+    let mtime_ms = meta.as_ref().and_then(mtime_ms_from_metadata);
     let mut bytes = Vec::with_capacity(
         meta.as_ref()
             .map_or(0, |m| usize::try_from(m.len()).unwrap_or(0)),
@@ -113,15 +110,6 @@ fn read_with_mtime(path: &Path) -> Result<(Vec<u8>, Option<u64>), WorldError> {
     file.read_to_end(&mut bytes)
         .map_err(|e| WorldError::io(path, e))?;
     Ok((bytes, mtime_ms))
-}
-
-fn hex(bytes: &[u8; 32]) -> String {
-    use core::fmt::Write;
-    let mut out = String::with_capacity(64);
-    for b in bytes {
-        let _ = write!(out, "{b:02x}");
-    }
-    out
 }
 
 fn count_chunks(bytes: &[u8], region_x: i32, region_z: i32) -> Result<usize, WorldError> {
