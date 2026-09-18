@@ -33,3 +33,5 @@ Each behavior is configurable without changing the default:
 - Scope flags (`--in`, `--region`, `--kind`) rebuild and delete only
   inside the scope; see [Scope selection](../scope.md). Combine with
   `--timing`/`--json` as usual.
+- Before rebuilding, the CLI echoes the target snapshot, scope, and
+  policy to stderr (human output only).

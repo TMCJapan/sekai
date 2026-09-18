@@ -28,3 +28,4 @@ sekai --store ./sekai-store rollback ./world @stable --in overworld
 
 - 対象範囲フラグ（`--in`、`--region`、`--kind`）は対象範囲内のみを再構築および削除します。[対象範囲選択](../scope.md)を参照してください。
   通常通り `--timing` や `--json` と組み合わせることができます。
+- 再構築の前に、CLIは対象スナップショット・対象範囲・ポリシーを標準エラー出力に表示します（human出力のみ）。

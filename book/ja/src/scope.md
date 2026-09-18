@@ -18,4 +18,4 @@ sekai --store ./sekai-store export 3 ./restored --region overworld:0,0
 
 対象範囲はフィルターであり、パーティション（分割）ではありません。
 対象範囲付きのバックアップはその対象範囲内のみの事実として読み取られ（対象範囲外の座標は何も記録されず、フォールバックを通じて解決されます）、対象範囲付きのロールバックやエクスポートが対象範囲外のファイルに触れることはありません。
-[ADR-0003](../../docs/adr/0003-scope-as-filter.md) を参照してください。
+[ADR-0003](https://github.com/TMCJapan/sekai/blob/main/docs/adr/0003-scope-as-filter.md) を参照してください。

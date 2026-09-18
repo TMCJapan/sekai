@@ -15,5 +15,5 @@
 | `gc --dry-run`、`prune --dry-run` | plan のみ、削除なし |
 | `rollback`、`export` | なし（rollback は定義上破壊的、export は空ディレクトリ前提で可逆のため） |
 
-フラグマトリクス、エンベロープ、コマンドごとのペイロード、互換性の約束などの完全な規約については [docs/json.md](../../docs/json.md) を参照してください。
+フラグマトリクス、エンベロープ、コマンドごとのペイロード、互換性の約束などの完全な規約については [docs/json.md](https://github.com/TMCJapan/sekai/blob/main/docs/json.md) を参照してください。
 そのページがリファレンスであり、本ドキュメントでは重複記載を行いません。

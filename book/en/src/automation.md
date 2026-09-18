@@ -18,5 +18,5 @@ Dry runs by command:
 | `rollback`, `export` | none (rollback is destructive by definition; export targets an empty directory, so it is trivially reversible) |
 
 The full contract — flag matrix, envelope, per-command payloads, and the
-compatibility promise — is [docs/json.md](../../docs/json.md). That page
+compatibility promise — is [docs/json.md](https://github.com/TMCJapan/sekai/blob/main/docs/json.md). That page
 is the reference; this book does not duplicate it.

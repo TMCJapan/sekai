@@ -50,6 +50,15 @@ pub async fn run(
         .with_context(|| format!("snapshot {snapshot:?} failed to resolve"))?;
     let scope = selection.owned_scope();
     let options = map_options(flags);
+    if !out.json {
+        eprintln!(
+            "rollback {} to snapshot {} (scope: {}, policy: {})",
+            world.display(),
+            id.raw(),
+            selection.describe(),
+            policy_summary(flags),
+        );
+    }
     let bar = progress_bar(progress);
     let owned = bar.clone();
     let (report, timings) = sekai_app::rollback(world, store, id, options, scope, move |update| {
@@ -145,6 +154,34 @@ fn print_rollback_timing_table(timings: &RollbackTimings, style: Styler) {
     );
 }
 
+/// One-line human summary of the restore policy for the pre-run echo.
+fn policy_summary(flags: &RollbackFlags) -> String {
+    let mut parts = Vec::new();
+    if flags.keep_post_snapshot_files {
+        parts.push("keep files");
+    }
+    if flags.keep_post_snapshot_chunks {
+        parts.push("keep chunks");
+    }
+    if flags.keep_tombstoned_chunks {
+        parts.push("keep tombstones");
+    }
+    if matches!(flags.on_missing_blob, OnMissingBlob::SkipChunk) {
+        parts.push("skip missing blobs");
+    }
+    if !matches!(flags.on_missing_file, OnMissingFile::SiblingFirst) {
+        parts.push(match flags.on_missing_file {
+            OnMissingFile::SiblingFirst => "sibling-first",
+            OnMissingFile::DerivedOnly => "derived-only",
+            OnMissingFile::Error => "missing-file error",
+        });
+    }
+    if parts.is_empty() {
+        return "strict".to_owned();
+    }
+    parts.join(", ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -202,6 +239,30 @@ mod tests {
                 on_missing_blob: sekai_app::MissingBlobPolicy::SkipChunk,
                 on_missing_file: sekai_app::MissingFilePolicy::Error,
             }
+        );
+    }
+
+    #[test]
+    fn summarizes_restore_policy() {
+        let strict = RollbackFlags {
+            keep_post_snapshot_files: false,
+            keep_post_snapshot_chunks: false,
+            keep_tombstoned_chunks: false,
+            on_missing_blob: OnMissingBlob::Abort,
+            on_missing_file: OnMissingFile::SiblingFirst,
+        };
+        assert_eq!(policy_summary(&strict), "strict");
+
+        let lenient = RollbackFlags {
+            keep_post_snapshot_files: true,
+            keep_post_snapshot_chunks: false,
+            keep_tombstoned_chunks: true,
+            on_missing_blob: OnMissingBlob::SkipChunk,
+            on_missing_file: OnMissingFile::Error,
+        };
+        assert_eq!(
+            policy_summary(&lenient),
+            "keep files, keep tombstones, skip missing blobs, missing-file error"
         );
     }
 }

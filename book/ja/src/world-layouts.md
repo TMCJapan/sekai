@@ -7,6 +7,6 @@
 - **Bukkit ファミリー** (Bukkit/Spigot/Paper/Purpur、26.1 以前のレイアウト): サーバーのルートディレクトリ。`<base>/`, `<base>_nether/DIM-1/`, `<base>_the_end/DIM1/` を保持します（ここで `base` は `level-name`、デフォルトは `world`）。Paper 26.1+ はバニラレイアウトへ移行します。
 - **プラグインワールド** (Multiverse 等): その内容によって検出される任意のフォルダ。
 
-完全なネームスペース規則は [ARCHITECTURE.md](../../ARCHITECTURE.md) ("World Layouts") に記載されています。
+完全なネームスペース規則は [ARCHITECTURE.md](https://github.com/TMCJapan/sekai/blob/main/ARCHITECTURE.md) ("World Layouts") に記載されています。
 実用上の2つの注意点：カスタムディメンションのフォルダはコンテンツハッシュ化されているため、名前を変更するとその履歴が孤立します。
 また、ロールバックは誤った場所に書き込むのではなく、明確にエラー（`UnknownRegionPath`）を出力する前に、可能な限り検出された同階層のフォルダを通じて移動されたフォルダを復元します。

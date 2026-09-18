@@ -46,7 +46,7 @@ jobs:
         with:
           ref: ${{ steps.resolve.outputs.tag }}
 
-      # The tag, the workspace version, and the seven internal path
+      # The tag, the workspace version, and the internal path
       # dependencies must move together; publishing depends on it.
       - name: Check version consistency
         run: |
@@ -58,9 +58,10 @@ jobs:
             echo "tag $TAG does not match workspace version $VER"
             exit 1
           }
-          N=$(grep -c "version = \"$VER\", path" Cargo.toml)
-          test "$N" = "7" || {
-            echo "expected 7 internal dependencies at $VER, found $N"
+          OUT_OF_SYNC=$(grep 'path = "crates/' Cargo.toml | grep -v "version = \"$VER\"" || true)
+          test -z "$OUT_OF_SYNC" || {
+            echo "internal path dependencies out of sync with $VER:"
+            echo "$OUT_OF_SYNC"
             exit 1
           }
 
@@ -136,6 +137,20 @@ jobs:
         uses: ./.github/actions/package-cli
         with:
           target: ${{ matrix.target }}
+
+      - name: Smoke-test packaged CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          SMOKE="$(mktemp -d)"
+          tar -xzf "sekai-${{ matrix.target }}.tar.gz" -C "$SMOKE"
+          BIN="$SMOKE/sekai"
+          if [ "$RUNNER_OS" = "Windows" ]; then BIN="$SMOKE/sekai.exe"; fi
+          "$BIN" --help >/dev/null
+          "$BIN" --store "$SMOKE/store" list --json | grep -q '"result":\[\]'
+          mkdir -p "$SMOKE/world"
+          "$BIN" --store "$SMOKE/store" backup "$SMOKE/world" --json | grep -q '"status":"ok"'
+          "$BIN" --store "$SMOKE/store" gc --dry-run --json | grep -q '"status":"ok"'
 
       - name: Upload CLI
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a

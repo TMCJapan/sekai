@@ -13,7 +13,7 @@ sekai debug scan ./world
   (RFC 3339 rendering is human-output only). Tags pointing at each
   snapshot are shown alongside; see [Tags](tags.md). `--stat` appends
   per-snapshot change statistics (fresh/tombstone/new-blob/effective
-  counts).
+  counts). An empty store prints a note to stderr and exits 0.
 - `status` previews what a backup would record: the basis snapshot
   (`latest`, `null` when the store is empty), changed regions (new and
   deleted files split out), chunks that would be newly recorded,
@@ -28,7 +28,7 @@ sekai debug scan ./world
   `--kind`) select the compared chunks; see
   [Scope selection](../scope.md). A chunk absent or tombstoned on a
   side diffs as an empty compound there — missing coordinates are never
-  errors (see [ADR-0006](../../docs/adr/0006-diff-missing-as-empty.md));
+  errors (see [ADR-0006](https://github.com/TMCJapan/sekai/blob/main/docs/adr/0006-diff-missing-as-empty.md));
   only corrupt payloads and missing blobs fail loudly. `--show-values`
   prints concrete old/new values in human output.
 - `debug scan` lists region files with size, mtime, chunk count, and
