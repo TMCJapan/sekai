@@ -11,5 +11,5 @@ Sekai には主に2つの機能が含まれています：
 - 本ガイドで解説する `sekai` CLI
 - サーバー管理ソフトウェア向けの再利用可能な Rust ライブラリ（`sekai-core` 上の `sekai-app`）。ライブラリ API は rustdoc（`cargo doc`）でドキュメント化されています。本ドキュメントでは CLI の操作のみを扱います。
 
-設計の背景については [ARCHITECTURE.md](../../ARCHITECTURE.md) を参照してください（レイヤリング、2層ハッシュモデル、MVCC/GC データモデル）。
-マシン可読な出力規格については [docs/json.md](../../docs/json.md) に記載されています。
+設計の背景については [ARCHITECTURE.md](https://github.com/TMCJapan/sekai/blob/main/ARCHITECTURE.md) を参照してください（レイヤリング、2層ハッシュモデル、MVCC/GC データモデル）。
+マシン可読な出力規格については [docs/json.md](https://github.com/TMCJapan/sekai/blob/main/docs/json.md) に記載されています。

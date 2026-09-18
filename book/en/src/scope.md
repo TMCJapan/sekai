@@ -20,4 +20,4 @@ sekai --store ./sekai-store export 3 ./restored --region overworld:0,0
 The scope is a filter, not a partition: a scoped backup reads as the
 truth for its scope only (out-of-scope coordinates record nothing and
 resolve through fallback), and a scoped rollback or export never touches
-files outside the scope. See [ADR-0003](../../docs/adr/0003-scope-as-filter.md).
+files outside the scope. See [ADR-0003](https://github.com/TMCJapan/sekai/blob/main/docs/adr/0003-scope-as-filter.md).

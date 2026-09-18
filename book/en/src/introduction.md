@@ -17,7 +17,7 @@ Sekai ships two things:
   server-management software. The library API is documented with rustdoc
   (`cargo doc`); this book covers operating the CLI only.
 
-Design background lives in [ARCHITECTURE.md](../../ARCHITECTURE.md):
+Design background lives in [ARCHITECTURE.md](https://github.com/TMCJapan/sekai/blob/main/ARCHITECTURE.md):
 layering, the two-layer hashing model, and the MVCC/GC data model. The
 machine-readable output contract lives in
-[docs/json.md](../../docs/json.md).
+[docs/json.md](https://github.com/TMCJapan/sekai/blob/main/docs/json.md).
