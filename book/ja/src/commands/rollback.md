@@ -2,6 +2,7 @@
 
 ```sh
 sekai --store ./sekai-store rollback ./world 1
+sekai --store ./sekai-store rollback ./world @stable --in overworld
 ```
 
 スナップショットからワールドを再構築し、リージョンファイルをアトミックに上書きします（対象ディレクトリ内のテンポラリファイル + `fsync` + `rename`；インプレースの直接変更は一切行われません）。
@@ -25,5 +26,5 @@ sekai --store ./sekai-store rollback ./world 1
 | `--on-missing-blob skip-chunk` | Blob が欠損しているチャンクをスキップする（デフォルトは `abort`） |
 | `--on-missing-file derived-only\|error` | 場所を推測する代わりに、同階層のフォルダを無視するか、エラーにする（デフォルトは `sibling-first`） |
 
-対象範囲付きのロールバックは、対象範囲内のみを再構築および削除します。
-通常通り `--timing` や `--json` と組み合わせることができます。
+- 対象範囲フラグ（`--in`、`--region`、`--kind`）は対象範囲内のみを再構築および削除します。[対象範囲選択](../scope.md)を参照してください。
+  通常通り `--timing` や `--json` と組み合わせることができます。

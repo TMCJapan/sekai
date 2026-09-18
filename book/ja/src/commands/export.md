@@ -11,6 +11,6 @@ sekai --store ./sekai-store export 1 ./restored
 
 - 出力ディレクトリが存在しない場合は作成されますが、存在する場合は空である必要があります。データの上書きを防ぐため、それ以外の場合は明確にエラーとなります。
 - `--flavor legacy|new|bukkit` は出力レイアウトを選択します（`legacy`: `region/`, `DIM-1/`, `DIM1/`、`new`: `dimensions/minecraft/<name>/`、`bukkit`: フォルダ分割）。`--base` はbukkitフレーバーのオーバーワールドフォルダ名を指定します（`level-name`、デフォルトは `world`）。
-- 対象範囲フラグはエクスポート対象を制限します。墓標化（tombstoned）されたリージョンはファイルを生成しません。
+- 対象範囲フラグ（`--in`、`--region`、`--kind`）はエクスポート対象を制限します。墓標化（tombstoned）されたリージョンはファイルを生成しません。[対象範囲選択](../scope.md)を参照してください。
 - `--on-missing-blob skip-chunk` は Blob が欠損しているチャンクをスキップします（デフォルトはロールバックと同様に `abort`）。
 - 導出可能なのはバニラのネームスペースのみです。カスタムディメンションは間違った場所に保存されるのを防ぐため、明確にエラー（`UnknownRegionPath`）となります。

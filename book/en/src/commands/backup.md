@@ -14,6 +14,8 @@ chunks.
 - `--progress` shows a stderr progress bar (refused with `--json`).
 - Scope flags (`--in`, `--region`, `--kind`) restrict what is recorded;
   see [Scope selection](../scope.md).
+- For a dry-run preview of the above, see `status` under
+  [Inspection](inspection.md).
 
 Unchanged regions are skipped by fingerprint; unchanged chunks inside
 changed regions resolve through fallback and cost no new blobs. A backup
