@@ -238,6 +238,20 @@ jobs:
         with:
           target: ${{ matrix.target }}
 
+      - name: Smoke-test packaged CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          SMOKE="$(mktemp -d)"
+          tar -xzf "sekai-${{ matrix.target }}.tar.gz" -C "$SMOKE"
+          BIN="$SMOKE/sekai"
+          if [ "$RUNNER_OS" = "Windows" ]; then BIN="$SMOKE/sekai.exe"; fi
+          "$BIN" --help >/dev/null
+          "$BIN" --store "$SMOKE/store" list --json | grep -q '"result":\[\]'
+          mkdir -p "$SMOKE/world"
+          "$BIN" --store "$SMOKE/store" backup "$SMOKE/world" --json | grep -q '"status":"ok"'
+          "$BIN" --store "$SMOKE/store" gc --dry-run --json | grep -q '"status":"ok"'
+
       - name: Upload CLI
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
