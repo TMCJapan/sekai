@@ -4,6 +4,9 @@
 # 現在のワールド状態を記録する（事前にサーバーへの書き込みを停止してください。「サーバー連携」を参照）
 sekai --store ./sekai-store backup ./world
 
+# 現在のワールドでバックアップを取ると何が記録されるかをプレビュー
+sekai --store ./sekai-store status ./world
+
 # スナップショットの一覧表示
 sekai --store ./sekai-store list
 

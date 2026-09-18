@@ -19,6 +19,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sekai_core::{
     BackupReport, ChunkCoord, Observation, RegionFingerprint, RegionKey, Scope, SnapshotEntry,
+    SnapshotId,
 };
 use sekai_storage::FileCas;
 use sekai_world::RegionRef;
@@ -36,6 +37,53 @@ pub struct BackupOptions {
     pub with_diff: bool,
     /// Tag names ignored by diff views. `None` selects the default set.
     pub ignore_tags: Option<Vec<String>>,
+}
+
+/// Preview behavior knobs.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct StatusOptions {
+    /// Ingest worker count. `0` means one per CPU, `1` stays sequential.
+    pub concurrency: usize,
+}
+
+/// What a backup would record, without recording anything.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatusReport {
+    /// Nothing in scope differs from the latest snapshot.
+    pub clean: bool,
+    /// Latest snapshot the preview is measured against, if any.
+    pub latest: Option<SnapshotId>,
+    /// In-scope regions that changed (new files included).
+    pub changed_regions: usize,
+    /// Changed regions with no stored state.
+    pub new_files: usize,
+    /// Stored regions gone from disk.
+    pub deleted_files: usize,
+    /// Chunks that would be newly recorded.
+    pub new_chunks: usize,
+    /// Tombstones that would be recorded for vanished chunks.
+    pub tombstones: usize,
+    /// Blobs absent from CAS (the rest would deduplicate).
+    pub new_blobs: usize,
+}
+
+/// Per-phase timings. Informational only; never changes preview semantics.
+#[derive(Debug, Clone, Default)]
+pub struct StatusTimings {
+    /// Wall-clock total.
+    pub total: Duration,
+    /// World discovery.
+    pub discover: Duration,
+    /// Fingerprint observation.
+    pub fingerprint: Duration,
+    /// Previous-state load plus carry/ingest planning.
+    pub universe_load: Duration,
+    /// Opening changed region files.
+    pub region_open: Duration,
+    /// Visiting and hashing changed chunks (never stored).
+    pub ingest: Duration,
+    /// Subset of `ingest` spent hashing.
+    pub hash: Duration,
 }
 
 /// Per-file progress report for the `progress` callback.
@@ -166,6 +214,7 @@ pub async fn backup(
         &options,
         scope.clone(),
         progress,
+        false,
     )
     .await?;
 
@@ -211,7 +260,105 @@ pub async fn backup(
     Ok((report, timings))
 }
 
-/// Whole-world observation: discovery plus fresh fingerprints.
+/// Preview what a backup would record, without writing anything: no CAS
+/// puts, no metadata commit. Read-only against both world and store.
+///
+/// Only `scope` is previewed. `progress` fires as changed files
+/// complete. Staged rows are assembled exactly as backup would, then
+/// counted instead of committed — so counts match a subsequent backup
+/// unless the world changes in between.
+pub async fn status(
+    world: &Path,
+    store_url: &str,
+    options: StatusOptions,
+    scope: Scope,
+    progress: impl Fn(BackupProgress) + Send,
+) -> Result<(StatusReport, StatusTimings), AppError> {
+    let total = Instant::now();
+    let store = super::open_store(store_url).await?;
+
+    let observed = tokio::task::spawn_blocking({
+        let world = world.to_path_buf();
+        move || observe(&world)
+    })
+    .await??;
+    let discover = observed.discover;
+    let fingerprint = observed.fingerprint;
+
+    let universe_started = Instant::now();
+    let (previous, plan) =
+        sekai_core::usecase::backup::plan_backup(store.meta(), &observed.observations, &scope)
+            .await?;
+    let universe_load = universe_started.elapsed();
+
+    let mut files: HashMap<RegionKey, Changed> = HashMap::with_capacity(observed.regions.len());
+    for (region, obs) in observed
+        .regions
+        .into_iter()
+        .zip(observed.observations.iter())
+    {
+        files.insert(obs.key, (region, obs.fingerprint));
+    }
+    let changed: Vec<Changed> = plan
+        .ingest
+        .iter()
+        .filter_map(|key| files.remove(key))
+        .collect();
+
+    // Diff views are preview-irrelevant: always skip the decode work.
+    let preview = BackupOptions {
+        concurrency: options.concurrency,
+        ..BackupOptions::default()
+    };
+    let walk = ingest_changed(
+        changed,
+        store.cas().root(),
+        &preview,
+        scope.clone(),
+        progress,
+        true,
+    )
+    .await?;
+
+    let staged = sekai_core::usecase::backup::assemble(
+        plan,
+        &previous,
+        walk.entries,
+        walk.present.into_iter().collect(),
+        walk.new_blobs,
+        walk.fingerprints,
+        &scope,
+    );
+
+    let new_files = staged
+        .fingerprints
+        .iter()
+        .filter(|fp| !previous.states.contains_key(&fp.key))
+        .count();
+    let new_chunks = staged.entries.iter().filter(|e| e.blob.is_some()).count();
+    let report = StatusReport {
+        clean: staged.entries.is_empty() && staged.removed.is_empty() && new_files == 0,
+        latest: previous.snapshot.map(|snapshot| snapshot.id),
+        changed_regions: walk.timings.len(),
+        new_files,
+        deleted_files: staged.removed.len(),
+        new_chunks,
+        tombstones: staged.tombstones,
+        new_blobs: staged.new_blobs,
+    };
+    let timings = StatusTimings {
+        total: total.elapsed(),
+        discover,
+        fingerprint,
+        universe_load,
+        region_open: walk.region_open,
+        ingest: walk.ingest,
+        hash: walk.hash,
+    };
+    Ok((report, timings))
+}
+
+// Whole-world observation: discovery plus fresh fingerprints.
 struct Observed {
     regions: Vec<sekai_world::RegionRef>,
     observations: Vec<Observation>,
@@ -281,6 +428,7 @@ async fn ingest_changed(
     options: &BackupOptions,
     scope: Scope,
     progress: impl Fn(BackupProgress) + Send,
+    dry_run: bool,
 ) -> Result<RegionWalk, AppError> {
     let mut walk = RegionWalk {
         timings: Vec::with_capacity(changed.len()),
@@ -307,7 +455,14 @@ async fn ingest_changed(
         let ignore_tags = options.ignore_tags.clone();
         let scope = scope.clone();
         set.spawn_blocking(move || {
-            ingest_group(group, &cas_root, with_diff, ignore_tags.as_deref(), &scope)
+            ingest_group(
+                group,
+                &cas_root,
+                with_diff,
+                ignore_tags.as_deref(),
+                &scope,
+                dry_run,
+            )
         });
     }
     while let Some(outcome) = set.join_next().await {
@@ -361,12 +516,25 @@ fn ingest_group(
     with_diff: bool,
     ignore_tags: Option<&[String]>,
     scope: &Scope,
+    dry_run: bool,
 ) -> Result<(Vec<FileOutcome>, Duration), AppError> {
     let mut cas = FileCas::open(cas_root)?;
     let mut outcomes = Vec::with_capacity(group.len());
     for (region, observed) in group {
-        let outcome = ingest_file(&region, observed, &mut cas, with_diff, ignore_tags, scope)?;
+        let outcome = ingest_file(
+            &region,
+            observed,
+            &mut cas,
+            with_diff,
+            ignore_tags,
+            scope,
+            dry_run,
+        )?;
         outcomes.push(outcome);
+    }
+    if dry_run {
+        // Nothing was written: no shards to sync.
+        return Ok((outcomes, Duration::ZERO));
     }
     // Barrier for this worker's shards; the join orders all barriers
     // before the metadata commit.
@@ -393,6 +561,7 @@ struct ChunkIngestCtx<'a> {
     cas: &'a mut FileCas,
     scratch: &'a mut Vec<u8>,
     with_diff: bool,
+    dry_run: bool,
     ignore: &'a [&'a str],
     entries: &'a mut Vec<SnapshotEntry>,
     present: &'a mut HashSet<ChunkCoord>,
@@ -401,7 +570,8 @@ struct ChunkIngestCtx<'a> {
 
 /// Read, hash, and store one changed region file, staging its rows.
 /// Chunks outside `scope` are skipped before hashing: their history stays
-/// untouched and fallback keeps resolving them.
+/// untouched and fallback keeps resolving them. Under `dry_run` blobs are
+/// probed, never stored.
 fn ingest_file(
     region: &RegionRef,
     observed: RegionFingerprint,
@@ -409,6 +579,7 @@ fn ingest_file(
     with_diff: bool,
     ignore_tags: Option<&[String]>,
     scope: &Scope,
+    dry_run: bool,
 ) -> Result<FileOutcome, AppError> {
     let opened = Instant::now();
     let bytes = sekai_world::open_image(&region.path)?;
@@ -446,6 +617,7 @@ fn ingest_file(
                 cas,
                 scratch: &mut scratch,
                 with_diff,
+                dry_run,
                 ignore,
                 entries: &mut entries,
                 present: &mut present,
@@ -513,7 +685,11 @@ fn ingest_timed(
     });
     let hash_elapsed = hash_started.elapsed();
     let cas_started = Instant::now();
-    if ctx.cas.put_blob(&hash, chunk.payload)? {
+    if ctx.dry_run {
+        if !ctx.cas.contains_blob(&hash) {
+            *ctx.new_blobs += 1;
+        }
+    } else if ctx.cas.put_blob(&hash, chunk.payload)? {
         *ctx.new_blobs += 1;
     }
     let cas_elapsed = cas_started.elapsed();

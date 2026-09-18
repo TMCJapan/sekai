@@ -19,6 +19,37 @@ fn parses_subcommands() {
     assert!(matches!(&cli.command, Command::Rollback { snapshot, .. } if snapshot == "3"));
 
     assert!(Cli::try_parse_from(["sekai", "rollback", "w"]).is_err());
+
+    let cli = Cli::try_parse_from(["sekai", "status", "w"]).expect("status parses");
+    assert!(matches!(
+        cli.command,
+        Command::Status {
+            progress: false,
+            jobs: 0,
+            output: TimingArgs {
+                timing: false,
+                json: false,
+            },
+            ..
+        }
+    ));
+    assert_eq!(cli.command.name(), "status");
+    assert!(!cli.command.output_json());
+
+    let cli = Cli::try_parse_from(["sekai", "status", "w", "--timing", "--json", "--jobs", "4"])
+        .expect("status options parse");
+    assert!(matches!(
+        cli.command,
+        Command::Status {
+            jobs: 4,
+            output: TimingArgs {
+                timing: true,
+                json: true,
+            },
+            ..
+        }
+    ));
+    assert!(cli.command.output_json());
 }
 
 #[test]

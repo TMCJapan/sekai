@@ -13,7 +13,10 @@ mod gc;
 mod rollback;
 mod tag;
 
-pub use backup::{BackupOptions, BackupProgress, BackupTimings, RegionTiming, backup};
+pub use backup::{
+    BackupOptions, BackupProgress, BackupTimings, RegionTiming, StatusOptions, StatusReport,
+    StatusTimings, backup, status,
+};
 pub use diff::{
     ChunkDiff, DiffProgress, DiffTimings, diff_blobs, diff_chunk, diff_chunks, diff_world_chunk,
     diff_world_chunks, snapshot_chunk_coords, world_chunk_coords,

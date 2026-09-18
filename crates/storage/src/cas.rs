@@ -52,6 +52,15 @@ impl FileCas {
         self.root.join("blobs").join(dir).join(file)
     }
 
+    /// Whether `hash` is already stored. Read-only probe for blocking
+    /// contexts (e.g. dry-run previews that must not write); async
+    /// callers use the [`BlobStore`](sekai_core::BlobStore) trait method
+    /// instead. False negatives from concurrent deletes only undercount
+    /// a preview, never corrupt it.
+    pub fn contains_blob(&self, hash: &BlobHash) -> bool {
+        self.path_of(hash).is_file()
+    }
+
     /// Ensure the parent shard directory exists.
     fn ensure_parent(&mut self, dest: &Path, shard_id: u8) -> Result<(), StorageError> {
         if self.ensured_shards.contains(&shard_id) {

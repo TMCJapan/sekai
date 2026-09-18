@@ -46,6 +46,24 @@ pub enum Command {
         #[command(flatten)]
         selection: Selection,
     },
+    /// Preview what a backup would record, without writing anything.
+    Status {
+        /// World directory to preview.
+        world: PathBuf,
+        /// Human or JSON rendering plus optional phase timings.
+        #[command(flatten)]
+        output: TimingArgs,
+        /// Show a progress bar on stderr. Refused with `--json`, and
+        /// silent without a stderr TTY.
+        #[arg(long, conflicts_with = "json")]
+        progress: bool,
+        /// World portion to preview (default: whole world).
+        #[command(flatten)]
+        selection: Selection,
+        /// Preview worker count. `0` means one per CPU.
+        #[arg(long, default_value = "0")]
+        jobs: usize,
+    },
     /// Rebuild the world from a snapshot, overwriting region files.
     Rollback {
         /// World directory to rebuild in place.
@@ -167,6 +185,7 @@ impl Command {
     pub const fn name(&self) -> &'static str {
         match self {
             Self::Backup { .. } => "backup",
+            Self::Status { .. } => "status",
             Self::Rollback { .. } => "rollback",
             Self::List { .. } => "list",
             Self::Export { .. } => "export",
@@ -184,6 +203,7 @@ impl Command {
     pub const fn output_json(&self) -> bool {
         match self {
             Self::Backup { output, .. }
+            | Self::Status { output, .. }
             | Self::Rollback { output, .. }
             | Self::Export { output, .. }
             | Self::Gc { output, .. } => output.json,

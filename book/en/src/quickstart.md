@@ -5,6 +5,9 @@
 # "Server coordination")
 sekai --store ./sekai-store backup ./world
 
+# Preview what a backup would record, without writing anything
+sekai --store ./sekai-store status ./world
+
 # List snapshots
 sekai --store ./sekai-store list
 

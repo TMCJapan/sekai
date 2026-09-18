@@ -8,6 +8,7 @@
 - [Concepts](concepts.md)
 - [Scope selection](scope.md)
 - [Backup](commands/backup.md)
+- [Status](commands/status.md)
 - [Rollback](commands/rollback.md)
 - [Export](commands/export.md)
 - [Tags](commands/tags.md)

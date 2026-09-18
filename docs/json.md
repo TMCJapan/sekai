@@ -15,6 +15,7 @@ carries the bare result only.
 | Command | `--json` | `--timing` | Notes |
 |---|---|---|---|
 | `backup` | report (+timings with `--timing`) | table + JSON block | regions list is timing detail, JSON-only |
+| `status` | preview (+timings with `--timing`) | table + JSON block | read-only: never writes to world or store |
 | `rollback` | report (+timings with `--timing`) | table + JSON block | |
 | `list` | snapshot array (+stats with `--stat`) | n/a | no phases exist |
 | `export` | report (+timings with `--timing`) | table + JSON block | |
@@ -26,7 +27,7 @@ carries the bare result only.
 Without `--timing`, `--json` emits the bare result. With `--timing`,
 reports that would be bare arrays (`diff`, `scan`) are promoted to an
 object holding the array (`diffs`/`entries`) plus the timing block;
-object reports (backup/rollback/export/gc) append the block in place.
+object reports (backup/status/rollback/export/gc) append the block in place.
 
 ## Envelope
 
@@ -39,7 +40,7 @@ Every invocation prints exactly one JSON object to stdout:
 {"command": "<name>", "status": "error", "error": "<full context chain>"}
 ```
 
-`command` is one of `backup`, `rollback`, `list`, `export`, `tag`, `diff`, `gc`, `scan`.
+`command` is one of `backup`, `status`, `rollback`, `list`, `export`, `tag`, `diff`, `gc`, `scan`.
 The error string is the full anyhow context chain (outermost message
 first, then `Caused by:` lines), JSON-escaped.
 
@@ -82,6 +83,22 @@ With `--timing` the `total_ms`/`phases`/`regions` block is appended:
      "open_ms": 1, "ingest_ms": 20, "hash_ms": 2, "cas_ms": 15}
   ]
 }
+
+### `status`
+
+```jsonc
+{
+  "clean": false, "latest": 2, "changed_regions": 1, "new_files": 0,
+  "deleted_files": 0, "new_chunks": 3, "tombstones": 1, "new_blobs": 2,
+  "total_ms": 50,
+  "phases": {"discover_ms": 1, "fingerprint_ms": 2, "universe_load_ms": 3,
+             "region_open_ms": 4, "ingest_ms": 30, "hash_ms": 10}
+}
+```
+
+The `total_ms`/`phases` block appears only with `--timing`.
+`latest` is `null` when no snapshot exists yet. Counts describe what a
+backup would record; nothing is written.
 ```
 
 ### `rollback`
