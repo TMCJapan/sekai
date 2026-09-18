@@ -56,6 +56,16 @@ pub trait MetaStore {
     where
         F: FnMut(&ChunkHistoryEntry) -> bool + Send;
 
+    /// Visit raw rows introduced at `snapshot` (fresh ingests plus
+    /// tombstones, no fallback). Return `false` to stop early.
+    fn visit_fresh_rows<F>(
+        &self,
+        snapshot: SnapshotId,
+        visit: F,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send
+    where
+        F: FnMut(&ChunkHistoryEntry) -> bool + Send;
+
     /// Visit snapshots in ID order. Return `false` to stop early.
     fn visit_snapshots<F>(&self, visit: F) -> impl Future<Output = Result<(), Self::Error>> + Send
     where

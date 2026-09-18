@@ -102,6 +102,56 @@ where
     assert!(!meta.untag(&alpha).await.unwrap());
 }
 
+/// Fresh-row visits and per-snapshot statistics.
+pub async fn fresh_stats<M>(meta: &mut M)
+where
+    M: MetaStore,
+    M::Error: core::fmt::Debug,
+{
+    use sekai_core::usecase::snapshot::{SnapshotStats, snapshot_stats};
+    let first = meta.create_snapshot(1_000).await.unwrap();
+    meta.record_chunk(first, &coord(0, 0), Some(&BlobHash([1; 32])), None)
+        .await
+        .unwrap();
+    meta.record_chunk(first, &coord(1, 0), Some(&BlobHash([1; 32])), None)
+        .await
+        .unwrap();
+    let second = meta.create_snapshot(2_000).await.unwrap();
+    meta.record_chunk(second, &coord(0, 0), Some(&BlobHash([2; 32])), None)
+        .await
+        .unwrap();
+    meta.record_chunk(second, &coord(1, 0), None, None)
+        .await
+        .unwrap();
+
+    let mut fresh = 0usize;
+    meta.visit_fresh_rows(second, |_| {
+        fresh += 1;
+        true
+    })
+    .await
+    .unwrap();
+    assert_eq!(fresh, 2);
+    assert_eq!(
+        snapshot_stats(&*meta, first).await.unwrap(),
+        SnapshotStats {
+            fresh_chunks: 2,
+            fresh_tombstones: 0,
+            new_blobs: 1,
+            effective_chunks: 2,
+        }
+    );
+    assert_eq!(
+        snapshot_stats(&*meta, second).await.unwrap(),
+        SnapshotStats {
+            fresh_chunks: 1,
+            fresh_tombstones: 1,
+            new_blobs: 1,
+            effective_chunks: 1,
+        }
+    );
+}
+
 /// Fingerprint carry: unchanged regions skip ingest, changed ones re-ingest.
 pub async fn backup_carry<M>(meta: &mut M)
 where

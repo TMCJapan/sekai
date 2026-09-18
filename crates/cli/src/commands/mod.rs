@@ -84,7 +84,7 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
             )
             .await
         }
-        Command::List { json } => list::run(&cli.store, *json, style).await,
+        Command::List { json, stat } => list::run(&cli.store, *json, *stat, style).await,
         Command::Tag {
             name,
             snapshot,

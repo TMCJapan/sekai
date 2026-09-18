@@ -28,10 +28,10 @@ pub use rollback::{
 pub use sekai_core::{
     Area, BackupReport, BlobHash, ChunkCoord, DEFAULT_IGNORED, Dimension, GcPlan, GcReport,
     NbtChange, NbtDiffEntry, NbtValue, Rect, RegionKey, RegionKind, RollbackReport, Scope,
-    Snapshot, SnapshotId, SnapshotTag, TagName,
+    Snapshot, SnapshotId, SnapshotStats, SnapshotTag, TagName,
 };
 pub use sekai_world::{LayoutFlavor, RegionScanEntry, ScanTimings};
-pub use tag::{create_tag, delete_tag, list_tags, resolve_snapshot_ref};
+pub use tag::{create_tag, delete_tag, list_tags, resolve_snapshot_ref, snapshot_stats};
 
 /// List all snapshots in ID order (for `list` and pre-flight checks).
 pub async fn list_snapshots(store_url: &str) -> Result<Vec<Snapshot>, AppError> {

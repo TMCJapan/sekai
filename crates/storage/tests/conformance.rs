@@ -65,6 +65,14 @@ async fn sqlite_tags() {
 }
 
 #[tokio::test]
+async fn sqlite_fresh_stats() {
+    let dir = tempdir("fresh");
+    let mut store = open(&dir).await;
+    common::fresh_stats(store.meta_mut()).await;
+    cleanup(&dir);
+}
+
+#[tokio::test]
 async fn sqlite_cas_roundtrip() {
     let dir = tempdir("cas");
     let mut store = open(&dir).await;
