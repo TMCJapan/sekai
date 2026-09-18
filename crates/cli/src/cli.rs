@@ -311,7 +311,8 @@ pub struct DiffArgs {
     pub show_values: bool,
 }
 
-/// World-portion selection shared by backup, rollback, and diff.
+/// World-portion selection shared by backup, status, rollback, diff, and
+/// export.
 ///
 /// Each `--in` picks one dimension whole, one chunk, or one rectangle;
 /// `--region` is shorthand for a region-aligned rectangle. Entries compose

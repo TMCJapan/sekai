@@ -120,7 +120,7 @@ pub trait MetaStore {
     /// Retire `from` into `into` (`into` must be retained and newer):
     /// rows superseded at or before `into` are removed, surviving rows
     /// are re-stamped onto `into`, derived states follow, and the
-    /// snapshot row (plus its tags, by cascade) is deleted — all
+    /// snapshot row (plus its tags, by cascade) is deleted - all
     /// atomically. Effective states of retained snapshots never change.
     fn retire_snapshot(
         &mut self,

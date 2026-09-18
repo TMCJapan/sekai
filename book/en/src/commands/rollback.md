@@ -2,6 +2,7 @@
 
 ```sh
 sekai --store ./sekai-store rollback ./world 1
+sekai --store ./sekai-store rollback ./world @stable --in overworld
 ```
 
 Rebuilds the world from a snapshot, overwriting region files atomically
@@ -29,5 +30,6 @@ Each behavior is configurable without changing the default:
 | `--on-missing-blob skip-chunk` | skip chunks whose blob is missing (default `abort`) |
 | `--on-missing-file derived-only\|error` | ignore sibling folders, or fail, instead of guessing a location (default `sibling-first`) |
 
-Scoped rollback rebuilds and deletes only inside the scope. Combine with
-`--timing`/`--json` as usual.
+- Scope flags (`--in`, `--region`, `--kind`) rebuild and delete only
+  inside the scope; see [Scope selection](../scope.md). Combine with
+  `--timing`/`--json` as usual.
