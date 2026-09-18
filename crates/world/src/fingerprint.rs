@@ -3,23 +3,13 @@
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use sekai_core::{RegionFingerprint, RegionKey};
 
 use crate::error::WorldError;
+use crate::observation::{header_hash_of_prefix, mtime_ms_from_metadata};
 
-/// First bytes of a region file covered by the header hash.
-pub const HEADER_HASH_LEN: usize = 4096;
-
-pub(crate) fn mtime_ms_from_system_time(t: SystemTime) -> Option<u64> {
-    let elapsed = t.duration_since(UNIX_EPOCH).ok()?;
-    Some(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
-}
-
-pub(crate) fn mtime_ms_from_metadata(meta: &std::fs::Metadata) -> Option<u64> {
-    mtime_ms_from_system_time(meta.modified().ok()?)
-}
+pub use crate::observation::HEADER_HASH_LEN;
 
 /// Last modification time as Unix millis, or `None` when unavailable.
 pub fn file_mtime_ms(path: &Path) -> Option<u64> {
@@ -45,6 +35,6 @@ pub fn fingerprint_file(path: &Path, key: RegionKey) -> Result<RegionFingerprint
         key,
         size,
         mtime_ms,
-        header_hash: sekai_anvil::header_hash(&header),
+        header_hash: header_hash_of_prefix(&header),
     })
 }

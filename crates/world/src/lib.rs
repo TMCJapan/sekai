@@ -4,6 +4,7 @@
 mod discover;
 mod error;
 mod fingerprint;
+mod observation;
 mod scan;
 mod swap;
 
