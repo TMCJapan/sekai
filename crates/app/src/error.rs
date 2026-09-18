@@ -29,6 +29,9 @@ pub enum AppError {
     /// Garbage collection failed.
     #[error("{0}")]
     Gc(sekai_core::GcError<sekai_storage::StorageError, sekai_storage::StorageError>),
+    /// Snapshot pruning failed.
+    #[error("{0}")]
+    Prune(sekai_core::PruneError<sekai_storage::StorageError>),
     /// NBT parsing or diff operation failed.
     #[error(transparent)]
     Nbt(#[from] sekai_nbt::NbtError),

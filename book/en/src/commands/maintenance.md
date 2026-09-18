@@ -15,6 +15,26 @@ but not with `--progress`, which has no apply phase to report.
 There is no snapshot pruning yet: GC only removes orphan blobs, never
 metadata.
 
+## Pruning snapshots
+
+```sh
+sekai --store ./sekai-store prune --keep-last 10 --dry-run
+sekai --store ./sekai-store prune --keep-last 10
+sekai --store ./sekai-store prune --before @stable
+```
+
+`prune` deletes old snapshots. Retention keeps the newest `--keep-last`
+N intersected with `--before` and newer (at least one selector is
+required); a selection retaining nothing fails loudly instead of wiping
+the store.
+
+Deletion folds oldest-first: each retired snapshot moves its
+still-effective rows onto the next retained snapshot and drops rows
+already superseded there, so every retained snapshot restores exactly
+as before. Tags on deleted snapshots disappear with them. Pruning never
+unlinks blobs — run `gc` afterwards to reclaim the dereferenced ones.
+`--dry-run` prints the planned deletions only.
+
 For a full secondary backup of everything — snapshots, metadata, and
 blobs — copy or archive the entire store directory to an external
 location. Per-command file writes are crash-ordered (blobs before

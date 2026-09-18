@@ -8,6 +8,7 @@ mod export;
 mod gc;
 mod list;
 mod progress;
+mod prune;
 mod rollback;
 mod status;
 mod tag;
@@ -147,6 +148,23 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
             .await
         }
         Command::Diff(args) => diff::run(&cli.store, args, style).await,
+        Command::Prune {
+            keep_last,
+            before,
+            dry_run,
+            output,
+            progress,
+        } => {
+            prune::run(
+                &cli.store,
+                *keep_last,
+                before.clone(),
+                *dry_run,
+                *progress,
+                ReportOut::of(*output, style),
+            )
+            .await
+        }
         Command::Gc {
             dry_run,
             output,

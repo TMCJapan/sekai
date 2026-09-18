@@ -3,8 +3,9 @@
 use alloc::vec::Vec;
 use core::future::Future;
 use sekai_util::{
-    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, RegionFingerprint, RegionKey,
-    RegionStateEntry, Snapshot, SnapshotEntry, SnapshotId, SnapshotTag, TagName,
+    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, FoldOutcome,
+    RegionFingerprint, RegionKey, RegionStateEntry, Snapshot, SnapshotEntry, SnapshotId,
+    SnapshotTag, TagName,
 };
 
 /// Snapshot metadata and per-chunk history storage.
@@ -115,4 +116,15 @@ pub trait MetaStore {
     fn visit_tags<F>(&self, visit: F) -> impl Future<Output = Result<(), Self::Error>> + Send
     where
         F: FnMut(&SnapshotTag) -> bool + Send;
+
+    /// Retire `from` into `into` (`into` must be retained and newer):
+    /// rows superseded at or before `into` are removed, surviving rows
+    /// are re-stamped onto `into`, derived states follow, and the
+    /// snapshot row (plus its tags, by cascade) is deleted — all
+    /// atomically. Effective states of retained snapshots never change.
+    fn retire_snapshot(
+        &mut self,
+        from: SnapshotId,
+        into: SnapshotId,
+    ) -> impl Future<Output = Result<FoldOutcome, Self::Error>> + Send;
 }

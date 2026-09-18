@@ -152,6 +152,87 @@ where
     );
 }
 
+/// Pruning folds oldest-first without changing retained effective states,
+/// and drops tags of deleted snapshots by cascade.
+pub async fn prune_flow<M>(meta: &mut M)
+where
+    M: MetaStore,
+    M::Error: core::fmt::Debug,
+{
+    use sekai_core::TagName;
+    use sekai_core::usecase::prune::{PruneReport, prune_apply, prune_plan, select_retained};
+    // S1: A@0,0 B@1,0 / S2: C@0,0 (B carried) / S3: D@2,0.
+    let first = meta.create_snapshot(1_000).await.unwrap();
+    meta.record_chunk(first, &coord(0, 0), Some(&BlobHash([1; 32])), None)
+        .await
+        .unwrap();
+    meta.record_chunk(first, &coord(1, 0), Some(&BlobHash([2; 32])), None)
+        .await
+        .unwrap();
+    let second = meta.create_snapshot(2_000).await.unwrap();
+    meta.record_chunk(second, &coord(0, 0), Some(&BlobHash([3; 32])), None)
+        .await
+        .unwrap();
+    let third = meta.create_snapshot(3_000).await.unwrap();
+    meta.record_chunk(third, &coord(2, 0), Some(&BlobHash([4; 32])), None)
+        .await
+        .unwrap();
+    meta.tag_snapshot(&TagName::parse("doomed").unwrap(), first, 1_500)
+        .await
+        .unwrap();
+
+    let before: Vec<Vec<(ChunkCoord, Option<BlobHash>)>> =
+        effective_rows(meta, &[first, second, third]).await;
+
+    let listed = sekai_core::usecase::snapshot::list_snapshots(&*meta)
+        .await
+        .unwrap();
+    let retained = select_retained(&listed, Some(2), None);
+    let plan = prune_plan(&*meta, &retained).await.unwrap();
+    assert_eq!(plan.delete, [first]);
+    assert_eq!(plan.retained, [second, third]);
+    let report = prune_apply(meta, &plan, |_, _| {}).await.unwrap();
+    assert_eq!(
+        report,
+        PruneReport {
+            pruned: 1,
+            rows_folded: 1,
+            rows_dropped: 1,
+        }
+    );
+
+    let after: Vec<Vec<(ChunkCoord, Option<BlobHash>)>> =
+        effective_rows(meta, &[second, third]).await;
+    assert_eq!(after, before[1..]);
+    assert!(meta.lookup_snapshot(first).await.unwrap().is_none());
+    assert!(
+        meta.lookup_tag(&TagName::parse("doomed").unwrap())
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+async fn effective_rows<M>(meta: &M, ids: &[SnapshotId]) -> Vec<Vec<(ChunkCoord, Option<BlobHash>)>>
+where
+    M: MetaStore,
+    M::Error: core::fmt::Debug,
+{
+    let mut out = Vec::new();
+    for id in ids {
+        let mut rows = Vec::new();
+        meta.visit_snapshot_chunks(*id, |entry| {
+            rows.push((entry.coord, entry.blob));
+            true
+        })
+        .await
+        .unwrap();
+        rows.sort();
+        out.push(rows);
+    }
+    out
+}
+
 /// Fingerprint carry: unchanged regions skip ingest, changed ones re-ingest.
 pub async fn backup_carry<M>(meta: &mut M)
 where

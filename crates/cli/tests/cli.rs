@@ -602,6 +602,67 @@ fn parses_gc_command() {
 }
 
 #[test]
+fn parses_prune_command() {
+    let cli = Cli::try_parse_from(["sekai", "prune", "--keep-last", "3"])
+        .expect("prune --keep-last parses");
+    assert!(matches!(
+        cli.command,
+        Command::Prune {
+            keep_last: Some(3),
+            before: None,
+            dry_run: false,
+            progress: false,
+            ..
+        }
+    ));
+    assert_eq!(cli.command.name(), "prune");
+    assert!(!cli.command.output_json());
+
+    let cli = Cli::try_parse_from([
+        "sekai",
+        "prune",
+        "--before",
+        "@stable",
+        "--dry-run",
+        "--json",
+    ])
+    .expect("prune --before --dry-run parses");
+    assert!(matches!(
+        &cli.command,
+        Command::Prune {
+            keep_last: None,
+            before: Some(_),
+            dry_run: true,
+            output: TimingArgs { json: true, .. },
+            ..
+        }
+    ));
+    assert!(cli.command.output_json());
+    if let Command::Prune { before, .. } = &cli.command {
+        assert_eq!(before.as_deref(), Some("@stable"));
+    } else {
+        panic!("expected prune");
+    }
+
+    assert!(
+        Cli::try_parse_from(["sekai", "prune"]).is_err(),
+        "prune without a selector is refused"
+    );
+    assert!(
+        Cli::try_parse_from([
+            "sekai",
+            "prune",
+            "--keep-last",
+            "3",
+            "--dry-run",
+            "--progress"
+        ])
+        .is_err(),
+        "prune --dry-run --progress is refused"
+    );
+}
+
+#[test]
 fn parses_color_flag() {
     let cli = Cli::try_parse_from(["sekai", "backup", "world"]).expect("backup parses");
     assert_eq!(cli.color, ColorChoice::Auto);

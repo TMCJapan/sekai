@@ -11,18 +11,18 @@ pub mod usecase;
 
 pub use port::{BlobStore, MetaStore};
 pub use sekai_util::{
-    ApplyOutcome, Area, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, Dimension, GcPlan,
-    HexError, Rect, RegionFingerprint, RegionKey, RegionKind, RegionStateEntry, Scope, Snapshot,
-    SnapshotEntry, SnapshotId, SnapshotTag, TagName, TagNameError,
+    ApplyOutcome, Area, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, Dimension, FoldOutcome,
+    GcPlan, HexError, Rect, RegionFingerprint, RegionKey, RegionKind, RegionStateEntry, Scope,
+    Snapshot, SnapshotEntry, SnapshotId, SnapshotTag, TagName, TagNameError,
 };
 
 // sekai-nbt AST diff types
 pub use sekai_nbt::{DEFAULT_IGNORED, NbtChange, NbtDiffEntry, Value as NbtValue};
 
 pub use usecase::{
-    Assembled, BackupReport, DiffError, GcError, GcReport, Observation, Plan, Previous,
-    ResolveError, RollbackError, RollbackPlan, RollbackReport, SnapshotStats, diff_blobs,
-    diff_blobs_v1,
+    Assembled, BackupReport, DiffError, GcError, GcReport, Observation, Plan, Previous, PruneError,
+    PrunePlan, PruneReport, ResolveError, RollbackError, RollbackPlan, RollbackReport,
+    SnapshotStats, diff_blobs, diff_blobs_v1,
 };
 
 /// Compute a volatile diff hash for decompressed chunk NBT.
