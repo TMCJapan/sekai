@@ -46,7 +46,7 @@ jobs:
         with:
           ref: ${{ steps.resolve.outputs.tag }}
 
-      # The tag, the workspace version, and the seven internal path
+      # The tag, the workspace version, and the internal path
       # dependencies must move together; publishing depends on it.
       - name: Check version consistency
         run: |
@@ -58,9 +58,10 @@ jobs:
             echo "tag $TAG does not match workspace version $VER"
             exit 1
           }
-          N=$(grep -c "version = \"$VER\", path" Cargo.toml)
-          test "$N" = "7" || {
-            echo "expected 7 internal dependencies at $VER, found $N"
+          OUT_OF_SYNC=$(grep 'path = "crates/' Cargo.toml | grep -v "version = \"$VER\"" || true)
+          test -z "$OUT_OF_SYNC" || {
+            echo "internal path dependencies out of sync with $VER:"
+            echo "$OUT_OF_SYNC"
             exit 1
           }
 

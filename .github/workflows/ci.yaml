@@ -90,6 +90,25 @@ jobs:
 
   # Split from `dist` below so the checks and the release build get a runner
   # each.
+  rustdoc:
+    name: API docs (rustdoc)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Setup Rust toolchain and cache
+        uses: ./.github/actions/setup-rust
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ""
+          components: ""
+          cache-key: rustdoc
+
+      - name: Check rustdoc warnings
+        run: RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+
   test:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
@@ -154,6 +173,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Check doc links and guide parity
+        run: python3 .github/scripts/check-docs.py
 
       - name: Install mdbook
         uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af
