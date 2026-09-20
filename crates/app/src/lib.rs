@@ -10,9 +10,14 @@ mod diff;
 mod error;
 mod export;
 mod gc;
+mod prune;
 mod rollback;
+mod tag;
 
-pub use backup::{BackupOptions, BackupProgress, BackupTimings, RegionTiming, backup};
+pub use backup::{
+    BackupOptions, BackupProgress, BackupTimings, RegionTiming, StatusOptions, StatusReport,
+    StatusTimings, backup, status,
+};
 pub use diff::{
     ChunkDiff, DiffProgress, DiffTimings, diff_blobs, diff_chunk, diff_chunks, diff_world_chunk,
     diff_world_chunks, snapshot_chunk_coords, world_chunk_coords,
@@ -20,16 +25,18 @@ pub use diff::{
 pub use error::AppError;
 pub use export::{ExportOptions, ExportProgress, ExportReport, ExportTimings, export};
 pub use gc::{GcProgress, GcTimings, gc, gc_apply, gc_plan};
+pub use prune::{PruneProgress, PruneTimings, prune, prune_apply, prune_plan};
 pub use rollback::{
     MissingBlobPolicy, MissingFilePolicy, RollbackOptions, RollbackProgress, RollbackTimings,
     rollback,
 };
 pub use sekai_core::{
     Area, BackupReport, BlobHash, ChunkCoord, DEFAULT_IGNORED, Dimension, GcPlan, GcReport,
-    NbtChange, NbtDiffEntry, NbtValue, Rect, RegionKey, RegionKind, RollbackReport, Scope,
-    Snapshot, SnapshotId,
+    NbtChange, NbtDiffEntry, NbtValue, PrunePlan, PruneReport, Rect, RegionKey, RegionKind,
+    RollbackReport, Scope, Snapshot, SnapshotId, SnapshotStats, SnapshotTag, TagName,
 };
 pub use sekai_world::{LayoutFlavor, RegionScanEntry, ScanTimings};
+pub use tag::{create_tag, delete_tag, list_tags, resolve_snapshot_ref, snapshot_stats};
 
 /// List all snapshots in ID order (for `list` and pre-flight checks).
 pub async fn list_snapshots(store_url: &str) -> Result<Vec<Snapshot>, AppError> {

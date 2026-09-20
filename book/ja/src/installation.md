@@ -1,14 +1,18 @@
 # インストール
 
-ソースからビルドするには Rust ツールチェーンが必要です（固定バージョンは `rust-toolchain.toml` に記載されています）。
-リポジトリをクローンして以下を実行してください：
+各 GitHub Release にプリビルトバイナリ（`sekai-<target triple>.tar.gz`）を添付しています。
+Rust ツールチェーンがある場合（固定バージョンは `rust-toolchain.toml`）は以下でも導入できます：
+
+```sh
+cargo install sekai-cli
+```
+
+インストールされるバイナリ名は `sekai` です。
+現在のリポジトリのソースから自分でビルドする場合は以下です：
 
 ```sh
 cargo install --path ./crates/cli
 ```
-
-インストールされるバイナリ名は `sekai` です。
-サポートされているすべてのプラットフォーム向けのリリースビルドも、CIアーティファクト（`sekai-<target triple>`）として生成されます。
 
 セットアップの確認：
 

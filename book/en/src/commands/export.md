@@ -7,6 +7,7 @@ sekai --store ./sekai-store export 1 ./restored
 Rebuilds a snapshot into a fresh directory. Unlike rollback, the live
 world is never touched — export shares the rollback restore set but
 writes every file under the output directory at its layout-derived path.
+The snapshot argument accepts `<id>` or `@tag` (see [Tags](tags.md)).
 
 - The output directory is created when missing and must otherwise be
   empty; anything else fails loudly so export can never clobber data.
@@ -14,8 +15,9 @@ writes every file under the output directory at its layout-derived path.
   `region/`, `DIM-1/`, `DIM1/`; `new`: `dimensions/minecraft/<name>/`;
   `bukkit`: split folders). `--base` names the overworld folder for the
   bukkit flavor (`level-name`, default `world`).
-- Scope flags restrict what is exported; tombstoned regions produce no
-  files.
+- Scope flags (`--in`, `--region`, `--kind`) restrict what is exported;
+  tombstoned regions produce no files. See
+  [Scope selection](../scope.md).
 - `--on-missing-blob skip-chunk` skips chunks whose blob is missing
   (default `abort`, as in rollback).
 - Only vanilla namespaces are derivable; custom dimensions fail loudly

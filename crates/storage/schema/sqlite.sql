@@ -32,3 +32,11 @@ CREATE TABLE region_state(
     PRIMARY KEY(dim, kind, rx, rz)
 );
 
+-- Human-readable snapshot aliases. Tags die with their snapshot
+-- (`ON DELETE CASCADE`): pruning a tagged snapshot drops its tags.
+CREATE TABLE snapshot_tags(
+    name TEXT PRIMARY KEY,
+    snapshot_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+    created_at_ms INTEGER NOT NULL
+);
+

@@ -13,7 +13,7 @@ layout. Pass the same path on every run:
   their contents.
 
 The full namespace rules live in
-[ARCHITECTURE.md](../../ARCHITECTURE.md) ("World Layouts"). Two practical
+[ARCHITECTURE.md](https://github.com/TMCJapan/sekai/blob/main/ARCHITECTURE.md) ("World Layouts"). Two practical
 consequences: custom-dimension folders are content-hashed, so renaming
 one orphans its history; and rollback restores moved folders through
 discovered siblings when possible, failing loudly

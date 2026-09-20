@@ -6,4 +6,4 @@
 - **墓標 (Tombstone)**: 明示的な「チャンク非存在」行です。バックアップ間で削除されたチャンクは、記録なし（サイレント）ではなく墓標として記録されます。これにより、ロールバック時に正しく再削除できます。
 - **導出状態 (Derived state)**: `region_state` のフィンガープリントにより、次回のバックアップが高速化されます。これらを消去しても、高々1回のフルインジェストのコストがかかるのみで、間違ったデータが作成されることはありません。
 
-正式な定義は [ARCHITECTURE.md](../../ARCHITECTURE.md) （"Data & Hashing Model" および "History, State, and GC Model"）を参照してください。
+正式な定義は [ARCHITECTURE.md](https://github.com/TMCJapan/sekai/blob/main/ARCHITECTURE.md) （"Data & Hashing Model" および "History, State, and GC Model"）を参照してください。

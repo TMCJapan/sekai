@@ -18,5 +18,5 @@
   Wiping them costs at most one full ingest, never wrong data.
 
 The authoritative definitions are in
-[ARCHITECTURE.md](../../ARCHITECTURE.md) ("Data & Hashing Model" and
+[ARCHITECTURE.md](https://github.com/TMCJapan/sekai/blob/main/ARCHITECTURE.md) ("Data & Hashing Model" and
 "History, State, and GC Model").

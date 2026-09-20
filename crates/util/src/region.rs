@@ -98,6 +98,15 @@ pub struct ApplyOutcome {
     pub carried_chunks: usize,
 }
 
+/// Result of retiring one snapshot into its successor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FoldOutcome {
+    /// Rows re-stamped onto the successor snapshot.
+    pub folded: usize,
+    /// Rows superseded before the successor and removed.
+    pub dropped: usize,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

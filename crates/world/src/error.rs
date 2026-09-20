@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 
+use sekai_core::{Dimension, RegionKind};
+
 /// Failures while discovering, reading, or swapping world files.
 #[derive(Debug, thiserror::Error)]
 pub enum WorldError {
@@ -18,12 +20,12 @@ pub enum WorldError {
     #[error("region image error: {0}")]
     Anvil(#[from] sekai_anvil::AnvilError),
     /// No directory mapping exists for this namespace.
-    #[error("cannot derive region path for dim {dim}, kind {kind}, r.{region_x}.{region_z}")]
+    #[error("cannot derive region path for dim {dim_code}, kind {kind_code}, r.{region_x}.{region_z}", dim_code = dim.raw(), kind_code = kind.raw())]
     UnknownRegionPath {
-        /// Dimension namespace code.
-        dim: i32,
-        /// Region family code.
-        kind: i32,
+        /// Dimension namespace.
+        dim: Dimension,
+        /// Region family.
+        kind: RegionKind,
         /// Region X.
         region_x: i32,
         /// Region Z.

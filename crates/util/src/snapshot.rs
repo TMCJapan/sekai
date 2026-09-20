@@ -1,5 +1,7 @@
 //! Snapshot identifiers and metadata.
 
+use crate::tag::TagName;
+
 /// Monotonically increasing snapshot identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SnapshotId(pub u64);
@@ -24,6 +26,28 @@ impl Snapshot {
     /// Construct snapshot metadata.
     pub const fn new(id: SnapshotId, created_at_ms: u64) -> Self {
         Self { id, created_at_ms }
+    }
+}
+
+/// Named alias for one snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapshotTag {
+    /// Validated tag name.
+    pub name: TagName,
+    /// Snapshot the tag points at.
+    pub snapshot: SnapshotId,
+    /// Tag creation time as Unix millis (informational only).
+    pub created_at_ms: u64,
+}
+
+impl SnapshotTag {
+    /// Construct a tag record.
+    pub const fn new(name: TagName, snapshot: SnapshotId, created_at_ms: u64) -> Self {
+        Self {
+            name,
+            snapshot,
+            created_at_ms,
+        }
     }
 }
 

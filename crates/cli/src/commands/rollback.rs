@@ -1,7 +1,7 @@
 //! Rollback subcommand execution, DTOs, and output rendering.
 
 use anyhow::Context as _;
-use sekai_app::{RollbackReport, RollbackTimings, SnapshotId};
+use sekai_app::{RollbackReport, RollbackTimings};
 use serde::Serialize;
 use std::path::Path;
 
@@ -39,15 +39,26 @@ const fn map_options(flags: &RollbackFlags) -> sekai_app::RollbackOptions {
 pub async fn run(
     store: &str,
     world: &Path,
-    snapshot: u64,
+    snapshot: &str,
     progress: bool,
     selection: &Selection,
     flags: &RollbackFlags,
     out: ReportOut,
 ) -> anyhow::Result<()> {
-    let id = SnapshotId(snapshot);
+    let id = sekai_app::resolve_snapshot_ref(store, snapshot)
+        .await
+        .with_context(|| format!("snapshot {snapshot:?} failed to resolve"))?;
     let scope = selection.owned_scope();
     let options = map_options(flags);
+    if !out.json {
+        eprintln!(
+            "rollback {} to snapshot {} (scope: {}, policy: {})",
+            world.display(),
+            id.raw(),
+            selection.describe(),
+            policy_summary(flags),
+        );
+    }
     let bar = progress_bar(progress);
     let owned = bar.clone();
     let (report, timings) = sekai_app::rollback(world, store, id, options, scope, move |update| {
@@ -61,7 +72,7 @@ pub async fn run(
     .await
     .with_context(|| {
         format!(
-            "rollback of {} to snapshot {snapshot} failed",
+            "rollback of {} to snapshot {snapshot:?} failed",
             world.display()
         )
     })?;
@@ -76,7 +87,7 @@ pub async fn run(
     let style = out.style;
     println!(
         "snapshot {} restored: {} files rewritten, {} files deleted, {} chunks restored",
-        style.bold(&snapshot.to_string()),
+        style.bold(&id.raw().to_string()),
         report.files_written,
         report.files_deleted,
         report.chunks_restored
@@ -143,6 +154,34 @@ fn print_rollback_timing_table(timings: &RollbackTimings, style: Styler) {
     );
 }
 
+/// One-line human summary of the restore policy for the pre-run echo.
+fn policy_summary(flags: &RollbackFlags) -> String {
+    let mut parts = Vec::new();
+    if flags.keep_post_snapshot_files {
+        parts.push("keep files");
+    }
+    if flags.keep_post_snapshot_chunks {
+        parts.push("keep chunks");
+    }
+    if flags.keep_tombstoned_chunks {
+        parts.push("keep tombstones");
+    }
+    if matches!(flags.on_missing_blob, OnMissingBlob::SkipChunk) {
+        parts.push("skip missing blobs");
+    }
+    if !matches!(flags.on_missing_file, OnMissingFile::SiblingFirst) {
+        parts.push(match flags.on_missing_file {
+            OnMissingFile::SiblingFirst => "sibling-first",
+            OnMissingFile::DerivedOnly => "derived-only",
+            OnMissingFile::Error => "missing-file error",
+        });
+    }
+    if parts.is_empty() {
+        return "strict".to_owned();
+    }
+    parts.join(", ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -200,6 +239,30 @@ mod tests {
                 on_missing_blob: sekai_app::MissingBlobPolicy::SkipChunk,
                 on_missing_file: sekai_app::MissingFilePolicy::Error,
             }
+        );
+    }
+
+    #[test]
+    fn summarizes_restore_policy() {
+        let strict = RollbackFlags {
+            keep_post_snapshot_files: false,
+            keep_post_snapshot_chunks: false,
+            keep_tombstoned_chunks: false,
+            on_missing_blob: OnMissingBlob::Abort,
+            on_missing_file: OnMissingFile::SiblingFirst,
+        };
+        assert_eq!(policy_summary(&strict), "strict");
+
+        let lenient = RollbackFlags {
+            keep_post_snapshot_files: true,
+            keep_post_snapshot_chunks: false,
+            keep_tombstoned_chunks: true,
+            on_missing_blob: OnMissingBlob::SkipChunk,
+            on_missing_file: OnMissingFile::Error,
+        };
+        assert_eq!(
+            policy_summary(&lenient),
+            "keep files, keep tombstones, skip missing blobs, missing-file error"
         );
     }
 }

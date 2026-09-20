@@ -14,6 +14,10 @@ chunks.
 - `--progress` shows a stderr progress bar (refused with `--json`).
 - Scope flags (`--in`, `--region`, `--kind`) restrict what is recorded;
   see [Scope selection](../scope.md).
+- For a dry-run preview of the above, see `status` under
+  [Inspection](inspection.md).
+- When the store directory is created by the backup, the CLI says so
+  on stderr (human output only).
 
 Unchanged regions are skipped by fingerprint; unchanged chunks inside
 changed regions resolve through fallback and cost no new blobs. A backup

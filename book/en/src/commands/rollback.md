@@ -2,11 +2,13 @@
 
 ```sh
 sekai --store ./sekai-store rollback ./world 1
+sekai --store ./sekai-store rollback ./world @stable --in overworld
 ```
 
 Rebuilds the world from a snapshot, overwriting region files atomically
 (temp file in the target directory + `fsync` + `rename`; in-place
-mutation never happens). Files are stamped with the snapshot time, and
+mutation never happens). The snapshot argument accepts `<id>` or `@tag`
+(see [Tags](tags.md)). Files are stamped with the snapshot time, and
 volatile tags are rewound to capture values.
 
 The default policy is strict:
@@ -28,5 +30,8 @@ Each behavior is configurable without changing the default:
 | `--on-missing-blob skip-chunk` | skip chunks whose blob is missing (default `abort`) |
 | `--on-missing-file derived-only\|error` | ignore sibling folders, or fail, instead of guessing a location (default `sibling-first`) |
 
-Scoped rollback rebuilds and deletes only inside the scope. Combine with
-`--timing`/`--json` as usual.
+- Scope flags (`--in`, `--region`, `--kind`) rebuild and delete only
+  inside the scope; see [Scope selection](../scope.md). Combine with
+  `--timing`/`--json` as usual.
+- Before rebuilding, the CLI echoes the target snapshot, scope, and
+  policy to stderr (human output only).

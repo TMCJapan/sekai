@@ -8,8 +8,8 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use crate::port::{BlobStore, MetaStore};
 use sekai_util::{
-    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, RegionFingerprint, RegionKey,
-    RegionStateEntry, Snapshot, SnapshotId,
+    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, FoldOutcome,
+    RegionFingerprint, RegionKey, RegionStateEntry, Snapshot, SnapshotId, SnapshotTag, TagName,
 };
 
 /// Fake backend failure.
@@ -65,6 +65,8 @@ pub struct MemMeta {
     pub rows: Vec<ChunkHistoryEntry>,
     /// Derived region states.
     pub states: Vec<RegionStateEntry>,
+    /// Tags by name.
+    pub tags: BTreeMap<TagName, SnapshotTag>,
 }
 
 impl MetaStore for MemMeta {
@@ -149,6 +151,22 @@ impl MetaStore for MemMeta {
         core::future::ready(Ok(()))
     }
 
+    fn visit_fresh_rows<F>(
+        &self,
+        snapshot: SnapshotId,
+        mut visit: F,
+    ) -> impl Future<Output = Result<(), MemError>> + Send
+    where
+        F: FnMut(&ChunkHistoryEntry) -> bool + Send,
+    {
+        for row in self.rows.iter().filter(|row| row.snapshot == snapshot) {
+            if !visit(row) {
+                break;
+            }
+        }
+        core::future::ready(Ok(()))
+    }
+
     fn load_region_states(
         &self,
     ) -> impl Future<Output = Result<Vec<RegionStateEntry>, MemError>> + Send {
@@ -206,6 +224,83 @@ impl MetaStore for MemMeta {
         }
         self.states.retain(|state| !removed.contains(&state.key));
         Ok(ApplyOutcome { id, carried_chunks })
+    }
+
+    fn tag_snapshot(
+        &mut self,
+        name: &TagName,
+        snapshot: SnapshotId,
+        created_at_ms: u64,
+    ) -> impl Future<Output = Result<(), MemError>> + Send {
+        // Mirrors the backend PRIMARY KEY: duplicates are rejected.
+        if self.tags.contains_key(name) {
+            return core::future::ready(Err(MemError));
+        }
+        self.tags.insert(
+            name.clone(),
+            SnapshotTag::new(name.clone(), snapshot, created_at_ms),
+        );
+        core::future::ready(Ok(()))
+    }
+
+    fn untag(&mut self, name: &TagName) -> impl Future<Output = Result<bool, MemError>> + Send {
+        core::future::ready(Ok(self.tags.remove(name).is_some()))
+    }
+
+    fn lookup_tag(
+        &self,
+        name: &TagName,
+    ) -> impl Future<Output = Result<Option<SnapshotTag>, MemError>> + Send {
+        core::future::ready(Ok(self.tags.get(name).cloned()))
+    }
+
+    fn visit_tags<F>(&self, mut visit: F) -> impl Future<Output = Result<(), MemError>> + Send
+    where
+        F: FnMut(&SnapshotTag) -> bool + Send,
+    {
+        // BTreeMap iteration is name order, matching the backend query.
+        for tag in self.tags.values() {
+            if !visit(tag) {
+                break;
+            }
+        }
+        core::future::ready(Ok(()))
+    }
+
+    fn retire_snapshot(
+        &mut self,
+        from: SnapshotId,
+        into: SnapshotId,
+    ) -> impl Future<Output = Result<FoldOutcome, MemError>> + Send {
+        let mut folded = 0usize;
+        let mut dropped = 0usize;
+        let mut kept: Vec<ChunkHistoryEntry> = Vec::new();
+        for row in &self.rows {
+            if row.snapshot != from {
+                kept.push(*row);
+                continue;
+            }
+            let superseded = self.rows.iter().any(|other| {
+                other.coord == row.coord && other.snapshot > from && other.snapshot <= into
+            });
+            if superseded {
+                dropped += 1;
+            } else {
+                let mut moved = *row;
+                moved.snapshot = into;
+                kept.push(moved);
+                folded += 1;
+            }
+        }
+        self.rows = kept;
+        for state in &mut self.states {
+            if state.snapshot_id == from {
+                state.snapshot_id = into;
+            }
+        }
+        self.snapshots.retain(|snapshot| snapshot.id != from);
+        self.tags.retain(|_, tag| tag.snapshot != from);
+        core::future::ready(Ok(FoldOutcome { folded, dropped }))
     }
 }
 

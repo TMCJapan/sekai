@@ -3,8 +3,9 @@
 use alloc::vec::Vec;
 use core::future::Future;
 use sekai_util::{
-    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, RegionFingerprint, RegionKey,
-    RegionStateEntry, Snapshot, SnapshotEntry, SnapshotId,
+    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, FoldOutcome,
+    RegionFingerprint, RegionKey, RegionStateEntry, Snapshot, SnapshotEntry, SnapshotId,
+    SnapshotTag, TagName,
 };
 
 /// Snapshot metadata and per-chunk history storage.
@@ -56,6 +57,16 @@ pub trait MetaStore {
     where
         F: FnMut(&ChunkHistoryEntry) -> bool + Send;
 
+    /// Visit raw rows introduced at `snapshot` (fresh ingests plus
+    /// tombstones, no fallback). Return `false` to stop early.
+    fn visit_fresh_rows<F>(
+        &self,
+        snapshot: SnapshotId,
+        visit: F,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send
+    where
+        F: FnMut(&ChunkHistoryEntry) -> bool + Send;
+
     /// Visit snapshots in ID order. Return `false` to stop early.
     fn visit_snapshots<F>(&self, visit: F) -> impl Future<Output = Result<(), Self::Error>> + Send
     where
@@ -82,4 +93,38 @@ pub trait MetaStore {
         fingerprints: &[RegionFingerprint],
         removed: &[RegionKey],
     ) -> impl Future<Output = Result<ApplyOutcome, Self::Error>> + Send;
+
+    /// Point `name` at `snapshot`. Duplicate names are a backend error;
+    /// callers check-then-insert when they need friendlier failures.
+    fn tag_snapshot(
+        &mut self,
+        name: &TagName,
+        snapshot: SnapshotId,
+        created_at_ms: u64,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// Remove `name`. Returns whether a tag was removed.
+    fn untag(&mut self, name: &TagName) -> impl Future<Output = Result<bool, Self::Error>> + Send;
+
+    /// Tag record for `name`, or `None` when it does not exist.
+    fn lookup_tag(
+        &self,
+        name: &TagName,
+    ) -> impl Future<Output = Result<Option<SnapshotTag>, Self::Error>> + Send;
+
+    /// Visit tags in name order. Return `false` to stop early.
+    fn visit_tags<F>(&self, visit: F) -> impl Future<Output = Result<(), Self::Error>> + Send
+    where
+        F: FnMut(&SnapshotTag) -> bool + Send;
+
+    /// Retire `from` into `into` (`into` must be retained and newer):
+    /// rows superseded at or before `into` are removed, surviving rows
+    /// are re-stamped onto `into`, derived states follow, and the
+    /// snapshot row (plus its tags, by cascade) is deleted - all
+    /// atomically. Effective states of retained snapshots never change.
+    fn retire_snapshot(
+        &mut self,
+        from: SnapshotId,
+        into: SnapshotId,
+    ) -> impl Future<Output = Result<FoldOutcome, Self::Error>> + Send;
 }

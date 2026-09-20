@@ -6,9 +6,9 @@
 use std::path::Path;
 
 use sekai_core::{
-    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, Dimension, MetaStore,
-    RegionFingerprint, RegionKey, RegionKind, RegionStateEntry, Snapshot, SnapshotEntry,
-    SnapshotId,
+    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, Dimension, FoldOutcome,
+    MetaStore, RegionFingerprint, RegionKey, RegionKind, RegionStateEntry, Snapshot, SnapshotEntry,
+    SnapshotId, SnapshotTag, TagName,
 };
 use sqlx::Row as _;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteSynchronous};
@@ -17,7 +17,7 @@ use crate::api::{StorageError, Store, io_error};
 use crate::cas::FileCas;
 
 /// Managed schema version (`PRAGMA user_version`).
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 const SCHEMA: &str = include_str!("../schema/sqlite.sql");
 
@@ -163,9 +163,7 @@ fn decode_state(row: &sqlx::sqlite::SqliteRow) -> Result<RegionStateEntry, Stora
     let size_raw: i64 = row.try_get("size")?;
     let size = i64_to_u64(size_raw, "size")?;
     let header: Vec<u8> = row.try_get("header_hash")?;
-    let header_hash: [u8; 32] = header
-        .try_into()
-        .map_err(|header: Vec<u8>| StorageError::InvalidHashLength { len: header.len() })?;
+    let header_hash = hash32(header)?;
     let snapshot_raw: i64 = row.try_get("snapshot_id")?;
     let snapshot_id = snapshot_id_from_i64(snapshot_raw)?;
     Ok(RegionStateEntry {
@@ -177,6 +175,22 @@ fn decode_state(row: &sqlx::sqlite::SqliteRow) -> Result<RegionStateEntry, Stora
     })
 }
 
+/// Decode one `snapshot_tags` row. Stored names always re-validate:
+/// anything else is corruption, never silent reinterpretation.
+fn decode_tag(row: &sqlx::sqlite::SqliteRow) -> Result<SnapshotTag, StorageError> {
+    let name_raw: String = row.try_get("name")?;
+    let name = TagName::parse(&name_raw).map_err(|_| StorageError::InvalidTagName {
+        name: name_raw.clone(),
+    })?;
+    let snapshot_raw: i64 = row.try_get("snapshot_id")?;
+    let snapshot = snapshot_id_from_i64(snapshot_raw)?;
+    Ok(SnapshotTag::new(
+        name,
+        snapshot,
+        millis_col(row, "created_at_ms")?,
+    ))
+}
+
 /// `SnapshotId` as an `INTEGER` bind parameter.
 fn snap_param(id: SnapshotId) -> Result<i64, StorageError> {
     i64::try_from(id.0).map_err(|_| StorageError::InvalidSnapshotId(id.0))
@@ -186,6 +200,20 @@ fn snap_param(id: SnapshotId) -> Result<i64, StorageError> {
 /// clock, so an absurd value is their bug, surfaced loudly.
 fn millis_param(ms: u64) -> Result<i64, StorageError> {
     i64::try_from(ms).map_err(|_| StorageError::InvalidTimestamp(ms))
+}
+
+/// Shared `chunk_history` insert used by single-row and batch commits.
+const INSERT_CHUNK_SQL: &str =
+    "INSERT INTO chunk_history (snapshot_id, dim, kind, cx, cz, blob, diff)
+             VALUES (?, ?, ?, ?, ?, ?, ?)";
+
+/// Decode one `snapshots` row.
+fn decode_snapshot(row: &sqlx::sqlite::SqliteRow) -> Result<Snapshot, StorageError> {
+    let id: i64 = row.try_get("id")?;
+    Ok(Snapshot::new(
+        snapshot_id_from_i64(id)?,
+        millis_col(row, "created_at_ms")?,
+    ))
 }
 
 impl sekai_core::MetaStore for SqliteMeta {
@@ -207,19 +235,16 @@ impl sekai_core::MetaStore for SqliteMeta {
         blob: Option<&BlobHash>,
         diff: Option<&DiffHash>,
     ) -> Result<(), StorageError> {
-        sqlx::query(
-            "INSERT INTO chunk_history (snapshot_id, dim, kind, cx, cz, blob, diff)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(snap_param(snapshot)?)
-        .bind(i64::from(coord.dim.raw()))
-        .bind(i64::from(coord.kind.raw()))
-        .bind(i64::from(coord.x))
-        .bind(i64::from(coord.z))
-        .bind(blob.map(|h| &h.0[..]))
-        .bind(diff.map(|h| &h.0[..]))
-        .execute(&self.pool)
-        .await?;
+        sqlx::query(INSERT_CHUNK_SQL)
+            .bind(snap_param(snapshot)?)
+            .bind(i64::from(coord.dim.raw()))
+            .bind(i64::from(coord.kind.raw()))
+            .bind(i64::from(coord.x))
+            .bind(i64::from(coord.z))
+            .bind(blob.map(|h| &h.0[..]))
+            .bind(diff.map(|h| &h.0[..]))
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -251,28 +276,14 @@ impl sekai_core::MetaStore for SqliteMeta {
             .bind(snap_param(id)?)
             .fetch_optional(&self.pool)
             .await?;
-        row.map(|row| {
-            let id: i64 = row.try_get("id")?;
-            Ok(Snapshot::new(
-                snapshot_id_from_i64(id)?,
-                millis_col(&row, "created_at_ms")?,
-            ))
-        })
-        .transpose()
+        row.map(|row| decode_snapshot(&row)).transpose()
     }
 
     async fn latest_snapshot(&self) -> Result<Option<Snapshot>, StorageError> {
         let row = sqlx::query("SELECT id, created_at_ms FROM snapshots ORDER BY id DESC LIMIT 1")
             .fetch_optional(&self.pool)
             .await?;
-        row.map(|row| {
-            let id: i64 = row.try_get("id")?;
-            Ok(Snapshot::new(
-                snapshot_id_from_i64(id)?,
-                millis_col(&row, "created_at_ms")?,
-            ))
-        })
-        .transpose()
+        row.map(|row| decode_snapshot(&row)).transpose()
     }
 
     async fn visit_snapshot_chunks<F>(
@@ -317,9 +328,7 @@ impl sekai_core::MetaStore for SqliteMeta {
             .fetch_all(&self.pool)
             .await?;
         for row in &rows {
-            let id: i64 = row.try_get("id")?;
-            let snapshot =
-                Snapshot::new(snapshot_id_from_i64(id)?, millis_col(row, "created_at_ms")?);
+            let snapshot = decode_snapshot(row)?;
             if !visit(&snapshot) {
                 break;
             }
@@ -334,6 +343,127 @@ impl sekai_core::MetaStore for SqliteMeta {
         .fetch_all(&self.pool)
         .await?;
         rows.iter().map(decode_state).collect()
+    }
+
+    async fn tag_snapshot(
+        &mut self,
+        name: &TagName,
+        snapshot: SnapshotId,
+        created_at_ms: u64,
+    ) -> Result<(), StorageError> {
+        sqlx::query(
+            "INSERT INTO snapshot_tags (name, snapshot_id, created_at_ms) VALUES (?, ?, ?)",
+        )
+        .bind(name.as_str())
+        .bind(snap_param(snapshot)?)
+        .bind(millis_param(created_at_ms)?)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn untag(&mut self, name: &TagName) -> Result<bool, StorageError> {
+        let done = sqlx::query("DELETE FROM snapshot_tags WHERE name = ?")
+            .bind(name.as_str())
+            .execute(&self.pool)
+            .await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    async fn lookup_tag(&self, name: &TagName) -> Result<Option<SnapshotTag>, StorageError> {
+        let row = sqlx::query(
+            "SELECT name, snapshot_id, created_at_ms FROM snapshot_tags WHERE name = ?",
+        )
+        .bind(name.as_str())
+        .fetch_optional(&self.pool)
+        .await?;
+        row.map(|row| decode_tag(&row)).transpose()
+    }
+
+    async fn visit_tags<F>(&self, mut visit: F) -> Result<(), StorageError>
+    where
+        F: FnMut(&SnapshotTag) -> bool + Send,
+    {
+        let rows =
+            sqlx::query("SELECT name, snapshot_id, created_at_ms FROM snapshot_tags ORDER BY name")
+                .fetch_all(&self.pool)
+                .await?;
+        for row in &rows {
+            if !visit(&decode_tag(row)?) {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    async fn visit_fresh_rows<F>(
+        &self,
+        snapshot: SnapshotId,
+        mut visit: F,
+    ) -> Result<(), StorageError>
+    where
+        F: FnMut(&ChunkHistoryEntry) -> bool + Send,
+    {
+        let rows = sqlx::query(
+            "SELECT snapshot_id, dim, kind, cx, cz, blob, diff FROM chunk_history
+             WHERE snapshot_id = ?",
+        )
+        .bind(snap_param(snapshot)?)
+        .fetch_all(&self.pool)
+        .await?;
+        for row in &rows {
+            if !visit(&decode_history(row)?) {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    async fn retire_snapshot(
+        &mut self,
+        from: SnapshotId,
+        into: SnapshotId,
+    ) -> Result<FoldOutcome, StorageError> {
+        let from = snap_param(from)?;
+        let into = snap_param(into)?;
+        let mut tx = self.pool.begin().await?;
+        // Rows already superseded at or before the successor vanish;
+        // survivors move onto it. Tags follow the snapshot row by cascade.
+        // Positional convention below: `?1` is always the retired
+        // snapshot, `?2` the successor.
+        let dropped = sqlx::query(
+            "DELETE FROM chunk_history WHERE snapshot_id = ?1
+             AND (dim, kind, cx, cz) IN (
+                 SELECT dim, kind, cx, cz FROM chunk_history
+                 WHERE snapshot_id > ?1 AND snapshot_id <= ?2
+             )",
+        )
+        .bind(from)
+        .bind(into)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+        let folded =
+            sqlx::query("UPDATE chunk_history SET snapshot_id = ?2 WHERE snapshot_id = ?1")
+                .bind(from)
+                .bind(into)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
+        sqlx::query("UPDATE region_state SET snapshot_id = ?2 WHERE snapshot_id = ?1")
+            .bind(from)
+            .bind(into)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM snapshots WHERE id = ?")
+            .bind(from)
+            .execute(&mut *tx)
+            .await?;
+        tx.commit().await?;
+        Ok(FoldOutcome {
+            folded: usize::try_from(folded).unwrap_or(usize::MAX),
+            dropped: usize::try_from(dropped).unwrap_or(usize::MAX),
+        })
     }
 
     async fn apply_snapshot_incremental(
@@ -352,19 +482,16 @@ impl sekai_core::MetaStore for SqliteMeta {
             .last_insert_rowid();
         let snapshot = snapshot_id_from_i64(id)?;
         for entry in entries {
-            sqlx::query(
-                "INSERT INTO chunk_history (snapshot_id, dim, kind, cx, cz, blob, diff)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)",
-            )
-            .bind(id)
-            .bind(i64::from(entry.coord.dim.raw()))
-            .bind(i64::from(entry.coord.kind.raw()))
-            .bind(i64::from(entry.coord.x))
-            .bind(i64::from(entry.coord.z))
-            .bind(entry.blob.as_ref().map(|h| &h.0[..]))
-            .bind(entry.diff.as_ref().map(|h| &h.0[..]))
-            .execute(&mut *tx)
-            .await?;
+            sqlx::query(INSERT_CHUNK_SQL)
+                .bind(id)
+                .bind(i64::from(entry.coord.dim.raw()))
+                .bind(i64::from(entry.coord.kind.raw()))
+                .bind(i64::from(entry.coord.x))
+                .bind(i64::from(entry.coord.z))
+                .bind(entry.blob.as_ref().map(|h| &h.0[..]))
+                .bind(entry.diff.as_ref().map(|h| &h.0[..]))
+                .execute(&mut *tx)
+                .await?;
         }
         let mut carried_chunks = 0usize;
         if let Some((prev, keys)) = carry_from {

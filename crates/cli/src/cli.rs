@@ -2,7 +2,7 @@
 
 use crate::style::ColorChoice;
 use clap::{Parser, Subcommand};
-use sekai_app::{Area, ChunkCoord, Dimension, Rect, RegionKind, Scope};
+use sekai_app::{Area, ChunkCoord, Dimension, Rect, RegionKind, Scope, TagName};
 use std::path::PathBuf;
 
 /// Chunk-level deduplicated snapshots for Minecraft region files.
@@ -46,12 +46,30 @@ pub enum Command {
         #[command(flatten)]
         selection: Selection,
     },
+    /// Preview what a backup would record, without writing anything.
+    Status {
+        /// World directory to preview.
+        world: PathBuf,
+        /// Human or JSON rendering plus optional phase timings.
+        #[command(flatten)]
+        output: TimingArgs,
+        /// Show a progress bar on stderr. Refused with `--json`, and
+        /// silent without a stderr TTY.
+        #[arg(long, conflicts_with = "json")]
+        progress: bool,
+        /// World portion to preview (default: whole world).
+        #[command(flatten)]
+        selection: Selection,
+        /// Preview worker count. `0` means one per CPU.
+        #[arg(long, default_value = "0")]
+        jobs: usize,
+    },
     /// Rebuild the world from a snapshot, overwriting region files.
     Rollback {
         /// World directory to rebuild in place.
         world: PathBuf,
-        /// Snapshot ID to restore (see `list`).
-        snapshot: u64,
+        /// Snapshot reference to restore (`<id>` or `@tag`, see `list`).
+        snapshot: String,
         /// Human or JSON rendering plus optional phase timings.
         #[command(flatten)]
         output: TimingArgs,
@@ -91,11 +109,14 @@ pub enum Command {
         /// See docs/json.md.
         #[arg(long)]
         json: bool,
+        /// Include per-snapshot change statistics.
+        #[arg(long)]
+        stat: bool,
     },
     /// Rebuild a snapshot into a fresh directory (never touches the live world).
     Export {
-        /// Snapshot ID to export (see `list`).
-        snapshot: u64,
+        /// Snapshot reference to export (`<id>` or `@tag`, see `list`).
+        snapshot: String,
         /// Directory to rebuild the snapshot into (created when missing;
         /// must otherwise be empty).
         out: PathBuf,
@@ -119,8 +140,46 @@ pub enum Command {
         #[arg(long, conflicts_with = "json")]
         progress: bool,
     },
+    /// Tag snapshots with human-readable names.
+    Tag {
+        /// Tag name (`[A-Za-z0-9._-]`, 1-64 bytes, not all digits).
+        /// Omitted with nothing else lists tags.
+        name: Option<TagName>,
+        /// Snapshot reference (`<id>` or `@tag`) to point at.
+        snapshot: Option<String>,
+        /// Delete the tag instead of creating it.
+        #[arg(long, short = 'd', conflicts_with_all = ["snapshot", "force"])]
+        delete: bool,
+        /// Move an existing tag instead of failing.
+        #[arg(long)]
+        force: bool,
+        /// Emit output as JSON instead of human text. See docs/json.md.
+        #[arg(long)]
+        json: bool,
+    },
     /// Compare chunk NBT AST between two snapshots or between world state and a snapshot.
     Diff(DiffArgs),
+    /// Delete old snapshots, folding their rows into retained ones.
+    /// At least one of `--keep-last` / `--before` is required.
+    Prune {
+        /// Keep the newest N snapshots.
+        #[arg(long, required_unless_present = "before")]
+        keep_last: Option<u64>,
+        /// Retain this snapshot and everything newer (`<id>` or `@tag`).
+        #[arg(long, required_unless_present = "keep_last")]
+        before: Option<String>,
+        /// Show what would be deleted without deleting anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Human or JSON rendering plus optional phase timings.
+        #[command(flatten)]
+        output: TimingArgs,
+        /// Show a progress bar on stderr. Refused with `--json`, and
+        /// silent without a stderr TTY. Refused with `--dry-run`, which
+        /// has no apply phase to report progress for.
+        #[arg(long, conflicts_with_all = ["json", "dry_run"])]
+        progress: bool,
+    },
     /// Garbage collect unreferenced orphan blobs from the store.
     Gc {
         /// Inspect store and build plan without unlinking orphan blobs.
@@ -147,9 +206,12 @@ impl Command {
     pub const fn name(&self) -> &'static str {
         match self {
             Self::Backup { .. } => "backup",
+            Self::Status { .. } => "status",
             Self::Rollback { .. } => "rollback",
             Self::List { .. } => "list",
             Self::Export { .. } => "export",
+            Self::Tag { .. } => "tag",
+            Self::Prune { .. } => "prune",
             Self::Diff(_) => "diff",
             Self::Gc { .. } => "gc",
             Self::Debug { debug } => match debug {
@@ -163,10 +225,12 @@ impl Command {
     pub const fn output_json(&self) -> bool {
         match self {
             Self::Backup { output, .. }
+            | Self::Status { output, .. }
             | Self::Rollback { output, .. }
             | Self::Export { output, .. }
+            | Self::Prune { output, .. }
             | Self::Gc { output, .. } => output.json,
-            Self::List { json } => *json,
+            Self::List { json, .. } | Self::Tag { json, .. } => *json,
             Self::Diff(args) => args.output.json,
             Self::Debug { debug } => match debug {
                 DebugCommand::Scan { output, .. } => output.json,
@@ -225,10 +289,12 @@ pub struct DiffArgs {
     /// World directory to compare against snapshot (if specified).
     #[arg(long)]
     pub world: Option<PathBuf>,
-    /// Older snapshot ID (if omitted when comparing snapshots, defaults to second-latest).
-    pub old_snapshot: Option<u64>,
-    /// Newer snapshot ID (if omitted, defaults to latest snapshot).
-    pub new_snapshot: Option<u64>,
+    /// Older snapshot reference (`<id>` or `@tag`; if omitted when
+    /// comparing snapshots, defaults to second-latest).
+    pub old_snapshot: Option<String>,
+    /// Newer snapshot reference (`<id>` or `@tag`; if omitted, defaults
+    /// to latest snapshot).
+    pub new_snapshot: Option<String>,
     /// Chunks to compare (default: whole world). One chunk keeps the
     /// legacy single-chunk output; several switch to grouped output.
     #[command(flatten)]
@@ -245,7 +311,8 @@ pub struct DiffArgs {
     pub show_values: bool,
 }
 
-/// World-portion selection shared by backup, rollback, and diff.
+/// World-portion selection shared by backup, status, rollback, diff, and
+/// export.
 ///
 /// Each `--in` picks one dimension whole, one chunk, or one rectangle;
 /// `--region` is shorthand for a region-aligned rectangle. Entries compose
@@ -271,6 +338,30 @@ pub struct Selection {
 }
 
 impl Selection {
+    /// One-line human summary of the selected scope for pre-run echoes.
+    pub fn describe(&self) -> String {
+        if self.areas.is_empty() && self.region.is_empty() {
+            return "whole world".to_owned();
+        }
+        let mut parts = Vec::new();
+        if !self.areas.is_empty() {
+            parts.push(format!("{} area(s)", self.areas.len()));
+        }
+        if !self.region.is_empty() {
+            parts.push(format!("{} region(s)", self.region.len()));
+        }
+        if !self.kind.is_empty() {
+            let kinds = self
+                .kind
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(",");
+            parts.push(format!("kinds {kinds}"));
+        }
+        parts.join(", ")
+    }
+
     /// Region kinds covered: explicit set, or all when unlisted.
     pub fn kinds(&self) -> Vec<RegionKind> {
         if self.kind.is_empty() {

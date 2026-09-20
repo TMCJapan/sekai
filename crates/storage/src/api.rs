@@ -28,6 +28,9 @@ pub enum StorageError {
     /// Stored history integer does not fit its domain type.
     #[error("stored history column {column} has out-of-range value: {value}")]
     InvalidHistoryValue { column: &'static str, value: i64 },
+    /// Stored tag name fails validation.
+    #[error("stored tag name is invalid: {name}")]
+    InvalidTagName { name: String },
     /// Millisecond timestamp does not fit `i64`.
     #[error("timestamp out of range: {0}")]
     InvalidTimestamp(u64),
@@ -35,7 +38,9 @@ pub enum StorageError {
     #[error("snapshot ID out of range: {0}")]
     InvalidSnapshotId(u64),
     /// Database schema version is not supported.
-    #[error("unsupported schema version: {found}, this binary supports {supported}")]
+    #[error(
+        "unsupported schema version: {found}, this binary supports {supported} (recreate the store; pre-release stores are not migrated)"
+    )]
     UnsupportedSchema { found: i64, supported: i64 },
     /// SQLite operation failed.
     #[cfg(feature = "backend-sqlite")]

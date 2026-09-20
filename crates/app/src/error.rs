@@ -29,12 +29,24 @@ pub enum AppError {
     /// Garbage collection failed.
     #[error("{0}")]
     Gc(sekai_core::GcError<sekai_storage::StorageError, sekai_storage::StorageError>),
+    /// Snapshot pruning failed.
+    #[error("{0}")]
+    Prune(sekai_core::PruneError<sekai_storage::StorageError>),
     /// NBT parsing or diff operation failed.
     #[error(transparent)]
     Nbt(#[from] sekai_nbt::NbtError),
     /// Snapshot operation failed.
     #[error("{0}")]
     Snapshot(sekai_core::usecase::snapshot::SnapshotError<sekai_storage::StorageError>),
+    /// Snapshot reference (`<id>` or `@tag`) could not be resolved.
+    #[error("{0}")]
+    SnapshotRef(sekai_core::usecase::snapshot::ResolveError<sekai_storage::StorageError>),
+    /// Tag name is already taken.
+    #[error("tag already exists: {name} (use --force to move it)")]
+    TagExists {
+        /// Conflicting tag name.
+        name: String,
+    },
     /// No snapshots exist in the store.
     #[error("no snapshots found in store")]
     NoSnapshots,

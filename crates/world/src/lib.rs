@@ -4,10 +4,11 @@
 mod discover;
 mod error;
 mod fingerprint;
+mod observation;
 mod scan;
 mod swap;
 
-pub use discover::{LayoutFlavor, RegionRef, derive_path, detect_flavor, discover};
+pub use discover::{LayoutFlavor, RegionRef, derive_path, detect_flavor, discover, sibling_path};
 pub use error::WorldError;
 pub use fingerprint::{HEADER_HASH_LEN, file_mtime_ms, fingerprint_file};
 pub use scan::{RegionScanEntry, ScanTimings, scan_world};
