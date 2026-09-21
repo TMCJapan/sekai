@@ -49,7 +49,7 @@ serde_json = { version = "1.0.151", default-features = false, features = ["alloc
 sqlx = { version = "0.9.0", default-features = false, features = ["sqlite", "runtime-tokio"] }
 thiserror = { version = "2.0.20", default-features = false }
 tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread"] }
-twox-hash = { version = "1", default-features = false }
+twox-hash = { version = "2", default-features = false }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
