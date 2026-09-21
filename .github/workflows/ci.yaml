@@ -30,7 +30,7 @@ jobs:
           - name: Checkout repository
             uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
           - name: Install cargo-deny and cargo-machete
-            uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af
+            uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908
             with:
               tool: cargo-deny,cargo-machete
 
@@ -154,7 +154,7 @@ jobs:
       # After the cache step on purpose: `rust-cache` restores `~/.cargo/bin`,
       # which is where `install-action` drops the binary.
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af
+        uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908
         with:
           tool: cargo-nextest
 
@@ -178,7 +178,7 @@ jobs:
         run: python3 .github/scripts/check-docs.py
 
       - name: Install mdbook
-        uses: taiki-e/install-action@9534c84618278caac52cb373bb164ed464dbd8af
+        uses: taiki-e/install-action@4076c08d76dba979c11a7285295b0716c1d67908
         with:
           tool: mdbook
 
