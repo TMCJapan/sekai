@@ -1,7 +1,8 @@
 //! Micro benchmarks for content hashing.
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use sekai_core::hash_blob;
+use std::hint::black_box;
 
 fn benches(c: &mut Criterion) {
     let tiny = vec![3u8; 64];
