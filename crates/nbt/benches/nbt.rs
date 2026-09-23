@@ -1,7 +1,8 @@
 //! Micro benchmarks for NBT parsing, diffing, display, and digest.
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use sekai_nbt::{DEFAULT_IGNORED, diff, diff_hash, parse};
+use std::hint::black_box;
 
 fn chunk_nbt(status: &str, extra_sections: usize) -> Vec<u8> {
     let mut nbt = vec![10, 0, 0];
