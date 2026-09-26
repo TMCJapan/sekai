@@ -408,7 +408,7 @@ where
         .unwrap();
 
     let plan = gc_plan(store.cas(), store.meta()).await.unwrap();
-    assert_eq!(plan.orphans(), &[orphan]);
+    assert_eq!(plan.orphans, vec![orphan]);
     let (cas, meta) = store.cas_and_meta();
     let report = gc_apply(cas, meta, &plan, |_, _| {}).await.unwrap();
     assert_eq!(report.removed, 1);

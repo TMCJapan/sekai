@@ -862,7 +862,7 @@ async fn gc_runs_and_returns_timings() {
         .unwrap();
 
     let (plan, plan_timings) = sekai_app::gc_plan(&store).await.unwrap();
-    assert_eq!(plan.len(), 0);
+    assert!(plan.orphans.is_empty());
     assert_eq!(plan_timings.apply, std::time::Duration::ZERO);
 
     let (report, timings) = sekai_app::gc(&store, |_| {}).await.unwrap();
