@@ -621,7 +621,7 @@ mod tests {
     use super::*;
     use sekai_core::{
         RegionKind, Scope,
-        usecase::backup::{Observation, assemble, commit, plan_backup, stage_present},
+        usecase::backup::{Ingested, Observation, assemble, commit, plan_backup, stage_present},
     };
     use sqlx::ConnectOptions as _;
     use sqlx::Connection as _;
@@ -723,10 +723,12 @@ mod tests {
         let staged = assemble(
             plan,
             &previous,
-            vec![stage_present(coord, BlobHash([1; 32]))],
-            BTreeSet::from([coord]),
-            0,
-            vec![fp],
+            Ingested {
+                entries: vec![stage_present(coord, BlobHash([1; 32]))],
+                present: BTreeSet::from([coord]),
+                new_blobs: 0,
+                fingerprints: vec![fp],
+            },
             &Scope::World,
         );
         let report = commit(&mut meta, &previous, &staged, 2_000).await.unwrap();
@@ -783,10 +785,12 @@ mod tests {
         let staged = assemble(
             plan,
             &previous,
-            vec![stage_present(c0, BlobHash([9; 32]))],
-            BTreeSet::from([c0]),
-            1,
-            vec![changed],
+            Ingested {
+                entries: vec![stage_present(c0, BlobHash([9; 32]))],
+                present: BTreeSet::from([c0]),
+                new_blobs: 1,
+                fingerprints: vec![changed],
+            },
             &Scope::World,
         );
         let report = commit(&mut meta, &previous, &staged, 2_000).await.unwrap();

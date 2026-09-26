@@ -177,6 +177,19 @@ pub const fn stage_present(coord: ChunkCoord, hash: BlobHash) -> SnapshotEntry {
     SnapshotEntry::new(coord, Some(hash), None)
 }
 
+/// What the adapter's ingest pass produced for the changed files.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Ingested {
+    /// Fresh history rows for every chunk read.
+    pub entries: Vec<SnapshotEntry>,
+    /// Coordinates those rows cover.
+    pub present: BTreeSet<ChunkCoord>,
+    /// Blobs newly written to CAS.
+    pub new_blobs: usize,
+    /// Fresh fingerprints for the ingested files.
+    pub fingerprints: Vec<RegionFingerprint>,
+}
+
 /// Merge fresh rows with carried coordinates and tombstones.
 ///
 /// Previously present coordinates inside `scope` but not present in the new
@@ -184,15 +197,13 @@ pub const fn stage_present(coord: ChunkCoord, hash: BlobHash) -> SnapshotEntry {
 /// fallback, so scoped backups never record spurious tombstones. Coordinates
 /// already tombstoned at the previous snapshot are absent from
 /// `Previous::universe` and therefore neither carried nor re-tombstoned.
-pub fn assemble(
-    plan: Plan,
-    previous: &Previous,
-    ingested_entries: Vec<SnapshotEntry>,
-    mut present: BTreeSet<ChunkCoord>,
-    new_blobs: usize,
-    fingerprints: Vec<RegionFingerprint>,
-    scope: &Scope,
-) -> Assembled {
+pub fn assemble(plan: Plan, previous: &Previous, ingested: Ingested, scope: &Scope) -> Assembled {
+    let Ingested {
+        mut entries,
+        mut present,
+        new_blobs,
+        fingerprints,
+    } = ingested;
     if !plan.carries.is_empty() {
         let skipped: BTreeSet<RegionKey> = plan.carries.iter().copied().collect();
         for coord in &previous.universe {
@@ -201,7 +212,6 @@ pub fn assemble(
             }
         }
     }
-    let mut entries = ingested_entries;
     let mut tombstones = 0usize;
     for coord in &previous.universe {
         if scope.contains(*coord) && !present.contains(coord) {
@@ -341,10 +351,12 @@ mod tests {
         let staged = assemble(
             plan,
             &previous,
-            alloc::vec![stage_present(coord(0, 0), BlobHash([9; 32]))],
-            BTreeSet::from([coord(0, 0)]),
-            1,
-            alloc::vec![changed],
+            Ingested {
+                entries: alloc::vec![stage_present(coord(0, 0), BlobHash([9; 32]))],
+                present: BTreeSet::from([coord(0, 0)]),
+                new_blobs: 1,
+                fingerprints: alloc::vec![changed],
+            },
             &Scope::World,
         );
         assert_eq!(staged.chunks, 2);
@@ -388,15 +400,7 @@ mod tests {
         let (previous, plan) =
             crate::support::block_on(plan_backup(&meta, &[], &Scope::World)).unwrap();
         assert_eq!(plan.removed, alloc::vec![key(0, 0)]);
-        let staged = assemble(
-            plan,
-            &previous,
-            alloc::vec::Vec::new(),
-            BTreeSet::new(),
-            0,
-            alloc::vec::Vec::new(),
-            &Scope::World,
-        );
+        let staged = assemble(plan, &previous, Ingested::default(), &Scope::World);
         assert_eq!(staged.chunks, 0);
         assert_eq!(staged.tombstones, 2);
 
@@ -438,15 +442,7 @@ mod tests {
             &Scope::World,
         ))
         .unwrap();
-        let staged = assemble(
-            plan,
-            &previous,
-            alloc::vec::Vec::new(),
-            BTreeSet::new(),
-            0,
-            alloc::vec::Vec::new(),
-            &Scope::World,
-        );
+        let staged = assemble(plan, &previous, Ingested::default(), &Scope::World);
         assert_eq!(staged.tombstones, 1);
         assert_eq!(staged.chunks, 1);
         let report =
@@ -468,15 +464,7 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(previous.universe, BTreeSet::from([coord(32, 0)]));
-        let staged = assemble(
-            plan,
-            &previous,
-            alloc::vec::Vec::new(),
-            BTreeSet::new(),
-            0,
-            alloc::vec::Vec::new(),
-            &Scope::World,
-        );
+        let staged = assemble(plan, &previous, Ingested::default(), &Scope::World);
         assert!(staged.entries.is_empty());
         assert_eq!(staged.tombstones, 0);
         assert_eq!(staged.chunks, 1);
@@ -573,10 +561,12 @@ mod tests {
         let staged = assemble(
             plan,
             &previous,
-            alloc::vec![stage_present(coord(0, 0), BlobHash([9; 32]))],
-            BTreeSet::from([coord(0, 0)]),
-            1,
-            alloc::vec::Vec::new(),
+            Ingested {
+                entries: alloc::vec![stage_present(coord(0, 0), BlobHash([9; 32]))],
+                present: BTreeSet::from([coord(0, 0)]),
+                new_blobs: 1,
+                fingerprints: alloc::vec::Vec::new(),
+            },
             &scope,
         );
         assert_eq!(staged.tombstones, 1);

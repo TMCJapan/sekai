@@ -6,7 +6,7 @@ use sekai_core::{
     BlobHash, BlobStore, ChunkCoord, Dimension, MetaStore, Observation, RegionFingerprint,
     RegionKey, RegionKind, Scope, SnapshotEntry, SnapshotId, SnapshotTag, TagName,
     usecase::{
-        backup::{assemble, commit, plan_backup, stage_present},
+        backup::{Ingested, assemble, commit, plan_backup, stage_present},
         gc::{gc_apply, gc_plan},
         rollback::plan_rollback,
     },
@@ -293,10 +293,12 @@ where
     let staged = assemble(
         plan,
         &previous,
-        vec![stage_present(coord(0, 0), BlobHash([9; 32]))],
-        BTreeSet::from([coord(0, 0)]),
-        1,
-        vec![changed],
+        Ingested {
+            entries: vec![stage_present(coord(0, 0), BlobHash([9; 32]))],
+            present: BTreeSet::from([coord(0, 0)]),
+            new_blobs: 1,
+            fingerprints: vec![changed],
+        },
         &Scope::World,
     );
     let report = commit(meta, &previous, &staged, 2_000).await.unwrap();
@@ -328,15 +330,7 @@ where
     .unwrap();
     let (previous, plan) = plan_backup(&*meta, &[], &Scope::World).await.unwrap();
     assert_eq!(plan.removed, vec![key(0, 0)]);
-    let staged = assemble(
-        plan,
-        &previous,
-        Vec::new(),
-        BTreeSet::new(),
-        0,
-        Vec::new(),
-        &Scope::World,
-    );
+    let staged = assemble(plan, &previous, Ingested::default(), &Scope::World);
     assert_eq!(staged.tombstones, 1);
     let report = commit(meta, &previous, &staged, 2_000).await.unwrap();
     assert_eq!(report.tombstones, 1);

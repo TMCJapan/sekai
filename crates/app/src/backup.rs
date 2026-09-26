@@ -17,6 +17,7 @@ use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use sekai_core::usecase::backup::Ingested;
 use sekai_core::{
     BackupReport, ChunkCoord, Observation, RegionFingerprint, RegionKey, Scope, SnapshotEntry,
     SnapshotId,
@@ -211,7 +212,7 @@ pub async fn backup(
         .filter_map(|key| files.remove(key))
         .collect();
 
-    let walk = ingest_changed(
+    let (ingested, walk) = ingest_changed(
         changed,
         store.cas().root(),
         &options,
@@ -221,15 +222,7 @@ pub async fn backup(
     )
     .await?;
 
-    let staged = sekai_core::usecase::backup::assemble(
-        plan,
-        &previous,
-        walk.entries,
-        walk.present.into_iter().collect(),
-        walk.new_blobs,
-        walk.fingerprints,
-        &scope,
-    );
+    let staged = sekai_core::usecase::backup::assemble(plan, &previous, ingested, &scope);
 
     let now_ms = now_ms()?;
     // Persist batched shard-directory renames before the metadata commit:
@@ -258,7 +251,7 @@ pub async fn backup(
         db_apply,
         skipped_regions: report.skipped_regions,
         carried_chunks: report.carried_chunks,
-        regions: walk.timings,
+        regions: walk.regions,
     };
     Ok((report, timings))
 }
@@ -313,7 +306,7 @@ pub async fn status(
         concurrency: options.concurrency,
         ..BackupOptions::default()
     };
-    let walk = ingest_changed(
+    let (ingested, walk) = ingest_changed(
         changed,
         store.cas().root(),
         &preview,
@@ -323,15 +316,7 @@ pub async fn status(
     )
     .await?;
 
-    let staged = sekai_core::usecase::backup::assemble(
-        plan,
-        &previous,
-        walk.entries,
-        walk.present.into_iter().collect(),
-        walk.new_blobs,
-        walk.fingerprints,
-        &scope,
-    );
+    let staged = sekai_core::usecase::backup::assemble(plan, &previous, ingested, &scope);
 
     let new_files = staged
         .fingerprints
@@ -342,7 +327,7 @@ pub async fn status(
     let report = StatusReport {
         clean: staged.entries.is_empty() && staged.removed.is_empty() && new_files == 0,
         latest: previous.snapshot.map(|snapshot| snapshot.id),
-        changed_regions: walk.timings.len(),
+        changed_regions: walk.regions.len(),
         new_files,
         deleted_files: staged.removed.len(),
         new_chunks,
@@ -416,6 +401,40 @@ struct RegionWalk {
     timings: Vec<RegionTiming>,
 }
 
+impl RegionWalk {
+    /// Split into what `core` assembles from and what the report needs.
+    fn into_parts(self) -> (Ingested, IngestTimings) {
+        let ingested = Ingested {
+            entries: self.entries,
+            present: self.present.into_iter().collect(),
+            new_blobs: self.new_blobs,
+            fingerprints: self.fingerprints,
+        };
+        let timings = IngestTimings {
+            region_open: self.region_open,
+            ingest: self.ingest,
+            hash: self.hash,
+            cas: self.cas,
+            regions: self.timings,
+        };
+        (ingested, timings)
+    }
+}
+
+/// Per-phase ingest timings, reported under `--timing`.
+struct IngestTimings {
+    /// Time spent opening changed region files.
+    region_open: Duration,
+    /// Time spent visiting, hashing, and storing changed chunks.
+    ingest: Duration,
+    /// Subset of `ingest` spent hashing.
+    hash: Duration,
+    /// Subset of `ingest` spent in `CAS put`.
+    cas: Duration,
+    /// Per-region details, in discovery order.
+    regions: Vec<RegionTiming>,
+}
+
 /// Ingest changed files, sequentially or across worker threads.
 ///
 /// One file never justifies task overhead, so it stays in a single blocking
@@ -432,13 +451,13 @@ async fn ingest_changed(
     scope: Scope,
     progress: impl Fn(BackupProgress) + Send,
     dry_run: bool,
-) -> Result<RegionWalk, AppError> {
+) -> Result<(Ingested, IngestTimings), AppError> {
     let mut walk = RegionWalk {
         timings: Vec::with_capacity(changed.len()),
         ..Default::default()
     };
     if changed.is_empty() {
-        return Ok(walk);
+        return Ok(walk.into_parts());
     }
     let workers = match options.concurrency {
         0 => std::thread::available_parallelism().map_or(4, NonZeroUsize::get),
@@ -484,7 +503,7 @@ async fn ingest_changed(
     }
     // Completion order is nondeterministic; keep timing output stable.
     walk.timings.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(walk)
+    Ok(walk.into_parts())
 }
 
 /// Split changed files into size-balanced groups, one per worker.
