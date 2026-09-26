@@ -15,7 +15,8 @@ sekai --store ./sekai-store export 3 ./restored --region overworld:0,0
   `--in DIM:x0,z0..x1,z1` an inclusive chunk rectangle.
 - `--region DIM:RX,RZ` selects every chunk of one region file
   (rectangle shorthand).
-- `--kind` selects region families (`region`, `entities`, `poi`).
+- `--kind` selects region families (`region`, `entities`, `poi`). Alone it
+  narrows the whole world to those families.
 
 The scope is a filter, not a partition: a scoped backup reads as the
 truth for its scope only (out-of-scope coordinates record nothing and

@@ -293,6 +293,25 @@ fn selection_owned_scope_round_trips() {
         kind: Vec::new(),
     };
     assert_eq!(base.owned_scope(), Scope::World);
+    // `--kind` on its own narrows the whole world instead of being dropped.
+    let kinds = Selection {
+        kind: vec![sekai_app::RegionKind::REGION],
+        ..base.clone()
+    };
+    let scope = kinds.owned_scope();
+    assert!(matches!(scope, Scope::Kinds(ref k) if k == &[sekai_app::RegionKind::REGION]));
+    assert!(scope.contains(sekai_app::ChunkCoord::new(
+        Dimension::NETHER,
+        sekai_app::RegionKind::REGION,
+        4,
+        4
+    )));
+    assert!(!scope.contains(sekai_app::ChunkCoord::new(
+        Dimension::NETHER,
+        sekai_app::RegionKind::POI,
+        4,
+        4
+    )));
     let dim = Selection {
         areas: vec!["nether".parse().unwrap()],
         ..base.clone()

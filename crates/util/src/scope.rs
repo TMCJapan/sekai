@@ -33,12 +33,16 @@ impl Rect {
     }
 
     /// Whole region file `(rx, rz)` as a rectangle.
+    ///
+    /// Region coordinates whose chunk span leaves `i32` are clamped, so the
+    /// rectangle stays consistent with [`Rect::overlaps_region`] instead of
+    /// selecting nothing.
     pub const fn region(rx: i32, rz: i32) -> Self {
         Self {
-            x0: rx.saturating_mul(32),
-            z0: rz.saturating_mul(32),
-            x1: rx.saturating_mul(32).saturating_add(31),
-            z1: rz.saturating_mul(32).saturating_add(31),
+            x0: region_first(rx),
+            z0: region_first(rz),
+            x1: region_last(rx),
+            z1: region_last(rz),
         }
     }
 
@@ -48,16 +52,41 @@ impl Rect {
     }
 
     /// Whether the region file `(rx, rz)` overlaps this rectangle.
-    /// Spans are computed in `i64`: `32 * rx` overflows `i32` for absurd
-    /// region coordinates.
+    ///
+    /// Spans come from the same clamping as [`Rect::region`], so the two
+    /// always agree: `32 * rx` would overflow `i32` for absurd coordinates.
     pub const fn overlaps_region(self, rx: i32, rz: i32) -> bool {
-        let rx0 = rx as i64 * 32;
-        let rz0 = rz as i64 * 32;
-        self.x0 as i64 <= rx0 + 31
-            && rx0 <= self.x1 as i64
-            && self.z0 as i64 <= rz0 + 31
-            && rz0 <= self.z1 as i64
+        self.x0 <= region_last(rx)
+            && region_first(rx) <= self.x1
+            && self.z0 <= region_last(rz)
+            && region_first(rz) <= self.z1
     }
+}
+
+/// Largest region coordinate whose 32-chunk span still fits `i32`.
+const MAX_REGION: i32 = i32::MAX / 32;
+/// Smallest region coordinate whose 32-chunk span still fits `i32`.
+const MIN_REGION: i32 = i32::MIN / 32;
+
+/// Clamp a region coordinate into the chunk-representable range.
+const fn clamp_region(r: i32) -> i32 {
+    if r > MAX_REGION {
+        MAX_REGION
+    } else if r < MIN_REGION {
+        MIN_REGION
+    } else {
+        r
+    }
+}
+
+/// First chunk coordinate of region file `r`.
+const fn region_first(r: i32) -> i32 {
+    clamp_region(r) * 32
+}
+
+/// Last chunk coordinate of region file `r`.
+const fn region_last(r: i32) -> i32 {
+    region_first(r).saturating_add(31)
 }
 
 /// One dimension's selected area.
@@ -96,11 +125,14 @@ impl Area {
 /// and scoped rollbacks never touch their files.
 ///
 /// An empty [`Scope::Select`] matches nothing; use [`Scope::World`] for
-/// the whole world.
+/// the whole world, or [`Scope::Kinds`] to narrow the whole world to
+/// region families.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Scope {
     /// Every dimension, kind, and chunk.
     World,
+    /// Every dimension, restricted to these region families.
+    Kinds(Vec<RegionKind>),
     /// Per-dimension areas with uniformly applied region kinds.
     Select {
         /// Region families the selection covers.
@@ -128,6 +160,7 @@ impl Scope {
     pub fn contains(&self, coord: ChunkCoord) -> bool {
         match self {
             Self::World => true,
+            Self::Kinds(kinds) => kinds.contains(&coord.kind),
             Self::Select { kinds, areas } => {
                 kinds.contains(&coord.kind)
                     && areas
@@ -141,6 +174,7 @@ impl Scope {
     pub fn matches_region(&self, key: RegionKey) -> bool {
         match self {
             Self::World => true,
+            Self::Kinds(kinds) => kinds.contains(&key.kind),
             Self::Select { kinds, areas } => {
                 kinds.contains(&key.kind)
                     && areas
@@ -158,8 +192,10 @@ mod tests {
 
     const OVER: Dimension = Dimension::OVERWORLD;
     const NETHER: Dimension = Dimension::NETHER;
+    const END: Dimension = Dimension::END;
     const REGION: RegionKind = RegionKind::REGION;
     const ENTITIES: RegionKind = RegionKind::ENTITIES;
+    const POI_REGION: RegionKind = RegionKind::POI;
 
     #[test]
     fn world_matches_everything() {
@@ -202,6 +238,30 @@ mod tests {
         assert!(!Rect::region(-1, 2).contains(0, 64));
     }
 
+    /// A region rectangle and its overlap test must agree even where the
+    /// region spans chunks `i32` cannot name, or `--region` would silently
+    /// select nothing.
+    #[test]
+    fn region_rectangles_agree_with_overlap_at_the_range_edges() {
+        for r in [0, 1, -1, 1_000_000, -1_000_000, 67_108_863, -67_108_864] {
+            let rect = Rect::region(r, r);
+            assert!(rect.overlaps_region(r, r), "region {r} must overlap itself");
+            assert!(rect.contains(rect.x0, rect.z0));
+            assert!(rect.contains(rect.x1, rect.z1));
+        }
+        // Beyond the representable chunk range the span clamps, but the
+        // region still selects itself instead of matching nothing.
+        let far = i32::MAX;
+        assert!(Rect::region(far, far).overlaps_region(far, far));
+        let far_negative = i32::MIN;
+        assert!(
+            Rect::region(far_negative, far_negative).overlaps_region(far_negative, far_negative)
+        );
+        // Ordinary regions still exclude their neighbors.
+        assert!(!Rect::region(0, 0).overlaps_region(1, 0));
+        assert!(!Rect::region(0, 0).overlaps_region(0, 1));
+    }
+
     #[test]
     fn chunks_match_list_and_owning_regions() {
         let listed = alloc::vec![
@@ -229,6 +289,19 @@ mod tests {
         assert!(scope.contains(ChunkCoord::new(OVER, ENTITIES, 0, 0)));
         assert!(!scope.contains(ChunkCoord::new(OVER, REGION, 0, 0)));
         assert!(!scope.matches_region(RegionKey::new(OVER, REGION, 0, 0)));
+    }
+
+    #[test]
+    fn kinds_scope_covers_every_dimension() {
+        let scope = Scope::Kinds(alloc::vec![ENTITIES]);
+        assert!(scope.contains(ChunkCoord::new(NETHER, ENTITIES, 7, -7)));
+        assert!(!scope.contains(ChunkCoord::new(OVER, REGION, 0, 0)));
+        assert!(scope.matches_region(RegionKey::new(END, ENTITIES, 0, 0)));
+        assert!(!scope.matches_region(RegionKey::new(OVER, POI_REGION, 0, 0)));
+        // An empty family list selects nothing rather than everything.
+        let empty = Scope::Kinds(alloc::vec![]);
+        assert!(!empty.contains(ChunkCoord::new(OVER, REGION, 0, 0)));
+        assert!(!empty.matches_region(RegionKey::new(OVER, REGION, 0, 0)));
     }
 
     #[test]

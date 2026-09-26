@@ -223,8 +223,9 @@ Backup, rollback, and diff accept a scope: whole world (default) or
 per-dimension areas — whole dimension (`--in DIM`), chunk rectangle
 (`--in DIM:x0,z0..x1,z1`), explicit chunks (`--in DIM:x,z`), or region
 files (`--region DIM:RX,RZ`, rectangle sugar). Region kinds (`--kind`,
-repeatable; empty means all) apply uniformly across every area. The
-scope is a filter, not a partition:
+repeatable; empty means all) apply uniformly across every area, and on
+their own they narrow the whole world to those families (`Scope::Kinds`).
+The scope is a filter, not a partition:
 
 - Scoped backup ingests, carries, and tombstones only inside the scope.
   Out-of-scope coordinates record no rows and no tombstones, resolving
