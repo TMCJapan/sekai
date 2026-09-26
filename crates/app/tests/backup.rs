@@ -145,6 +145,54 @@ async fn backup_list_rollback_round_trip() {
 }
 
 #[tokio::test]
+async fn deleted_region_file_tombstones_once() {
+    let root = tempdir("vanished-file");
+    let world = root.join("world");
+    let store = root.join("store").to_string_lossy().into_owned();
+    let doomed = world.join("poi/r.0.0.mca");
+    write_region(
+        &doomed,
+        &[
+            (0, 0, vec![3, 1, 2, 3]),
+            (1, 0, vec![3, 4, 5, 6]),
+            (2, 0, vec![3, 7, 7, 7]),
+        ],
+    );
+    write_region(&world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 8, 8, 8])]);
+
+    let (first, _) = sekai_app::backup(&world, &store, options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+    assert_eq!(first.chunks, 4);
+    assert_eq!(first.tombstones, 0);
+
+    // The file vanishes: its chunks tombstone exactly once.
+    std::fs::remove_file(&doomed).unwrap();
+    let (second, _) = sekai_app::backup(&world, &store, options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+    assert_eq!(second.tombstones, 3);
+    assert_eq!(second.chunks, 1);
+
+    // Repeat backup with an unchanged world records no rows at all: the
+    // tombstones already resolve through fallback, so nothing is re-recorded
+    // and the present count matches the effective one.
+    let (third, _) = sekai_app::backup(&world, &store, options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+    assert_eq!(third.tombstones, 0);
+    assert_eq!(third.new_blobs, 0);
+    assert_eq!(third.chunks, 1);
+    let stats = sekai_app::snapshot_stats(&store, third.snapshot)
+        .await
+        .unwrap();
+    assert_eq!(stats.fresh_chunks, 0);
+    assert_eq!(stats.fresh_tombstones, 0);
+    assert_eq!(stats.effective_chunks, 1);
+    cleanup(&root);
+}
+
+#[tokio::test]
 async fn scoped_backup_records_no_spurious_tombstones() {
     use sekai_app::{ChunkCoord, Dimension, RegionKind, Scope};
     let root = tempdir("scoped");
@@ -206,12 +254,14 @@ async fn scoped_backup_records_no_spurious_tombstones() {
     assert_eq!(scoped2.tombstones, 1);
 
     // A following full backup sees no further changes: zero tombstones,
-    // zero new blobs, nether chunk intact.
+    // zero new blobs, nether chunk intact. The carried overworld file must
+    // not resurrect its tombstoned chunk in the present count either.
     let (full2, _) = sekai_app::backup(&world, &store, options(), Scope::World, |_| {})
         .await
         .unwrap();
     assert_eq!(full2.tombstones, 0);
     assert_eq!(full2.new_blobs, 0);
+    assert_eq!(full2.chunks, 2);
     let snapshots = sekai_app::list_snapshots(&store).await.unwrap();
     assert_eq!(snapshots.len(), 4);
     let diffs = sekai_app::diff_chunk(

@@ -209,9 +209,13 @@ bumps instead of a full row copy.
 
 ## Tombstones
 
-Missing chunks are explicit `NULL`-blob rows. Rollback onto tombstones
-removes sectors (fully tombstoned regions delete the file rather than
-leaving a header-only shell).
+Missing chunks are explicit `NULL`-blob rows, written once at the snapshot
+where they vanish: a coordinate already tombstoned records nothing further,
+because its absence already resolves through fallback. Change detection
+therefore compares the world against the effective *present* coordinate set
+of the latest snapshot, so a repeated backup of an unchanged world writes no
+chunk rows at all. Rollback onto tombstones removes sectors (fully
+tombstoned regions delete the file rather than leaving a header-only shell).
 
 ## Scoped Operations
 

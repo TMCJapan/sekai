@@ -8,8 +8,10 @@
 //! matching all three signals contributes no new rows - its previous rows
 //! stay readable through fallback instead of being copied. Tombstones avoid
 //! a global chunk census: the known universe is exactly the effective
-//! coordinate set of the latest snapshot, so every snapshot records fresh
-//! rows only for ingested chunks plus tombstones for vanished coordinates.
+//! present coordinate set of the latest snapshot, so every snapshot records
+//! fresh rows only for ingested chunks plus tombstones for coordinates that
+//! just vanished. A coordinate already tombstoned records nothing further -
+//! its absence resolves through fallback, so repeat backups stay row-free.
 //!
 //! The orchestration is split so concrete adapters (parallelism,
 //! filesystem, clocks, timing) stay outside `core`:
@@ -57,7 +59,8 @@ pub struct BackupReport {
 pub struct Previous {
     /// Latest snapshot, when the store is non-empty.
     pub snapshot: Option<Snapshot>,
-    /// Coordinates of the latest snapshot (empty on first run).
+    /// Effective present coordinates of the latest snapshot, tombstones
+    /// excluded (empty on first run).
     pub universe: BTreeSet<ChunkCoord>,
     /// Stored fingerprints keyed by region identity.
     pub states: BTreeMap<RegionKey, RegionStateEntry>,
@@ -119,7 +122,13 @@ pub async fn plan_backup<M: MetaStore>(
     let snapshot = meta.latest_snapshot().await?;
     if let Some(latest) = snapshot {
         meta.visit_snapshot_chunks(latest.id, |entry| {
-            universe.insert(entry.coord);
+            // Present coordinates only. A tombstoned coordinate is already
+            // absent from the effective state, so keeping it would re-record
+            // the same tombstone row on every later backup and count a
+            // vanished chunk as present.
+            if entry.blob.is_some() {
+                universe.insert(entry.coord);
+            }
             true
         })
         .await?;
@@ -169,9 +178,11 @@ pub const fn stage_present(coord: ChunkCoord, hash: BlobHash) -> SnapshotEntry {
 
 /// Merge fresh rows with carried coordinates and tombstones.
 ///
-/// Previously known coordinates inside `scope` but not present in the new
+/// Previously present coordinates inside `scope` but not present in the new
 /// scan become tombstones; out-of-scope coordinates keep resolving through
-/// fallback, so scoped backups never record spurious tombstones.
+/// fallback, so scoped backups never record spurious tombstones. Coordinates
+/// already tombstoned at the previous snapshot are absent from
+/// `Previous::universe` and therefore neither carried nor re-tombstoned.
 pub fn assemble(
     plan: Plan,
     previous: &Previous,
@@ -396,6 +407,84 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(tomb.is_tombstone());
+    }
+
+    #[test]
+    fn already_tombstoned_coordinates_record_no_further_rows() {
+        let mut meta = MemMeta::default();
+        let fp0 = fingerprint(key(0, 0));
+        let fp1 = fingerprint(key(1, 0));
+        crate::support::block_on(meta.apply_snapshot_incremental(
+            1_000,
+            &[
+                stage_present(coord(0, 0), BlobHash([1; 32])),
+                stage_present(coord(32, 0), BlobHash([2; 32])),
+            ],
+            None,
+            &[fp0, fp1],
+            &[],
+        ))
+        .unwrap();
+
+        // Region (0,0) is gone from disk: its chunk tombstones once while
+        // region (1,0) carries over.
+        let (previous, plan) = crate::support::block_on(plan_backup(
+            &meta,
+            &[Observation {
+                key: key(1, 0),
+                fingerprint: fp1,
+            }],
+            &Scope::World,
+        ))
+        .unwrap();
+        let staged = assemble(
+            plan,
+            &previous,
+            alloc::vec::Vec::new(),
+            BTreeSet::new(),
+            0,
+            alloc::vec::Vec::new(),
+            &Scope::World,
+        );
+        assert_eq!(staged.tombstones, 1);
+        assert_eq!(staged.chunks, 1);
+        let report =
+            crate::support::block_on(commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        assert_eq!(report.tombstones, 1);
+        assert_eq!(report.chunks, 1);
+        assert_eq!(report.carried_chunks, 1);
+
+        // Repeat backup with the same world: the tombstone already resolves
+        // through fallback, so it records no fresh row and the vanished
+        // chunk is not carried back as present.
+        let (previous, plan) = crate::support::block_on(plan_backup(
+            &meta,
+            &[Observation {
+                key: key(1, 0),
+                fingerprint: fp1,
+            }],
+            &Scope::World,
+        ))
+        .unwrap();
+        assert_eq!(previous.universe, BTreeSet::from([coord(32, 0)]));
+        let staged = assemble(
+            plan,
+            &previous,
+            alloc::vec::Vec::new(),
+            BTreeSet::new(),
+            0,
+            alloc::vec::Vec::new(),
+            &Scope::World,
+        );
+        assert!(staged.entries.is_empty());
+        assert_eq!(staged.tombstones, 0);
+        assert_eq!(staged.chunks, 1);
+
+        let report =
+            crate::support::block_on(commit(&mut meta, &previous, &staged, 3_000)).unwrap();
+        assert_eq!(report.tombstones, 0);
+        assert_eq!(report.chunks, 1);
+        assert!(meta.rows.iter().all(|row| row.snapshot != report.snapshot));
     }
 
     #[test]
