@@ -42,15 +42,7 @@ pub async fn prune_plan(
 ) -> Result<(PrunePlan, PruneTimings), AppError> {
     let total_started = Instant::now();
     let store = super::open_store(store_url).await?;
-    let plan_started = Instant::now();
-    let snapshots = sekai_core::usecase::snapshot::list_snapshots(store.meta())
-        .await
-        .map_err(AppError::Snapshot)?;
-    let retained = sekai_core::usecase::prune::select_retained(&snapshots, keep_last, before);
-    let plan = sekai_core::usecase::prune::prune_plan(store.meta(), &retained)
-        .await
-        .map_err(AppError::Prune)?;
-    let plan_dt = plan_started.elapsed();
+    let (plan, plan_dt) = plan_within(&store, keep_last, before).await?;
     let timings = PruneTimings {
         total: total_started.elapsed(),
         plan: plan_dt,
@@ -68,25 +60,12 @@ pub async fn prune_apply(
 ) -> Result<(PruneReport, PruneTimings), AppError> {
     let total_started = Instant::now();
     let mut store = super::open_store(store_url).await?;
-
-    let apply_started = Instant::now();
-    let mut progress = progress;
-    let report = sekai_core::usecase::prune::prune_apply(store.meta_mut(), plan, |done, total| {
-        progress(PruneProgress {
-            snapshots_done: done,
-            snapshots_total: total,
-        });
-    })
-    .await
-    .map_err(AppError::Prune)?;
-    let apply_dt = apply_started.elapsed();
-
+    let (report, apply_dt) = apply_within(&mut store, plan, progress).await?;
     let timings = PruneTimings {
         total: total_started.elapsed(),
         plan: Duration::ZERO,
         apply: apply_dt,
     };
-
     Ok((report, timings))
 }
 
@@ -100,8 +79,23 @@ pub async fn prune(
 ) -> Result<(PruneReport, PruneTimings), AppError> {
     let total_started = Instant::now();
     let mut store = super::open_store(store_url).await?;
+    let (plan, plan_dt) = plan_within(&store, keep_last, before).await?;
+    let (report, apply_dt) = apply_within(&mut store, &plan, progress).await?;
+    let timings = PruneTimings {
+        total: total_started.elapsed(),
+        plan: plan_dt,
+        apply: apply_dt,
+    };
+    Ok((report, timings))
+}
 
-    let plan_started = Instant::now();
+/// Select the retained set and list the deletions an open store would make.
+async fn plan_within(
+    store: &sekai_storage::SqliteStore,
+    keep_last: Option<u64>,
+    before: Option<SnapshotId>,
+) -> Result<(PrunePlan, Duration), AppError> {
+    let started = Instant::now();
     let snapshots = sekai_core::usecase::snapshot::list_snapshots(store.meta())
         .await
         .map_err(AppError::Snapshot)?;
@@ -109,11 +103,17 @@ pub async fn prune(
     let plan = sekai_core::usecase::prune::prune_plan(store.meta(), &retained)
         .await
         .map_err(AppError::Prune)?;
-    let plan_dt = plan_started.elapsed();
+    Ok((plan, started.elapsed()))
+}
 
-    let apply_started = Instant::now();
-    let mut progress = progress;
-    let report = sekai_core::usecase::prune::prune_apply(store.meta_mut(), &plan, |done, total| {
+/// Apply `plan` against an open store, reporting the phase duration.
+async fn apply_within(
+    store: &mut sekai_storage::SqliteStore,
+    plan: &PrunePlan,
+    mut progress: impl FnMut(PruneProgress) + Send,
+) -> Result<(PruneReport, Duration), AppError> {
+    let started = Instant::now();
+    let report = sekai_core::usecase::prune::prune_apply(store.meta_mut(), plan, |done, total| {
         progress(PruneProgress {
             snapshots_done: done,
             snapshots_total: total,
@@ -121,13 +121,5 @@ pub async fn prune(
     })
     .await
     .map_err(AppError::Prune)?;
-    let apply_dt = apply_started.elapsed();
-
-    let timings = PruneTimings {
-        total: total_started.elapsed(),
-        plan: plan_dt,
-        apply: apply_dt,
-    };
-
-    Ok((report, timings))
+    Ok((report, started.elapsed()))
 }

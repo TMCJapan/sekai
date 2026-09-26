@@ -32,12 +32,7 @@ pub struct GcProgress {
 pub async fn gc_plan(store_url: &str) -> Result<(GcPlan, GcTimings), AppError> {
     let total_started = Instant::now();
     let store = super::open_store(store_url).await?;
-    store.cas().ensure_idle()?;
-    let plan_started = Instant::now();
-    let plan = sekai_core::usecase::gc::gc_plan(store.cas(), store.meta())
-        .await
-        .map_err(AppError::Gc)?;
-    let plan_dt = plan_started.elapsed();
+    let (plan, plan_dt) = plan_within(&store).await?;
     let timings = GcTimings {
         total: total_started.elapsed(),
         plan: plan_dt,
@@ -55,29 +50,12 @@ pub async fn gc_apply(
 ) -> Result<(GcReport, GcTimings), AppError> {
     let total_started = Instant::now();
     let mut store = super::open_store(store_url).await?;
-    // Re-checked at apply time: a plan can sit around for a while, and a
-    // backup may have started since it was made.
-    store.cas().ensure_idle()?;
-
-    let apply_started = Instant::now();
-    let (cas, meta) = store.cas_and_meta();
-    let mut progress = progress;
-    let report = sekai_core::usecase::gc::gc_apply(cas, meta, plan, |done, total| {
-        progress(GcProgress {
-            blobs_done: done,
-            blobs_total: total,
-        });
-    })
-    .await
-    .map_err(AppError::Gc)?;
-    let apply_dt = apply_started.elapsed();
-
+    let (report, apply_dt) = apply_within(&mut store, plan, progress).await?;
     let timings = GcTimings {
         total: total_started.elapsed(),
         plan: Duration::ZERO,
         apply: apply_dt,
     };
-
     Ok((report, timings))
 }
 
@@ -89,19 +67,40 @@ pub async fn gc(
 ) -> Result<(GcReport, GcTimings), AppError> {
     let total_started = Instant::now();
     let mut store = super::open_store(store_url).await?;
-    store.cas().ensure_idle()?;
+    let (plan, plan_dt) = plan_within(&store).await?;
+    let (report, apply_dt) = apply_within(&mut store, &plan, progress).await?;
+    let timings = GcTimings {
+        total: total_started.elapsed(),
+        plan: plan_dt,
+        apply: apply_dt,
+    };
+    Ok((report, timings))
+}
 
-    let plan_started = Instant::now();
+/// Build the orphan plan against an open store, refusing a busy one.
+async fn plan_within(store: &sekai_storage::SqliteStore) -> Result<(GcPlan, Duration), AppError> {
+    store.cas().ensure_idle()?;
+    let started = Instant::now();
     let plan = sekai_core::usecase::gc::gc_plan(store.cas(), store.meta())
         .await
         .map_err(AppError::Gc)?;
-    let plan_dt = plan_started.elapsed();
+    Ok((plan, started.elapsed()))
+}
 
-    let apply_started = Instant::now();
+/// Unlink `plan`'s orphans against an open store.
+///
+/// The busy check repeats here rather than trusting the planning pass: a
+/// backup that started in between would have put blobs into the CAS that
+/// this very plan calls orphaned.
+async fn apply_within(
+    store: &mut sekai_storage::SqliteStore,
+    plan: &GcPlan,
+    mut progress: impl FnMut(GcProgress) + Send,
+) -> Result<(GcReport, Duration), AppError> {
     store.cas().ensure_idle()?;
+    let started = Instant::now();
     let (cas, meta) = store.cas_and_meta();
-    let mut progress = progress;
-    let report = sekai_core::usecase::gc::gc_apply(cas, meta, &plan, |done, total| {
+    let report = sekai_core::usecase::gc::gc_apply(cas, meta, plan, |done, total| {
         progress(GcProgress {
             blobs_done: done,
             blobs_total: total,
@@ -109,13 +108,5 @@ pub async fn gc(
     })
     .await
     .map_err(AppError::Gc)?;
-    let apply_dt = apply_started.elapsed();
-
-    let timings = GcTimings {
-        total: total_started.elapsed(),
-        plan: plan_dt,
-        apply: apply_dt,
-    };
-
-    Ok((report, timings))
+    Ok((report, started.elapsed()))
 }
