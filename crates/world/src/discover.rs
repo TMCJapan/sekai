@@ -95,12 +95,6 @@ fn read_dir_opt(dir: &Path) -> Result<Vec<fs::DirEntry>, WorldError> {
     }
 }
 
-/// Symlinks are followed (`fs::metadata`, unlike `DirEntry::file_type` and
-/// `DirEntry::metadata`): a region file or world folder that lives on
-/// another disk is still part of the world, and the game itself opens
-/// whatever the path resolves to. Ignoring links made such a world
-/// invisible - the backup stored nothing and the next one tombstoned the
-/// history the previous backup had recorded.
 fn is_dir(entry: &fs::DirEntry) -> Result<bool, WorldError> {
     resolved_meta(entry).map_or(Ok(false), |meta| Ok(meta.is_dir()))
 }
@@ -109,9 +103,15 @@ fn is_file(entry: &fs::DirEntry) -> Result<bool, WorldError> {
     resolved_meta(entry).map_or(Ok(false), |meta| Ok(meta.is_file()))
 }
 
-/// Metadata of the entry's target. A dangling symlink resolves to nothing
-/// and is simply not a region file or directory - the same outcome the
-/// non-following check produced - so only real I/O failures are errors.
+/// Metadata of the entry's target, following symlinks (`fs::metadata`, unlike
+/// `DirEntry::file_type` and `DirEntry::metadata`): a region file or world
+/// folder living on another disk is still part of the world, and the game
+/// itself opens whatever the path resolves to. Ignoring links made such a
+/// world invisible - the backup stored nothing and the next one tombstoned
+/// the history the previous backup had recorded.
+///
+/// Unresolvable targets - dangling links, permission denials - yield `None`
+/// and are skipped: an unreadable entry must not fail the whole scan.
 fn resolved_meta(entry: &fs::DirEntry) -> Option<fs::Metadata> {
     fs::metadata(entry.path()).ok()
 }
@@ -508,7 +508,7 @@ pub fn derive_path(
 ///
 /// Folders may have moved since the backup (e.g. across a 26.1 migration),
 /// so callers prefer this over flavor derivation whenever a same-dimension
-/// sibling exists. Returns `None` when no sibling is discovered.
+/// sibling exists.
 pub fn sibling_path(discovered: &BTreeMap<RegionKey, PathBuf>, key: &RegionKey) -> Option<PathBuf> {
     let sibling = discovered
         .iter()

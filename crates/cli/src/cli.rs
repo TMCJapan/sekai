@@ -549,7 +549,7 @@ pub struct Xz {
 
 #[derive(Debug, Subcommand)]
 pub enum DebugCommand {
-    /// List region files with size, mtime, chunk count, and header hash.
+    /// List region files with size, mtime, chunk count, and content hash.
     ///
     /// Read-only: never writes to the world or the store.
     Scan {

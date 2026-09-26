@@ -109,7 +109,7 @@ pub async fn rollback(
     let store = super::open_store(store_url).await?;
 
     let plan_started = Instant::now();
-    // Snapshot must exist; its timestamp stamps rebuilt files.
+    // The snapshot's creation time stamps every rebuilt file.
     let plan = sekai_core::usecase::rollback::plan_rollback(store.meta(), snapshot)
         .await
         .map_err(AppError::Rollback)?;

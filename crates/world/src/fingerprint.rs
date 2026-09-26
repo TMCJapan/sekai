@@ -16,14 +16,10 @@ pub fn file_mtime_ms(path: &Path) -> Option<u64> {
 
 /// Fingerprint one region file.
 ///
-/// The content hash covers every byte, streamed: a header-only hash left
-/// everything past the 4 KiB location table invisible, so a chunk rewritten
-/// to the same compressed length under a preserved mtime (`cp -p`,
-/// `rsync -t`, `tar -x`, a ZFS/Btrfs rollback, a coarse-mtime filesystem)
-/// was declared unchanged. The backup then stored nothing and a later
-/// rollback overwrote bytes it had never captured. Reading the file is the
-/// price of not silently skipping a real change; it replaces a 4 KiB read
-/// with one sequential pass that the ingest path reads anyway.
+/// The content hash covers every byte, streamed, so a payload edit survives
+/// even when the compressed length and the mtime both stay put - the case a
+/// header-only hash missed. Reading the file is the price of that: one
+/// sequential pass the ingest path pays anyway. See ADR-0012.
 pub fn fingerprint_file(path: &Path, key: RegionKey) -> Result<RegionFingerprint, WorldError> {
     let mut file = File::open(path).map_err(|e| WorldError::io(path, e))?;
     let meta = file.metadata().map_err(|e| WorldError::io(path, e))?;

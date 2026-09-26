@@ -3,18 +3,10 @@
 //! Change detection (`diff`) is deliberately not computed here; parsing
 //! every chunk would multiply scan cost for data no consumer reads yet.
 //!
-//! Unchanged region files skip ingestion entirely: each file carries a
-//! `(mtime, size, content hash)` fingerprint in derived state, and a file
-//! matching all three signals contributes no new rows - its previous rows
-//! stay readable through fallback instead of being copied. Tombstones avoid
-//! a global chunk census: the known universe is exactly the effective
-//! present coordinate set of the latest snapshot, so every snapshot records
-//! fresh rows only for ingested chunks plus tombstones for coordinates that
-//! just vanished. A coordinate already tombstoned records nothing further -
-//! its absence resolves through fallback, so repeat backups stay row-free.
-//!
-//! The orchestration is split so concrete adapters (parallelism,
-//! filesystem, clocks, timing) stay outside `core`:
+//! The policy is stated in ARCHITECTURE.md ("Delta History Storage" and
+//! "Tombstones"): unchanged files carry no new rows, vanished coordinates
+//! tombstone once, and everything else resolves through fallback. This
+//! module is the orchestration split that keeps adapters out of `core`:
 //!
 //! ```text
 //! plan_backup   read previous state, decide carry vs ingest (policy)
@@ -23,10 +15,6 @@
 //!   -> adapter flushes CAS (durability barrier before metadata)
 //! commit        record the snapshot atomically (single metadata batch)
 //! ```
-//!
-//! Crash order: every blob is flushed to CAS *before* the single metadata
-//! batch commits, so a torn backup leaves at most orphan blobs (reclaimed
-//! by future GC), never dangling references.
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
@@ -204,6 +192,8 @@ pub fn assemble(plan: Plan, previous: &Previous, ingested: Ingested, scope: &Sco
         new_blobs,
         fingerprints,
     } = ingested;
+    // A carried file is still on disk, so its coordinates count as present
+    // without being read again.
     if !plan.carries.is_empty() {
         let skipped: BTreeSet<RegionKey> = plan.carries.iter().copied().collect();
         for coord in &previous.universe {
@@ -212,6 +202,7 @@ pub fn assemble(plan: Plan, previous: &Previous, ingested: Ingested, scope: &Sco
             }
         }
     }
+    // Present before, absent from this scan: the coordinate just vanished.
     let mut tombstones = 0usize;
     for coord in &previous.universe {
         if scope.contains(*coord) && !present.contains(coord) {

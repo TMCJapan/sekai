@@ -108,8 +108,6 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
-    /// A crashed run leaves the marker behind. It must never block the
-    /// command operators run on a timer, so `begin_run` takes it over.
     #[test]
     fn a_stale_marker_does_not_wedge_backups() {
         let root = temp_root("stale");

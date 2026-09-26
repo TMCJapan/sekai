@@ -50,7 +50,7 @@ pub fn run_scan(world: &Path, output: TimingArgs, style: Styler) -> anyhow::Resu
             });
 
         println!(
-            "{} dim={} kind={} region=r.{}.{} size={} mtime={} chunks={} header={}",
+            "{} dim={} kind={} region=r.{}.{} size={} mtime={} chunks={} content={}",
             entry.path.display(),
             entry.dim.raw(),
             kind_name(entry.kind),

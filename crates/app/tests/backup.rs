@@ -1443,8 +1443,7 @@ async fn randomized_backup_rollback_round_trip() {
                     model.insert(name.to_owned(), chunks);
                 }
                 30..=59 => {
-                    // Same-size rewrite: the fingerprint's header hash and
-                    // the file size both stay identical.
+                    // Same-chunk-count rewrite: replace one payload in place.
                     if let Some(chunks) = model.get_mut(name) {
                         let keys: Vec<(i32, i32)> = chunks.keys().copied().collect();
                         if !keys.is_empty() {

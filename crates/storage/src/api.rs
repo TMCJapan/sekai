@@ -168,7 +168,7 @@ impl<M, C> Store<M, C> {
     }
 }
 
-/// Store root as a directory path.
+/// Wrap an I/O failure together with the path that caused it.
 pub(crate) fn io_error(path: &Path, source: std::io::Error) -> StorageError {
     StorageError::Io {
         path: path.to_path_buf(),
@@ -205,8 +205,6 @@ mod tests {
         ));
     }
 
-    /// An empty location would resolve against the process working
-    /// directory, scattering a store there instead of failing.
     #[cfg(feature = "backend-sqlite")]
     #[test]
     fn empty_store_locations_are_rejected() {

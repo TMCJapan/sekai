@@ -44,7 +44,7 @@ pub struct ScanTimings {
     pub discover: Duration,
     /// File reads (plus mtime observation).
     pub read: Duration,
-    /// Header hashing and chunk counting.
+    /// Content hashing and chunk counting.
     pub parse: Duration,
 }
 
@@ -120,7 +120,7 @@ pub fn scan_world(world: &Path) -> Result<ScanReport, WorldError> {
     })
 }
 
-/// Hash one file's header and count its chunks.
+/// Hash one file's contents and count its chunks.
 fn parse_entry(
     region: &RegionRef,
     bytes: &[u8],

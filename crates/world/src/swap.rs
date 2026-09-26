@@ -69,7 +69,9 @@ pub fn atomic_swap(target: &Path, image: &[u8]) -> Result<(), WorldError> {
         }
     };
 
-    #[allow(clippy::collection_is_never_read)]
+    // Disarmed by `take` after the rename: the guard exists only for its
+    // `Drop`, which clippy cannot see as a read.
+    #[allow(clippy::collection_is_never_read, reason = "the value is only dropped")]
     let mut guard = Some(TempFileGuard(&tmp));
 
     file.write_all(image).map_err(|e| WorldError::io(&tmp, e))?;
@@ -81,6 +83,8 @@ pub fn atomic_swap(target: &Path, image: &[u8]) -> Result<(), WorldError> {
     // Rename succeeded; disarm the cleanup guard.
     guard.take();
 
+    // The rename itself is only crash-durable once the parent directory's
+    // own entry is persisted; no equivalent exists in `std` on Windows.
     #[cfg(unix)]
     {
         let dir = fs::File::open(parent).map_err(|e| WorldError::io(parent, e))?;

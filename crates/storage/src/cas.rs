@@ -1,10 +1,10 @@
 //! Content-addressed blob files.
 //!
 //! Writes are atomic; file data is fsynced in `put_blob`, while shard-directory
-//! durability is batched by `sync` before metadata can reference new blobs.
-//! That barrier also covers the `blobs/` entry of a newly created shard: a
-//! directory's own name lives in its parent, so fsyncing only the shard would
-//! leave every blob in a fresh shard unreferenced after a crash.
+//! durability is batched by `sync_dirs` before metadata can reference new
+//! blobs. That barrier also covers the `blobs/` entry of a newly created
+//! shard: a directory's own name lives in its parent, so fsyncing only the
+//! shard would leave every blob in a fresh shard unreferenced after a crash.
 
 use std::collections::HashSet;
 use std::io::{Read as _, Write as _};
