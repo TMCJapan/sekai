@@ -25,7 +25,7 @@ impl fmt::Display for Value {
                 write!(f, "]")
             }
             Self::String(v) => write!(f, "\"{}\"", Quoted(v)),
-            Self::List(items) => {
+            Self::List { items, .. } => {
                 write!(f, "[")?;
                 join(f, items.iter(), |f, v| write!(f, "{v}"))?;
                 write!(f, "]")
@@ -168,7 +168,7 @@ mod tests {
             ("Status".into(), Value::String("full".into())),
             (
                 "sections".into(),
-                Value::List(vec![Value::Compound(vec![("Y".into(), Value::Byte(0))])]),
+                Value::list(vec![Value::Compound(vec![("Y".into(), Value::Byte(0))])]),
             ),
         ]);
         assert_eq!(rendered(&value), "{Status: \"full\", sections: [{Y: 0b}]}");

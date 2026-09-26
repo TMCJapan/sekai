@@ -28,13 +28,39 @@ pub enum Value {
     Double(f64),
     ByteArray(Vec<i8>),
     String(String),
-    List(Vec<Self>),
+    /// A list keeps its declared element tag: it is the only thing that
+    /// distinguishes an empty `List<Compound>` from an empty `List<Int>`,
+    /// and losing it made the two hash identically.
+    List {
+        /// Declared element tag (0 when the list is empty and untagged).
+        element: u8,
+        /// Elements, all of `element` type.
+        items: Vec<Self>,
+    },
     Compound(Vec<(String, Self)>),
     IntArray(Vec<i32>),
     LongArray(Vec<i64>),
 }
 
 impl Value {
+    /// A list whose element tag is taken from its first element.
+    ///
+    /// Only for values built by hand: a parsed list carries the tag the
+    /// document declared, including for an empty list. Use
+    /// [`Value::empty_list`] when the type matters but there are no items.
+    pub fn list(items: Vec<Self>) -> Self {
+        let element = items.first().map_or(0, Self::tag_id);
+        Self::List { element, items }
+    }
+
+    /// An empty list with a declared element tag.
+    pub const fn empty_list(element: u8) -> Self {
+        Self::List {
+            element,
+            items: Vec::new(),
+        }
+    }
+
     pub const fn tag_id(&self) -> u8 {
         match self {
             Self::Byte(_) => 1,
@@ -45,7 +71,7 @@ impl Value {
             Self::Double(_) => 6,
             Self::ByteArray(_) => 7,
             Self::String(_) => 8,
-            Self::List(_) => 9,
+            Self::List { .. } => 9,
             Self::Compound(_) => 10,
             Self::IntArray(_) => 11,
             Self::LongArray(_) => 12,
@@ -384,7 +410,10 @@ fn parse_list(cursor: &mut Cursor<'_>, depth: usize) -> Result<Value, NbtError> 
         values.push(parse_payload(cursor, element_tag, depth + 1)?);
     }
 
-    Ok(Value::List(values))
+    Ok(Value::List {
+        element: element_tag,
+        items: values,
+    })
 }
 
 /// Fewest input bytes one element of `tag` can occupy. Only ever used to
