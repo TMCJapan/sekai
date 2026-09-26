@@ -95,18 +95,25 @@ fn read_dir_opt(dir: &Path) -> Result<Vec<fs::DirEntry>, WorldError> {
     }
 }
 
+/// Symlinks are followed (`fs::metadata`, unlike `DirEntry::file_type` and
+/// `DirEntry::metadata`): a region file or world folder that lives on
+/// another disk is still part of the world, and the game itself opens
+/// whatever the path resolves to. Ignoring links made such a world
+/// invisible - the backup stored nothing and the next one tombstoned the
+/// history the previous backup had recorded.
 fn is_dir(entry: &fs::DirEntry) -> Result<bool, WorldError> {
-    entry
-        .file_type()
-        .map(|ft| ft.is_dir())
-        .map_err(|source| WorldError::io(entry.path(), source))
+    resolved_meta(entry).map_or(Ok(false), |meta| Ok(meta.is_dir()))
 }
 
 fn is_file(entry: &fs::DirEntry) -> Result<bool, WorldError> {
-    entry
-        .file_type()
-        .map(|ft| ft.is_file())
-        .map_err(|source| WorldError::io(entry.path(), source))
+    resolved_meta(entry).map_or(Ok(false), |meta| Ok(meta.is_file()))
+}
+
+/// Metadata of the entry's target. A dangling symlink resolves to nothing
+/// and is simply not a region file or directory - the same outcome the
+/// non-following check produced - so only real I/O failures are errors.
+fn resolved_meta(entry: &fs::DirEntry) -> Option<fs::Metadata> {
+    fs::metadata(entry.path()).ok()
 }
 
 #[derive(Clone, Copy)]

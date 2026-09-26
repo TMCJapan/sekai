@@ -491,6 +491,67 @@ fn fingerprints_are_stable_and_change_sensitive() {
     ));
 }
 
+/// A symlinked region file is real data; ignoring it would store nothing
+/// now and tombstone that nothing on the next backup.
+#[cfg(unix)]
+#[test]
+fn symlinked_region_files_are_followed() {
+    let outside = tempdir("symlink-outside");
+    let image = one_chunk_image();
+    write(&outside.join("r.0.0.mca"), &image);
+    let world = tempdir("symlink-inside");
+    write(&world.join("region/r.0.0.mca"), &image);
+    // A link to a file held elsewhere on the same filesystem, as a
+    // deduplicated data layout would produce.
+    let shared = world.join("shared");
+    std::fs::create_dir_all(&shared).unwrap();
+    std::fs::copy(world.join("region/r.0.0.mca"), shared.join("r.1.0.mca")).unwrap();
+    std::os::unix::fs::symlink(shared.join("r.1.0.mca"), world.join("region/r.1.0.mca")).unwrap();
+    // A link to a file outside the world is followed too: the game opens
+    // whatever the path resolves to, and refusing it would silently drop
+    // chunks the server can load.
+    std::os::unix::fs::symlink(outside.join("r.0.0.mca"), world.join("region/r.2.0.mca")).unwrap();
+
+    let found = discover(&world).unwrap();
+    assert_eq!(found.len(), 3);
+    for region_x in 1..=2 {
+        let linked = found
+            .iter()
+            .find(|r| r.region_x == region_x)
+            .unwrap_or_else(|| panic!("symlinked region {region_x} discovered"));
+        assert_eq!(linked.dim, Dimension::OVERWORLD);
+        assert_eq!(open_image(&linked.path).unwrap(), image);
+    }
+    // A broken link is not a region file.
+    std::os::unix::fs::symlink(world.join("missing.mca"), world.join("region/r.3.0.mca")).unwrap();
+    assert_eq!(discover(&world).unwrap().len(), 3);
+
+    cleanup(&world);
+    cleanup(&outside);
+}
+
+/// A symlinked world folder inside a server root is the world, not a
+/// missing one.
+#[cfg(unix)]
+#[test]
+fn symlinked_world_folders_are_discovered() {
+    let data = tempdir("symlink-data");
+    let image = one_chunk_image();
+    write(&data.join("region/r.0.0.mca"), &image);
+    let root = tempdir("symlink-root");
+    std::os::unix::fs::symlink(&data, root.join("survival")).unwrap();
+
+    let found = discover(&root).unwrap();
+    assert_eq!(found.len(), 1);
+    // Namespaces hash the root-relative path, so the link's own name is
+    // what the history keys on.
+    assert_ne!(found[0].dim, Dimension::OVERWORLD);
+    assert_eq!(open_image(&found[0].path).unwrap(), image);
+
+    cleanup(&root);
+    cleanup(&data);
+}
+
 #[test]
 fn scan_counts_chunks_without_writing() {
     let world = tempdir("scan");
