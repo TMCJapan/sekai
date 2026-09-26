@@ -93,6 +93,15 @@ impl<'a> Cursor<'a> {
         self.bytes.len() - self.pos
     }
 
+    /// Capacity for `len` elements of `element_size` bytes each, clamped to
+    /// what the remaining input could still hold. A declared length is
+    /// untrusted: pre-allocating from it alone would let a short input
+    /// reserve gigabytes, and a failed allocation aborts the process instead
+    /// of surfacing an error.
+    fn capacity_hint(&self, len: usize, element_size: usize) -> usize {
+        len.min(self.remaining() / element_size)
+    }
+
     fn read_u8(&mut self) -> Result<u8, NbtError> {
         let value = *self.bytes.get(self.pos).ok_or(NbtError::UnexpectedEnd)?;
 
@@ -291,7 +300,7 @@ fn read_len(cursor: &mut Cursor<'_>) -> Result<usize, NbtError> {
 
 fn read_i32_array(cursor: &mut Cursor<'_>) -> Result<Vec<i32>, NbtError> {
     let len = read_len(cursor)?;
-    let mut values = Vec::with_capacity(len);
+    let mut values = Vec::with_capacity(cursor.capacity_hint(len, size_of::<i32>()));
 
     for _ in 0..len {
         values.push(cursor.read_i32()?);
@@ -302,7 +311,7 @@ fn read_i32_array(cursor: &mut Cursor<'_>) -> Result<Vec<i32>, NbtError> {
 
 fn read_i64_array(cursor: &mut Cursor<'_>) -> Result<Vec<i64>, NbtError> {
     let len = read_len(cursor)?;
-    let mut values = Vec::with_capacity(len);
+    let mut values = Vec::with_capacity(cursor.capacity_hint(len, size_of::<i64>()));
 
     for _ in 0..len {
         values.push(cursor.read_i64()?);
@@ -337,9 +346,17 @@ fn parse_compound_body(
     }
 
     // Sorting makes manually constructed Values and parsed Values use the same
-    // canonical compound ordering. Keep the first occurrence of duplicate keys.
+    // canonical compound ordering. Duplicate keys resolve last-wins, matching
+    // the map semantics the game itself uses to read NBT compounds.
     entries.sort_by(|a, b| a.0.cmp(&b.0));
-    entries.dedup_by(|a, b| a.0 == b.0);
+    entries.dedup_by(|later, earlier| {
+        if earlier.0 == later.0 {
+            *earlier = later.clone();
+            true
+        } else {
+            false
+        }
+    });
 
     Ok(entries)
 }
@@ -361,13 +378,27 @@ fn parse_list(cursor: &mut Cursor<'_>, depth: usize) -> Result<Value, NbtError> 
 
     let len = usize::try_from(raw_len).map_err(|_| NbtError::InvalidLength(raw_len))?;
 
-    let mut values = Vec::with_capacity(len);
+    let mut values = Vec::with_capacity(cursor.capacity_hint(len, min_payload_size(element_tag)));
 
     for _ in 0..len {
         values.push(parse_payload(cursor, element_tag, depth + 1)?);
     }
 
     Ok(Value::List(values))
+}
+
+/// Fewest input bytes one element of `tag` can occupy. Only ever used to
+/// clamp a declared list length, so a lower bound is enough: an overestimate
+/// would merely reserve more than necessary, an underestimate would reserve
+/// less and let the vector grow as elements are actually read.
+const fn min_payload_size(tag: u8) -> usize {
+    match tag {
+        2 | 8 => 2,          // Short | String: two-byte length prefix
+        3 | 5 | 7 | 11 => 4, // Int | Float | ByteArray | IntArray
+        4 | 6 | 12 => 8,     // Long | Double | LongArray
+        9 => 5,              // List: element tag + length prefix
+        _ => 1,              // Byte, or a Compound's End terminator
+    }
 }
 
 #[cfg(test)]
@@ -432,6 +463,12 @@ mod tests {
             self.named(10, name);
             self.bytes.extend_from_slice(body);
             self.end();
+        }
+
+        /// Named payload written verbatim, for hand-built malformed input.
+        fn raw(&mut self, id: u8, name: &str, payload: &[u8]) {
+            self.named(id, name);
+            self.bytes.extend_from_slice(payload);
         }
     }
 
@@ -595,7 +632,7 @@ mod tests {
     }
 
     #[test]
-    fn first_duplicate_key_wins() {
+    fn last_duplicate_key_wins() {
         let mut writer = Writer::new();
 
         writer.root();
@@ -607,6 +644,37 @@ mod tests {
             panic!("root must be a compound");
         };
 
-        assert_eq!(entries, vec![("a".to_owned(), Value::Int(1))]);
+        assert_eq!(entries, vec![("a".to_owned(), Value::Int(2))]);
+    }
+
+    /// A declared array/list length must never reserve more than the
+    /// remaining input could hold: `alloc` failure aborts rather than
+    /// returning an error, so the pre-allocation has to stay input-bounded.
+    #[test]
+    fn declared_lengths_never_over_allocate() {
+        let huge = i32::MAX.to_be_bytes().to_vec();
+
+        // IntArray declaring i32::MAX elements with nothing behind it.
+        let mut writer = Writer::new();
+        writer.root();
+        writer.raw(11, "ia", &huge);
+        writer.end();
+        assert_eq!(parse_root(&writer.bytes), Err(NbtError::UnexpectedEnd));
+
+        // LongArray likewise.
+        let mut writer = Writer::new();
+        writer.root();
+        writer.raw(12, "la", &huge);
+        writer.end();
+        assert_eq!(parse_root(&writer.bytes), Err(NbtError::UnexpectedEnd));
+
+        // A list of i32::MAX compounds.
+        let mut list = alloc::vec![10u8];
+        list.extend_from_slice(&huge);
+        let mut writer = Writer::new();
+        writer.root();
+        writer.raw(9, "l", &list);
+        writer.end();
+        assert_eq!(parse_root(&writer.bytes), Err(NbtError::UnexpectedEnd));
     }
 }
