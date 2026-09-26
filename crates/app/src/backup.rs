@@ -19,8 +19,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sekai_core::usecase::backup::Ingested;
 use sekai_core::{
-    BackupReport, ChunkCoord, Observation, RegionFingerprint, RegionKey, Scope, SnapshotEntry,
-    SnapshotId,
+    Assembled, BackupReport, ChunkCoord, Observation, Previous, RegionFingerprint, RegionKey,
+    Scope, SnapshotEntry, SnapshotId,
 };
 use sekai_storage::FileCas;
 use sekai_world::RegionRef;
@@ -183,46 +183,14 @@ pub async fn backup(
     // reference them, so `gc` must not scan in that window.
     let _run = store.cas().begin_run()?;
 
-    let observed = tokio::task::spawn_blocking({
-        let world = world.to_path_buf();
-        move || observe(&world)
-    })
-    .await??;
-    let discover = observed.discover;
-    let fingerprint = observed.fingerprint;
-
-    let universe_started = Instant::now();
-    let (previous, plan) =
-        sekai_core::usecase::backup::plan_backup(store.meta(), &observed.observations, &scope)
-            .await?;
-    let universe_load = universe_started.elapsed();
-
-    let mut files: HashMap<RegionKey, Changed> = HashMap::with_capacity(observed.regions.len());
-    for (region, obs) in observed
-        .regions
-        .into_iter()
-        .zip(observed.observations.iter())
-    {
-        files.insert(obs.key, (region, obs.fingerprint));
-    }
-    // Changed files in discovery order; carries need no file access.
-    let changed: Vec<Changed> = plan
-        .ingest
-        .iter()
-        .filter_map(|key| files.remove(key))
-        .collect();
-
-    let (ingested, walk) = ingest_changed(
-        changed,
-        store.cas().root(),
-        &options,
-        scope.clone(),
-        progress,
-        false,
-    )
-    .await?;
-
-    let staged = sekai_core::usecase::backup::assemble(plan, &previous, ingested, &scope);
+    let Prepared {
+        previous,
+        staged,
+        walk,
+        discover,
+        fingerprint,
+        universe_load,
+    } = prepare(&store, world, &options, &scope, progress, false).await?;
 
     let now_ms = now_ms()?;
     // Persist batched shard-directory renames before the metadata commit:
@@ -256,6 +224,80 @@ pub async fn backup(
     Ok((report, timings))
 }
 
+/// Everything a backup records and a status preview counts, before the
+/// commit decision that separates them.
+struct Prepared {
+    previous: Previous,
+    staged: Assembled,
+    walk: IngestTimings,
+    discover: Duration,
+    fingerprint: Duration,
+    universe_load: Duration,
+}
+
+/// Observe the world, plan against the previous snapshot, and ingest the
+/// changed files - the whole pipeline `backup` and `status` share.
+///
+/// Under `dry_run` blobs are probed instead of stored, so the staged rows
+/// are the same numbers a real backup would commit.
+async fn prepare(
+    store: &sekai_storage::SqliteStore,
+    world: &Path,
+    options: &BackupOptions,
+    scope: &Scope,
+    progress: impl Fn(BackupProgress) + Send,
+    dry_run: bool,
+) -> Result<Prepared, AppError> {
+    let observed = tokio::task::spawn_blocking({
+        let world = world.to_path_buf();
+        move || observe(&world)
+    })
+    .await??;
+    let discover = observed.discover;
+    let fingerprint = observed.fingerprint;
+
+    let universe_started = Instant::now();
+    let (previous, plan) =
+        sekai_core::usecase::backup::plan_backup(store.meta(), &observed.observations, scope)
+            .await?;
+    let universe_load = universe_started.elapsed();
+
+    let mut files: HashMap<RegionKey, Changed> = HashMap::with_capacity(observed.regions.len());
+    for (region, obs) in observed
+        .regions
+        .into_iter()
+        .zip(observed.observations.iter())
+    {
+        files.insert(obs.key, (region, obs.fingerprint));
+    }
+    // Changed files in discovery order; carries need no file access.
+    let changed: Vec<Changed> = plan
+        .ingest
+        .iter()
+        .filter_map(|key| files.remove(key))
+        .collect();
+
+    let (ingested, walk) = ingest_changed(
+        changed,
+        store.cas().root(),
+        options,
+        scope.clone(),
+        progress,
+        dry_run,
+    )
+    .await?;
+    let staged = sekai_core::usecase::backup::assemble(plan, &previous, ingested, scope);
+
+    Ok(Prepared {
+        previous,
+        staged,
+        walk,
+        discover,
+        fingerprint,
+        universe_load,
+    })
+}
+
 /// Preview what a backup would record, without writing anything: no CAS
 /// puts, no metadata commit. Read-only against both world and store.
 ///
@@ -273,50 +315,19 @@ pub async fn status(
     let total = Instant::now();
     let store = super::open_store(store_url).await?;
 
-    let observed = tokio::task::spawn_blocking({
-        let world = world.to_path_buf();
-        move || observe(&world)
-    })
-    .await??;
-    let discover = observed.discover;
-    let fingerprint = observed.fingerprint;
-
-    let universe_started = Instant::now();
-    let (previous, plan) =
-        sekai_core::usecase::backup::plan_backup(store.meta(), &observed.observations, &scope)
-            .await?;
-    let universe_load = universe_started.elapsed();
-
-    let mut files: HashMap<RegionKey, Changed> = HashMap::with_capacity(observed.regions.len());
-    for (region, obs) in observed
-        .regions
-        .into_iter()
-        .zip(observed.observations.iter())
-    {
-        files.insert(obs.key, (region, obs.fingerprint));
-    }
-    let changed: Vec<Changed> = plan
-        .ingest
-        .iter()
-        .filter_map(|key| files.remove(key))
-        .collect();
-
     // Diff views are preview-irrelevant: always skip the decode work.
     let preview = BackupOptions {
         concurrency: options.concurrency,
         ..BackupOptions::default()
     };
-    let (ingested, walk) = ingest_changed(
-        changed,
-        store.cas().root(),
-        &preview,
-        scope.clone(),
-        progress,
-        true,
-    )
-    .await?;
-
-    let staged = sekai_core::usecase::backup::assemble(plan, &previous, ingested, &scope);
+    let Prepared {
+        previous,
+        staged,
+        walk,
+        discover,
+        fingerprint,
+        universe_load,
+    } = prepare(&store, world, &preview, &scope, progress, true).await?;
 
     let new_files = staged
         .fingerprints
