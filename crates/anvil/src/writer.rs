@@ -94,7 +94,10 @@ impl RegionBuilder {
         for chunk in &self.staged {
             let sectors = sectors_for(chunk.payload.len())?;
 
-            if offset > MAX_SECTOR_OFFSET {
+            // The whole run must stay addressable: the location table stores
+            // a 24-bit sector offset, so the last sector of the run has to
+            // fit as well, not just the first.
+            if offset.saturating_add(sectors) > MAX_SECTOR_OFFSET {
                 return Err(AnvilError::ImageTooLarge { sectors: offset });
             }
 

@@ -100,6 +100,12 @@ impl RegionImage {
     /// Returns `Ok(None)` if the chunk coordinate is outside this region or if the
     /// chunk has not been generated (is empty).
     pub fn chunk_payload(&self, x: i32, z: i32) -> Result<Option<&[u8]>, AnvilError> {
+        // A zero-length image is the empty region `visit_chunks` reports, not
+        // a corrupt location table.
+        if self.bytes.is_empty() {
+            return Ok(None);
+        }
+
         let Ok(index) = self.loc.slot_of(x, z) else {
             return Ok(None);
         };
@@ -231,6 +237,9 @@ mod tests {
             .unwrap();
 
         assert_eq!(count, 0);
+
+        // The single-chunk lookup agrees: empty region, no corrupt entry.
+        assert_eq!(image.chunk_payload(0, 0).unwrap(), None);
     }
 
     #[test]

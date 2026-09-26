@@ -255,11 +255,16 @@ fn unlz4(body: &[u8], out: &mut Vec<u8>) -> Result<(), AnvilError> {
         } else {
             out.resize(end_output, 0);
 
+            // Every exit below must leave `out` at the last valid block
+            // boundary, never at zero-filled padding.
             let decoded = lz4_flex::block::decompress_into(
                 block,
                 out.get_mut(start..).ok_or(AnvilError::Lz4)?,
             )
-            .map_err(|_| AnvilError::Lz4)?;
+            .map_err(|_| {
+                out.truncate(start);
+                AnvilError::Lz4
+            })?;
 
             if decoded != decompressed_len {
                 out.truncate(start);
@@ -458,6 +463,28 @@ mod tests {
         payload.extend_from_slice(&lz4_empty());
 
         assert_eq!(decompress_into(&payload, &mut out), Err(AnvilError::Lz4),);
+    }
+
+    /// A failed block must leave `out` at the last valid block boundary, not
+    /// at the zero-filled padding the block decoder reserves up front.
+    #[test]
+    fn failed_lz4_block_leaves_no_padding_behind() {
+        // Token 0x20 promises 15 literals but supplies none.
+        let mut payload = Vec::from([4]);
+        payload.extend_from_slice(&lz4_block(0x20, &[0xF0], 8, &[0; 8]));
+
+        let mut out = Vec::new();
+        assert_eq!(decompress_into(&payload, &mut out), Err(AnvilError::Lz4));
+        assert!(out.is_empty(), "left {} zero bytes behind", out.len());
+
+        // Same failure after a good block: the good prefix survives intact.
+        let mut payload = Vec::from([4]);
+        payload.extend_from_slice(&lz4_block(0x10, b"ok", 2, b"ok"));
+        payload.extend_from_slice(&lz4_block(0x20, &[0xF0], 8, &[0; 8]));
+
+        let mut out = Vec::new();
+        assert_eq!(decompress_into(&payload, &mut out), Err(AnvilError::Lz4));
+        assert_eq!(out, b"ok");
     }
 
     #[test]
