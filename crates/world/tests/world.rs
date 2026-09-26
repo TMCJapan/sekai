@@ -234,6 +234,153 @@ fn trio_wins_over_conversion_leftovers() {
 }
 
 #[test]
+fn empty_overworld_keeps_the_trio_namespaces() {
+    // A freshly created (or briefly emptied) overworld has a `region/`
+    // directory but no files in it. Namespaces must not flip to hashed
+    // codes just because the overworld holds nothing right now.
+    let root = tempdir("empty-overworld");
+    let image = one_chunk_image();
+    std::fs::create_dir_all(root.join("world/region")).unwrap();
+    write(&root.join("world_nether/DIM-1/region/r.0.0.mca"), &image);
+    write(&root.join("world_the_end/DIM1/region/r.0.0.mca"), &image);
+
+    let flavor = detect_flavor(&root).unwrap();
+    assert_eq!(
+        flavor,
+        LayoutFlavor::Bukkit {
+            base: "world".to_owned()
+        }
+    );
+
+    // The same siblings keep their vanilla codes whether or not the
+    // overworld holds files.
+    let nether = |root: &Path| {
+        discover(root)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.dim == Dimension::NETHER)
+            .map(|r| r.path)
+    };
+    let empty = nether(&root);
+    assert_eq!(
+        empty,
+        Some(root.join("world_nether/DIM-1/region/r.0.0.mca"))
+    );
+
+    write(&root.join("world/region/r.0.0.mca"), &image);
+    assert_eq!(detect_flavor(&root).unwrap(), flavor);
+    assert_eq!(nether(&root), empty);
+
+    let over: Vec<_> = discover(&root)
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.dim == Dimension::OVERWORLD)
+        .collect();
+    assert_eq!(over.len(), 1);
+    assert_eq!(over[0].path, root.join("world/region/r.0.0.mca"));
+    cleanup(&root);
+}
+
+#[test]
+fn level_name_wins_over_a_leftover_world_folder() {
+    // `level-name=survival` with a stale `world/` trio still on disk: the
+    // server loads `survival`, so its files must keep the vanilla codes and
+    // the leftover must not be promoted to OVERWORLD.
+    let root = tempdir("levelname-leftover");
+    let live = one_chunk_image();
+    let mut stale = one_chunk_image();
+    stale[8192 + 4] = 9;
+    write(
+        &root.join("server.properties"),
+        b"motd=x\nlevel-name=survival\n",
+    );
+    write(&root.join("survival/region/r.1.0.mca"), &live);
+    write(&root.join("survival_nether/DIM-1/region/r.0.0.mca"), &live);
+    write(&root.join("world/region/r.9.9.mca"), &stale);
+    write(&root.join("world_nether/DIM-1/region/r.0.0.mca"), &stale);
+
+    assert_eq!(
+        detect_flavor(&root).unwrap(),
+        LayoutFlavor::Bukkit {
+            base: "survival".to_owned()
+        }
+    );
+    let found = discover(&root).unwrap();
+    let over: Vec<_> = found
+        .iter()
+        .filter(|r| r.dim == Dimension::OVERWORLD)
+        .collect();
+    assert_eq!(over.len(), 1);
+    assert_eq!(over[0].path, root.join("survival/region/r.1.0.mca"));
+    let nether: Vec<_> = found
+        .iter()
+        .filter(|r| r.dim == Dimension::NETHER)
+        .collect();
+    assert_eq!(nether.len(), 1);
+    assert_eq!(
+        nether[0].path,
+        root.join("survival_nether/DIM-1/region/r.0.0.mca")
+    );
+    // The leftover trio is still discoverable, under its own namespace.
+    assert_eq!(found.len(), 4);
+    cleanup(&root);
+}
+
+#[test]
+fn stray_dimensions_dir_does_not_hijack_a_bukkit_root() {
+    // A `dimensions/` directory left at a Bukkit container root (migration
+    // residue, a plugin) must not make the root look like a 26.1 vanilla
+    // world: rollback would then restore into a tree the server ignores.
+    let root = tempdir("stray-dimensions");
+    let image = one_chunk_image();
+    write(&root.join("world/region/r.0.0.mca"), &image);
+    write(&root.join("world_nether/DIM-1/region/r.0.0.mca"), &image);
+    std::fs::create_dir_all(root.join("dimensions/minecraft/the_nether")).unwrap();
+
+    assert_eq!(
+        detect_flavor(&root).unwrap(),
+        LayoutFlavor::Bukkit {
+            base: "world".to_owned()
+        }
+    );
+    assert_eq!(
+        derive_path(
+            &root,
+            &detect_flavor(&root).unwrap(),
+            Dimension::NETHER,
+            RegionKind::REGION,
+            0,
+            0
+        )
+        .unwrap(),
+        root.join("world_nether/DIM-1/region/r.0.0.mca")
+    );
+    cleanup(&root);
+}
+
+#[test]
+fn duplicate_coordinate_names_resolve_deterministically() {
+    // `r.0.0.mca` and `r.00.00.mca` both parse as region (0,0). The chosen
+    // file must follow a fixed rule (lowest name first), never directory
+    // iteration order.
+    let root = tempdir("dup-coords");
+    let mut second = one_chunk_image();
+    second[8192 + 4] = 7;
+    write(&root.join("region/r.0.0.mca"), &one_chunk_image());
+    write(&root.join("region/r.00.00.mca"), &second);
+
+    let found = discover(&root).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].path, root.join("region/r.0.0.mca"));
+    for _ in 0..8 {
+        let again = discover(&root).unwrap();
+        assert_eq!(again.len(), 1);
+        assert_eq!(again[0].path, root.join("region/r.0.0.mca"));
+    }
+    cleanup(&root);
+}
+
+#[test]
 fn nested_vanilla_copy_gets_hashed_codes() {
     // A full vanilla world copied under the root keeps working under hashed
     // namespaces instead of colliding with the outer namespaces.
