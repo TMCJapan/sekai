@@ -2,6 +2,9 @@
 //!
 //! Writes are atomic; file data is fsynced in `put_blob`, while shard-directory
 //! durability is batched by `sync` before metadata can reference new blobs.
+//! That barrier also covers the `blobs/` entry of a newly created shard: a
+//! directory's own name lives in its parent, so fsyncing only the shard would
+//! leave every blob in a fresh shard unreferenced after a crash.
 
 use std::collections::HashSet;
 use std::io::{Read as _, Write as _};
@@ -16,6 +19,22 @@ use crate::api::{StorageError, io_error};
 
 /// Monotonic temp-file disambiguator within this process.
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Persist a directory's own entries. A no-op on Windows, where `std` has
+/// no equivalent to fsyncing a directory handle.
+#[cfg(unix)]
+fn sync_dir(dir: &Path) -> Result<(), StorageError> {
+    let handle = std::fs::File::open(dir).map_err(|source| io_error(dir, source))?;
+    handle.sync_all().map_err(|source| io_error(dir, source))
+}
+
+/// Windows stub: keeps the fallible signature so callers stay identical
+/// across platforms, even though nothing here can fail.
+#[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps, reason = "matches the unix signature")]
+const fn sync_dir(_dir: &Path) -> Result<(), StorageError> {
+    Ok(())
+}
 
 /// File-backed CAS rooted at `<root>/` (blobs live under `<root>/blobs/`).
 #[derive(Debug, Clone)]
@@ -32,7 +51,13 @@ impl FileCas {
     /// Open (creating if needed) the CAS rooted at `root`.
     pub fn open(root: &Path) -> Result<Self, StorageError> {
         let blobs = root.join("blobs");
+        let existed = blobs.is_dir();
         std::fs::create_dir_all(&blobs).map_err(|source| io_error(&blobs, source))?;
+        // A freshly created `blobs/` is itself an entry in the store root:
+        // persist it now, while nothing else depends on it yet.
+        if !existed {
+            sync_dir(root)?;
+        }
         Ok(Self {
             root: root.to_path_buf(),
             ensured_shards: HashSet::new(),
@@ -92,28 +117,40 @@ impl FileCas {
     /// [`BlobStore`](sekai_core::BlobStore) trait method instead.
     pub fn put_blob(&mut self, hash: &BlobHash, payload: &[u8]) -> Result<bool, StorageError> {
         let dest = self.path_of(hash);
-        if dest.exists() {
+        if dest.is_file() {
             return Ok(false);
         }
         self.ensure_parent(&dest, hash.as_bytes()[0])?;
         let io = |path: PathBuf| move |source: std::io::Error| io_error(&path, source);
-        let tmp = dest.with_extension(format!(
-            "tmp-{}-{}",
-            std::process::id(),
-            TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        let write = || -> Result<bool, StorageError> {
-            let mut f = std::fs::File::create(&tmp).map_err(io(tmp.clone()))?;
-            f.write_all(payload).map_err(io(tmp.clone()))?;
-            f.sync_all().map_err(io(tmp.clone()))?;
-            drop(f);
-            match std::fs::rename(&tmp, &dest) {
-                Ok(()) => Ok(true),
-                Err(_) if dest.exists() => Ok(false),
-                Err(source) => Err(io(dest.clone())(source)),
+        // `create_new`: a name left behind by a crashed process (or by a
+        // second process that happens to reuse this pid) must never be
+        // truncated and reused - draw a fresh counter instead.
+        let (tmp, mut file) = loop {
+            let candidate = dest.with_extension(format!(
+                "tmp-{}-{}",
+                std::process::id(),
+                TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+            {
+                Ok(f) => break (candidate, f),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(source) => return Err(io(candidate)(source)),
             }
         };
-        let result = write();
+        let result = (|| {
+            file.write_all(payload).map_err(io(tmp.clone()))?;
+            file.sync_all().map_err(io(tmp.clone()))?;
+            drop(file);
+            match std::fs::rename(&tmp, &dest) {
+                Ok(()) => Ok(true),
+                Err(_) if dest.is_file() => Ok(false),
+                Err(source) => Err(io(dest.clone())(source)),
+            }
+        })();
         if !matches!(result, Ok(true)) {
             let _ = std::fs::remove_file(&tmp);
         }
@@ -131,12 +168,16 @@ impl FileCas {
         #[cfg(unix)]
         {
             let pending: Vec<u8> = self.pending_dir_sync.iter().copied().collect();
-            for shard in pending {
+            for shard in &pending {
                 let hex = format!("{shard:02x}");
                 let dir = self.root.join("blobs").join(hex);
-                let f = std::fs::File::open(&dir).map_err(|source| io_error(&dir, source))?;
-                f.sync_all().map_err(|source| io_error(&dir, source))?;
-                self.pending_dir_sync.remove(&shard);
+                sync_dir(&dir)?;
+                self.pending_dir_sync.remove(shard);
+            }
+            if !pending.is_empty() {
+                // Blobs in a shard created by this run only become durable
+                // once the shard's own entry in `blobs/` is persisted too.
+                sync_dir(&self.root.join("blobs"))?;
             }
         }
         #[cfg(not(unix))]
@@ -236,7 +277,9 @@ impl sekai_core::BlobStore for FileCas {
     type Error = StorageError;
 
     fn contains(&self, hash: &BlobHash) -> impl Future<Output = Result<bool, Self::Error>> + Send {
-        core::future::ready(Ok(self.path_of(hash).exists()))
+        // `is_file`, matching `contains_blob` and `put_blob`: a directory
+        // squatting on a blob path is not a stored blob.
+        core::future::ready(Ok(self.path_of(hash).is_file()))
     }
 
     fn put(
@@ -277,7 +320,27 @@ impl sekai_core::BlobStore for FileCas {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core::future::Future;
+    use core::pin::pin;
+    use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
     use std::sync::Barrier;
+
+    /// Drive an immediately-ready future; only valid for futures that never
+    /// pend (the `FileCas` trait impls resolve without I/O).
+    fn block_on<F: Future>(fut: F) -> F::Output {
+        const VTABLE: RawWakerVTable = RawWakerVTable::new(|_| RAW, |_| {}, |_| {}, |_| {});
+        const RAW: RawWaker = RawWaker::new(core::ptr::null(), &VTABLE);
+        // Safety: the vtable ignores its pointer and allocates nothing.
+        let waker = unsafe { Waker::from_raw(RAW) };
+        let mut cx = Context::from_waker(&waker);
+        let mut fut = pin!(fut);
+        loop {
+            if let Poll::Ready(out) = fut.as_mut().poll(&mut cx) {
+                return out;
+            }
+            core::hint::spin_loop();
+        }
+    }
 
     fn temp_root(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -326,6 +389,45 @@ mod tests {
                 .unwrap();
             assert_eq!(read_back, payload);
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_stale_temp_name_is_never_reused() {
+        // A temp file left by a crashed process (same pid, same counter)
+        // must not be truncated and rewritten: the put draws a fresh name.
+        let root = temp_root("stale-tmp");
+        let hash = BlobHash([3; 32]);
+        let stale = root.join("blobs/03").join(format!(
+            "{}.tmp-{}-0",
+            &hash.hex_string()[2..],
+            std::process::id()
+        ));
+        std::fs::create_dir_all(stale.parent().unwrap()).unwrap();
+        std::fs::write(&stale, b"leftover").unwrap();
+
+        let mut cas = FileCas::open(&root).unwrap();
+        assert!(cas.put_blob(&hash, b"payload").unwrap());
+        // The leftover is untouched, and the blob landed beside it.
+        assert_eq!(std::fs::read(&stale).unwrap(), b"leftover");
+        let mut out = Vec::new();
+        cas.fetch_blob(&hash, &mut out).unwrap();
+        assert_eq!(out, b"payload");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn contains_ignores_a_directory_on_a_blob_path() {
+        // An externally corrupted store may hold a directory where a blob
+        // belongs; it must not read as a stored blob.
+        let root = temp_root("dir-squat");
+        let hash = BlobHash([5; 32]);
+        let path = root.join("blobs/05").join(&hash.hex_string()[2..]);
+        std::fs::create_dir_all(&path).unwrap();
+
+        let cas = FileCas::open(&root).unwrap();
+        assert!(!cas.contains_blob(&hash));
+        assert!(!block_on(sekai_core::BlobStore::contains(&cas, &hash)).unwrap());
         let _ = std::fs::remove_dir_all(&root);
     }
 }

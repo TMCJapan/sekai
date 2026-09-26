@@ -59,12 +59,17 @@ impl SqliteMeta {
             .fetch_one(&pool)
             .await?;
         if version == 0 {
-            sqlx::query(SCHEMA).execute(&pool).await?;
+            // DDL and the version stamp commit together: a crash between
+            // them would leave a half-created schema that no later open can
+            // repair (the gate would demand a version the store never got).
+            let mut tx = pool.begin().await?;
+            sqlx::query(SCHEMA).execute(&mut *tx).await?;
             sqlx::query(sqlx::AssertSqlSafe(format!(
                 "PRAGMA user_version = {SCHEMA_VERSION}"
             )))
-            .execute(&pool)
+            .execute(&mut *tx)
             .await?;
+            tx.commit().await?;
         } else if version != SCHEMA_VERSION {
             return Err(StorageError::UnsupportedSchema {
                 found: version,
@@ -552,7 +557,7 @@ impl sekai_core::MetaStore for SqliteMeta {
                 .mtime_ms
                 .map(|ms| i64::try_from(ms).map_err(|_| StorageError::InvalidTimestamp(ms)))
                 .transpose()?;
-            let size = i64::try_from(fp.size).unwrap_or(i64::MAX);
+            let size = i64::try_from(fp.size).map_err(|_| StorageError::InvalidSize(fp.size))?;
             sqlx::query(
                 "INSERT INTO region_state (dim, kind, rx, rz, mtime_ms, size, header_hash, snapshot_id)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
