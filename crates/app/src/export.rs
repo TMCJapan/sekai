@@ -16,7 +16,7 @@ use sekai_storage::FileCas;
 use sekai_world::LayoutFlavor;
 
 use crate::error::AppError;
-use crate::rollback::MissingBlobPolicy;
+use crate::rollback::{MissingBlobPolicy, fetch_or_skip};
 
 /// Export policy. `Default` aborts on missing blobs, as in rollback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -64,7 +64,6 @@ pub struct ExportProgress {
 /// `scope` is exported. `progress` fires as files complete; it must be
 /// `'static` because the file pass runs on a blocking pool (pass a `move`
 /// closure owning its state).
-#[allow(clippy::too_many_arguments)]
 pub async fn export(
     out: &Path,
     store_url: &str,
@@ -172,14 +171,8 @@ fn export_files(
         let path = sekai_world::derive_path(&out, &flavor, key.dim, key.kind, key.rx, key.rz)?;
         let mut writer = sekai_anvil::RegionBuilder::new(key.rx, key.rz, timestamp)?;
         for (coord, hash) in rows {
-            match cas.fetch_blob(hash, &mut blob_buf) {
-                Ok(()) => {}
-                Err(sekai_storage::StorageError::BlobMissing { .. })
-                    if options.on_missing_blob == MissingBlobPolicy::SkipChunk =>
-                {
-                    continue;
-                }
-                Err(source) => return Err(source.into()),
+            if !fetch_or_skip(&cas, hash, options.on_missing_blob, &mut blob_buf)? {
+                continue;
             }
             writer.stage_chunk(coord.x, coord.z, &blob_buf)?;
             report.chunks_restored += 1;

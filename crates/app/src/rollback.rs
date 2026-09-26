@@ -252,21 +252,22 @@ fn rollback_files(
         let mut writer = sekai_anvil::RegionBuilder::new(key.rx, key.rz, timestamp)?;
         let mut restored: BTreeSet<(i32, i32)> = BTreeSet::new();
         for (coord, hash) in rows {
-            match cas.fetch_blob(hash, &mut blob_buf) {
-                Ok(()) => {}
-                Err(sekai_storage::StorageError::BlobMissing { .. })
-                    if options.on_missing_blob == MissingBlobPolicy::SkipChunk =>
-                {
-                    continue;
-                }
-                Err(source) => return Err(source.into()),
+            if !fetch_or_skip(&cas, hash, options.on_missing_blob, &mut blob_buf)? {
+                continue;
             }
             writer.stage_chunk(coord.x, coord.z, &blob_buf)?;
             restored.insert((coord.x, coord.z));
             report.chunks_restored += 1;
         }
         if options.keep_post_snapshot_chunks || options.keep_tombstoned_chunks {
-            merge_live_chunks(&path, &key, &restored, tombs, options, &mut writer)?;
+            merge_live_chunks(
+                &path,
+                &key,
+                &restored,
+                tombs.map(Vec::as_slice),
+                options,
+                &mut writer,
+            )?;
         }
         sekai_world::atomic_swap(&path, &writer.image()?)?;
         report.files_written += 1;
@@ -275,16 +276,36 @@ fn rollback_files(
     Ok(report)
 }
 
+/// Fetch one blob into `out`, honoring `policy` when CAS has no such blob.
+///
+/// `false` means the chunk must be skipped; under
+/// [`MissingBlobPolicy::Abort`] a missing blob is corruption and propagates.
+pub(super) fn fetch_or_skip(
+    cas: &FileCas,
+    hash: &BlobHash,
+    policy: MissingBlobPolicy,
+    out: &mut Vec<u8>,
+) -> Result<bool, AppError> {
+    match cas.fetch_blob(hash, out) {
+        Ok(()) => Ok(true),
+        Err(sekai_storage::StorageError::BlobMissing { .. })
+            if policy == MissingBlobPolicy::SkipChunk =>
+        {
+            Ok(false)
+        }
+        Err(source) => Err(source.into()),
+    }
+}
+
 /// Merge live on-disk chunks that the snapshot does not restore into
 /// `writer`: tombstoned coordinates under `keep_tombstoned_chunks`,
 /// snapshot-unknown ones under `keep_post_snapshot_chunks`. Missing live
 /// files contribute nothing; corrupt ones fail loudly.
-#[allow(clippy::too_many_arguments)]
 fn merge_live_chunks(
     path: &Path,
     key: &RegionKey,
     restored: &BTreeSet<(i32, i32)>,
-    tombs: Option<&Vec<ChunkCoord>>,
+    tombs: Option<&[ChunkCoord]>,
     options: RollbackOptions,
     writer: &mut sekai_anvil::RegionBuilder,
 ) -> Result<(), AppError> {
