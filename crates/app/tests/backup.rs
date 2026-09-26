@@ -1,6 +1,7 @@
 //! End-to-end backup flows over real world folders and SQLite stores.
 
-use sekai_app::{BackupOptions, SnapshotId};
+use sekai_app::{BackupOptions, Scope, SnapshotId};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -1356,4 +1357,208 @@ async fn real_world_corpus_round_trip() {
         assert_eq!(&chunk_map(path), chunks, "{path:?} restored");
     }
     cleanup(&root);
+}
+
+/// Model-based round trip over pseudo-random mutation sequences: back up
+/// after every mutation, then roll back to each snapshot in turn and require
+/// the world to match the recorded state byte-for-byte (per chunk payload).
+///
+/// This is the safety net for the delta-storage invariants that hand-written
+/// scenarios miss: the effective state of a snapshot must equal the world it
+/// captured, tombstones must resolve through fallback, and a restore must
+/// reproduce files, chunks, and payloads exactly - across deleted files,
+/// emptied regions, and same-size rewrites.
+#[tokio::test(flavor = "multi_thread")]
+async fn randomized_backup_rollback_round_trip() {
+    const FILES: [(&str, i32, i32); 4] = [
+        ("region/r.0.0.mca", 0, 0),
+        ("region/r.1.0.mca", 1, 0),
+        ("poi/r.0.0.mca", 0, 0),
+        ("entities/r.1.1.mca", 1, 1),
+    ];
+    const SEEDS: u64 = 12;
+    const STEPS: usize = 8;
+
+    for seed in 1..=SEEDS {
+        let root = tempdir(&format!("model{seed}"));
+        let world = root.join("world");
+        std::fs::create_dir_all(&world).unwrap();
+        let store = root.join("store").to_string_lossy().into_owned();
+        let mut rng = Rng(seed | 1);
+        let mut model: ChunkMaps = ChunkMaps::new();
+        let mut history: Vec<ChunkMaps> = Vec::new();
+        let mut id = 0u32;
+
+        for step in 0..STEPS {
+            let action = rng.below(100);
+            let (name, rx, rz) = FILES[usize::try_from(rng.below(FILES.len() as u64)).unwrap()];
+            let coord = (
+                rx * 32 + i32::try_from(rng.below(6)).unwrap(),
+                rz * 32 + i32::try_from(rng.below(6)).unwrap(),
+            );
+            match action {
+                0..=29 => {
+                    // (Re)create the file with one fresh chunk.
+                    id += 1;
+                    let mut chunks = BTreeMap::new();
+                    chunks.insert(coord, model_payload(&format!("v{id}")));
+                    model.insert(name.to_owned(), chunks);
+                }
+                30..=59 => {
+                    // Same-size rewrite: the fingerprint's header hash and
+                    // the file size both stay identical.
+                    if let Some(chunks) = model.get_mut(name) {
+                        let keys: Vec<(i32, i32)> = chunks.keys().copied().collect();
+                        if !keys.is_empty() {
+                            id += 1;
+                            let pick = keys[usize::try_from(rng.below(keys.len() as u64)).unwrap()];
+                            chunks.insert(pick, model_payload(&format!("{}", id % 100)));
+                        }
+                    }
+                }
+                60..=79 => {
+                    if let Some(chunks) = model.get_mut(name) {
+                        let keys: Vec<(i32, i32)> = chunks.keys().copied().collect();
+                        if !keys.is_empty() {
+                            let pick = keys[usize::try_from(rng.below(keys.len() as u64)).unwrap()];
+                            chunks.remove(&pick);
+                        }
+                    }
+                }
+                80..=89 => {
+                    model.remove(name);
+                }
+                _ => {}
+            }
+            // Only rewrite files whose bytes actually change, so unchanged
+            // regions keep their mtime and exercise the carry path.
+            materialize(&world, &model, &FILES);
+
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            let (report, _) = sekai_app::backup(&world, &store, options(), Scope::World, |_| {})
+                .await
+                .unwrap_or_else(|e| panic!("seed {seed} step {step}: backup failed: {e}"));
+            let expected: usize = model.values().map(BTreeMap::len).sum();
+            assert_eq!(report.chunks, expected, "seed {seed} step {step}");
+
+            // The snapshot's effective state is the world, tombstones
+            // included; a fresh tombstone is recorded exactly once.
+            let stats = sekai_app::snapshot_stats(&store, report.snapshot)
+                .await
+                .unwrap();
+            assert_eq!(
+                stats.effective_chunks, expected,
+                "seed {seed} step {step}: effective state"
+            );
+            assert_eq!(stats.fresh_tombstones, report.tombstones);
+            history.push(model.clone());
+        }
+
+        // Strict rollback deletes fully tombstoned regions, so a header-only
+        // file on disk is expected to be gone after a restore.
+        let snapshots = sekai_app::list_snapshots(&store).await.unwrap();
+        assert_eq!(snapshots.len(), history.len());
+        for (index, snapshot) in snapshots.iter().enumerate().rev() {
+            sekai_app::rollback(
+                &world,
+                &store,
+                snapshot.id,
+                sekai_app::RollbackOptions::default(),
+                Scope::World,
+                |_| {},
+            )
+            .await
+            .unwrap_or_else(|e| panic!("seed {seed}: rollback failed: {e}"));
+            let want: ChunkMaps = history[index]
+                .iter()
+                .filter(|(_, chunks)| !chunks.is_empty())
+                .map(|(name, chunks)| (name.clone(), chunks.clone()))
+                .collect();
+            assert_eq!(
+                read_world(&world),
+                want,
+                "seed {seed} snapshot {}",
+                snapshot.id.0
+            );
+        }
+        cleanup(&root);
+    }
+}
+
+/// World model: root-relative region path -> chunk payloads.
+type ChunkMaps = BTreeMap<String, BTreeMap<(i32, i32), Vec<u8>>>;
+
+/// Uncompressed sector framing around a minimal NBT compound.
+fn model_payload(id: &str) -> Vec<u8> {
+    let mut nbt = vec![10u8, 0, 0, 8, 0, 2];
+    nbt.extend_from_slice(b"id");
+    nbt.extend_from_slice(&u16::try_from(id.len()).unwrap().to_be_bytes());
+    nbt.extend_from_slice(id.as_bytes());
+    nbt.push(0);
+    let mut out = vec![3u8];
+    out.extend_from_slice(&nbt);
+    out
+}
+
+fn materialize(world: &Path, model: &ChunkMaps, files: &[(&str, i32, i32)]) {
+    for (name, _, _) in files {
+        let path = world.join(name);
+        match model.get(*name) {
+            Some(chunks) => {
+                let image = {
+                    let file_name = path.file_name().unwrap().to_str().unwrap();
+                    let (rx, rz) = sekai_anvil::parse_region_name(file_name).unwrap();
+                    let mut builder = sekai_anvil::RegionBuilder::new(rx, rz, 0).unwrap();
+                    for ((x, z), bytes) in chunks {
+                        builder.stage_chunk(*x, *z, bytes).unwrap();
+                    }
+                    builder.image().unwrap()
+                };
+                if std::fs::read(&path).ok().as_deref() != Some(image.as_slice()) {
+                    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                    std::fs::write(&path, image).unwrap();
+                }
+            }
+            None => {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+}
+
+fn read_world(world: &Path) -> ChunkMaps {
+    sekai_world::discover(world)
+        .unwrap()
+        .into_iter()
+        .map(|region| {
+            // `/` regardless of platform, so the keys match the model's.
+            let rel = region
+                .path
+                .strip_prefix(world)
+                .unwrap_or(&region.path)
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
+            (rel, chunk_map(&region.path))
+        })
+        .collect()
+}
+
+/// xorshift64: small, seeded, and dependency-free.
+struct Rng(u64);
+
+impl Rng {
+    const fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        x
+    }
+
+    const fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
 }
