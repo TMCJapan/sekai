@@ -123,7 +123,7 @@ pub struct BackupTimings {
     pub skipped_regions: usize,
     /// History rows carried over.
     pub carried_chunks: usize,
-    /// Per-region details for ingested files, in discovery order.
+    /// Per-region details for ingested files, sorted by path.
     pub regions: Vec<RegionTiming>,
 }
 
@@ -408,7 +408,7 @@ struct RegionWalk {
     hash: Duration,
     /// Subset of `ingest` spent in `CAS put`.
     cas: Duration,
-    /// Per-region details for ingested files, in discovery order.
+    /// Per-region details for ingested files, sorted by path.
     timings: Vec<RegionTiming>,
 }
 
@@ -442,7 +442,7 @@ struct IngestTimings {
     hash: Duration,
     /// Subset of `ingest` spent in `CAS put`.
     cas: Duration,
-    /// Per-region details, in discovery order.
+    /// Per-region details, sorted by path.
     regions: Vec<RegionTiming>,
 }
 
