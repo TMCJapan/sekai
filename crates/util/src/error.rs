@@ -1,3 +1,5 @@
+//! Errors shared by the parsing and encoding helpers.
+
 use core::fmt;
 
 /// Error returned when parsing an invalid named code.

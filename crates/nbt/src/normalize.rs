@@ -1,6 +1,10 @@
+//! Canonical feed order for volatile diff hashing.
+
 use crate::parser::Value;
 use sekai_util::DiffHash;
 
+/// Compound names excluded from diff hashes unless overridden: fields the
+/// server rewrites on its own, whose churn would mask real edits.
 pub const DEFAULT_IGNORED: &[&str] = &["InhabitedTime", "LastUpdate"];
 
 pub(crate) trait Feed {

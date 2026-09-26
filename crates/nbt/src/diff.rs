@@ -1,3 +1,5 @@
+//! Structural diff between two parsed NBT trees.
+
 use alloc::{borrow::ToOwned, format, string::String, vec::Vec};
 use core::cmp::Ordering;
 
