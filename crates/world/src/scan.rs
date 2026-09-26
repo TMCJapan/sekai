@@ -48,11 +48,32 @@ pub struct ScanTimings {
     pub parse: Duration,
 }
 
+/// A region file the scan could not inspect, with the reason.
+#[derive(Debug, Clone)]
+pub struct ScanSkip {
+    /// Full file path.
+    pub path: PathBuf,
+    /// Why the file was skipped.
+    pub reason: String,
+}
+
+/// Result of a read-only world scan: what was inspected, what was not.
+#[derive(Debug, Clone)]
+pub struct ScanReport {
+    /// Successfully inspected region files.
+    pub entries: Vec<RegionScanEntry>,
+    /// Files that could not be read or parsed.
+    pub skipped: Vec<ScanSkip>,
+    /// Per-phase timings.
+    pub timings: ScanTimings,
+}
+
 /// Scan every region file under `world` without writing anything.
 ///
 /// A single corrupt or unreadable region does not abort the whole scan;
-/// that entry is skipped so healthy regions remain inspectable.
-pub fn scan_world(world: &Path) -> Result<(Vec<RegionScanEntry>, ScanTimings), WorldError> {
+/// it is reported in [`ScanReport::skipped`] instead of vanishing, so an
+/// inventory never silently undercounts the files on disk.
+pub fn scan_world(world: &Path) -> Result<ScanReport, WorldError> {
     let total_started = Instant::now();
     let discover_started = Instant::now();
     let regions = discover(world)?;
@@ -60,17 +81,31 @@ pub fn scan_world(world: &Path) -> Result<(Vec<RegionScanEntry>, ScanTimings), W
     let mut read = Duration::ZERO;
     let mut parse = Duration::ZERO;
     let mut out = Vec::new();
+    let mut skipped = Vec::new();
     for region in regions {
         let read_started = Instant::now();
         let outcome = read_with_mtime(&region.path);
         read += read_started.elapsed();
-        let Ok((bytes, mtime_ms)) = outcome else {
-            continue;
+        let (bytes, mtime_ms) = match outcome {
+            Ok(parts) => parts,
+            Err(source) => {
+                skipped.push(ScanSkip {
+                    path: region.path.clone(),
+                    reason: source.to_string(),
+                });
+                continue;
+            }
         };
         let parse_started = Instant::now();
         let entry = parse_entry(&region, &bytes, mtime_ms);
         parse += parse_started.elapsed();
-        out.extend(entry);
+        match entry {
+            Ok(entry) => out.push(entry),
+            Err(source) => skipped.push(ScanSkip {
+                path: region.path.clone(),
+                reason: source.to_string(),
+            }),
+        }
     }
     let timings = ScanTimings {
         total: total_started.elapsed(),
@@ -78,15 +113,24 @@ pub fn scan_world(world: &Path) -> Result<(Vec<RegionScanEntry>, ScanTimings), W
         read,
         parse,
     };
-    Ok((out, timings))
+    Ok(ScanReport {
+        entries: out,
+        skipped,
+        timings,
+    })
 }
 
-/// Hash one file's header and count its chunks; `None` skips corrupt files.
-fn parse_entry(region: &RegionRef, bytes: &[u8], mtime_ms: Option<u64>) -> Option<RegionScanEntry> {
+/// Hash one file's header and count its chunks.
+fn parse_entry(
+    region: &RegionRef,
+    bytes: &[u8],
+    mtime_ms: Option<u64>,
+) -> Result<RegionScanEntry, WorldError> {
     let file_bytes = bytes.len() as u64;
     let header_hash = hex_hash(&header_hash_of_prefix(bytes));
-    let chunks = count_chunks(bytes, region.region_x, region.region_z).ok()?;
-    Some(RegionScanEntry {
+    let chunks = count_chunks(bytes, region.region_x, region.region_z)
+        .map_err(|source| WorldError::io(&region.path, std::io::Error::other(source)))?;
+    Ok(RegionScanEntry {
         path: region.path.clone(),
         dim: region.dim,
         kind: region.kind,

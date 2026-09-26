@@ -497,8 +497,10 @@ fn scan_counts_chunks_without_writing() {
     write(&world.join("region/r.0.0.mca"), &one_chunk_image());
     write(&world.join("region/r.1.0.mca"), &[0u8; 8192]);
     write(&world.join("region/r.2.0.mca"), &[]);
-    let (mut entries, timings) = scan_world(&world).unwrap();
+    let report = scan_world(&world).unwrap();
+    let mut entries = report.entries;
     entries.sort_by_key(|e| e.region_x);
+    assert!(report.skipped.is_empty());
     assert_eq!(entries.len(), 3);
     assert_eq!(entries[0].chunks, 1);
     assert_eq!(entries[0].file_bytes % 4096, 0);
@@ -506,7 +508,27 @@ fn scan_counts_chunks_without_writing() {
     assert_eq!(entries[1].chunks, 0);
     assert_eq!(entries[2].chunks, 0);
     assert_eq!(entries[2].file_bytes, 0);
+    let timings = report.timings;
     assert!(timings.total >= timings.discover + timings.read + timings.parse);
+    cleanup(&world);
+}
+
+/// A corrupt file must be reported, not silently dropped: an inventory
+/// that undercounts is worse than one that fails.
+#[test]
+fn scan_reports_unreadable_files() {
+    let world = tempdir("scan-corrupt");
+    write(&world.join("region/r.0.0.mca"), &one_chunk_image());
+    // Truncated below the 8 KiB header: unreadable, but discoverable.
+    write(&world.join("region/r.1.0.mca"), &[7u8; 100]);
+    let report = scan_world(&world).unwrap();
+    assert_eq!(report.entries.len(), 1);
+    assert_eq!(report.skipped.len(), 1);
+    assert!(report.skipped[0].path.ends_with("r.1.0.mca"));
+    assert!(
+        !report.skipped[0].reason.is_empty(),
+        "a skip must carry a reason"
+    );
     cleanup(&world);
 }
 

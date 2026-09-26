@@ -10,8 +10,9 @@ use crate::envelope::envelope_ok;
 use crate::style::Styler;
 
 pub fn run_scan(world: &Path, output: TimingArgs, style: Styler) -> anyhow::Result<()> {
-    let (entries, timings) =
+    let report =
         sekai_app::scan(world).with_context(|| format!("scan of {} failed", world.display()))?;
+    let entries = &report.entries;
     if output.json {
         if output.timing {
             println!(
@@ -19,17 +20,27 @@ pub fn run_scan(world: &Path, output: TimingArgs, style: Styler) -> anyhow::Resu
                 envelope_ok(
                     "scan",
                     &TimedEntries {
-                        entries: scan_payload(&entries),
-                        timing: Some((&timings).into()),
+                        entries: scan_payload(entries),
+                        skipped: scan_skips(&report.skipped),
+                        timing: Some((&report.timings).into()),
                     }
                 )?
             );
         } else {
-            println!("{}", envelope_ok("scan", &scan_payload(&entries))?);
+            println!(
+                "{}",
+                envelope_ok(
+                    "scan",
+                    &ScanEntries {
+                        result: scan_payload(entries),
+                        skipped: scan_skips(&report.skipped),
+                    }
+                )?
+            );
         }
         return Ok(());
     }
-    for entry in &entries {
+    for entry in entries {
         let short_hash = entry
             .header_hash
             .char_indices()
@@ -55,16 +66,30 @@ pub fn run_scan(world: &Path, output: TimingArgs, style: Styler) -> anyhow::Resu
     }
     let total_bytes: u64 = entries.iter().map(|e| e.file_bytes).sum();
     let total_chunks: usize = entries.iter().map(|e| e.chunks).sum();
+    for skip in &report.skipped {
+        eprintln!("skipped {}: {}", skip.path.display(), skip.reason);
+    }
     println!(
-        "{} files, {} bytes, {} chunks",
+        "{} files, {} bytes, {} chunks{}",
         entries.len(),
         total_bytes,
-        total_chunks
+        total_chunks,
+        skipped_suffix(&report.skipped)
     );
     if output.timing {
-        print_scan_timing_table(&timings, entries.len(), style);
+        print_scan_timing_table(&report.timings, entries.len(), style);
     }
     Ok(())
+}
+
+/// `, N unreadable` when files were skipped, so the count never reads as
+/// a complete inventory.
+fn skipped_suffix(skipped: &[sekai_app::ScanSkip]) -> String {
+    if skipped.is_empty() {
+        String::new()
+    } else {
+        format!(", {} unreadable", skipped.len())
+    }
 }
 
 #[derive(Serialize)]
@@ -78,6 +103,18 @@ struct ScanEntryJson {
     mtime_ms: Option<u64>,
     chunks: usize,
     header_hash: String,
+}
+
+#[derive(Serialize)]
+struct ScanSkipJson {
+    path: String,
+    reason: String,
+}
+
+#[derive(Serialize)]
+struct ScanEntries {
+    result: Vec<ScanEntryJson>,
+    skipped: Vec<ScanSkipJson>,
 }
 
 #[derive(Serialize)]
@@ -97,6 +134,7 @@ struct ScanPhasesJson {
 #[derive(Serialize)]
 struct TimedEntries {
     entries: Vec<ScanEntryJson>,
+    skipped: Vec<ScanSkipJson>,
     #[serde(flatten)]
     timing: Option<ScanTimingJson>,
 }
@@ -127,6 +165,16 @@ fn scan_payload(entries: &[sekai_app::RegionScanEntry]) -> Vec<ScanEntryJson> {
             mtime_ms: entry.mtime_ms,
             chunks: entry.chunks,
             header_hash: entry.header_hash.clone(),
+        })
+        .collect()
+}
+
+fn scan_skips(skipped: &[sekai_app::ScanSkip]) -> Vec<ScanSkipJson> {
+    skipped
+        .iter()
+        .map(|skip| ScanSkipJson {
+            path: skip.path.to_string_lossy().into_owned(),
+            reason: skip.reason.clone(),
         })
         .collect()
 }
@@ -171,10 +219,28 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&TimedEntries {
                 entries: empty,
+                skipped: Vec::new(),
                 timing: Some((&timings).into()),
             })
             .unwrap(),
-            r#"{"entries":[],"total_ms":30,"phases":{"discover_ms":1,"read_ms":2,"parse_ms":3}}"#
+            r#"{"entries":[],"skipped":[],"total_ms":30,"phases":{"discover_ms":1,"read_ms":2,"parse_ms":3}}"#
+        );
+    }
+
+    /// Files the scan could not inspect must be visible in the payload.
+    #[test]
+    fn renders_scan_skips() {
+        let skipped = vec![sekai_app::ScanSkip {
+            path: Path::new("/w/region/r.1.0.mca").to_path_buf(),
+            reason: "truncated region image".to_owned(),
+        }];
+        assert_eq!(
+            serde_json::to_string(&ScanEntries {
+                result: Vec::new(),
+                skipped: scan_skips(&skipped),
+            })
+            .unwrap(),
+            r#"{"result":[],"skipped":[{"path":"/w/region/r.1.0.mca","reason":"truncated region image"}]}"#
         );
     }
 }
