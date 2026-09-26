@@ -328,4 +328,7 @@ object-store CAS swaps don't touch metadata code.
   scheduling, and process control belong to callers, never to `core`,
   `anvil`, `nbt`, `storage`, `world`, or `app` internals.
 - **Rebuildable derived state** and **two-phase destructive operations**
-  (plan before apply) hold for every change.
+  (plan before apply) hold for every change. A fingerprint must therefore be
+  a *content* signal: hashing only part of a file would let a changed file
+  look unchanged, which is wrong data rather than a cache miss
+  ([ADR-0012](docs/adr/0012-fingerprint-covers-file-content.md)).

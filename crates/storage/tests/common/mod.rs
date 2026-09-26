@@ -29,7 +29,7 @@ pub const fn fingerprint(key: RegionKey) -> RegionFingerprint {
         key,
         mtime_ms: Some(1_700_000_000_000),
         size: 8192,
-        header_hash: [7; 32],
+        content_hash: [7; 32],
     }
 }
 

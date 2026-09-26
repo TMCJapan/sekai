@@ -27,7 +27,7 @@ CREATE TABLE region_state(
     rz INTEGER NOT NULL,
     mtime_ms INTEGER NULL,
     size INTEGER NOT NULL,
-    header_hash BLOB NOT NULL,
+    content_hash BLOB NOT NULL,
     snapshot_id INTEGER NOT NULL REFERENCES snapshots(id),
     PRIMARY KEY(dim, kind, rx, rz)
 );

@@ -42,11 +42,11 @@ pub fn run_scan(world: &Path, output: TimingArgs, style: Styler) -> anyhow::Resu
     }
     for entry in entries {
         let short_hash = entry
-            .header_hash
+            .content_hash
             .char_indices()
             .nth(12)
-            .map_or(entry.header_hash.as_str(), |(idx, _)| {
-                &entry.header_hash[..idx]
+            .map_or(entry.content_hash.as_str(), |(idx, _)| {
+                &entry.content_hash[..idx]
             });
 
         println!(
@@ -102,7 +102,7 @@ struct ScanEntryJson {
     size: u64,
     mtime_ms: Option<u64>,
     chunks: usize,
-    header_hash: String,
+    content_hash: String,
 }
 
 #[derive(Serialize)]
@@ -164,7 +164,7 @@ fn scan_payload(entries: &[sekai_app::RegionScanEntry]) -> Vec<ScanEntryJson> {
             size: entry.file_bytes,
             mtime_ms: entry.mtime_ms,
             chunks: entry.chunks,
-            header_hash: entry.header_hash.clone(),
+            content_hash: entry.content_hash.clone(),
         })
         .collect()
 }

@@ -4,7 +4,7 @@
 //! every chunk would multiply scan cost for data no consumer reads yet.
 //!
 //! Unchanged region files skip ingestion entirely: each file carries a
-//! `(mtime, size, header hash)` fingerprint in derived state, and a file
+//! `(mtime, size, content hash)` fingerprint in derived state, and a file
 //! matching all three signals contributes no new rows - its previous rows
 //! stay readable through fallback instead of being copied. Tombstones avoid
 //! a global chunk census: the known universe is exactly the effective
@@ -282,7 +282,7 @@ mod tests {
             key,
             mtime_ms: Some(1_700_000_000_000),
             size: 8192,
-            header_hash: [7; 32],
+            content_hash: [7; 32],
         }
     }
 

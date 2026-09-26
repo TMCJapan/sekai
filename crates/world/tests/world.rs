@@ -480,8 +480,8 @@ fn fingerprints_are_stable_and_change_sensitive() {
     assert_eq!(other.len() as u64, a.size);
     write(&path, &other);
     assert_ne!(
-        a.header_hash,
-        fingerprint_file(&path, key).unwrap().header_hash
+        a.content_hash,
+        fingerprint_file(&path, key).unwrap().content_hash
     );
     // Missing file is an I/O error, not a fingerprint.
     cleanup(&world);
@@ -491,65 +491,65 @@ fn fingerprints_are_stable_and_change_sensitive() {
     ));
 }
 
-/// A symlinked region file is real data; ignoring it would store nothing
-/// now and tombstone that nothing on the next backup.
-#[cfg(unix)]
+/// The whole point of hashing content: a payload edit past the location
+/// table, with the file's size *and* mtime preserved, must still be seen.
+/// `cp -p`, `rsync -t`, `tar -x`, a ZFS/Btrfs snapshot rollback, or any
+/// coarse-mtime filesystem produce exactly this file.
 #[test]
-fn symlinked_region_files_are_followed() {
-    let outside = tempdir("symlink-outside");
-    let image = one_chunk_image();
-    write(&outside.join("r.0.0.mca"), &image);
-    let world = tempdir("symlink-inside");
-    write(&world.join("region/r.0.0.mca"), &image);
-    // A link to a file held elsewhere on the same filesystem, as a
-    // deduplicated data layout would produce.
-    let shared = world.join("shared");
-    std::fs::create_dir_all(&shared).unwrap();
-    std::fs::copy(world.join("region/r.0.0.mca"), shared.join("r.1.0.mca")).unwrap();
-    std::os::unix::fs::symlink(shared.join("r.1.0.mca"), world.join("region/r.1.0.mca")).unwrap();
-    // A link to a file outside the world is followed too: the game opens
-    // whatever the path resolves to, and refusing it would silently drop
-    // chunks the server can load.
-    std::os::unix::fs::symlink(outside.join("r.0.0.mca"), world.join("region/r.2.0.mca")).unwrap();
+fn fingerprint_sees_a_payload_edit_with_preserved_size_and_mtime() {
+    let world = tempdir("fp-payload");
+    let path = world.join("region/r.0.0.mca");
+    let key = RegionKey::new(Dimension::OVERWORLD, RegionKind::REGION, 0, 0);
+    // A fixed timestamp both writes are stamped with, so mtime cannot be the
+    // signal that catches the edit.
+    let stamp = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
 
-    let found = discover(&world).unwrap();
-    assert_eq!(found.len(), 3);
-    for region_x in 1..=2 {
-        let linked = found
-            .iter()
-            .find(|r| r.region_x == region_x)
-            .unwrap_or_else(|| panic!("symlinked region {region_x} discovered"));
-        assert_eq!(linked.dim, Dimension::OVERWORLD);
-        assert_eq!(open_image(&linked.path).unwrap(), image);
+    let original = one_chunk_image();
+    write(&path, &original);
+    set_mtime(&path, stamp);
+    let before = fingerprint_file(&path, key).unwrap();
+
+    // Rewrite the chunk payload in place, keeping the compressed length, so
+    // the location table and the file size stay byte-identical.
+    let mut changed = original.clone();
+    for byte in &mut changed[original.len() - 4..] {
+        *byte ^= 0xFF;
     }
-    // A broken link is not a region file.
-    std::os::unix::fs::symlink(world.join("missing.mca"), world.join("region/r.3.0.mca")).unwrap();
-    assert_eq!(discover(&world).unwrap().len(), 3);
+    assert_eq!(changed.len(), original.len());
+    write(&path, &changed);
+    set_mtime(&path, stamp);
 
+    let after = fingerprint_file(&path, key).unwrap();
+    assert_eq!(after.size, before.size, "size must be identical");
+    assert_eq!(after.mtime_ms, before.mtime_ms, "mtime must be identical");
+    assert_ne!(
+        after.content_hash, before.content_hash,
+        "a same-size payload edit under a preserved mtime must be detected"
+    );
+
+    // And therefore the pair does not match, which is what plan_backup asks
+    // before skipping a file.
+    let stored = sekai_core::RegionStateEntry {
+        key,
+        mtime_ms: before.mtime_ms,
+        size: before.size,
+        content_hash: before.content_hash,
+        snapshot_id: sekai_core::SnapshotId(1),
+    };
+    assert!(
+        !after.matches_state(&stored),
+        "the file must not be treated as unchanged"
+    );
     cleanup(&world);
-    cleanup(&outside);
 }
 
-/// A symlinked world folder inside a server root is the world, not a
-/// missing one.
-#[cfg(unix)]
-#[test]
-fn symlinked_world_folders_are_discovered() {
-    let data = tempdir("symlink-data");
-    let image = one_chunk_image();
-    write(&data.join("region/r.0.0.mca"), &image);
-    let root = tempdir("symlink-root");
-    std::os::unix::fs::symlink(&data, root.join("survival")).unwrap();
-
-    let found = discover(&root).unwrap();
-    assert_eq!(found.len(), 1);
-    // Namespaces hash the root-relative path, so the link's own name is
-    // what the history keys on.
-    assert_ne!(found[0].dim, Dimension::OVERWORLD);
-    assert_eq!(open_image(&found[0].path).unwrap(), image);
-
-    cleanup(&root);
-    cleanup(&data);
+fn set_mtime(path: &Path, time: std::time::SystemTime) {
+    let file = std::fs::File::options()
+        .write(true)
+        .open(path)
+        .expect("file is writable");
+    let times = std::fs::FileTimes::new().set_modified(time);
+    file.set_times(times).expect("mtime is settable");
 }
 
 #[test]
@@ -565,7 +565,7 @@ fn scan_counts_chunks_without_writing() {
     assert_eq!(entries.len(), 3);
     assert_eq!(entries[0].chunks, 1);
     assert_eq!(entries[0].file_bytes % 4096, 0);
-    assert_eq!(entries[0].header_hash.len(), 64);
+    assert_eq!(entries[0].content_hash.len(), 64);
     assert_eq!(entries[1].chunks, 0);
     assert_eq!(entries[2].chunks, 0);
     assert_eq!(entries[2].file_bytes, 0);

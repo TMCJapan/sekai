@@ -17,7 +17,7 @@ use crate::api::{StorageError, Store, io_error};
 use crate::cas::FileCas;
 
 /// Managed schema version (`PRAGMA user_version`).
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 const SCHEMA: &str = include_str!("../schema/sqlite.sql");
 
@@ -167,15 +167,15 @@ fn decode_state(row: &sqlx::sqlite::SqliteRow) -> Result<RegionStateEntry, Stora
     let mtime_ms = mtime_ms.map(|v| i64_to_u64(v, "mtime_ms")).transpose()?;
     let size_raw: i64 = row.try_get("size")?;
     let size = i64_to_u64(size_raw, "size")?;
-    let header: Vec<u8> = row.try_get("header_hash")?;
-    let header_hash = hash32(header)?;
+    let content: Vec<u8> = row.try_get("content_hash")?;
+    let content_hash = hash32(content)?;
     let snapshot_raw: i64 = row.try_get("snapshot_id")?;
     let snapshot_id = snapshot_id_from_i64(snapshot_raw)?;
     Ok(RegionStateEntry {
         key,
         mtime_ms,
         size,
-        header_hash,
+        content_hash,
         snapshot_id,
     })
 }
@@ -343,7 +343,7 @@ impl sekai_core::MetaStore for SqliteMeta {
 
     async fn load_region_states(&self) -> Result<Vec<RegionStateEntry>, StorageError> {
         let rows = sqlx::query(
-            "SELECT dim, kind, rx, rz, mtime_ms, size, header_hash, snapshot_id FROM region_state",
+            "SELECT dim, kind, rx, rz, mtime_ms, size, content_hash, snapshot_id FROM region_state",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -578,11 +578,11 @@ impl sekai_core::MetaStore for SqliteMeta {
                 .transpose()?;
             let size = i64::try_from(fp.size).map_err(|_| StorageError::InvalidSize(fp.size))?;
             sqlx::query(
-                "INSERT INTO region_state (dim, kind, rx, rz, mtime_ms, size, header_hash, snapshot_id)
+                "INSERT INTO region_state (dim, kind, rx, rz, mtime_ms, size, content_hash, snapshot_id)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                  ON CONFLICT(dim, kind, rx, rz) DO UPDATE SET
                    mtime_ms = excluded.mtime_ms, size = excluded.size,
-                   header_hash = excluded.header_hash, snapshot_id = excluded.snapshot_id",
+                   content_hash = excluded.content_hash, snapshot_id = excluded.snapshot_id",
             )
             .bind(i64::from(fp.key.dim.raw()))
             .bind(i64::from(fp.key.kind.raw()))
@@ -590,7 +590,7 @@ impl sekai_core::MetaStore for SqliteMeta {
             .bind(i64::from(fp.key.rz))
             .bind(mtime_ms)
             .bind(size)
-            .bind(&fp.header_hash[..])
+            .bind(&fp.content_hash[..])
             .bind(id)
             .execute(&mut *tx)
             .await?;
@@ -690,7 +690,7 @@ mod tests {
             key,
             mtime_ms: Some(1),
             size: 8192,
-            header_hash: [7; 32],
+            content_hash: [7; 32],
         };
         let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::REGION, 0, 0);
         meta.apply_snapshot_incremental(
@@ -742,7 +742,7 @@ mod tests {
             key,
             mtime_ms: Some(1),
             size: 8192,
-            header_hash: [7; 32],
+            content_hash: [7; 32],
         };
         let c0 = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::REGION, 0, 0);
         let c1 = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::REGION, 32, 0);

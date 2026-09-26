@@ -9,7 +9,7 @@ use sekai_core::{Dimension, RegionKind};
 
 use crate::discover::{RegionRef, discover};
 use crate::error::WorldError;
-use crate::observation::{header_hash_of_prefix, hex_hash, mtime_ms_from_metadata};
+use crate::observation::{content_hash_of_bytes, hex_hash, mtime_ms_from_metadata};
 
 /// One region file observed on disk.
 #[derive(Debug, Clone)]
@@ -30,8 +30,8 @@ pub struct RegionScanEntry {
     pub mtime_ms: Option<u64>,
     /// Chunks present in the file.
     pub chunks: usize,
-    /// Hex header hash.
-    pub header_hash: String,
+    /// Hex content hash.
+    pub content_hash: String,
 }
 
 /// Per-phase timings for [`scan_world`]. Informational only; never
@@ -127,7 +127,7 @@ fn parse_entry(
     mtime_ms: Option<u64>,
 ) -> Result<RegionScanEntry, WorldError> {
     let file_bytes = bytes.len() as u64;
-    let header_hash = hex_hash(&header_hash_of_prefix(bytes));
+    let content_hash = hex_hash(&content_hash_of_bytes(bytes));
     let chunks = count_chunks(bytes, region.region_x, region.region_z)
         .map_err(|source| WorldError::io(&region.path, std::io::Error::other(source)))?;
     Ok(RegionScanEntry {
@@ -139,7 +139,7 @@ fn parse_entry(
         file_bytes,
         mtime_ms,
         chunks,
-        header_hash,
+        content_hash,
     })
 }
 

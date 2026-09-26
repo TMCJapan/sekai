@@ -213,7 +213,7 @@ impl MetaStore for MemMeta {
                 key: fp.key,
                 mtime_ms: fp.mtime_ms,
                 size: fp.size,
-                header_hash: fp.header_hash,
+                content_hash: fp.content_hash,
                 snapshot_id: id,
             };
             if let Some(state) = self.states.iter_mut().find(|s| s.key == fp.key) {

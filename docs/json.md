@@ -283,10 +283,10 @@ the next `gc`.
   "result": [
     {"path": "/w/region/r.0.0.mca", "dim": 0, "kind": 0,
      "region_x": 0, "region_z": 0, "size": 12345, "mtime_ms": 1700000000000,
-     "chunks": 60, "header_hash": "ab12..."},
+     "chunks": 60, "content_hash": "ab12..."},
     {"path": "/w/region/r.1.0.mca", "dim": 0, "kind": 0,
      "region_x": 1, "region_z": 0, "size": 8192, "mtime_ms": null,
-     "chunks": 0, "header_hash": "cd34..."}
+     "chunks": 0, "content_hash": "cd34..."}
   ],
   "skipped": [
     {"path": "/w/region/r.2.0.mca", "reason": "truncated region image: 100 bytes, need at least 8192"}

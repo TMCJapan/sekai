@@ -36,8 +36,8 @@ pub struct RegionFingerprint {
     pub mtime_ms: Option<u64>,
     /// File size in bytes.
     pub size: u64,
-    /// Blake3 of the file's location-table sector (first 4 KiB).
-    pub header_hash: [u8; 32],
+    /// Blake3 of the whole file.
+    pub content_hash: [u8; 32],
 }
 
 /// Persisted fingerprint of the last ingested file state.
@@ -49,8 +49,8 @@ pub struct RegionStateEntry {
     pub mtime_ms: Option<u64>,
     /// File size in bytes.
     pub size: u64,
-    /// Blake3 of the file's location-table sector (first 4 KiB).
-    pub header_hash: [u8; 32],
+    /// Blake3 of the whole file.
+    pub content_hash: [u8; 32],
     /// Snapshot that last confirmed this fingerprint.
     pub snapshot_id: SnapshotId,
 }
@@ -62,12 +62,18 @@ impl RegionFingerprint {
     /// forces ingest: silently trusting a clock the platform cannot provide
     /// would risk stale snapshots, so the fail-safe direction is to redo
     /// the work.
+    ///
+    /// The content hash covers every byte. It used to cover only the 4 KiB
+    /// location table, which left a same-size payload edit invisible
+    /// whenever mtime was preserved (`cp -p`, `rsync -t`, `tar -x`, a
+    /// filesystem snapshot, a coarse-mtime filesystem) - the backup then
+    /// stored nothing and a later rollback overwrote uncaptured bytes.
     pub fn matches_state(&self, state: &RegionStateEntry) -> bool {
         self.key == state.key
             && self.mtime_ms == state.mtime_ms
             && self.mtime_ms.is_some()
             && self.size == state.size
-            && self.header_hash == state.header_hash
+            && self.content_hash == state.content_hash
     }
 }
 
@@ -120,7 +126,7 @@ mod tests {
             key: key(),
             mtime_ms: Some(1_700_000_000_000),
             size: 8192,
-            header_hash: [7; 32],
+            content_hash: [7; 32],
         }
     }
 
@@ -129,7 +135,7 @@ mod tests {
             key: key(),
             mtime_ms: Some(1_700_000_000_000),
             size: 8192,
-            header_hash: [7; 32],
+            content_hash: [7; 32],
             snapshot_id: SnapshotId(1),
         }
     }
@@ -148,7 +154,7 @@ mod tests {
         assert!(!changed.matches_state(&base));
 
         let mut changed = fingerprint();
-        changed.header_hash[0] ^= 0xFF;
+        changed.content_hash[0] ^= 0xFF;
         assert!(!changed.matches_state(&base));
 
         // Unknown clock on either side forces ingest (fail-safe direction).
