@@ -178,6 +178,9 @@ pub async fn backup(
 ) -> Result<(BackupReport, BackupTimings), AppError> {
     let total = Instant::now();
     let mut store = super::open_store(store_url).await?;
+    // Held for the whole run: blobs reach the CAS before the rows that
+    // reference them, so `gc` must not scan in that window.
+    let _run = store.cas().begin_run()?;
 
     let observed = tokio::task::spawn_blocking({
         let world = world.to_path_buf();

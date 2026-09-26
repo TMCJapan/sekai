@@ -25,6 +25,16 @@ pub enum StorageError {
     /// URL carries no store location.
     #[error("store location is empty: pass a directory path")]
     EmptyStorePath,
+    /// A writing run holds the store; `gc` must not run alongside it.
+    #[error(
+        "store is in use by a running backup (marker {path}{holder}): a backup writes blobs before it commits the rows that reference them, so collecting now would unlink blobs the next commit still needs. Wait for it to finish, or remove the marker if no backup is running."
+    )]
+    StoreBusy {
+        /// Marker file that was found.
+        path: PathBuf,
+        /// Contents recorded by the run holding it.
+        holder: String,
+    },
     /// Stored hash bytes are not 32 bytes long.
     #[error("stored hash has invalid length: {len} bytes, expected 32")]
     InvalidHashLength { len: usize },

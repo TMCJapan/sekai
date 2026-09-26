@@ -12,11 +12,14 @@ pub mod mysql;
 /// Reserved Postgres backend stub.
 #[cfg(feature = "backend-postgres")]
 pub mod postgres;
+/// Exclusive-run marker (`backup.inflight`) guarding `gc` against backups.
+pub mod runs;
 /// SQLite backend (sqlx).
 #[cfg(feature = "backend-sqlite")]
 pub mod sqlite;
 
 pub use api::{BackendKind, BlobStore, MetaStore, StorageError, Store, parse_backend_url};
 pub use cas::FileCas;
+pub use runs::RunGuard;
 #[cfg(feature = "backend-sqlite")]
 pub use sqlite::{SqliteMeta, SqliteStore, open_sqlite};

@@ -22,6 +22,44 @@ fn cleanup(dir: &Path) {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A backup's blobs reach the CAS before the rows referencing them, so
+/// `gc` must refuse while a backup holds the store. Otherwise it unlinks
+/// blobs the next metadata commit still needs.
+#[tokio::test]
+async fn gc_refuses_while_a_backup_holds_the_store() {
+    let root = tempdir("gc-guard");
+    let world = root.join("world");
+    let store = root.join("store");
+    let store_url = store.to_string_lossy().into_owned();
+    write_region(&world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1, 2, 3])]);
+
+    sekai_app::backup(&world, &store_url, options(), Scope::World, |_| {})
+        .await
+        .unwrap();
+    // A finished backup leaves nothing behind.
+    assert!(!store.join("backup.inflight").exists());
+    sekai_app::gc(&store_url, |_| {}).await.unwrap();
+
+    // A held marker (a backup in flight) blocks collection.
+    std::fs::write(store.join("backup.inflight"), "12345 0\n").unwrap();
+    let err = sekai_app::gc(&store_url, |_| {}).await.unwrap_err();
+    assert!(
+        err.to_string().contains("running backup"),
+        "unexpected error: {err}"
+    );
+    let err = sekai_app::gc_plan(&store_url).await.unwrap_err();
+    assert!(err.to_string().contains("running backup"), "{err}");
+
+    // Backups are never blocked by a stale marker.
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    write_region(&world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 4, 5, 6])]);
+    sekai_app::backup(&world, &store_url, options(), Scope::World, |_| {})
+        .await
+        .expect("a stale marker must not block a backup");
+    assert!(!store.join("backup.inflight").exists());
+    cleanup(&root);
+}
+
 /// Write a region image through the real builder, deriving the region
 /// coordinates from the file name.
 fn write_region(path: &Path, chunks: &[(i32, i32, Vec<u8>)]) {

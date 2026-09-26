@@ -70,6 +70,21 @@ impl FileCas {
         &self.root
     }
 
+    /// Claim the store for a run that writes blobs (backup).
+    ///
+    /// The returned guard removes the marker on drop - including on an
+    /// early return or a panic - and [`Self::ensure_idle`] makes `gc`
+    /// refuse while it is held. See [`crate::runs`] for why the two must
+    /// not overlap.
+    pub fn begin_run(&self) -> Result<crate::runs::RunGuard, StorageError> {
+        crate::runs::begin_run(&self.root)
+    }
+
+    /// Fail when another run currently holds the store.
+    pub fn ensure_idle(&self) -> Result<(), StorageError> {
+        crate::runs::ensure_idle(&self.root)
+    }
+
     /// File path for `hash` (`blobs/<first byte hex>/<remaining hex>`).
     fn path_of(&self, hash: &BlobHash) -> PathBuf {
         let hex = hash.hex_string();

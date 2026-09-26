@@ -32,6 +32,7 @@ pub struct GcProgress {
 pub async fn gc_plan(store_url: &str) -> Result<(GcPlan, GcTimings), AppError> {
     let total_started = Instant::now();
     let store = super::open_store(store_url).await?;
+    store.cas().ensure_idle()?;
     let plan_started = Instant::now();
     let plan = sekai_core::usecase::gc::gc_plan(store.cas(), store.meta())
         .await
@@ -54,6 +55,9 @@ pub async fn gc_apply(
 ) -> Result<(GcReport, GcTimings), AppError> {
     let total_started = Instant::now();
     let mut store = super::open_store(store_url).await?;
+    // Re-checked at apply time: a plan can sit around for a while, and a
+    // backup may have started since it was made.
+    store.cas().ensure_idle()?;
 
     let apply_started = Instant::now();
     let (cas, meta) = store.cas_and_meta();
@@ -85,6 +89,7 @@ pub async fn gc(
 ) -> Result<(GcReport, GcTimings), AppError> {
     let total_started = Instant::now();
     let mut store = super::open_store(store_url).await?;
+    store.cas().ensure_idle()?;
 
     let plan_started = Instant::now();
     let plan = sekai_core::usecase::gc::gc_plan(store.cas(), store.meta())
@@ -93,6 +98,7 @@ pub async fn gc(
     let plan_dt = plan_started.elapsed();
 
     let apply_started = Instant::now();
+    store.cas().ensure_idle()?;
     let (cas, meta) = store.cas_and_meta();
     let mut progress = progress;
     let report = sekai_core::usecase::gc::gc_apply(cas, meta, &plan, |done, total| {

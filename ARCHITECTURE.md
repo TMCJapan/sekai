@@ -253,6 +253,11 @@ The scope is a filter, not a partition:
   global CAS dedup.
 - **Two-phase safety**: `gc plan` (read-only candidates) then `gc apply`
   (re-verified unlink). No metadata writes in the orphan-only scope.
+- **Exclusivity**: a run that writes blobs holds `backup.inflight` in the
+  store root for its duration; `gc` refuses at plan and apply time while it
+  is held, because a backup's blobs are in the CAS before the rows that
+  reference them. Readers (`rollback`, `export`, `diff`) never take it. See
+  [ADR-0011](docs/adr/0011-backup-run-marker.md).
 - **Snapshot pruning** (`prune`): oldest-first fold into the next
   retained snapshot, then delete. Pruning dereferences blobs only;
   `gc` reclaims them afterwards.
