@@ -272,6 +272,11 @@ impl MetaStore for MemMeta {
         from: SnapshotId,
         into: SnapshotId,
     ) -> impl Future<Output = Result<FoldOutcome, MemError>> + Send {
+        // Mirrors the backend: a retirement folds into a strictly newer,
+        // existing snapshot.
+        if into <= from || !self.snapshots.iter().any(|s| s.id == into) {
+            return core::future::ready(Err(MemError));
+        }
         let mut folded = 0usize;
         let mut dropped = 0usize;
         let mut kept: Vec<ChunkHistoryEntry> = Vec::new();

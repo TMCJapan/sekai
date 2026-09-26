@@ -429,6 +429,25 @@ impl sekai_core::MetaStore for SqliteMeta {
         from: SnapshotId,
         into: SnapshotId,
     ) -> Result<FoldOutcome, StorageError> {
+        // Preconditions are cheap to check and expensive to get wrong:
+        // folding a snapshot into an older or equal one rewrites history
+        // (a chunk first seen later becomes visible at the earlier
+        // snapshot), and a missing target silently no-ops.
+        if into <= from {
+            return Err(StorageError::InvalidRetirement {
+                from: from.0,
+                into: into.0,
+            });
+        }
+        for id in [from, into] {
+            let found: Option<i64> = sqlx::query_scalar("SELECT 1 FROM snapshots WHERE id = ?")
+                .bind(snap_param(id)?)
+                .fetch_optional(&self.pool)
+                .await?;
+            if found.is_none() {
+                return Err(StorageError::UnknownSnapshot { id: id.0 });
+            }
+        }
         let from = snap_param(from)?;
         let into = snap_param(into)?;
         let mut tx = self.pool.begin().await?;

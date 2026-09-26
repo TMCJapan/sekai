@@ -211,6 +211,26 @@ where
             .unwrap()
             .is_none()
     );
+
+    // A retirement into an older or equal snapshot, or into one that does
+    // not exist, is a backend error rather than a silent no-op: the first
+    // would retroactively attach later rows to an earlier snapshot.
+    for (from, into) in [
+        (second, first),
+        (first, first),
+        (second, second),
+        (second, SnapshotId(999)),
+        (SnapshotId(999), third),
+    ] {
+        assert!(
+            meta.retire_snapshot(from, into).await.is_err(),
+            "retire {from:?} into {into:?} must fail"
+        );
+    }
+    // The rejected attempts changed nothing.
+    let after_failures: Vec<Vec<(ChunkCoord, Option<BlobHash>)>> =
+        effective_rows(meta, &[second, third]).await;
+    assert_eq!(after_failures, after);
 }
 
 async fn effective_rows<M>(meta: &M, ids: &[SnapshotId]) -> Vec<Vec<(ChunkCoord, Option<BlobHash>)>>

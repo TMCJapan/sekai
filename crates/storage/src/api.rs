@@ -43,6 +43,20 @@ pub enum StorageError {
     /// Snapshot ID does not fit SQLite's signed integer type.
     #[error("snapshot ID out of range: {0}")]
     InvalidSnapshotId(u64),
+    /// A retirement must fold a snapshot into a strictly newer one.
+    #[error("cannot retire snapshot {from} into {into}: the successor must be newer")]
+    InvalidRetirement {
+        /// Snapshot being retired.
+        from: u64,
+        /// Intended successor.
+        into: u64,
+    },
+    /// The named snapshot does not exist.
+    #[error("unknown snapshot: {id}")]
+    UnknownSnapshot {
+        /// Requested snapshot ID.
+        id: u64,
+    },
     /// Database schema version is not supported.
     #[error(
         "unsupported schema version: {found}, this binary supports {supported} (recreate the store; pre-release stores are not migrated)"
