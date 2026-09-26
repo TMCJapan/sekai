@@ -6,11 +6,15 @@
 //! already superseded there. Pruning never unlinks blobs; run GC
 //! afterwards to reclaim the dereferenced ones.
 
+#[cfg(test)]
+use alloc::collections::BTreeMap;
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use core::fmt;
 
 use crate::port::meta::MetaStore;
+#[cfg(test)]
+use sekai_util::{BlobHash, ChunkCoord};
 use sekai_util::{Snapshot, SnapshotId};
 
 /// Snapshots selected for deletion, oldest first, plus what survives.
@@ -151,7 +155,7 @@ pub async fn prune_apply<M: MetaStore>(
 pub(crate) fn effective_present<M: MetaStore>(
     meta: &M,
     snapshots: &[SnapshotId],
-) -> Vec<alloc::collections::BTreeMap<sekai_util::ChunkCoord, sekai_util::BlobHash>>
+) -> Vec<BTreeMap<ChunkCoord, BlobHash>>
 where
     M::Error: fmt::Debug,
 {
@@ -159,10 +163,7 @@ where
     snapshots
         .iter()
         .map(|id| {
-            let mut state: alloc::collections::BTreeMap<
-                sekai_util::ChunkCoord,
-                sekai_util::BlobHash,
-            > = alloc::collections::BTreeMap::new();
+            let mut state: BTreeMap<ChunkCoord, BlobHash> = BTreeMap::new();
             block_on(meta.visit_snapshot_chunks(*id, |entry| {
                 if let Some(blob) = entry.blob {
                     state.insert(entry.coord, blob);
