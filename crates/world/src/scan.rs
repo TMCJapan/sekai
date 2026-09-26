@@ -99,14 +99,22 @@ fn parse_entry(region: &RegionRef, bytes: &[u8], mtime_ms: Option<u64>) -> Optio
     })
 }
 
+/// Upper bound on the pre-allocation for a region read. A declared file
+/// size is untrusted: reserving it verbatim would abort the process on a
+/// sparse or hostile `.mca` instead of reporting a clean error, so the
+/// buffer grows with the bytes actually read.
+const MAX_READ_RESERVE: u64 = 8 * 1024 * 1024;
+
+/// Read a whole region file plus its mtime.
 fn read_with_mtime(path: &Path) -> Result<(Vec<u8>, Option<u64>), WorldError> {
     let mut file = File::open(path).map_err(|e| WorldError::io(path, e))?;
     let meta = file.metadata().ok();
     let mtime_ms = meta.as_ref().and_then(mtime_ms_from_metadata);
-    let mut bytes = Vec::with_capacity(
-        meta.as_ref()
-            .map_or(0, |m| usize::try_from(m.len()).unwrap_or(0)),
-    );
+    let reserve = meta
+        .as_ref()
+        .map_or(0, std::fs::Metadata::len)
+        .min(MAX_READ_RESERVE);
+    let mut bytes = Vec::with_capacity(usize::try_from(reserve).unwrap_or(0));
     file.read_to_end(&mut bytes)
         .map_err(|e| WorldError::io(path, e))?;
     Ok((bytes, mtime_ms))

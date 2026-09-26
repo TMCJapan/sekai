@@ -538,3 +538,20 @@ fn atomic_swap_replaces_and_cleans_up() {
         Err(sekai_world::WorldError::Io { .. })
     ));
 }
+#[cfg(unix)]
+#[test]
+fn atomic_swap_preserves_target_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let world = tempdir("swap-mode");
+    let target = world.join("region/r.0.0.mca");
+    write(&target, b"old");
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+    atomic_swap(&target, &one_chunk_image()).unwrap();
+
+    // The rename replaces the inode, so the mode has to be carried over or a
+    // hardened file silently becomes writable again.
+    let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o444);
+    cleanup(&world);
+}
