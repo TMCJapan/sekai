@@ -530,10 +530,7 @@ fn fingerprint_sees_a_payload_edit_with_preserved_size_and_mtime() {
     // And therefore the pair does not match, which is what plan_backup asks
     // before skipping a file.
     let stored = sekai_core::RegionStateEntry {
-        key,
-        mtime_ms: before.mtime_ms,
-        size: before.size,
-        content_hash: before.content_hash,
+        fingerprint: before,
         snapshot_id: sekai_core::SnapshotId(1),
     };
     assert!(

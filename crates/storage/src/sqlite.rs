@@ -172,10 +172,12 @@ fn decode_state(row: &sqlx::sqlite::SqliteRow) -> Result<RegionStateEntry, Stora
     let snapshot_raw: i64 = row.try_get("snapshot_id")?;
     let snapshot_id = snapshot_id_from_i64(snapshot_raw)?;
     Ok(RegionStateEntry {
-        key,
-        mtime_ms,
-        size,
-        content_hash,
+        fingerprint: RegionFingerprint {
+            key,
+            mtime_ms,
+            size,
+            content_hash,
+        },
         snapshot_id,
     })
 }

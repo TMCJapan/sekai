@@ -202,7 +202,7 @@ impl MetaStore for MemMeta {
             }
             for key in keys {
                 for state in &mut self.states {
-                    if state.key == *key {
+                    if state.fingerprint.key == *key {
                         state.snapshot_id = id;
                     }
                 }
@@ -210,19 +210,17 @@ impl MetaStore for MemMeta {
         }
         for fp in fingerprints {
             let entry = RegionStateEntry {
-                key: fp.key,
-                mtime_ms: fp.mtime_ms,
-                size: fp.size,
-                content_hash: fp.content_hash,
+                fingerprint: *fp,
                 snapshot_id: id,
             };
-            if let Some(state) = self.states.iter_mut().find(|s| s.key == fp.key) {
+            if let Some(state) = self.states.iter_mut().find(|s| s.fingerprint.key == fp.key) {
                 *state = entry;
             } else {
                 self.states.push(entry);
             }
         }
-        self.states.retain(|state| !removed.contains(&state.key));
+        self.states
+            .retain(|state| !removed.contains(&state.fingerprint.key));
         Ok(ApplyOutcome { id, carried_chunks })
     }
 

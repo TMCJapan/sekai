@@ -135,7 +135,7 @@ pub async fn plan_backup<M: MetaStore>(
     }
     let mut states: BTreeMap<RegionKey, RegionStateEntry> = BTreeMap::new();
     for state in meta.load_region_states().await? {
-        states.insert(state.key, state);
+        states.insert(state.fingerprint.key, state);
     }
     let previous = Previous {
         snapshot,
@@ -164,8 +164,9 @@ pub async fn plan_backup<M: MetaStore>(
         }
     }
     for state in previous.states.values() {
-        if scope.matches_region(state.key) && !plan.discovered.contains(&state.key) {
-            plan.removed.push(state.key);
+        let key = state.fingerprint.key;
+        if scope.matches_region(key) && !plan.discovered.contains(&key) {
+            plan.removed.push(key);
         }
     }
     Ok((previous, plan))
