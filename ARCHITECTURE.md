@@ -170,8 +170,10 @@ diffing, never as ingest failures.
   (header + adler handled internally).
 - Type `1` (gzip): parse the gzip header manually (magic `1F 8B`, method `8`,
   flags: `FTEXT/FHCRC/FEXTRA/FNAME/FCOMMENT`), run
-  `miniz_oxide::inflate::decompress_to_vec_with_limit` over the raw deflate
-  stream, then verify the footer (`crc32fast` over output + `ISIZE`).
+  `miniz_oxide::inflate::core::decompress` over the raw deflate
+  stream, require it to consume the body exactly so the 8-byte trailer
+  starts where the stream ends, then verify the footer (`crc32fast` over
+  output + `ISIZE`).
 - Type `4` (lz4-java stream): parse the framing (see lz4-java framing spec
   in `crates/anvil/src/lib.rs`), decode each body with the `lz4_flex` block
   API (`Raw` bodies are copied), verify the per-block XXH32 checksum, stop at

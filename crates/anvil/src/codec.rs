@@ -1,9 +1,11 @@
 //! Chunk compression framing and decompression.
 
+use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::hash::Hasher as _;
 
-use miniz_oxide::inflate::{TINFLStatus, decompress_to_vec_with_limit};
+use miniz_oxide::inflate::TINFLStatus;
+use miniz_oxide::inflate::core::{DecompressorOxide, decompress, inflate_flags};
 
 use crate::error::AnvilError;
 
@@ -73,11 +75,43 @@ fn inflate_zlib_capped(body: &[u8]) -> Result<Vec<u8>, AnvilError> {
     }
 }
 
-fn inflate_raw_capped(body: &[u8]) -> Result<Vec<u8>, AnvilError> {
-    match decompress_to_vec_with_limit(body, MAX_DECOMPRESSED) {
-        Ok(out) => Ok(out),
-        Err(err) if err.status == TINFLStatus::HasMoreOutput => Err(AnvilError::OutputTooLarge),
-        Err(_) => Err(AnvilError::Gzip),
+/// Inflate a raw deflate stream that must span `body` exactly.
+///
+/// `decompress_to_vec_with_limit` reports success as soon as the stream
+/// ends, ignoring whatever follows it; gzip framing needs the exact end
+/// position because the 8-byte trailer must start there.
+fn inflate_raw_exact(body: &[u8]) -> Result<Vec<u8>, AnvilError> {
+    let mut decomp = Box::<DecompressorOxide>::default();
+    let mut out: Vec<u8> = Vec::new();
+    let mut input = body;
+    loop {
+        // Room for more output; matches may reach back into it.
+        let room = MAX_DECOMPRESSED - out.len();
+        if room == 0 {
+            return Err(AnvilError::OutputTooLarge);
+        }
+        let base = out.len();
+        out.resize(base + room.min(64 * 1024), 0);
+        let (status, in_consumed, out_consumed) = decompress(
+            &mut decomp,
+            input,
+            &mut out,
+            base,
+            inflate_flags::TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF,
+        );
+        out.truncate(base + out_consumed);
+        input = input.get(in_consumed..).ok_or(AnvilError::Gzip)?;
+        match status {
+            TINFLStatus::Done => {
+                return if input.is_empty() {
+                    Ok(out)
+                } else {
+                    Err(AnvilError::Gzip)
+                };
+            }
+            TINFLStatus::HasMoreOutput => {}
+            _ => return Err(AnvilError::Gzip),
+        }
     }
 }
 
@@ -153,7 +187,11 @@ fn gunzip_capped(body: &[u8], out: &mut Vec<u8>) -> Result<(), AnvilError> {
 
     let footer = body.get(end..).ok_or(AnvilError::Gzip)?;
 
-    let decoded = inflate_raw_capped(stream)?;
+    // Exact-length inflate: the trailer must begin where the deflate stream
+    // ends. Java's `GZIPInputStream` reads the footer immediately after the
+    // inflater finishes, so anything in between is corruption this decoder
+    // used to skip.
+    let decoded = inflate_raw_exact(stream)?;
 
     let mut crc = crc32fast::Hasher::new();
     crc.update(&decoded);
@@ -323,6 +361,34 @@ mod tests {
         payload.extend_from_slice(&isize.to_le_bytes());
 
         payload
+    }
+
+    /// The 8-byte trailer must start where the deflate stream ends.
+    /// Anything between them is corruption that Java's `GZIPInputStream`
+    /// rejects, so this decoder must too.
+    #[test]
+    fn gzip_rejects_bytes_between_stream_and_trailer() {
+        let body = b"nbt-body";
+        let good = gzip_body(body, None);
+        let mut out = Vec::new();
+        assert_eq!(decompress_into(&good, &mut out), Ok(Compression::Gzip));
+        assert_eq!(out, body);
+
+        for junk in [1usize, 6, 64] {
+            // Splice padding in front of the trailer, leaving the CRC and
+            // ISIZE untouched: only the framing is wrong.
+            let trailer_at = good.len() - 8;
+            let mut spliced = good[..trailer_at].to_vec();
+            spliced.extend(core::iter::repeat_n(0xAAu8, junk));
+            spliced.extend_from_slice(&good[trailer_at..]);
+            let mut out = Vec::new();
+            assert_eq!(
+                decompress_into(&spliced, &mut out),
+                Err(AnvilError::Gzip),
+                "{junk} junk bytes accepted"
+            );
+            assert!(out.is_empty());
+        }
     }
 
     fn lz4_checksum(body: &[u8]) -> [u8; 4] {
