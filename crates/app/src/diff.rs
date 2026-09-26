@@ -139,29 +139,15 @@ pub async fn diff_chunks(
     let store = super::open_store(store_url).await?;
     let ignore_set = ignore.unwrap_or(DEFAULT_IGNORED);
     let mut timings = DiffTimings::default();
-    let mut progress = progress;
-    let mut out = Vec::with_capacity(coords.len());
-    for (index, coord) in coords.iter().enumerate() {
-        let started = Instant::now();
-        let old_compressed = snapshot_chunk_compressed(&store, old_snapshot, coord).await?;
-        let new_compressed = snapshot_chunk_compressed(&store, new_snapshot, coord).await?;
-        timings.blob_fetch += started.elapsed();
-        let started = Instant::now();
-        let old_nbt = decompress_or_empty(old_compressed)?;
-        let new_nbt = decompress_or_empty(new_compressed)?;
-        timings.decompress += started.elapsed();
-        let started = Instant::now();
-        let entries = diff_nbt(&old_nbt, &new_nbt, ignore_set)?;
-        timings.diff_compute += started.elapsed();
-        progress(DiffProgress {
-            chunks_done: index + 1,
-            chunks_total: coords.len(),
-        });
-        out.push(ChunkDiff {
-            coord: *coord,
-            entries,
-        });
-    }
+    let out = diff_coords(
+        coords,
+        ignore_set,
+        DiffSource::Snapshot(&store, old_snapshot),
+        DiffSource::Snapshot(&store, new_snapshot),
+        progress,
+        &mut timings,
+    )
+    .await?;
     timings.total = total_started.elapsed();
     Ok((out, timings))
 }
@@ -278,19 +264,61 @@ pub async fn diff_world_chunks(
     let store = super::open_store(store_url).await?;
     let ignore_set = ignore.unwrap_or(DEFAULT_IGNORED);
     let mut timings = DiffTimings::default();
-    let mut progress = progress;
+    let out = diff_coords(
+        coords,
+        ignore_set,
+        DiffSource::Snapshot(&store, snapshot_id),
+        DiffSource::World(world),
+        progress,
+        &mut timings,
+    )
+    .await?;
+    timings.total = total_started.elapsed();
+    Ok((out, timings))
+}
+
+/// One side of a diff: where its compressed payload comes from.
+enum DiffSource<'a> {
+    /// A snapshot, resolved through metadata fallback.
+    Snapshot(&'a sekai_storage::SqliteStore, SnapshotId),
+    /// The live world directory.
+    World(&'a Path),
+}
+
+impl DiffSource<'_> {
+    /// Raw payload for `coord`, or `None` when that side has no such chunk.
+    async fn payload(&self, coord: &ChunkCoord) -> Result<Option<Vec<u8>>, AppError> {
+        match self {
+            Self::Snapshot(store, id) => snapshot_chunk_compressed(store, *id, coord).await,
+            Self::World(world) => read_world_chunk_compressed(world, coord),
+        }
+    }
+}
+
+/// Diff every coordinate of `old` against `new`, accumulating phase timings.
+///
+/// A payload of `None` decompresses as [`EMPTY_COMPOUND`], so an absent chunk
+/// on one side reports whole-value Added/Removed entries.
+async fn diff_coords(
+    coords: &[ChunkCoord],
+    ignore_set: &[&str],
+    old: DiffSource<'_>,
+    new: DiffSource<'_>,
+    mut progress: impl FnMut(DiffProgress) + Send,
+    timings: &mut DiffTimings,
+) -> Result<Vec<ChunkDiff>, AppError> {
     let mut out = Vec::with_capacity(coords.len());
     for (index, coord) in coords.iter().enumerate() {
         let started = Instant::now();
-        let snapshot_compressed = snapshot_chunk_compressed(&store, snapshot_id, coord).await?;
-        let world_compressed = read_world_chunk_compressed(world, coord)?;
+        let old_compressed = old.payload(coord).await?;
+        let new_compressed = new.payload(coord).await?;
         timings.blob_fetch += started.elapsed();
         let started = Instant::now();
-        let snapshot_nbt = decompress_or_empty(snapshot_compressed)?;
-        let world_nbt = decompress_or_empty(world_compressed)?;
+        let old_nbt = decompress_or_empty(old_compressed)?;
+        let new_nbt = decompress_or_empty(new_compressed)?;
         timings.decompress += started.elapsed();
         let started = Instant::now();
-        let entries = diff_nbt(&snapshot_nbt, &world_nbt, ignore_set)?;
+        let entries = diff_nbt(&old_nbt, &new_nbt, ignore_set)?;
         timings.diff_compute += started.elapsed();
         progress(DiffProgress {
             chunks_done: index + 1,
@@ -301,6 +329,5 @@ pub async fn diff_world_chunks(
             entries,
         });
     }
-    timings.total = total_started.elapsed();
-    Ok((out, timings))
+    Ok(out)
 }
