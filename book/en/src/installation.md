@@ -5,15 +5,10 @@ Prebuilt binaries are attached to each GitHub Release
 installed (the pinned version is in `rust-toolchain.toml`):
 
 ```sh
-cargo install sekai-cli
+cargo install --git https://github.com/TMCJapan/sekai
 ```
 
-The installed binary is named `sekai`. To build from a checkout instead
-(for development):
-
-```sh
-cargo install --path ./crates/cli
-```
+The installed binary is named `sekai`.
 
 Verify the setup:
 

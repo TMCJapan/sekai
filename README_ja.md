@@ -16,17 +16,11 @@ Minecraft Java 版のリージョンファイル (`.mca`) を対象とした、�
 Rust ツールチェインがある場合は以下でも導入できます:
 
 ```sh
-cargo install sekai-cli
+cargo install --git https://github.com/TMCJapan/sekai
 
 ```
 
 インストールされるバイナリ名は `sekai` です。
-現在のリポジトリのソースから自分でビルドする場合は以下です:
-
-```sh
-cargo install --path ./crates/cli
-
-```
 
 ## 使い方
 

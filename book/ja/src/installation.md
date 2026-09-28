@@ -4,15 +4,10 @@
 Rust ツールチェーンがある場合（固定バージョンは `rust-toolchain.toml`）は以下でも導入できます：
 
 ```sh
-cargo install sekai-cli
+cargo install --git https://github.com/TMCJapan/sekai
 ```
 
 インストールされるバイナリ名は `sekai` です。
-現在のリポジトリのソースから自分でビルドする場合は以下です：
-
-```sh
-cargo install --path ./crates/cli
-```
 
 セットアップの確認：
 
