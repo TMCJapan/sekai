@@ -13,12 +13,12 @@ to their capture-time values).
 ## Installation
 
 Prebuilt binaries are attached to each
-[GitHub Release](https://github.com/TMCJapan/sekai/releases)
+[GitHub Release](https://github.com/tmcjapan/sekai/releases)
 (`sekai-<target triple>.tar.gz`). Alternatively, with a Rust toolchain
 installed:
 
 ```sh
-cargo install --git https://github.com/TMCJapan/sekai
+cargo install --git https://github.com/tmcjapan/sekai
 
 ```
 

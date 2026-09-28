@@ -5,7 +5,7 @@ Prebuilt binaries are attached to each GitHub Release
 installed (the pinned version is in `rust-toolchain.toml`):
 
 ```sh
-cargo install --git https://github.com/TMCJapan/sekai
+cargo install --git https://github.com/tmcjapan/sekai
 ```
 
 The installed binary is named `sekai`.

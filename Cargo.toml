@@ -15,8 +15,8 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
-homepage = "https://github.com/TMCJapan/sekai"
-repository = "https://github.com/TMCJapan/sekai"
+homepage = "https://github.com/tmcjapan/sekai"
+repository = "https://github.com/tmcjapan/sekai"
 
 [workspace.dependencies]
 sekai-anvil = { version = "0.1.0", path = "crates/anvil" }

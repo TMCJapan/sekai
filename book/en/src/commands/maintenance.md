@@ -21,7 +21,7 @@ unlink blobs the next commit still needs. The error names the
 `backup.inflight` marker in the store root — delete it only if no backup is
 actually running (a crashed one leaves it behind). `backup` itself is never
 blocked by a stale marker. See
-[ADR-0011](https://github.com/TMCJapan/sekai/blob/main/docs/adr/0011-backup-run-marker.md).
+[ADR-0011](https://github.com/tmcjapan/sekai/blob/main/docs/adr/0011-backup-run-marker.md).
 
 ## Pruning snapshots
 
