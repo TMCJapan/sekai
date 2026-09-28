@@ -1,12 +1,12 @@
-# 概要
+# 目次
 
 - [はじめに](introduction.md)
 - [インストール](installation.md)
 - [クイックスタート](quickstart.md)
 - [サーバー連携](server-coordination.md)
-- [ワールドのレイアウト](world-layouts.md)
-- [概念](concepts.md)
-- [対象範囲選択](scope.md)
+- [ワールドレイアウト](world-layouts.md)
+- [基本概念](concepts.md)
+- [スコープ（対象範囲）の選択](scope.md)
 - [バックアップ](commands/backup.md)
 - [ロールバック](commands/rollback.md)
 - [エクスポート](commands/export.md)
