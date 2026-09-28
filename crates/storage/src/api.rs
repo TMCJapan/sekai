@@ -22,6 +22,19 @@ pub enum StorageError {
     /// URL names a backend that is unknown or not compiled in.
     #[error("unsupported storage backend: {url}")]
     UnsupportedBackend { url: String },
+    /// URL carries no store location.
+    #[error("store location is empty: pass a directory path")]
+    EmptyStorePath,
+    /// A writing run holds the store; `gc` must not run alongside it.
+    #[error(
+        "store is in use by a running backup (marker {path}{holder}): a backup writes blobs before it commits the rows that reference them, so collecting now would unlink blobs the next commit still needs. Wait for it to finish, or remove the marker if no backup is running."
+    )]
+    StoreBusy {
+        /// Marker file that was found.
+        path: PathBuf,
+        /// Contents recorded by the run holding it.
+        holder: String,
+    },
     /// Stored hash bytes are not 32 bytes long.
     #[error("stored hash has invalid length: {len} bytes, expected 32")]
     InvalidHashLength { len: usize },
@@ -34,9 +47,26 @@ pub enum StorageError {
     /// Millisecond timestamp does not fit `i64`.
     #[error("timestamp out of range: {0}")]
     InvalidTimestamp(u64),
+    /// Region file size does not fit `i64`.
+    #[error("region size out of range: {0}")]
+    InvalidSize(u64),
     /// Snapshot ID does not fit SQLite's signed integer type.
     #[error("snapshot ID out of range: {0}")]
     InvalidSnapshotId(u64),
+    /// A retirement must fold a snapshot into a strictly newer one.
+    #[error("cannot retire snapshot {from} into {into}: the successor must be newer")]
+    InvalidRetirement {
+        /// Snapshot being retired.
+        from: u64,
+        /// Intended successor.
+        into: u64,
+    },
+    /// The named snapshot does not exist.
+    #[error("unknown snapshot: {id}")]
+    UnknownSnapshot {
+        /// Requested snapshot ID.
+        id: u64,
+    },
     /// Database schema version is not supported.
     #[error(
         "unsupported schema version: {found}, this binary supports {supported} (recreate the store; pre-release stores are not migrated)"
@@ -66,29 +96,36 @@ pub enum BackendKind {
 
 /// Split a store URL into backend and the part after `://`.
 ///
-/// Bare paths select SQLite when that backend is compiled; unknown schemes fail.
+/// Bare paths select SQLite when that backend is compiled; unknown schemes
+/// fail. An empty location fails too: it would resolve against the process
+/// working directory and scatter a store there.
 pub fn parse_backend_url(url: &str) -> Result<(BackendKind, &str), StorageError> {
     let unsupported = || StorageError::UnsupportedBackend {
         url: url.to_owned(),
     };
-    match url.split_once("://") {
+    let selected = match url.split_once("://") {
         #[cfg(feature = "backend-sqlite")]
-        Some(("sqlite", rest)) => Ok((BackendKind::Sqlite, rest)),
+        Some(("sqlite", rest)) => Some((BackendKind::Sqlite, rest)),
         #[cfg(feature = "backend-mysql")]
-        Some(("mysql", rest)) => Ok((BackendKind::Mysql, rest)),
+        Some(("mysql", rest)) => Some((BackendKind::Mysql, rest)),
         #[cfg(feature = "backend-postgres")]
-        Some(("postgres", rest)) => Ok((BackendKind::Postgres, rest)),
-        Some(_) => Err(unsupported()),
+        Some(("postgres", rest)) => Some((BackendKind::Postgres, rest)),
+        Some(_) => None,
         None => {
             #[cfg(feature = "backend-sqlite")]
             {
-                Ok((BackendKind::Sqlite, url))
+                Some((BackendKind::Sqlite, url))
             }
             #[cfg(not(feature = "backend-sqlite"))]
             {
-                Err(unsupported())
+                None
             }
         }
+    };
+    match selected {
+        Some((_, "")) => Err(StorageError::EmptyStorePath),
+        Some(selection) => Ok(selection),
+        None => Err(unsupported()),
     }
 }
 
@@ -131,7 +168,7 @@ impl<M, C> Store<M, C> {
     }
 }
 
-/// Store root as a directory path.
+/// Wrap an I/O failure together with the path that caused it.
 pub(crate) fn io_error(path: &Path, source: std::io::Error) -> StorageError {
     StorageError::Io {
         path: path.to_path_buf(),
@@ -165,6 +202,19 @@ mod tests {
         assert!(matches!(
             parse_backend_url("s3://bucket/store"),
             Err(StorageError::UnsupportedBackend { .. })
+        ));
+    }
+
+    #[cfg(feature = "backend-sqlite")]
+    #[test]
+    fn empty_store_locations_are_rejected() {
+        assert!(matches!(
+            parse_backend_url(""),
+            Err(StorageError::EmptyStorePath)
+        ));
+        assert!(matches!(
+            parse_backend_url("sqlite://"),
+            Err(StorageError::EmptyStorePath)
         ));
     }
 }

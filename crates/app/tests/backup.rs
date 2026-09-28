@@ -1,6 +1,7 @@
 //! End-to-end backup flows over real world folders and SQLite stores.
 
-use sekai_app::{BackupOptions, SnapshotId};
+use sekai_app::{BackupOptions, Scope, SnapshotId};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -19,6 +20,44 @@ fn tempdir(name: &str) -> PathBuf {
 
 fn cleanup(dir: &Path) {
     let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A backup's blobs reach the CAS before the rows referencing them, so
+/// `gc` must refuse while a backup holds the store. Otherwise it unlinks
+/// blobs the next metadata commit still needs.
+#[tokio::test]
+async fn gc_refuses_while_a_backup_holds_the_store() {
+    let root = tempdir("gc-guard");
+    let world = root.join("world");
+    let store = root.join("store");
+    let store_url = store.to_string_lossy().into_owned();
+    write_region(&world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1, 2, 3])]);
+
+    sekai_app::backup(&world, &store_url, options(), Scope::World, |_| {})
+        .await
+        .unwrap();
+    // A finished backup leaves nothing behind.
+    assert!(!store.join("backup.inflight").exists());
+    sekai_app::gc(&store_url, |_| {}).await.unwrap();
+
+    // A held marker (a backup in flight) blocks collection.
+    std::fs::write(store.join("backup.inflight"), "12345 0\n").unwrap();
+    let err = sekai_app::gc(&store_url, |_| {}).await.unwrap_err();
+    assert!(
+        err.to_string().contains("running backup"),
+        "unexpected error: {err}"
+    );
+    let err = sekai_app::gc_plan(&store_url).await.unwrap_err();
+    assert!(err.to_string().contains("running backup"), "{err}");
+
+    // Backups are never blocked by a stale marker.
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    write_region(&world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 4, 5, 6])]);
+    sekai_app::backup(&world, &store_url, options(), Scope::World, |_| {})
+        .await
+        .expect("a stale marker must not block a backup");
+    assert!(!store.join("backup.inflight").exists());
+    cleanup(&root);
 }
 
 /// Write a region image through the real builder, deriving the region
@@ -145,6 +184,54 @@ async fn backup_list_rollback_round_trip() {
 }
 
 #[tokio::test]
+async fn deleted_region_file_tombstones_once() {
+    let root = tempdir("vanished-file");
+    let world = root.join("world");
+    let store = root.join("store").to_string_lossy().into_owned();
+    let doomed = world.join("poi/r.0.0.mca");
+    write_region(
+        &doomed,
+        &[
+            (0, 0, vec![3, 1, 2, 3]),
+            (1, 0, vec![3, 4, 5, 6]),
+            (2, 0, vec![3, 7, 7, 7]),
+        ],
+    );
+    write_region(&world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 8, 8, 8])]);
+
+    let (first, _) = sekai_app::backup(&world, &store, options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+    assert_eq!(first.chunks, 4);
+    assert_eq!(first.tombstones, 0);
+
+    // The file vanishes: its chunks tombstone exactly once.
+    std::fs::remove_file(&doomed).unwrap();
+    let (second, _) = sekai_app::backup(&world, &store, options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+    assert_eq!(second.tombstones, 3);
+    assert_eq!(second.chunks, 1);
+
+    // Repeat backup with an unchanged world records no rows at all: the
+    // tombstones already resolve through fallback, so nothing is re-recorded
+    // and the present count matches the effective one.
+    let (third, _) = sekai_app::backup(&world, &store, options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+    assert_eq!(third.tombstones, 0);
+    assert_eq!(third.new_blobs, 0);
+    assert_eq!(third.chunks, 1);
+    let stats = sekai_app::snapshot_stats(&store, third.snapshot)
+        .await
+        .unwrap();
+    assert_eq!(stats.fresh_chunks, 0);
+    assert_eq!(stats.fresh_tombstones, 0);
+    assert_eq!(stats.effective_chunks, 1);
+    cleanup(&root);
+}
+
+#[tokio::test]
 async fn scoped_backup_records_no_spurious_tombstones() {
     use sekai_app::{ChunkCoord, Dimension, RegionKind, Scope};
     let root = tempdir("scoped");
@@ -206,12 +293,14 @@ async fn scoped_backup_records_no_spurious_tombstones() {
     assert_eq!(scoped2.tombstones, 1);
 
     // A following full backup sees no further changes: zero tombstones,
-    // zero new blobs, nether chunk intact.
+    // zero new blobs, nether chunk intact. The carried overworld file must
+    // not resurrect its tombstoned chunk in the present count either.
     let (full2, _) = sekai_app::backup(&world, &store, options(), Scope::World, |_| {})
         .await
         .unwrap();
     assert_eq!(full2.tombstones, 0);
     assert_eq!(full2.new_blobs, 0);
+    assert_eq!(full2.chunks, 2);
     let snapshots = sekai_app::list_snapshots(&store).await.unwrap();
     assert_eq!(snapshots.len(), 4);
     let diffs = sekai_app::diff_chunk(
@@ -773,7 +862,7 @@ async fn gc_runs_and_returns_timings() {
         .unwrap();
 
     let (plan, plan_timings) = sekai_app::gc_plan(&store).await.unwrap();
-    assert_eq!(plan.len(), 0);
+    assert!(plan.orphans.is_empty());
     assert_eq!(plan_timings.apply, std::time::Duration::ZERO);
 
     let (report, timings) = sekai_app::gc(&store, |_| {}).await.unwrap();
@@ -1306,4 +1395,207 @@ async fn real_world_corpus_round_trip() {
         assert_eq!(&chunk_map(path), chunks, "{path:?} restored");
     }
     cleanup(&root);
+}
+
+/// Model-based round trip over pseudo-random mutation sequences: back up
+/// after every mutation, then roll back to each snapshot in turn and require
+/// the world to match the recorded state byte-for-byte (per chunk payload).
+///
+/// This is the safety net for the delta-storage invariants that hand-written
+/// scenarios miss: the effective state of a snapshot must equal the world it
+/// captured, tombstones must resolve through fallback, and a restore must
+/// reproduce files, chunks, and payloads exactly - across deleted files,
+/// emptied regions, and same-size rewrites.
+#[tokio::test(flavor = "multi_thread")]
+async fn randomized_backup_rollback_round_trip() {
+    const FILES: [(&str, i32, i32); 4] = [
+        ("region/r.0.0.mca", 0, 0),
+        ("region/r.1.0.mca", 1, 0),
+        ("poi/r.0.0.mca", 0, 0),
+        ("entities/r.1.1.mca", 1, 1),
+    ];
+    const SEEDS: u64 = 12;
+    const STEPS: usize = 8;
+
+    for seed in 1..=SEEDS {
+        let root = tempdir(&format!("model{seed}"));
+        let world = root.join("world");
+        std::fs::create_dir_all(&world).unwrap();
+        let store = root.join("store").to_string_lossy().into_owned();
+        let mut rng = Rng(seed | 1);
+        let mut model: ChunkMaps = ChunkMaps::new();
+        let mut history: Vec<ChunkMaps> = Vec::new();
+        let mut id = 0u32;
+
+        for step in 0..STEPS {
+            let action = rng.below(100);
+            let (name, rx, rz) = FILES[usize::try_from(rng.below(FILES.len() as u64)).unwrap()];
+            let coord = (
+                rx * 32 + i32::try_from(rng.below(6)).unwrap(),
+                rz * 32 + i32::try_from(rng.below(6)).unwrap(),
+            );
+            match action {
+                0..=29 => {
+                    // (Re)create the file with one fresh chunk.
+                    id += 1;
+                    let mut chunks = BTreeMap::new();
+                    chunks.insert(coord, model_payload(&format!("v{id}")));
+                    model.insert(name.to_owned(), chunks);
+                }
+                30..=59 => {
+                    // Same-chunk-count rewrite: replace one payload in place.
+                    if let Some(chunks) = model.get_mut(name) {
+                        let keys: Vec<(i32, i32)> = chunks.keys().copied().collect();
+                        if !keys.is_empty() {
+                            id += 1;
+                            let pick = keys[usize::try_from(rng.below(keys.len() as u64)).unwrap()];
+                            chunks.insert(pick, model_payload(&format!("{}", id % 100)));
+                        }
+                    }
+                }
+                60..=79 => {
+                    if let Some(chunks) = model.get_mut(name) {
+                        let keys: Vec<(i32, i32)> = chunks.keys().copied().collect();
+                        if !keys.is_empty() {
+                            let pick = keys[usize::try_from(rng.below(keys.len() as u64)).unwrap()];
+                            chunks.remove(&pick);
+                        }
+                    }
+                }
+                80..=89 => {
+                    model.remove(name);
+                }
+                _ => {}
+            }
+            // Only rewrite files whose bytes actually change, so unchanged
+            // regions keep their mtime and exercise the carry path.
+            materialize(&world, &model, &FILES);
+
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            let (report, _) = sekai_app::backup(&world, &store, options(), Scope::World, |_| {})
+                .await
+                .unwrap_or_else(|e| panic!("seed {seed} step {step}: backup failed: {e}"));
+            let expected: usize = model.values().map(BTreeMap::len).sum();
+            assert_eq!(report.chunks, expected, "seed {seed} step {step}");
+
+            // The snapshot's effective state is the world, tombstones
+            // included; a fresh tombstone is recorded exactly once.
+            let stats = sekai_app::snapshot_stats(&store, report.snapshot)
+                .await
+                .unwrap();
+            assert_eq!(
+                stats.effective_chunks, expected,
+                "seed {seed} step {step}: effective state"
+            );
+            assert_eq!(stats.fresh_tombstones, report.tombstones);
+            history.push(model.clone());
+        }
+
+        // Strict rollback deletes fully tombstoned regions, so a header-only
+        // file on disk is expected to be gone after a restore.
+        let snapshots = sekai_app::list_snapshots(&store).await.unwrap();
+        assert_eq!(snapshots.len(), history.len());
+        for (index, snapshot) in snapshots.iter().enumerate().rev() {
+            sekai_app::rollback(
+                &world,
+                &store,
+                snapshot.id,
+                sekai_app::RollbackOptions::default(),
+                Scope::World,
+                |_| {},
+            )
+            .await
+            .unwrap_or_else(|e| panic!("seed {seed}: rollback failed: {e}"));
+            let want: ChunkMaps = history[index]
+                .iter()
+                .filter(|(_, chunks)| !chunks.is_empty())
+                .map(|(name, chunks)| (name.clone(), chunks.clone()))
+                .collect();
+            assert_eq!(
+                read_world(&world),
+                want,
+                "seed {seed} snapshot {}",
+                snapshot.id.0
+            );
+        }
+        cleanup(&root);
+    }
+}
+
+/// World model: root-relative region path -> chunk payloads.
+type ChunkMaps = BTreeMap<String, BTreeMap<(i32, i32), Vec<u8>>>;
+
+/// Uncompressed sector framing around a minimal NBT compound.
+fn model_payload(id: &str) -> Vec<u8> {
+    let mut nbt = vec![10u8, 0, 0, 8, 0, 2];
+    nbt.extend_from_slice(b"id");
+    nbt.extend_from_slice(&u16::try_from(id.len()).unwrap().to_be_bytes());
+    nbt.extend_from_slice(id.as_bytes());
+    nbt.push(0);
+    let mut out = vec![3u8];
+    out.extend_from_slice(&nbt);
+    out
+}
+
+fn materialize(world: &Path, model: &ChunkMaps, files: &[(&str, i32, i32)]) {
+    for (name, _, _) in files {
+        let path = world.join(name);
+        match model.get(*name) {
+            Some(chunks) => {
+                let image = {
+                    let file_name = path.file_name().unwrap().to_str().unwrap();
+                    let (rx, rz) = sekai_anvil::parse_region_name(file_name).unwrap();
+                    let mut builder = sekai_anvil::RegionBuilder::new(rx, rz, 0).unwrap();
+                    for ((x, z), bytes) in chunks {
+                        builder.stage_chunk(*x, *z, bytes).unwrap();
+                    }
+                    builder.image().unwrap()
+                };
+                if std::fs::read(&path).ok().as_deref() != Some(image.as_slice()) {
+                    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                    std::fs::write(&path, image).unwrap();
+                }
+            }
+            None => {
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+    }
+}
+
+fn read_world(world: &Path) -> ChunkMaps {
+    sekai_world::discover(world)
+        .unwrap()
+        .into_iter()
+        .map(|region| {
+            // `/` regardless of platform, so the keys match the model's.
+            let rel = region
+                .path
+                .strip_prefix(world)
+                .unwrap_or(&region.path)
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/");
+            (rel, chunk_map(&region.path))
+        })
+        .collect()
+}
+
+/// xorshift64: small, seeded, and dependency-free.
+struct Rng(u64);
+
+impl Rng {
+    const fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        x
+    }
+
+    const fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
 }

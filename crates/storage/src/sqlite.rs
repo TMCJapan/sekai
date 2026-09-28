@@ -17,7 +17,7 @@ use crate::api::{StorageError, Store, io_error};
 use crate::cas::FileCas;
 
 /// Managed schema version (`PRAGMA user_version`).
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 const SCHEMA: &str = include_str!("../schema/sqlite.sql");
 
@@ -59,12 +59,17 @@ impl SqliteMeta {
             .fetch_one(&pool)
             .await?;
         if version == 0 {
-            sqlx::query(SCHEMA).execute(&pool).await?;
+            // DDL and the version stamp commit together: a crash between
+            // them would leave a half-created schema that no later open can
+            // repair (the gate would demand a version the store never got).
+            let mut tx = pool.begin().await?;
+            sqlx::query(SCHEMA).execute(&mut *tx).await?;
             sqlx::query(sqlx::AssertSqlSafe(format!(
                 "PRAGMA user_version = {SCHEMA_VERSION}"
             )))
-            .execute(&pool)
+            .execute(&mut *tx)
             .await?;
+            tx.commit().await?;
         } else if version != SCHEMA_VERSION {
             return Err(StorageError::UnsupportedSchema {
                 found: version,
@@ -162,15 +167,17 @@ fn decode_state(row: &sqlx::sqlite::SqliteRow) -> Result<RegionStateEntry, Stora
     let mtime_ms = mtime_ms.map(|v| i64_to_u64(v, "mtime_ms")).transpose()?;
     let size_raw: i64 = row.try_get("size")?;
     let size = i64_to_u64(size_raw, "size")?;
-    let header: Vec<u8> = row.try_get("header_hash")?;
-    let header_hash = hash32(header)?;
+    let content: Vec<u8> = row.try_get("content_hash")?;
+    let content_hash = hash32(content)?;
     let snapshot_raw: i64 = row.try_get("snapshot_id")?;
     let snapshot_id = snapshot_id_from_i64(snapshot_raw)?;
     Ok(RegionStateEntry {
-        key,
-        mtime_ms,
-        size,
-        header_hash,
+        fingerprint: RegionFingerprint {
+            key,
+            mtime_ms,
+            size,
+            content_hash,
+        },
         snapshot_id,
     })
 }
@@ -338,7 +345,7 @@ impl sekai_core::MetaStore for SqliteMeta {
 
     async fn load_region_states(&self) -> Result<Vec<RegionStateEntry>, StorageError> {
         let rows = sqlx::query(
-            "SELECT dim, kind, rx, rz, mtime_ms, size, header_hash, snapshot_id FROM region_state",
+            "SELECT dim, kind, rx, rz, mtime_ms, size, content_hash, snapshot_id FROM region_state",
         )
         .fetch_all(&self.pool)
         .await?;
@@ -424,6 +431,25 @@ impl sekai_core::MetaStore for SqliteMeta {
         from: SnapshotId,
         into: SnapshotId,
     ) -> Result<FoldOutcome, StorageError> {
+        // Preconditions are cheap to check and expensive to get wrong:
+        // folding a snapshot into an older or equal one rewrites history
+        // (a chunk first seen later becomes visible at the earlier
+        // snapshot), and a missing target silently no-ops.
+        if into <= from {
+            return Err(StorageError::InvalidRetirement {
+                from: from.0,
+                into: into.0,
+            });
+        }
+        for id in [from, into] {
+            let found: Option<i64> = sqlx::query_scalar("SELECT 1 FROM snapshots WHERE id = ?")
+                .bind(snap_param(id)?)
+                .fetch_optional(&self.pool)
+                .await?;
+            if found.is_none() {
+                return Err(StorageError::UnknownSnapshot { id: id.0 });
+            }
+        }
         let from = snap_param(from)?;
         let into = snap_param(into)?;
         let mut tx = self.pool.begin().await?;
@@ -552,13 +578,13 @@ impl sekai_core::MetaStore for SqliteMeta {
                 .mtime_ms
                 .map(|ms| i64::try_from(ms).map_err(|_| StorageError::InvalidTimestamp(ms)))
                 .transpose()?;
-            let size = i64::try_from(fp.size).unwrap_or(i64::MAX);
+            let size = i64::try_from(fp.size).map_err(|_| StorageError::InvalidSize(fp.size))?;
             sqlx::query(
-                "INSERT INTO region_state (dim, kind, rx, rz, mtime_ms, size, header_hash, snapshot_id)
+                "INSERT INTO region_state (dim, kind, rx, rz, mtime_ms, size, content_hash, snapshot_id)
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                  ON CONFLICT(dim, kind, rx, rz) DO UPDATE SET
                    mtime_ms = excluded.mtime_ms, size = excluded.size,
-                   header_hash = excluded.header_hash, snapshot_id = excluded.snapshot_id",
+                   content_hash = excluded.content_hash, snapshot_id = excluded.snapshot_id",
             )
             .bind(i64::from(fp.key.dim.raw()))
             .bind(i64::from(fp.key.kind.raw()))
@@ -566,7 +592,7 @@ impl sekai_core::MetaStore for SqliteMeta {
             .bind(i64::from(fp.key.rz))
             .bind(mtime_ms)
             .bind(size)
-            .bind(&fp.header_hash[..])
+            .bind(&fp.content_hash[..])
             .bind(id)
             .execute(&mut *tx)
             .await?;
@@ -595,7 +621,7 @@ mod tests {
     use super::*;
     use sekai_core::{
         RegionKind, Scope,
-        usecase::backup::{Observation, assemble, commit, plan_backup, stage_present},
+        usecase::backup::{Ingested, Observation, assemble, commit, plan_backup, stage_present},
     };
     use sqlx::ConnectOptions as _;
     use sqlx::Connection as _;
@@ -666,7 +692,7 @@ mod tests {
             key,
             mtime_ms: Some(1),
             size: 8192,
-            header_hash: [7; 32],
+            content_hash: [7; 32],
         };
         let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::REGION, 0, 0);
         meta.apply_snapshot_incremental(
@@ -697,10 +723,12 @@ mod tests {
         let staged = assemble(
             plan,
             &previous,
-            vec![stage_present(coord, BlobHash([1; 32]))],
-            BTreeSet::from([coord]),
-            0,
-            vec![fp],
+            Ingested {
+                entries: vec![stage_present(coord, BlobHash([1; 32]))],
+                present: BTreeSet::from([coord]),
+                new_blobs: 0,
+                fingerprints: vec![fp],
+            },
             &Scope::World,
         );
         let report = commit(&mut meta, &previous, &staged, 2_000).await.unwrap();
@@ -718,7 +746,7 @@ mod tests {
             key,
             mtime_ms: Some(1),
             size: 8192,
-            header_hash: [7; 32],
+            content_hash: [7; 32],
         };
         let c0 = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::REGION, 0, 0);
         let c1 = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::REGION, 32, 0);
@@ -757,10 +785,12 @@ mod tests {
         let staged = assemble(
             plan,
             &previous,
-            vec![stage_present(c0, BlobHash([9; 32]))],
-            BTreeSet::from([c0]),
-            1,
-            vec![changed],
+            Ingested {
+                entries: vec![stage_present(c0, BlobHash([9; 32]))],
+                present: BTreeSet::from([c0]),
+                new_blobs: 1,
+                fingerprints: vec![changed],
+            },
             &Scope::World,
         );
         let report = commit(&mut meta, &previous, &staged, 2_000).await.unwrap();

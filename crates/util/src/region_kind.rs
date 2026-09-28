@@ -1,3 +1,5 @@
+//! Region family codes and their on-disk directory names.
+
 use core::{fmt, str::FromStr};
 
 use crate::error::ParseCodeError;

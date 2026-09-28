@@ -170,8 +170,10 @@ diffing, never as ingest failures.
   (header + adler handled internally).
 - Type `1` (gzip): parse the gzip header manually (magic `1F 8B`, method `8`,
   flags: `FTEXT/FHCRC/FEXTRA/FNAME/FCOMMENT`), run
-  `miniz_oxide::inflate::decompress_to_vec_with_limit` over the raw deflate
-  stream, then verify the footer (`crc32fast` over output + `ISIZE`).
+  `miniz_oxide::inflate::core::decompress` over the raw deflate
+  stream, require it to consume the body exactly so the 8-byte trailer
+  starts where the stream ends, then verify the footer (`crc32fast` over
+  output + `ISIZE`).
 - Type `4` (lz4-java stream): parse the framing (see lz4-java framing spec
   in `crates/anvil/src/lib.rs`), decode each body with the `lz4_flex` block
   API (`Raw` bodies are copied), verify the per-block XXH32 checksum, stop at
@@ -209,9 +211,13 @@ bumps instead of a full row copy.
 
 ## Tombstones
 
-Missing chunks are explicit `NULL`-blob rows. Rollback onto tombstones
-removes sectors (fully tombstoned regions delete the file rather than
-leaving a header-only shell).
+Missing chunks are explicit `NULL`-blob rows, written once at the snapshot
+where they vanish: a coordinate already tombstoned records nothing further,
+because its absence already resolves through fallback. Change detection
+therefore compares the world against the effective *present* coordinate set
+of the latest snapshot, so a repeated backup of an unchanged world writes no
+chunk rows at all. Rollback onto tombstones removes sectors (fully
+tombstoned regions delete the file rather than leaving a header-only shell).
 
 ## Scoped Operations
 
@@ -219,8 +225,9 @@ Backup, rollback, and diff accept a scope: whole world (default) or
 per-dimension areas — whole dimension (`--in DIM`), chunk rectangle
 (`--in DIM:x0,z0..x1,z1`), explicit chunks (`--in DIM:x,z`), or region
 files (`--region DIM:RX,RZ`, rectangle sugar). Region kinds (`--kind`,
-repeatable; empty means all) apply uniformly across every area. The
-scope is a filter, not a partition:
+repeatable; empty means all) apply uniformly across every area, and on
+their own they narrow the whole world to those families (`Scope::Kinds`).
+The scope is a filter, not a partition:
 
 - Scoped backup ingests, carries, and tombstones only inside the scope.
   Out-of-scope coordinates record no rows and no tombstones, resolving
@@ -246,6 +253,11 @@ scope is a filter, not a partition:
   global CAS dedup.
 - **Two-phase safety**: `gc plan` (read-only candidates) then `gc apply`
   (re-verified unlink). No metadata writes in the orphan-only scope.
+- **Exclusivity**: a run that writes blobs holds `backup.inflight` in the
+  store root for its duration; `gc` refuses at plan and apply time while it
+  is held, because a backup's blobs are in the CAS before the rows that
+  reference them. Readers (`rollback`, `export`, `diff`) never take it. See
+  [ADR-0011](docs/adr/0011-backup-run-marker.md).
 - **Snapshot pruning** (`prune`): oldest-first fold into the next
   retained snapshot, then delete. Pruning dereferences blobs only;
   `gc` reclaims them afterwards.
@@ -316,4 +328,7 @@ object-store CAS swaps don't touch metadata code.
   scheduling, and process control belong to callers, never to `core`,
   `anvil`, `nbt`, `storage`, `world`, or `app` internals.
 - **Rebuildable derived state** and **two-phase destructive operations**
-  (plan before apply) hold for every change.
+  (plan before apply) hold for every change. A fingerprint must therefore be
+  a *content* signal: hashing only part of a file would let a changed file
+  look unchanged, which is wrong data rather than a cache miss
+  ([ADR-0012](docs/adr/0012-fingerprint-covers-file-content.md)).

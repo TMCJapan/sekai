@@ -33,7 +33,7 @@ read-only flows.
 | Bench | Median | Notes |
 |---|---|---|
 | `backup/small-full` | 14.7 ms | fresh store |
-| `backup/small-incremental` | 2.8 ms | second backup, no changes |
+| `backup/small-incremental` | 3.1 ms | second backup, no changes; 2.7 ms before full-content fingerprinting |
 | `backup/medium-full` | 484 ms | fresh store |
 | `rollback/small` | 3.3 ms | ~200 chunks rewrite |
 | `rollback/corpus` | 19.0 ms | 1189 chunks rewrite |
@@ -46,7 +46,13 @@ Rule-of-thumb estimates per subcommand (same machine class):
 
 - `backup` full: ~500 ms for ~7K chunks; dominated by `db_apply`
   (WAL Full + per-blob fsync). Incremental no-change runs near
-  `universe_load` cost.
+  `universe_load` plus the fingerprint pass, which reads every region
+  file: ~2 GB/s warm, disk-bound cold. On the 9.6 MiB `test-world`
+  corpus a no-change backup reports `total=14ms` with `fp=5ms`, against
+  `total=9ms`/`fp=0ms` when only the 4 KiB location table was hashed
+  (i3-12100F, warm cache, release). That is the price of not skipping a
+  real change under a preserved mtime; see
+  [ADR-0012](adr/0012-fingerprint-covers-file-content.md).
 - `rollback`: rewrite-bound, ~15–20 ms per 1K chunks.
 - `diff`: ~0.5 ms per chunk, dominated by per-chunk CAS file opens
   (batching opportunity, untracked).

@@ -32,4 +32,6 @@ sekai debug scan ./world
   only corrupt payloads and missing blobs fail loudly. `--show-values`
   prints concrete old/new values in human output.
 - `debug scan` lists region files with size, mtime, chunk count, and
-  header hash, plus per-phase timings with `--timing`.
+  content hash, plus per-phase timings with `--timing`. Files that cannot be
+  read or parsed are reported as skipped (with the reason) instead of
+  vanishing, so a partial inventory never reads as a complete one.

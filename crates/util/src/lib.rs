@@ -1,3 +1,9 @@
+//! Shared domain vocabulary: coordinates, namespaces, hashes, scopes, and
+//! the record types every other crate passes around.
+//!
+//! Pure data plus the invariants that belong to it (coordinate arithmetic,
+//! hex encoding, tag validation); no I/O and no policy.
+
 #![no_std]
 
 extern crate alloc;

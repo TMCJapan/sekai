@@ -14,15 +14,18 @@ impl fmt::Display for Value {
             Self::Short(v) => write!(f, "{v}s"),
             Self::Int(v) => write!(f, "{v}"),
             Self::Long(v) => write!(f, "{v}L"),
-            Self::Float(v) => fmt_float(f64::from(*v), f, "f"),
-            Self::Double(v) => fmt_float(*v, f, ""),
+            // `to_string` on the value itself: widening an f32 to f64
+            // first would print the exact binary64 expansion (`0.1` as
+            // `0.10000000149011612`) instead of the shortest f32 form.
+            Self::Float(v) => fmt_float(&v.to_string(), v.is_finite(), f, "f"),
+            Self::Double(v) => fmt_float(&v.to_string(), v.is_finite(), f, ""),
             Self::ByteArray(items) => {
                 write!(f, "[B;")?;
                 join(f, items.iter(), |f, v| write!(f, "{v}"))?;
                 write!(f, "]")
             }
             Self::String(v) => write!(f, "\"{}\"", Quoted(v)),
-            Self::List(items) => {
+            Self::List { items, .. } => {
                 write!(f, "[")?;
                 join(f, items.iter(), |f, v| write!(f, "{v}"))?;
                 write!(f, "]")
@@ -68,10 +71,9 @@ fn join<T>(
 /// Float formatting that always carries a decimal point (`1.0f`, not `1f`),
 /// so integers and floats stay visually distinct. Non-finite values pass
 /// through Rust-style (`NaNf`, `inff`); SNBT cannot represent them.
-fn fmt_float(v: f64, f: &mut fmt::Formatter<'_>, suffix: &str) -> fmt::Result {
-    let text = v.to_string();
+fn fmt_float(text: &str, finite: bool, f: &mut fmt::Formatter<'_>, suffix: &str) -> fmt::Result {
     write!(f, "{text}")?;
-    if v.is_finite() && !text.contains(['.', 'e', 'E']) {
+    if finite && !text.contains(['.', 'e', 'E']) {
         write!(f, ".0")?;
     }
     write!(f, "{suffix}")
@@ -133,6 +135,16 @@ mod tests {
         assert_eq!(rendered(&Value::Double(2.0)), "2.0");
     }
 
+    /// An `f32` must render at `f32` precision: widening it to `f64` first
+    /// would print the exact binary64 expansion of the value.
+    #[test]
+    fn renders_floats_at_their_own_precision() {
+        assert_eq!(rendered(&Value::Float(0.1)), "0.1f");
+        assert_eq!(rendered(&Value::Float(0.3)), "0.3f");
+        assert_eq!(rendered(&Value::Float(1.0 / 3.0)), "0.33333334f");
+        assert_eq!(rendered(&Value::Double(0.1)), "0.1");
+    }
+
     #[test]
     fn renders_strings_with_escapes() {
         assert_eq!(rendered(&Value::String("foo".into())), "\"foo\"");
@@ -156,7 +168,7 @@ mod tests {
             ("Status".into(), Value::String("full".into())),
             (
                 "sections".into(),
-                Value::List(vec![Value::Compound(vec![("Y".into(), Value::Byte(0))])]),
+                Value::list(vec![Value::Compound(vec![("Y".into(), Value::Byte(0))])]),
             ),
         ]);
         assert_eq!(rendered(&value), "{Status: \"full\", sections: [{Y: 0b}]}");

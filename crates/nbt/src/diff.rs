@@ -1,3 +1,5 @@
+//! Structural diff between two parsed NBT trees.
+
 use alloc::{borrow::ToOwned, format, string::String, vec::Vec};
 use core::cmp::Ordering;
 
@@ -37,8 +39,29 @@ fn diff_values(old: &Value, new: &Value, path: &str, ignore: &[&str], out: &mut 
         (Value::Compound(old_entries), Value::Compound(new_entries)) => {
             diff_compounds(old_entries, new_entries, path, ignore, out);
         }
-        (Value::List(old_items), Value::List(new_items)) => {
-            diff_lists(old_items, new_items, path, ignore, out);
+        (
+            Value::List {
+                element: old_element,
+                items: old_items,
+            },
+            Value::List {
+                element: new_element,
+                items: new_items,
+            },
+        ) => {
+            if old_element == new_element {
+                diff_lists(old_items, new_items, path, ignore, out);
+            } else {
+                // Same emptiness, different declared type: a whole-value
+                // change, not an element-wise one.
+                out.push(NbtDiffEntry {
+                    path: path.to_owned(),
+                    change: NbtChange::Modified {
+                        old: old.clone(),
+                        new: new.clone(),
+                    },
+                });
+            }
         }
 
         _ => {
@@ -218,14 +241,14 @@ mod tests {
     fn handles_nested_compounds_and_lists() {
         let old = Value::Compound(vec![(
             "sections".to_owned(),
-            Value::List(vec![Value::Compound(vec![(
+            Value::list(vec![Value::Compound(vec![(
                 "Y".to_owned(),
                 Value::Byte(0),
             )])]),
         )]);
         let new = Value::Compound(vec![(
             "sections".to_owned(),
-            Value::List(vec![Value::Compound(vec![(
+            Value::list(vec![Value::Compound(vec![(
                 "Y".to_owned(),
                 Value::Byte(1),
             )])]),

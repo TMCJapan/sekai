@@ -35,7 +35,7 @@ pub use sekai_core::{
     NbtChange, NbtDiffEntry, NbtValue, PrunePlan, PruneReport, Rect, RegionKey, RegionKind,
     RollbackReport, Scope, Snapshot, SnapshotId, SnapshotStats, SnapshotTag, TagName,
 };
-pub use sekai_world::{LayoutFlavor, RegionScanEntry, ScanTimings};
+pub use sekai_world::{LayoutFlavor, RegionScanEntry, ScanReport, ScanSkip, ScanTimings};
 pub use tag::{create_tag, delete_tag, list_tags, resolve_snapshot_ref, snapshot_stats};
 
 /// List all snapshots in ID order (for `list` and pre-flight checks).
@@ -55,10 +55,10 @@ pub async fn latest_snapshot_id(store_url: &str) -> Result<SnapshotId, AppError>
 }
 
 /// Read-only inspection of every region file under `world`, additionally
-/// returning per-phase timings.
+/// returning per-phase timings and any files that could not be inspected.
 ///
 /// Never writes to the world or the store.
-pub fn scan(world: &std::path::Path) -> Result<(Vec<RegionScanEntry>, ScanTimings), AppError> {
+pub fn scan(world: &std::path::Path) -> Result<ScanReport, AppError> {
     Ok(sekai_world::scan_world(world)?)
 }
 

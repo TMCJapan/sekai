@@ -6,7 +6,7 @@ use sekai_core::{
     BlobHash, BlobStore, ChunkCoord, Dimension, MetaStore, Observation, RegionFingerprint,
     RegionKey, RegionKind, Scope, SnapshotEntry, SnapshotId, SnapshotTag, TagName,
     usecase::{
-        backup::{assemble, commit, plan_backup, stage_present},
+        backup::{Ingested, assemble, commit, plan_backup, stage_present},
         gc::{gc_apply, gc_plan},
         rollback::plan_rollback,
     },
@@ -29,7 +29,7 @@ pub const fn fingerprint(key: RegionKey) -> RegionFingerprint {
         key,
         mtime_ms: Some(1_700_000_000_000),
         size: 8192,
-        header_hash: [7; 32],
+        content_hash: [7; 32],
     }
 }
 
@@ -211,6 +211,26 @@ where
             .unwrap()
             .is_none()
     );
+
+    // A retirement into an older or equal snapshot, or into one that does
+    // not exist, is a backend error rather than a silent no-op: the first
+    // would retroactively attach later rows to an earlier snapshot.
+    for (from, into) in [
+        (second, first),
+        (first, first),
+        (second, second),
+        (second, SnapshotId(999)),
+        (SnapshotId(999), third),
+    ] {
+        assert!(
+            meta.retire_snapshot(from, into).await.is_err(),
+            "retire {from:?} into {into:?} must fail"
+        );
+    }
+    // The rejected attempts changed nothing.
+    let after_failures: Vec<Vec<(ChunkCoord, Option<BlobHash>)>> =
+        effective_rows(meta, &[second, third]).await;
+    assert_eq!(after_failures, after);
 }
 
 async fn effective_rows<M>(meta: &M, ids: &[SnapshotId]) -> Vec<Vec<(ChunkCoord, Option<BlobHash>)>>
@@ -273,10 +293,12 @@ where
     let staged = assemble(
         plan,
         &previous,
-        vec![stage_present(coord(0, 0), BlobHash([9; 32]))],
-        BTreeSet::from([coord(0, 0)]),
-        1,
-        vec![changed],
+        Ingested {
+            entries: vec![stage_present(coord(0, 0), BlobHash([9; 32]))],
+            present: BTreeSet::from([coord(0, 0)]),
+            new_blobs: 1,
+            fingerprints: vec![changed],
+        },
         &Scope::World,
     );
     let report = commit(meta, &previous, &staged, 2_000).await.unwrap();
@@ -308,15 +330,7 @@ where
     .unwrap();
     let (previous, plan) = plan_backup(&*meta, &[], &Scope::World).await.unwrap();
     assert_eq!(plan.removed, vec![key(0, 0)]);
-    let staged = assemble(
-        plan,
-        &previous,
-        Vec::new(),
-        BTreeSet::new(),
-        0,
-        Vec::new(),
-        &Scope::World,
-    );
+    let staged = assemble(plan, &previous, Ingested::default(), &Scope::World);
     assert_eq!(staged.tombstones, 1);
     let report = commit(meta, &previous, &staged, 2_000).await.unwrap();
     assert_eq!(report.tombstones, 1);
@@ -388,7 +402,7 @@ where
         .unwrap();
 
     let plan = gc_plan(store.cas(), store.meta()).await.unwrap();
-    assert_eq!(plan.orphans(), &[orphan]);
+    assert_eq!(plan.orphans, vec![orphan]);
     let (cas, meta) = store.cas_and_meta();
     let report = gc_apply(cas, meta, &plan, |_, _| {}).await.unwrap();
     assert_eq!(report.removed, 1);

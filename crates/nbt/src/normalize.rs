@@ -1,6 +1,10 @@
+//! Canonical feed order for volatile diff hashing.
+
 use crate::parser::Value;
 use sekai_util::DiffHash;
 
+/// Compound names excluded from diff hashes unless overridden: fields the
+/// server rewrites on its own, whose churn would mask real edits.
 pub const DEFAULT_IGNORED: &[&str] = &["InhabitedTime", "LastUpdate"];
 
 pub(crate) trait Feed {
@@ -76,9 +80,10 @@ fn feed_payload(feed: &mut impl Feed, ignored: &[&str], value: &Value) {
             }
         }
 
-        Value::List(items) => {
-            let element_tag = items.first().map_or(0, Value::tag_id);
-            feed.update(&[element_tag]);
+        Value::List { element, items } => {
+            // The declared element tag is hashed even when the list is
+            // empty, where it is the only type information there is.
+            feed.update(&[*element]);
             feed.update(&len_i32(items.len()));
 
             for item in items {
@@ -119,13 +124,47 @@ mod tests {
             ("Status".to_owned(), Value::String(status.to_owned())),
             (
                 "sections".to_owned(),
-                Value::List(vec![Value::Compound(vec![(
+                Value::list(vec![Value::Compound(vec![(
                     "Y".to_owned(),
                     Value::Byte(0),
                 )])]),
             ),
             ("xPos".to_owned(), Value::Int(3)),
         ])
+    }
+
+    /// An empty list's element type is the only type information it has.
+    /// Dropping it made `List<Compound>` and `List<Int>` hash alike, so a
+    /// chunk whose only change was that type read as unchanged.
+    #[test]
+    fn empty_list_element_types_digest_distinctly() {
+        let compound_list = Value::Compound(vec![(
+            "l".to_owned(),
+            Value::empty_list(Value::tag_id(&Value::Compound(alloc::vec![]))),
+        )]);
+        let int_list = Value::Compound(vec![(
+            "l".to_owned(),
+            Value::empty_list(Value::tag_id(&Value::Int(0))),
+        )]);
+        assert_ne!(
+            digest(&[], &compound_list),
+            digest(&[], &int_list),
+            "empty lists of different element types must not collide"
+        );
+        // Parsed documents keep the distinction too.
+        let bytes_of = |element: u8| {
+            let mut bytes = alloc::vec![10u8, 0, 0, 9, 0, 1, b'l', element, 0, 0, 0, 0, 0];
+            bytes.shrink_to_fit();
+            bytes
+        };
+        let parsed_compound = parse_root(&bytes_of(10)).unwrap();
+        let parsed_int = parse_root(&bytes_of(3)).unwrap();
+        assert_ne!(digest(&[], &parsed_compound), digest(&[], &parsed_int));
+        assert_eq!(
+            digest(&[], &parsed_compound),
+            digest(&[], &compound_list),
+            "parsing must preserve the declared element tag"
+        );
     }
 
     #[test]

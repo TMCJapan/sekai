@@ -18,7 +18,7 @@ mod writer;
 
 pub use codec::{Compression, compression_of, decompress_into};
 pub use error::AnvilError;
-pub use hash::{custom_dimension_id, header_hash};
+pub use hash::{ContentHasher, content_hash, custom_dimension_id};
 pub use reader::{Chunk, RegionImage};
 pub use region::{
     FIRST_DATA_SECTOR, HEADER_LEN, MAX_SECTOR_OFFSET, MAX_SECTORS_PER_CHUNK, ROW_WIDTH, RegionLoc,

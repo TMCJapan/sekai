@@ -3,16 +3,10 @@
 //! Change detection (`diff`) is deliberately not computed here; parsing
 //! every chunk would multiply scan cost for data no consumer reads yet.
 //!
-//! Unchanged region files skip ingestion entirely: each file carries a
-//! `(mtime, size, header hash)` fingerprint in derived state, and a file
-//! matching all three signals contributes no new rows - its previous rows
-//! stay readable through fallback instead of being copied. Tombstones avoid
-//! a global chunk census: the known universe is exactly the effective
-//! coordinate set of the latest snapshot, so every snapshot records fresh
-//! rows only for ingested chunks plus tombstones for vanished coordinates.
-//!
-//! The orchestration is split so concrete adapters (parallelism,
-//! filesystem, clocks, timing) stay outside `core`:
+//! The policy is stated in ARCHITECTURE.md ("Delta History Storage" and
+//! "Tombstones"): unchanged files carry no new rows, vanished coordinates
+//! tombstone once, and everything else resolves through fallback. This
+//! module is the orchestration split that keeps adapters out of `core`:
 //!
 //! ```text
 //! plan_backup   read previous state, decide carry vs ingest (policy)
@@ -21,10 +15,6 @@
 //!   -> adapter flushes CAS (durability barrier before metadata)
 //! commit        record the snapshot atomically (single metadata batch)
 //! ```
-//!
-//! Crash order: every blob is flushed to CAS *before* the single metadata
-//! batch commits, so a torn backup leaves at most orphan blobs (reclaimed
-//! by future GC), never dangling references.
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
@@ -57,7 +47,8 @@ pub struct BackupReport {
 pub struct Previous {
     /// Latest snapshot, when the store is non-empty.
     pub snapshot: Option<Snapshot>,
-    /// Coordinates of the latest snapshot (empty on first run).
+    /// Effective present coordinates of the latest snapshot, tombstones
+    /// excluded (empty on first run).
     pub universe: BTreeSet<ChunkCoord>,
     /// Stored fingerprints keyed by region identity.
     pub states: BTreeMap<RegionKey, RegionStateEntry>,
@@ -119,14 +110,20 @@ pub async fn plan_backup<M: MetaStore>(
     let snapshot = meta.latest_snapshot().await?;
     if let Some(latest) = snapshot {
         meta.visit_snapshot_chunks(latest.id, |entry| {
-            universe.insert(entry.coord);
+            // Present coordinates only. A tombstoned coordinate is already
+            // absent from the effective state, so keeping it would re-record
+            // the same tombstone row on every later backup and count a
+            // vanished chunk as present.
+            if entry.blob.is_some() {
+                universe.insert(entry.coord);
+            }
             true
         })
         .await?;
     }
     let mut states: BTreeMap<RegionKey, RegionStateEntry> = BTreeMap::new();
     for state in meta.load_region_states().await? {
-        states.insert(state.key, state);
+        states.insert(state.fingerprint.key, state);
     }
     let previous = Previous {
         snapshot,
@@ -155,8 +152,9 @@ pub async fn plan_backup<M: MetaStore>(
         }
     }
     for state in previous.states.values() {
-        if scope.matches_region(state.key) && !plan.discovered.contains(&state.key) {
-            plan.removed.push(state.key);
+        let key = state.fingerprint.key;
+        if scope.matches_region(key) && !plan.discovered.contains(&key) {
+            plan.removed.push(key);
         }
     }
     Ok((previous, plan))
@@ -167,20 +165,35 @@ pub const fn stage_present(coord: ChunkCoord, hash: BlobHash) -> SnapshotEntry {
     SnapshotEntry::new(coord, Some(hash), None)
 }
 
+/// What the adapter's ingest pass produced for the changed files.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Ingested {
+    /// Fresh history rows for every chunk read.
+    pub entries: Vec<SnapshotEntry>,
+    /// Coordinates those rows cover.
+    pub present: BTreeSet<ChunkCoord>,
+    /// Blobs newly written to CAS.
+    pub new_blobs: usize,
+    /// Fresh fingerprints for the ingested files.
+    pub fingerprints: Vec<RegionFingerprint>,
+}
+
 /// Merge fresh rows with carried coordinates and tombstones.
 ///
-/// Previously known coordinates inside `scope` but not present in the new
+/// Previously present coordinates inside `scope` but not present in the new
 /// scan become tombstones; out-of-scope coordinates keep resolving through
-/// fallback, so scoped backups never record spurious tombstones.
-pub fn assemble(
-    plan: Plan,
-    previous: &Previous,
-    ingested_entries: Vec<SnapshotEntry>,
-    mut present: BTreeSet<ChunkCoord>,
-    new_blobs: usize,
-    fingerprints: Vec<RegionFingerprint>,
-    scope: &Scope,
-) -> Assembled {
+/// fallback, so scoped backups never record spurious tombstones. Coordinates
+/// already tombstoned at the previous snapshot are absent from
+/// `Previous::universe` and therefore neither carried nor re-tombstoned.
+pub fn assemble(plan: Plan, previous: &Previous, ingested: Ingested, scope: &Scope) -> Assembled {
+    let Ingested {
+        mut entries,
+        mut present,
+        new_blobs,
+        fingerprints,
+    } = ingested;
+    // A carried file is still on disk, so its coordinates count as present
+    // without being read again.
     if !plan.carries.is_empty() {
         let skipped: BTreeSet<RegionKey> = plan.carries.iter().copied().collect();
         for coord in &previous.universe {
@@ -189,7 +202,7 @@ pub fn assemble(
             }
         }
     }
-    let mut entries = ingested_entries;
+    // Present before, absent from this scan: the coordinate just vanished.
     let mut tombstones = 0usize;
     for coord in &previous.universe {
         if scope.contains(*coord) && !present.contains(coord) {
@@ -271,7 +284,7 @@ mod tests {
             key,
             mtime_ms: Some(1_700_000_000_000),
             size: 8192,
-            header_hash: [7; 32],
+            content_hash: [7; 32],
         }
     }
 
@@ -329,10 +342,12 @@ mod tests {
         let staged = assemble(
             plan,
             &previous,
-            alloc::vec![stage_present(coord(0, 0), BlobHash([9; 32]))],
-            BTreeSet::from([coord(0, 0)]),
-            1,
-            alloc::vec![changed],
+            Ingested {
+                entries: alloc::vec![stage_present(coord(0, 0), BlobHash([9; 32]))],
+                present: BTreeSet::from([coord(0, 0)]),
+                new_blobs: 1,
+                fingerprints: alloc::vec![changed],
+            },
             &Scope::World,
         );
         assert_eq!(staged.chunks, 2);
@@ -376,15 +391,7 @@ mod tests {
         let (previous, plan) =
             crate::support::block_on(plan_backup(&meta, &[], &Scope::World)).unwrap();
         assert_eq!(plan.removed, alloc::vec![key(0, 0)]);
-        let staged = assemble(
-            plan,
-            &previous,
-            alloc::vec::Vec::new(),
-            BTreeSet::new(),
-            0,
-            alloc::vec::Vec::new(),
-            &Scope::World,
-        );
+        let staged = assemble(plan, &previous, Ingested::default(), &Scope::World);
         assert_eq!(staged.chunks, 0);
         assert_eq!(staged.tombstones, 2);
 
@@ -396,6 +403,68 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(tomb.is_tombstone());
+    }
+
+    #[test]
+    fn already_tombstoned_coordinates_record_no_further_rows() {
+        let mut meta = MemMeta::default();
+        let fp0 = fingerprint(key(0, 0));
+        let fp1 = fingerprint(key(1, 0));
+        crate::support::block_on(meta.apply_snapshot_incremental(
+            1_000,
+            &[
+                stage_present(coord(0, 0), BlobHash([1; 32])),
+                stage_present(coord(32, 0), BlobHash([2; 32])),
+            ],
+            None,
+            &[fp0, fp1],
+            &[],
+        ))
+        .unwrap();
+
+        // Region (0,0) is gone from disk: its chunk tombstones once while
+        // region (1,0) carries over.
+        let (previous, plan) = crate::support::block_on(plan_backup(
+            &meta,
+            &[Observation {
+                key: key(1, 0),
+                fingerprint: fp1,
+            }],
+            &Scope::World,
+        ))
+        .unwrap();
+        let staged = assemble(plan, &previous, Ingested::default(), &Scope::World);
+        assert_eq!(staged.tombstones, 1);
+        assert_eq!(staged.chunks, 1);
+        let report =
+            crate::support::block_on(commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        assert_eq!(report.tombstones, 1);
+        assert_eq!(report.chunks, 1);
+        assert_eq!(report.carried_chunks, 1);
+
+        // Repeat backup with the same world: the tombstone already resolves
+        // through fallback, so it records no fresh row and the vanished
+        // chunk is not carried back as present.
+        let (previous, plan) = crate::support::block_on(plan_backup(
+            &meta,
+            &[Observation {
+                key: key(1, 0),
+                fingerprint: fp1,
+            }],
+            &Scope::World,
+        ))
+        .unwrap();
+        assert_eq!(previous.universe, BTreeSet::from([coord(32, 0)]));
+        let staged = assemble(plan, &previous, Ingested::default(), &Scope::World);
+        assert!(staged.entries.is_empty());
+        assert_eq!(staged.tombstones, 0);
+        assert_eq!(staged.chunks, 1);
+
+        let report =
+            crate::support::block_on(commit(&mut meta, &previous, &staged, 3_000)).unwrap();
+        assert_eq!(report.tombstones, 0);
+        assert_eq!(report.chunks, 1);
+        assert!(meta.rows.iter().all(|row| row.snapshot != report.snapshot));
     }
 
     #[test]
@@ -483,10 +552,12 @@ mod tests {
         let staged = assemble(
             plan,
             &previous,
-            alloc::vec![stage_present(coord(0, 0), BlobHash([9; 32]))],
-            BTreeSet::from([coord(0, 0)]),
-            1,
-            alloc::vec::Vec::new(),
+            Ingested {
+                entries: alloc::vec![stage_present(coord(0, 0), BlobHash([9; 32]))],
+                present: BTreeSet::from([coord(0, 0)]),
+                new_blobs: 1,
+                fingerprints: alloc::vec::Vec::new(),
+            },
             &scope,
         );
         assert_eq!(staged.tombstones, 1);

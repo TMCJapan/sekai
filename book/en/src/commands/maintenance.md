@@ -15,6 +15,14 @@ but not with `--progress`, which has no apply phase to report.
 GC removes only orphan blobs, never metadata; snapshot deletion is
 `prune` (fold-into-next-retained, then `gc` to reclaim).
 
+`gc` refuses while a `backup` is running: a backup writes blobs before it
+commits the rows that reference them, so collecting in that window would
+unlink blobs the next commit still needs. The error names the
+`backup.inflight` marker in the store root — delete it only if no backup is
+actually running (a crashed one leaves it behind). `backup` itself is never
+blocked by a stale marker. See
+[ADR-0011](https://github.com/TMCJapan/sekai/blob/main/docs/adr/0011-backup-run-marker.md).
+
 ## Pruning snapshots
 
 ```sh

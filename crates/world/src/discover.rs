@@ -57,18 +57,21 @@ pub enum LayoutFlavor {
     },
 }
 
-/// Pick the derivation flavor: new layout wins when present, then Bukkit
-/// trio detection on container roots, else legacy.
+/// Pick the derivation flavor: an elected Bukkit trio first, then the new
+/// layout when present, else legacy.
 ///
 /// Pass the same path on every run: namespace codes for non-default
 /// folders derive from root-relative paths.
 pub fn detect_flavor(world: &Path) -> Result<LayoutFlavor, WorldError> {
-    if world.join("dimensions").is_dir() {
-        return Ok(LayoutFlavor::New);
-    }
+    // Trio first: a Bukkit container root may hold a stray `dimensions/`
+    // directory (migration leftovers, a plugin), and deriving vanilla
+    // namespaces from it would restore into a tree the server never reads.
     let container = !is_top_world_folder(world)?;
     if container && let Some(base) = bukkit_base(world)? {
         return Ok(LayoutFlavor::Bukkit { base });
+    }
+    if world.join("dimensions").is_dir() {
+        return Ok(LayoutFlavor::New);
     }
     Ok(LayoutFlavor::Legacy)
 }
@@ -93,17 +96,24 @@ fn read_dir_opt(dir: &Path) -> Result<Vec<fs::DirEntry>, WorldError> {
 }
 
 fn is_dir(entry: &fs::DirEntry) -> Result<bool, WorldError> {
-    entry
-        .file_type()
-        .map(|ft| ft.is_dir())
-        .map_err(|source| WorldError::io(entry.path(), source))
+    resolved_meta(entry).map_or(Ok(false), |meta| Ok(meta.is_dir()))
 }
 
 fn is_file(entry: &fs::DirEntry) -> Result<bool, WorldError> {
-    entry
-        .file_type()
-        .map(|ft| ft.is_file())
-        .map_err(|source| WorldError::io(entry.path(), source))
+    resolved_meta(entry).map_or(Ok(false), |meta| Ok(meta.is_file()))
+}
+
+/// Metadata of the entry's target, following symlinks (`fs::metadata`, unlike
+/// `DirEntry::file_type` and `DirEntry::metadata`): a region file or world
+/// folder living on another disk is still part of the world, and the game
+/// itself opens whatever the path resolves to. Ignoring links made such a
+/// world invisible - the backup stored nothing and the next one tombstoned
+/// the history the previous backup had recorded.
+///
+/// Unresolvable targets - dangling links, permission denials - yield `None`
+/// and are skipped: an unreadable entry must not fail the whole scan.
+fn resolved_meta(entry: &fs::DirEntry) -> Option<fs::Metadata> {
+    fs::metadata(entry.path()).ok()
 }
 
 #[derive(Clone, Copy)]
@@ -119,7 +129,13 @@ fn scan_dim_root(
     policy: InsertPolicy,
 ) -> Result<(), WorldError> {
     for (kind, kind_dir) in KIND_DIRS {
-        for entry in read_dir_opt(&root.join(kind_dir))? {
+        // Sorted by name so that two files spelling the same coordinates
+        // (`r.0.0.mca` and `r.00.00.mca`, both of which the game itself
+        // parses as region 0,0) resolve the same way on every run instead
+        // of following directory order.
+        let mut entries = read_dir_opt(&root.join(kind_dir))?;
+        entries.sort_by_key(fs::DirEntry::file_name);
+        for entry in entries {
             if !is_file(&entry)? {
                 continue;
             }
@@ -188,6 +204,11 @@ fn is_top_world_folder(dir: &Path) -> Result<bool, WorldError> {
 /// elect a Bukkit flavor; a lone folder (e.g. a Multiverse world `sky/`)
 /// without its `_nether`/`_the_end` siblings is treated as a plugin world
 /// and hashed, avoiding a silent namespace flip if siblings appear later.
+///
+/// The overworld candidate is recognized structurally (its own `region/`
+/// directory, which a server creates whether or not it holds files yet):
+/// requiring stored region files would flip the whole world to hashed
+/// namespaces the moment the overworld is emptied or briefly unsaved.
 fn bukkit_base(world: &Path) -> Result<Option<String>, WorldError> {
     let mut trio: Vec<String> = Vec::new();
     for entry in read_dir_opt(world)? {
@@ -201,7 +222,7 @@ fn bukkit_base(world: &Path) -> Result<Option<String>, WorldError> {
         if RESERVED_SUBDIRS.contains(&name) {
             continue;
         }
-        if !is_world_folder(&entry.path())? {
+        if !is_bukkit_overworld(&entry.path())? {
             continue;
         }
         if world.join(format!("{name}_nether")).is_dir()
@@ -210,11 +231,40 @@ fn bukkit_base(world: &Path) -> Result<Option<String>, WorldError> {
             trio.push(name.to_owned());
         }
     }
+    // `level-name` is authoritative: a leftover `world/` trio must never
+    // win over the world the server actually loads.
+    if let Some(level) = level_name(world)
+        && trio.contains(&level)
+    {
+        return Ok(Some(level));
+    }
     if trio.iter().any(|t| t == "world") {
         return Ok(Some("world".to_owned()));
     }
     trio.sort();
     Ok(trio.into_iter().next())
+}
+
+/// Overworld folder signature: world-folder contents, or a `region/`
+/// directory that exists but is still empty.
+fn is_bukkit_overworld(dir: &Path) -> Result<bool, WorldError> {
+    Ok(dir.join("region").is_dir() || is_world_folder(dir)?)
+}
+
+/// `level-name` from a Bukkit/Paper `server.properties`, when readable.
+///
+/// The file is untrusted input: only uncommented `key=value` lines with
+/// that exact key count, and the value is trimmed of surrounding spaces.
+/// An unreadable file is simply "not configured" - it never fails a scan.
+fn level_name(world: &Path) -> Option<String> {
+    let text = fs::read_to_string(world.join("server.properties")).ok()?;
+    text.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("level-name=")
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    })
 }
 
 /// Root-relative `/`-joined path for stable hashing, or `None` for
@@ -458,7 +508,7 @@ pub fn derive_path(
 ///
 /// Folders may have moved since the backup (e.g. across a 26.1 migration),
 /// so callers prefer this over flavor derivation whenever a same-dimension
-/// sibling exists. Returns `None` when no sibling is discovered.
+/// sibling exists.
 pub fn sibling_path(discovered: &BTreeMap<RegionKey, PathBuf>, key: &RegionKey) -> Option<PathBuf> {
     let sibling = discovered
         .iter()

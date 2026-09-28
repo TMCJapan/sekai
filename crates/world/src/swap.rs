@@ -36,6 +36,15 @@ pub fn atomic_swap(target: &Path, image: &[u8]) -> Result<(), WorldError> {
         |n| n.to_string_lossy().into_owned(),
     );
 
+    // The rename replaces the inode, so a target's permissions have to be
+    // carried over explicitly; otherwise a hardened (`0444`) or group-owned
+    // region file silently becomes `0666 & ~umask` owned by this process.
+    #[cfg(unix)]
+    let target_mode = target.metadata().ok().map(|meta| {
+        use std::os::unix::fs::PermissionsExt;
+        meta.permissions().mode()
+    });
+
     // Use `create_new` so a stale `*.tmp-*` left by a crashed previous
     // process is not truncated; retry with a fresh counter on collision.
     let (tmp, mut file) = {
@@ -45,11 +54,14 @@ pub fn atomic_swap(target: &Path, image: &[u8]) -> Result<(), WorldError> {
                 std::process::id(),
                 TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
             ));
-            match fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&candidate)
-            {
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            if let Some(mode) = target_mode {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(mode);
+            }
+            match options.open(&candidate) {
                 Ok(f) => break (candidate, f),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(e) => return Err(WorldError::io(&candidate, e)),
@@ -57,7 +69,9 @@ pub fn atomic_swap(target: &Path, image: &[u8]) -> Result<(), WorldError> {
         }
     };
 
-    #[allow(clippy::collection_is_never_read)]
+    // Disarmed by `take` after the rename: the guard exists only for its
+    // `Drop`, which clippy cannot see as a read.
+    #[allow(clippy::collection_is_never_read, reason = "the value is only dropped")]
     let mut guard = Some(TempFileGuard(&tmp));
 
     file.write_all(image).map_err(|e| WorldError::io(&tmp, e))?;
@@ -69,6 +83,8 @@ pub fn atomic_swap(target: &Path, image: &[u8]) -> Result<(), WorldError> {
     // Rename succeeded; disarm the cleanup guard.
     guard.take();
 
+    // The rename itself is only crash-durable once the parent directory's
+    // own entry is persisted; no equivalent exists in `std` on Windows.
     #[cfg(unix)]
     {
         let dir = fs::File::open(parent).map_err(|e| WorldError::io(parent, e))?;

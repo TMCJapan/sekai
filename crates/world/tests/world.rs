@@ -234,6 +234,153 @@ fn trio_wins_over_conversion_leftovers() {
 }
 
 #[test]
+fn empty_overworld_keeps_the_trio_namespaces() {
+    // A freshly created (or briefly emptied) overworld has a `region/`
+    // directory but no files in it. Namespaces must not flip to hashed
+    // codes just because the overworld holds nothing right now.
+    let root = tempdir("empty-overworld");
+    let image = one_chunk_image();
+    std::fs::create_dir_all(root.join("world/region")).unwrap();
+    write(&root.join("world_nether/DIM-1/region/r.0.0.mca"), &image);
+    write(&root.join("world_the_end/DIM1/region/r.0.0.mca"), &image);
+
+    let flavor = detect_flavor(&root).unwrap();
+    assert_eq!(
+        flavor,
+        LayoutFlavor::Bukkit {
+            base: "world".to_owned()
+        }
+    );
+
+    // The same siblings keep their vanilla codes whether or not the
+    // overworld holds files.
+    let nether = |root: &Path| {
+        discover(root)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.dim == Dimension::NETHER)
+            .map(|r| r.path)
+    };
+    let empty = nether(&root);
+    assert_eq!(
+        empty,
+        Some(root.join("world_nether/DIM-1/region/r.0.0.mca"))
+    );
+
+    write(&root.join("world/region/r.0.0.mca"), &image);
+    assert_eq!(detect_flavor(&root).unwrap(), flavor);
+    assert_eq!(nether(&root), empty);
+
+    let over: Vec<_> = discover(&root)
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.dim == Dimension::OVERWORLD)
+        .collect();
+    assert_eq!(over.len(), 1);
+    assert_eq!(over[0].path, root.join("world/region/r.0.0.mca"));
+    cleanup(&root);
+}
+
+#[test]
+fn level_name_wins_over_a_leftover_world_folder() {
+    // `level-name=survival` with a stale `world/` trio still on disk: the
+    // server loads `survival`, so its files must keep the vanilla codes and
+    // the leftover must not be promoted to OVERWORLD.
+    let root = tempdir("levelname-leftover");
+    let live = one_chunk_image();
+    let mut stale = one_chunk_image();
+    stale[8192 + 4] = 9;
+    write(
+        &root.join("server.properties"),
+        b"motd=x\nlevel-name=survival\n",
+    );
+    write(&root.join("survival/region/r.1.0.mca"), &live);
+    write(&root.join("survival_nether/DIM-1/region/r.0.0.mca"), &live);
+    write(&root.join("world/region/r.9.9.mca"), &stale);
+    write(&root.join("world_nether/DIM-1/region/r.0.0.mca"), &stale);
+
+    assert_eq!(
+        detect_flavor(&root).unwrap(),
+        LayoutFlavor::Bukkit {
+            base: "survival".to_owned()
+        }
+    );
+    let found = discover(&root).unwrap();
+    let over: Vec<_> = found
+        .iter()
+        .filter(|r| r.dim == Dimension::OVERWORLD)
+        .collect();
+    assert_eq!(over.len(), 1);
+    assert_eq!(over[0].path, root.join("survival/region/r.1.0.mca"));
+    let nether: Vec<_> = found
+        .iter()
+        .filter(|r| r.dim == Dimension::NETHER)
+        .collect();
+    assert_eq!(nether.len(), 1);
+    assert_eq!(
+        nether[0].path,
+        root.join("survival_nether/DIM-1/region/r.0.0.mca")
+    );
+    // The leftover trio is still discoverable, under its own namespace.
+    assert_eq!(found.len(), 4);
+    cleanup(&root);
+}
+
+#[test]
+fn stray_dimensions_dir_does_not_hijack_a_bukkit_root() {
+    // A `dimensions/` directory left at a Bukkit container root (migration
+    // residue, a plugin) must not make the root look like a 26.1 vanilla
+    // world: rollback would then restore into a tree the server ignores.
+    let root = tempdir("stray-dimensions");
+    let image = one_chunk_image();
+    write(&root.join("world/region/r.0.0.mca"), &image);
+    write(&root.join("world_nether/DIM-1/region/r.0.0.mca"), &image);
+    std::fs::create_dir_all(root.join("dimensions/minecraft/the_nether")).unwrap();
+
+    assert_eq!(
+        detect_flavor(&root).unwrap(),
+        LayoutFlavor::Bukkit {
+            base: "world".to_owned()
+        }
+    );
+    assert_eq!(
+        derive_path(
+            &root,
+            &detect_flavor(&root).unwrap(),
+            Dimension::NETHER,
+            RegionKind::REGION,
+            0,
+            0
+        )
+        .unwrap(),
+        root.join("world_nether/DIM-1/region/r.0.0.mca")
+    );
+    cleanup(&root);
+}
+
+#[test]
+fn duplicate_coordinate_names_resolve_deterministically() {
+    // `r.0.0.mca` and `r.00.00.mca` both parse as region (0,0). The chosen
+    // file must follow a fixed rule (lowest name first), never directory
+    // iteration order.
+    let root = tempdir("dup-coords");
+    let mut second = one_chunk_image();
+    second[8192 + 4] = 7;
+    write(&root.join("region/r.0.0.mca"), &one_chunk_image());
+    write(&root.join("region/r.00.00.mca"), &second);
+
+    let found = discover(&root).unwrap();
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].path, root.join("region/r.0.0.mca"));
+    for _ in 0..8 {
+        let again = discover(&root).unwrap();
+        assert_eq!(again.len(), 1);
+        assert_eq!(again[0].path, root.join("region/r.0.0.mca"));
+    }
+    cleanup(&root);
+}
+
+#[test]
 fn nested_vanilla_copy_gets_hashed_codes() {
     // A full vanilla world copied under the root keeps working under hashed
     // namespaces instead of colliding with the outer namespaces.
@@ -333,8 +480,8 @@ fn fingerprints_are_stable_and_change_sensitive() {
     assert_eq!(other.len() as u64, a.size);
     write(&path, &other);
     assert_ne!(
-        a.header_hash,
-        fingerprint_file(&path, key).unwrap().header_hash
+        a.content_hash,
+        fingerprint_file(&path, key).unwrap().content_hash
     );
     // Missing file is an I/O error, not a fingerprint.
     cleanup(&world);
@@ -344,22 +491,102 @@ fn fingerprints_are_stable_and_change_sensitive() {
     ));
 }
 
+/// The whole point of hashing content: a payload edit past the location
+/// table, with the file's size *and* mtime preserved, must still be seen.
+/// `cp -p`, `rsync -t`, `tar -x`, a ZFS/Btrfs snapshot rollback, or any
+/// coarse-mtime filesystem produce exactly this file.
+#[test]
+fn fingerprint_sees_a_payload_edit_with_preserved_size_and_mtime() {
+    let world = tempdir("fp-payload");
+    let path = world.join("region/r.0.0.mca");
+    let key = RegionKey::new(Dimension::OVERWORLD, RegionKind::REGION, 0, 0);
+    // A fixed timestamp both writes are stamped with, so mtime cannot be the
+    // signal that catches the edit.
+    let stamp = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+
+    let original = one_chunk_image();
+    write(&path, &original);
+    set_mtime(&path, stamp);
+    let before = fingerprint_file(&path, key).unwrap();
+
+    // Rewrite the chunk payload in place, keeping the compressed length, so
+    // the location table and the file size stay byte-identical.
+    let mut changed = original.clone();
+    for byte in &mut changed[original.len() - 4..] {
+        *byte ^= 0xFF;
+    }
+    assert_eq!(changed.len(), original.len());
+    write(&path, &changed);
+    set_mtime(&path, stamp);
+
+    let after = fingerprint_file(&path, key).unwrap();
+    assert_eq!(after.size, before.size, "size must be identical");
+    assert_eq!(after.mtime_ms, before.mtime_ms, "mtime must be identical");
+    assert_ne!(
+        after.content_hash, before.content_hash,
+        "a same-size payload edit under a preserved mtime must be detected"
+    );
+
+    // And therefore the pair does not match, which is what plan_backup asks
+    // before skipping a file.
+    let stored = sekai_core::RegionStateEntry {
+        fingerprint: before,
+        snapshot_id: sekai_core::SnapshotId(1),
+    };
+    assert!(
+        !after.matches_state(&stored),
+        "the file must not be treated as unchanged"
+    );
+    cleanup(&world);
+}
+
+fn set_mtime(path: &Path, time: std::time::SystemTime) {
+    let file = std::fs::File::options()
+        .write(true)
+        .open(path)
+        .expect("file is writable");
+    let times = std::fs::FileTimes::new().set_modified(time);
+    file.set_times(times).expect("mtime is settable");
+}
+
 #[test]
 fn scan_counts_chunks_without_writing() {
     let world = tempdir("scan");
     write(&world.join("region/r.0.0.mca"), &one_chunk_image());
     write(&world.join("region/r.1.0.mca"), &[0u8; 8192]);
     write(&world.join("region/r.2.0.mca"), &[]);
-    let (mut entries, timings) = scan_world(&world).unwrap();
+    let report = scan_world(&world).unwrap();
+    let mut entries = report.entries;
     entries.sort_by_key(|e| e.region_x);
+    assert!(report.skipped.is_empty());
     assert_eq!(entries.len(), 3);
     assert_eq!(entries[0].chunks, 1);
     assert_eq!(entries[0].file_bytes % 4096, 0);
-    assert_eq!(entries[0].header_hash.len(), 64);
+    assert_eq!(entries[0].content_hash.len(), 64);
     assert_eq!(entries[1].chunks, 0);
     assert_eq!(entries[2].chunks, 0);
     assert_eq!(entries[2].file_bytes, 0);
+    let timings = report.timings;
     assert!(timings.total >= timings.discover + timings.read + timings.parse);
+    cleanup(&world);
+}
+
+/// A corrupt file must be reported, not silently dropped: an inventory
+/// that undercounts is worse than one that fails.
+#[test]
+fn scan_reports_unreadable_files() {
+    let world = tempdir("scan-corrupt");
+    write(&world.join("region/r.0.0.mca"), &one_chunk_image());
+    // Truncated below the 8 KiB header: unreadable, but discoverable.
+    write(&world.join("region/r.1.0.mca"), &[7u8; 100]);
+    let report = scan_world(&world).unwrap();
+    assert_eq!(report.entries.len(), 1);
+    assert_eq!(report.skipped.len(), 1);
+    assert!(report.skipped[0].path.ends_with("r.1.0.mca"));
+    assert!(
+        !report.skipped[0].reason.is_empty(),
+        "a skip must carry a reason"
+    );
     cleanup(&world);
 }
 
@@ -390,4 +617,21 @@ fn atomic_swap_replaces_and_cleans_up() {
         open_image(&target),
         Err(sekai_world::WorldError::Io { .. })
     ));
+}
+#[cfg(unix)]
+#[test]
+fn atomic_swap_preserves_target_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let world = tempdir("swap-mode");
+    let target = world.join("region/r.0.0.mca");
+    write(&target, b"old");
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+    atomic_swap(&target, &one_chunk_image()).unwrap();
+
+    // The rename replaces the inode, so the mode has to be carried over or a
+    // hardened file silently becomes writable again.
+    let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o444);
+    cleanup(&world);
 }

@@ -341,7 +341,11 @@ impl Selection {
     /// One-line human summary of the selected scope for pre-run echoes.
     pub fn describe(&self) -> String {
         if self.areas.is_empty() && self.region.is_empty() {
-            return "whole world".to_owned();
+            return if self.kind.is_empty() {
+                "whole world".to_owned()
+            } else {
+                format!("whole world, kinds {}", self.kind_summary())
+            };
         }
         let mut parts = Vec::new();
         if !self.areas.is_empty() {
@@ -351,15 +355,18 @@ impl Selection {
             parts.push(format!("{} region(s)", self.region.len()));
         }
         if !self.kind.is_empty() {
-            let kinds = self
-                .kind
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(",");
-            parts.push(format!("kinds {kinds}"));
+            parts.push(format!("kinds {}", self.kind_summary()));
         }
         parts.join(", ")
+    }
+
+    /// Comma-separated explicit `--kind` values.
+    fn kind_summary(&self) -> String {
+        self.kind
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
     }
 
     /// Region kinds covered: explicit set, or all when unlisted.
@@ -404,7 +411,13 @@ impl Selection {
     /// Owned scope for this selection. Empty means the whole world.
     pub fn owned_scope(&self) -> Scope {
         if self.areas.is_empty() && self.region.is_empty() {
-            return Scope::World;
+            // `--kind` alone still narrows: dropping it here would silently
+            // widen the operation to every region family.
+            return if self.kind.is_empty() {
+                Scope::World
+            } else {
+                Scope::Kinds(self.kinds())
+            };
         }
         let kinds = self.kinds();
         let mut chunks: std::collections::BTreeMap<Dimension, Vec<ChunkCoord>> =
@@ -536,7 +549,7 @@ pub struct Xz {
 
 #[derive(Debug, Subcommand)]
 pub enum DebugCommand {
-    /// List region files with size, mtime, chunk count, and header hash.
+    /// List region files with size, mtime, chunk count, and content hash.
     ///
     /// Read-only: never writes to the world or the store.
     Scan {

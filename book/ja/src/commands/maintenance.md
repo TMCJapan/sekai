@@ -13,6 +13,10 @@ sekai --store ./sekai-store gc
 GCは孤立した Blob のみを削除し、メタデータを削除することはありません。
 スナップショットの削除は `prune` が担います（次保持への fold 後に `gc` で回収）。
 
+`gc` は `backup` の実行中にエラーを返します。backup は行がcommitされる前に Blob を書き込むため、その窓で回収すると次のcommitで必要になる Blob を削除してしまいます。エラーにはストア直下のマーカーファイル `backup.inflight` が示されます。実際に backup が実行中でない場合（異常終了で残った場合を含む）のみ、このファイルを削除してください。
+古いマーカーによって `backup` 自体がブロックされることはありません。
+[ADR-0011](https://github.com/TMCJapan/sekai/blob/main/docs/adr/0011-backup-run-marker.md) を参照してください。
+
 ## スナップショットの削減
 
 ```sh

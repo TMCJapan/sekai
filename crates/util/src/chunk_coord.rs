@@ -1,3 +1,5 @@
+//! Global chunk identity and its mapping onto region files.
+
 use crate::dimension::Dimension;
 use crate::region_kind::RegionKind;
 

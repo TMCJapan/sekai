@@ -92,8 +92,8 @@ pub async fn gc_apply<B: BlobStore, M: MetaStore>(
     let mut orphans = 0usize;
     let mut removed = 0usize;
     let mut done = 0usize;
-    let total = plan.len();
-    for hash in plan.orphans() {
+    let total = plan.orphans.len();
+    for hash in &plan.orphans {
         if still_orphan.contains(hash) {
             orphans += 1;
             if blobs.remove(hash).await.map_err(GcError::Blob)? {
@@ -104,7 +104,7 @@ pub async fn gc_apply<B: BlobStore, M: MetaStore>(
         progress(done, total);
     }
     Ok(GcReport {
-        candidates: plan.len(),
+        candidates: total,
         orphans,
         removed,
     })
@@ -141,8 +141,8 @@ mod tests {
         .unwrap();
 
         let plan = block_on(gc_plan(&cas, &meta)).unwrap();
-        assert_eq!(plan.orphans(), &[orphan]);
-        assert_eq!(plan.examined(), 2);
+        assert_eq!(plan.orphans, alloc::vec![orphan]);
+        assert_eq!(plan.examined, 2);
 
         let report = block_on(gc_apply(&mut cas, &meta, &plan, |_, _| {})).unwrap();
         assert_eq!(

@@ -2,9 +2,34 @@
 
 use sekai_util::Dimension;
 
-/// Blake3 digest of a region-file header or other byte prefix.
-pub fn header_hash(header: &[u8]) -> [u8; 32] {
-    *blake3::hash(header).as_bytes()
+/// Blake3 digest of a byte slice.
+pub fn content_hash(bytes: &[u8]) -> [u8; 32] {
+    *blake3::hash(bytes).as_bytes()
+}
+
+/// Incremental Blake3 over a stream of byte slices.
+///
+/// Region files are hashed while being read, so the whole file never has to
+/// sit in memory. The primitive lives here because compression framing and
+/// digests are Anvil knowledge; `world` only supplies the bytes.
+#[derive(Debug, Default, Clone)]
+pub struct ContentHasher(blake3::Hasher);
+
+impl ContentHasher {
+    /// Fresh hasher.
+    pub fn new() -> Self {
+        Self(blake3::Hasher::new())
+    }
+
+    /// Feed the next slice of content.
+    pub fn update(&mut self, bytes: &[u8]) {
+        self.0.update(bytes);
+    }
+
+    /// Consume the hasher and return the digest.
+    pub fn finalize(self) -> [u8; 32] {
+        *self.0.finalize().as_bytes()
+    }
 }
 
 /// Stable dimension identifier derived from a custom dimension path.
@@ -20,9 +45,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn header_hash_is_stable() {
-        assert_eq!(header_hash(b"abc"), header_hash(b"abc"));
-        assert_ne!(header_hash(b"abc"), header_hash(b"xyz"));
+    fn content_hash_is_stable() {
+        assert_eq!(content_hash(b"abc"), content_hash(b"abc"));
+        assert_ne!(content_hash(b"abc"), content_hash(b"xyz"));
+    }
+
+    /// Streaming in pieces must equal hashing the whole slice at once.
+    #[test]
+    fn content_hasher_matches_a_single_shot_digest() {
+        let data: alloc::vec::Vec<u8> = (0..300u32).map(|i| (i % 251) as u8).collect();
+        let mut hasher = ContentHasher::new();
+        for chunk in data.chunks(7) {
+            hasher.update(chunk);
+        }
+        assert_eq!(hasher.finalize(), content_hash(&data));
+
+        let empty = ContentHasher::new();
+        assert_eq!(empty.finalize(), content_hash(b""));
     }
 
     #[test]

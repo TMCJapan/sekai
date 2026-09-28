@@ -36,21 +36,15 @@ pub struct RegionFingerprint {
     pub mtime_ms: Option<u64>,
     /// File size in bytes.
     pub size: u64,
-    /// Blake3 of the file's location-table sector (first 4 KiB).
-    pub header_hash: [u8; 32],
+    /// Blake3 of the whole file.
+    pub content_hash: [u8; 32],
 }
 
 /// Persisted fingerprint of the last ingested file state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RegionStateEntry {
-    /// Which file this state describes.
-    pub key: RegionKey,
-    /// Last modification time as Unix millis (`None` when unavailable).
-    pub mtime_ms: Option<u64>,
-    /// File size in bytes.
-    pub size: u64,
-    /// Blake3 of the file's location-table sector (first 4 KiB).
-    pub header_hash: [u8; 32],
+    /// The fingerprint as observed when `snapshot_id` confirmed it.
+    pub fingerprint: RegionFingerprint,
     /// Snapshot that last confirmed this fingerprint.
     pub snapshot_id: SnapshotId,
 }
@@ -58,16 +52,13 @@ pub struct RegionStateEntry {
 impl RegionFingerprint {
     /// Whether the file can skip ingestion against stored state.
     ///
-    /// All three signals must agree, and a missing `mtime` on either side
-    /// forces ingest: silently trusting a clock the platform cannot provide
-    /// would risk stale snapshots, so the fail-safe direction is to redo
-    /// the work.
+    /// Every signal must agree - a fingerprint with a new signal added
+    /// cannot be silently ignored here, which is the point of comparing the
+    /// whole value. A missing `mtime` on either side forces ingest instead:
+    /// trusting a clock the platform cannot provide would risk stale
+    /// snapshots, so the fail-safe direction is to redo the work.
     pub fn matches_state(&self, state: &RegionStateEntry) -> bool {
-        self.key == state.key
-            && self.mtime_ms == state.mtime_ms
-            && self.mtime_ms.is_some()
-            && self.size == state.size
-            && self.header_hash == state.header_hash
+        self.mtime_ms.is_some() && self == &state.fingerprint
     }
 }
 
@@ -120,16 +111,13 @@ mod tests {
             key: key(),
             mtime_ms: Some(1_700_000_000_000),
             size: 8192,
-            header_hash: [7; 32],
+            content_hash: [7; 32],
         }
     }
 
     const fn stored() -> RegionStateEntry {
         RegionStateEntry {
-            key: key(),
-            mtime_ms: Some(1_700_000_000_000),
-            size: 8192,
-            header_hash: [7; 32],
+            fingerprint: fingerprint(),
             snapshot_id: SnapshotId(1),
         }
     }
@@ -148,7 +136,7 @@ mod tests {
         assert!(!changed.matches_state(&base));
 
         let mut changed = fingerprint();
-        changed.header_hash[0] ^= 0xFF;
+        changed.content_hash[0] ^= 0xFF;
         assert!(!changed.matches_state(&base));
 
         // Unknown clock on either side forces ingest (fail-safe direction).
@@ -156,7 +144,7 @@ mod tests {
         changed.mtime_ms = None;
         assert!(!changed.matches_state(&base));
         let mut stored = base;
-        stored.mtime_ms = None;
+        stored.fingerprint.mtime_ms = None;
         assert!(!fingerprint().matches_state(&stored));
     }
 

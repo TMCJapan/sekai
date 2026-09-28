@@ -23,12 +23,13 @@ carries the bare result only.
 | `diff` | single array, grouped array (multi), or timed object | table + JSON block | `--in`/`--region` select chunks; one chunk keeps the single shape |
 | `gc` | report or dry-run plan (+timings with `--timing`) | table + JSON block | dry-run timings carry `plan_ms`; `apply_ms` is `0` |
 | `prune` | report or dry-run plan (+timings with `--timing`) | table + JSON block | dry-run lists IDs; blobs are never unlinked, run `gc` after |
-| `debug scan` | entry array (+timings with `--timing`) | table + JSON block | |
+| `debug scan` | `{result, skipped}` (+timings with `--timing`) | table + JSON block | `skipped` lists files that could not be read or parsed |
 
 Without `--timing`, `--json` emits the bare result. With `--timing`,
 reports that would be bare arrays (`diff`, `scan`) are promoted to an
-object holding the array (`diffs`/`entries`) plus the timing block;
-object reports (backup/status/rollback/export/gc/prune) append the block in place.
+object holding the array (`diffs`/`entries`/`result`) plus the timing
+block; object reports (backup/status/rollback/export/gc/prune) append the
+block in place.
 
 ## Envelope
 
@@ -278,25 +279,33 @@ the next `gc`.
 ### `scan` (`debug scan`)
 
 ```jsonc
-[
-  {"path": "/w/region/r.0.0.mca", "dim": 0, "kind": 0,
-   "region_x": 0, "region_z": 0, "size": 12345, "mtime_ms": 1700000000000,
-   "chunks": 60, "header_hash": "ab12..."},
-  {"path": "/w/region/r.1.0.mca", "dim": 0, "kind": 0,
-   "region_x": 1, "region_z": 0, "size": 8192, "mtime_ms": null,
-   "chunks": 0, "header_hash": "cd34..."}
-]
+{
+  "result": [
+    {"path": "/w/region/r.0.0.mca", "dim": 0, "kind": 0,
+     "region_x": 0, "region_z": 0, "size": 12345, "mtime_ms": 1700000000000,
+     "chunks": 60, "content_hash": "ab12..."},
+    {"path": "/w/region/r.1.0.mca", "dim": 0, "kind": 0,
+     "region_x": 1, "region_z": 0, "size": 8192, "mtime_ms": null,
+     "chunks": 0, "content_hash": "cd34..."}
+  ],
+  "skipped": [
+    {"path": "/w/region/r.2.0.mca", "reason": "truncated region image: 100 bytes, need at least 8192"}
+  ]
+}
 ```
 
 `dim`/`kind` are raw integer codes; `mtime_ms` is `null` when the
-platform cannot provide a timestamp.
+platform cannot provide a timestamp. `skipped` lists files that were
+discovered but could not be read or parsed, so a partial inventory is
+never mistaken for a complete one; it is empty for a healthy world.
 
-With `--timing` the array moves under `entries` and the timing block is
+With `--timing` the entries move under `entries` and the timing block is
 appended:
 
 ```jsonc
 {
   "entries": [],
+  "skipped": [],
   "total_ms": 30,
   "phases": {"discover_ms": 1, "read_ms": 20, "parse_ms": 8}
 }

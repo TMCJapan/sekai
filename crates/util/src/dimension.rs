@@ -1,3 +1,5 @@
+//! Dimension namespace codes and their vanilla assignments.
+
 use crate::error::ParseCodeError;
 use core::fmt;
 use core::str::FromStr;

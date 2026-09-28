@@ -9,7 +9,7 @@ use sekai_core::{Dimension, RegionKind};
 
 use crate::discover::{RegionRef, discover};
 use crate::error::WorldError;
-use crate::observation::{header_hash_of_prefix, hex_hash, mtime_ms_from_metadata};
+use crate::observation::{content_hash_of_bytes, hex_hash, mtime_ms_from_metadata};
 
 /// One region file observed on disk.
 #[derive(Debug, Clone)]
@@ -30,8 +30,8 @@ pub struct RegionScanEntry {
     pub mtime_ms: Option<u64>,
     /// Chunks present in the file.
     pub chunks: usize,
-    /// Hex header hash.
-    pub header_hash: String,
+    /// Hex content hash.
+    pub content_hash: String,
 }
 
 /// Per-phase timings for [`scan_world`]. Informational only; never
@@ -44,15 +44,36 @@ pub struct ScanTimings {
     pub discover: Duration,
     /// File reads (plus mtime observation).
     pub read: Duration,
-    /// Header hashing and chunk counting.
+    /// Content hashing and chunk counting.
     pub parse: Duration,
+}
+
+/// A region file the scan could not inspect, with the reason.
+#[derive(Debug, Clone)]
+pub struct ScanSkip {
+    /// Full file path.
+    pub path: PathBuf,
+    /// Why the file was skipped.
+    pub reason: String,
+}
+
+/// Result of a read-only world scan: what was inspected, what was not.
+#[derive(Debug, Clone)]
+pub struct ScanReport {
+    /// Successfully inspected region files.
+    pub entries: Vec<RegionScanEntry>,
+    /// Files that could not be read or parsed.
+    pub skipped: Vec<ScanSkip>,
+    /// Per-phase timings.
+    pub timings: ScanTimings,
 }
 
 /// Scan every region file under `world` without writing anything.
 ///
 /// A single corrupt or unreadable region does not abort the whole scan;
-/// that entry is skipped so healthy regions remain inspectable.
-pub fn scan_world(world: &Path) -> Result<(Vec<RegionScanEntry>, ScanTimings), WorldError> {
+/// it is reported in [`ScanReport::skipped`] instead of vanishing, so an
+/// inventory never silently undercounts the files on disk.
+pub fn scan_world(world: &Path) -> Result<ScanReport, WorldError> {
     let total_started = Instant::now();
     let discover_started = Instant::now();
     let regions = discover(world)?;
@@ -60,17 +81,31 @@ pub fn scan_world(world: &Path) -> Result<(Vec<RegionScanEntry>, ScanTimings), W
     let mut read = Duration::ZERO;
     let mut parse = Duration::ZERO;
     let mut out = Vec::new();
+    let mut skipped = Vec::new();
     for region in regions {
         let read_started = Instant::now();
         let outcome = read_with_mtime(&region.path);
         read += read_started.elapsed();
-        let Ok((bytes, mtime_ms)) = outcome else {
-            continue;
+        let (bytes, mtime_ms) = match outcome {
+            Ok(parts) => parts,
+            Err(source) => {
+                skipped.push(ScanSkip {
+                    path: region.path.clone(),
+                    reason: source.to_string(),
+                });
+                continue;
+            }
         };
         let parse_started = Instant::now();
         let entry = parse_entry(&region, &bytes, mtime_ms);
         parse += parse_started.elapsed();
-        out.extend(entry);
+        match entry {
+            Ok(entry) => out.push(entry),
+            Err(source) => skipped.push(ScanSkip {
+                path: region.path.clone(),
+                reason: source.to_string(),
+            }),
+        }
     }
     let timings = ScanTimings {
         total: total_started.elapsed(),
@@ -78,15 +113,24 @@ pub fn scan_world(world: &Path) -> Result<(Vec<RegionScanEntry>, ScanTimings), W
         read,
         parse,
     };
-    Ok((out, timings))
+    Ok(ScanReport {
+        entries: out,
+        skipped,
+        timings,
+    })
 }
 
-/// Hash one file's header and count its chunks; `None` skips corrupt files.
-fn parse_entry(region: &RegionRef, bytes: &[u8], mtime_ms: Option<u64>) -> Option<RegionScanEntry> {
+/// Hash one file's contents and count its chunks.
+fn parse_entry(
+    region: &RegionRef,
+    bytes: &[u8],
+    mtime_ms: Option<u64>,
+) -> Result<RegionScanEntry, WorldError> {
     let file_bytes = bytes.len() as u64;
-    let header_hash = hex_hash(&header_hash_of_prefix(bytes));
-    let chunks = count_chunks(bytes, region.region_x, region.region_z).ok()?;
-    Some(RegionScanEntry {
+    let content_hash = hex_hash(&content_hash_of_bytes(bytes));
+    let chunks = count_chunks(bytes, region.region_x, region.region_z)
+        .map_err(|source| WorldError::io(&region.path, std::io::Error::other(source)))?;
+    Ok(RegionScanEntry {
         path: region.path.clone(),
         dim: region.dim,
         kind: region.kind,
@@ -95,18 +139,26 @@ fn parse_entry(region: &RegionRef, bytes: &[u8], mtime_ms: Option<u64>) -> Optio
         file_bytes,
         mtime_ms,
         chunks,
-        header_hash,
+        content_hash,
     })
 }
 
+/// Upper bound on the pre-allocation for a region read. A declared file
+/// size is untrusted: reserving it verbatim would abort the process on a
+/// sparse or hostile `.mca` instead of reporting a clean error, so the
+/// buffer grows with the bytes actually read.
+const MAX_READ_RESERVE: u64 = 8 * 1024 * 1024;
+
+/// Read a whole region file plus its mtime.
 fn read_with_mtime(path: &Path) -> Result<(Vec<u8>, Option<u64>), WorldError> {
     let mut file = File::open(path).map_err(|e| WorldError::io(path, e))?;
     let meta = file.metadata().ok();
     let mtime_ms = meta.as_ref().and_then(mtime_ms_from_metadata);
-    let mut bytes = Vec::with_capacity(
-        meta.as_ref()
-            .map_or(0, |m| usize::try_from(m.len()).unwrap_or(0)),
-    );
+    let reserve = meta
+        .as_ref()
+        .map_or(0, std::fs::Metadata::len)
+        .min(MAX_READ_RESERVE);
+    let mut bytes = Vec::with_capacity(usize::try_from(reserve).unwrap_or(0));
     file.read_to_end(&mut bytes)
         .map_err(|e| WorldError::io(path, e))?;
     Ok((bytes, mtime_ms))
