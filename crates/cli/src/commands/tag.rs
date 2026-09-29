@@ -16,11 +16,13 @@ pub async fn run(
     json: bool,
     style: Styler,
 ) -> anyhow::Result<()> {
+    let mut instance = sekai_app::SekaiInstance::open(store).await?;
     if delete {
         let Some(name) = name else {
             anyhow::bail!("tag name is required to delete a tag");
         };
-        let removed = sekai_app::delete_tag(store, &name)
+        let removed = instance
+            .delete_tag(&name)
             .await
             .with_context(|| format!("delete of tag {name} failed"))?;
         if !removed {
@@ -42,10 +44,12 @@ pub async fn run(
         return Ok(());
     }
     if let (Some(name), Some(snapshot)) = (name.as_ref(), snapshot.as_ref()) {
-        let id = sekai_app::resolve_snapshot_ref(store, snapshot)
+        let id = instance
+            .resolve_snapshot_ref(snapshot)
             .await
             .with_context(|| format!("tag target {snapshot:?} failed to resolve"))?;
-        let record = sekai_app::create_tag(store, name, id, force)
+        let record = instance
+            .create_tag(name, id, force)
             .await
             .with_context(|| format!("tag {name} failed"))?;
         if json {
@@ -62,7 +66,8 @@ pub async fn run(
     if name.is_some() || snapshot.is_some() {
         anyhow::bail!("tag creation needs both <name> and <snapshot>");
     }
-    let tags = sekai_app::list_tags(store)
+    let tags = instance
+        .list_tags()
         .await
         .with_context(|| format!("tag list for {store} failed"))?;
     if json {

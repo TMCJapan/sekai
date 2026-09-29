@@ -18,16 +18,21 @@ pub async fn run(
     out: ReportOut,
 ) -> anyhow::Result<()> {
     let style = out.style;
+    let mut instance = sekai_app::SekaiInstance::open(store)
+        .await
+        .with_context(|| format!("prune for {store} failed"))?;
     let before = match before {
         Some(raw) => Some(
-            sekai_app::resolve_snapshot_ref(store, &raw)
+            instance
+                .resolve_snapshot_ref(&raw)
                 .await
                 .with_context(|| format!("snapshot {raw:?} failed to resolve"))?,
         ),
         None => None,
     };
     if dry_run {
-        let (plan, timings) = sekai_app::prune_plan(store, keep_last, before)
+        let (plan, timings) = instance
+            .prune_plan(keep_last, before)
             .await
             .with_context(|| format!("prune plan for {store} failed"))?;
         if out.json {
@@ -49,16 +54,17 @@ pub async fn run(
     }
 
     let bar = progress_bar(progress);
-    let (report, timings) = sekai_app::prune(store, keep_last, before, |update| {
-        report_progress(
-            bar.as_ref(),
-            update.snapshots_done,
-            update.snapshots_total,
-            "snapshots",
-        );
-    })
-    .await
-    .with_context(|| format!("prune for {store} failed"))?;
+    let (report, timings) = instance
+        .prune(keep_last, before, |update| {
+            report_progress(
+                bar.as_ref(),
+                update.snapshots_done,
+                update.snapshots_total,
+                "snapshots",
+            );
+        })
+        .await
+        .with_context(|| format!("prune for {store} failed"))?;
     finish_progress(bar.as_ref());
     if out.json {
         println!(

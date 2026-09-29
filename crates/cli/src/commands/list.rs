@@ -6,12 +6,13 @@ use serde::Serialize;
 use std::fmt::Write as _;
 
 pub async fn run(store: &str, json: bool, stat: bool, style: Styler) -> anyhow::Result<()> {
-    let snapshots = sekai_app::list_snapshots(store).await?;
-    let tags = sekai_app::list_tags(store).await?;
+    let instance = sekai_app::SekaiInstance::open(store).await?;
+    let snapshots = instance.list_snapshots().await?;
+    let tags = instance.list_tags().await?;
     let mut stats = Vec::new();
     if stat {
         for snapshot in &snapshots {
-            stats.push(sekai_app::snapshot_stats(store, snapshot.id).await?);
+            stats.push(instance.snapshot_stats(snapshot.id).await?);
         }
     }
     if json {

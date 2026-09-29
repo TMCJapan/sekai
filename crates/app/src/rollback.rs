@@ -21,6 +21,7 @@ use sekai_storage::FileCas;
 use sekai_world::LayoutFlavor;
 
 use crate::error::AppError;
+use crate::instance::{WorldHandle, WorldHandleMut};
 
 /// Per-phase timings for rollback execution.
 #[derive(Debug, Clone, Default)]
@@ -90,23 +91,58 @@ pub struct RollbackOptions {
     pub on_missing_file: MissingFilePolicy,
 }
 
-/// Rebuild `world` from `snapshot` in the store at `store_url`, returning
-/// execution report and per-phase timings.
-///
-/// Only `scope` is rebuilt: region files outside the scope are never
-/// written, deleted, or otherwise touched. `progress` fires as files
-/// complete; it must be `'static` because the file pass runs on a
-/// blocking pool (pass a `move` closure owning its state).
-pub async fn rollback(
+impl WorldHandle<'_> {
+    /// Rebuild the bound world from `snapshot`, returning execution report
+    /// and per-phase timings.
+    ///
+    /// Only `scope` is rebuilt: region files outside the scope are never
+    /// written, deleted, or otherwise touched. `progress` fires as files
+    /// complete; it must be `'static` because the file pass runs on a
+    /// blocking pool (pass a `move` closure owning its state).
+    pub async fn rollback(
+        &self,
+        snapshot: SnapshotId,
+        options: RollbackOptions,
+        scope: Scope,
+        progress: impl Fn(RollbackProgress) + Send + 'static,
+    ) -> Result<(RollbackReport, RollbackTimings), AppError> {
+        rollback_impl(
+            &self.instance.store,
+            &self.root,
+            snapshot,
+            options,
+            scope,
+            progress,
+        )
+        .await
+    }
+}
+
+impl WorldHandleMut<'_> {
+    /// Rebuild the bound world from `snapshot`; see [`WorldHandle::rollback`].
+    pub async fn rollback(
+        &self,
+        snapshot: SnapshotId,
+        options: RollbackOptions,
+        scope: Scope,
+        progress: impl Fn(RollbackProgress) + Send + 'static,
+    ) -> Result<(RollbackReport, RollbackTimings), AppError> {
+        self.view()
+            .rollback(snapshot, options, scope, progress)
+            .await
+    }
+}
+
+/// Rollback implementation shared by read-only and read-write handles.
+async fn rollback_impl(
+    store: &sekai_storage::SqliteStore,
     world: &Path,
-    store_url: &str,
     snapshot: SnapshotId,
     options: RollbackOptions,
     scope: Scope,
     progress: impl Fn(RollbackProgress) + Send + 'static,
 ) -> Result<(RollbackReport, RollbackTimings), AppError> {
     let total_started = Instant::now();
-    let store = super::open_store(store_url).await?;
 
     let plan_started = Instant::now();
     // The snapshot's creation time stamps every rebuilt file.

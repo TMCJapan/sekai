@@ -69,32 +69,29 @@ async fn export_rebuilds_snapshot_into_fresh_directory() {
     write_region(&over, &[(0, 0, vec![3, 1]), (1, 0, vec![3, 2])]);
     write_region(&nether, &[(0, 0, vec![3, 3])]);
 
-    sekai_app::backup(
-        &world,
-        &store,
-        backup_options(),
-        sekai_app::Scope::World,
-        |_| {},
-    )
-    .await
-    .unwrap();
-    let snapshots = sekai_app::list_snapshots(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    instance
+        .world_mut(&world)
+        .backup(backup_options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+    let snapshots = instance.list_snapshots().await.unwrap();
 
     // Diverge live afterwards: export must still reproduce the snapshot.
     write_region(&over, &[(0, 0, vec![3, 9])]);
 
     let out = root.join("exported");
-    let (report, timings) = sekai_app::export(
-        &out,
-        &store,
-        snapshots[0].id,
-        LayoutFlavor::Legacy,
-        sekai_app::ExportOptions::default(),
-        sekai_app::Scope::World,
-        |_| {},
-    )
-    .await
-    .unwrap();
+    let (report, timings) = instance
+        .export(
+            &out,
+            snapshots[0].id,
+            LayoutFlavor::Legacy,
+            sekai_app::ExportOptions::default(),
+            sekai_app::Scope::World,
+            |_| {},
+        )
+        .await
+        .unwrap();
     assert_eq!(report.files_written, 2);
     assert_eq!(report.chunks_restored, 3);
     assert!(timings.total >= timings.plan + timings.export_files);
@@ -121,24 +118,27 @@ async fn export_honors_layout_flavor_and_scope() {
     write_region(&world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
     write_region(&world.join("DIM-1/region/r.0.0.mca"), &[(0, 0, vec![3, 2])]);
 
-    sekai_app::backup(&world, &store, backup_options(), Scope::World, |_| {})
+    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    instance
+        .world_mut(&world)
+        .backup(backup_options(), Scope::World, |_| {})
         .await
         .unwrap();
-    let snapshots = sekai_app::list_snapshots(&store).await.unwrap();
+    let snapshots = instance.list_snapshots().await.unwrap();
 
     // Modern layout, overworld scope only: the nether file stays out.
     let out = root.join("modern");
-    let (report, _) = sekai_app::export(
-        &out,
-        &store,
-        snapshots[0].id,
-        LayoutFlavor::New,
-        sekai_app::ExportOptions::default(),
-        Scope::dimension(Dimension::OVERWORLD),
-        |_| {},
-    )
-    .await
-    .unwrap();
+    let (report, _) = instance
+        .export(
+            &out,
+            snapshots[0].id,
+            LayoutFlavor::New,
+            sekai_app::ExportOptions::default(),
+            Scope::dimension(Dimension::OVERWORLD),
+            |_| {},
+        )
+        .await
+        .unwrap();
     assert_eq!(report.files_written, 1);
     assert_eq!(report.chunks_restored, 1);
     assert!(
@@ -149,19 +149,19 @@ async fn export_honors_layout_flavor_and_scope() {
 
     // Bukkit layout, whole world.
     let bukkit = root.join("bukkit");
-    let (report, _) = sekai_app::export(
-        &bukkit,
-        &store,
-        snapshots[0].id,
-        LayoutFlavor::Bukkit {
-            base: "myworld".to_owned(),
-        },
-        sekai_app::ExportOptions::default(),
-        Scope::World,
-        |_| {},
-    )
-    .await
-    .unwrap();
+    let (report, _) = instance
+        .export(
+            &bukkit,
+            snapshots[0].id,
+            LayoutFlavor::Bukkit {
+                base: "myworld".to_owned(),
+            },
+            sekai_app::ExportOptions::default(),
+            Scope::World,
+            |_| {},
+        )
+        .await
+        .unwrap();
     assert_eq!(report.files_written, 2);
     assert!(bukkit.join("myworld/region/r.0.0.mca").is_file());
     assert!(
@@ -180,24 +180,35 @@ async fn export_refuses_non_empty_directory() {
     let store = root.join("store").to_string_lossy().into_owned();
     write_region(&world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
 
-    sekai_app::backup(
-        &world,
-        &store,
-        backup_options(),
-        sekai_app::Scope::World,
-        |_| {},
-    )
-    .await
-    .unwrap();
-    let snapshots = sekai_app::list_snapshots(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    instance
+        .world_mut(&world)
+        .backup(backup_options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+    let snapshots = instance.list_snapshots().await.unwrap();
 
     let out = root.join("out");
     std::fs::create_dir_all(&out).unwrap();
     std::fs::write(out.join("existing.txt"), b"data").unwrap();
     assert!(
-        sekai_app::export(
+        instance
+            .export(
+                &out,
+                snapshots[0].id,
+                LayoutFlavor::Legacy,
+                sekai_app::ExportOptions::default(),
+                sekai_app::Scope::World,
+                |_| {},
+            )
+            .await
+            .is_err()
+    );
+    // An empty directory is accepted.
+    std::fs::remove_file(out.join("existing.txt")).unwrap();
+    let (report, _) = instance
+        .export(
             &out,
-            &store,
             snapshots[0].id,
             LayoutFlavor::Legacy,
             sekai_app::ExportOptions::default(),
@@ -205,21 +216,7 @@ async fn export_refuses_non_empty_directory() {
             |_| {},
         )
         .await
-        .is_err()
-    );
-    // An empty directory is accepted.
-    std::fs::remove_file(out.join("existing.txt")).unwrap();
-    let (report, _) = sekai_app::export(
-        &out,
-        &store,
-        snapshots[0].id,
-        LayoutFlavor::Legacy,
-        sekai_app::ExportOptions::default(),
-        sekai_app::Scope::World,
-        |_| {},
-    )
-    .await
-    .unwrap();
+        .unwrap();
     assert_eq!(report.files_written, 1);
     cleanup(&root);
 }
@@ -233,40 +230,33 @@ async fn export_omits_tombstoned_regions() {
     let region = world.join("region/r.0.0.mca");
     write_region(&region, &[(0, 0, vec![3, 1])]);
 
-    sekai_app::backup(
-        &world,
-        &store,
-        backup_options(),
-        sekai_app::Scope::World,
-        |_| {},
-    )
-    .await
-    .unwrap();
+    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    instance
+        .world_mut(&world)
+        .backup(backup_options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
     // Empty the region: the second snapshot tombstones its only chunk.
     write_region(&region, &[]);
-    sekai_app::backup(
-        &world,
-        &store,
-        backup_options(),
-        sekai_app::Scope::World,
-        |_| {},
-    )
-    .await
-    .unwrap();
-    let snapshots = sekai_app::list_snapshots(&store).await.unwrap();
+    instance
+        .world_mut(&world)
+        .backup(backup_options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+    let snapshots = instance.list_snapshots().await.unwrap();
 
     let out = root.join("out");
-    let (report, _) = sekai_app::export(
-        &out,
-        &store,
-        snapshots[1].id,
-        LayoutFlavor::Legacy,
-        sekai_app::ExportOptions::default(),
-        sekai_app::Scope::World,
-        |_| {},
-    )
-    .await
-    .unwrap();
+    let (report, _) = instance
+        .export(
+            &out,
+            snapshots[1].id,
+            LayoutFlavor::Legacy,
+            sekai_app::ExportOptions::default(),
+            sekai_app::Scope::World,
+            |_| {},
+        )
+        .await
+        .unwrap();
     assert_eq!(report.files_written, 0);
     assert_eq!(report.chunks_restored, 0);
     assert!(!out.join("region/r.0.0.mca").exists());

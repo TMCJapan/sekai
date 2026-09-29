@@ -26,6 +26,7 @@ use sekai_storage::FileCas;
 use sekai_world::RegionRef;
 
 use crate::error::AppError;
+use crate::instance::{WorldHandle, WorldHandleMut};
 
 /// Backup behavior knobs.
 #[derive(Debug, Clone, Default)]
@@ -163,65 +164,67 @@ struct FileOutcome {
     timing: RegionTiming,
 }
 
-/// Scan `world` and record it as a new snapshot in the store at
-/// `store_url`, additionally returning per-phase timings.
-///
-/// Only `scope` is ingested: out-of-scope coordinates record no rows and
-/// no tombstones, resolving through fallback from earlier snapshots.
-/// `progress` fires as changed files complete. The report is identical
-/// with or without timings.
-pub async fn backup(
-    world: &Path,
-    store_url: &str,
-    options: BackupOptions,
-    scope: Scope,
-    progress: impl Fn(BackupProgress) + Send,
-) -> Result<(BackupReport, BackupTimings), AppError> {
-    let total = Instant::now();
-    let mut store = super::open_store(store_url).await?;
-    // Held for the whole run: blobs reach the CAS before the rows that
-    // reference them, so `gc` must not scan in that window.
-    let _run = store.cas().begin_run()?;
+impl WorldHandleMut<'_> {
+    /// Scan the bound world and record it as a new snapshot in the store,
+    /// additionally returning per-phase timings.
+    ///
+    /// Only `scope` is ingested: out-of-scope coordinates record no rows and
+    /// no tombstones, resolving through fallback from earlier snapshots.
+    /// `progress` fires as changed files complete. The report is identical
+    /// with or without timings.
+    pub async fn backup(
+        &mut self,
+        options: BackupOptions,
+        scope: Scope,
+        progress: impl Fn(BackupProgress) + Send,
+    ) -> Result<(BackupReport, BackupTimings), AppError> {
+        let total = Instant::now();
+        let store = &mut self.instance.store;
+        // Held for the whole run: blobs reach the CAS before the rows that
+        // reference them, so `gc` must not scan in that window.
+        let _run = store.cas().begin_run()?;
 
-    let Prepared {
-        previous,
-        staged,
-        walk,
-        discover,
-        fingerprint,
-        universe_load,
-    } = prepare(&store, world, &options, &scope, progress, false).await?;
+        let Prepared {
+            previous,
+            staged,
+            walk,
+            discover,
+            fingerprint,
+            universe_load,
+        } = prepare(store, &self.root, &options, &scope, progress, false).await?;
 
-    let now_ms = now_ms()?;
-    // Persist batched shard-directory renames before the metadata commit:
-    // file data is already synced per blob, and this single barrier (at
-    // most one fsync per touched shard) is what makes every referenced blob
-    // crash-durable. Timed under `cas`, the durability bucket. Explicit
-    // here even though workers already synced their own handles: the
-    // barrier belongs at the call site, never hidden inside adapters.
-    let sync_started = Instant::now();
-    store.cas_mut().sync_dirs()?;
-    let dir_sync = sync_started.elapsed();
-    let db_started = Instant::now();
-    let report =
-        sekai_core::usecase::backup::commit(store.meta_mut(), &previous, &staged, now_ms).await?;
-    let db_apply = db_started.elapsed();
+        let now_ms = now_ms()?;
+        // Persist batched shard-directory renames before the metadata commit:
+        // file data is already synced per blob, and this single barrier (at
+        // most one fsync per touched shard) is what makes every referenced blob
+        // crash-durable. Timed under `cas`, the durability bucket. Explicit
+        // here even though workers already synced their own handles: the
+        // barrier belongs at the call site, never hidden inside adapters.
+        let sync_started = Instant::now();
+        store.cas_mut().sync_dirs()?;
+        let dir_sync = sync_started.elapsed();
+        let db_started = Instant::now();
+        let report =
+            sekai_core::usecase::backup::commit(store.meta_mut(), &previous, &staged, now_ms)
+                .await?;
+        let db_apply = db_started.elapsed();
 
-    let timings = BackupTimings {
-        total: total.elapsed(),
-        discover,
-        fingerprint,
-        universe_load,
-        region_open: walk.region_open,
-        ingest: walk.ingest,
-        hash: walk.hash,
-        cas_put: walk.cas + dir_sync,
-        db_apply,
-        skipped_regions: report.skipped_regions,
-        carried_chunks: report.carried_chunks,
-        regions: walk.regions,
-    };
-    Ok((report, timings))
+        let timings = BackupTimings {
+            total: total.elapsed(),
+            discover,
+            fingerprint,
+            universe_load,
+            region_open: walk.region_open,
+            ingest: walk.ingest,
+            hash: walk.hash,
+            cas_put: walk.cas + dir_sync,
+            db_apply,
+            skipped_regions: report.skipped_regions,
+            carried_chunks: report.carried_chunks,
+            regions: walk.regions,
+        };
+        Ok((report, timings))
+    }
 }
 
 /// Everything a backup records and a status preview counts, before the
@@ -298,22 +301,45 @@ async fn prepare(
     })
 }
 
-/// Preview what a backup would record, without writing anything: no CAS
-/// puts, no metadata commit. Read-only against both world and store.
-///
-/// Only `scope` is previewed. `progress` fires as changed files
-/// complete. Staged rows are assembled exactly as backup would, then
-/// counted instead of committed - so counts match a subsequent backup
-/// unless the world changes in between.
-pub async fn status(
+impl WorldHandle<'_> {
+    /// Preview what a backup would record, without writing anything: no CAS
+    /// puts, no metadata commit. Read-only against both world and store.
+    ///
+    /// Only `scope` is previewed. `progress` fires as changed files
+    /// complete. Staged rows are assembled exactly as backup would, then
+    /// counted instead of committed - so counts match a subsequent backup
+    /// unless the world changes in between.
+    pub async fn status(
+        &self,
+        options: StatusOptions,
+        scope: Scope,
+        progress: impl Fn(BackupProgress) + Send,
+    ) -> Result<(StatusReport, StatusTimings), AppError> {
+        status_impl(&self.instance.store, &self.root, options, scope, progress).await
+    }
+}
+
+impl WorldHandleMut<'_> {
+    /// Preview what a backup would record; see [`WorldHandle::status`].
+    pub async fn status(
+        &self,
+        options: StatusOptions,
+        scope: Scope,
+        progress: impl Fn(BackupProgress) + Send,
+    ) -> Result<(StatusReport, StatusTimings), AppError> {
+        self.view().status(options, scope, progress).await
+    }
+}
+
+/// Preview implementation shared by read-only and read-write handles.
+async fn status_impl(
+    store: &sekai_storage::SqliteStore,
     world: &Path,
-    store_url: &str,
     options: StatusOptions,
     scope: Scope,
     progress: impl Fn(BackupProgress) + Send,
 ) -> Result<(StatusReport, StatusTimings), AppError> {
     let total = Instant::now();
-    let store = super::open_store(store_url).await?;
 
     // Diff views are preview-irrelevant: always skip the decode work.
     let preview = BackupOptions {
@@ -327,7 +353,7 @@ pub async fn status(
         discover,
         fingerprint,
         universe_load,
-    } = prepare(&store, world, &preview, &scope, progress, true).await?;
+    } = prepare(store, world, &preview, &scope, progress, true).await?;
 
     let new_files = staged
         .fingerprints

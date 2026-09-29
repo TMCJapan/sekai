@@ -4,31 +4,34 @@
 //! selected by URL. Threading, clocks, and timing live here because `core`
 //! is `no_std`; argument parsing and output formatting live in the `sekai`
 //! binary.
+//!
+//! Store-scoped operations hang off [`SekaiInstance`] (open once, then
+//! `gc`, `prune`, `list_snapshots`, ...); operations that touch a world
+//! hang off the handles it hands out: [`WorldHandle`] for read-only work
+//! and [`WorldHandleMut`] for `backup`.
 
 mod backup;
 mod diff;
 mod error;
 mod export;
 mod gc;
+mod instance;
 mod prune;
 mod rollback;
 mod tag;
 
 pub use backup::{
     BackupOptions, BackupProgress, BackupTimings, RegionTiming, StatusOptions, StatusReport,
-    StatusTimings, backup, status,
+    StatusTimings,
 };
-pub use diff::{
-    ChunkDiff, DiffProgress, DiffTimings, diff_blobs, diff_chunk, diff_chunks, diff_world_chunk,
-    diff_world_chunks, snapshot_chunk_coords, world_chunk_coords,
-};
+pub use diff::{ChunkDiff, DiffProgress, DiffTimings, world_chunk_coords};
 pub use error::AppError;
-pub use export::{ExportOptions, ExportProgress, ExportReport, ExportTimings, export};
-pub use gc::{GcProgress, GcTimings, gc, gc_apply, gc_plan};
-pub use prune::{PruneProgress, PruneTimings, prune, prune_apply, prune_plan};
+pub use export::{ExportOptions, ExportProgress, ExportReport, ExportTimings};
+pub use gc::{GcProgress, GcTimings};
+pub use instance::{SekaiInstance, WorldHandle, WorldHandleMut};
+pub use prune::{PruneProgress, PruneTimings};
 pub use rollback::{
     MissingBlobPolicy, MissingFilePolicy, RollbackOptions, RollbackProgress, RollbackTimings,
-    rollback,
 };
 pub use sekai_core::{
     Area, BackupReport, BlobHash, ChunkCoord, DEFAULT_IGNORED, Dimension, GcPlan, GcReport,
@@ -36,23 +39,6 @@ pub use sekai_core::{
     RollbackReport, Scope, Snapshot, SnapshotId, SnapshotStats, SnapshotTag, TagName,
 };
 pub use sekai_world::{LayoutFlavor, RegionScanEntry, ScanReport, ScanSkip, ScanTimings};
-pub use tag::{create_tag, delete_tag, list_tags, resolve_snapshot_ref, snapshot_stats};
-
-/// List all snapshots in ID order (for `list` and pre-flight checks).
-pub async fn list_snapshots(store_url: &str) -> Result<Vec<Snapshot>, AppError> {
-    let store = open_store(store_url).await?;
-    sekai_core::usecase::snapshot::list_snapshots(store.meta())
-        .await
-        .map_err(AppError::Snapshot)
-}
-
-pub async fn latest_snapshot_id(store_url: &str) -> Result<SnapshotId, AppError> {
-    let store = open_store(store_url).await?;
-    sekai_core::usecase::snapshot::latest_snapshot_id(store.meta())
-        .await
-        .map_err(AppError::Snapshot)?
-        .ok_or(AppError::NoSnapshots)
-}
 
 /// Read-only inspection of every region file under `world`, additionally
 /// returning per-phase timings and any files that could not be inspected.
@@ -60,22 +46,4 @@ pub async fn latest_snapshot_id(store_url: &str) -> Result<SnapshotId, AppError>
 /// Never writes to the world or the store.
 pub fn scan(world: &std::path::Path) -> Result<ScanReport, AppError> {
     Ok(sekai_world::scan_world(world)?)
-}
-
-/// Open the store named by `store_url`.
-///
-/// `sqlite://<dir>` (or a bare `<dir>`) opens a SQLite store; anything else
-/// fails loudly, including backends not compiled in.
-async fn open_store(store_url: &str) -> Result<sekai_storage::SqliteStore, AppError> {
-    let (kind, rest) = sekai_storage::parse_backend_url(store_url)?;
-    // `Sqlite` is currently the only variant; the pattern becomes
-    // refutable once stub backends land, and anything else fails below.
-    #[cfg(feature = "backend-sqlite")]
-    if kind == sekai_storage::BackendKind::Sqlite {
-        return Ok(sekai_storage::open_sqlite(std::path::Path::new(rest)).await?);
-    }
-    Err(sekai_storage::StorageError::UnsupportedBackend {
-        url: store_url.to_owned(),
-    }
-    .into())
 }

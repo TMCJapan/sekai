@@ -15,21 +15,18 @@ fn benches(c: &mut Criterion) {
         let world = root.join("world");
         generate(&world, &SMALL);
         let store = root.join("store").to_string_lossy().into_owned();
-        rt.block_on(sekai_app::backup(
-            &world,
-            &store,
-            options(),
-            Scope::World,
-            |_| {},
-        ))
+        let mut instance = rt
+            .block_on(sekai_app::SekaiInstance::open(&store))
+            .expect("open works");
+        rt.block_on(
+            instance
+                .world_mut(&world)
+                .backup(options(), Scope::World, |_| {}),
+        )
         .expect("backup works");
-        let snapshots = rt
-            .block_on(sekai_app::list_snapshots(&store))
-            .expect("list works");
+        let snapshots = rt.block_on(instance.list_snapshots()).expect("list works");
         b.iter(|| {
-            rt.block_on(sekai_app::rollback(
-                &world,
-                &store,
+            rt.block_on(instance.world(&world).rollback(
                 snapshots[0].id,
                 sekai_app::RollbackOptions::default(),
                 Scope::World,
@@ -44,21 +41,18 @@ fn benches(c: &mut Criterion) {
         let world = corpus_world();
         let root = world.parent().unwrap().to_path_buf();
         let store = root.join("store").to_string_lossy().into_owned();
-        rt.block_on(sekai_app::backup(
-            &world,
-            &store,
-            options(),
-            Scope::World,
-            |_| {},
-        ))
+        let mut instance = rt
+            .block_on(sekai_app::SekaiInstance::open(&store))
+            .expect("open works");
+        rt.block_on(
+            instance
+                .world_mut(&world)
+                .backup(options(), Scope::World, |_| {}),
+        )
         .expect("backup works");
-        let snapshots = rt
-            .block_on(sekai_app::list_snapshots(&store))
-            .expect("list works");
+        let snapshots = rt.block_on(instance.list_snapshots()).expect("list works");
         b.iter(|| {
-            rt.block_on(sekai_app::rollback(
-                &world,
-                &store,
+            rt.block_on(instance.world(&world).rollback(
                 snapshots[0].id,
                 sekai_app::RollbackOptions::default(),
                 Scope::World,

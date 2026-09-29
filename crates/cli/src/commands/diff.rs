@@ -16,10 +16,15 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
     let selection = &args.selection;
     let scope = selection.owned_scope();
     let mut coords = selection.explicit_chunks();
+    let instance = sekai_app::SekaiInstance::open(store).await?;
     let snapshot_pair = if args.world.is_none() {
         Some(
-            resolve_snapshot_pair(store, args.old_snapshot.clone(), args.new_snapshot.clone())
-                .await?,
+            resolve_snapshot_pair(
+                &instance,
+                args.old_snapshot.clone(),
+                args.new_snapshot.clone(),
+            )
+            .await?,
         )
     } else {
         None
@@ -30,8 +35,8 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
         let mut enumerated = if let Some(world) = &args.world {
             sekai_app::world_chunk_coords(world)?
         } else if let Some((old_id, new_id)) = snapshot_pair {
-            let mut union = sekai_app::snapshot_chunk_coords(store, old_id).await?;
-            union.extend(sekai_app::snapshot_chunk_coords(store, new_id).await?);
+            let mut union = instance.snapshot_chunk_coords(old_id).await?;
+            union.extend(instance.snapshot_chunk_coords(new_id).await?);
             union
         } else {
             anyhow::bail!("internal error: snapshot pair missing for snapshot diff");
@@ -48,43 +53,47 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
             .or(args.new_snapshot.as_deref());
         let snapshot_id = if let Some(raw) = snapshot_ref {
             Some(
-                sekai_app::resolve_snapshot_ref(store, raw)
+                instance
+                    .resolve_snapshot_ref(raw)
                     .await
                     .with_context(|| format!("snapshot {raw:?} failed to resolve"))?,
             )
         } else {
             None
         };
-        sekai_app::diff_world_chunks(world, store, snapshot_id, &coords, None, |update| {
-            report_progress(
-                bar.as_ref(),
-                update.chunks_done,
-                update.chunks_total,
-                "chunks",
-            );
-        })
-        .await
-        .with_context(|| "failed to compute chunk diffs between world state and snapshot")?
+        instance
+            .world(world)
+            .diff_world_chunks(snapshot_id, &coords, None, |update| {
+                report_progress(
+                    bar.as_ref(),
+                    update.chunks_done,
+                    update.chunks_total,
+                    "chunks",
+                );
+            })
+            .await
+            .with_context(|| "failed to compute chunk diffs between world state and snapshot")?
     } else {
         let Some((old_id, new_id)) = snapshot_pair else {
             anyhow::bail!("internal error: snapshot pair missing for snapshot diff");
         };
-        sekai_app::diff_chunks(store, old_id, new_id, &coords, None, |update| {
-            report_progress(
-                bar.as_ref(),
-                update.chunks_done,
-                update.chunks_total,
-                "chunks",
-            );
-        })
-        .await
-        .with_context(|| {
-            format!(
-                "failed to compute chunk diffs between snapshot {} and {}",
-                old_id.raw(),
-                new_id.raw()
-            )
-        })?
+        instance
+            .diff_chunks(old_id, new_id, &coords, None, |update| {
+                report_progress(
+                    bar.as_ref(),
+                    update.chunks_done,
+                    update.chunks_total,
+                    "chunks",
+                );
+            })
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to compute chunk diffs between snapshot {} and {}",
+                    old_id.raw(),
+                    new_id.raw()
+                )
+            })?
     };
     finish_progress(bar.as_ref());
 
@@ -162,29 +171,33 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
 }
 
 async fn resolve_snapshot_pair(
-    store: &str,
+    instance: &sekai_app::SekaiInstance,
     old_snapshot: Option<String>,
     new_snapshot: Option<String>,
 ) -> anyhow::Result<(SnapshotId, SnapshotId)> {
-    async fn resolve(store: &str, raw: &str) -> anyhow::Result<SnapshotId> {
-        sekai_app::resolve_snapshot_ref(store, raw)
+    async fn resolve(instance: &sekai_app::SekaiInstance, raw: &str) -> anyhow::Result<SnapshotId> {
+        instance
+            .resolve_snapshot_ref(raw)
             .await
             .with_context(|| format!("snapshot {raw:?} failed to resolve"))
     }
     match (old_snapshot, new_snapshot) {
-        (Some(old), Some(new)) => Ok((resolve(store, &old).await?, resolve(store, &new).await?)),
+        (Some(old), Some(new)) => Ok((
+            resolve(instance, &old).await?,
+            resolve(instance, &new).await?,
+        )),
         (Some(old), None) => {
-            let latest = sekai_app::latest_snapshot_id(store).await?;
-            Ok((resolve(store, &old).await?, latest))
+            let latest = instance.latest_snapshot_id().await?;
+            Ok((resolve(instance, &old).await?, latest))
         }
         (None, new) => {
-            let snapshots = sekai_app::list_snapshots(store).await?;
+            let snapshots = instance.list_snapshots().await?;
             if snapshots.len() < 2 {
                 anyhow::bail!("at least 2 snapshots are required when snapshot IDs are omitted");
             }
             let old = snapshots[snapshots.len() - 2].id;
             let new_id = if let Some(raw) = new {
-                resolve(store, &raw).await?
+                resolve(instance, &raw).await?
             } else {
                 snapshots[snapshots.len() - 1].id
             };

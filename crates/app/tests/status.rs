@@ -63,21 +63,23 @@ async fn status_reports_clean_world() {
     let store = store_dir.to_string_lossy().into_owned();
     write_region(&world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
 
-    sekai_app::backup(
-        &world,
-        &store,
-        sekai_app::BackupOptions::default(),
-        sekai_app::Scope::World,
-        |_| {},
-    )
-    .await
-    .unwrap();
-    let snapshots = sekai_app::list_snapshots(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    instance
+        .world_mut(&world)
+        .backup(
+            sekai_app::BackupOptions::default(),
+            sekai_app::Scope::World,
+            |_| {},
+        )
+        .await
+        .unwrap();
+    let snapshots = instance.list_snapshots().await.unwrap();
 
-    let (report, timings) =
-        sekai_app::status(&world, &store, options(), sekai_app::Scope::World, |_| {})
-            .await
-            .unwrap();
+    let (report, timings) = instance
+        .world(&world)
+        .status(options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
     assert!(report.clean);
     assert_eq!(report.latest, Some(snapshots[0].id));
     assert_eq!(report.changed_regions, 0);
@@ -94,15 +96,16 @@ async fn status_counts_changes_without_writing() {
     let store = store_dir.to_string_lossy().into_owned();
     write_region(&world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
 
-    sekai_app::backup(
-        &world,
-        &store,
-        sekai_app::BackupOptions::default(),
-        sekai_app::Scope::World,
-        |_| {},
-    )
-    .await
-    .unwrap();
+    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    instance
+        .world_mut(&world)
+        .backup(
+            sekai_app::BackupOptions::default(),
+            sekai_app::Scope::World,
+            |_| {},
+        )
+        .await
+        .unwrap();
     let blobs_before = blob_count(&store_dir);
 
     // Diverge: change one chunk, add one, delete the region's sibling file.
@@ -112,7 +115,9 @@ async fn status_counts_changes_without_writing() {
     );
     write_region(&world.join("region/r.1.0.mca"), &[(32, 0, vec![3, 3])]);
 
-    let (report, _) = sekai_app::status(&world, &store, options(), sekai_app::Scope::World, |_| {})
+    let (report, _) = instance
+        .world(&world)
+        .status(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
     assert!(!report.clean);
@@ -124,19 +129,19 @@ async fn status_counts_changes_without_writing() {
     assert_eq!(report.new_blobs, 3);
 
     // Preview wrote nothing: same snapshots, same blobs.
-    assert_eq!(sekai_app::list_snapshots(&store).await.unwrap().len(), 1);
+    assert_eq!(instance.list_snapshots().await.unwrap().len(), 1);
     assert_eq!(blob_count(&store_dir), blobs_before);
 
     // A following backup records exactly what status predicted.
-    let (backup, _) = sekai_app::backup(
-        &world,
-        &store,
-        sekai_app::BackupOptions::default(),
-        sekai_app::Scope::World,
-        |_| {},
-    )
-    .await
-    .unwrap();
+    let (backup, _) = instance
+        .world_mut(&world)
+        .backup(
+            sekai_app::BackupOptions::default(),
+            sekai_app::Scope::World,
+            |_| {},
+        )
+        .await
+        .unwrap();
     assert_eq!(backup.chunks, 3);
     assert_eq!(backup.new_blobs, 3);
     assert_eq!(backup.tombstones, 0);
@@ -151,18 +156,21 @@ async fn status_counts_tombstones() {
     let region = world.join("region/r.0.0.mca");
     write_region(&region, &[(0, 0, vec![3, 1]), (1, 0, vec![3, 2])]);
 
-    sekai_app::backup(
-        &world,
-        &store,
-        sekai_app::BackupOptions::default(),
-        sekai_app::Scope::World,
-        |_| {},
-    )
-    .await
-    .unwrap();
+    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    instance
+        .world_mut(&world)
+        .backup(
+            sekai_app::BackupOptions::default(),
+            sekai_app::Scope::World,
+            |_| {},
+        )
+        .await
+        .unwrap();
     write_region(&region, &[(0, 0, vec![3, 1])]);
 
-    let (report, _) = sekai_app::status(&world, &store, options(), sekai_app::Scope::World, |_| {})
+    let (report, _) = instance
+        .world(&world)
+        .status(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
     assert!(!report.clean);

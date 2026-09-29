@@ -16,13 +16,14 @@ fn benches(c: &mut Criterion) {
             let world = root.join("world");
             generate(&world, &SMALL);
             let store = root.join("store").to_string_lossy().into_owned();
-            rt.block_on(sekai_app::backup(
-                &world,
-                &store,
-                options(),
-                Scope::World,
-                |_| {},
-            ))
+            let mut instance = rt
+                .block_on(sekai_app::SekaiInstance::open(&store))
+                .expect("open works");
+            rt.block_on(
+                instance
+                    .world_mut(&world)
+                    .backup(options(), Scope::World, |_| {}),
+            )
             .expect("backup works");
             std::fs::remove_dir_all(&root).ok();
         });
@@ -33,22 +34,21 @@ fn benches(c: &mut Criterion) {
         let world = root.join("world");
         generate(&world, &SMALL);
         let store = root.join("store").to_string_lossy().into_owned();
-        rt.block_on(sekai_app::backup(
-            &world,
-            &store,
-            options(),
-            Scope::World,
-            |_| {},
-        ))
+        let mut instance = rt
+            .block_on(sekai_app::SekaiInstance::open(&store))
+            .expect("open works");
+        rt.block_on(
+            instance
+                .world_mut(&world)
+                .backup(options(), Scope::World, |_| {}),
+        )
         .expect("backup works");
         b.iter(|| {
-            rt.block_on(sekai_app::backup(
-                &world,
-                &store,
-                options(),
-                Scope::World,
-                |_| {},
-            ))
+            rt.block_on(
+                instance
+                    .world_mut(&world)
+                    .backup(options(), Scope::World, |_| {}),
+            )
             .expect("backup works");
         });
         std::fs::remove_dir_all(&root).ok();
@@ -60,13 +60,14 @@ fn benches(c: &mut Criterion) {
             let world = root.join("world");
             generate(&world, &MEDIUM);
             let store = root.join("store").to_string_lossy().into_owned();
-            rt.block_on(sekai_app::backup(
-                &world,
-                &store,
-                options(),
-                Scope::World,
-                |_| {},
-            ))
+            let mut instance = rt
+                .block_on(sekai_app::SekaiInstance::open(&store))
+                .expect("open works");
+            rt.block_on(
+                instance
+                    .world_mut(&world)
+                    .backup(options(), Scope::World, |_| {}),
+            )
             .expect("backup works");
             std::fs::remove_dir_all(&root).ok();
         });

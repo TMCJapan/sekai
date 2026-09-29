@@ -45,7 +45,11 @@ pub async fn run(
     flags: &RollbackFlags,
     out: ReportOut,
 ) -> anyhow::Result<()> {
-    let id = sekai_app::resolve_snapshot_ref(store, snapshot)
+    let instance = sekai_app::SekaiInstance::open(store)
+        .await
+        .with_context(|| format!("rollback of {} failed", world.display()))?;
+    let id = instance
+        .resolve_snapshot_ref(snapshot)
         .await
         .with_context(|| format!("snapshot {snapshot:?} failed to resolve"))?;
     let scope = selection.owned_scope();
@@ -61,21 +65,23 @@ pub async fn run(
     }
     let bar = progress_bar(progress);
     let owned = bar.clone();
-    let (report, timings) = sekai_app::rollback(world, store, id, options, scope, move |update| {
-        report_progress(
-            owned.as_ref(),
-            update.files_done,
-            update.files_total,
-            format!("files {} chunks", update.chunks_done),
-        );
-    })
-    .await
-    .with_context(|| {
-        format!(
-            "rollback of {} to snapshot {snapshot:?} failed",
-            world.display()
-        )
-    })?;
+    let (report, timings) = instance
+        .world(world)
+        .rollback(id, options, scope, move |update| {
+            report_progress(
+                owned.as_ref(),
+                update.files_done,
+                update.files_total,
+                format!("files {} chunks", update.chunks_done),
+            );
+        })
+        .await
+        .with_context(|| {
+            format!(
+                "rollback of {} to snapshot {snapshot:?} failed",
+                world.display()
+            )
+        })?;
     finish_progress(bar.as_ref());
     if out.json {
         println!(

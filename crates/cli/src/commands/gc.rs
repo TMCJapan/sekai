@@ -11,8 +11,12 @@ use crate::style::Styler;
 
 pub async fn run(store: &str, dry_run: bool, progress: bool, out: ReportOut) -> anyhow::Result<()> {
     let style = out.style;
+    let mut instance = sekai_app::SekaiInstance::open(store)
+        .await
+        .with_context(|| format!("gc for {store} failed"))?;
     if dry_run {
-        let (plan, timings) = sekai_app::gc_plan(store)
+        let (plan, timings) = instance
+            .gc_plan()
             .await
             .with_context(|| format!("gc plan for {store} failed"))?;
         if out.json {
@@ -34,11 +38,12 @@ pub async fn run(store: &str, dry_run: bool, progress: bool, out: ReportOut) -> 
     }
 
     let bar = progress_bar(progress);
-    let (report, timings) = sekai_app::gc(store, |update| {
-        report_progress(bar.as_ref(), update.blobs_done, update.blobs_total, "blobs");
-    })
-    .await
-    .with_context(|| format!("gc for {store} failed"))?;
+    let (report, timings) = instance
+        .gc(|update| {
+            report_progress(bar.as_ref(), update.blobs_done, update.blobs_total, "blobs");
+        })
+        .await
+        .with_context(|| format!("gc for {store} failed"))?;
     finish_progress(bar.as_ref());
     if out.json {
         println!(

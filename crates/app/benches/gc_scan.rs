@@ -15,19 +15,19 @@ fn benches(c: &mut Criterion) {
         let world = root.join("world");
         generate(&world, &SMALL);
         let store = root.join("store").to_string_lossy().into_owned();
-        rt.block_on(sekai_app::backup(
-            &world,
-            &store,
-            options(),
-            Scope::World,
-            |_| {},
-        ))
+        let mut instance = rt
+            .block_on(sekai_app::SekaiInstance::open(&store))
+            .expect("open works");
+        rt.block_on(
+            instance
+                .world_mut(&world)
+                .backup(options(), Scope::World, |_| {}),
+        )
         .expect("backup works");
         // Plan is read-only and repeatable; apply (unlink syscalls) is
         // covered by unit tests.
         b.iter(|| {
-            rt.block_on(sekai_app::gc_plan(&store))
-                .expect("gc plan works");
+            rt.block_on(instance.gc_plan()).expect("gc plan works");
         });
         std::fs::remove_dir_all(&root).ok();
     });
