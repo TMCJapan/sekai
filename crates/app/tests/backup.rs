@@ -165,7 +165,7 @@ async fn backup_list_rollback_round_trip() {
 
     // Roll back to the first snapshot: the changed chunk reverts.
     let (rolled, _rollback_timings) = instance
-        .world(&world)
+        .world_mut(&world)
         .rollback(
             snapshots[0].id,
             sekai_app::RollbackOptions::default(),
@@ -345,7 +345,7 @@ async fn scoped_rollback_leaves_other_dimensions_untouched() {
     // is neither recreated nor deleted (it stays absent), and the report
     // counts only in-scope work.
     let (rolled, _) = instance
-        .world(&world)
+        .world_mut(&world)
         .rollback(
             snapshots[0].id,
             sekai_app::RollbackOptions::default(),
@@ -362,7 +362,7 @@ async fn scoped_rollback_leaves_other_dimensions_untouched() {
 
     // Nether-scoped rollback recreates the deleted file from CAS.
     let (rolled, _) = instance
-        .world(&world)
+        .world_mut(&world)
         .rollback(
             snapshots[0].id,
             sekai_app::RollbackOptions::default(),
@@ -380,7 +380,7 @@ async fn scoped_rollback_leaves_other_dimensions_untouched() {
     let before = std::fs::read(&nether).unwrap();
     assert_eq!(before, nether_diverged);
     instance
-        .world(&world)
+        .world_mut(&world)
         .rollback(
             snapshots[0].id,
             sekai_app::RollbackOptions::default(),
@@ -422,7 +422,7 @@ async fn strict_rollback_removes_post_snapshot_files() {
 
     // Snapshot 2: all-tombstone region deleted (not shelled), new chunk kept.
     let (rolled, _) = instance
-        .world(&world)
+        .world_mut(&world)
         .rollback(
             snapshots[1].id,
             sekai_app::RollbackOptions::default(),
@@ -439,7 +439,7 @@ async fn strict_rollback_removes_post_snapshot_files() {
 
     // Snapshot 1: original chunk rebuilt, post-snapshot file removed.
     let (rolled, _) = instance
-        .world(&world)
+        .world_mut(&world)
         .rollback(
             snapshots[0].id,
             sekai_app::RollbackOptions::default(),
@@ -483,7 +483,7 @@ async fn keep_options_preserve_post_snapshot_data() {
         ..RollbackOptions::default()
     };
     let (rolled, _) = instance
-        .world(&world)
+        .world_mut(&world)
         .rollback(snapshots[0].id, keep, sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
@@ -527,7 +527,7 @@ async fn keep_tombstoned_chunks_preserves_live_bytes() {
 
     // Strict rollback drops the tombstoned chunk and reverts the rest.
     let (rolled, _) = instance
-        .world(&world)
+        .world_mut(&world)
         .rollback(
             snapshots[1].id,
             sekai_app::RollbackOptions::default(),
@@ -547,7 +547,7 @@ async fn keep_tombstoned_chunks_preserves_live_bytes() {
         ..RollbackOptions::default()
     };
     let (rolled, _) = instance
-        .world(&world)
+        .world_mut(&world)
         .rollback(snapshots[1].id, keep, sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
@@ -589,7 +589,7 @@ async fn keep_tombstoned_chunks_leaves_fully_tombstoned_files() {
         ..RollbackOptions::default()
     };
     let (rolled, _) = instance
-        .world(&world)
+        .world_mut(&world)
         .rollback(snapshots[1].id, keep, sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
@@ -599,7 +599,7 @@ async fn keep_tombstoned_chunks_leaves_fully_tombstoned_files() {
 
     // Strict rollback deletes the fully tombstoned file.
     let (rolled, _) = instance
-        .world(&world)
+        .world_mut(&world)
         .rollback(
             snapshots[1].id,
             sekai_app::RollbackOptions::default(),
@@ -652,7 +652,7 @@ async fn missing_blob_abort_is_default_and_skip_recovers() {
     // Default policy aborts loudly, leaving the live file alone.
     assert!(
         instance
-            .world(&world)
+            .world_mut(&world)
             .rollback(
                 snapshots[0].id,
                 sekai_app::RollbackOptions::default(),
@@ -670,7 +670,7 @@ async fn missing_blob_abort_is_default_and_skip_recovers() {
         ..RollbackOptions::default()
     };
     let (rolled, _) = instance
-        .world(&world)
+        .world_mut(&world)
         .rollback(snapshots[0].id, skip, sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
@@ -700,7 +700,7 @@ async fn missing_file_error_policy_refuses_to_guess() {
 
     // Default policy recreates the file at the derived path.
     let (rolled, _) = instance
-        .world(&world)
+        .world_mut(&world)
         .rollback(
             snapshots[0].id,
             sekai_app::RollbackOptions::default(),
@@ -720,7 +720,7 @@ async fn missing_file_error_policy_refuses_to_guess() {
     };
     assert!(
         instance
-            .world(&world)
+            .world_mut(&world)
             .rollback(snapshots[0].id, strict, sekai_app::Scope::World, |_| {})
             .await
             .is_err()
@@ -732,7 +732,7 @@ async fn missing_file_error_policy_refuses_to_guess() {
         ..RollbackOptions::default()
     };
     let (rolled, _) = instance
-        .world(&world)
+        .world_mut(&world)
         .rollback(snapshots[0].id, derived, sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
@@ -830,7 +830,7 @@ async fn errors_surface_loudly() {
     // Unknown snapshot (empty store is created on open, then lookup fails).
     assert!(
         instance
-            .world(root.join("world"))
+            .world_mut(root.join("world"))
             .rollback(
                 SnapshotId(99),
                 sekai_app::RollbackOptions::default(),
@@ -895,7 +895,7 @@ async fn progress_events_cover_rollback_diff_and_gc() {
     let events = Arc::new(Mutex::new(Vec::new()));
     let seen = Arc::clone(&events);
     instance
-        .world(&world)
+        .world_mut(&world)
         .rollback(
             snapshots[0].id,
             sekai_app::RollbackOptions::default(),
@@ -1280,7 +1280,7 @@ async fn all_kinds_round_trip() {
         assert_eq!(diffs[0].path, "Status");
 
         let (rolled, _) = instance
-            .world(&world)
+            .world_mut(&world)
             .rollback(
                 snapshots[0].id,
                 sekai_app::RollbackOptions::default(),
@@ -1425,7 +1425,7 @@ async fn real_world_corpus_round_trip() {
         })
         .collect();
     let (rolled, _) = instance
-        .world(&world)
+        .world_mut(&world)
         .rollback(
             snapshots[0].id,
             sekai_app::RollbackOptions::default(),
@@ -1542,7 +1542,7 @@ async fn randomized_backup_rollback_round_trip() {
         assert_eq!(snapshots.len(), history.len());
         for (index, snapshot) in snapshots.iter().enumerate().rev() {
             instance
-                .world(&world)
+                .world_mut(&world)
                 .rollback(
                     snapshot.id,
                     sekai_app::RollbackOptions::default(),

@@ -26,7 +26,7 @@ fn benches(c: &mut Criterion) {
         .expect("backup works");
         let snapshots = rt.block_on(instance.list_snapshots()).expect("list works");
         b.iter(|| {
-            rt.block_on(instance.world(&world).rollback(
+            rt.block_on(instance.world_mut(&world).rollback(
                 snapshots[0].id,
                 sekai_app::RollbackOptions::default(),
                 Scope::World,
@@ -52,7 +52,7 @@ fn benches(c: &mut Criterion) {
         .expect("backup works");
         let snapshots = rt.block_on(instance.list_snapshots()).expect("list works");
         b.iter(|| {
-            rt.block_on(instance.world(&world).rollback(
+            rt.block_on(instance.world_mut(&world).rollback(
                 snapshots[0].id,
                 sekai_app::RollbackOptions::default(),
                 Scope::World,

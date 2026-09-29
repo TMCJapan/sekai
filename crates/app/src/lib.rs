@@ -8,7 +8,8 @@
 //! Store-scoped operations hang off [`SekaiInstance`] (open once, then
 //! `gc`, `prune`, `list_snapshots`, ...); operations that touch a world
 //! hang off the handles it hands out: [`WorldHandle`] for read-only work
-//! and [`WorldHandleMut`] for `backup`.
+//! (`status`, `diff_world_*`) and [`WorldHandleMut`] for `backup` and
+//! `rollback`.
 
 mod backup;
 mod diff;

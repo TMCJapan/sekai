@@ -45,7 +45,7 @@ pub async fn run(
     flags: &RollbackFlags,
     out: ReportOut,
 ) -> anyhow::Result<()> {
-    let instance = sekai_app::SekaiInstance::open(store)
+    let mut instance = sekai_app::SekaiInstance::open(store)
         .await
         .with_context(|| format!("rollback of {} failed", world.display()))?;
     let id = instance
@@ -66,7 +66,7 @@ pub async fn run(
     let bar = progress_bar(progress);
     let owned = bar.clone();
     let (report, timings) = instance
-        .world(world)
+        .world_mut(world)
         .rollback(id, options, scope, move |update| {
             report_progress(
                 owned.as_ref(),

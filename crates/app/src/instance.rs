@@ -4,8 +4,8 @@
 //! the store is opened once per process instead of once per free function,
 //! and metadata/CAS adapters are reached through one place. Operations that
 //! touch a world hang off borrowed handles: [`WorldHandle`] for read-only
-//! work, [`WorldHandleMut`] for runs that write, so write exclusivity shows
-//! in the type.
+//! work, [`WorldHandleMut`] for runs that write (backup, rollback), so write
+//! exclusivity shows in the type.
 
 use std::path::{Path, PathBuf};
 
@@ -96,9 +96,10 @@ impl WorldHandle<'_> {
 
 /// Read-write handle to one world directory bound to an instance.
 ///
-/// Writes go through `&mut self`, and the handle borrows the instance
-/// mutably: while a write session is alive, store-scoped operations on the
-/// same instance cannot start.
+/// Runs that write (`backup`, `rollback`) go through `&mut self`, and the
+/// handle borrows the instance mutably: while a write session is alive, no
+/// second handle for the same instance can exist, so store-scoped
+/// operations and other world writes cannot start.
 pub struct WorldHandleMut<'a> {
     pub(crate) instance: &'a mut SekaiInstance,
     pub(crate) root: PathBuf,

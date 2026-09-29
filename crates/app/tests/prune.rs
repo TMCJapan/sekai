@@ -113,7 +113,7 @@ async fn prune_folds_and_gc_reclaims() {
 
     // Retained snapshots still restore faithfully through fallback.
     let (rolled, _) = instance
-        .world(&world)
+        .world_mut(&world)
         .rollback(
             snapshots[1].id,
             sekai_app::RollbackOptions::default(),
