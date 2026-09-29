@@ -14,7 +14,6 @@ use sekai_core::{Snapshot, SnapshotId};
 use crate::error::AppError;
 
 /// An opened store; all store-scoped operations go through this.
-#[derive(Debug, Clone)]
 pub struct SekaiInstance {
     pub(crate) store: sekai_storage::SqliteStore,
 }
