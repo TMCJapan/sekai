@@ -16,25 +16,25 @@ fn tempdir(name: &str) -> PathBuf {
     dir
 }
 
-fn cleanup(dir: &Path) {
+fn cleanup(dir: impl AsRef<Path>) {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-fn write_region(path: &Path, chunks: &[(i32, i32, Vec<u8>)]) {
-    let name = path.file_name().unwrap().to_str().unwrap();
+fn write_region(path: impl AsRef<Path>, chunks: &[(i32, i32, Vec<u8>)]) {
+    let name = path.as_ref().file_name().unwrap().to_str().unwrap();
     let (rx, rz) = sekai_anvil::parse_region_name(name).unwrap();
     let mut builder = sekai_anvil::RegionBuilder::new(rx, rz, 0).unwrap();
     for (x, z, payload) in chunks {
         builder.stage_chunk(*x, *z, payload).unwrap();
     }
     let image = builder.image().unwrap();
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(path, image).unwrap();
+    std::fs::create_dir_all(path.as_ref().parent().unwrap()).unwrap();
+    std::fs::write(path.as_ref(), image).unwrap();
 }
 
-fn blob_count(store: &Path) -> usize {
+fn blob_count(store: impl AsRef<Path>) -> usize {
     let mut count = 0usize;
-    let mut dirs = vec![store.join("blobs")];
+    let mut dirs = vec![store.as_ref().join("blobs")];
     while let Some(dir) = dirs.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
@@ -61,7 +61,7 @@ async fn status_reports_clean_world() {
     let world = root.join("world");
     let store_dir = root.join("store");
     let store = store_dir.to_string_lossy().into_owned();
-    write_region(&world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
+    write_region(world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
 
     let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
     instance
@@ -94,7 +94,7 @@ async fn status_counts_changes_without_writing() {
     let world = root.join("world");
     let store_dir = root.join("store");
     let store = store_dir.to_string_lossy().into_owned();
-    write_region(&world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
+    write_region(world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
 
     let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
     instance
@@ -110,10 +110,10 @@ async fn status_counts_changes_without_writing() {
 
     // Diverge: change one chunk, add one, delete the region's sibling file.
     write_region(
-        &world.join("region/r.0.0.mca"),
+        world.join("region/r.0.0.mca"),
         &[(0, 0, vec![3, 9]), (1, 0, vec![3, 2])],
     );
-    write_region(&world.join("region/r.1.0.mca"), &[(32, 0, vec![3, 3])]);
+    write_region(world.join("region/r.1.0.mca"), &[(32, 0, vec![3, 3])]);
 
     let (report, _) = instance
         .world(&world)

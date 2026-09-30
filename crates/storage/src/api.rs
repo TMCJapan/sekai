@@ -169,9 +169,9 @@ impl<M, C> Store<M, C> {
 }
 
 /// Wrap an I/O failure together with the path that caused it.
-pub(crate) fn io_error(path: &Path, source: std::io::Error) -> StorageError {
+pub(crate) fn io_error(path: impl AsRef<Path>, source: std::io::Error) -> StorageError {
     StorageError::Io {
-        path: path.to_path_buf(),
+        path: path.as_ref().to_path_buf(),
         source,
     }
 }

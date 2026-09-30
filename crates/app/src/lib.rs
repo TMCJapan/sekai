@@ -21,6 +21,8 @@ mod prune;
 mod rollback;
 mod tag;
 
+use std::path::Path;
+
 pub use backup::{
     BackupOptions, BackupProgress, BackupTimings, RegionTiming, StatusOptions, StatusReport,
     StatusTimings,
@@ -45,6 +47,6 @@ pub use sekai_world::{LayoutFlavor, RegionScanEntry, ScanReport, ScanSkip, ScanT
 /// returning per-phase timings and any files that could not be inspected.
 ///
 /// Never writes to the world or the store.
-pub fn scan(world: &std::path::Path) -> Result<ScanReport, AppError> {
+pub fn scan(world: impl AsRef<Path>) -> Result<ScanReport, AppError> {
     Ok(sekai_world::scan_world(world)?)
 }

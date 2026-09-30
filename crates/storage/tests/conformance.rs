@@ -24,11 +24,11 @@ fn tempdir(name: &str) -> PathBuf {
     dir
 }
 
-async fn open(dir: &Path) -> sekai_storage::SqliteStore {
+async fn open(dir: impl AsRef<Path>) -> sekai_storage::SqliteStore {
     open_sqlite(dir).await.unwrap()
 }
 
-fn cleanup(dir: &Path) {
+fn cleanup(dir: impl AsRef<Path>) {
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -104,7 +104,7 @@ async fn cas_skips_foreign_and_temp_names() {
     let hash = sekai_core::hash_blob(b"real");
     assert!(cas.put(&hash, b"real").await.unwrap());
     let hex = hash.hex_string();
-    let shard = cas.root().join("blobs").join(&hex[..2]);
+    let shard = cas.root().as_ref().join("blobs").join(&hex[..2]);
     std::fs::write(shard.join("foreign.bin"), b"x").unwrap();
     std::fs::write(shard.join(format!("{}-tmp", &hex[2..])), b"y").unwrap();
     let mut seen = Vec::new();

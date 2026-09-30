@@ -17,27 +17,27 @@ fn tempdir(name: &str) -> PathBuf {
     dir
 }
 
-fn cleanup(dir: &Path) {
+fn cleanup(dir: impl AsRef<Path>) {
     let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Write a region image through the real builder, deriving the region
 /// coordinates from the file name.
-fn write_region(path: &Path, chunks: &[(i32, i32, Vec<u8>)]) {
-    let name = path.file_name().unwrap().to_str().unwrap();
+fn write_region(path: impl AsRef<Path>, chunks: &[(i32, i32, Vec<u8>)]) {
+    let name = path.as_ref().file_name().unwrap().to_str().unwrap();
     let (rx, rz) = sekai_anvil::parse_region_name(name).unwrap();
     let mut builder = sekai_anvil::RegionBuilder::new(rx, rz, 0).unwrap();
     for (x, z, payload) in chunks {
         builder.stage_chunk(*x, *z, payload).unwrap();
     }
     let image = builder.image().unwrap();
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(path.as_ref().parent().unwrap()).unwrap();
     std::fs::write(path, image).unwrap();
 }
 
 /// Chunk payloads keyed by coordinate.
-fn chunk_map(path: &Path) -> BTreeMap<(i32, i32), Vec<u8>> {
-    let name = path.file_name().unwrap().to_str().unwrap();
+fn chunk_map(path: impl AsRef<Path>) -> BTreeMap<(i32, i32), Vec<u8>> {
+    let name = path.as_ref().file_name().unwrap().to_str().unwrap();
     let (rx, rz) = sekai_anvil::parse_region_name(name).unwrap();
     let bytes = std::fs::read(path).unwrap();
     let image = sekai_anvil::RegionImage::from_bytes(bytes, rx, rz).unwrap();
@@ -99,11 +99,11 @@ async fn export_rebuilds_snapshot_into_fresh_directory() {
     let mut expected = BTreeMap::new();
     expected.insert((0, 0), vec![3, 1]);
     expected.insert((1, 0), vec![3, 2]);
-    assert_eq!(chunk_map(&out.join("region/r.0.0.mca")), expected);
+    assert_eq!(chunk_map(out.join("region/r.0.0.mca")), expected);
     let mut expected_nether = BTreeMap::new();
     expected_nether.insert((0, 0), vec![3, 3]);
     assert_eq!(
-        chunk_map(&out.join("DIM-1/region/r.0.0.mca")),
+        chunk_map(out.join("DIM-1/region/r.0.0.mca")),
         expected_nether
     );
     cleanup(&root);
@@ -115,8 +115,8 @@ async fn export_honors_layout_flavor_and_scope() {
     let root = tempdir("flavor-scope");
     let world = root.join("world");
     let store = root.join("store").to_string_lossy().into_owned();
-    write_region(&world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
-    write_region(&world.join("DIM-1/region/r.0.0.mca"), &[(0, 0, vec![3, 2])]);
+    write_region(world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
+    write_region(world.join("DIM-1/region/r.0.0.mca"), &[(0, 0, vec![3, 2])]);
 
     let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
     instance
@@ -178,7 +178,7 @@ async fn export_refuses_non_empty_directory() {
     let root = tempdir("nonempty");
     let world = root.join("world");
     let store = root.join("store").to_string_lossy().into_owned();
-    write_region(&world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
+    write_region(world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
 
     let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
     instance

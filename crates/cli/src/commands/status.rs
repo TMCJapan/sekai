@@ -13,7 +13,7 @@ use crate::style::Styler;
 
 pub async fn run(
     store: &str,
-    world: &Path,
+    world: impl AsRef<Path>,
     jobs: usize,
     progress: bool,
     selection: &Selection,
@@ -25,9 +25,9 @@ pub async fn run(
     let options = sekai_app::StatusOptions { concurrency: jobs };
     let instance = sekai_app::SekaiInstance::open(store)
         .await
-        .with_context(|| format!("status of {} failed", world.display()))?;
+        .with_context(|| format!("status of {} failed", world.as_ref().display()))?;
     let (report, timings) = instance
-        .world(world)
+        .world(world.as_ref())
         .status(options, scope, move |update| {
             report_progress(
                 owned.as_ref(),
@@ -37,7 +37,7 @@ pub async fn run(
             );
         })
         .await
-        .with_context(|| format!("status of {} failed", world.display()))?;
+        .with_context(|| format!("status of {} failed", world.as_ref().display()))?;
     finish_progress(bar.as_ref());
     if out.json {
         println!(

@@ -19,8 +19,11 @@ fn tempdir(name: &str) -> PathBuf {
     dir
 }
 
-async fn run_tag(store: &Path, args: &[&str]) -> anyhow::Result<()> {
-    let store = store.to_str().expect("temporary store path is UTF-8");
+async fn run_tag(store: impl AsRef<Path>, args: &[&str]) -> anyhow::Result<()> {
+    let store = store
+        .as_ref()
+        .to_str()
+        .expect("temporary store path is UTF-8");
     let mut argv = vec!["sekai", "--store", store, "tag"];
     argv.extend_from_slice(args);
     let cli = Cli::try_parse_from(argv).expect("tag arguments parse");

@@ -22,7 +22,7 @@ fn tempdir(name: &str) -> PathBuf {
     dir
 }
 
-fn cleanup(dir: &Path) {
+fn cleanup(dir: impl AsRef<Path>) {
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -33,8 +33,8 @@ fn one_chunk_image() -> Vec<u8> {
     builder.image().unwrap()
 }
 
-fn write(path: &Path, bytes: &[u8]) {
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+fn write(path: impl AsRef<Path>, bytes: &[u8]) {
+    std::fs::create_dir_all(path.as_ref().parent().unwrap()).unwrap();
     std::fs::write(path, bytes).unwrap();
 }
 
@@ -43,20 +43,17 @@ fn discovers_legacy_and_new_layouts() {
     let world = tempdir("layouts");
     let image = one_chunk_image();
     // Legacy triple.
-    write(&world.join("region/r.0.0.mca"), &image);
-    write(&world.join("DIM-1/region/r.0.0.mca"), &image);
-    write(&world.join("DIM1/entities/r.1.0.mca"), &image);
+    write(world.join("region/r.0.0.mca"), &image);
+    write(world.join("DIM-1/region/r.0.0.mca"), &image);
+    write(world.join("DIM1/entities/r.1.0.mca"), &image);
     // New layout.
     write(
-        &world.join("dimensions/minecraft/overworld/region/r.2.0.mca"),
+        world.join("dimensions/minecraft/overworld/region/r.2.0.mca"),
         &image,
     );
-    write(
-        &world.join("dimensions/aether/sky/region/r.0.1.mca"),
-        &image,
-    );
+    write(world.join("dimensions/aether/sky/region/r.0.1.mca"), &image);
     // Foreign files are ignored.
-    write(&world.join("region/notes.txt"), b"nope");
+    write(world.join("region/notes.txt"), b"nope");
 
     let mut found = discover(&world).unwrap();
     found.sort_by_key(|r| (r.dim.raw(), r.kind.raw(), r.region_x, r.region_z));
@@ -86,9 +83,9 @@ fn discovers_legacy_and_new_layouts() {
 fn discovers_bukkit_nesting() {
     let world = tempdir("bukkit");
     let image = one_chunk_image();
-    write(&world.join("world/region/r.0.0.mca"), &image);
-    write(&world.join("world_nether/DIM-1/region/r.0.0.mca"), &image);
-    write(&world.join("world_the_end/DIM1/region/r.0.0.mca"), &image);
+    write(world.join("world/region/r.0.0.mca"), &image);
+    write(world.join("world_nether/DIM-1/region/r.0.0.mca"), &image);
+    write(world.join("world_the_end/DIM1/region/r.0.0.mca"), &image);
     let found = discover(&world).unwrap();
     assert_eq!(found.len(), 3);
     let at = |dim, kind| {
@@ -125,9 +122,9 @@ fn discovers_custom_level_name_trio() {
     // `level-name: srv` servers use srv/srv_nether/srv_the_end.
     let root = tempdir("levelname");
     let image = one_chunk_image();
-    write(&root.join("srv/region/r.0.0.mca"), &image);
-    write(&root.join("srv_nether/DIM-1/region/r.0.0.mca"), &image);
-    write(&root.join("srv_the_end/DIM1/region/r.0.0.mca"), &image);
+    write(root.join("srv/region/r.0.0.mca"), &image);
+    write(root.join("srv_nether/DIM-1/region/r.0.0.mca"), &image);
+    write(root.join("srv_the_end/DIM1/region/r.0.0.mca"), &image);
     let found = discover(&root).unwrap();
     assert_eq!(found.len(), 3);
     assert!(
@@ -169,10 +166,10 @@ fn multiverse_worlds_never_collide() {
     // same-environment worlds cannot silently share coordinates.
     let root = tempdir("multiverse");
     let image = one_chunk_image();
-    write(&root.join("world/region/r.0.0.mca"), &image);
-    write(&root.join("world_nether/DIM-1/region/r.0.0.mca"), &image);
-    write(&root.join("sky/region/r.0.0.mca"), &image);
-    write(&root.join("sky_nether/DIM-1/region/r.0.0.mca"), &image);
+    write(root.join("world/region/r.0.0.mca"), &image);
+    write(root.join("world_nether/DIM-1/region/r.0.0.mca"), &image);
+    write(root.join("sky/region/r.0.0.mca"), &image);
+    write(root.join("sky_nether/DIM-1/region/r.0.0.mca"), &image);
     let found = discover(&root).unwrap();
     assert_eq!(found.len(), 4);
     let dims: Vec<_> = found.iter().map(|r| r.dim).collect();
@@ -220,9 +217,9 @@ fn trio_wins_over_conversion_leftovers() {
     stale[8192 + 4] = 9;
     let mut live = one_chunk_image();
     live[8192 + 4] = 7;
-    write(&root.join("DIM-1/region/r.0.0.mca"), &stale);
-    write(&root.join("world/region/r.1.0.mca"), &one_chunk_image());
-    write(&root.join("world_nether/DIM-1/region/r.0.0.mca"), &live);
+    write(root.join("DIM-1/region/r.0.0.mca"), &stale);
+    write(root.join("world/region/r.1.0.mca"), &one_chunk_image());
+    write(root.join("world_nether/DIM-1/region/r.0.0.mca"), &live);
     let found = discover(&root).unwrap();
     let nether: Vec<_> = found
         .iter()
@@ -241,8 +238,8 @@ fn empty_overworld_keeps_the_trio_namespaces() {
     let root = tempdir("empty-overworld");
     let image = one_chunk_image();
     std::fs::create_dir_all(root.join("world/region")).unwrap();
-    write(&root.join("world_nether/DIM-1/region/r.0.0.mca"), &image);
-    write(&root.join("world_the_end/DIM1/region/r.0.0.mca"), &image);
+    write(root.join("world_nether/DIM-1/region/r.0.0.mca"), &image);
+    write(root.join("world_the_end/DIM1/region/r.0.0.mca"), &image);
 
     let flavor = detect_flavor(&root).unwrap();
     assert_eq!(
@@ -254,7 +251,7 @@ fn empty_overworld_keeps_the_trio_namespaces() {
 
     // The same siblings keep their vanilla codes whether or not the
     // overworld holds files.
-    let nether = |root: &Path| {
+    let nether = |root| {
         discover(root)
             .unwrap()
             .into_iter()
@@ -267,7 +264,7 @@ fn empty_overworld_keeps_the_trio_namespaces() {
         Some(root.join("world_nether/DIM-1/region/r.0.0.mca"))
     );
 
-    write(&root.join("world/region/r.0.0.mca"), &image);
+    write(root.join("world/region/r.0.0.mca"), &image);
     assert_eq!(detect_flavor(&root).unwrap(), flavor);
     assert_eq!(nether(&root), empty);
 
@@ -291,13 +288,13 @@ fn level_name_wins_over_a_leftover_world_folder() {
     let mut stale = one_chunk_image();
     stale[8192 + 4] = 9;
     write(
-        &root.join("server.properties"),
+        root.join("server.properties"),
         b"motd=x\nlevel-name=survival\n",
     );
-    write(&root.join("survival/region/r.1.0.mca"), &live);
-    write(&root.join("survival_nether/DIM-1/region/r.0.0.mca"), &live);
-    write(&root.join("world/region/r.9.9.mca"), &stale);
-    write(&root.join("world_nether/DIM-1/region/r.0.0.mca"), &stale);
+    write(root.join("survival/region/r.1.0.mca"), &live);
+    write(root.join("survival_nether/DIM-1/region/r.0.0.mca"), &live);
+    write(root.join("world/region/r.9.9.mca"), &stale);
+    write(root.join("world_nether/DIM-1/region/r.0.0.mca"), &stale);
 
     assert_eq!(
         detect_flavor(&root).unwrap(),
@@ -333,8 +330,8 @@ fn stray_dimensions_dir_does_not_hijack_a_bukkit_root() {
     // world: rollback would then restore into a tree the server ignores.
     let root = tempdir("stray-dimensions");
     let image = one_chunk_image();
-    write(&root.join("world/region/r.0.0.mca"), &image);
-    write(&root.join("world_nether/DIM-1/region/r.0.0.mca"), &image);
+    write(root.join("world/region/r.0.0.mca"), &image);
+    write(root.join("world_nether/DIM-1/region/r.0.0.mca"), &image);
     std::fs::create_dir_all(root.join("dimensions/minecraft/the_nether")).unwrap();
 
     assert_eq!(
@@ -366,8 +363,8 @@ fn duplicate_coordinate_names_resolve_deterministically() {
     let root = tempdir("dup-coords");
     let mut second = one_chunk_image();
     second[8192 + 4] = 7;
-    write(&root.join("region/r.0.0.mca"), &one_chunk_image());
-    write(&root.join("region/r.00.00.mca"), &second);
+    write(root.join("region/r.0.0.mca"), &one_chunk_image());
+    write(root.join("region/r.00.00.mca"), &second);
 
     let found = discover(&root).unwrap();
     assert_eq!(found.len(), 1);
@@ -386,9 +383,9 @@ fn nested_vanilla_copy_gets_hashed_codes() {
     // namespaces instead of colliding with the outer namespaces.
     let root = tempdir("nested");
     let image = one_chunk_image();
-    write(&root.join("region/r.0.0.mca"), &image);
-    write(&root.join("old/region/r.0.0.mca"), &image);
-    write(&root.join("old/DIM-1/region/r.0.0.mca"), &image);
+    write(root.join("region/r.0.0.mca"), &image);
+    write(root.join("old/region/r.0.0.mca"), &image);
+    write(root.join("old/DIM-1/region/r.0.0.mca"), &image);
     let found = discover(&root).unwrap();
     assert_eq!(found.len(), 3);
     assert!(
@@ -540,7 +537,7 @@ fn fingerprint_sees_a_payload_edit_with_preserved_size_and_mtime() {
     cleanup(&world);
 }
 
-fn set_mtime(path: &Path, time: std::time::SystemTime) {
+fn set_mtime(path: impl AsRef<Path>, time: std::time::SystemTime) {
     let file = std::fs::File::options()
         .write(true)
         .open(path)
@@ -552,9 +549,9 @@ fn set_mtime(path: &Path, time: std::time::SystemTime) {
 #[test]
 fn scan_counts_chunks_without_writing() {
     let world = tempdir("scan");
-    write(&world.join("region/r.0.0.mca"), &one_chunk_image());
-    write(&world.join("region/r.1.0.mca"), &[0u8; 8192]);
-    write(&world.join("region/r.2.0.mca"), &[]);
+    write(world.join("region/r.0.0.mca"), &one_chunk_image());
+    write(world.join("region/r.1.0.mca"), &[0u8; 8192]);
+    write(world.join("region/r.2.0.mca"), &[]);
     let report = scan_world(&world).unwrap();
     let mut entries = report.entries;
     entries.sort_by_key(|e| e.region_x);
@@ -576,9 +573,9 @@ fn scan_counts_chunks_without_writing() {
 #[test]
 fn scan_reports_unreadable_files() {
     let world = tempdir("scan-corrupt");
-    write(&world.join("region/r.0.0.mca"), &one_chunk_image());
+    write(world.join("region/r.0.0.mca"), &one_chunk_image());
     // Truncated below the 8 KiB header: unreadable, but discoverable.
-    write(&world.join("region/r.1.0.mca"), &[7u8; 100]);
+    write(world.join("region/r.1.0.mca"), &[7u8; 100]);
     let report = scan_world(&world).unwrap();
     assert_eq!(report.entries.len(), 1);
     assert_eq!(report.skipped.len(), 1);

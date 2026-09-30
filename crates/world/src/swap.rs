@@ -18,20 +18,21 @@ impl Drop for TempFileGuard<'_> {
 }
 
 /// Read a whole file into memory with path-carrying errors.
-pub fn open_image(path: &Path) -> Result<Vec<u8>, WorldError> {
-    fs::read(path).map_err(|e| WorldError::io(path, e))
+pub fn open_image(path: impl AsRef<Path>) -> Result<Vec<u8>, WorldError> {
+    fs::read(path.as_ref()).map_err(|e| WorldError::io(path.as_ref(), e))
 }
 
 /// Swap `image` into place at `target` atomically.
-pub fn atomic_swap(target: &Path, image: &[u8]) -> Result<(), WorldError> {
+pub fn atomic_swap(target: impl AsRef<Path>, image: &[u8]) -> Result<(), WorldError> {
     let parent = target
+        .as_ref()
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
 
     fs::create_dir_all(parent).map_err(|e| WorldError::io(parent, e))?;
 
-    let file_name = target.file_name().map_or_else(
+    let file_name = target.as_ref().file_name().map_or_else(
         || "region.mca".to_owned(),
         |n| n.to_string_lossy().into_owned(),
     );
@@ -40,7 +41,7 @@ pub fn atomic_swap(target: &Path, image: &[u8]) -> Result<(), WorldError> {
     // carried over explicitly; otherwise a hardened (`0444`) or group-owned
     // region file silently becomes `0666 & ~umask` owned by this process.
     #[cfg(unix)]
-    let target_mode = target.metadata().ok().map(|meta| {
+    let target_mode = target.as_ref().metadata().ok().map(|meta| {
         use std::os::unix::fs::PermissionsExt;
         meta.permissions().mode()
     });
@@ -78,7 +79,7 @@ pub fn atomic_swap(target: &Path, image: &[u8]) -> Result<(), WorldError> {
     file.sync_all().map_err(|e| WorldError::io(&tmp, e))?;
     drop(file);
 
-    fs::rename(&tmp, target).map_err(|e| WorldError::io(target, e))?;
+    fs::rename(&tmp, target.as_ref()).map_err(|e| WorldError::io(target.as_ref(), e))?;
 
     // Rename succeeded; disarm the cleanup guard.
     guard.take();

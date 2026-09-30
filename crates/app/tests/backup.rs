@@ -18,7 +18,7 @@ fn tempdir(name: &str) -> PathBuf {
     dir
 }
 
-fn cleanup(dir: &Path) {
+fn cleanup(dir: impl AsRef<Path>) {
     let _ = std::fs::remove_dir_all(dir);
 }
 
@@ -31,7 +31,7 @@ async fn gc_refuses_while_a_backup_holds_the_store() {
     let world = root.join("world");
     let store = root.join("store");
     let store_url = store.to_string_lossy().into_owned();
-    write_region(&world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1, 2, 3])]);
+    write_region(world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1, 2, 3])]);
 
     let mut instance = sekai_app::SekaiInstance::open(&store_url).await.unwrap();
     instance
@@ -55,7 +55,7 @@ async fn gc_refuses_while_a_backup_holds_the_store() {
 
     // Backups are never blocked by a stale marker.
     std::thread::sleep(std::time::Duration::from_millis(5));
-    write_region(&world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 4, 5, 6])]);
+    write_region(world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 4, 5, 6])]);
     instance
         .world_mut(&world)
         .backup(options(), Scope::World, |_| {})
@@ -67,21 +67,21 @@ async fn gc_refuses_while_a_backup_holds_the_store() {
 
 /// Write a region image through the real builder, deriving the region
 /// coordinates from the file name.
-fn write_region(path: &Path, chunks: &[(i32, i32, Vec<u8>)]) {
-    let name = path.file_name().unwrap().to_str().unwrap();
+fn write_region(path: impl AsRef<Path>, chunks: &[(i32, i32, Vec<u8>)]) {
+    let name = path.as_ref().file_name().unwrap().to_str().unwrap();
     let (rx, rz) = sekai_anvil::parse_region_name(name).unwrap();
     let mut builder = sekai_anvil::RegionBuilder::new(rx, rz, 0).unwrap();
     for (x, z, payload) in chunks {
         builder.stage_chunk(*x, *z, payload).unwrap();
     }
     let image = builder.image().unwrap();
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(path.as_ref().parent().unwrap()).unwrap();
     std::fs::write(path, image).unwrap();
 }
 
 /// Chunk coordinates present in the region file at `path`.
-fn read_coords(path: &Path) -> Vec<(i32, i32)> {
-    let name = path.file_name().unwrap().to_str().unwrap();
+fn read_coords(path: impl AsRef<Path>) -> Vec<(i32, i32)> {
+    let name = path.as_ref().file_name().unwrap().to_str().unwrap();
     let (rx, rz) = sekai_anvil::parse_region_name(name).unwrap();
     let bytes = std::fs::read(path).unwrap();
     let image = sekai_anvil::RegionImage::from_bytes(bytes, rx, rz).unwrap();
@@ -99,8 +99,8 @@ fn read_coords(path: &Path) -> Vec<(i32, i32)> {
 /// (rollback rewrites layout, so raw bytes differ).
 type ChunkMap = std::collections::BTreeMap<(i32, i32), Vec<u8>>;
 
-fn chunk_map(path: &Path) -> ChunkMap {
-    let name = path.file_name().unwrap().to_str().unwrap();
+fn chunk_map(path: impl AsRef<Path>) -> ChunkMap {
+    let name = path.as_ref().file_name().unwrap().to_str().unwrap();
     let (rx, rz) = sekai_anvil::parse_region_name(name).unwrap();
     let bytes = std::fs::read(path).unwrap();
     let image = sekai_anvil::RegionImage::from_bytes(bytes, rx, rz).unwrap();
@@ -205,7 +205,7 @@ async fn deleted_region_file_tombstones_once() {
             (2, 0, vec![3, 7, 7, 7]),
         ],
     );
-    write_region(&world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 8, 8, 8])]);
+    write_region(world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 8, 8, 8])]);
 
     let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
     let (first, _) = instance
@@ -753,7 +753,7 @@ async fn with_diff_records_diff_hashes() {
     let nbt = vec![10, 0, 0, 0];
     let mut payload = vec![3];
     payload.extend_from_slice(&nbt);
-    write_region(&world.join("region/r.0.0.mca"), &[(0, 0, payload)]);
+    write_region(world.join("region/r.0.0.mca"), &[(0, 0, payload)]);
 
     let options = BackupOptions {
         with_diff: true,
@@ -794,8 +794,8 @@ async fn progress_fires_per_changed_file() {
     let root = tempdir("progress");
     let world = root.join("world");
     let store = root.join("store").to_string_lossy().into_owned();
-    write_region(&world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
-    write_region(&world.join("region/r.1.0.mca"), &[(32, 0, vec![3, 2])]);
+    write_region(world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
+    write_region(world.join("region/r.1.0.mca"), &[(32, 0, vec![3, 2])]);
 
     let events = Arc::new(Mutex::new(Vec::new()));
     let seen = Arc::clone(&events);
@@ -848,7 +848,7 @@ async fn gc_runs_and_returns_timings() {
     let root = tempdir("gc");
     let world = root.join("world");
     let store = root.join("store").to_string_lossy().into_owned();
-    write_region(&world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
+    write_region(world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
 
     let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
     instance
@@ -876,11 +876,11 @@ async fn progress_events_cover_rollback_diff_and_gc() {
     let world = root.join("world");
     let store = root.join("store").to_string_lossy().into_owned();
     write_region(
-        &world.join("region/r.0.0.mca"),
+        world.join("region/r.0.0.mca"),
         &[(0, 0, build_status_nbt("minecraft:full"))],
     );
     write_region(
-        &world.join("region/r.1.0.mca"),
+        world.join("region/r.1.0.mca"),
         &[(32, 0, build_status_nbt("minecraft:full"))],
     );
 
@@ -1150,7 +1150,7 @@ async fn sparse_entities_chunk_diffs_empty_without_error() {
     let store = root.join("store").to_string_lossy().into_owned();
     // Dense terrain only; no entities/poi files at all.
     write_region(
-        &world.join("region/r.0.0.mca"),
+        world.join("region/r.0.0.mca"),
         &[(0, 0, build_status_nbt("minecraft:full"))],
     );
 
@@ -1191,7 +1191,7 @@ async fn created_and_deleted_chunks_diff_as_added_removed() {
 
     // S1: no entities chunk.
     write_region(
-        &world.join("region/r.0.0.mca"),
+        world.join("region/r.0.0.mca"),
         &[(0, 0, build_status_nbt("minecraft:full"))],
     );
     let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
@@ -1301,15 +1301,15 @@ async fn rect_and_kind_scopes_limit_ingest() {
     let world = root.join("world");
     let store = root.join("store").to_string_lossy().into_owned();
     write_region(
-        &world.join("region/r.0.0.mca"),
+        world.join("region/r.0.0.mca"),
         &[(0, 0, build_status_nbt("a")), (1, 0, build_status_nbt("b"))],
     );
     write_region(
-        &world.join("region/r.1.0.mca"),
+        world.join("region/r.1.0.mca"),
         &[(32, 0, build_status_nbt("c"))],
     );
     write_region(
-        &world.join("entities/r.0.0.mca"),
+        world.join("entities/r.0.0.mca"),
         &[(0, 0, build_status_nbt("d"))],
     );
 
@@ -1365,13 +1365,13 @@ fn corpus_path() -> PathBuf {
         .join("test-world")
 }
 
-fn copy_dir(src: &Path, dst: &Path) {
-    std::fs::create_dir_all(dst).unwrap();
+fn copy_dir(src: impl AsRef<Path>, dst: impl AsRef<Path>) {
+    std::fs::create_dir_all(dst.as_ref()).unwrap();
     for entry in std::fs::read_dir(src).unwrap() {
         let entry = entry.unwrap();
-        let target = dst.join(entry.file_name());
+        let target = dst.as_ref().join(entry.file_name());
         if entry.file_type().unwrap().is_dir() {
-            copy_dir(&entry.path(), &target);
+            copy_dir(entry.path(), &target);
         } else {
             std::fs::copy(entry.path(), &target).unwrap();
         }
@@ -1385,7 +1385,7 @@ async fn real_world_corpus_round_trip() {
 
     let root = tempdir("corpus");
     let world = root.join("world");
-    copy_dir(&corpus_path(), &world);
+    copy_dir(corpus_path(), &world);
     let store = root.join("store").to_string_lossy().into_owned();
 
     let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
@@ -1582,9 +1582,9 @@ fn model_payload(id: &str) -> Vec<u8> {
     out
 }
 
-fn materialize(world: &Path, model: &ChunkMaps, files: &[(&str, i32, i32)]) {
+fn materialize(world: impl AsRef<Path>, model: &ChunkMaps, files: &[(&str, i32, i32)]) {
     for (name, _, _) in files {
-        let path = world.join(name);
+        let path = world.as_ref().join(name);
         match model.get(*name) {
             Some(chunks) => {
                 let image = {
@@ -1608,15 +1608,15 @@ fn materialize(world: &Path, model: &ChunkMaps, files: &[(&str, i32, i32)]) {
     }
 }
 
-fn read_world(world: &Path) -> ChunkMaps {
-    sekai_world::discover(world)
+fn read_world(world: impl AsRef<Path>) -> ChunkMaps {
+    sekai_world::discover(world.as_ref())
         .unwrap()
         .into_iter()
         .map(|region| {
             // `/` regardless of platform, so the keys match the model's.
             let rel = region
                 .path
-                .strip_prefix(world)
+                .strip_prefix(world.as_ref())
                 .unwrap_or(&region.path)
                 .components()
                 .map(|c| c.as_os_str().to_string_lossy())

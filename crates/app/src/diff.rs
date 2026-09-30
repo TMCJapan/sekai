@@ -58,7 +58,7 @@ impl SekaiInstance {
 /// Returns `None` when the region file or chunk entry is absent; corrupt
 /// files still fail loudly.
 fn read_world_chunk_compressed(
-    world: &Path,
+    world: impl AsRef<Path>,
     coord: &ChunkCoord,
 ) -> Result<Option<Vec<u8>>, AppError> {
     let rx = coord.region_x();
@@ -175,7 +175,7 @@ impl SekaiInstance {
 }
 
 /// Chunk coordinates present on disk in `world`.
-pub fn world_chunk_coords(world: &Path) -> Result<Vec<ChunkCoord>, AppError> {
+pub fn world_chunk_coords(world: impl AsRef<Path>) -> Result<Vec<ChunkCoord>, AppError> {
     let mut coords = Vec::new();
     for region in sekai_world::discover(world)? {
         let bytes = sekai_world::open_image(&region.path)?;

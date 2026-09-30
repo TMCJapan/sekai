@@ -32,10 +32,10 @@ pub type SqliteStore = Store<SqliteMeta, FileCas>;
 
 /// Open (creating if needed) the store rooted at `root`
 /// (`<root>/meta.sqlite` plus `<root>/blobs/`).
-pub async fn open_sqlite(root: &Path) -> Result<SqliteStore, StorageError> {
-    std::fs::create_dir_all(root).map_err(|source| io_error(root, source))?;
-    let cas = FileCas::open(root)?;
-    let meta = SqliteMeta::open(&root.join("meta.sqlite")).await?;
+pub async fn open_sqlite(root: impl AsRef<Path>) -> Result<SqliteStore, StorageError> {
+    std::fs::create_dir_all(root.as_ref()).map_err(|source| io_error(root.as_ref(), source))?;
+    let cas = FileCas::open(root.as_ref())?;
+    let meta = SqliteMeta::open(&root.as_ref().join("meta.sqlite")).await?;
     Ok(Store::new(meta, cas))
 }
 
@@ -44,7 +44,7 @@ impl SqliteMeta {
     ///
     /// The parent directory must already exist; this type never creates it
     /// (directory layout is the store's concern).
-    pub async fn open(path: &Path) -> Result<Self, StorageError> {
+    pub async fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
         let options = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)

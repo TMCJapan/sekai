@@ -101,7 +101,7 @@ fn chunk_nbt(rng: &mut Rng, spec: &WorldSpec, x: i32, z: i32) -> Vec<u8> {
 }
 
 /// Generate `spec` into `world/region/` (overworld only).
-pub fn generate(world: &Path, spec: &WorldSpec) {
+pub fn generate(world: impl AsRef<Path>, spec: &WorldSpec) {
     let mut rng = Rng::new(spec.seed);
     for r in 0..spec.regions {
         let rx = i32::try_from(r).expect("few regions");
@@ -118,7 +118,7 @@ pub fn generate(world: &Path, spec: &WorldSpec) {
             payload.extend_from_slice(&compressed);
             builder.stage_chunk(x, z, &payload).expect("chunk fits");
         }
-        let dir = world.join("region");
+        let dir = world.as_ref().join("region");
         std::fs::create_dir_all(&dir).expect("mkdir works");
         let image = builder.image().expect("image assembles");
         std::fs::write(dir.join(format!("r.{r}.0.mca")), image).expect("write works");
