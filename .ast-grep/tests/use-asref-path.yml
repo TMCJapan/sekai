@@ -1,0 +1,9 @@
+id: use-asref-path
+language: rust
+testCases:
+  - code: "fn good(p: impl AsRef<Path>) {}"
+    valid: true
+    message: "Correct pattern: impl AsRef<Path>"
+  - code: "fn bad(p: &Path) {}"
+    valid: false
+    message: "Should use impl AsRef<Path>"

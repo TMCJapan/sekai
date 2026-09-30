@@ -56,6 +56,22 @@ jobs:
           - name: Check for unused dependencies
             run: cargo machete
 
+  ast-grep:
+    name: AST grep rules
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Install ast-grep
+        uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172
+        with:
+          tool: ast-grep
+      - name: Run ast-grep tests
+        run: ast-grep test -c .ast-grep/sgconfig.yml --test-dir .ast-grep/tests
+      - name: Run ast-grep prohibition rules
+        # Switch to --error=no-path-ref-arg once remaining violations are fixed.
+        run: ast-grep scan --warning=no-path-ref-arg --rule .ast-grep/rules/no-path-ref-arg.yml .
+
   portability:
     name: Library / ${{ matrix.name }}
     runs-on: ubuntu-latest
