@@ -32,7 +32,7 @@ fn sync_dir(dir: impl AsRef<Path>) -> Result<(), StorageError> {
 /// across platforms, even though nothing here can fail.
 #[cfg(not(unix))]
 #[allow(clippy::unnecessary_wraps, reason = "matches the unix signature")]
-const fn sync_dir(_dir: impl AsRef<Path>) -> Result<(), StorageError> {
+fn sync_dir(_dir: impl AsRef<Path>) -> Result<(), StorageError> {
     Ok(())
 }
 
