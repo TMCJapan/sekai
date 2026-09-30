@@ -171,13 +171,13 @@ cargo clippy -p sekai-util -p sekai-anvil -p sekai-nbt -p sekai-core --target th
 cargo clippy -p sekai-util -p sekai-anvil -p sekai-nbt -p sekai-core --target wasm32-unknown-unknown -- -D warnings
 
 # Run all unit and integration tests (default backend)
-cargo test --workspace
+cargo nextest run --workspace
 
 # Backend matrix (when touching storage backends)
-cargo test -p sekai-storage
-cargo test -p sekai-storage --no-default-features --features backend-sqlite
+cargo nextest run -p sekai-storage
+cargo nextest run -p sekai-storage --no-default-features --features backend-sqlite
 # mysql/postgres: reserved; run once implemented, e.g.
-# cargo test -p sekai-storage --no-default-features --features backend-mysql
+# cargo nextest run -p sekai-storage --no-default-features --features backend-mysql
 
 # Run dependency, advisory, and license checks
 cargo deny check
