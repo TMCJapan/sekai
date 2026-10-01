@@ -4,10 +4,12 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use sekai_core::{
-    BlobHash, ChunkCoord, DEFAULT_IGNORED, MetaStore, NbtDiffEntry, SnapshotId, diff_nbt,
+    BlobHash, BlobStore as _, ChunkCoord, DEFAULT_IGNORED, MetaStore, NbtDiffEntry, SnapshotId,
+    diff_nbt,
 };
 
 use crate::error::AppError;
+use crate::instance::{SekaiInstance, WorldHandle, WorldHandleMut};
 
 /// Per-phase timings for chunk AST diffs. Informational only; never
 /// changes diff semantics.
@@ -23,26 +25,33 @@ pub struct DiffTimings {
     pub diff_compute: Duration,
 }
 
-/// Compute AST diff between two stored chunk blob hashes in `store_url`.
-pub async fn diff_blobs(
-    store_url: &str,
-    old_hash: &BlobHash,
-    new_hash: &BlobHash,
-    ignore: Option<&[&str]>,
-) -> Result<Vec<NbtDiffEntry>, AppError> {
-    let store = super::open_store(store_url).await?;
-    let ignore_set = ignore.unwrap_or(DEFAULT_IGNORED);
+impl SekaiInstance {
+    /// Compute AST diff between two stored chunk blob hashes.
+    pub async fn diff_blobs(
+        &self,
+        old_hash: &BlobHash,
+        new_hash: &BlobHash,
+        ignore: Option<&[&str]>,
+    ) -> Result<Vec<NbtDiffEntry>, AppError> {
+        let ignore_set = ignore.unwrap_or(DEFAULT_IGNORED);
 
-    let mut old_compressed = Vec::new();
-    let mut new_compressed = Vec::new();
+        let mut old_compressed = Vec::new();
+        let mut new_compressed = Vec::new();
 
-    store.cas().fetch_blob(old_hash, &mut old_compressed)?;
-    store.cas().fetch_blob(new_hash, &mut new_compressed)?;
+        self.store
+            .cas()
+            .fetch_into(old_hash, &mut old_compressed)
+            .await?;
+        self.store
+            .cas()
+            .fetch_into(new_hash, &mut new_compressed)
+            .await?;
 
-    let old_nbt = decompress_chunk(&old_compressed)?;
-    let new_nbt = decompress_chunk(&new_compressed)?;
+        let old_nbt = decompress_chunk(&old_compressed)?;
+        let new_nbt = decompress_chunk(&new_compressed)?;
 
-    Ok(diff_nbt(&old_nbt, &new_nbt, ignore_set)?)
+        Ok(diff_nbt(&old_nbt, &new_nbt, ignore_set)?)
+    }
 }
 
 /// Fetch raw (still compressed) chunk payload directly from a world directory.
@@ -89,27 +98,23 @@ pub struct DiffProgress {
     pub chunks_total: usize,
 }
 
-/// Compute AST diff for a chunk coordinate between two snapshots in `store_url`.
-pub async fn diff_chunk(
-    store_url: &str,
-    old_snapshot: SnapshotId,
-    new_snapshot: SnapshotId,
-    coord: &ChunkCoord,
-    ignore: Option<&[&str]>,
-) -> Result<Vec<NbtDiffEntry>, AppError> {
-    let (diffs, _) = diff_chunks(
-        store_url,
-        old_snapshot,
-        new_snapshot,
-        &[*coord],
-        ignore,
-        |_| {},
-    )
-    .await?;
-    Ok(diffs
-        .into_iter()
-        .next()
-        .map_or_else(Vec::new, |diff| diff.entries))
+impl SekaiInstance {
+    /// Compute AST diff for a chunk coordinate between two snapshots.
+    pub async fn diff_chunk(
+        &self,
+        old_snapshot: SnapshotId,
+        new_snapshot: SnapshotId,
+        coord: &ChunkCoord,
+        ignore: Option<&[&str]>,
+    ) -> Result<Vec<NbtDiffEntry>, AppError> {
+        let (diffs, _) = self
+            .diff_chunks(old_snapshot, new_snapshot, &[*coord], ignore, |_| {})
+            .await?;
+        Ok(diffs
+            .into_iter()
+            .next()
+            .map_or_else(Vec::new, |diff| diff.entries))
+    }
 }
 
 /// One chunk's AST diff entries between two sources.
@@ -121,52 +126,52 @@ pub struct ChunkDiff {
     pub entries: Vec<NbtDiffEntry>,
 }
 
-/// Compute AST diffs for explicit chunk coordinates.
-///
-/// Compares two snapshots in `store_url`, additionally returning
-/// per-phase timings. A chunk absent (or tombstoned) on a side diffs as an
-/// empty compound there: absent on both sides yields no entries, present on
-/// one side reports whole-value Added/Removed entries.
-pub async fn diff_chunks(
-    store_url: &str,
-    old_snapshot: SnapshotId,
-    new_snapshot: SnapshotId,
-    coords: &[ChunkCoord],
-    ignore: Option<&[&str]>,
-    progress: impl FnMut(DiffProgress) + Send,
-) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
-    let total_started = Instant::now();
-    let store = super::open_store(store_url).await?;
-    let ignore_set = ignore.unwrap_or(DEFAULT_IGNORED);
-    let mut timings = DiffTimings::default();
-    let out = diff_coords(
-        coords,
-        ignore_set,
-        DiffSource::Snapshot(&store, old_snapshot),
-        DiffSource::Snapshot(&store, new_snapshot),
-        progress,
-        &mut timings,
-    )
-    .await?;
-    timings.total = total_started.elapsed();
-    Ok((out, timings))
-}
-
-/// Effective chunk coordinates of one snapshot (fallback-resolved set).
-pub async fn snapshot_chunk_coords(
-    store_url: &str,
-    snapshot: SnapshotId,
-) -> Result<Vec<ChunkCoord>, AppError> {
-    let store = super::open_store(store_url).await?;
-    let mut coords = Vec::new();
-    store
-        .meta()
-        .visit_snapshot_chunks(snapshot, |entry| {
-            coords.push(entry.coord);
-            true
-        })
+impl SekaiInstance {
+    /// Compute AST diffs for explicit chunk coordinates.
+    ///
+    /// Compares two snapshots in the store, additionally returning
+    /// per-phase timings. A chunk absent (or tombstoned) on a side diffs as an
+    /// empty compound there: absent on both sides yields no entries, present on
+    /// one side reports whole-value Added/Removed entries.
+    pub async fn diff_chunks(
+        &self,
+        old_snapshot: SnapshotId,
+        new_snapshot: SnapshotId,
+        coords: &[ChunkCoord],
+        ignore: Option<&[&str]>,
+        progress: impl FnMut(DiffProgress) + Send,
+    ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
+        let total_started = Instant::now();
+        let ignore_set = ignore.unwrap_or(DEFAULT_IGNORED);
+        let mut timings = DiffTimings::default();
+        let out = diff_coords(
+            coords,
+            ignore_set,
+            DiffSource::Snapshot(&self.store, old_snapshot),
+            DiffSource::Snapshot(&self.store, new_snapshot),
+            progress,
+            &mut timings,
+        )
         .await?;
-    Ok(coords)
+        timings.total = total_started.elapsed();
+        Ok((out, timings))
+    }
+
+    /// Effective chunk coordinates of one snapshot (fallback-resolved set).
+    pub async fn snapshot_chunk_coords(
+        &self,
+        snapshot: SnapshotId,
+    ) -> Result<Vec<ChunkCoord>, AppError> {
+        let mut coords = Vec::new();
+        self.store
+            .meta()
+            .visit_snapshot_chunks(snapshot, |entry| {
+                coords.push(entry.coord);
+                true
+            })
+            .await?;
+        Ok(coords)
+    }
 }
 
 /// Chunk coordinates present on disk in `world`.
@@ -221,60 +226,85 @@ fn decompress_or_empty(compressed: Option<Vec<u8>>) -> Result<Vec<u8>, AppError>
     compressed.map_or_else(|| Ok(EMPTY_COMPOUND.to_vec()), |c| decompress_chunk(&c))
 }
 
-/// Compute AST diff for a chunk coordinate between current world state and a snapshot in `store_url`.
-///
-/// If `snapshot` is `None`, the latest snapshot in the store is used.
-pub async fn diff_world_chunk(
-    world: &Path,
-    store_url: &str,
-    snapshot: Option<SnapshotId>,
-    coord: &ChunkCoord,
-    ignore: Option<&[&str]>,
-) -> Result<Vec<NbtDiffEntry>, AppError> {
-    let (diffs, _) =
-        diff_world_chunks(world, store_url, snapshot, &[*coord], ignore, |_| {}).await?;
-    Ok(diffs
-        .into_iter()
-        .next()
-        .map_or_else(Vec::new, |diff| diff.entries))
+impl WorldHandle<'_> {
+    /// Compute AST diff for a chunk coordinate between the bound world state
+    /// and a snapshot.
+    ///
+    /// If `snapshot` is `None`, the latest snapshot in the store is used.
+    pub async fn diff_world_chunk(
+        &self,
+        snapshot: Option<SnapshotId>,
+        coord: &ChunkCoord,
+        ignore: Option<&[&str]>,
+    ) -> Result<Vec<NbtDiffEntry>, AppError> {
+        let (diffs, _) = self
+            .diff_world_chunks(snapshot, &[*coord], ignore, |_| {})
+            .await?;
+        Ok(diffs
+            .into_iter()
+            .next()
+            .map_or_else(Vec::new, |diff| diff.entries))
+    }
+
+    /// Compute AST diffs for explicit chunk coordinates between the bound
+    /// world state and a snapshot, additionally returning per-phase timings.
+    ///
+    /// If `snapshot` is `None`, the latest snapshot in the store is used.
+    /// World-side acquisition (region lookup, read, parse) counts under
+    /// `blob_fetch`; both sides' decompression under `decompress`.
+    pub async fn diff_world_chunks(
+        &self,
+        snapshot: Option<SnapshotId>,
+        coords: &[ChunkCoord],
+        ignore: Option<&[&str]>,
+        progress: impl FnMut(DiffProgress) + Send,
+    ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
+        let total_started = Instant::now();
+        let snapshot_id = match snapshot {
+            Some(id) => id,
+            None => self.instance.latest_snapshot_id().await?,
+        };
+
+        let ignore_set = ignore.unwrap_or(DEFAULT_IGNORED);
+        let mut timings = DiffTimings::default();
+        let out = diff_coords(
+            coords,
+            ignore_set,
+            DiffSource::Snapshot(&self.instance.store, snapshot_id),
+            DiffSource::World(&self.root),
+            progress,
+            &mut timings,
+        )
+        .await?;
+        timings.total = total_started.elapsed();
+        Ok((out, timings))
+    }
 }
 
-/// Compute AST diffs for explicit chunk coordinates between current world
-/// state and a snapshot in `store_url`, additionally returning per-phase
-/// timings.
-///
-/// If `snapshot` is `None`, the latest snapshot in the store is used.
-/// World-side acquisition (region lookup, read, parse) counts under
-/// `blob_fetch`; both sides' decompression under `decompress`.
-pub async fn diff_world_chunks(
-    world: &Path,
-    store_url: &str,
-    snapshot: Option<SnapshotId>,
-    coords: &[ChunkCoord],
-    ignore: Option<&[&str]>,
-    progress: impl FnMut(DiffProgress) + Send,
-) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
-    let total_started = Instant::now();
-    let snapshot_id = if let Some(id) = snapshot {
-        id
-    } else {
-        super::latest_snapshot_id(store_url).await?
-    };
+impl WorldHandleMut<'_> {
+    /// Compute AST diff for one chunk; see [`WorldHandle::diff_world_chunk`].
+    pub async fn diff_world_chunk(
+        &self,
+        snapshot: Option<SnapshotId>,
+        coord: &ChunkCoord,
+        ignore: Option<&[&str]>,
+    ) -> Result<Vec<NbtDiffEntry>, AppError> {
+        self.view().diff_world_chunk(snapshot, coord, ignore).await
+    }
 
-    let store = super::open_store(store_url).await?;
-    let ignore_set = ignore.unwrap_or(DEFAULT_IGNORED);
-    let mut timings = DiffTimings::default();
-    let out = diff_coords(
-        coords,
-        ignore_set,
-        DiffSource::Snapshot(&store, snapshot_id),
-        DiffSource::World(world),
-        progress,
-        &mut timings,
-    )
-    .await?;
-    timings.total = total_started.elapsed();
-    Ok((out, timings))
+    /// Compute AST diffs for explicit chunks; see
+    /// [`WorldHandle::diff_world_chunks`].
+    pub async fn diff_world_chunks(
+        &self,
+        snapshot: Option<SnapshotId>,
+        coords: &[ChunkCoord],
+        ignore: Option<&[&str]>,
+        progress: impl FnMut(DiffProgress) + Send,
+    ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
+        self.view()
+            .diff_world_chunks(snapshot, coords, ignore, progress)
+            .await
+    }
 }
 
 /// One side of a diff: where its compressed payload comes from.

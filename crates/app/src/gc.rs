@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use sekai_core::{GcPlan, GcReport};
 
 use crate::error::AppError;
+use crate::instance::SekaiInstance;
 
 /// Per-phase timings for garbage collection.
 #[derive(Debug, Clone, Default)]
@@ -26,55 +27,54 @@ pub struct GcProgress {
     pub blobs_total: usize,
 }
 
-/// Inspect store and return a plan of unreferenced orphan blobs,
-/// additionally returning per-phase timings (`apply` is zero: dry-run
-/// never unlinks).
-pub async fn gc_plan(store_url: &str) -> Result<(GcPlan, GcTimings), AppError> {
-    let total_started = Instant::now();
-    let store = super::open_store(store_url).await?;
-    let (plan, plan_dt) = plan_within(&store).await?;
-    let timings = GcTimings {
-        total: total_started.elapsed(),
-        plan: plan_dt,
-        apply: Duration::ZERO,
-    };
-    Ok((plan, timings))
-}
+impl SekaiInstance {
+    /// Inspect the store and return a plan of unreferenced orphan blobs,
+    /// additionally returning per-phase timings (`apply` is zero: dry-run
+    /// never unlinks).
+    pub async fn gc_plan(&self) -> Result<(GcPlan, GcTimings), AppError> {
+        let total_started = Instant::now();
+        let (plan, plan_dt) = plan_within(self.store()).await?;
+        let timings = GcTimings {
+            total: total_started.elapsed(),
+            plan: plan_dt,
+            apply: Duration::ZERO,
+        };
+        Ok((plan, timings))
+    }
 
-/// Execute a garbage collection plan, removing orphan blobs.
-/// `progress` fires per examined orphan candidate.
-pub async fn gc_apply(
-    store_url: &str,
-    plan: &GcPlan,
-    progress: impl FnMut(GcProgress) + Send,
-) -> Result<(GcReport, GcTimings), AppError> {
-    let total_started = Instant::now();
-    let mut store = super::open_store(store_url).await?;
-    let (report, apply_dt) = apply_within(&mut store, plan, progress).await?;
-    let timings = GcTimings {
-        total: total_started.elapsed(),
-        plan: Duration::ZERO,
-        apply: apply_dt,
-    };
-    Ok((report, timings))
-}
+    /// Execute a garbage collection plan, removing orphan blobs.
+    /// `progress` fires per examined orphan candidate.
+    pub async fn gc_apply(
+        &mut self,
+        plan: &GcPlan,
+        progress: impl FnMut(GcProgress) + Send,
+    ) -> Result<(GcReport, GcTimings), AppError> {
+        let total_started = Instant::now();
+        let (report, apply_dt) = apply_within(self.store_mut(), plan, progress).await?;
+        let timings = GcTimings {
+            total: total_started.elapsed(),
+            plan: Duration::ZERO,
+            apply: apply_dt,
+        };
+        Ok((report, timings))
+    }
 
-/// Run garbage collection plan and apply in a single pass.
-/// `progress` fires per examined orphan candidate during apply.
-pub async fn gc(
-    store_url: &str,
-    progress: impl FnMut(GcProgress) + Send,
-) -> Result<(GcReport, GcTimings), AppError> {
-    let total_started = Instant::now();
-    let mut store = super::open_store(store_url).await?;
-    let (plan, plan_dt) = plan_within(&store).await?;
-    let (report, apply_dt) = apply_within(&mut store, &plan, progress).await?;
-    let timings = GcTimings {
-        total: total_started.elapsed(),
-        plan: plan_dt,
-        apply: apply_dt,
-    };
-    Ok((report, timings))
+    /// Run garbage collection plan and apply in a single pass.
+    /// `progress` fires per examined orphan candidate during apply.
+    pub async fn gc(
+        &mut self,
+        progress: impl FnMut(GcProgress) + Send,
+    ) -> Result<(GcReport, GcTimings), AppError> {
+        let total_started = Instant::now();
+        let (plan, plan_dt) = plan_within(self.store()).await?;
+        let (report, apply_dt) = apply_within(self.store_mut(), &plan, progress).await?;
+        let timings = GcTimings {
+            total: total_started.elapsed(),
+            plan: plan_dt,
+            apply: apply_dt,
+        };
+        Ok((report, timings))
+    }
 }
 
 /// Build the orphan plan against an open store, refusing a busy one.

@@ -16,6 +16,7 @@ use sekai_storage::FileCas;
 use sekai_world::LayoutFlavor;
 
 use crate::error::AppError;
+use crate::instance::SekaiInstance;
 use crate::rollback::{MissingBlobPolicy, fetch_or_skip};
 
 /// Export policy. `Default` aborts on missing blobs, as in rollback.
@@ -56,59 +57,61 @@ pub struct ExportProgress {
     pub chunks_done: usize,
 }
 
-/// Rebuild `snapshot` from the store at `store_url` into `out`, returning
-/// execution report and per-phase timings.
-///
-/// `out` is created when missing and must otherwise be empty; anything
-/// else fails loudly so export can never clobber existing data. Only
-/// `scope` is exported. `progress` fires as files complete; it must be
-/// `'static` because the file pass runs on a blocking pool (pass a `move`
-/// closure owning its state).
-pub async fn export(
-    out: &Path,
-    store_url: &str,
-    snapshot: SnapshotId,
-    flavor: LayoutFlavor,
-    options: ExportOptions,
-    scope: Scope,
-    progress: impl Fn(ExportProgress) + Send + 'static,
-) -> Result<(ExportReport, ExportTimings), AppError> {
-    let total_started = Instant::now();
-    refuse_non_empty(out)?;
+impl SekaiInstance {
+    /// Rebuild `snapshot` from the store into `out`, returning execution
+    /// report and per-phase timings.
+    ///
+    /// `out` is created when missing and must otherwise be empty; anything
+    /// else fails loudly so export can never clobber existing data. Only
+    /// `scope` is exported. `progress` fires as files complete; it must be
+    /// `'static` because the file pass runs on a blocking pool (pass a
+    /// `move` closure owning its state).
+    pub async fn export(
+        &self,
+        out: &Path,
+        snapshot: SnapshotId,
+        flavor: LayoutFlavor,
+        options: ExportOptions,
+        scope: Scope,
+        progress: impl Fn(ExportProgress) + Send + 'static,
+    ) -> Result<(ExportReport, ExportTimings), AppError> {
+        let total_started = Instant::now();
+        refuse_non_empty(out)?;
 
-    let store = super::open_store(store_url).await?;
+        let store = self.store();
 
-    let plan_started = Instant::now();
-    let plan = sekai_core::usecase::rollback::plan_rollback(store.meta(), snapshot)
-        .await
-        .map_err(AppError::Rollback)?;
-    let plan_dt = plan_started.elapsed();
+        let plan_started = Instant::now();
+        let plan = sekai_core::usecase::rollback::plan_rollback(store.meta(), snapshot)
+            .await
+            .map_err(AppError::Rollback)?;
+        let plan_dt = plan_started.elapsed();
 
-    let timestamp = u32::try_from(plan.created_at_ms / 1000).unwrap_or(u32::MAX);
+        let timestamp = u32::try_from(plan.created_at_ms / 1000).unwrap_or(u32::MAX);
 
-    let mut groups = plan.groups;
-    groups.retain(|key, _| scope.matches_region(*key));
+        let mut groups = plan.groups;
+        groups.retain(|key, _| scope.matches_region(*key));
 
-    let job = ExportJob {
-        groups,
-        options,
-        cas: store.cas().clone(),
-        out: out.to_path_buf(),
-        flavor,
-    };
+        let job = ExportJob {
+            groups,
+            options,
+            cas: store.cas().clone(),
+            out: out.to_path_buf(),
+            flavor,
+        };
 
-    let files_started = Instant::now();
-    let report =
-        tokio::task::spawn_blocking(move || export_files(job, timestamp, progress)).await??;
-    let files_dt = files_started.elapsed();
+        let files_started = Instant::now();
+        let report =
+            tokio::task::spawn_blocking(move || export_files(job, timestamp, progress)).await??;
+        let files_dt = files_started.elapsed();
 
-    let timings = ExportTimings {
-        total: total_started.elapsed(),
-        plan: plan_dt,
-        export_files: files_dt,
-    };
+        let timings = ExportTimings {
+            total: total_started.elapsed(),
+            plan: plan_dt,
+            export_files: files_dt,
+        };
 
-    Ok((report, timings))
+        Ok((report, timings))
+    }
 }
 
 /// Fail unless `out` is missing or an empty directory.

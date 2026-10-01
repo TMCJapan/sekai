@@ -45,7 +45,16 @@ pub async fn run(
     flags: &ExportFlags,
     out: ReportOut,
 ) -> anyhow::Result<()> {
-    let id = sekai_app::resolve_snapshot_ref(store, snapshot)
+    let instance = sekai_app::SekaiInstance::open(store)
+        .await
+        .with_context(|| {
+            format!(
+                "export of snapshot {snapshot:?} to {} failed",
+                out_dir.display()
+            )
+        })?;
+    let id = instance
+        .resolve_snapshot_ref(snapshot)
         .await
         .with_context(|| format!("snapshot {snapshot:?} failed to resolve"))?;
     let scope = selection.owned_scope();
@@ -53,8 +62,8 @@ pub async fn run(
     let options = map_options(flags.on_missing_blob);
     let bar = progress_bar(progress);
     let owned = bar.clone();
-    let (report, timings) =
-        sekai_app::export(out_dir, store, id, flavor, options, scope, move |update| {
+    let (report, timings) = instance
+        .export(out_dir, id, flavor, options, scope, move |update| {
             report_progress(
                 owned.as_ref(),
                 update.files_done,

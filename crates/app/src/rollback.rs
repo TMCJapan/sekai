@@ -21,6 +21,7 @@ use sekai_storage::FileCas;
 use sekai_world::LayoutFlavor;
 
 use crate::error::AppError;
+use crate::instance::WorldHandleMut;
 
 /// Per-phase timings for rollback execution.
 #[derive(Debug, Clone, Default)]
@@ -90,83 +91,88 @@ pub struct RollbackOptions {
     pub on_missing_file: MissingFilePolicy,
 }
 
-/// Rebuild `world` from `snapshot` in the store at `store_url`, returning
-/// execution report and per-phase timings.
-///
-/// Only `scope` is rebuilt: region files outside the scope are never
-/// written, deleted, or otherwise touched. `progress` fires as files
-/// complete; it must be `'static` because the file pass runs on a
-/// blocking pool (pass a `move` closure owning its state).
-pub async fn rollback(
-    world: &Path,
-    store_url: &str,
-    snapshot: SnapshotId,
-    options: RollbackOptions,
-    scope: Scope,
-    progress: impl Fn(RollbackProgress) + Send + 'static,
-) -> Result<(RollbackReport, RollbackTimings), AppError> {
-    let total_started = Instant::now();
-    let store = super::open_store(store_url).await?;
+impl WorldHandleMut<'_> {
+    /// Rebuild the bound world from `snapshot`, returning execution report
+    /// and per-phase timings.
+    ///
+    /// Only `scope` is rebuilt: region files outside the scope are never
+    /// written, deleted, or otherwise touched. `progress` fires as files
+    /// complete; it must be `'static` because the file pass runs on a
+    /// blocking pool (pass a `move` closure owning its state).
+    ///
+    /// Rebuilding writes (and may delete) region files, so it goes through
+    /// `&mut self`: only one write session per world can exist at a time.
+    pub async fn rollback(
+        &mut self,
+        snapshot: SnapshotId,
+        options: RollbackOptions,
+        scope: Scope,
+        progress: impl Fn(RollbackProgress) + Send + 'static,
+    ) -> Result<(RollbackReport, RollbackTimings), AppError> {
+        let store = &self.instance.store;
+        let world = self.root.as_path();
+        let total_started = Instant::now();
 
-    let plan_started = Instant::now();
-    // The snapshot's creation time stamps every rebuilt file.
-    let plan = sekai_core::usecase::rollback::plan_rollback(store.meta(), snapshot)
-        .await
-        .map_err(AppError::Rollback)?;
-    let plan_dt = plan_started.elapsed();
+        let plan_started = Instant::now();
+        // The snapshot's creation time stamps every rebuilt file.
+        let plan = sekai_core::usecase::rollback::plan_rollback(store.meta(), snapshot)
+            .await
+            .map_err(AppError::Rollback)?;
+        let plan_dt = plan_started.elapsed();
 
-    let timestamp = u32::try_from(plan.created_at_ms / 1000).unwrap_or(u32::MAX);
+        let timestamp = u32::try_from(plan.created_at_ms / 1000).unwrap_or(u32::MAX);
 
-    // Scope before the blocking pass: out-of-scope regions are dropped
-    // from both sides, so the file pass below cannot tell they exist.
-    let mut groups = plan.groups;
-    groups.retain(|key, _| scope.matches_region(*key));
-    let mut tombstones = plan.tombstones;
-    tombstones.retain(|key, _| scope.matches_region(*key));
+        // Scope before the blocking pass: out-of-scope regions are dropped
+        // from both sides, so the file pass below cannot tell they exist.
+        let mut groups = plan.groups;
+        groups.retain(|key, _| scope.matches_region(*key));
+        let mut tombstones = plan.tombstones;
+        tombstones.retain(|key, _| scope.matches_region(*key));
 
-    let discover_started = Instant::now();
-    let flavor = sekai_world::detect_flavor(world)?;
-    let world_buf = world.to_path_buf();
-    let mut discovered: BTreeMap<RegionKey, PathBuf> = tokio::task::spawn_blocking(move || {
-        sekai_world::discover(&world_buf).map(|regions| {
-            regions
-                .into_iter()
-                .map(|r| {
-                    (
-                        RegionKey::new(r.dim, r.kind, r.region_x, r.region_z),
-                        r.path,
-                    )
-                })
-                .collect()
+        let discover_started = Instant::now();
+        let flavor = sekai_world::detect_flavor(world)?;
+        let world_buf = world.to_path_buf();
+        let mut discovered: BTreeMap<RegionKey, PathBuf> = tokio::task::spawn_blocking(move || {
+            sekai_world::discover(&world_buf).map(|regions| {
+                regions
+                    .into_iter()
+                    .map(|r| {
+                        (
+                            RegionKey::new(r.dim, r.kind, r.region_x, r.region_z),
+                            r.path,
+                        )
+                    })
+                    .collect()
+            })
         })
-    })
-    .await??;
-    let discover_dt = discover_started.elapsed();
-    discovered.retain(|key, _| scope.matches_region(*key));
+        .await??;
+        let discover_dt = discover_started.elapsed();
+        discovered.retain(|key, _| scope.matches_region(*key));
 
-    let job = RollbackJob {
-        groups,
-        tombstones,
-        options,
-        cas: store.cas().clone(),
-        world: world.to_path_buf(),
-        flavor,
-        discovered,
-    };
+        let job = RollbackJob {
+            groups,
+            tombstones,
+            options,
+            cas: store.cas().clone(),
+            world: world.to_path_buf(),
+            flavor,
+            discovered,
+        };
 
-    let files_started = Instant::now();
-    let report =
-        tokio::task::spawn_blocking(move || rollback_files(job, timestamp, progress)).await??;
-    let files_dt = files_started.elapsed();
+        let files_started = Instant::now();
+        let report =
+            tokio::task::spawn_blocking(move || rollback_files(job, timestamp, progress)).await??;
+        let files_dt = files_started.elapsed();
 
-    let timings = RollbackTimings {
-        total: total_started.elapsed(),
-        plan: plan_dt,
-        discover: discover_dt,
-        rollback_files: files_dt,
-    };
+        let timings = RollbackTimings {
+            total: total_started.elapsed(),
+            plan: plan_dt,
+            discover: discover_dt,
+            rollback_files: files_dt,
+        };
 
-    Ok((report, timings))
+        Ok((report, timings))
+    }
 }
 
 /// Everything one rollback file pass needs, owned for the blocking task.

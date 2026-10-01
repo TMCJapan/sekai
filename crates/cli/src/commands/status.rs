@@ -23,16 +23,21 @@ pub async fn run(
     let bar = progress_bar(progress);
     let owned = bar.clone();
     let options = sekai_app::StatusOptions { concurrency: jobs };
-    let (report, timings) = sekai_app::status(world, store, options, scope, move |update| {
-        report_progress(
-            owned.as_ref(),
-            update.files_done,
-            update.files_total,
-            format!("files {} chunks", update.chunks_done),
-        );
-    })
-    .await
-    .with_context(|| format!("status of {} failed", world.display()))?;
+    let instance = sekai_app::SekaiInstance::open(store)
+        .await
+        .with_context(|| format!("status of {} failed", world.display()))?;
+    let (report, timings) = instance
+        .world(world)
+        .status(options, scope, move |update| {
+            report_progress(
+                owned.as_ref(),
+                update.files_done,
+                update.files_total,
+                format!("files {} chunks", update.chunks_done),
+            );
+        })
+        .await
+        .with_context(|| format!("status of {} failed", world.display()))?;
     finish_progress(bar.as_ref());
     if out.json {
         println!(

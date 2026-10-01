@@ -15,23 +15,21 @@ fn benches(c: &mut Criterion) {
         let world = root.join("world");
         generate(&world, &SMALL);
         let store = root.join("store").to_string_lossy().into_owned();
-        rt.block_on(sekai_app::backup(
-            &world,
-            &store,
-            options(),
-            Scope::World,
-            |_| {},
-        ))
+        let mut instance = rt
+            .block_on(sekai_app::SekaiInstance::open(&store))
+            .expect("open works");
+        rt.block_on(
+            instance
+                .world_mut(&world)
+                .backup(options(), Scope::World, |_| {}),
+        )
         .expect("backup works");
-        let snapshots = rt
-            .block_on(sekai_app::list_snapshots(&store))
-            .expect("list works");
+        let snapshots = rt.block_on(instance.list_snapshots()).expect("list works");
         let coords = rt
-            .block_on(sekai_app::snapshot_chunk_coords(&store, snapshots[0].id))
+            .block_on(instance.snapshot_chunk_coords(snapshots[0].id))
             .expect("coords work");
         b.iter(|| {
-            rt.block_on(sekai_app::diff_chunks(
-                &store,
+            rt.block_on(instance.diff_chunks(
                 snapshots[0].id,
                 snapshots[0].id,
                 &coords,
@@ -47,23 +45,21 @@ fn benches(c: &mut Criterion) {
         let world = corpus_world();
         let root = world.parent().unwrap().to_path_buf();
         let store = root.join("store").to_string_lossy().into_owned();
-        rt.block_on(sekai_app::backup(
-            &world,
-            &store,
-            options(),
-            Scope::World,
-            |_| {},
-        ))
+        let mut instance = rt
+            .block_on(sekai_app::SekaiInstance::open(&store))
+            .expect("open works");
+        rt.block_on(
+            instance
+                .world_mut(&world)
+                .backup(options(), Scope::World, |_| {}),
+        )
         .expect("backup works");
-        let snapshots = rt
-            .block_on(sekai_app::list_snapshots(&store))
-            .expect("list works");
+        let snapshots = rt.block_on(instance.list_snapshots()).expect("list works");
         let coords = rt
-            .block_on(sekai_app::snapshot_chunk_coords(&store, snapshots[0].id))
+            .block_on(instance.snapshot_chunk_coords(snapshots[0].id))
             .expect("coords work");
         b.iter(|| {
-            rt.block_on(sekai_app::diff_chunks(
-                &store,
+            rt.block_on(instance.diff_chunks(
                 snapshots[0].id,
                 snapshots[0].id,
                 &coords,

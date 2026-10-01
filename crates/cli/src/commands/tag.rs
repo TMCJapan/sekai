@@ -16,71 +16,101 @@ pub async fn run(
     json: bool,
     style: Styler,
 ) -> anyhow::Result<()> {
+    // Validate before opening the store: a malformed invocation must not
+    // create the store directory as a side effect.
+    let action = parse_action(delete, name, snapshot)?;
+    let mut instance = sekai_app::SekaiInstance::open(store).await?;
+
+    match action {
+        Action::Delete(name) => {
+            let removed = instance
+                .delete_tag(&name)
+                .await
+                .with_context(|| format!("delete of tag {name} failed"))?;
+            if !removed {
+                anyhow::bail!("unknown tag: {name}");
+            }
+            if json {
+                println!(
+                    "{}",
+                    envelope_ok(
+                        "tag",
+                        &TagDelete {
+                            name: name.as_str().to_owned(),
+                        }
+                    )?
+                );
+                return Ok(());
+            }
+            println!("deleted tag {}", style.bold(name.as_str()));
+        }
+        Action::Create { name, snapshot } => {
+            let id = instance
+                .resolve_snapshot_ref(&snapshot)
+                .await
+                .with_context(|| format!("tag target {snapshot:?} failed to resolve"))?;
+            let record = instance
+                .create_tag(&name, id, force)
+                .await
+                .with_context(|| format!("tag {name} failed"))?;
+            if json {
+                println!("{}", envelope_ok("tag", &tag_payload(&record))?);
+                return Ok(());
+            }
+            println!(
+                "tagged {} as {}",
+                style.bold(&record.snapshot.raw().to_string()),
+                style.bold(name.as_str())
+            );
+        }
+        Action::List => {
+            let tags = instance
+                .list_tags()
+                .await
+                .with_context(|| format!("tag list for {store} failed"))?;
+            if json {
+                println!(
+                    "{}",
+                    envelope_ok("tag", &tags.iter().map(tag_payload).collect::<Vec<_>>())?
+                );
+                return Ok(());
+            }
+            for tag in &tags {
+                println!(
+                    "{}\t{}\t{}",
+                    style.bold(tag.name.as_str()),
+                    tag.snapshot.raw(),
+                    format_time(tag.created_at_ms)
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Requested tag operation, validated before the store is opened.
+enum Action {
+    Delete(TagName),
+    Create { name: TagName, snapshot: String },
+    List,
+}
+
+fn parse_action(
+    delete: bool,
+    name: Option<TagName>,
+    snapshot: Option<String>,
+) -> anyhow::Result<Action> {
     if delete {
         let Some(name) = name else {
             anyhow::bail!("tag name is required to delete a tag");
         };
-        let removed = sekai_app::delete_tag(store, &name)
-            .await
-            .with_context(|| format!("delete of tag {name} failed"))?;
-        if !removed {
-            anyhow::bail!("unknown tag: {name}");
-        }
-        if json {
-            println!(
-                "{}",
-                envelope_ok(
-                    "tag",
-                    &TagDelete {
-                        name: name.as_str().to_owned(),
-                    }
-                )?
-            );
-            return Ok(());
-        }
-        println!("deleted tag {}", style.bold(name.as_str()));
-        return Ok(());
+        return Ok(Action::Delete(name));
     }
-    if let (Some(name), Some(snapshot)) = (name.as_ref(), snapshot.as_ref()) {
-        let id = sekai_app::resolve_snapshot_ref(store, snapshot)
-            .await
-            .with_context(|| format!("tag target {snapshot:?} failed to resolve"))?;
-        let record = sekai_app::create_tag(store, name, id, force)
-            .await
-            .with_context(|| format!("tag {name} failed"))?;
-        if json {
-            println!("{}", envelope_ok("tag", &tag_payload(&record))?);
-            return Ok(());
-        }
-        println!(
-            "tagged {} as {}",
-            style.bold(&record.snapshot.raw().to_string()),
-            style.bold(name.as_str())
-        );
-        return Ok(());
+    match (name, snapshot) {
+        (Some(name), Some(snapshot)) => Ok(Action::Create { name, snapshot }),
+        (None, None) => Ok(Action::List),
+        _ => anyhow::bail!("tag creation needs both <name> and <snapshot>"),
     }
-    if name.is_some() || snapshot.is_some() {
-        anyhow::bail!("tag creation needs both <name> and <snapshot>");
-    }
-    let tags = sekai_app::list_tags(store)
-        .await
-        .with_context(|| format!("tag list for {store} failed"))?;
-    if json {
-        println!(
-            "{}",
-            envelope_ok("tag", &tags.iter().map(tag_payload).collect::<Vec<_>>())?
-        );
-        return Ok(());
-    }
-    for tag in &tags {
-        println!(
-            "{}\t{}\t{}",
-            style.bold(tag.name.as_str()),
-            tag.snapshot.raw(),
-            format_time(tag.created_at_ms)
-        );
-    }
-    Ok(())
 }
 
 #[derive(Serialize)]

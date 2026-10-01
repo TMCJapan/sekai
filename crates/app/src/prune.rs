@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 use sekai_core::{PrunePlan, PruneReport, SnapshotId};
 
 use crate::error::AppError;
+use crate::instance::SekaiInstance;
 
 /// Per-phase timings for snapshot pruning.
 #[derive(Debug, Clone, Default)]
@@ -30,63 +31,62 @@ pub struct PruneProgress {
     pub snapshots_total: usize,
 }
 
-/// Inspect snapshots and return a deletion plan.
-///
-/// Retention keeps `keep_last` newest intersected with `before`-and-newer.
-/// Additionally returns per-phase timings (`apply` is zero: dry-run never
-/// deletes).
-pub async fn prune_plan(
-    store_url: &str,
-    keep_last: Option<u64>,
-    before: Option<SnapshotId>,
-) -> Result<(PrunePlan, PruneTimings), AppError> {
-    let total_started = Instant::now();
-    let store = super::open_store(store_url).await?;
-    let (plan, plan_dt) = plan_within(&store, keep_last, before).await?;
-    let timings = PruneTimings {
-        total: total_started.elapsed(),
-        plan: plan_dt,
-        apply: Duration::ZERO,
-    };
-    Ok((plan, timings))
-}
+impl SekaiInstance {
+    /// Inspect snapshots and return a deletion plan.
+    ///
+    /// Retention keeps `keep_last` newest intersected with `before`-and-newer.
+    /// Additionally returns per-phase timings (`apply` is zero: dry-run never
+    /// deletes).
+    pub async fn prune_plan(
+        &self,
+        keep_last: Option<u64>,
+        before: Option<SnapshotId>,
+    ) -> Result<(PrunePlan, PruneTimings), AppError> {
+        let total_started = Instant::now();
+        let (plan, plan_dt) = plan_within(self.store(), keep_last, before).await?;
+        let timings = PruneTimings {
+            total: total_started.elapsed(),
+            plan: plan_dt,
+            apply: Duration::ZERO,
+        };
+        Ok((plan, timings))
+    }
 
-/// Execute a pruning plan, deleting snapshots oldest-first.
-/// `progress` fires per deleted snapshot.
-pub async fn prune_apply(
-    store_url: &str,
-    plan: &PrunePlan,
-    progress: impl FnMut(PruneProgress) + Send,
-) -> Result<(PruneReport, PruneTimings), AppError> {
-    let total_started = Instant::now();
-    let mut store = super::open_store(store_url).await?;
-    let (report, apply_dt) = apply_within(&mut store, plan, progress).await?;
-    let timings = PruneTimings {
-        total: total_started.elapsed(),
-        plan: Duration::ZERO,
-        apply: apply_dt,
-    };
-    Ok((report, timings))
-}
+    /// Execute a pruning plan, deleting snapshots oldest-first.
+    /// `progress` fires per deleted snapshot.
+    pub async fn prune_apply(
+        &mut self,
+        plan: &PrunePlan,
+        progress: impl FnMut(PruneProgress) + Send,
+    ) -> Result<(PruneReport, PruneTimings), AppError> {
+        let total_started = Instant::now();
+        let (report, apply_dt) = apply_within(self.store_mut(), plan, progress).await?;
+        let timings = PruneTimings {
+            total: total_started.elapsed(),
+            plan: Duration::ZERO,
+            apply: apply_dt,
+        };
+        Ok((report, timings))
+    }
 
-/// Plan and apply snapshot pruning in a single pass.
-/// `progress` fires per deleted snapshot during apply.
-pub async fn prune(
-    store_url: &str,
-    keep_last: Option<u64>,
-    before: Option<SnapshotId>,
-    progress: impl FnMut(PruneProgress) + Send,
-) -> Result<(PruneReport, PruneTimings), AppError> {
-    let total_started = Instant::now();
-    let mut store = super::open_store(store_url).await?;
-    let (plan, plan_dt) = plan_within(&store, keep_last, before).await?;
-    let (report, apply_dt) = apply_within(&mut store, &plan, progress).await?;
-    let timings = PruneTimings {
-        total: total_started.elapsed(),
-        plan: plan_dt,
-        apply: apply_dt,
-    };
-    Ok((report, timings))
+    /// Plan and apply snapshot pruning in a single pass.
+    /// `progress` fires per deleted snapshot during apply.
+    pub async fn prune(
+        &mut self,
+        keep_last: Option<u64>,
+        before: Option<SnapshotId>,
+        progress: impl FnMut(PruneProgress) + Send,
+    ) -> Result<(PruneReport, PruneTimings), AppError> {
+        let total_started = Instant::now();
+        let (plan, plan_dt) = plan_within(self.store(), keep_last, before).await?;
+        let (report, apply_dt) = apply_within(self.store_mut(), &plan, progress).await?;
+        let timings = PruneTimings {
+            total: total_started.elapsed(),
+            plan: plan_dt,
+            apply: apply_dt,
+        };
+        Ok((report, timings))
+    }
 }
 
 /// Select the retained set and list the deletions an open store would make.
