@@ -154,13 +154,13 @@ pub fn runtime() -> tokio::runtime::Runtime {
 /// Unused by the backup benches, which generate seeded worlds instead.
 #[allow(dead_code)]
 pub fn corpus_world() -> std::path::PathBuf {
-    fn copy_dir(src: &std::path::Path, dst: &std::path::Path) {
-        std::fs::create_dir_all(dst).expect("mkdir works");
-        for entry in std::fs::read_dir(src).expect("read works") {
+    fn copy_dir(src: impl AsRef<Path>, dst: impl AsRef<Path>) {
+        std::fs::create_dir_all(dst.as_ref()).expect("mkdir works");
+        for entry in std::fs::read_dir(src.as_ref()).expect("read works") {
             let entry = entry.expect("entry works");
-            let target = dst.join(entry.file_name());
+            let target = dst.as_ref().join(entry.file_name());
             if entry.file_type().expect("type works").is_dir() {
-                copy_dir(&entry.path(), &target);
+                copy_dir(entry.path(), &target);
             } else {
                 std::fs::copy(entry.path(), &target).expect("copy works");
             }
@@ -169,8 +169,8 @@ pub fn corpus_world() -> std::path::PathBuf {
     let root = tempdir("corpus");
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     copy_dir(
-        &manifest.join("..").join("..").join("test-world"),
-        &root.join("world"),
+        manifest.join("..").join("..").join("test-world"),
+        root.join("world"),
     );
     root.join("world")
 }
