@@ -7,5 +7,17 @@ rule:
   kind: parameter
   has:
     kind: reference_type
-    regex: '&Path(?:Buf)?\b'
+    any:
+      - has:
+          kind: type_identifier
+          regex: '^Path(?:Buf)?$'
+      - has:
+          kind: scoped_type_identifier
+          all:
+            - has:
+                kind: scoped_identifier
+                regex: '^(?:std::path|core::path)$'
+            - has:
+                kind: type_identifier
+                regex: '^Path(?:Buf)?$'
     stopBy: end

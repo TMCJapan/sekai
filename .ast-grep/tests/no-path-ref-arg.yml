@@ -11,3 +11,18 @@ testCases:
     valid: true
   - code: "fn ok2(p: &str) {}"
     valid: true
+  - code: "fn bad3(p: &'a Path) {}"
+    valid: false
+    message: "Use impl AsRef<Path> instead of &'a Path"
+  - code: "fn bad4(p: &std::path::Path) {}"
+    valid: false
+    message: "Use impl AsRef<Path> instead of &std::path::Path"
+  - code: "fn bad5(p: &core::path::PathBuf) {}"
+    valid: false
+    message: "Use impl AsRef<Path> instead of &core::path::PathBuf"
+  - code: "fn bad6(p: &'a std::path::Path) {}"
+    valid: false
+    message: "Use impl AsRef<Path> instead of &'a std::path::Path"
+  - code: "fn bad7(p: &mut std::path::Path) {}"
+    valid: false
+    message: "Use impl AsRef<Path> instead of &mut std::path::Path"
