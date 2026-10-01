@@ -69,8 +69,7 @@ jobs:
       - name: Run ast-grep tests
         run: ast-grep test -c .ast-grep/sgconfig.yml --test-dir .ast-grep/tests
       - name: Run ast-grep prohibition rules
-        # Switch to --error=no-path-ref-arg once remaining violations are fixed.
-        run: ast-grep scan --warning=no-path-ref-arg --rule .ast-grep/rules/no-path-ref-arg.yml .
+        run: ast-grep scan --rule .ast-grep/rules/no-path-ref-arg.yml .
 
   portability:
     name: Library / ${{ matrix.name }}
