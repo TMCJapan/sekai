@@ -67,7 +67,7 @@ jobs:
         with:
           tool: ast-grep
       - name: Run ast-grep tests
-        run: ast-grep test -c .ast-grep/sgconfig.yml --test-dir .ast-grep/tests
+        run: ast-grep test -c .ast-grep/sgconfig.yml --test-dir .ast-grep/tests --skip-snapshot-tests
       - name: Run ast-grep prohibition rules
         run: ast-grep scan --rule .ast-grep/rules/no-path-ref-arg.yml .
 

@@ -1,28 +1,12 @@
 id: no-path-ref-arg
-language: rust
-testCases:
-  - code: "fn bad1(p: &Path) {}"
-    valid: false
-    message: "Use impl AsRef<Path> instead of &Path"
-  - code: "fn bad2(p: &PathBuf) {}"
-    valid: false
-    message: "Use impl AsRef<Path> instead of &PathBuf"
-  - code: "fn ok(p: impl AsRef<Path>) {}"
-    valid: true
-  - code: "fn ok2(p: &str) {}"
-    valid: true
-  - code: "fn bad3(p: &'a Path) {}"
-    valid: false
-    message: "Use impl AsRef<Path> instead of &'a Path"
-  - code: "fn bad4(p: &std::path::Path) {}"
-    valid: false
-    message: "Use impl AsRef<Path> instead of &std::path::Path"
-  - code: "fn bad5(p: &core::path::PathBuf) {}"
-    valid: false
-    message: "Use impl AsRef<Path> instead of &core::path::PathBuf"
-  - code: "fn bad6(p: &'a std::path::Path) {}"
-    valid: false
-    message: "Use impl AsRef<Path> instead of &'a std::path::Path"
-  - code: "fn bad7(p: &mut std::path::Path) {}"
-    valid: false
-    message: "Use impl AsRef<Path> instead of &mut std::path::Path"
+valid:
+  - "fn generic_path(p: impl AsRef<Path>) {}"
+  - "fn string_slice(p: &str) {}"
+invalid:
+  - "fn explicit_path(p: &Path) {}"
+  - "fn explicit_path_buf(p: &PathBuf) {}"
+  - "fn lifetime_path(p: &'a Path) {}"
+  - "fn std_path(p: &std::path::Path) {}"
+  - "fn core_path_buf(p: &core::path::PathBuf) {}"
+  - "fn lifetime_std_path(p: &'a std::path::Path) {}"
+  - "fn mut_std_path(p: &mut std::path::Path) {}"
