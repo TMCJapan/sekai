@@ -69,7 +69,7 @@ async fn export_rebuilds_snapshot_into_fresh_directory() {
     write_region(&over, &[(0, 0, vec![3, 1]), (1, 0, vec![3, 2])]);
     write_region(&nether, &[(0, 0, vec![3, 3])]);
 
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&world)
         .backup(backup_options(), sekai_app::Scope::World, |_| {})
@@ -118,7 +118,7 @@ async fn export_honors_layout_flavor_and_scope() {
     write_region(world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
     write_region(world.join("DIM-1/region/r.0.0.mca"), &[(0, 0, vec![3, 2])]);
 
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&world)
         .backup(backup_options(), Scope::World, |_| {})
@@ -180,7 +180,7 @@ async fn export_refuses_non_empty_directory() {
     let store = root.join("store").to_string_lossy().into_owned();
     write_region(world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
 
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&world)
         .backup(backup_options(), sekai_app::Scope::World, |_| {})
@@ -230,7 +230,7 @@ async fn export_omits_tombstoned_regions() {
     let region = world.join("region/r.0.0.mca");
     write_region(&region, &[(0, 0, vec![3, 1])]);
 
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&world)
         .backup(backup_options(), sekai_app::Scope::World, |_| {})

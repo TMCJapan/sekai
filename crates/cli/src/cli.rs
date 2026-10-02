@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Parser)]
 #[command(name = "sekai", version, about)]
 pub struct Cli {
-    /// Backup store directory (created when missing). Prefix with
-    /// `sqlite://` explicitly if preferred.
+    /// Backup store directory (`backup` creates it when missing; other
+    /// commands fail). Prefix with `sqlite://` explicitly if preferred.
     #[arg(long, global = true, default_value = "sekai-store")]
     pub store: String,
 
