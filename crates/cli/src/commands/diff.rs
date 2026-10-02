@@ -8,7 +8,7 @@ use super::diff_render::{
     render_diff_grouped, render_diff_human,
 };
 use super::progress::{finish_progress, progress_bar, report_progress};
-use crate::cli::DiffArgs;
+use crate::cli::{DiffArgs, DiffTarget, SnapshotRef};
 use crate::envelope::envelope_ok;
 use crate::style::Styler;
 
@@ -17,83 +17,65 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
     let scope = selection.owned_scope();
     let mut coords = selection.explicit_chunks();
     let instance = sekai_app::SekaiInstance::open(store).await?;
-    let snapshot_pair = if args.world.is_none() {
-        Some(
-            resolve_snapshot_pair(
-                &instance,
-                args.old_snapshot.clone(),
-                args.new_snapshot.clone(),
-            )
-            .await?,
-        )
-    } else {
-        None
-    };
-    // Broad areas (whole dimensions, rectangles) and empty selections
-    // resolve through enumeration; explicit chunks join the union.
-    if selection.has_broad_areas() || coords.is_empty() {
-        let mut enumerated = if let Some(world) = &args.world {
-            sekai_app::world_chunk_coords(world)?
-        } else if let Some((old_id, new_id)) = snapshot_pair {
-            let mut union = instance.snapshot_chunk_coords(old_id).await?;
-            union.extend(instance.snapshot_chunk_coords(new_id).await?);
-            union
-        } else {
-            anyhow::bail!("internal error: snapshot pair missing for snapshot diff");
-        };
-        coords.append(&mut enumerated);
-    }
-    let coords = scoped_coords(coords, &scope);
     let bar = progress_bar(args.progress);
 
-    let (diffs, timings) = if let Some(world) = &args.world {
-        let snapshot_ref = args
-            .old_snapshot
-            .as_deref()
-            .or(args.new_snapshot.as_deref());
-        let snapshot_id = if let Some(raw) = snapshot_ref {
-            Some(
-                instance
-                    .resolve_snapshot_ref(raw)
-                    .await
-                    .with_context(|| format!("snapshot {raw:?} failed to resolve"))?,
-            )
-        } else {
-            None
-        };
-        instance
-            .world(world)
-            .diff_world_chunks(snapshot_id, &coords, None, |update| {
-                report_progress(
-                    bar.as_ref(),
-                    update.chunks_done,
-                    update.chunks_total,
-                    "chunks",
-                );
-            })
-            .await
-            .with_context(|| "failed to compute chunk diffs between world state and snapshot")?
-    } else {
-        let Some((old_id, new_id)) = snapshot_pair else {
-            anyhow::bail!("internal error: snapshot pair missing for snapshot diff");
-        };
-        instance
-            .diff_chunks(old_id, new_id, &coords, None, |update| {
-                report_progress(
-                    bar.as_ref(),
-                    update.chunks_done,
-                    update.chunks_total,
-                    "chunks",
-                );
-            })
-            .await
-            .with_context(|| {
-                format!(
-                    "failed to compute chunk diffs between snapshot {} and {}",
-                    old_id.raw(),
-                    new_id.raw()
-                )
-            })?
+    // Broad areas (whole dimensions, rectangles) and empty selections
+    // resolve through enumeration; explicit chunks join the union.
+    let broad = selection.has_broad_areas() || coords.is_empty();
+    let (diffs, timings) = match args.target() {
+        DiffTarget::World { world, snapshot } => {
+            if broad {
+                coords.append(&mut sekai_app::world_chunk_coords(world)?);
+            }
+            let coords = scoped_coords(coords, &scope);
+            let snapshot_id = match snapshot {
+                Some(raw) => Some(
+                    instance
+                        .resolve_snapshot_ref(raw.as_str())
+                        .await
+                        .with_context(|| format!("snapshot {raw} failed to resolve"))?,
+                ),
+                None => None,
+            };
+            instance
+                .world(world)
+                .diff_world_chunks(snapshot_id, &coords, None, |update| {
+                    report_progress(
+                        bar.as_ref(),
+                        update.chunks_done,
+                        update.chunks_total,
+                        "chunks",
+                    );
+                })
+                .await
+                .with_context(|| "failed to compute chunk diffs between world state and snapshot")?
+        }
+        DiffTarget::Snapshots { old, new } => {
+            let (old_id, new_id) = resolve_snapshot_pair(&instance, old, new).await?;
+            if broad {
+                let mut union = instance.snapshot_chunk_coords(old_id).await?;
+                union.extend(instance.snapshot_chunk_coords(new_id).await?);
+                coords.append(&mut union);
+            }
+            let coords = scoped_coords(coords, &scope);
+            instance
+                .diff_chunks(old_id, new_id, &coords, None, |update| {
+                    report_progress(
+                        bar.as_ref(),
+                        update.chunks_done,
+                        update.chunks_total,
+                        "chunks",
+                    );
+                })
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to compute chunk diffs between snapshot {} and {}",
+                        old_id.raw(),
+                        new_id.raw()
+                    )
+                })?
+        }
     };
     finish_progress(bar.as_ref());
 
@@ -172,23 +154,25 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
 
 async fn resolve_snapshot_pair(
     instance: &sekai_app::SekaiInstance,
-    old_snapshot: Option<String>,
-    new_snapshot: Option<String>,
+    old_snapshot: Option<&SnapshotRef>,
+    new_snapshot: Option<&SnapshotRef>,
 ) -> anyhow::Result<(SnapshotId, SnapshotId)> {
-    async fn resolve(instance: &sekai_app::SekaiInstance, raw: &str) -> anyhow::Result<SnapshotId> {
+    async fn resolve(
+        instance: &sekai_app::SekaiInstance,
+        raw: &SnapshotRef,
+    ) -> anyhow::Result<SnapshotId> {
         instance
-            .resolve_snapshot_ref(raw)
+            .resolve_snapshot_ref(raw.as_str())
             .await
-            .with_context(|| format!("snapshot {raw:?} failed to resolve"))
+            .with_context(|| format!("snapshot {raw} failed to resolve"))
     }
     match (old_snapshot, new_snapshot) {
-        (Some(old), Some(new)) => Ok((
-            resolve(instance, &old).await?,
-            resolve(instance, &new).await?,
-        )),
+        (Some(old), Some(new)) => {
+            Ok((resolve(instance, old).await?, resolve(instance, new).await?))
+        }
         (Some(old), None) => {
             let latest = instance.latest_snapshot_id().await?;
-            Ok((resolve(instance, &old).await?, latest))
+            Ok((resolve(instance, old).await?, latest))
         }
         (None, new) => {
             let snapshots = instance.list_snapshots().await?;
@@ -196,10 +180,9 @@ async fn resolve_snapshot_pair(
                 anyhow::bail!("at least 2 snapshots are required when snapshot IDs are omitted");
             }
             let old = snapshots[snapshots.len() - 2].id;
-            let new_id = if let Some(raw) = new {
-                resolve(instance, &raw).await?
-            } else {
-                snapshots[snapshots.len() - 1].id
+            let new_id = match new {
+                Some(raw) => resolve(instance, raw).await?,
+                None => snapshots[snapshots.len() - 1].id,
             };
             Ok((old, new_id))
         }

@@ -40,7 +40,7 @@ sekai --store ./sekai-store rollback ./world 1
 sekai --store ./sekai-store diff 1 2 --in overworld:0,0
 
 # スナップショット 2 に後から参照できるタグ名を付与
-sekai --store ./sekai-store tag stable 2
+sekai --store ./sekai-store tag create stable 2
 
 # 参照されていない Blob をプレビュー後、ガベージコレクション (GC) で回収
 sekai --store ./sekai-store gc --dry-run

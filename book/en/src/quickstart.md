@@ -18,7 +18,7 @@ sekai --store ./sekai-store rollback ./world 1
 sekai --store ./sekai-store diff 1 2 --in overworld:0,0
 
 # Name snapshot 2 for later reference
-sekai --store ./sekai-store tag stable 2
+sekai --store ./sekai-store tag create stable 2
 
 # Preview unreferenced blobs, then collect them
 sekai --store ./sekai-store gc --dry-run

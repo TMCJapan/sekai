@@ -1,6 +1,8 @@
-//! CLI-level tag argument validation must precede store creation.
+//! Malformed tag invocations must be refused by clap at parse time, so
+//! they can never reach `commands::run` and create the store as a side
+//! effect (issue #80).
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use clap::Parser as _;
@@ -19,31 +21,27 @@ fn tempdir(name: &str) -> PathBuf {
     dir
 }
 
-async fn run_tag(store: impl AsRef<Path>, args: &[&str]) -> anyhow::Result<()> {
-    let store = store
-        .as_ref()
-        .to_str()
-        .expect("temporary store path is UTF-8");
-    let mut argv = vec!["sekai", "--store", store, "tag"];
-    argv.extend_from_slice(args);
-    let cli = Cli::try_parse_from(argv).expect("tag arguments parse");
-    sekai_cli::commands::run(&cli).await
-}
-
-#[tokio::test]
-async fn invalid_tag_arguments_do_not_create_the_store() {
+#[test]
+fn invalid_tag_arguments_do_not_create_the_store() {
     let root = tempdir("invalid-args");
     let store = root.join("store");
+    let store = store.to_str().expect("temporary store path is UTF-8");
 
-    // Name without a snapshot is a validation error, not an empty store.
-    let err = run_tag(&store, &["abcde"]).await.unwrap_err();
-    assert!(err.to_string().contains("tag creation needs both"));
-    assert!(!store.exists(), "`tag abcde` must not create the store");
-
-    // Deleting without a tag name is likewise rejected up front.
-    let err = run_tag(&store, &["--delete"]).await.unwrap_err();
-    assert!(err.to_string().contains("tag name is required"));
-    assert!(!store.exists(), "`tag --delete` must not create the store");
+    // Incomplete operations and the legacy flat surface are parse errors:
+    // clap rejects them before any sekai code runs.
+    for args in [
+        vec!["sekai", "--store", store, "tag", "abcde"],
+        vec!["sekai", "--store", store, "tag", "--delete"],
+        vec!["sekai", "--store", store, "tag", "create", "abcde"],
+        vec!["sekai", "--store", store, "tag", "delete"],
+        vec!["sekai", "--store", store, "tag", "list", "abcde"],
+    ] {
+        assert!(Cli::try_parse_from(&args).is_err(), "{args:?} is refused");
+    }
+    assert!(
+        !root.join("store").exists(),
+        "rejected tag arguments must not create the store"
+    );
 
     let _ = std::fs::remove_dir_all(&root);
 }

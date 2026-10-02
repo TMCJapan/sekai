@@ -6,13 +6,14 @@ use serde::Serialize;
 
 use super::ReportOut;
 use super::progress::{finish_progress, progress_bar, report_progress};
+use crate::cli::SnapshotRef;
 use crate::envelope::envelope_ok;
 use crate::style::Styler;
 
 pub async fn run(
     store: &str,
     keep_last: Option<u64>,
-    before: Option<String>,
+    before: Option<&SnapshotRef>,
     dry_run: bool,
     progress: bool,
     out: ReportOut,
@@ -24,9 +25,9 @@ pub async fn run(
     let before = match before {
         Some(raw) => Some(
             instance
-                .resolve_snapshot_ref(&raw)
+                .resolve_snapshot_ref(raw.as_str())
                 .await
-                .with_context(|| format!("snapshot {raw:?} failed to resolve"))?,
+                .with_context(|| format!("snapshot {raw} failed to resolve"))?,
         ),
         None => None,
     };

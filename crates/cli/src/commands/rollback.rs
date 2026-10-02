@@ -7,7 +7,7 @@ use std::path::Path;
 
 use super::ReportOut;
 use super::progress::{finish_progress, progress_bar, report_progress};
-use crate::cli::{OnMissingBlob, OnMissingFile, Selection};
+use crate::cli::{OnMissingBlob, OnMissingFile, Selection, SnapshotRef};
 use crate::envelope::envelope_ok;
 use crate::style::Styler;
 
@@ -39,7 +39,7 @@ const fn map_options(flags: &RollbackFlags) -> sekai_app::RollbackOptions {
 pub async fn run(
     store: &str,
     world: impl AsRef<Path>,
-    snapshot: &str,
+    snapshot: &SnapshotRef,
     progress: bool,
     selection: &Selection,
     flags: &RollbackFlags,
@@ -49,9 +49,9 @@ pub async fn run(
         .await
         .with_context(|| format!("rollback of {} failed", world.as_ref().display()))?;
     let id = instance
-        .resolve_snapshot_ref(snapshot)
+        .resolve_snapshot_ref(snapshot.as_str())
         .await
-        .with_context(|| format!("snapshot {snapshot:?} failed to resolve"))?;
+        .with_context(|| format!("snapshot {snapshot} failed to resolve"))?;
     let scope = selection.owned_scope();
     let options = map_options(flags);
     if !out.json {
@@ -78,7 +78,7 @@ pub async fn run(
         .await
         .with_context(|| {
             format!(
-                "rollback of {} to snapshot {snapshot:?} failed",
+                "rollback of {} to snapshot {snapshot} failed",
                 world.as_ref().display()
             )
         })?;

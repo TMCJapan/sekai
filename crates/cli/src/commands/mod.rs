@@ -104,24 +104,7 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
             .await
         }
         Command::List { json, stat } => list::run(&cli.store, *json, *stat, style).await,
-        Command::Tag {
-            name,
-            snapshot,
-            delete,
-            force,
-            json,
-        } => {
-            tag::run(
-                &cli.store,
-                name.clone(),
-                snapshot.clone(),
-                *delete,
-                *force,
-                *json,
-                style,
-            )
-            .await
-        }
+        Command::Tag { action } => tag::run(&cli.store, action, style).await,
         Command::Export {
             snapshot,
             out,
@@ -158,7 +141,7 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
             prune::run(
                 &cli.store,
                 *keep_last,
-                before.clone(),
+                before.as_ref(),
                 *dry_run,
                 *progress,
                 ReportOut::of(*output, style),

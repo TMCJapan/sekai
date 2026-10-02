@@ -7,7 +7,7 @@ use std::path::Path;
 
 use super::ReportOut;
 use super::progress::{finish_progress, progress_bar, report_progress};
-use crate::cli::{ExportFlavor, OnMissingBlob, Selection};
+use crate::cli::{ExportFlavor, OnMissingBlob, Selection, SnapshotRef};
 use crate::envelope::envelope_ok;
 use crate::style::Styler;
 
@@ -38,7 +38,7 @@ const fn map_options(on_missing_blob: OnMissingBlob) -> sekai_app::ExportOptions
 
 pub async fn run(
     store: &str,
-    snapshot: &str,
+    snapshot: &SnapshotRef,
     out_dir: impl AsRef<Path>,
     progress: bool,
     selection: &Selection,
@@ -49,14 +49,14 @@ pub async fn run(
         .await
         .with_context(|| {
             format!(
-                "export of snapshot {snapshot:?} to {} failed",
+                "export of snapshot {snapshot} to {} failed",
                 out_dir.as_ref().display()
             )
         })?;
     let id = instance
-        .resolve_snapshot_ref(snapshot)
+        .resolve_snapshot_ref(snapshot.as_str())
         .await
-        .with_context(|| format!("snapshot {snapshot:?} failed to resolve"))?;
+        .with_context(|| format!("snapshot {snapshot} failed to resolve"))?;
     let scope = selection.owned_scope();
     let flavor = map_flavor(flags);
     let options = map_options(flags.on_missing_blob);
@@ -81,7 +81,7 @@ pub async fn run(
         .await
         .with_context(|| {
             format!(
-                "export of snapshot {snapshot:?} to {} failed",
+                "export of snapshot {snapshot} to {} failed",
                 out_dir.as_ref().display()
             )
         })?;

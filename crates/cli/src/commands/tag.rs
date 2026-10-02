@@ -1,36 +1,50 @@
 //! Tag subcommand execution, DTOs, and output rendering.
 
 use anyhow::Context as _;
-use sekai_app::{SnapshotTag, TagName};
+use sekai_app::SnapshotTag;
 use serde::Serialize;
 
+use crate::cli::TagCommand;
 use crate::envelope::envelope_ok;
 use crate::style::Styler;
 
-pub async fn run(
-    store: &str,
-    name: Option<TagName>,
-    snapshot: Option<String>,
-    delete: bool,
-    force: bool,
-    json: bool,
-    style: Styler,
-) -> anyhow::Result<()> {
-    // Validate before opening the store: a malformed invocation must not
-    // create the store directory as a side effect.
-    let action = parse_action(delete, name, snapshot)?;
+pub async fn run(store: &str, action: &TagCommand, style: Styler) -> anyhow::Result<()> {
     let mut instance = sekai_app::SekaiInstance::open(store).await?;
 
     match action {
-        Action::Delete(name) => {
+        TagCommand::Create {
+            name,
+            snapshot,
+            force,
+            json,
+        } => {
+            let id = instance
+                .resolve_snapshot_ref(snapshot.as_str())
+                .await
+                .with_context(|| format!("tag target {snapshot} failed to resolve"))?;
+            let record = instance
+                .create_tag(name, id, *force)
+                .await
+                .with_context(|| format!("tag {name} failed"))?;
+            if *json {
+                println!("{}", envelope_ok("tag", &tag_payload(&record))?);
+                return Ok(());
+            }
+            println!(
+                "tagged {} as {}",
+                style.bold(&record.snapshot.raw().to_string()),
+                style.bold(name.as_str())
+            );
+        }
+        TagCommand::Delete { name, json } => {
             let removed = instance
-                .delete_tag(&name)
+                .delete_tag(name)
                 .await
                 .with_context(|| format!("delete of tag {name} failed"))?;
             if !removed {
                 anyhow::bail!("unknown tag: {name}");
             }
-            if json {
+            if *json {
                 println!(
                     "{}",
                     envelope_ok(
@@ -44,31 +58,12 @@ pub async fn run(
             }
             println!("deleted tag {}", style.bold(name.as_str()));
         }
-        Action::Create { name, snapshot } => {
-            let id = instance
-                .resolve_snapshot_ref(&snapshot)
-                .await
-                .with_context(|| format!("tag target {snapshot:?} failed to resolve"))?;
-            let record = instance
-                .create_tag(&name, id, force)
-                .await
-                .with_context(|| format!("tag {name} failed"))?;
-            if json {
-                println!("{}", envelope_ok("tag", &tag_payload(&record))?);
-                return Ok(());
-            }
-            println!(
-                "tagged {} as {}",
-                style.bold(&record.snapshot.raw().to_string()),
-                style.bold(name.as_str())
-            );
-        }
-        Action::List => {
+        TagCommand::List { json } => {
             let tags = instance
                 .list_tags()
                 .await
                 .with_context(|| format!("tag list for {store} failed"))?;
-            if json {
+            if *json {
                 println!(
                     "{}",
                     envelope_ok("tag", &tags.iter().map(tag_payload).collect::<Vec<_>>())?
@@ -86,31 +81,6 @@ pub async fn run(
         }
     }
     Ok(())
-}
-
-/// Requested tag operation, validated before the store is opened.
-enum Action {
-    Delete(TagName),
-    Create { name: TagName, snapshot: String },
-    List,
-}
-
-fn parse_action(
-    delete: bool,
-    name: Option<TagName>,
-    snapshot: Option<String>,
-) -> anyhow::Result<Action> {
-    if delete {
-        let Some(name) = name else {
-            anyhow::bail!("tag name is required to delete a tag");
-        };
-        return Ok(Action::Delete(name));
-    }
-    match (name, snapshot) {
-        (Some(name), Some(snapshot)) => Ok(Action::Create { name, snapshot }),
-        (None, None) => Ok(Action::List),
-        _ => anyhow::bail!("tag creation needs both <name> and <snapshot>"),
-    }
 }
 
 #[derive(Serialize)]
@@ -142,6 +112,7 @@ fn format_time(created_at_ms: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sekai_app::TagName;
 
     #[test]
     fn renders_tag_payloads() {
