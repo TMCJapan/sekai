@@ -68,7 +68,7 @@ impl SekaiInstance {
     /// `move` closure owning its state).
     pub async fn export(
         &self,
-        out: &Path,
+        out: impl AsRef<Path>,
         snapshot: SnapshotId,
         flavor: LayoutFlavor,
         options: ExportOptions,
@@ -76,7 +76,7 @@ impl SekaiInstance {
         progress: impl Fn(ExportProgress) + Send + 'static,
     ) -> Result<(ExportReport, ExportTimings), AppError> {
         let total_started = Instant::now();
-        refuse_non_empty(out)?;
+        refuse_non_empty(out.as_ref())?;
 
         let store = self.store();
 
@@ -95,7 +95,7 @@ impl SekaiInstance {
             groups,
             options,
             cas: store.cas().clone(),
-            out: out.to_path_buf(),
+            out: out.as_ref().to_path_buf(),
             flavor,
         };
 
@@ -115,13 +115,13 @@ impl SekaiInstance {
 }
 
 /// Fail unless `out` is missing or an empty directory.
-fn refuse_non_empty(out: &Path) -> Result<(), AppError> {
-    match std::fs::read_dir(out) {
+fn refuse_non_empty(out: impl AsRef<Path>) -> Result<(), AppError> {
+    match std::fs::read_dir(out.as_ref()) {
         Ok(mut entries) => {
             if entries.next().is_some() {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::DirectoryNotEmpty,
-                    format!("export target {} is not empty", out.display()),
+                    format!("export target {} is not empty", out.as_ref().display()),
                 )
                 .into());
             }
@@ -132,7 +132,7 @@ fn refuse_non_empty(out: &Path) -> Result<(), AppError> {
             source.kind(),
             format!(
                 "failed to inspect export target {}: {source}",
-                out.display()
+                out.as_ref().display()
             ),
         )
         .into()),

@@ -1,0 +1,8 @@
+id: use-asref-path
+language: rust
+severity: hint
+message: "Correct pattern: use impl AsRef<Path> for path arguments"
+note: "When a function takes a path argument, it should accept impl AsRef<Path> rather than a concrete reference type."
+rule:
+  kind: parameter
+  regex: 'impl AsRef<Path>'

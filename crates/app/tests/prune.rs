@@ -16,19 +16,19 @@ fn tempdir(name: &str) -> PathBuf {
     dir
 }
 
-fn cleanup(dir: &Path) {
+fn cleanup(dir: impl AsRef<Path>) {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-fn write_region(path: &Path, chunks: &[(i32, i32, Vec<u8>)]) {
-    let name = path.file_name().unwrap().to_str().unwrap();
+fn write_region(path: impl AsRef<Path>, chunks: &[(i32, i32, Vec<u8>)]) {
+    let name = path.as_ref().file_name().unwrap().to_str().unwrap();
     let (rx, rz) = sekai_anvil::parse_region_name(name).unwrap();
     let mut builder = sekai_anvil::RegionBuilder::new(rx, rz, 0).unwrap();
     for (x, z, payload) in chunks {
         builder.stage_chunk(*x, *z, payload).unwrap();
     }
     let image = builder.image().unwrap();
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(path.as_ref().parent().unwrap()).unwrap();
     std::fs::write(path, image).unwrap();
 }
 
@@ -39,9 +39,9 @@ fn backup_options() -> sekai_app::BackupOptions {
     }
 }
 
-fn blob_count(store: &Path) -> usize {
+fn blob_count(store: impl AsRef<Path>) -> usize {
     let mut count = 0usize;
-    let mut dirs = vec![store.join("blobs")];
+    let mut dirs = vec![store.as_ref().join("blobs")];
     while let Some(dir) = dirs.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {
             continue;
@@ -140,7 +140,7 @@ async fn prune_before_ref_and_empty_guards() {
     let store = root.join("store").to_string_lossy().into_owned();
     let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
     for payload in [vec![3, 1], vec![3, 2], vec![3, 3]] {
-        write_region(&world.join("region/r.0.0.mca"), &[(0, 0, payload)]);
+        write_region(world.join("region/r.0.0.mca"), &[(0, 0, payload)]);
         instance
             .world_mut(&world)
             .backup(backup_options(), sekai_app::Scope::World, |_| {})

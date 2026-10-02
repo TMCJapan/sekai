@@ -1,0 +1,12 @@
+id: no-path-ref-arg
+valid:
+  - "fn generic_path(p: impl AsRef<Path>) {}"
+  - "fn string_slice(p: &str) {}"
+invalid:
+  - "fn explicit_path(p: &Path) {}"
+  - "fn explicit_path_buf(p: &PathBuf) {}"
+  - "fn lifetime_path(p: &'a Path) {}"
+  - "fn std_path(p: &std::path::Path) {}"
+  - "fn core_path_buf(p: &core::path::PathBuf) {}"
+  - "fn lifetime_std_path(p: &'a std::path::Path) {}"
+  - "fn mut_std_path(p: &mut std::path::Path) {}"

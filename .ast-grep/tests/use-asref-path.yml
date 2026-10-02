@@ -1,0 +1,5 @@
+id: use-asref-path
+valid:
+  - "fn ref_path(p: &Path) {}"
+invalid:
+  - "fn generic_path(p: impl AsRef<Path>) {}"

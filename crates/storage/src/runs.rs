@@ -39,8 +39,8 @@ impl Drop for RunGuard {
 }
 
 /// Create (or refresh) the marker under `root`.
-pub fn begin_run(root: &Path) -> Result<RunGuard, StorageError> {
-    let path = root.join(RUN_MARKER);
+pub fn begin_run(root: impl AsRef<Path>) -> Result<RunGuard, StorageError> {
+    let path = root.as_ref().join(RUN_MARKER);
     // Truncate an existing marker: a leftover from a crashed run must not
     // block backups, only `gc`.
     let mut file = fs::OpenOptions::new()
@@ -56,8 +56,8 @@ pub fn begin_run(root: &Path) -> Result<RunGuard, StorageError> {
 }
 
 /// Fail while a run marker is present.
-pub fn ensure_idle(root: &Path) -> Result<(), StorageError> {
-    let path = root.join(RUN_MARKER);
+pub fn ensure_idle(root: impl AsRef<Path>) -> Result<(), StorageError> {
+    let path = root.as_ref().join(RUN_MARKER);
     match fs::read_to_string(&path) {
         Ok(stamp) => Err(StorageError::StoreBusy {
             path,

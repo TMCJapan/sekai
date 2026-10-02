@@ -9,9 +9,9 @@ use crate::cli::TimingArgs;
 use crate::envelope::envelope_ok;
 use crate::style::Styler;
 
-pub fn run_scan(world: &Path, output: TimingArgs, style: Styler) -> anyhow::Result<()> {
-    let report =
-        sekai_app::scan(world).with_context(|| format!("scan of {} failed", world.display()))?;
+pub fn run_scan(world: impl AsRef<Path>, output: TimingArgs, style: Styler) -> anyhow::Result<()> {
+    let report = sekai_app::scan(world.as_ref())
+        .with_context(|| format!("scan of {} failed", world.as_ref().display()))?;
     let entries = &report.entries;
     if output.json {
         if output.timing {

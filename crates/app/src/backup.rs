@@ -245,14 +245,14 @@ struct Prepared {
 /// are the same numbers a real backup would commit.
 async fn prepare(
     store: &sekai_storage::SqliteStore,
-    world: &Path,
+    world: impl AsRef<Path>,
     options: &BackupOptions,
     scope: &Scope,
     progress: impl Fn(BackupProgress) + Send,
     dry_run: bool,
 ) -> Result<Prepared, AppError> {
     let observed = tokio::task::spawn_blocking({
-        let world = world.to_path_buf();
+        let world = world.as_ref().to_path_buf();
         move || observe(&world)
     })
     .await??;
@@ -334,7 +334,7 @@ impl WorldHandleMut<'_> {
 /// Preview implementation shared by read-only and read-write handles.
 async fn status_impl(
     store: &sekai_storage::SqliteStore,
-    world: &Path,
+    world: impl AsRef<Path>,
     options: StatusOptions,
     scope: Scope,
     progress: impl Fn(BackupProgress) + Send,
@@ -393,7 +393,7 @@ struct Observed {
 
 /// Discover every region file and fingerprint it. Blocking: file walks and
 /// opens belong on a blocking pool, never on an async worker.
-fn observe(world: &Path) -> Result<Observed, AppError> {
+fn observe(world: impl AsRef<Path>) -> Result<Observed, AppError> {
     let discover_started = Instant::now();
     let regions = sekai_world::discover(world)?;
     let discover = discover_started.elapsed();
@@ -483,7 +483,7 @@ struct IngestTimings {
 /// order across workers is completion-order (DB-irrelevant, one txn).
 async fn ingest_changed(
     changed: Vec<Changed>,
-    cas_root: &Path,
+    cas_root: impl AsRef<Path>,
     options: &BackupOptions,
     scope: Scope,
     progress: impl Fn(BackupProgress) + Send,
@@ -509,7 +509,7 @@ async fn ingest_changed(
 
     let mut set = tokio::task::JoinSet::new();
     for group in groups {
-        let cas_root = cas_root.to_path_buf();
+        let cas_root = cas_root.as_ref().to_path_buf();
         let with_diff = options.with_diff;
         let ignore_tags = options.ignore_tags.clone();
         let scope = scope.clone();
@@ -571,7 +571,7 @@ fn partition_groups(mut changed: Vec<Changed>, workers: usize) -> Vec<Vec<Change
 /// account it under `cas` (the durability bucket).
 fn ingest_group(
     group: Vec<Changed>,
-    cas_root: &Path,
+    cas_root: impl AsRef<Path>,
     with_diff: bool,
     ignore_tags: Option<&[String]>,
     scope: &Scope,

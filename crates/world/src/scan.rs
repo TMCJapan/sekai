@@ -73,7 +73,7 @@ pub struct ScanReport {
 /// A single corrupt or unreadable region does not abort the whole scan;
 /// it is reported in [`ScanReport::skipped`] instead of vanishing, so an
 /// inventory never silently undercounts the files on disk.
-pub fn scan_world(world: &Path) -> Result<ScanReport, WorldError> {
+pub fn scan_world(world: impl AsRef<Path>) -> Result<ScanReport, WorldError> {
     let total_started = Instant::now();
     let discover_started = Instant::now();
     let regions = discover(world)?;
@@ -150,8 +150,8 @@ fn parse_entry(
 const MAX_READ_RESERVE: u64 = 8 * 1024 * 1024;
 
 /// Read a whole region file plus its mtime.
-fn read_with_mtime(path: &Path) -> Result<(Vec<u8>, Option<u64>), WorldError> {
-    let mut file = File::open(path).map_err(|e| WorldError::io(path, e))?;
+fn read_with_mtime(path: impl AsRef<Path>) -> Result<(Vec<u8>, Option<u64>), WorldError> {
+    let mut file = File::open(path.as_ref()).map_err(|e| WorldError::io(path.as_ref(), e))?;
     let meta = file.metadata().ok();
     let mtime_ms = meta.as_ref().and_then(mtime_ms_from_metadata);
     let reserve = meta
@@ -160,7 +160,7 @@ fn read_with_mtime(path: &Path) -> Result<(Vec<u8>, Option<u64>), WorldError> {
         .min(MAX_READ_RESERVE);
     let mut bytes = Vec::with_capacity(usize::try_from(reserve).unwrap_or(0));
     file.read_to_end(&mut bytes)
-        .map_err(|e| WorldError::io(path, e))?;
+        .map_err(|e| WorldError::io(path.as_ref(), e))?;
     Ok((bytes, mtime_ms))
 }
 

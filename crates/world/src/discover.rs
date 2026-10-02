@@ -62,15 +62,15 @@ pub enum LayoutFlavor {
 ///
 /// Pass the same path on every run: namespace codes for non-default
 /// folders derive from root-relative paths.
-pub fn detect_flavor(world: &Path) -> Result<LayoutFlavor, WorldError> {
+pub fn detect_flavor(world: impl AsRef<Path>) -> Result<LayoutFlavor, WorldError> {
     // Trio first: a Bukkit container root may hold a stray `dimensions/`
     // directory (migration leftovers, a plugin), and deriving vanilla
     // namespaces from it would restore into a tree the server never reads.
-    let container = !is_top_world_folder(world)?;
-    if container && let Some(base) = bukkit_base(world)? {
+    let container = !is_top_world_folder(world.as_ref())?;
+    if container && let Some(base) = bukkit_base(world.as_ref())? {
         return Ok(LayoutFlavor::Bukkit { base });
     }
-    if world.join("dimensions").is_dir() {
+    if world.as_ref().join("dimensions").is_dir() {
         return Ok(LayoutFlavor::New);
     }
     Ok(LayoutFlavor::Legacy)
@@ -85,13 +85,13 @@ const KIND_DIRS: [(RegionKind, &str); 3] = [
 /// Subdirectories never treated as world folders themselves.
 const RESERVED_SUBDIRS: [&str; 3] = ["dimensions", "DIM-1", "DIM1"];
 
-fn read_dir_opt(dir: &Path) -> Result<Vec<fs::DirEntry>, WorldError> {
-    match fs::read_dir(dir) {
+fn read_dir_opt(dir: impl AsRef<Path>) -> Result<Vec<fs::DirEntry>, WorldError> {
+    match fs::read_dir(dir.as_ref()) {
         Ok(entries) => entries
-            .map(|res| res.map_err(|source| WorldError::io(dir, source)))
+            .map(|res| res.map_err(|source| WorldError::io(dir.as_ref(), source)))
             .collect(),
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-        Err(source) => Err(WorldError::io(dir, source)),
+        Err(source) => Err(WorldError::io(dir.as_ref(), source)),
     }
 }
 
@@ -123,7 +123,7 @@ enum InsertPolicy {
 }
 
 fn scan_dim_root(
-    root: &Path,
+    root: impl AsRef<Path>,
     dim: Dimension,
     found: &mut BTreeMap<(Dimension, RegionKind, i32, i32), RegionRef>,
     policy: InsertPolicy,
@@ -133,7 +133,7 @@ fn scan_dim_root(
         // (`r.0.0.mca` and `r.00.00.mca`, both of which the game itself
         // parses as region 0,0) resolve the same way on every run instead
         // of following directory order.
-        let mut entries = read_dir_opt(&root.join(kind_dir))?;
+        let mut entries = read_dir_opt(root.as_ref().join(kind_dir))?;
         entries.sort_by_key(fs::DirEntry::file_name);
         for entry in entries {
             if !is_file(&entry)? {
@@ -169,20 +169,22 @@ fn scan_dim_root(
 
 /// Whether `dir` looks like a world folder: `level.dat`, `DIM-1`/`DIM1`
 /// nesting, or a kind directory holding parseable region files.
-fn is_world_folder(dir: &Path) -> Result<bool, WorldError> {
-    Ok(is_top_world_folder(dir)? || dir.join("DIM-1").is_dir() || dir.join("DIM1").is_dir())
+fn is_world_folder(dir: impl AsRef<Path>) -> Result<bool, WorldError> {
+    Ok(is_top_world_folder(dir.as_ref())?
+        || dir.as_ref().join("DIM-1").is_dir()
+        || dir.as_ref().join("DIM1").is_dir())
 }
 
 /// Whether `dir` is itself a world folder root: `level.dat` or a kind
 /// directory holding parseable region files (no `DIM-1` nesting test - a
 /// bare `DIM-1` holder is a container, and claiming it as a world would
 /// hide the trio logic from `discover`).
-fn is_top_world_folder(dir: &Path) -> Result<bool, WorldError> {
-    if dir.join("level.dat").is_file() {
+fn is_top_world_folder(dir: impl AsRef<Path>) -> Result<bool, WorldError> {
+    if dir.as_ref().join("level.dat").is_file() {
         return Ok(true);
     }
     for (_, kind_dir) in KIND_DIRS {
-        for entry in read_dir_opt(&dir.join(kind_dir))? {
+        for entry in read_dir_opt(dir.as_ref().join(kind_dir))? {
             if !is_file(&entry)? {
                 continue;
             }
@@ -209,9 +211,9 @@ fn is_top_world_folder(dir: &Path) -> Result<bool, WorldError> {
 /// directory, which a server creates whether or not it holds files yet):
 /// requiring stored region files would flip the whole world to hashed
 /// namespaces the moment the overworld is emptied or briefly unsaved.
-fn bukkit_base(world: &Path) -> Result<Option<String>, WorldError> {
+fn bukkit_base(world: impl AsRef<Path>) -> Result<Option<String>, WorldError> {
     let mut trio: Vec<String> = Vec::new();
-    for entry in read_dir_opt(world)? {
+    for entry in read_dir_opt(world.as_ref())? {
         if !is_dir(&entry)? {
             continue;
         }
@@ -222,18 +224,18 @@ fn bukkit_base(world: &Path) -> Result<Option<String>, WorldError> {
         if RESERVED_SUBDIRS.contains(&name) {
             continue;
         }
-        if !is_bukkit_overworld(&entry.path())? {
+        if !is_bukkit_overworld(entry.path())? {
             continue;
         }
-        if world.join(format!("{name}_nether")).is_dir()
-            || world.join(format!("{name}_the_end")).is_dir()
+        if world.as_ref().join(format!("{name}_nether")).is_dir()
+            || world.as_ref().join(format!("{name}_the_end")).is_dir()
         {
             trio.push(name.to_owned());
         }
     }
     // `level-name` is authoritative: a leftover `world/` trio must never
     // win over the world the server actually loads.
-    if let Some(level) = level_name(world)
+    if let Some(level) = level_name(world.as_ref())
         && trio.contains(&level)
     {
         return Ok(Some(level));
@@ -247,8 +249,8 @@ fn bukkit_base(world: &Path) -> Result<Option<String>, WorldError> {
 
 /// Overworld folder signature: world-folder contents, or a `region/`
 /// directory that exists but is still empty.
-fn is_bukkit_overworld(dir: &Path) -> Result<bool, WorldError> {
-    Ok(dir.join("region").is_dir() || is_world_folder(dir)?)
+fn is_bukkit_overworld(dir: impl AsRef<Path>) -> Result<bool, WorldError> {
+    Ok(dir.as_ref().join("region").is_dir() || is_world_folder(dir)?)
 }
 
 /// `level-name` from a Bukkit/Paper `server.properties`, when readable.
@@ -256,8 +258,8 @@ fn is_bukkit_overworld(dir: &Path) -> Result<bool, WorldError> {
 /// The file is untrusted input: only uncommented `key=value` lines with
 /// that exact key count, and the value is trimmed of surrounding spaces.
 /// An unreadable file is simply "not configured" - it never fails a scan.
-fn level_name(world: &Path) -> Option<String> {
-    let text = fs::read_to_string(world.join("server.properties")).ok()?;
+fn level_name(world: impl AsRef<Path>) -> Option<String> {
+    let text = fs::read_to_string(world.as_ref().join("server.properties")).ok()?;
     text.lines().find_map(|line| {
         line.trim()
             .strip_prefix("level-name=")
@@ -269,8 +271,8 @@ fn level_name(world: &Path) -> Option<String> {
 
 /// Root-relative `/`-joined path for stable hashing, or `None` for
 /// non-UTF-8 names (skipped like everywhere else here).
-fn rel_name(world: &Path, path: &Path) -> Option<String> {
-    let rel = path.strip_prefix(world).ok()?;
+fn rel_name(world: impl AsRef<Path>, path: impl AsRef<Path>) -> Option<String> {
+    let rel = path.as_ref().strip_prefix(world).ok()?;
     let mut out = String::new();
     for (i, comp) in rel.components().enumerate() {
         let s = comp.as_os_str().to_str()?;
@@ -299,7 +301,7 @@ fn tree_dim(ns_name: &str, dim_name: &str) -> Option<Dimension> {
 /// Vanilla `(namespace, name)` pairs always map to vanilla codes so history
 /// survives 26.1-style migrations.
 fn scan_dimensions(
-    dims_dir: &Path,
+    dims_dir: impl AsRef<Path>,
     rel_prefix: &str,
     found: &mut BTreeMap<(Dimension, RegionKind, i32, i32), RegionRef>,
 ) -> Result<(), WorldError> {
@@ -311,7 +313,7 @@ fn scan_dimensions(
         let Some(ns_name) = ns_file_name.to_str() else {
             continue;
         };
-        for name in read_dir_opt(&ns.path())? {
+        for name in read_dir_opt(ns.path())? {
             if !is_dir(&name)? {
                 continue;
             }
@@ -327,7 +329,7 @@ fn scan_dimensions(
                 };
                 sekai_core::resolve_custom_dimension(&rel)
             });
-            scan_dim_root(&name.path(), dim, found, InsertPolicy::Overwrite)?;
+            scan_dim_root(name.path(), dim, found, InsertPolicy::Overwrite)?;
         }
     }
     Ok(())
@@ -340,33 +342,33 @@ fn scan_dimensions(
 /// folders are found) or a single world folder for vanilla ones - but the
 /// same path on every run, since non-default namespaces hash
 /// root-relative paths.
-pub fn discover(world: &Path) -> Result<Vec<RegionRef>, WorldError> {
-    if !world.is_dir() {
+pub fn discover(world: impl AsRef<Path>) -> Result<Vec<RegionRef>, WorldError> {
+    if !world.as_ref().is_dir() {
         return Err(WorldError::io(
-            world,
+            world.as_ref(),
             std::io::Error::new(std::io::ErrorKind::NotFound, "world directory not found"),
         ));
     }
     let mut found = BTreeMap::new();
     // Vanilla roots at the argument itself.
     for (root, dim) in [
-        (world.to_path_buf(), Dimension::OVERWORLD),
-        (world.join("DIM-1"), Dimension::NETHER),
-        (world.join("DIM1"), Dimension::END),
+        (world.as_ref().to_path_buf(), Dimension::OVERWORLD),
+        (world.as_ref().join("DIM-1"), Dimension::NETHER),
+        (world.as_ref().join("DIM1"), Dimension::END),
     ] {
         scan_dim_root(&root, dim, &mut found, InsertPolicy::KeepExisting)?;
     }
     // Container roots (not world folders themselves) additionally resolve
     // the Bukkit trio. Gating on container mode keeps a lone nested folder
     // from stealing the vanilla namespace of the root's own content.
-    let base = if is_top_world_folder(world)? {
+    let base = if is_top_world_folder(world.as_ref())? {
         None
     } else {
-        bukkit_base(world)?
+        bukkit_base(world.as_ref())?
     };
     // Bukkit trio: live server data wins over conversion leftovers above.
     if let Some(base) = &base {
-        let over = world.join(base);
+        let over = world.as_ref().join(base);
         scan_dim_root(
             &over,
             Dimension::OVERWORLD,
@@ -374,18 +376,18 @@ pub fn discover(world: &Path) -> Result<Vec<RegionRef>, WorldError> {
             InsertPolicy::Overwrite,
         )?;
         scan_dim_root(
-            &world.join(format!("{base}_nether")).join("DIM-1"),
+            world.as_ref().join(format!("{base}_nether")).join("DIM-1"),
             Dimension::NETHER,
             &mut found,
             InsertPolicy::Overwrite,
         )?;
         scan_dim_root(
-            &world.join(format!("{base}_the_end")).join("DIM1"),
+            world.as_ref().join(format!("{base}_the_end")).join("DIM1"),
             Dimension::END,
             &mut found,
             InsertPolicy::Overwrite,
         )?;
-        scan_dimensions(&over.join("dimensions"), base, &mut found)?;
+        scan_dimensions(over.join("dimensions"), base, &mut found)?;
     }
     // Other world folders: hashed namespaces, never colliding silently.
     let trio: [String; 3] = base.as_ref().map_or_else(Default::default, |base| {
@@ -395,7 +397,7 @@ pub fn discover(world: &Path) -> Result<Vec<RegionRef>, WorldError> {
             format!("{base}_the_end"),
         ]
     });
-    for entry in read_dir_opt(world)? {
+    for entry in read_dir_opt(world.as_ref())? {
         if !is_dir(&entry)? {
             continue;
         }
@@ -406,30 +408,30 @@ pub fn discover(world: &Path) -> Result<Vec<RegionRef>, WorldError> {
         if RESERVED_SUBDIRS.contains(&name) || trio.iter().any(|t| t == name) {
             continue;
         }
-        if !is_world_folder(&entry.path())? {
+        if !is_world_folder(entry.path())? {
             continue;
         }
-        let Some(rel) = rel_name(world, &entry.path()) else {
+        let Some(rel) = rel_name(world.as_ref(), entry.path()) else {
             continue;
         };
         let dim = sekai_core::resolve_custom_dimension(&rel);
-        scan_dim_root(&entry.path(), dim, &mut found, InsertPolicy::KeepExisting)?;
+        scan_dim_root(entry.path(), dim, &mut found, InsertPolicy::KeepExisting)?;
         scan_dim_root(
-            &entry.path().join("DIM-1"),
+            entry.path().join("DIM-1"),
             sekai_core::resolve_custom_dimension(&format!("{rel}/DIM-1")),
             &mut found,
             InsertPolicy::KeepExisting,
         )?;
         scan_dim_root(
-            &entry.path().join("DIM1"),
+            entry.path().join("DIM1"),
             sekai_core::resolve_custom_dimension(&format!("{rel}/DIM1")),
             &mut found,
             InsertPolicy::KeepExisting,
         )?;
-        scan_dimensions(&entry.path().join("dimensions"), &rel, &mut found)?;
+        scan_dimensions(entry.path().join("dimensions"), &rel, &mut found)?;
     }
     // Root-level dimensions tree (vanilla 26.1+ single world).
-    scan_dimensions(&world.join("dimensions"), "", &mut found)?;
+    scan_dimensions(world.as_ref().join("dimensions"), "", &mut found)?;
     Ok(found.into_values().collect())
 }
 
@@ -451,7 +453,7 @@ const fn kind_dir(kind: RegionKind) -> Option<&'static str> {
 /// derivation whenever any exist, since folders may have moved since the
 /// backup (e.g. across a 26.1 migration).
 pub fn derive_path(
-    world: &Path,
+    world: impl AsRef<Path>,
     flavor: &LayoutFlavor,
     dim: Dimension,
     kind: RegionKind,
@@ -465,7 +467,7 @@ pub fn derive_path(
         region_z,
     };
     let kind_dir = kind_dir(kind).ok_or_else(unknown)?;
-    let mut path = world.to_path_buf();
+    let mut path = world.as_ref().to_path_buf();
 
     match flavor {
         LayoutFlavor::New => {

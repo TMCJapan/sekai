@@ -33,7 +33,7 @@ fn store_preexists(store: &str) -> bool {
 
 pub async fn run(
     store: &str,
-    world: &Path,
+    world: impl AsRef<Path>,
     with_diff: bool,
     jobs: usize,
     progress: bool,
@@ -45,9 +45,9 @@ pub async fn run(
     let bar = progress_bar(progress);
     let mut instance = sekai_app::SekaiInstance::open(store)
         .await
-        .with_context(|| format!("backup of {} failed", world.display()))?;
+        .with_context(|| format!("backup of {} failed", world.as_ref().display()))?;
     let (report, timings) = instance
-        .world_mut(world)
+        .world_mut(world.as_ref())
         .backup(options(with_diff, jobs), scope, |update| {
             report_progress(
                 bar.as_ref(),
@@ -57,7 +57,7 @@ pub async fn run(
             );
         })
         .await
-        .with_context(|| format!("backup of {} failed", world.display()))?;
+        .with_context(|| format!("backup of {} failed", world.as_ref().display()))?;
     finish_progress(bar.as_ref());
     if out.json {
         println!(

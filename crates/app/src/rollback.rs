@@ -308,23 +308,23 @@ pub(super) fn fetch_or_skip(
 /// snapshot-unknown ones under `keep_post_snapshot_chunks`. Missing live
 /// files contribute nothing; corrupt ones fail loudly.
 fn merge_live_chunks(
-    path: &Path,
+    path: impl AsRef<Path>,
     key: &RegionKey,
     restored: &BTreeSet<(i32, i32)>,
     tombs: Option<&[ChunkCoord]>,
     options: RollbackOptions,
     writer: &mut sekai_anvil::RegionBuilder,
 ) -> Result<(), AppError> {
-    if !path.exists() {
+    if !path.as_ref().exists() {
         return Ok(());
     }
-    let bytes = std::fs::read(path).map_err(|source| sekai_world::WorldError::Io {
-        path: path.to_path_buf(),
+    let bytes = std::fs::read(path.as_ref()).map_err(|source| sekai_world::WorldError::Io {
+        path: path.as_ref().to_path_buf(),
         source,
     })?;
     let image = sekai_anvil::RegionImage::from_bytes(bytes, key.rx, key.rz).map_err(|source| {
         AppError::RegionFailed {
-            path: path.to_path_buf(),
+            path: path.as_ref().to_path_buf(),
             source,
         }
     })?;
@@ -349,7 +349,7 @@ fn merge_live_chunks(
             true
         })
         .map_err(|source| AppError::RegionFailed {
-            path: path.to_path_buf(),
+            path: path.as_ref().to_path_buf(),
             source,
         })?;
     if let Some(source) = failed {
@@ -362,7 +362,7 @@ fn merge_live_chunks(
 /// per [`MissingFilePolicy`].
 fn resolve_target(
     discovered: &BTreeMap<RegionKey, PathBuf>,
-    world: &Path,
+    world: impl AsRef<Path>,
     flavor: &LayoutFlavor,
     key: &RegionKey,
     policy: MissingFilePolicy,
@@ -390,7 +390,7 @@ fn resolve_target(
 /// loudly instead of writing somewhere wrong.
 fn sibling_or_derived(
     discovered: &BTreeMap<RegionKey, PathBuf>,
-    world: &Path,
+    world: impl AsRef<Path>,
     flavor: &LayoutFlavor,
     key: &RegionKey,
 ) -> Result<PathBuf, AppError> {

@@ -1,0 +1,23 @@
+id: no-path-ref-arg
+language: rust
+severity: error
+message: "Function argument must use impl AsRef<Path> instead of &Path or &PathBuf"
+note: "Using &Path or &PathBuf in function arguments is prohibited. Use impl AsRef<Path> for flexibility."
+rule:
+  kind: parameter
+  has:
+    kind: reference_type
+    any:
+      - has:
+          kind: type_identifier
+          regex: '^Path(?:Buf)?$'
+      - has:
+          kind: scoped_type_identifier
+          all:
+            - has:
+                kind: scoped_identifier
+                regex: '^(?:std::path|core::path)$'
+            - has:
+                kind: type_identifier
+                regex: '^Path(?:Buf)?$'
+    stopBy: end

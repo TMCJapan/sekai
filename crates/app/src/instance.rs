@@ -30,7 +30,7 @@ impl SekaiInstance {
         #[cfg(feature = "backend-sqlite")]
         if kind == sekai_storage::BackendKind::Sqlite {
             return Ok(Self {
-                store: sekai_storage::open_sqlite(Path::new(rest)).await?,
+                store: sekai_storage::open_sqlite(rest).await?,
             });
         }
         Err(sekai_storage::StorageError::UnsupportedBackend {

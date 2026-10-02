@@ -39,7 +39,7 @@ const fn map_options(on_missing_blob: OnMissingBlob) -> sekai_app::ExportOptions
 pub async fn run(
     store: &str,
     snapshot: &str,
-    out_dir: &Path,
+    out_dir: impl AsRef<Path>,
     progress: bool,
     selection: &Selection,
     flags: &ExportFlags,
@@ -50,7 +50,7 @@ pub async fn run(
         .with_context(|| {
             format!(
                 "export of snapshot {snapshot:?} to {} failed",
-                out_dir.display()
+                out_dir.as_ref().display()
             )
         })?;
     let id = instance
@@ -63,19 +63,26 @@ pub async fn run(
     let bar = progress_bar(progress);
     let owned = bar.clone();
     let (report, timings) = instance
-        .export(out_dir, id, flavor, options, scope, move |update| {
-            report_progress(
-                owned.as_ref(),
-                update.files_done,
-                update.files_total,
-                format!("files {} chunks", update.chunks_done),
-            );
-        })
+        .export(
+            out_dir.as_ref(),
+            id,
+            flavor,
+            options,
+            scope,
+            move |update| {
+                report_progress(
+                    owned.as_ref(),
+                    update.files_done,
+                    update.files_total,
+                    format!("files {} chunks", update.chunks_done),
+                );
+            },
+        )
         .await
         .with_context(|| {
             format!(
                 "export of snapshot {snapshot:?} to {} failed",
-                out_dir.display()
+                out_dir.as_ref().display()
             )
         })?;
     finish_progress(bar.as_ref());

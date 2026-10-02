@@ -23,16 +23,16 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// Persist a directory's own entries. A no-op on Windows, where `std` has
 /// no equivalent to fsyncing a directory handle.
 #[cfg(unix)]
-fn sync_dir(dir: &Path) -> Result<(), StorageError> {
-    let handle = std::fs::File::open(dir).map_err(|source| io_error(dir, source))?;
-    handle.sync_all().map_err(|source| io_error(dir, source))
+fn sync_dir(dir: impl AsRef<Path>) -> Result<(), StorageError> {
+    let handle = std::fs::File::open(&dir).map_err(|source| io_error(&dir, source))?;
+    handle.sync_all().map_err(|source| io_error(&dir, source))
 }
 
 /// Windows stub: keeps the fallible signature so callers stay identical
 /// across platforms, even though nothing here can fail.
 #[cfg(not(unix))]
 #[allow(clippy::unnecessary_wraps, reason = "matches the unix signature")]
-const fn sync_dir(_dir: &Path) -> Result<(), StorageError> {
+fn sync_dir(_dir: impl AsRef<Path>) -> Result<(), StorageError> {
     Ok(())
 }
 
@@ -49,24 +49,24 @@ pub struct FileCas {
 
 impl FileCas {
     /// Open (creating if needed) the CAS rooted at `root`.
-    pub fn open(root: &Path) -> Result<Self, StorageError> {
-        let blobs = root.join("blobs");
+    pub fn open(root: impl AsRef<Path>) -> Result<Self, StorageError> {
+        let blobs = root.as_ref().join("blobs");
         let existed = blobs.is_dir();
         std::fs::create_dir_all(&blobs).map_err(|source| io_error(&blobs, source))?;
         // A freshly created `blobs/` is itself an entry in the store root:
         // persist it now, while nothing else depends on it yet.
         if !existed {
-            sync_dir(root)?;
+            sync_dir(root.as_ref())?;
         }
         Ok(Self {
-            root: root.to_path_buf(),
+            root: root.as_ref().to_path_buf(),
             ensured_shards: HashSet::new(),
             pending_dir_sync: HashSet::new(),
         })
     }
 
     /// Storage root.
-    pub fn root(&self) -> &Path {
+    pub fn root(&self) -> impl AsRef<Path> {
         &self.root
     }
 
@@ -102,11 +102,15 @@ impl FileCas {
     }
 
     /// Ensure the parent shard directory exists.
-    fn ensure_parent(&mut self, dest: &Path, shard_id: u8) -> Result<(), StorageError> {
+    fn ensure_parent(&mut self, dest: impl AsRef<Path>, shard_id: u8) -> Result<(), StorageError> {
         if self.ensured_shards.contains(&shard_id) {
             return Ok(());
         }
-        let shard = dest.parent().map(Path::to_path_buf).unwrap_or_default();
+        let shard = dest
+            .as_ref()
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
         std::fs::create_dir_all(&shard).map_err(|source| io_error(&shard, source))?;
         self.ensured_shards.insert(shard_id);
         Ok(())
@@ -192,7 +196,7 @@ impl FileCas {
             if !pending.is_empty() {
                 // Blobs in a shard created by this run only become durable
                 // once the shard's own entry in `blobs/` is persisted too.
-                sync_dir(&self.root.join("blobs"))?;
+                sync_dir(self.root.join("blobs"))?;
             }
         }
         #[cfg(not(unix))]
@@ -245,15 +249,15 @@ impl FileCas {
             let shard = shard.map_err(|source| io_error(&blobs, source))?;
             if !shard
                 .file_type()
-                .map_err(|source| io_error(&shard.path(), source))?
+                .map_err(|source| io_error(shard.path(), source))?
                 .is_dir()
             {
                 continue;
             }
-            let entries = std::fs::read_dir(shard.path())
-                .map_err(|source| io_error(&shard.path(), source))?;
+            let entries =
+                std::fs::read_dir(shard.path()).map_err(|source| io_error(shard.path(), source))?;
             for entry in entries {
-                let entry = entry.map_err(|source| io_error(&shard.path(), source))?;
+                let entry = entry.map_err(|source| io_error(shard.path(), source))?;
                 let path = entry.path();
                 if !entry
                     .file_type()
