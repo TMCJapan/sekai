@@ -154,14 +154,14 @@ live chunks after fallback.
 
 ### `tag`
 
-Create (`tag <name> <snapshot>`) and delete (`tag -d <name>`) return
-the record:
+Create (`tag create <name> <snapshot>`) and delete (`tag delete
+<name>`) return the record:
 
 ```jsonc
 {"name": "stable", "snapshot": 2, "created_at_ms": 1700000001000}
 ```
 
-Deletion returns `{"name": "stable"}`. Bare `tag` lists all tags in
+Deletion returns `{"name": "stable"}`. `tag list` lists all tags in
 name order:
 
 ```jsonc

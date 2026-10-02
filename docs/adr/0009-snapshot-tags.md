@@ -1,6 +1,6 @@
 # ADR-0009: Snapshot tags and `@tag` references
 
-- Status: Accepted
+- Status: Accepted (flat `tag` surface superseded by ADR-0013)
 - Date: 2026-09-18
 
 ## Context

@@ -3,10 +3,15 @@ use sekai_app::Dimension;
 use sekai_cli::{
     cli::{
         Cli, Command, DebugCommand, DiffArgs, ExportFlavor, OnMissingBlob, OnMissingFile,
-        Selection, TimingArgs,
+        Selection, SnapshotRef, TagCommand, TimingArgs,
     },
     style::ColorChoice,
 };
+
+/// `Option<SnapshotRef>` as `Option<&str>` for assertions.
+fn ref_str(value: Option<&SnapshotRef>) -> Option<&str> {
+    value.map(SnapshotRef::as_str)
+}
 
 #[test]
 fn parses_subcommands() {
@@ -16,7 +21,7 @@ fn parses_subcommands() {
 
     let cli = Cli::try_parse_from(["sekai", "--store", "s", "rollback", "w", "3"])
         .expect("rollback parses");
-    assert!(matches!(&cli.command, Command::Rollback { snapshot, .. } if snapshot == "3"));
+    assert!(matches!(&cli.command, Command::Rollback { snapshot, .. } if snapshot.as_str() == "3"));
 
     assert!(Cli::try_parse_from(["sekai", "rollback", "w"]).is_err());
 
@@ -118,15 +123,15 @@ fn parses_diff_command() {
     if let Command::Diff(args) = &cli.command {
         // Default kinds cover all three families.
         assert_eq!(args.selection.explicit_chunks().len(), 3);
-        assert_eq!(args.old_snapshot.as_deref(), Some("1"));
-        assert_eq!(args.new_snapshot.as_deref(), Some("2"));
+        assert_eq!(ref_str(args.old_snapshot.as_ref()), Some("1"));
+        assert_eq!(ref_str(args.new_snapshot.as_ref()), Some("2"));
     } else {
         panic!("expected diff");
     }
 
     let cli = Cli::try_parse_from(["sekai", "diff", "@stable", "2"]).expect("diff tag refs parse");
     if let Command::Diff(args) = &cli.command {
-        assert_eq!(args.old_snapshot.as_deref(), Some("@stable"));
+        assert_eq!(ref_str(args.old_snapshot.as_ref()), Some("@stable"));
     } else {
         panic!("expected diff");
     }
@@ -216,6 +221,45 @@ fn parses_diff_command() {
 }
 
 #[test]
+fn validates_snapshot_refs_at_parse_time() {
+    // Malformed references are refused before any code runs, so they can
+    // never touch the store (`<id>` is u64, `@tag` follows TagName rules).
+    for args in [
+        vec!["sekai", "rollback", "w", "abc"],
+        vec!["sekai", "rollback", "w", ""],
+        vec!["sekai", "rollback", "w", "@"],
+        vec!["sekai", "rollback", "w", "@123"],
+        vec!["sekai", "rollback", "w", "@bad name"],
+        vec!["sekai", "export", "latest", "out"],
+        vec!["sekai", "prune", "--before", "stable"],
+        vec!["sekai", "diff", "1", "two"],
+        vec!["sekai", "tag", "create", "stable", "newest"],
+    ] {
+        assert!(Cli::try_parse_from(&args).is_err(), "{args:?} is refused");
+    }
+
+    for args in [
+        vec!["sekai", "rollback", "w", "3"],
+        vec!["sekai", "rollback", "w", "@stable"],
+        vec!["sekai", "export", "@v1.2_x-1", "out"],
+        vec!["sekai", "prune", "--before", "@stable"],
+        vec!["sekai", "diff", "@stable", "2"],
+        vec!["sekai", "tag", "create", "stable", "0"],
+    ] {
+        Cli::try_parse_from(&args).unwrap_or_else(|err| panic!("{args:?} parses: {err}"));
+    }
+
+    // `--world` compares against at most one snapshot; a second positional
+    // used to be ignored silently and is now refused.
+    Cli::try_parse_from(["sekai", "diff", "--world", "w", "@stable"])
+        .expect("diff --world with one snapshot parses");
+    assert!(
+        Cli::try_parse_from(["sekai", "diff", "--world", "w", "1", "2"]).is_err(),
+        "diff --world with two snapshots is refused"
+    );
+}
+
+#[test]
 fn parses_area_specs() {
     use sekai_cli::cli::{AreaSpec, DimArea, RegionSpec};
 
@@ -257,7 +301,7 @@ fn parses_selection_for_backup_and_rollback() {
 
     let cli = Cli::try_parse_from(["sekai", "rollback", "w", "3", "--region", "nether:1,-1"])
         .expect("rollback --region parses");
-    assert!(matches!(&cli.command, Command::Rollback { snapshot, .. } if snapshot == "3"));
+    assert!(matches!(&cli.command, Command::Rollback { snapshot, .. } if snapshot.as_str() == "3"));
 
     // `--in` and `--region` compose; kinds are repeatable.
     assert!(
@@ -459,7 +503,7 @@ fn parses_timing_and_debug_scan() {
                 json: false,
             },
             ..
-        } if snapshot == "3"
+        } if snapshot.as_str() == "3"
     ));
 
     let cli = Cli::try_parse_from([
@@ -488,61 +532,78 @@ fn parses_timing_and_debug_scan() {
                 json: true,
             },
             ..
-        } if snapshot == "3"
+        } if snapshot.as_str() == "3"
     ));
     assert!(
         Cli::try_parse_from(["sekai", "export", "3", "out", "--flavor", "tarball"]).is_err(),
         "unknown export flavor is refused"
     );
 
-    let cli = Cli::try_parse_from(["sekai", "tag", "stable", "3"]).expect("tag create parses");
+    let cli =
+        Cli::try_parse_from(["sekai", "tag", "create", "stable", "3"]).expect("tag create parses");
     assert!(matches!(
         &cli.command,
         Command::Tag {
-            name,
-            snapshot: Some(_),
-            delete: false,
-            force: false,
-            json: false,
-        } if name.as_ref().is_some_and(|n| n.as_str() == "stable")
+            action: TagCommand::Create {
+                name,
+                snapshot,
+                force: false,
+                json: false,
+            }
+        } if name.as_str() == "stable" && snapshot.as_str() == "3"
     ));
+    assert_eq!(cli.command.name(), "tag");
+    assert!(!cli.command.output_json());
 
-    let cli = Cli::try_parse_from(["sekai", "tag", "stable", "@prev", "--force", "--json"])
-        .expect("tag force parses");
+    let cli = Cli::try_parse_from([
+        "sekai", "tag", "create", "stable", "@prev", "--force", "--json",
+    ])
+    .expect("tag create --force parses");
     assert!(matches!(
         &cli.command,
         Command::Tag {
-            force: true,
-            json: true,
-            ..
+            action: TagCommand::Create {
+                force: true,
+                json: true,
+                ..
+            }
+        }
+    ));
+    assert!(cli.command.output_json());
+
+    let cli = Cli::try_parse_from(["sekai", "tag", "delete", "stable"]).expect("tag delete parses");
+    assert!(matches!(
+        &cli.command,
+        Command::Tag {
+            action: TagCommand::Delete { .. }
         }
     ));
     assert_eq!(cli.command.name(), "tag");
-    assert!(cli.command.output_json());
 
-    let cli =
-        Cli::try_parse_from(["sekai", "tag", "stable", "--delete"]).expect("tag delete parses");
-    assert!(matches!(&cli.command, Command::Tag { delete: true, .. }));
-
-    let cli = Cli::try_parse_from(["sekai", "tag"]).expect("bare tag lists");
+    let cli = Cli::try_parse_from(["sekai", "tag", "list", "--json"]).expect("tag list parses");
     assert!(matches!(
         &cli.command,
         Command::Tag {
-            name: None,
-            snapshot: None,
-            delete: false,
-            ..
+            action: TagCommand::List { json: true }
         }
     ));
+    assert!(cli.command.output_json());
 
-    assert!(
-        Cli::try_parse_from(["sekai", "tag", "stable", "3", "--delete"]).is_err(),
-        "tag delete with snapshot is refused"
-    );
-    assert!(
-        Cli::try_parse_from(["sekai", "tag", "bad name", "3"]).is_err(),
-        "invalid tag name is refused"
-    );
+    // Every invalid shape is a parse error: the legacy flat surface,
+    // missing operands, and flags that belong to another operation.
+    for args in [
+        vec!["sekai", "tag"],
+        vec!["sekai", "tag", "stable", "3"],
+        vec!["sekai", "tag", "stable", "--delete"],
+        vec!["sekai", "tag", "create", "stable"],
+        vec!["sekai", "tag", "delete"],
+        vec!["sekai", "tag", "create", "bad name", "3"],
+        vec!["sekai", "tag", "create", "stable", "abc"],
+        vec!["sekai", "tag", "delete", "stable", "--force"],
+        vec!["sekai", "tag", "list", "stable"],
+    ] {
+        assert!(Cli::try_parse_from(&args).is_err(), "{args:?} is refused");
+    }
 
     let cli = Cli::try_parse_from(["sekai", "list", "--json"]).expect("list --json parses");
     assert!(matches!(cli.command, Command::List { json: true, .. }));
@@ -680,7 +741,7 @@ fn parses_prune_command() {
     ));
     assert!(cli.command.output_json());
     if let Command::Prune { before, .. } = &cli.command {
-        assert_eq!(before.as_deref(), Some("@stable"));
+        assert_eq!(ref_str(before.as_ref()), Some("@stable"));
     } else {
         panic!("expected prune");
     }

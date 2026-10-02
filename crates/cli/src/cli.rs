@@ -3,7 +3,7 @@
 use crate::style::ColorChoice;
 use clap::{Parser, Subcommand};
 use sekai_app::{Area, ChunkCoord, Dimension, Rect, RegionKind, Scope, TagName};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Chunk-level deduplicated snapshots for Minecraft region files.
 #[derive(Debug, Parser)]
@@ -69,7 +69,7 @@ pub enum Command {
         /// World directory to rebuild in place.
         world: PathBuf,
         /// Snapshot reference to restore (`<id>` or `@tag`, see `list`).
-        snapshot: String,
+        snapshot: SnapshotRef,
         /// Human or JSON rendering plus optional phase timings.
         #[command(flatten)]
         output: TimingArgs,
@@ -116,7 +116,7 @@ pub enum Command {
     /// Rebuild a snapshot into a fresh directory (never touches the live world).
     Export {
         /// Snapshot reference to export (`<id>` or `@tag`, see `list`).
-        snapshot: String,
+        snapshot: SnapshotRef,
         /// Directory to rebuild the snapshot into (created when missing;
         /// must otherwise be empty).
         out: PathBuf,
@@ -142,20 +142,8 @@ pub enum Command {
     },
     /// Tag snapshots with human-readable names.
     Tag {
-        /// Tag name (`[A-Za-z0-9._-]`, 1-64 bytes, not all digits).
-        /// Omitted with nothing else lists tags.
-        name: Option<TagName>,
-        /// Snapshot reference (`<id>` or `@tag`) to point at.
-        snapshot: Option<String>,
-        /// Delete the tag instead of creating it.
-        #[arg(long, short = 'd', conflicts_with_all = ["snapshot", "force"])]
-        delete: bool,
-        /// Move an existing tag instead of failing.
-        #[arg(long)]
-        force: bool,
-        /// Emit output as JSON instead of human text. See docs/json.md.
-        #[arg(long)]
-        json: bool,
+        #[command(subcommand)]
+        action: TagCommand,
     },
     /// Compare chunk NBT AST between two snapshots or between world state and a snapshot.
     Diff(DiffArgs),
@@ -167,7 +155,7 @@ pub enum Command {
         keep_last: Option<u64>,
         /// Retain this snapshot and everything newer (`<id>` or `@tag`).
         #[arg(long, required_unless_present = "keep_last")]
-        before: Option<String>,
+        before: Option<SnapshotRef>,
         /// Show what would be deleted without deleting anything.
         #[arg(long)]
         dry_run: bool,
@@ -230,12 +218,94 @@ impl Command {
             | Self::Export { output, .. }
             | Self::Prune { output, .. }
             | Self::Gc { output, .. } => output.json,
-            Self::List { json, .. } | Self::Tag { json, .. } => *json,
+            Self::List { json, .. } => *json,
+            Self::Tag { action } => action.output_json(),
             Self::Diff(args) => args.output.json,
             Self::Debug { debug } => match debug {
                 DebugCommand::Scan { output, .. } => output.json,
             },
         }
+    }
+}
+
+/// Tag operations. Modeling them as subcommands keeps every invalid
+/// argument shape (create without a snapshot, delete without a name,
+/// `--force` on a list) statically unrepresentable.
+#[derive(Debug, Subcommand)]
+pub enum TagCommand {
+    /// Point a tag at a snapshot.
+    Create {
+        /// Tag name (`[A-Za-z0-9._-]`, 1-64 bytes, not all digits).
+        name: TagName,
+        /// Snapshot reference (`<id>` or `@tag`, see `list`) to point at.
+        snapshot: SnapshotRef,
+        /// Move an existing tag instead of failing.
+        #[arg(long)]
+        force: bool,
+        /// Emit output as JSON instead of human text. See docs/json.md.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete a tag.
+    Delete {
+        /// Tag name to delete.
+        name: TagName,
+        /// Emit output as JSON instead of human text. See docs/json.md.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List all tags in name order.
+    List {
+        /// Emit output as JSON instead of human text. See docs/json.md.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+impl TagCommand {
+    /// Whether the operation runs in JSON mode (`--json`).
+    pub const fn output_json(&self) -> bool {
+        match self {
+            Self::Create { json, .. } | Self::Delete { json, .. } | Self::List { json } => *json,
+        }
+    }
+}
+
+/// Snapshot reference on the command line: `<id>` or `@tag`.
+///
+/// The shape is validated at parse time so a malformed reference never
+/// reaches the store; resolving it to an existing snapshot stays a
+/// runtime step. The grammar mirrors `core`'s `resolve_snapshot_ref`:
+/// `@` followed by a valid [`TagName`], or a plain `u64` ID.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnapshotRef(String);
+
+impl SnapshotRef {
+    /// Raw reference text (`<id>` or `@tag`).
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for SnapshotRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::str::FromStr for SnapshotRef {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some(name) = s.strip_prefix('@') {
+            TagName::parse(name)
+                .map_err(|err| format!("invalid tag reference {s:?}: {err}, expected @<tag>"))?;
+        } else {
+            s.parse::<u64>().map_err(|_| {
+                format!("invalid snapshot reference {s:?}, expected <id> or @<tag>")
+            })?;
+        }
+        Ok(Self(s.to_owned()))
     }
 }
 
@@ -290,11 +360,13 @@ pub struct DiffArgs {
     #[arg(long)]
     pub world: Option<PathBuf>,
     /// Older snapshot reference (`<id>` or `@tag`; if omitted when
-    /// comparing snapshots, defaults to second-latest).
-    pub old_snapshot: Option<String>,
+    /// comparing snapshots, defaults to second-latest). With `--world`,
+    /// the single snapshot to compare against (default: latest).
+    pub old_snapshot: Option<SnapshotRef>,
     /// Newer snapshot reference (`<id>` or `@tag`; if omitted, defaults
-    /// to latest snapshot).
-    pub new_snapshot: Option<String>,
+    /// to latest snapshot). Snapshot-vs-snapshot only.
+    #[arg(conflicts_with = "world")]
+    pub new_snapshot: Option<SnapshotRef>,
     /// Chunks to compare (default: whole world). One chunk keeps the
     /// legacy single-chunk output; several switch to grouped output.
     #[command(flatten)]
@@ -309,6 +381,41 @@ pub struct DiffArgs {
     /// Show concrete old/new values in human output (SNBT format).
     #[arg(long)]
     pub show_values: bool,
+}
+
+impl DiffArgs {
+    /// What this invocation compares. Total over every argument shape clap
+    /// accepts: `--world` compares against at most one snapshot (the second
+    /// positional is refused at parse time), and the snapshot pair defaults
+    /// resolve against the store at runtime.
+    pub fn target(&self) -> DiffTarget<'_> {
+        self.world.as_ref().map_or(
+            DiffTarget::Snapshots {
+                old: self.old_snapshot.as_ref(),
+                new: self.new_snapshot.as_ref(),
+            },
+            |world| DiffTarget::World {
+                world,
+                snapshot: self.old_snapshot.as_ref(),
+            },
+        )
+    }
+}
+
+/// Comparison sides of a `diff` run, with the `--world`-versus-positional
+/// ambiguity resolved statically instead of juggling `Option`s at runtime.
+#[derive(Debug)]
+pub enum DiffTarget<'a> {
+    /// Live world state against one snapshot (`None` means latest).
+    World {
+        world: &'a Path,
+        snapshot: Option<&'a SnapshotRef>,
+    },
+    /// Snapshot against snapshot (`None` defaults: second-latest vs latest).
+    Snapshots {
+        old: Option<&'a SnapshotRef>,
+        new: Option<&'a SnapshotRef>,
+    },
 }
 
 /// World-portion selection shared by backup, status, rollback, diff, and
