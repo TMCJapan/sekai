@@ -22,4 +22,4 @@ pub use api::{BackendKind, BlobStore, MetaStore, StorageError, Store, parse_back
 pub use cas::FileCas;
 pub use runs::RunGuard;
 #[cfg(feature = "backend-sqlite")]
-pub use sqlite::{SqliteMeta, SqliteStore, open_sqlite};
+pub use sqlite::{SqliteMeta, SqliteStore, init_sqlite, open_sqlite};

@@ -7,7 +7,7 @@
 mod common;
 
 use sekai_core::{BlobHash, BlobStore as _};
-use sekai_storage::open_sqlite;
+use sekai_storage::{init_sqlite, open_sqlite};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -24,8 +24,8 @@ fn tempdir(name: &str) -> PathBuf {
     dir
 }
 
-async fn open(dir: impl AsRef<Path>) -> sekai_storage::SqliteStore {
-    open_sqlite(dir).await.unwrap()
+async fn init(dir: impl AsRef<Path>) -> sekai_storage::SqliteStore {
+    init_sqlite(dir).await.unwrap()
 }
 
 fn cleanup(dir: impl AsRef<Path>) {
@@ -35,7 +35,7 @@ fn cleanup(dir: impl AsRef<Path>) {
 #[tokio::test]
 async fn sqlite_snapshot_lifecycle() {
     let dir = tempdir("snap");
-    let mut store = open(&dir).await;
+    let mut store = init(&dir).await;
     common::snapshot_lifecycle(store.meta_mut()).await;
     cleanup(&dir);
 }
@@ -43,7 +43,7 @@ async fn sqlite_snapshot_lifecycle() {
 #[tokio::test]
 async fn sqlite_backup_carry() {
     let dir = tempdir("carry");
-    let mut store = open(&dir).await;
+    let mut store = init(&dir).await;
     common::backup_carry(store.meta_mut()).await;
     cleanup(&dir);
 }
@@ -51,7 +51,7 @@ async fn sqlite_backup_carry() {
 #[tokio::test]
 async fn sqlite_tombstones() {
     let dir = tempdir("tomb");
-    let mut store = open(&dir).await;
+    let mut store = init(&dir).await;
     common::tombstones(store.meta_mut()).await;
     cleanup(&dir);
 }
@@ -59,7 +59,7 @@ async fn sqlite_tombstones() {
 #[tokio::test]
 async fn sqlite_tags() {
     let dir = tempdir("tags");
-    let mut store = open(&dir).await;
+    let mut store = init(&dir).await;
     common::tags(store.meta_mut()).await;
     cleanup(&dir);
 }
@@ -67,7 +67,7 @@ async fn sqlite_tags() {
 #[tokio::test]
 async fn sqlite_fresh_stats() {
     let dir = tempdir("fresh");
-    let mut store = open(&dir).await;
+    let mut store = init(&dir).await;
     common::fresh_stats(store.meta_mut()).await;
     cleanup(&dir);
 }
@@ -75,7 +75,7 @@ async fn sqlite_fresh_stats() {
 #[tokio::test]
 async fn sqlite_prune_flow() {
     let dir = tempdir("prune");
-    let mut store = open(&dir).await;
+    let mut store = init(&dir).await;
     common::prune_flow(store.meta_mut()).await;
     cleanup(&dir);
 }
@@ -83,7 +83,7 @@ async fn sqlite_prune_flow() {
 #[tokio::test]
 async fn sqlite_cas_roundtrip() {
     let dir = tempdir("cas");
-    let mut store = open(&dir).await;
+    let mut store = init(&dir).await;
     common::cas_roundtrip(store.cas_mut()).await;
     cleanup(&dir);
 }
@@ -91,7 +91,7 @@ async fn sqlite_cas_roundtrip() {
 #[tokio::test]
 async fn sqlite_torn_orphan_gc() {
     let dir = tempdir("gc");
-    let mut store = open(&dir).await;
+    let mut store = init(&dir).await;
     common::torn_orphan_gc(&mut store).await;
     cleanup(&dir);
 }
@@ -99,7 +99,7 @@ async fn sqlite_torn_orphan_gc() {
 #[tokio::test]
 async fn cas_skips_foreign_and_temp_names() {
     let dir = tempdir("names");
-    let mut store = open(&dir).await;
+    let mut store = init(&dir).await;
     let cas = store.cas_mut();
     let hash = sekai_core::hash_blob(b"real");
     assert!(cas.put(&hash, b"real").await.unwrap());
@@ -118,5 +118,24 @@ async fn cas_skips_foreign_and_temp_names() {
     let mut out = Vec::new();
     assert!(cas.fetch_into(&BlobHash([9; 32]), &mut out).await.is_err());
     assert!(out.is_empty());
+    cleanup(&dir);
+}
+
+/// Only `init_sqlite` materializes a store; `open_sqlite` must fail loudly on
+/// a root that was never initialized and leave nothing behind (issue #80).
+#[tokio::test]
+async fn open_of_a_missing_store_fails_without_creating_it() {
+    let dir = tempdir("missing");
+    let err = open_sqlite(&dir).await.unwrap_err();
+    assert!(
+        matches!(&err, sekai_storage::StorageError::StoreMissing { path } if path == &dir),
+        "unexpected error: {err}"
+    );
+    assert!(!dir.exists(), "a failed open must not create anything");
+
+    let _store = init_sqlite(&dir).await.unwrap();
+    assert!(dir.join("meta.sqlite").is_file());
+    assert!(dir.join("blobs").is_dir());
+    let _store = open_sqlite(&dir).await.unwrap();
     cleanup(&dir);
 }

@@ -67,7 +67,7 @@ async fn prune_folds_and_gc_reclaims() {
     let store = store_dir.to_string_lossy().into_owned();
     let region = world.join("region/r.0.0.mca");
 
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
 
     // Three snapshots with distinct payloads; the oldest is tagged.
     write_region(&region, &[(0, 0, vec![3, 1])]);
@@ -138,7 +138,7 @@ async fn prune_before_ref_and_empty_guards() {
     let root = tempdir("guards");
     let world = root.join("world");
     let store = root.join("store").to_string_lossy().into_owned();
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     for payload in [vec![3, 1], vec![3, 2], vec![3, 3]] {
         write_region(world.join("region/r.0.0.mca"), &[(0, 0, payload)]);
         instance

@@ -16,7 +16,7 @@ fn benches(c: &mut Criterion) {
         generate(&world, &SMALL);
         let store = root.join("store").to_string_lossy().into_owned();
         let mut instance = rt
-            .block_on(sekai_app::SekaiInstance::open(&store))
+            .block_on(sekai_app::SekaiInstance::init(&store))
             .expect("open works");
         rt.block_on(
             instance
@@ -46,7 +46,7 @@ fn benches(c: &mut Criterion) {
         let root = world.parent().unwrap().to_path_buf();
         let store = root.join("store").to_string_lossy().into_owned();
         let mut instance = rt
-            .block_on(sekai_app::SekaiInstance::open(&store))
+            .block_on(sekai_app::SekaiInstance::init(&store))
             .expect("open works");
         rt.block_on(
             instance
