@@ -147,8 +147,14 @@ impl SekaiInstance {
         let out = diff_coords(
             coords,
             ignore_set,
-            DiffSource::Snapshot(&self.store, old_snapshot),
-            DiffSource::Snapshot(&self.store, new_snapshot),
+            SnapshotDiff {
+                store: &self.store,
+                id: old_snapshot,
+            },
+            SnapshotDiff {
+                store: &self.store,
+                id: new_snapshot,
+            },
             progress,
             &mut timings,
         )
@@ -270,8 +276,11 @@ impl WorldHandle<'_> {
         let out = diff_coords(
             coords,
             ignore_set,
-            DiffSource::Snapshot(&self.instance.store, snapshot_id),
-            DiffSource::World(&self.root),
+            SnapshotDiff {
+                store: &self.instance.store,
+                id: snapshot_id,
+            },
+            self.root.as_path(),
             progress,
             &mut timings,
         )
@@ -307,21 +316,27 @@ impl WorldHandleMut<'_> {
     }
 }
 
-/// One side of a diff: where its compressed payload comes from.
-enum DiffSource<'a> {
-    /// A snapshot, resolved through metadata fallback.
-    Snapshot(&'a sekai_storage::SqliteStore, SnapshotId),
-    /// The live world directory.
-    World(&'a Path),
+trait DiffSource {
+    async fn payload(&self, coord: &ChunkCoord) -> Result<Option<Vec<u8>>, AppError>;
 }
 
-impl DiffSource<'_> {
-    /// Raw payload for `coord`, or `None` when that side has no such chunk.
+struct SnapshotDiff<'a> {
+    store: &'a sekai_storage::SqliteStore,
+    id: SnapshotId,
+}
+
+impl DiffSource for SnapshotDiff<'_> {
     async fn payload(&self, coord: &ChunkCoord) -> Result<Option<Vec<u8>>, AppError> {
-        match self {
-            Self::Snapshot(store, id) => snapshot_chunk_compressed(store, *id, coord).await,
-            Self::World(world) => read_world_chunk_compressed(world, coord),
-        }
+        snapshot_chunk_compressed(self.store, self.id, coord).await
+    }
+}
+
+impl DiffSource for &Path {
+    fn payload(
+        &self,
+        coord: &ChunkCoord,
+    ) -> impl Future<Output = Result<Option<Vec<u8>>, AppError>> {
+        std::future::ready(read_world_chunk_compressed(*self, coord))
     }
 }
 
@@ -332,8 +347,8 @@ impl DiffSource<'_> {
 async fn diff_coords(
     coords: &[ChunkCoord],
     ignore_set: &[&str],
-    old: DiffSource<'_>,
-    new: DiffSource<'_>,
+    old: impl DiffSource,
+    new: impl DiffSource,
     mut progress: impl FnMut(DiffProgress) + Send,
     timings: &mut DiffTimings,
 ) -> Result<Vec<ChunkDiff>, AppError> {
