@@ -5,14 +5,14 @@ mod common;
 
 use common::{SMALL, corpus_world, generate, options, runtime, tempdir};
 use criterion::{Criterion, criterion_group, criterion_main};
-use sekai_app::Scope;
+use sekai_app::{HostWorktree, Scope};
 
 fn benches(c: &mut Criterion) {
     let rt = runtime();
 
     c.bench_function("rollback/small", |b| {
         let root = tempdir("rollback-small");
-        let mut world = root.join("world");
+        let mut world = HostWorktree::new(root.join("world"));
         generate(&world, &SMALL);
         let store = root.join("store").to_string_lossy().into_owned();
         let mut instance = rt
@@ -38,8 +38,8 @@ fn benches(c: &mut Criterion) {
     });
 
     c.bench_function("rollback/corpus", |b| {
-        let mut world = corpus_world();
-        let root = world.parent().unwrap().to_path_buf();
+        let mut world = HostWorktree::new(corpus_world());
+        let root = world.as_ref().parent().unwrap().to_path_buf();
         let store = root.join("store").to_string_lossy().into_owned();
         let mut instance = rt
             .block_on(sekai_app::SekaiInstance::init(&store))

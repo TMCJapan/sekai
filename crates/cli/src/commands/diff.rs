@@ -1,7 +1,7 @@
 //! Diff subcommand execution, DTOs, and coordination.
 
 use anyhow::Context as _;
-use sekai_app::{ChunkCoord, ChunkDiff, Scope, SnapshotId};
+use sekai_app::{ChunkCoord, ChunkDiff, HostWorktree, Scope, SnapshotId};
 
 use super::diff_render::{
     TimedDiffs, diff_entry_payload, diff_group_payload, print_diff_timing_table,
@@ -24,7 +24,7 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
     let broad = selection.has_broad_areas() || coords.is_empty();
     let (diffs, timings) = match args.target() {
         DiffTarget::World { world, snapshot } => {
-            let world = world.to_path_buf();
+            let world = HostWorktree::new(world);
             if broad {
                 coords.append(&mut sekai_app::world_chunk_coords(&world)?);
             }

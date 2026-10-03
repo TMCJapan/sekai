@@ -1,7 +1,7 @@
 //! Backup subcommand execution, DTOs, and output rendering.
 
 use anyhow::Context as _;
-use sekai_app::{BackupOptions, BackupReport, BackupTimings};
+use sekai_app::{BackupOptions, BackupReport, BackupTimings, HostWorktree};
 use serde::Serialize;
 use std::path::Path;
 
@@ -42,11 +42,11 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let scope = selection.owned_scope();
     let fresh_store = !store_preexists(store);
-    let mut world = world.as_ref().to_path_buf();
+    let mut world = HostWorktree::new(world);
     let bar = progress_bar(progress);
     let mut instance = sekai_app::SekaiInstance::init(store)
         .await
-        .with_context(|| format!("backup of {} failed", world.display()))?;
+        .with_context(|| format!("backup of {} failed", world.as_ref().display()))?;
     let (report, timings) = instance
         .world_mut(&mut world)
         .backup(options(with_diff, jobs), scope, |update| {
@@ -58,7 +58,7 @@ pub async fn run(
             );
         })
         .await
-        .with_context(|| format!("backup of {} failed", world.display()))?;
+        .with_context(|| format!("backup of {} failed", world.as_ref().display()))?;
     finish_progress(bar.as_ref());
     if out.json {
         println!(

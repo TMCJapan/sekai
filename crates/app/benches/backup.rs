@@ -5,7 +5,7 @@ mod common;
 
 use common::{MEDIUM, SMALL, generate, options, runtime, tempdir};
 use criterion::{Criterion, criterion_group, criterion_main};
-use sekai_app::Scope;
+use sekai_app::{HostWorktree, Scope};
 
 fn benches(c: &mut Criterion) {
     let rt = runtime();
@@ -13,7 +13,7 @@ fn benches(c: &mut Criterion) {
     c.bench_function("backup/small-full", |b| {
         b.iter(|| {
             let root = tempdir("small");
-            let mut world = root.join("world");
+            let mut world = HostWorktree::new(root.join("world"));
             generate(&world, &SMALL);
             let store = root.join("store").to_string_lossy().into_owned();
             let mut instance = rt
@@ -31,7 +31,7 @@ fn benches(c: &mut Criterion) {
 
     c.bench_function("backup/small-incremental", |b| {
         let root = tempdir("incr");
-        let mut world = root.join("world");
+        let mut world = HostWorktree::new(root.join("world"));
         generate(&world, &SMALL);
         let store = root.join("store").to_string_lossy().into_owned();
         let mut instance = rt
@@ -57,7 +57,7 @@ fn benches(c: &mut Criterion) {
     c.bench_function("backup/medium-full", |b| {
         b.iter(|| {
             let root = tempdir("medium");
-            let mut world = root.join("world");
+            let mut world = HostWorktree::new(root.join("world"));
             generate(&world, &MEDIUM);
             let store = root.join("store").to_string_lossy().into_owned();
             let mut instance = rt

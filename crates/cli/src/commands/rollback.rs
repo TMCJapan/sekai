@@ -1,7 +1,7 @@
 //! Rollback subcommand execution, DTOs, and output rendering.
 
 use anyhow::Context as _;
-use sekai_app::{RollbackReport, RollbackTimings};
+use sekai_app::{HostWorktree, RollbackReport, RollbackTimings};
 use serde::Serialize;
 use std::path::Path;
 
@@ -45,10 +45,10 @@ pub async fn run(
     flags: &RollbackFlags,
     out: ReportOut,
 ) -> anyhow::Result<()> {
-    let mut world = world.as_ref().to_path_buf();
+    let mut world = HostWorktree::new(world);
     let mut instance = sekai_app::SekaiInstance::open(store)
         .await
-        .with_context(|| format!("rollback of {} failed", world.display()))?;
+        .with_context(|| format!("rollback of {} failed", world.as_ref().display()))?;
     let id = instance
         .resolve_snapshot_ref(snapshot.as_str())
         .await
@@ -58,7 +58,7 @@ pub async fn run(
     if !out.json {
         eprintln!(
             "rollback {} to snapshot {} (scope: {}, policy: {})",
-            world.display(),
+            world.as_ref().display(),
             id.raw(),
             selection.describe(),
             policy_summary(flags),
@@ -80,7 +80,7 @@ pub async fn run(
         .with_context(|| {
             format!(
                 "rollback of {} to snapshot {snapshot} failed",
-                world.display()
+                world.as_ref().display()
             )
         })?;
     finish_progress(bar.as_ref());

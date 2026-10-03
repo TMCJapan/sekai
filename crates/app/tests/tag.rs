@@ -1,5 +1,6 @@
 //! End-to-end snapshot tag flows over SQLite stores.
 
+use sekai_app::HostWorktree;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -36,9 +37,12 @@ fn write_region(path: impl AsRef<Path>, chunks: &[(i32, i32, Vec<u8>)]) {
 async fn tag_create_list_resolve_delete() {
     use sekai_app::TagName;
     let root = tempdir("crud");
-    let mut world = root.join("world");
+    let mut world = HostWorktree::new(root.join("world"));
     let store = root.join("store").to_string_lossy().into_owned();
-    write_region(world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
+    write_region(
+        world.as_ref().join("region/r.0.0.mca"),
+        &[(0, 0, vec![3, 1])],
+    );
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
@@ -84,7 +88,7 @@ async fn tag_create_list_resolve_delete() {
     assert!(instance.resolve_snapshot_ref("nope").await.is_err());
 
     // Rollback accepts the tag ref end to end.
-    let out = root.join("exported");
+    let out = HostWorktree::new(root.join("exported"));
     let id = instance.resolve_snapshot_ref("@stable").await.unwrap();
     let (report, _) = instance
         .export(
@@ -111,8 +115,9 @@ async fn tag_missing_snapshot_is_an_error() {
     let root = tempdir("missing");
     let store = root.join("store").to_string_lossy().into_owned();
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let mut world = HostWorktree::new(root.join("world"));
     instance
-        .world_mut(&mut root.join("world"))
+        .world_mut(&mut world)
         .backup(
             sekai_app::BackupOptions::default(),
             sekai_app::Scope::World,
