@@ -42,12 +42,13 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let scope = selection.owned_scope();
     let fresh_store = !store_preexists(store);
+    let mut world = world.as_ref().to_path_buf();
     let bar = progress_bar(progress);
     let mut instance = sekai_app::SekaiInstance::init(store)
         .await
-        .with_context(|| format!("backup of {} failed", world.as_ref().display()))?;
+        .with_context(|| format!("backup of {} failed", world.display()))?;
     let (report, timings) = instance
-        .world_mut(world.as_ref())
+        .world_mut(&mut world)
         .backup(options(with_diff, jobs), scope, |update| {
             report_progress(
                 bar.as_ref(),
@@ -57,7 +58,7 @@ pub async fn run(
             );
         })
         .await
-        .with_context(|| format!("backup of {} failed", world.as_ref().display()))?;
+        .with_context(|| format!("backup of {} failed", world.display()))?;
     finish_progress(bar.as_ref());
     if out.json {
         println!(

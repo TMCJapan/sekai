@@ -1,12 +1,12 @@
 //! Chunk AST diff operations over CAS and metadata stores.
 
-use std::path::Path;
 use std::time::{Duration, Instant};
 
 use sekai_core::{
     BlobHash, BlobStore as _, ChunkCoord, DEFAULT_IGNORED, MetaStore, NbtDiffEntry, SnapshotId,
     diff_nbt,
 };
+use sekai_world::WorldTree;
 
 use crate::error::AppError;
 use crate::instance::{SekaiInstance, WorldHandle, WorldHandleMut};
@@ -58,13 +58,13 @@ impl SekaiInstance {
 /// Returns `None` when the region file or chunk entry is absent; corrupt
 /// files still fail loudly.
 fn read_world_chunk_compressed(
-    world: impl AsRef<Path>,
+    world: &impl WorldTree,
     coord: &ChunkCoord,
 ) -> Result<Option<Vec<u8>>, AppError> {
     let rx = coord.region_x();
     let rz = coord.region_z();
 
-    let regions = sekai_world::discover(world)?;
+    let regions = world.discover()?;
     let Some(region_ref) = regions.into_iter().find(|r| {
         r.dim == coord.dim && r.kind == coord.kind && r.region_x == rx && r.region_z == rz
     }) else {
@@ -181,9 +181,9 @@ impl SekaiInstance {
 }
 
 /// Chunk coordinates present on disk in `world`.
-pub fn world_chunk_coords(world: impl AsRef<Path>) -> Result<Vec<ChunkCoord>, AppError> {
+pub fn world_chunk_coords(world: &impl WorldTree) -> Result<Vec<ChunkCoord>, AppError> {
     let mut coords = Vec::new();
-    for region in sekai_world::discover(world)? {
+    for region in world.discover()? {
         let bytes = sekai_world::open_image(&region.path)?;
         let failed = |source| AppError::RegionFailed {
             path: region.path.clone(),
@@ -232,7 +232,7 @@ fn decompress_or_empty(compressed: Option<Vec<u8>>) -> Result<Vec<u8>, AppError>
     compressed.map_or_else(|| Ok(EMPTY_COMPOUND.to_vec()), |c| decompress_chunk(&c))
 }
 
-impl WorldHandle<'_> {
+impl<T: WorldTree> WorldHandle<'_, T> {
     /// Compute AST diff for a chunk coordinate between the bound world state
     /// and a snapshot.
     ///
@@ -280,7 +280,7 @@ impl WorldHandle<'_> {
                 store: &self.instance.store,
                 id: snapshot_id,
             },
-            self.root.as_path(),
+            self.world,
             progress,
             &mut timings,
         )
@@ -290,7 +290,7 @@ impl WorldHandle<'_> {
     }
 }
 
-impl WorldHandleMut<'_> {
+impl<T: WorldTree> WorldHandleMut<'_, T> {
     /// Compute AST diff for one chunk; see [`WorldHandle::diff_world_chunk`].
     pub async fn diff_world_chunk(
         &self,
@@ -331,7 +331,7 @@ impl DiffSource for SnapshotDiff<'_> {
     }
 }
 
-impl DiffSource for &Path {
+impl<T: WorldTree> DiffSource for &T {
     fn payload(
         &self,
         coord: &ChunkCoord,

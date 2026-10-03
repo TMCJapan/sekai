@@ -23,7 +23,7 @@ use sekai_core::{
     Scope, SnapshotEntry, SnapshotId,
 };
 use sekai_storage::FileCas;
-use sekai_world::RegionRef;
+use sekai_world::{RegionRef, WorldTree};
 
 use crate::error::AppError;
 use crate::instance::{WorldHandle, WorldHandleMut};
@@ -164,7 +164,7 @@ struct FileOutcome {
     timing: RegionTiming,
 }
 
-impl WorldHandleMut<'_> {
+impl<T: WorldTree> WorldHandleMut<'_, T> {
     /// Scan the bound world and record it as a new snapshot in the store,
     /// additionally returning per-phase timings.
     ///
@@ -191,7 +191,7 @@ impl WorldHandleMut<'_> {
             discover,
             fingerprint,
             universe_load,
-        } = prepare(store, &self.root, &options, &scope, progress, false).await?;
+        } = prepare(store, self.world, &options, &scope, progress, false).await?;
 
         let now_ms = now_ms()?;
         // Persist batched shard-directory renames before the metadata commit:
@@ -245,17 +245,18 @@ struct Prepared {
 /// are the same numbers a real backup would commit.
 async fn prepare(
     store: &sekai_storage::SqliteStore,
-    world: impl AsRef<Path>,
+    world: &impl WorldTree,
     options: &BackupOptions,
     scope: &Scope,
     progress: impl Fn(BackupProgress) + Send,
     dry_run: bool,
 ) -> Result<Prepared, AppError> {
-    let observed = tokio::task::spawn_blocking({
-        let world = world.as_ref().to_path_buf();
-        move || observe(&world)
-    })
-    .await??;
+    // let observed = tokio::task::spawn_blocking({
+    //     let world = world.as_ref().to_path_buf();
+    //     move || observe(&world)
+    // })
+    // .await??;
+    let observed = observe(world)?;
     let discover = observed.discover;
     let fingerprint = observed.fingerprint;
 
@@ -301,7 +302,7 @@ async fn prepare(
     })
 }
 
-impl WorldHandle<'_> {
+impl<T: WorldTree> WorldHandle<'_, T> {
     /// Preview what a backup would record, without writing anything: no CAS
     /// puts, no metadata commit. Read-only against both world and store.
     ///
@@ -315,11 +316,11 @@ impl WorldHandle<'_> {
         scope: Scope,
         progress: impl Fn(BackupProgress) + Send,
     ) -> Result<(StatusReport, StatusTimings), AppError> {
-        status_impl(&self.instance.store, &self.root, options, scope, progress).await
+        status_impl(&self.instance.store, self.world, options, scope, progress).await
     }
 }
 
-impl WorldHandleMut<'_> {
+impl<T: WorldTree> WorldHandleMut<'_, T> {
     /// Preview what a backup would record; see [`WorldHandle::status`].
     pub async fn status(
         &self,
@@ -334,7 +335,7 @@ impl WorldHandleMut<'_> {
 /// Preview implementation shared by read-only and read-write handles.
 async fn status_impl(
     store: &sekai_storage::SqliteStore,
-    world: impl AsRef<Path>,
+    world: &impl WorldTree,
     options: StatusOptions,
     scope: Scope,
     progress: impl Fn(BackupProgress) + Send,
@@ -393,9 +394,9 @@ struct Observed {
 
 /// Discover every region file and fingerprint it. Blocking: file walks and
 /// opens belong on a blocking pool, never on an async worker.
-fn observe(world: impl AsRef<Path>) -> Result<Observed, AppError> {
+fn observe(world: &impl WorldTree) -> Result<Observed, AppError> {
     let discover_started = Instant::now();
-    let regions = sekai_world::discover(world)?;
+    let regions = world.discover()?;
     let discover = discover_started.elapsed();
 
     let fingerprint_started = Instant::now();

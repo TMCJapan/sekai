@@ -12,7 +12,7 @@ fn benches(c: &mut Criterion) {
 
     c.bench_function("diff/small-all", |b| {
         let root = tempdir("diff-small");
-        let world = root.join("world");
+        let mut world = root.join("world");
         generate(&world, &SMALL);
         let store = root.join("store").to_string_lossy().into_owned();
         let mut instance = rt
@@ -20,7 +20,7 @@ fn benches(c: &mut Criterion) {
             .expect("open works");
         rt.block_on(
             instance
-                .world_mut(&world)
+                .world_mut(&mut world)
                 .backup(options(), Scope::World, |_| {}),
         )
         .expect("backup works");
@@ -42,7 +42,7 @@ fn benches(c: &mut Criterion) {
     });
 
     c.bench_function("diff/corpus-all", |b| {
-        let world = corpus_world();
+        let mut world = corpus_world();
         let root = world.parent().unwrap().to_path_buf();
         let store = root.join("store").to_string_lossy().into_owned();
         let mut instance = rt
@@ -50,7 +50,7 @@ fn benches(c: &mut Criterion) {
             .expect("open works");
         rt.block_on(
             instance
-                .world_mut(&world)
+                .world_mut(&mut world)
                 .backup(options(), Scope::World, |_| {}),
         )
         .expect("backup works");

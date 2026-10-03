@@ -45,6 +45,7 @@ pub async fn run(
     flags: &ExportFlags,
     out: ReportOut,
 ) -> anyhow::Result<()> {
+    let world = out_dir.as_ref().to_path_buf();
     let instance = sekai_app::SekaiInstance::open(store)
         .await
         .with_context(|| {
@@ -63,21 +64,14 @@ pub async fn run(
     let bar = progress_bar(progress);
     let owned = bar.clone();
     let (report, timings) = instance
-        .export(
-            out_dir.as_ref(),
-            id,
-            flavor,
-            options,
-            scope,
-            move |update| {
-                report_progress(
-                    owned.as_ref(),
-                    update.files_done,
-                    update.files_total,
-                    format!("files {} chunks", update.chunks_done),
-                );
-            },
-        )
+        .export(&world, id, flavor, options, scope, move |update| {
+            report_progress(
+                owned.as_ref(),
+                update.files_done,
+                update.files_total,
+                format!("files {} chunks", update.chunks_done),
+            );
+        })
         .await
         .with_context(|| {
             format!(

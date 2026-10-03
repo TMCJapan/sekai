@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use sekai_core::{BlobHash, ChunkCoord, RegionKey, RollbackReport, Scope, SnapshotId};
 use sekai_storage::FileCas;
-use sekai_world::LayoutFlavor;
+use sekai_world::{LayoutFlavor, WorldTree};
 
 use crate::error::AppError;
 use crate::instance::WorldHandleMut;
@@ -91,7 +91,7 @@ pub struct RollbackOptions {
     pub on_missing_file: MissingFilePolicy,
 }
 
-impl WorldHandleMut<'_> {
+impl<T: WorldTree> WorldHandleMut<'_, T> {
     /// Rebuild the bound world from `snapshot`, returning execution report
     /// and per-phase timings.
     ///
@@ -110,7 +110,7 @@ impl WorldHandleMut<'_> {
         progress: impl Fn(RollbackProgress) + Send + 'static,
     ) -> Result<(RollbackReport, RollbackTimings), AppError> {
         let store = &self.instance.store;
-        let world = self.root.as_path();
+        let world = &*self.world;
         let total_started = Instant::now();
 
         let plan_started = Instant::now();
@@ -130,10 +130,24 @@ impl WorldHandleMut<'_> {
         tombstones.retain(|key, _| scope.matches_region(*key));
 
         let discover_started = Instant::now();
-        let flavor = sekai_world::detect_flavor(world)?;
-        let world_buf = world.to_path_buf();
-        let mut discovered: BTreeMap<RegionKey, PathBuf> = tokio::task::spawn_blocking(move || {
-            sekai_world::discover(&world_buf).map(|regions| {
+        let flavor = world.detect_flavor()?;
+        // TODO:
+        // let mut discovered: BTreeMap<RegionKey, PathBuf> = tokio::task::spawn_blocking(move || {
+        //     self.world.discover().map(|regions| {
+        //         regions
+        //             .into_iter()
+        //             .map(|r| {
+        //                 (
+        //                     RegionKey::new(r.dim, r.kind, r.region_x, r.region_z),
+        //                     r.path,
+        //                 )
+        //             })
+        //             .collect()
+        //     })
+        // })
+        // .await??;
+        let mut discovered: BTreeMap<RegionKey, PathBuf> =
+            self.world.discover().map(|regions| {
                 regions
                     .into_iter()
                     .map(|r| {
@@ -143,9 +157,7 @@ impl WorldHandleMut<'_> {
                         )
                     })
                     .collect()
-            })
-        })
-        .await??;
+            })?;
         let discover_dt = discover_started.elapsed();
         discovered.retain(|key, _| scope.matches_region(*key));
 
@@ -154,14 +166,15 @@ impl WorldHandleMut<'_> {
             tombstones,
             options,
             cas: store.cas().clone(),
-            world: world.to_path_buf(),
+            world,
             flavor,
             discovered,
         };
 
         let files_started = Instant::now();
-        let report =
-            tokio::task::spawn_blocking(move || rollback_files(job, timestamp, progress)).await??;
+        // TODO:
+        // let report = tokio::task::spawn_blocking(move || rollback_files(job, timestamp, progress)).await??;
+        let report = rollback_files(job, timestamp, progress)?;
         let files_dt = files_started.elapsed();
 
         let timings = RollbackTimings {
@@ -176,12 +189,12 @@ impl WorldHandleMut<'_> {
 }
 
 /// Everything one rollback file pass needs, owned for the blocking task.
-struct RollbackJob {
+struct RollbackJob<'a, T> {
     groups: BTreeMap<RegionKey, Vec<(ChunkCoord, BlobHash)>>,
     tombstones: BTreeMap<RegionKey, Vec<ChunkCoord>>,
     options: RollbackOptions,
     cas: FileCas,
-    world: PathBuf,
+    world: &'a T,
     flavor: LayoutFlavor,
     discovered: BTreeMap<RegionKey, PathBuf>,
 }
@@ -191,7 +204,7 @@ struct RollbackJob {
 /// Blocking: file reads, writes, and swaps belong on a blocking pool,
 /// never on an async worker.
 fn rollback_files(
-    job: RollbackJob,
+    job: RollbackJob<'_, impl WorldTree>,
     timestamp: u32,
     progress: impl Fn(RollbackProgress),
 ) -> Result<RollbackReport, AppError> {
@@ -232,7 +245,7 @@ fn rollback_files(
             None => match rows {
                 None => continue, // No rows and no file: nothing to do.
                 Some(_) => {
-                    resolve_target(&discovered, &world, &flavor, &key, options.on_missing_file)?
+                    resolve_target(&discovered, world, &flavor, &key, options.on_missing_file)?
                 }
             },
         };
@@ -362,7 +375,7 @@ fn merge_live_chunks(
 /// per [`MissingFilePolicy`].
 fn resolve_target(
     discovered: &BTreeMap<RegionKey, PathBuf>,
-    world: impl AsRef<Path>,
+    world: &impl WorldTree,
     flavor: &LayoutFlavor,
     key: &RegionKey,
     policy: MissingFilePolicy,
@@ -375,9 +388,9 @@ fn resolve_target(
             region_z: key.rz,
         }
         .into()),
-        MissingFilePolicy::DerivedOnly => Ok(sekai_world::derive_path(
-            world, flavor, key.dim, key.kind, key.rx, key.rz,
-        )?),
+        MissingFilePolicy::DerivedOnly => {
+            Ok(world.derive_path(flavor, key.dim, key.kind, key.rx, key.rz)?)
+        }
         MissingFilePolicy::SiblingFirst => sibling_or_derived(discovered, world, flavor, key),
     }
 }
@@ -390,14 +403,12 @@ fn resolve_target(
 /// loudly instead of writing somewhere wrong.
 fn sibling_or_derived(
     discovered: &BTreeMap<RegionKey, PathBuf>,
-    world: impl AsRef<Path>,
+    world: &impl WorldTree,
     flavor: &LayoutFlavor,
     key: &RegionKey,
 ) -> Result<PathBuf, AppError> {
     if let Some(path) = sekai_world::sibling_path(discovered, key) {
         return Ok(path);
     }
-    Ok(sekai_world::derive_path(
-        world, flavor, key.dim, key.kind, key.rx, key.rz,
-    )?)
+    Ok(world.derive_path(flavor, key.dim, key.kind, key.rx, key.rz)?)
 }

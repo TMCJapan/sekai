@@ -36,13 +36,13 @@ fn write_region(path: impl AsRef<Path>, chunks: &[(i32, i32, Vec<u8>)]) {
 async fn tag_create_list_resolve_delete() {
     use sekai_app::TagName;
     let root = tempdir("crud");
-    let world = root.join("world");
+    let mut world = root.join("world");
     let store = root.join("store").to_string_lossy().into_owned();
     write_region(world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
-        .world_mut(&world)
+        .world_mut(&mut world)
         .backup(
             sekai_app::BackupOptions::default(),
             sekai_app::Scope::World,
@@ -112,7 +112,7 @@ async fn tag_missing_snapshot_is_an_error() {
     let store = root.join("store").to_string_lossy().into_owned();
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
-        .world_mut(root.join("world"))
+        .world_mut(&mut root.join("world"))
         .backup(
             sekai_app::BackupOptions::default(),
             sekai_app::Scope::World,

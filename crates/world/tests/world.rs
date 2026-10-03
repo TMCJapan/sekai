@@ -1,10 +1,7 @@
 //! World filesystem behavior: discovery, fingerprints, scans, swaps.
 
 use sekai_core::{Dimension, RegionKey, RegionKind};
-use sekai_world::{
-    LayoutFlavor, atomic_swap, derive_path, detect_flavor, discover, fingerprint_file, open_image,
-    scan_world,
-};
+use sekai_world::{LayoutFlavor, WorldTree, atomic_swap, fingerprint_file, open_image, scan_world};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -55,7 +52,7 @@ fn discovers_legacy_and_new_layouts() {
     // Foreign files are ignored.
     write(world.join("region/notes.txt"), b"nope");
 
-    let mut found = discover(&world).unwrap();
+    let mut found = world.discover().unwrap();
     found.sort_by_key(|r| (r.dim.raw(), r.kind.raw(), r.region_x, r.region_z));
     let keys: Vec<_> = found
         .iter()
@@ -75,7 +72,7 @@ fn discovers_legacy_and_new_layouts() {
     assert_ne!(custom[0].dim, Dimension::NETHER);
     assert_ne!(custom[0].dim, Dimension::END);
     assert_eq!(found.len(), 5);
-    assert_eq!(detect_flavor(&world).unwrap(), LayoutFlavor::New);
+    assert_eq!(world.detect_flavor().unwrap(), LayoutFlavor::New);
     cleanup(&world);
 }
 
@@ -86,7 +83,7 @@ fn discovers_bukkit_nesting() {
     write(world.join("world/region/r.0.0.mca"), &image);
     write(world.join("world_nether/DIM-1/region/r.0.0.mca"), &image);
     write(world.join("world_the_end/DIM1/region/r.0.0.mca"), &image);
-    let found = discover(&world).unwrap();
+    let found = world.discover().unwrap();
     assert_eq!(found.len(), 3);
     let at = |dim, kind| {
         found
@@ -109,7 +106,7 @@ fn discovers_bukkit_nesting() {
         world.join("world_the_end/DIM1/region/r.0.0.mca")
     );
     assert_eq!(
-        detect_flavor(&world).unwrap(),
+        world.detect_flavor().unwrap(),
         LayoutFlavor::Bukkit {
             base: "world".to_owned()
         }
@@ -125,7 +122,7 @@ fn discovers_custom_level_name_trio() {
     write(root.join("srv/region/r.0.0.mca"), &image);
     write(root.join("srv_nether/DIM-1/region/r.0.0.mca"), &image);
     write(root.join("srv_the_end/DIM1/region/r.0.0.mca"), &image);
-    let found = discover(&root).unwrap();
+    let found = root.discover().unwrap();
     assert_eq!(found.len(), 3);
     assert!(
         found
@@ -137,15 +134,14 @@ fn discovers_custom_level_name_trio() {
             && r.path == root.join("srv_nether/DIM-1/region/r.0.0.mca"))
     );
     assert_eq!(
-        detect_flavor(&root).unwrap(),
+        root.detect_flavor().unwrap(),
         LayoutFlavor::Bukkit {
             base: "srv".to_owned()
         }
     );
     // Derivation follows the custom base.
     assert_eq!(
-        derive_path(
-            &root,
+        root.derive_path(
             &LayoutFlavor::Bukkit {
                 base: "srv".to_owned()
             },
@@ -170,7 +166,7 @@ fn multiverse_worlds_never_collide() {
     write(root.join("world_nether/DIM-1/region/r.0.0.mca"), &image);
     write(root.join("sky/region/r.0.0.mca"), &image);
     write(root.join("sky_nether/DIM-1/region/r.0.0.mca"), &image);
-    let found = discover(&root).unwrap();
+    let found = root.discover().unwrap();
     assert_eq!(found.len(), 4);
     let dims: Vec<_> = found.iter().map(|r| r.dim).collect();
     assert!(dims.contains(&Dimension::OVERWORLD));
@@ -193,8 +189,7 @@ fn multiverse_worlds_never_collide() {
     assert_eq!(keys.len(), 4);
     // Hashed dims are not derivable; rollback uses discovered folders.
     assert!(matches!(
-        derive_path(
-            &root,
+        root.derive_path(
             &LayoutFlavor::Bukkit {
                 base: "world".to_owned()
             },
@@ -220,7 +215,7 @@ fn trio_wins_over_conversion_leftovers() {
     write(root.join("DIM-1/region/r.0.0.mca"), &stale);
     write(root.join("world/region/r.1.0.mca"), &one_chunk_image());
     write(root.join("world_nether/DIM-1/region/r.0.0.mca"), &live);
-    let found = discover(&root).unwrap();
+    let found = root.discover().unwrap();
     let nether: Vec<_> = found
         .iter()
         .filter(|r| r.dim == Dimension::NETHER)
@@ -241,7 +236,7 @@ fn empty_overworld_keeps_the_trio_namespaces() {
     write(root.join("world_nether/DIM-1/region/r.0.0.mca"), &image);
     write(root.join("world_the_end/DIM1/region/r.0.0.mca"), &image);
 
-    let flavor = detect_flavor(&root).unwrap();
+    let flavor = root.detect_flavor().unwrap();
     assert_eq!(
         flavor,
         LayoutFlavor::Bukkit {
@@ -251,24 +246,25 @@ fn empty_overworld_keeps_the_trio_namespaces() {
 
     // The same siblings keep their vanilla codes whether or not the
     // overworld holds files.
-    let nether = |root| {
-        discover(root)
+    let nether = || {
+        root.discover()
             .unwrap()
             .into_iter()
             .find(|r| r.dim == Dimension::NETHER)
             .map(|r| r.path)
     };
-    let empty = nether(&root);
+    let empty = nether();
     assert_eq!(
         empty,
         Some(root.join("world_nether/DIM-1/region/r.0.0.mca"))
     );
 
     write(root.join("world/region/r.0.0.mca"), &image);
-    assert_eq!(detect_flavor(&root).unwrap(), flavor);
-    assert_eq!(nether(&root), empty);
+    assert_eq!(root.detect_flavor().unwrap(), flavor);
+    assert_eq!(nether(), empty);
 
-    let over: Vec<_> = discover(&root)
+    let over: Vec<_> = root
+        .discover()
         .unwrap()
         .into_iter()
         .filter(|r| r.dim == Dimension::OVERWORLD)
@@ -297,12 +293,12 @@ fn level_name_wins_over_a_leftover_world_folder() {
     write(root.join("world_nether/DIM-1/region/r.0.0.mca"), &stale);
 
     assert_eq!(
-        detect_flavor(&root).unwrap(),
+        root.detect_flavor().unwrap(),
         LayoutFlavor::Bukkit {
             base: "survival".to_owned()
         }
     );
-    let found = discover(&root).unwrap();
+    let found = root.discover().unwrap();
     let over: Vec<_> = found
         .iter()
         .filter(|r| r.dim == Dimension::OVERWORLD)
@@ -335,15 +331,14 @@ fn stray_dimensions_dir_does_not_hijack_a_bukkit_root() {
     std::fs::create_dir_all(root.join("dimensions/minecraft/the_nether")).unwrap();
 
     assert_eq!(
-        detect_flavor(&root).unwrap(),
+        root.detect_flavor().unwrap(),
         LayoutFlavor::Bukkit {
             base: "world".to_owned()
         }
     );
     assert_eq!(
-        derive_path(
-            &root,
-            &detect_flavor(&root).unwrap(),
+        root.derive_path(
+            &root.detect_flavor().unwrap(),
             Dimension::NETHER,
             RegionKind::REGION,
             0,
@@ -366,11 +361,11 @@ fn duplicate_coordinate_names_resolve_deterministically() {
     write(root.join("region/r.0.0.mca"), &one_chunk_image());
     write(root.join("region/r.00.00.mca"), &second);
 
-    let found = discover(&root).unwrap();
+    let found = root.discover().unwrap();
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].path, root.join("region/r.0.0.mca"));
     for _ in 0..8 {
-        let again = discover(&root).unwrap();
+        let again = root.discover().unwrap();
         assert_eq!(again.len(), 1);
         assert_eq!(again[0].path, root.join("region/r.0.0.mca"));
     }
@@ -386,7 +381,7 @@ fn nested_vanilla_copy_gets_hashed_codes() {
     write(root.join("region/r.0.0.mca"), &image);
     write(root.join("old/region/r.0.0.mca"), &image);
     write(root.join("old/DIM-1/region/r.0.0.mca"), &image);
-    let found = discover(&root).unwrap();
+    let found = root.discover().unwrap();
     assert_eq!(found.len(), 3);
     assert!(
         found
@@ -406,7 +401,7 @@ fn missing_world_is_an_error() {
     let world = tempdir("gone");
     cleanup(&world);
     assert!(matches!(
-        discover(&world),
+        world.discover(),
         Err(sekai_world::WorldError::Io { .. })
     ));
 }
@@ -415,32 +410,25 @@ fn missing_world_is_an_error() {
 fn derives_both_layouts() {
     let world = Path::new("/w");
     assert_eq!(
-        derive_path(
-            world,
-            &LayoutFlavor::Legacy,
-            Dimension::NETHER,
-            RegionKind::REGION,
-            -1,
-            2
-        )
-        .unwrap(),
+        world
+            .derive_path(
+                &LayoutFlavor::Legacy,
+                Dimension::NETHER,
+                RegionKind::REGION,
+                -1,
+                2
+            )
+            .unwrap(),
         Path::new("/w/DIM-1/region/r.-1.2.mca")
     );
     assert_eq!(
-        derive_path(
-            world,
-            &LayoutFlavor::New,
-            Dimension::END,
-            RegionKind::POI,
-            0,
-            0
-        )
-        .unwrap(),
+        world
+            .derive_path(&LayoutFlavor::New, Dimension::END, RegionKind::POI, 0, 0)
+            .unwrap(),
         Path::new("/w/dimensions/minecraft/the_end/poi/r.0.0.mca")
     );
     assert!(matches!(
-        derive_path(
-            world,
+        world.derive_path(
             &LayoutFlavor::New,
             Dimension::new(4242),
             RegionKind::REGION,
@@ -450,8 +438,7 @@ fn derives_both_layouts() {
         Err(sekai_world::WorldError::UnknownRegionPath { .. })
     ));
     assert!(matches!(
-        derive_path(
-            world,
+        world.derive_path(
             &LayoutFlavor::Legacy,
             Dimension::OVERWORLD,
             RegionKind::new(9),

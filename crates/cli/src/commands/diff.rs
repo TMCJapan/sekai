@@ -24,8 +24,9 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
     let broad = selection.has_broad_areas() || coords.is_empty();
     let (diffs, timings) = match args.target() {
         DiffTarget::World { world, snapshot } => {
+            let world = world.to_path_buf();
             if broad {
-                coords.append(&mut sekai_app::world_chunk_coords(world)?);
+                coords.append(&mut sekai_app::world_chunk_coords(&world)?);
             }
             let coords = scoped_coords(coords, &scope);
             let snapshot_id = match snapshot {
@@ -38,7 +39,7 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
                 None => None,
             };
             instance
-                .world(world)
+                .world(&world)
                 .diff_world_chunks(snapshot_id, &coords, None, |update| {
                     report_progress(
                         bar.as_ref(),

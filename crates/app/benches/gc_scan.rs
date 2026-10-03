@@ -12,7 +12,7 @@ fn benches(c: &mut Criterion) {
 
     c.bench_function("gc-plan/small", |b| {
         let root = tempdir("gc-small");
-        let world = root.join("world");
+        let mut world = root.join("world");
         generate(&world, &SMALL);
         let store = root.join("store").to_string_lossy().into_owned();
         let mut instance = rt
@@ -20,7 +20,7 @@ fn benches(c: &mut Criterion) {
             .expect("open works");
         rt.block_on(
             instance
-                .world_mut(&world)
+                .world_mut(&mut world)
                 .backup(options(), Scope::World, |_| {}),
         )
         .expect("backup works");

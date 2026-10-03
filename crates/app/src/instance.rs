@@ -7,9 +7,8 @@
 //! work, [`WorldHandleMut`] for runs that write (backup, rollback), so write
 //! exclusivity shows in the type.
 
-use std::path::{Path, PathBuf};
-
 use sekai_core::{Snapshot, SnapshotId};
+use sekai_world::WorldTree;
 
 use crate::error::AppError;
 
@@ -71,18 +70,21 @@ impl SekaiInstance {
     }
 
     /// Read-only handle rooted at `root`.
-    pub fn world(&self, root: impl AsRef<Path>) -> WorldHandle<'_> {
+    pub const fn world<'a, T: WorldTree>(&'a self, world: &'a T) -> WorldHandle<'a, T> {
         WorldHandle {
             instance: self,
-            root: root.as_ref().to_path_buf(),
+            world,
         }
     }
 
     /// Read-write handle rooted at `root`.
-    pub fn world_mut(&mut self, root: impl AsRef<Path>) -> WorldHandleMut<'_> {
+    pub const fn world_mut<'a, T: WorldTree>(
+        &'a mut self,
+        world: &'a mut T,
+    ) -> WorldHandleMut<'a, T> {
         WorldHandleMut {
             instance: self,
-            root: root.as_ref().to_path_buf(),
+            world,
         }
     }
 
@@ -103,16 +105,9 @@ impl SekaiInstance {
 }
 
 /// Read-only handle to one world directory bound to an instance.
-pub struct WorldHandle<'a> {
+pub struct WorldHandle<'a, T> {
     pub(crate) instance: &'a SekaiInstance,
-    pub(crate) root: PathBuf,
-}
-
-impl WorldHandle<'_> {
-    /// World root this handle is bound to.
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
+    pub(crate) world: &'a T,
 }
 
 /// Read-write handle to one world directory bound to an instance.
@@ -121,23 +116,18 @@ impl WorldHandle<'_> {
 /// handle borrows the instance mutably: while a write session is alive, no
 /// second handle for the same instance can exist, so store-scoped
 /// operations and other world writes cannot start.
-pub struct WorldHandleMut<'a> {
+pub struct WorldHandleMut<'a, T> {
     pub(crate) instance: &'a mut SekaiInstance,
-    pub(crate) root: PathBuf,
+    pub(crate) world: &'a mut T,
 }
 
-impl WorldHandleMut<'_> {
-    /// World root this handle is bound to.
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
-
+impl<T> WorldHandleMut<'_, T> {
     /// Read-only view of the same world, for read operations issued while a
     /// write session is held.
-    pub(crate) fn view(&self) -> WorldHandle<'_> {
+    pub(crate) const fn view(&self) -> WorldHandle<'_, T> {
         WorldHandle {
             instance: &*self.instance,
-            root: self.root.clone(),
+            world: &*self.world,
         }
     }
 }

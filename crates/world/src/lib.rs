@@ -7,9 +7,11 @@ mod fingerprint;
 mod observation;
 mod scan;
 mod swap;
+mod tree;
 
-pub use discover::{LayoutFlavor, RegionRef, derive_path, detect_flavor, discover, sibling_path};
+pub use discover::{LayoutFlavor, RegionRef, sibling_path};
 pub use error::WorldError;
 pub use fingerprint::{file_mtime_ms, fingerprint_file};
 pub use scan::{RegionScanEntry, ScanReport, ScanSkip, ScanTimings, scan_world};
 pub use swap::{atomic_swap, open_image};
+pub use tree::WorldTree;

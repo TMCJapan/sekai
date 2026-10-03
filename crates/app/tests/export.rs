@@ -62,7 +62,7 @@ fn backup_options() -> sekai_app::BackupOptions {
 async fn export_rebuilds_snapshot_into_fresh_directory() {
     use sekai_app::LayoutFlavor;
     let root = tempdir("roundtrip");
-    let world = root.join("world");
+    let mut world = root.join("world");
     let store = root.join("store").to_string_lossy().into_owned();
     let over = world.join("region/r.0.0.mca");
     let nether = world.join("DIM-1/region/r.0.0.mca");
@@ -71,7 +71,7 @@ async fn export_rebuilds_snapshot_into_fresh_directory() {
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
-        .world_mut(&world)
+        .world_mut(&mut world)
         .backup(backup_options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
@@ -113,14 +113,14 @@ async fn export_rebuilds_snapshot_into_fresh_directory() {
 async fn export_honors_layout_flavor_and_scope() {
     use sekai_app::{Dimension, LayoutFlavor, Scope};
     let root = tempdir("flavor-scope");
-    let world = root.join("world");
+    let mut world = root.join("world");
     let store = root.join("store").to_string_lossy().into_owned();
     write_region(world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
     write_region(world.join("DIM-1/region/r.0.0.mca"), &[(0, 0, vec![3, 2])]);
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
-        .world_mut(&world)
+        .world_mut(&mut world)
         .backup(backup_options(), Scope::World, |_| {})
         .await
         .unwrap();
@@ -176,13 +176,13 @@ async fn export_honors_layout_flavor_and_scope() {
 async fn export_refuses_non_empty_directory() {
     use sekai_app::LayoutFlavor;
     let root = tempdir("nonempty");
-    let world = root.join("world");
+    let mut world = root.join("world");
     let store = root.join("store").to_string_lossy().into_owned();
     write_region(world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
-        .world_mut(&world)
+        .world_mut(&mut world)
         .backup(backup_options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
@@ -225,21 +225,21 @@ async fn export_refuses_non_empty_directory() {
 async fn export_omits_tombstoned_regions() {
     use sekai_app::LayoutFlavor;
     let root = tempdir("tombstones");
-    let world = root.join("world");
+    let mut world = root.join("world");
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world.join("region/r.0.0.mca");
     write_region(&region, &[(0, 0, vec![3, 1])]);
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
-        .world_mut(&world)
+        .world_mut(&mut world)
         .backup(backup_options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
     // Empty the region: the second snapshot tombstones its only chunk.
     write_region(&region, &[]);
     instance
-        .world_mut(&world)
+        .world_mut(&mut world)
         .backup(backup_options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();

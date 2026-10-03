@@ -58,14 +58,14 @@ const fn options() -> sekai_app::StatusOptions {
 #[tokio::test]
 async fn status_reports_clean_world() {
     let root = tempdir("clean");
-    let world = root.join("world");
+    let mut world = root.join("world");
     let store_dir = root.join("store");
     let store = store_dir.to_string_lossy().into_owned();
     write_region(world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
-        .world_mut(&world)
+        .world_mut(&mut world)
         .backup(
             sekai_app::BackupOptions::default(),
             sekai_app::Scope::World,
@@ -91,14 +91,14 @@ async fn status_reports_clean_world() {
 #[tokio::test]
 async fn status_counts_changes_without_writing() {
     let root = tempdir("dirty");
-    let world = root.join("world");
+    let mut world = root.join("world");
     let store_dir = root.join("store");
     let store = store_dir.to_string_lossy().into_owned();
     write_region(world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
-        .world_mut(&world)
+        .world_mut(&mut world)
         .backup(
             sekai_app::BackupOptions::default(),
             sekai_app::Scope::World,
@@ -134,7 +134,7 @@ async fn status_counts_changes_without_writing() {
 
     // A following backup records exactly what status predicted.
     let (backup, _) = instance
-        .world_mut(&world)
+        .world_mut(&mut world)
         .backup(
             sekai_app::BackupOptions::default(),
             sekai_app::Scope::World,
@@ -151,14 +151,14 @@ async fn status_counts_changes_without_writing() {
 #[tokio::test]
 async fn status_counts_tombstones() {
     let root = tempdir("tomb");
-    let world = root.join("world");
+    let mut world = root.join("world");
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world.join("region/r.0.0.mca");
     write_region(&region, &[(0, 0, vec![3, 1]), (1, 0, vec![3, 2])]);
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
-        .world_mut(&world)
+        .world_mut(&mut world)
         .backup(
             sekai_app::BackupOptions::default(),
             sekai_app::Scope::World,

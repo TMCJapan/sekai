@@ -45,9 +45,10 @@ pub async fn run(
     flags: &RollbackFlags,
     out: ReportOut,
 ) -> anyhow::Result<()> {
+    let mut world = world.as_ref().to_path_buf();
     let mut instance = sekai_app::SekaiInstance::open(store)
         .await
-        .with_context(|| format!("rollback of {} failed", world.as_ref().display()))?;
+        .with_context(|| format!("rollback of {} failed", world.display()))?;
     let id = instance
         .resolve_snapshot_ref(snapshot.as_str())
         .await
@@ -57,7 +58,7 @@ pub async fn run(
     if !out.json {
         eprintln!(
             "rollback {} to snapshot {} (scope: {}, policy: {})",
-            world.as_ref().display(),
+            world.display(),
             id.raw(),
             selection.describe(),
             policy_summary(flags),
@@ -66,7 +67,7 @@ pub async fn run(
     let bar = progress_bar(progress);
     let owned = bar.clone();
     let (report, timings) = instance
-        .world_mut(world.as_ref())
+        .world_mut(&mut world)
         .rollback(id, options, scope, move |update| {
             report_progress(
                 owned.as_ref(),
@@ -79,7 +80,7 @@ pub async fn run(
         .with_context(|| {
             format!(
                 "rollback of {} to snapshot {snapshot} failed",
-                world.as_ref().display()
+                world.display()
             )
         })?;
     finish_progress(bar.as_ref());

@@ -19,15 +19,16 @@ pub async fn run(
     selection: &Selection,
     out: ReportOut,
 ) -> anyhow::Result<()> {
+    let world = world.as_ref().to_path_buf();
     let scope = selection.owned_scope();
     let bar = progress_bar(progress);
     let owned = bar.clone();
     let options = sekai_app::StatusOptions { concurrency: jobs };
     let instance = sekai_app::SekaiInstance::open(store)
         .await
-        .with_context(|| format!("status of {} failed", world.as_ref().display()))?;
+        .with_context(|| format!("status of {} failed", world.display()))?;
     let (report, timings) = instance
-        .world(world.as_ref())
+        .world(&world)
         .status(options, scope, move |update| {
             report_progress(
                 owned.as_ref(),
@@ -37,7 +38,7 @@ pub async fn run(
             );
         })
         .await
-        .with_context(|| format!("status of {} failed", world.as_ref().display()))?;
+        .with_context(|| format!("status of {} failed", world.display()))?;
     finish_progress(bar.as_ref());
     if out.json {
         println!(
