@@ -251,12 +251,10 @@ async fn prepare(
     progress: impl Fn(BackupProgress) + Send,
     dry_run: bool,
 ) -> Result<Prepared, AppError> {
-    // let observed = tokio::task::spawn_blocking({
-    //     let world = world.as_ref().to_path_buf();
-    //     move || observe(&world)
-    // })
-    // .await??;
-    let observed = observe(world)?;
+    // Whole-world observation walks and opens files: clone the handle and
+    // run it on the blocking pool.
+    let world_handle = world.clone();
+    let observed = tokio::task::spawn_blocking(move || observe(&world_handle)).await??;
     let discover = observed.discover;
     let fingerprint = observed.fingerprint;
 

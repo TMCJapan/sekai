@@ -129,35 +129,25 @@ impl<T: WorldTree> WorldHandleMut<'_, T> {
         let mut tombstones = plan.tombstones;
         tombstones.retain(|key, _| scope.matches_region(*key));
 
+        // Flavor detection and discovery walk the filesystem: clone the
+        // handle and run both on the blocking pool.
         let discover_started = Instant::now();
-        let flavor = world.detect_flavor()?;
-        // TODO:
-        // let mut discovered: BTreeMap<RegionKey, PathBuf> = tokio::task::spawn_blocking(move || {
-        //     self.world.discover().map(|regions| {
-        //         regions
-        //             .into_iter()
-        //             .map(|r| {
-        //                 (
-        //                     RegionKey::new(r.dim, r.kind, r.region_x, r.region_z),
-        //                     r.path,
-        //                 )
-        //             })
-        //             .collect()
-        //     })
-        // })
-        // .await??;
-        let mut discovered: BTreeMap<RegionKey, PathBuf> =
-            self.world.discover().map(|regions| {
-                regions
-                    .into_iter()
-                    .map(|r| {
-                        (
-                            RegionKey::new(r.dim, r.kind, r.region_x, r.region_z),
-                            r.path,
-                        )
-                    })
-                    .collect()
-            })?;
+        let world_handle = world.clone();
+        let (flavor, mut discovered) = tokio::task::spawn_blocking(move || {
+            let flavor = world_handle.detect_flavor()?;
+            let discovered: BTreeMap<RegionKey, PathBuf> = world_handle
+                .discover()?
+                .into_iter()
+                .map(|r| {
+                    (
+                        RegionKey::new(r.dim, r.kind, r.region_x, r.region_z),
+                        r.path,
+                    )
+                })
+                .collect();
+            Ok::<_, AppError>((flavor, discovered))
+        })
+        .await??;
         let discover_dt = discover_started.elapsed();
         discovered.retain(|key, _| scope.matches_region(*key));
 
@@ -166,15 +156,14 @@ impl<T: WorldTree> WorldHandleMut<'_, T> {
             tombstones,
             options,
             cas: store.cas().clone(),
-            world,
+            world: world.clone(),
             flavor,
             discovered,
         };
 
         let files_started = Instant::now();
-        // TODO:
-        // let report = tokio::task::spawn_blocking(move || rollback_files(job, timestamp, progress)).await??;
-        let report = rollback_files(job, timestamp, progress)?;
+        let report =
+            tokio::task::spawn_blocking(move || rollback_files(job, timestamp, progress)).await??;
         let files_dt = files_started.elapsed();
 
         let timings = RollbackTimings {
@@ -189,12 +178,12 @@ impl<T: WorldTree> WorldHandleMut<'_, T> {
 }
 
 /// Everything one rollback file pass needs, owned for the blocking task.
-struct RollbackJob<'a, T> {
+struct RollbackJob<T> {
     groups: BTreeMap<RegionKey, Vec<(ChunkCoord, BlobHash)>>,
     tombstones: BTreeMap<RegionKey, Vec<ChunkCoord>>,
     options: RollbackOptions,
     cas: FileCas,
-    world: &'a T,
+    world: T,
     flavor: LayoutFlavor,
     discovered: BTreeMap<RegionKey, PathBuf>,
 }
@@ -204,7 +193,7 @@ struct RollbackJob<'a, T> {
 /// Blocking: file reads, writes, and swaps belong on a blocking pool,
 /// never on an async worker.
 fn rollback_files(
-    job: RollbackJob<'_, impl WorldTree>,
+    job: RollbackJob<impl WorldTree>,
     timestamp: u32,
     progress: impl Fn(RollbackProgress),
 ) -> Result<RollbackReport, AppError> {
@@ -245,7 +234,7 @@ fn rollback_files(
             None => match rows {
                 None => continue, // No rows and no file: nothing to do.
                 Some(_) => {
-                    resolve_target(&discovered, world, &flavor, &key, options.on_missing_file)?
+                    resolve_target(&discovered, &world, &flavor, &key, options.on_missing_file)?
                 }
             },
         };

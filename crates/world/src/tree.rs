@@ -8,6 +8,7 @@ use crate::{LayoutFlavor, RegionRef, WorldError};
 ///
 /// Every operation resolves relative to the path passed to
 /// [`HostWorktree::new`]; the path is stored as given, never canonicalized.
+#[derive(Clone)]
 pub struct HostWorktree {
     path: PathBuf,
 }
@@ -65,8 +66,10 @@ impl AsRef<Path> for HostWorktree {
 /// World access shared by backup, export, rollback, and diff.
 ///
 /// Bundles discovery, layout flavor detection, and derived paths so
-/// `sekai-app` operations can accept any world implementation.
-pub trait WorldTree: Sync + Send + 'static {
+/// `sekai-app` operations can accept any world implementation. Handles are
+/// cheap to clone: blocking operations run on a blocking pool, and a borrow
+/// cannot cross `spawn_blocking`, so callers clone the handle into the task.
+pub trait WorldTree: Sync + Send + Clone + 'static {
     fn is_empty(&self) -> Result<bool, std::io::Error>;
     fn discover(&self) -> Result<Vec<RegionRef>, WorldError>;
     fn detect_flavor(&self) -> Result<LayoutFlavor, WorldError>;

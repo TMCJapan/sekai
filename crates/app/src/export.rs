@@ -101,14 +101,13 @@ impl SekaiInstance {
             groups,
             options,
             cas: store.cas().clone(),
-            out,
+            out: out.clone(),
             flavor,
         };
 
         let files_started = Instant::now();
-        // TODO:
-        // let report = tokio::task::spawn_blocking(move || export_files(job, timestamp, progress)).await??;
-        let report = export_files(job, timestamp, progress)?;
+        let report =
+            tokio::task::spawn_blocking(move || export_files(job, timestamp, progress)).await??;
         let files_dt = files_started.elapsed();
 
         let timings = ExportTimings {
@@ -122,18 +121,18 @@ impl SekaiInstance {
 }
 
 /// Everything one export file pass needs, owned for the blocking task.
-struct ExportJob<'a, T: WorldTree> {
+struct ExportJob<T: WorldTree> {
     groups: BTreeMap<RegionKey, Vec<(ChunkCoord, BlobHash)>>,
     options: ExportOptions,
     cas: FileCas,
-    out: &'a T,
+    out: T,
     flavor: LayoutFlavor,
 }
 
 /// Rebuild every snapshot region file under `out`. Blocking: file reads,
 /// writes, and swaps belong on a blocking pool, never on an async worker.
 fn export_files(
-    job: ExportJob<'_, impl WorldTree>,
+    job: ExportJob<impl WorldTree>,
     timestamp: u32,
     progress: impl Fn(ExportProgress),
 ) -> Result<ExportReport, AppError> {
