@@ -30,10 +30,33 @@ pub struct SqliteMeta {
 /// Opened SQLite store: metadata plus file CAS under one root.
 pub type SqliteStore = Store<SqliteMeta, FileCas>;
 
-/// Open (creating if needed) the store rooted at `root`
-/// (`<root>/meta.sqlite` plus `<root>/blobs/`).
-pub async fn open_sqlite(root: impl AsRef<Path>) -> Result<SqliteStore, StorageError> {
+/// Initialize the store rooted at `root`, creating it when missing.
+///
+/// The layout is `<root>/meta.sqlite` plus `<root>/blobs/`; initializing an
+/// existing store again is idempotent. This is the only path that
+/// materializes a store, reserved for backup runs.
+pub async fn init_sqlite(root: impl AsRef<Path>) -> Result<SqliteStore, StorageError> {
     std::fs::create_dir_all(root.as_ref()).map_err(|source| io_error(root.as_ref(), source))?;
+    connect_sqlite(root).await
+}
+
+/// Open the existing store rooted at `root`.
+///
+/// The layout is `<root>/meta.sqlite` plus `<root>/blobs/`. Fails with
+/// [`StorageError::StoreMissing`] when the store was never initialized,
+/// without creating anything.
+pub async fn open_sqlite(root: impl AsRef<Path>) -> Result<SqliteStore, StorageError> {
+    if !root.as_ref().join("meta.sqlite").is_file() {
+        return Err(StorageError::StoreMissing {
+            path: root.as_ref().to_path_buf(),
+        });
+    }
+    connect_sqlite(root).await
+}
+
+/// Attach CAS and metadata to an existing store root; the root directory must
+/// already hold `meta.sqlite`.
+async fn connect_sqlite(root: impl AsRef<Path>) -> Result<SqliteStore, StorageError> {
     let cas = FileCas::open(root.as_ref())?;
     let meta = SqliteMeta::open(&root.as_ref().join("meta.sqlite")).await?;
     Ok(Store::new(meta, cas))

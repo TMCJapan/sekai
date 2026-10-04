@@ -19,10 +19,12 @@ pub struct SekaiInstance {
 }
 
 impl SekaiInstance {
-    /// Open the store named by `store_url`.
+    /// Open the existing store named by `store_url`.
     ///
     /// `sqlite://<dir>` (or a bare `<dir>`) opens a SQLite store; anything
-    /// else fails loudly, including backends not compiled in.
+    /// else fails loudly, including backends not compiled in. A store that
+    /// was never initialized fails without creating anything: only
+    /// [`Self::init`] materializes a store.
     pub async fn open(store_url: &str) -> Result<Self, AppError> {
         let (kind, rest) = sekai_storage::parse_backend_url(store_url)?;
         // `Sqlite` is currently the only variant; the pattern becomes
@@ -31,6 +33,25 @@ impl SekaiInstance {
         if kind == sekai_storage::BackendKind::Sqlite {
             return Ok(Self {
                 store: sekai_storage::open_sqlite(rest).await?,
+            });
+        }
+        Err(sekai_storage::StorageError::UnsupportedBackend {
+            url: store_url.to_owned(),
+        }
+        .into())
+    }
+
+    /// Open the store named by `store_url`, initializing it when missing.
+    ///
+    /// This is the creation path reserved for `backup`; every other command
+    /// must go through [`Self::open`] so a missing store fails loudly instead
+    /// of leaving an empty store behind.
+    pub async fn init(store_url: &str) -> Result<Self, AppError> {
+        let (kind, rest) = sekai_storage::parse_backend_url(store_url)?;
+        #[cfg(feature = "backend-sqlite")]
+        if kind == sekai_storage::BackendKind::Sqlite {
+            return Ok(Self {
+                store: sekai_storage::init_sqlite(rest).await?,
             });
         }
         Err(sekai_storage::StorageError::UnsupportedBackend {

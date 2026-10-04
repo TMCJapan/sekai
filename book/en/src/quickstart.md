@@ -35,7 +35,8 @@ sekai --store ./sekai-store export 1 ./restored
 sekai debug scan ./world
 ```
 
-`--store` names the backup store directory (created when missing). Every
+`--store` names the backup store directory (`backup` creates it when
+missing; every other command fails on a missing store). Every
 command accepts `--json` for machine-readable output and, except `list`
 and `tag`, `--timing` for a per-phase breakdown. `backup`, `status`,
 `rollback`, `diff`, `export`, `gc`, and `prune` take `--progress` for a

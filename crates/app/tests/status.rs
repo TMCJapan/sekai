@@ -63,7 +63,7 @@ async fn status_reports_clean_world() {
     let store = store_dir.to_string_lossy().into_owned();
     write_region(world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
 
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&world)
         .backup(
@@ -96,7 +96,7 @@ async fn status_counts_changes_without_writing() {
     let store = store_dir.to_string_lossy().into_owned();
     write_region(world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
 
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&world)
         .backup(
@@ -156,7 +156,7 @@ async fn status_counts_tombstones() {
     let region = world.join("region/r.0.0.mca");
     write_region(&region, &[(0, 0, vec![3, 1]), (1, 0, vec![3, 2])]);
 
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&world)
         .backup(

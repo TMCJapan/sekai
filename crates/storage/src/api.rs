@@ -25,6 +25,17 @@ pub enum StorageError {
     /// URL carries no store location.
     #[error("store location is empty: pass a directory path")]
     EmptyStorePath,
+    /// The root holds no initialized store. Only backup runs create one;
+    /// every other operation must fail here instead of materializing an
+    /// empty store as a side effect.
+    #[error(
+        "no store at {path}: run a backup to create one",
+        path = path.display()
+    )]
+    StoreMissing {
+        /// Store root that was expected to hold `meta.sqlite`.
+        path: PathBuf,
+    },
     /// A writing run holds the store; `gc` must not run alongside it.
     #[error(
         "store is in use by a running backup (marker {path}{holder}): a backup writes blobs before it commits the rows that reference them, so collecting now would unlink blobs the next commit still needs. Wait for it to finish, or remove the marker if no backup is running."

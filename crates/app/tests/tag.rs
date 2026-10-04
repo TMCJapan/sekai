@@ -40,7 +40,7 @@ async fn tag_create_list_resolve_delete() {
     let store = root.join("store").to_string_lossy().into_owned();
     write_region(world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
 
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&world)
         .backup(
@@ -110,7 +110,7 @@ async fn tag_missing_snapshot_is_an_error() {
     use sekai_app::{SnapshotId, TagName};
     let root = tempdir("missing");
     let store = root.join("store").to_string_lossy().into_owned();
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(root.join("world"))
         .backup(

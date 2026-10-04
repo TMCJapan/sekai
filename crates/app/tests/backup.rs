@@ -33,7 +33,7 @@ async fn gc_refuses_while_a_backup_holds_the_store() {
     let store_url = store.to_string_lossy().into_owned();
     write_region(world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1, 2, 3])]);
 
-    let mut instance = sekai_app::SekaiInstance::open(&store_url).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store_url).await.unwrap();
     instance
         .world_mut(&world)
         .backup(options(), Scope::World, |_| {})
@@ -134,7 +134,7 @@ async fn backup_list_rollback_round_trip() {
     );
     write_region(&other, &[(32, 0, vec![3, 7, 7, 7])]);
 
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let (report, timings) = instance
         .world_mut(&world)
         .backup(options(), sekai_app::Scope::World, |_| {})
@@ -207,7 +207,7 @@ async fn deleted_region_file_tombstones_once() {
     );
     write_region(world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 8, 8, 8])]);
 
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let (first, _) = instance
         .world_mut(&world)
         .backup(options(), sekai_app::Scope::World, |_| {})
@@ -257,7 +257,7 @@ async fn scoped_backup_records_no_spurious_tombstones() {
     write_region(&over, &[(0, 0, payload.clone()), (1, 0, payload.clone())]);
     write_region(&nether, &[(0, 0, payload.clone())]);
 
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let (full, _) = instance
         .world_mut(&world)
         .backup(options(), Scope::World, |_| {})
@@ -327,7 +327,7 @@ async fn scoped_rollback_leaves_other_dimensions_untouched() {
     write_region(&over, &[(0, 0, vec![3, 1])]);
     write_region(&nether, &[(0, 0, vec![3, 2])]);
 
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&world)
         .backup(options(), Scope::World, |_| {})
@@ -401,7 +401,7 @@ async fn strict_rollback_removes_post_snapshot_files() {
     let kept = world.join("region/r.0.0.mca");
     write_region(&kept, &[(0, 0, vec![3, 1])]);
 
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&world)
         .backup(options(), sekai_app::Scope::World, |_| {})
@@ -464,7 +464,7 @@ async fn keep_options_preserve_post_snapshot_data() {
     let known = world.join("region/r.0.0.mca");
     write_region(&known, &[(0, 0, vec![3, 1])]);
 
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&world)
         .backup(options(), sekai_app::Scope::World, |_| {})
@@ -506,7 +506,7 @@ async fn keep_tombstoned_chunks_preserves_live_bytes() {
     let region = world.join("region/r.0.0.mca");
     write_region(&region, &[(0, 0, vec![3, 1]), (1, 0, vec![3, 2])]);
 
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&world)
         .backup(options(), sekai_app::Scope::World, |_| {})
@@ -567,7 +567,7 @@ async fn keep_tombstoned_chunks_leaves_fully_tombstoned_files() {
     let region = world.join("region/r.0.0.mca");
     write_region(&region, &[(0, 0, vec![3, 1])]);
 
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&world)
         .backup(options(), sekai_app::Scope::World, |_| {})
@@ -623,7 +623,7 @@ async fn missing_blob_abort_is_default_and_skip_recovers() {
     let region = world.join("region/r.0.0.mca");
     write_region(&region, &[(0, 0, vec![3, 1])]);
 
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&world)
         .backup(options(), sekai_app::Scope::World, |_| {})
@@ -689,7 +689,7 @@ async fn missing_file_error_policy_refuses_to_guess() {
     let region = world.join("region/r.0.0.mca");
     write_region(&region, &[(0, 0, vec![3, 1])]);
 
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&world)
         .backup(options(), sekai_app::Scope::World, |_| {})
@@ -759,7 +759,7 @@ async fn with_diff_records_diff_hashes() {
         with_diff: true,
         ..options()
     };
-    let mut instance = sekai_app::SekaiInstance::open(&store_url).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store_url).await.unwrap();
     let (report, _) = instance
         .world_mut(&world)
         .backup(options, sekai_app::Scope::World, |_| {})
@@ -799,7 +799,7 @@ async fn progress_fires_per_changed_file() {
 
     let events = Arc::new(Mutex::new(Vec::new()));
     let seen = Arc::clone(&events);
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&world)
         .backup(options(), sekai_app::Scope::World, move |p| {
@@ -818,7 +818,7 @@ async fn progress_fires_per_changed_file() {
 async fn errors_surface_loudly() {
     let root = tempdir("errors");
     let store = root.join("store").to_string_lossy().into_owned();
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     // Missing world.
     assert!(
         instance
@@ -850,7 +850,7 @@ async fn gc_runs_and_returns_timings() {
     let store = root.join("store").to_string_lossy().into_owned();
     write_region(world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
 
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&world)
         .backup(options(), sekai_app::Scope::World, |_| {})
@@ -884,7 +884,7 @@ async fn progress_events_cover_rollback_diff_and_gc() {
         &[(32, 0, build_status_nbt("minecraft:full"))],
     );
 
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&world)
         .backup(options(), sekai_app::Scope::World, |_| {})
@@ -976,7 +976,7 @@ async fn diff_chunk_between_snapshots() {
     let region = world.join("region/r.0.0.mca");
 
     write_region(&region, &[(0, 0, build_nbt("minecraft:full"))]);
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&world)
         .backup(options(), sekai_app::Scope::World, |_| {})
@@ -1035,7 +1035,7 @@ async fn diff_world_chunk_with_snapshot() {
     let region = world.join("region/r.0.0.mca");
 
     write_region(&region, &[(0, 0, build_nbt("minecraft:full"))]);
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&world)
         .backup(options(), sekai_app::Scope::World, |_| {})
@@ -1079,7 +1079,7 @@ async fn backs_up_region_with_trailing_partial_sector() {
     assert_ne!(bytes.len() % 4096, 0);
     std::fs::write(&region, &bytes).unwrap();
 
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let (report, _) = instance
         .world_mut(&world)
         .backup(options(), sekai_app::Scope::World, |_| {})
@@ -1105,7 +1105,7 @@ async fn corrupt_region_names_its_file() {
     bytes[0..4].copy_from_slice(&((9u32 << 8 | 1).to_be_bytes()));
     std::fs::write(&region, &bytes).unwrap();
 
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let err = instance
         .world_mut(&world)
         .backup(options(), sekai_app::Scope::World, |_| {})
@@ -1154,7 +1154,7 @@ async fn sparse_entities_chunk_diffs_empty_without_error() {
         &[(0, 0, build_status_nbt("minecraft:full"))],
     );
 
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&world)
         .backup(options(), sekai_app::Scope::World, |_| {})
@@ -1194,7 +1194,7 @@ async fn created_and_deleted_chunks_diff_as_added_removed() {
         world.join("region/r.0.0.mca"),
         &[(0, 0, build_status_nbt("minecraft:full"))],
     );
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&world)
         .backup(options(), sekai_app::Scope::World, |_| {})
@@ -1253,7 +1253,7 @@ async fn all_kinds_round_trip() {
         let coord = ChunkCoord::new(Dimension::OVERWORLD, kind, 0, 0);
 
         write_region(&file, &[(0, 0, build_status_nbt("minecraft:full"))]);
-        let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+        let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
         instance
             .world_mut(&world)
             .backup(options(), sekai_app::Scope::World, |_| {})
@@ -1313,7 +1313,7 @@ async fn rect_and_kind_scopes_limit_ingest() {
         &[(0, 0, build_status_nbt("d"))],
     );
 
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&world)
         .backup(options(), Scope::World, |_| {})
@@ -1388,7 +1388,7 @@ async fn real_world_corpus_round_trip() {
     copy_dir(corpus_path(), &world);
     let store = root.join("store").to_string_lossy().into_owned();
 
-    let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let (report, _) = instance
         .world_mut(&world)
         .backup(options(), sekai_app::Scope::World, |_| {})
@@ -1466,7 +1466,7 @@ async fn randomized_backup_rollback_round_trip() {
         let world = root.join("world");
         std::fs::create_dir_all(&world).unwrap();
         let store = root.join("store").to_string_lossy().into_owned();
-        let mut instance = sekai_app::SekaiInstance::open(&store).await.unwrap();
+        let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
         let mut rng = Rng(seed | 1);
         let mut model: ChunkMaps = ChunkMaps::new();
         let mut history: Vec<ChunkMaps> = Vec::new();

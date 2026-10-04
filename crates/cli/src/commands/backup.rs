@@ -43,7 +43,7 @@ pub async fn run(
     let scope = selection.owned_scope();
     let fresh_store = !store_preexists(store);
     let bar = progress_bar(progress);
-    let mut instance = sekai_app::SekaiInstance::open(store)
+    let mut instance = sekai_app::SekaiInstance::init(store)
         .await
         .with_context(|| format!("backup of {} failed", world.as_ref().display()))?;
     let (report, timings) = instance
