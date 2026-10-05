@@ -30,7 +30,7 @@ jobs:
           - name: Checkout repository
             uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
           - name: Install cargo-deny and cargo-machete
-            uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172
+            uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0
             with:
               tool: cargo-deny,cargo-machete
 
@@ -63,7 +63,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Install ast-grep
-        uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0
         with:
           tool: ast-grep
       - name: Run ast-grep tests
@@ -169,7 +169,7 @@ jobs:
       # After the cache step on purpose: `rust-cache` restores `~/.cargo/bin`,
       # which is where `install-action` drops the binary.
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0
         with:
           tool: cargo-nextest
 
@@ -193,7 +193,7 @@ jobs:
         run: python3 .github/scripts/check-docs.py
 
       - name: Install mdbook
-        uses: taiki-e/install-action@9983c65e42da123ff25d1f78505eb6de315aa172
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0
         with:
           tool: mdbook
 
