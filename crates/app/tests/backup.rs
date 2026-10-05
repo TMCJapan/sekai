@@ -980,17 +980,20 @@ async fn progress_events_cover_rollback_diff_and_gc() {
 async fn rollback_progress_completes_for_tombstone_only_region() {
     use std::sync::{Arc, Mutex};
     let root = tempdir("progress-tombstone-only");
-    let world = root.join("world");
+    let mut world = HostWorktree::new(root.join("world"));
     let store = root.join("store").to_string_lossy().into_owned();
 
-    let doomed = world.join("poi/r.0.0.mca");
+    let doomed = world.as_ref().join("poi/r.0.0.mca");
     write_region(&doomed, &[(0, 0, vec![3, 1, 2, 3])]);
-    write_region(world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 8, 8, 8])]);
+    write_region(
+        world.as_ref().join("region/r.0.0.mca"),
+        &[(0, 0, vec![3, 8, 8, 8])],
+    );
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
 
     instance
-        .world_mut(&world)
+        .world_mut(&mut world)
         .backup(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
@@ -998,7 +1001,7 @@ async fn rollback_progress_completes_for_tombstone_only_region() {
     std::fs::remove_file(&doomed).unwrap();
 
     let (second, _) = instance
-        .world_mut(&world)
+        .world_mut(&mut world)
         .backup(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
@@ -1011,7 +1014,7 @@ async fn rollback_progress_completes_for_tombstone_only_region() {
     let seen = Arc::clone(&events);
 
     let (report, _) = instance
-        .world_mut(&world)
+        .world_mut(&mut world)
         .rollback(
             snapshot_id,
             sekai_app::RollbackOptions::default(),
