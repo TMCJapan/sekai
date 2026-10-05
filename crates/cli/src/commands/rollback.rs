@@ -1,7 +1,7 @@
 //! Rollback subcommand execution, DTOs, and output rendering.
 
 use anyhow::Context as _;
-use sekai_app::{HostWorktree, RollbackReport, RollbackTimings};
+use sekai_app::{HostWorldTree, RollbackReport, RollbackTimings};
 use serde::Serialize;
 use std::path::Path;
 
@@ -45,7 +45,7 @@ pub async fn run(
     flags: &RollbackFlags,
     out: ReportOut,
 ) -> anyhow::Result<()> {
-    let mut world = HostWorktree::new(world);
+    let mut world = HostWorldTree::new(world);
     let mut instance = sekai_app::SekaiInstance::open(store)
         .await
         .with_context(|| format!("rollback of {} failed", world.as_ref().display()))?;

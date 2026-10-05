@@ -5,14 +5,14 @@ mod common;
 
 use common::{SMALL, corpus_world, generate, options, runtime, tempdir};
 use criterion::{Criterion, criterion_group, criterion_main};
-use sekai_app::{HostWorktree, Scope};
+use sekai_app::{HostWorldTree, Scope};
 
 fn benches(c: &mut Criterion) {
     let rt = runtime();
 
     c.bench_function("gc-plan/small", |b| {
         let root = tempdir("gc-small");
-        let mut world = HostWorktree::new(root.join("world"));
+        let mut world = HostWorldTree::new(root.join("world"));
         generate(&world, &SMALL);
         let store = root.join("store").to_string_lossy().into_owned();
         let mut instance = rt

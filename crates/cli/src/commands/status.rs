@@ -1,7 +1,7 @@
 //! Status subcommand execution, DTOs, and output rendering.
 
 use anyhow::Context as _;
-use sekai_app::{HostWorktree, StatusReport, StatusTimings};
+use sekai_app::{HostWorldTree, StatusReport, StatusTimings};
 use serde::Serialize;
 use std::path::Path;
 
@@ -19,7 +19,7 @@ pub async fn run(
     selection: &Selection,
     out: ReportOut,
 ) -> anyhow::Result<()> {
-    let world = HostWorktree::new(world);
+    let world = HostWorldTree::new(world);
     let scope = selection.owned_scope();
     let bar = progress_bar(progress);
     let owned = bar.clone();

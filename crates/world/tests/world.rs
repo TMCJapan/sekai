@@ -2,7 +2,7 @@
 
 use sekai_core::{Dimension, RegionKey, RegionKind};
 use sekai_world::{
-    HostWorktree, LayoutFlavor, WorldTree, atomic_swap, fingerprint_file, open_image, scan_world,
+    HostWorldTree, LayoutFlavor, WorldTree, atomic_swap, fingerprint_file, open_image, scan_world,
 };
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -39,7 +39,7 @@ fn write(path: impl AsRef<Path>, bytes: &[u8]) {
 
 #[test]
 fn discovers_legacy_and_new_layouts() {
-    let world = HostWorktree::new(tempdir("layouts"));
+    let world = HostWorldTree::new(tempdir("layouts"));
     let image = one_chunk_image();
     // Legacy triple.
     write(world.as_ref().join("region/r.0.0.mca"), &image);
@@ -87,7 +87,7 @@ fn discovers_legacy_and_new_layouts() {
 
 #[test]
 fn discovers_bukkit_nesting() {
-    let world = HostWorktree::new(tempdir("bukkit"));
+    let world = HostWorldTree::new(tempdir("bukkit"));
     let image = one_chunk_image();
     write(world.as_ref().join("world/region/r.0.0.mca"), &image);
     write(
@@ -132,7 +132,7 @@ fn discovers_bukkit_nesting() {
 #[test]
 fn discovers_custom_level_name_trio() {
     // `level-name: srv` servers use srv/srv_nether/srv_the_end.
-    let root = HostWorktree::new(tempdir("levelname"));
+    let root = HostWorldTree::new(tempdir("levelname"));
     let image = one_chunk_image();
     write(root.as_ref().join("srv/region/r.0.0.mca"), &image);
     write(
@@ -178,7 +178,7 @@ fn discovers_custom_level_name_trio() {
 fn multiverse_worlds_never_collide() {
     // Main trio keeps vanilla codes; extra world folders hash theirs, so
     // same-environment worlds cannot silently share coordinates.
-    let root = HostWorktree::new(tempdir("multiverse"));
+    let root = HostWorldTree::new(tempdir("multiverse"));
     let image = one_chunk_image();
     write(root.as_ref().join("world/region/r.0.0.mca"), &image);
     write(
@@ -231,7 +231,7 @@ fn multiverse_worlds_never_collide() {
 fn trio_wins_over_conversion_leftovers() {
     // A stale root-level DIM-1 next to a live Bukkit trio: the trio is live
     // server data, the leftover is pre-migration residue.
-    let root = HostWorktree::new(tempdir("stale"));
+    let root = HostWorldTree::new(tempdir("stale"));
     let mut stale = one_chunk_image();
     stale[8192 + 4] = 9;
     let mut live = one_chunk_image();
@@ -260,7 +260,7 @@ fn empty_overworld_keeps_the_trio_namespaces() {
     // A freshly created (or briefly emptied) overworld has a `region/`
     // directory but no files in it. Namespaces must not flip to hashed
     // codes just because the overworld holds nothing right now.
-    let root = HostWorktree::new(tempdir("empty-overworld"));
+    let root = HostWorldTree::new(tempdir("empty-overworld"));
     let image = one_chunk_image();
     std::fs::create_dir_all(root.as_ref().join("world/region")).unwrap();
     write(
@@ -282,7 +282,7 @@ fn empty_overworld_keeps_the_trio_namespaces() {
 
     // The same siblings keep their vanilla codes whether or not the
     // overworld holds files.
-    let nether = |root: &HostWorktree| {
+    let nether = |root: &HostWorldTree| {
         root.discover()
             .unwrap()
             .into_iter()
@@ -315,7 +315,7 @@ fn level_name_wins_over_a_leftover_world_folder() {
     // `level-name=survival` with a stale `world/` trio still on disk: the
     // server loads `survival`, so its files must keep the vanilla codes and
     // the leftover must not be promoted to OVERWORLD.
-    let root = HostWorktree::new(tempdir("levelname-leftover"));
+    let root = HostWorldTree::new(tempdir("levelname-leftover"));
     let live = one_chunk_image();
     let mut stale = one_chunk_image();
     stale[8192 + 4] = 9;
@@ -369,7 +369,7 @@ fn stray_dimensions_dir_does_not_hijack_a_bukkit_root() {
     // A `dimensions/` directory left at a Bukkit container root (migration
     // residue, a plugin) must not make the root look like a 26.1 vanilla
     // world: rollback would then restore into a tree the server ignores.
-    let root = HostWorktree::new(tempdir("stray-dimensions"));
+    let root = HostWorldTree::new(tempdir("stray-dimensions"));
     let image = one_chunk_image();
     write(root.as_ref().join("world/region/r.0.0.mca"), &image);
     write(
@@ -403,7 +403,7 @@ fn duplicate_coordinate_names_resolve_deterministically() {
     // `r.0.0.mca` and `r.00.00.mca` both parse as region (0,0). The chosen
     // file must follow a fixed rule (lowest name first), never directory
     // iteration order.
-    let root = HostWorktree::new(tempdir("dup-coords"));
+    let root = HostWorldTree::new(tempdir("dup-coords"));
     let mut second = one_chunk_image();
     second[8192 + 4] = 7;
     write(root.as_ref().join("region/r.0.0.mca"), &one_chunk_image());
@@ -424,7 +424,7 @@ fn duplicate_coordinate_names_resolve_deterministically() {
 fn nested_vanilla_copy_gets_hashed_codes() {
     // A full vanilla world copied under the root keeps working under hashed
     // namespaces instead of colliding with the outer namespaces.
-    let root = HostWorktree::new(tempdir("nested"));
+    let root = HostWorldTree::new(tempdir("nested"));
     let image = one_chunk_image();
     write(root.as_ref().join("region/r.0.0.mca"), &image);
     write(root.as_ref().join("old/region/r.0.0.mca"), &image);
@@ -447,7 +447,7 @@ fn nested_vanilla_copy_gets_hashed_codes() {
 
 #[test]
 fn missing_world_is_an_error() {
-    let world = HostWorktree::new(tempdir("gone"));
+    let world = HostWorldTree::new(tempdir("gone"));
     cleanup(&world);
     assert!(matches!(
         world.discover(),
@@ -457,7 +457,7 @@ fn missing_world_is_an_error() {
 
 #[test]
 fn derives_both_layouts() {
-    let world = HostWorktree::new("/w");
+    let world = HostWorldTree::new("/w");
     assert_eq!(
         world
             .derive_path(

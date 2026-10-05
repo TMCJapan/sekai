@@ -7,13 +7,13 @@ use crate::{LayoutFlavor, RegionRef, WorldError};
 /// A [`WorldTree`] rooted at a local directory.
 ///
 /// Every operation resolves relative to the path passed to
-/// [`HostWorktree::new`]; the path is stored as given, never canonicalized.
+/// [`HostWorldTree::new`]; the path is stored as given, never canonicalized.
 #[derive(Clone)]
-pub struct HostWorktree {
+pub struct HostWorldTree {
     path: PathBuf,
 }
 
-impl HostWorktree {
+impl HostWorldTree {
     /// Root a worktree at `path`.
     pub fn new(path: impl AsRef<Path>) -> Self {
         Self {
@@ -22,7 +22,7 @@ impl HostWorktree {
     }
 }
 
-impl WorldTree for HostWorktree {
+impl WorldTree for HostWorldTree {
     fn is_empty(&self) -> Result<bool, std::io::Error> {
         match std::fs::read_dir(&self.path) {
             Ok(mut entries) => Ok(entries.next().is_none()),
@@ -57,7 +57,7 @@ impl WorldTree for HostWorktree {
     }
 }
 
-impl AsRef<Path> for HostWorktree {
+impl AsRef<Path> for HostWorldTree {
     fn as_ref(&self) -> &Path {
         &self.path
     }

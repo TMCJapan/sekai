@@ -1,7 +1,7 @@
 //! Backup subcommand execution, DTOs, and output rendering.
 
 use anyhow::Context as _;
-use sekai_app::{BackupOptions, BackupReport, BackupTimings, HostWorktree};
+use sekai_app::{BackupOptions, BackupReport, BackupTimings, HostWorldTree};
 use serde::Serialize;
 use std::path::Path;
 
@@ -42,7 +42,7 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let scope = selection.owned_scope();
     let fresh_store = !store_preexists(store);
-    let mut world = HostWorktree::new(world);
+    let mut world = HostWorldTree::new(world);
     let bar = progress_bar(progress);
     let mut instance = sekai_app::SekaiInstance::init(store)
         .await

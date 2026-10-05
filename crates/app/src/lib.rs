@@ -42,7 +42,7 @@ pub use sekai_core::{
     RollbackReport, Scope, Snapshot, SnapshotId, SnapshotStats, SnapshotTag, TagName,
 };
 pub use sekai_world::{
-    HostWorktree, LayoutFlavor, RegionScanEntry, ScanReport, ScanSkip, ScanTimings, WorldTree,
+    HostWorldTree, LayoutFlavor, RegionScanEntry, ScanReport, ScanSkip, ScanTimings, WorldTree,
 };
 
 /// Read-only inspection of every region file under `world`, additionally

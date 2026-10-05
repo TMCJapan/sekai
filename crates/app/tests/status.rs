@@ -1,6 +1,6 @@
 //! Read-only backup previews over real world folders and SQLite stores.
 
-use sekai_app::HostWorktree;
+use sekai_app::HostWorldTree;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -59,7 +59,7 @@ const fn options() -> sekai_app::StatusOptions {
 #[tokio::test]
 async fn status_reports_clean_world() {
     let root = tempdir("clean");
-    let mut world = HostWorktree::new(root.join("world"));
+    let mut world = HostWorldTree::new(root.join("world"));
     let store_dir = root.join("store");
     let store = store_dir.to_string_lossy().into_owned();
     write_region(
@@ -95,7 +95,7 @@ async fn status_reports_clean_world() {
 #[tokio::test]
 async fn status_counts_changes_without_writing() {
     let root = tempdir("dirty");
-    let mut world = HostWorktree::new(root.join("world"));
+    let mut world = HostWorldTree::new(root.join("world"));
     let store_dir = root.join("store");
     let store = store_dir.to_string_lossy().into_owned();
     write_region(
@@ -161,7 +161,7 @@ async fn status_counts_changes_without_writing() {
 #[tokio::test]
 async fn status_counts_tombstones() {
     let root = tempdir("tomb");
-    let mut world = HostWorktree::new(root.join("world"));
+    let mut world = HostWorldTree::new(root.join("world"));
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world.as_ref().join("region/r.0.0.mca");
     write_region(&region, &[(0, 0, vec![3, 1]), (1, 0, vec![3, 2])]);

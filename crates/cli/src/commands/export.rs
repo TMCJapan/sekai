@@ -1,7 +1,7 @@
 //! Export subcommand execution, DTOs, and output rendering.
 
 use anyhow::Context as _;
-use sekai_app::{ExportReport, ExportTimings, HostWorktree};
+use sekai_app::{ExportReport, ExportTimings, HostWorldTree};
 use serde::Serialize;
 use std::path::Path;
 
@@ -45,7 +45,7 @@ pub async fn run(
     flags: &ExportFlags,
     out: ReportOut,
 ) -> anyhow::Result<()> {
-    let world = HostWorktree::new(out_dir.as_ref());
+    let world = HostWorldTree::new(out_dir.as_ref());
     let instance = sekai_app::SekaiInstance::open(store)
         .await
         .with_context(|| {

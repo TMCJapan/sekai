@@ -5,14 +5,14 @@ mod common;
 
 use common::{SMALL, corpus_world, generate, options, runtime, tempdir};
 use criterion::{Criterion, criterion_group, criterion_main};
-use sekai_app::{HostWorktree, Scope};
+use sekai_app::{HostWorldTree, Scope};
 
 fn benches(c: &mut Criterion) {
     let rt = runtime();
 
     c.bench_function("diff/small-all", |b| {
         let root = tempdir("diff-small");
-        let mut world = HostWorktree::new(root.join("world"));
+        let mut world = HostWorldTree::new(root.join("world"));
         generate(&world, &SMALL);
         let store = root.join("store").to_string_lossy().into_owned();
         let mut instance = rt
@@ -42,7 +42,7 @@ fn benches(c: &mut Criterion) {
     });
 
     c.bench_function("diff/corpus-all", |b| {
-        let mut world = HostWorktree::new(corpus_world());
+        let mut world = HostWorldTree::new(corpus_world());
         let root = world.as_ref().parent().unwrap().to_path_buf();
         let store = root.join("store").to_string_lossy().into_owned();
         let mut instance = rt

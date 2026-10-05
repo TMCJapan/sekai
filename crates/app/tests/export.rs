@@ -1,6 +1,6 @@
 //! End-to-end snapshot exports into fresh directories.
 
-use sekai_app::HostWorktree;
+use sekai_app::HostWorldTree;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -63,7 +63,7 @@ fn backup_options() -> sekai_app::BackupOptions {
 async fn export_rebuilds_snapshot_into_fresh_directory() {
     use sekai_app::LayoutFlavor;
     let root = tempdir("roundtrip");
-    let mut world = HostWorktree::new(root.join("world"));
+    let mut world = HostWorldTree::new(root.join("world"));
     let store = root.join("store").to_string_lossy().into_owned();
     let over = world.as_ref().join("region/r.0.0.mca");
     let nether = world.as_ref().join("DIM-1/region/r.0.0.mca");
@@ -81,7 +81,7 @@ async fn export_rebuilds_snapshot_into_fresh_directory() {
     // Diverge live afterwards: export must still reproduce the snapshot.
     write_region(&over, &[(0, 0, vec![3, 9])]);
 
-    let out = HostWorktree::new(root.join("exported"));
+    let out = HostWorldTree::new(root.join("exported"));
     let (report, timings) = instance
         .export(
             &out,
@@ -114,7 +114,7 @@ async fn export_rebuilds_snapshot_into_fresh_directory() {
 async fn export_honors_layout_flavor_and_scope() {
     use sekai_app::{Dimension, LayoutFlavor, Scope};
     let root = tempdir("flavor-scope");
-    let mut world = HostWorktree::new(root.join("world"));
+    let mut world = HostWorldTree::new(root.join("world"));
     let store = root.join("store").to_string_lossy().into_owned();
     write_region(
         world.as_ref().join("region/r.0.0.mca"),
@@ -134,7 +134,7 @@ async fn export_honors_layout_flavor_and_scope() {
     let snapshots = instance.list_snapshots().await.unwrap();
 
     // Modern layout, overworld scope only: the nether file stays out.
-    let out = HostWorktree::new(root.join("modern"));
+    let out = HostWorldTree::new(root.join("modern"));
     let (report, _) = instance
         .export(
             &out,
@@ -161,7 +161,7 @@ async fn export_honors_layout_flavor_and_scope() {
     );
 
     // Bukkit layout, whole world.
-    let bukkit = HostWorktree::new(root.join("bukkit"));
+    let bukkit = HostWorldTree::new(root.join("bukkit"));
     let (report, _) = instance
         .export(
             &bukkit,
@@ -190,7 +190,7 @@ async fn export_honors_layout_flavor_and_scope() {
 async fn export_refuses_non_empty_directory() {
     use sekai_app::LayoutFlavor;
     let root = tempdir("nonempty");
-    let mut world = HostWorktree::new(root.join("world"));
+    let mut world = HostWorldTree::new(root.join("world"));
     let store = root.join("store").to_string_lossy().into_owned();
     write_region(
         world.as_ref().join("region/r.0.0.mca"),
@@ -205,7 +205,7 @@ async fn export_refuses_non_empty_directory() {
         .unwrap();
     let snapshots = instance.list_snapshots().await.unwrap();
 
-    let out = HostWorktree::new(root.join("out"));
+    let out = HostWorldTree::new(root.join("out"));
     std::fs::create_dir_all(&out).unwrap();
     std::fs::write(out.as_ref().join("existing.txt"), b"data").unwrap();
     assert!(
@@ -242,7 +242,7 @@ async fn export_refuses_non_empty_directory() {
 async fn export_omits_tombstoned_regions() {
     use sekai_app::LayoutFlavor;
     let root = tempdir("tombstones");
-    let mut world = HostWorktree::new(root.join("world"));
+    let mut world = HostWorldTree::new(root.join("world"));
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world.as_ref().join("region/r.0.0.mca");
     write_region(&region, &[(0, 0, vec![3, 1])]);
@@ -262,7 +262,7 @@ async fn export_omits_tombstoned_regions() {
         .unwrap();
     let snapshots = instance.list_snapshots().await.unwrap();
 
-    let out = HostWorktree::new(root.join("out"));
+    let out = HostWorldTree::new(root.join("out"));
     let (report, _) = instance
         .export(
             &out,
