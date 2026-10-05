@@ -230,7 +230,11 @@ fn rollback_files(
         let path = match discovered.get(&key) {
             Some(path) => path.clone(),
             None => match rows {
-                None => continue, // No rows and no file: nothing to do.
+                None => {
+                    // No rows and no file: nothing to do.
+                    progressed(&report);
+                    continue;
+                }
                 Some(_) => {
                     resolve_target(&discovered, &world, &flavor, &key, options.on_missing_file)?
                 }

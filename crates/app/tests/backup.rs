@@ -956,6 +956,62 @@ async fn progress_events_cover_rollback_diff_and_gc() {
 }
 
 #[tokio::test]
+async fn rollback_progress_completes_for_tombstone_only_region() {
+    use std::sync::{Arc, Mutex};
+    let root = tempdir("progress-tombstone-only");
+    let world = root.join("world");
+    let store = root.join("store").to_string_lossy().into_owned();
+
+    let doomed = world.join("poi/r.0.0.mca");
+    write_region(&doomed, &[(0, 0, vec![3, 1, 2, 3])]);
+    write_region(world.join("region/r.0.0.mca"), &[(0, 0, vec![3, 8, 8, 8])]);
+
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+
+    instance
+        .world_mut(&world)
+        .backup(options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+
+    std::fs::remove_file(&doomed).unwrap();
+
+    let (second, _) = instance
+        .world_mut(&world)
+        .backup(options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+
+    assert_eq!(second.tombstones, 1);
+
+    let snapshot_id = instance.latest_snapshot_id().await.unwrap();
+
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&events);
+
+    let (report, _) = instance
+        .world_mut(&world)
+        .rollback(
+            snapshot_id,
+            sekai_app::RollbackOptions::default(),
+            sekai_app::Scope::World,
+            move |p| {
+                seen.lock().unwrap().push((p.files_done, p.files_total));
+            },
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(report.files_written, 1);
+    assert_eq!(report.files_deleted, 0);
+    assert!(!doomed.exists());
+
+    let events = events.lock().unwrap();
+    assert_eq!(*events, [(1, 2), (2, 2)]);
+    cleanup(&root);
+}
+
+#[tokio::test]
 async fn diff_chunk_between_snapshots() {
     fn build_nbt(status: &str) -> Vec<u8> {
         let mut nbt = vec![10, 0, 0, 8, 0, 6]; // TAG_Compound(""), TAG_String("Status")
