@@ -37,12 +37,10 @@ fn write_region(path: impl AsRef<Path>, chunks: &[(i32, i32, Vec<u8>)]) {
 async fn tag_create_list_resolve_delete() {
     use sekai_app::TagName;
     let root = tempdir("crud");
-    let mut world = HostWorldTree::new(root.join("world"));
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path);
     let store = root.join("store").to_string_lossy().into_owned();
-    write_region(
-        world.as_ref().join("region/r.0.0.mca"),
-        &[(0, 0, vec![3, 1])],
-    );
+    write_region(world_path.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance

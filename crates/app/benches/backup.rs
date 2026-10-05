@@ -13,8 +13,9 @@ fn benches(c: &mut Criterion) {
     c.bench_function("backup/small-full", |b| {
         b.iter(|| {
             let root = tempdir("small");
-            let mut world = HostWorldTree::new(root.join("world"));
-            generate(&world, &SMALL);
+            let world_path = root.join("world");
+            let mut world = HostWorldTree::new(&world_path);
+            generate(&world_path, &SMALL);
             let store = root.join("store").to_string_lossy().into_owned();
             let mut instance = rt
                 .block_on(sekai_app::SekaiInstance::init(&store))
@@ -31,8 +32,9 @@ fn benches(c: &mut Criterion) {
 
     c.bench_function("backup/small-incremental", |b| {
         let root = tempdir("incr");
-        let mut world = HostWorldTree::new(root.join("world"));
-        generate(&world, &SMALL);
+        let world_path = root.join("world");
+        let mut world = HostWorldTree::new(&world_path);
+        generate(&world_path, &SMALL);
         let store = root.join("store").to_string_lossy().into_owned();
         let mut instance = rt
             .block_on(sekai_app::SekaiInstance::init(&store))
@@ -57,8 +59,9 @@ fn benches(c: &mut Criterion) {
     c.bench_function("backup/medium-full", |b| {
         b.iter(|| {
             let root = tempdir("medium");
-            let mut world = HostWorldTree::new(root.join("world"));
-            generate(&world, &MEDIUM);
+            let world_path = root.join("world");
+            let mut world = HostWorldTree::new(&world_path);
+            generate(&world_path, &MEDIUM);
             let store = root.join("store").to_string_lossy().into_owned();
             let mut instance = rt
                 .block_on(sekai_app::SekaiInstance::init(&store))

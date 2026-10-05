@@ -13,20 +13,20 @@ use crate::style::Styler;
 
 pub async fn run(
     store: &str,
-    world: impl AsRef<Path>,
+    world_path: impl AsRef<Path>,
     jobs: usize,
     progress: bool,
     selection: &Selection,
     out: ReportOut,
 ) -> anyhow::Result<()> {
-    let world = HostWorldTree::new(world);
+    let world = HostWorldTree::new(&world_path);
     let scope = selection.owned_scope();
     let bar = progress_bar(progress);
     let owned = bar.clone();
     let options = sekai_app::StatusOptions { concurrency: jobs };
     let instance = sekai_app::SekaiInstance::open(store)
         .await
-        .with_context(|| format!("status of {} failed", world.as_ref().display()))?;
+        .with_context(|| format!("status of {} failed", world_path.as_ref().display()))?;
     let (report, timings) = instance
         .world(&world)
         .status(options, scope, move |update| {
@@ -38,7 +38,7 @@ pub async fn run(
             );
         })
         .await
-        .with_context(|| format!("status of {} failed", world.as_ref().display()))?;
+        .with_context(|| format!("status of {} failed", world_path.as_ref().display()))?;
     finish_progress(bar.as_ref());
     if out.json {
         println!(

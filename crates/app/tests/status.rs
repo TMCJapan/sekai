@@ -59,13 +59,11 @@ const fn options() -> sekai_app::StatusOptions {
 #[tokio::test]
 async fn status_reports_clean_world() {
     let root = tempdir("clean");
-    let mut world = HostWorldTree::new(root.join("world"));
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path);
     let store_dir = root.join("store");
     let store = store_dir.to_string_lossy().into_owned();
-    write_region(
-        world.as_ref().join("region/r.0.0.mca"),
-        &[(0, 0, vec![3, 1])],
-    );
+    write_region(world_path.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
@@ -95,13 +93,11 @@ async fn status_reports_clean_world() {
 #[tokio::test]
 async fn status_counts_changes_without_writing() {
     let root = tempdir("dirty");
-    let mut world = HostWorldTree::new(root.join("world"));
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path);
     let store_dir = root.join("store");
     let store = store_dir.to_string_lossy().into_owned();
-    write_region(
-        world.as_ref().join("region/r.0.0.mca"),
-        &[(0, 0, vec![3, 1])],
-    );
+    write_region(world_path.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
@@ -117,13 +113,10 @@ async fn status_counts_changes_without_writing() {
 
     // Diverge: change one chunk, add one, delete the region's sibling file.
     write_region(
-        world.as_ref().join("region/r.0.0.mca"),
+        world_path.join("region/r.0.0.mca"),
         &[(0, 0, vec![3, 9]), (1, 0, vec![3, 2])],
     );
-    write_region(
-        world.as_ref().join("region/r.1.0.mca"),
-        &[(32, 0, vec![3, 3])],
-    );
+    write_region(world_path.join("region/r.1.0.mca"), &[(32, 0, vec![3, 3])]);
 
     let (report, _) = instance
         .world(&world)
@@ -161,9 +154,10 @@ async fn status_counts_changes_without_writing() {
 #[tokio::test]
 async fn status_counts_tombstones() {
     let root = tempdir("tomb");
-    let mut world = HostWorldTree::new(root.join("world"));
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path);
     let store = root.join("store").to_string_lossy().into_owned();
-    let region = world.as_ref().join("region/r.0.0.mca");
+    let region = world_path.join("region/r.0.0.mca");
     write_region(&region, &[(0, 0, vec![3, 1]), (1, 0, vec![3, 2])]);
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();

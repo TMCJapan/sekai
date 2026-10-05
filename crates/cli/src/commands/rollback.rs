@@ -38,17 +38,17 @@ const fn map_options(flags: &RollbackFlags) -> sekai_app::RollbackOptions {
 
 pub async fn run(
     store: &str,
-    world: impl AsRef<Path>,
+    world_path: impl AsRef<Path>,
     snapshot: &SnapshotRef,
     progress: bool,
     selection: &Selection,
     flags: &RollbackFlags,
     out: ReportOut,
 ) -> anyhow::Result<()> {
-    let mut world = HostWorldTree::new(world);
+    let mut world = HostWorldTree::new(&world_path);
     let mut instance = sekai_app::SekaiInstance::open(store)
         .await
-        .with_context(|| format!("rollback of {} failed", world.as_ref().display()))?;
+        .with_context(|| format!("rollback of {} failed", world_path.as_ref().display()))?;
     let id = instance
         .resolve_snapshot_ref(snapshot.as_str())
         .await
@@ -58,7 +58,7 @@ pub async fn run(
     if !out.json {
         eprintln!(
             "rollback {} to snapshot {} (scope: {}, policy: {})",
-            world.as_ref().display(),
+            world_path.as_ref().display(),
             id.raw(),
             selection.describe(),
             policy_summary(flags),
@@ -80,7 +80,7 @@ pub async fn run(
         .with_context(|| {
             format!(
                 "rollback of {} to snapshot {snapshot} failed",
-                world.as_ref().display()
+                world_path.as_ref().display()
             )
         })?;
     finish_progress(bar.as_ref());

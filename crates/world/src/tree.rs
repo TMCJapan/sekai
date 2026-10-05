@@ -57,12 +57,6 @@ impl WorldTree for HostWorldTree {
     }
 }
 
-impl AsRef<Path> for HostWorldTree {
-    fn as_ref(&self) -> &Path {
-        &self.path
-    }
-}
-
 /// World access shared by backup, export, rollback, and diff.
 ///
 /// Bundles discovery, layout flavor detection, and derived paths so

@@ -12,8 +12,9 @@ fn benches(c: &mut Criterion) {
 
     c.bench_function("rollback/small", |b| {
         let root = tempdir("rollback-small");
-        let mut world = HostWorldTree::new(root.join("world"));
-        generate(&world, &SMALL);
+        let world_path = root.join("world");
+        let mut world = HostWorldTree::new(&world_path);
+        generate(&world_path, &SMALL);
         let store = root.join("store").to_string_lossy().into_owned();
         let mut instance = rt
             .block_on(sekai_app::SekaiInstance::init(&store))
@@ -38,8 +39,9 @@ fn benches(c: &mut Criterion) {
     });
 
     c.bench_function("rollback/corpus", |b| {
-        let mut world = HostWorldTree::new(corpus_world());
-        let root = world.as_ref().parent().unwrap().to_path_buf();
+        let world_path = corpus_world();
+        let mut world = HostWorldTree::new(&world_path);
+        let root = world_path.parent().unwrap().to_path_buf();
         let store = root.join("store").to_string_lossy().into_owned();
         let mut instance = rt
             .block_on(sekai_app::SekaiInstance::init(&store))
