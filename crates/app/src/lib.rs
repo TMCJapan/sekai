@@ -41,7 +41,9 @@ pub use sekai_core::{
     NbtChange, NbtDiffEntry, NbtValue, PrunePlan, PruneReport, Rect, RegionKey, RegionKind,
     RollbackReport, Scope, Snapshot, SnapshotId, SnapshotStats, SnapshotTag, TagName,
 };
-pub use sekai_world::{LayoutFlavor, RegionScanEntry, ScanReport, ScanSkip, ScanTimings};
+pub use sekai_world::{
+    HostWorktree, LayoutFlavor, RegionScanEntry, ScanReport, ScanSkip, ScanTimings, WorldTree,
+};
 
 /// Read-only inspection of every region file under `world`, additionally
 /// returning per-phase timings and any files that could not be inspected.

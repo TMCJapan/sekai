@@ -8,12 +8,11 @@
 //! loudly with the offending coordinates, as in rollback).
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use sekai_core::{BlobHash, ChunkCoord, RegionKey, Scope, SnapshotId};
 use sekai_storage::FileCas;
-use sekai_world::LayoutFlavor;
+use sekai_world::{LayoutFlavor, WorldTree};
 
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
@@ -68,7 +67,7 @@ impl SekaiInstance {
     /// `move` closure owning its state).
     pub async fn export(
         &self,
-        out: impl AsRef<Path>,
+        out: &impl WorldTree,
         snapshot: SnapshotId,
         flavor: LayoutFlavor,
         options: ExportOptions,
@@ -76,7 +75,14 @@ impl SekaiInstance {
         progress: impl Fn(ExportProgress) + Send + 'static,
     ) -> Result<(ExportReport, ExportTimings), AppError> {
         let total_started = Instant::now();
-        refuse_non_empty(out.as_ref())?;
+
+        if !out.is_empty()? {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::DirectoryNotEmpty,
+                "export target world is not empty",
+            )
+            .into());
+        }
 
         let store = self.store();
 
@@ -95,7 +101,7 @@ impl SekaiInstance {
             groups,
             options,
             cas: store.cas().clone(),
-            out: out.as_ref().to_path_buf(),
+            out: out.clone(),
             flavor,
         };
 
@@ -114,44 +120,19 @@ impl SekaiInstance {
     }
 }
 
-/// Fail unless `out` is missing or an empty directory.
-fn refuse_non_empty(out: impl AsRef<Path>) -> Result<(), AppError> {
-    match std::fs::read_dir(out.as_ref()) {
-        Ok(mut entries) => {
-            if entries.next().is_some() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::DirectoryNotEmpty,
-                    format!("export target {} is not empty", out.as_ref().display()),
-                )
-                .into());
-            }
-            Ok(())
-        }
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(std::io::Error::new(
-            source.kind(),
-            format!(
-                "failed to inspect export target {}: {source}",
-                out.as_ref().display()
-            ),
-        )
-        .into()),
-    }
-}
-
 /// Everything one export file pass needs, owned for the blocking task.
-struct ExportJob {
+struct ExportJob<T: WorldTree> {
     groups: BTreeMap<RegionKey, Vec<(ChunkCoord, BlobHash)>>,
     options: ExportOptions,
     cas: FileCas,
-    out: PathBuf,
+    out: T,
     flavor: LayoutFlavor,
 }
 
 /// Rebuild every snapshot region file under `out`. Blocking: file reads,
 /// writes, and swaps belong on a blocking pool, never on an async worker.
 fn export_files(
-    job: ExportJob,
+    job: ExportJob<impl WorldTree>,
     timestamp: u32,
     progress: impl Fn(ExportProgress),
 ) -> Result<ExportReport, AppError> {
@@ -171,7 +152,7 @@ fn export_files(
     let mut files_done = 0usize;
     let mut blob_buf = Vec::new();
     for (key, rows) in &groups {
-        let path = sekai_world::derive_path(&out, &flavor, key.dim, key.kind, key.rx, key.rz)?;
+        let path = out.derive_path(&flavor, key.dim, key.kind, key.rx, key.rz)?;
         let mut writer = sekai_anvil::RegionBuilder::new(key.rx, key.rz, timestamp)?;
         for (coord, hash) in rows {
             if !fetch_or_skip(&cas, hash, options.on_missing_blob, &mut blob_buf)? {

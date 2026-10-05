@@ -62,7 +62,7 @@ pub enum LayoutFlavor {
 ///
 /// Pass the same path on every run: namespace codes for non-default
 /// folders derive from root-relative paths.
-pub fn detect_flavor(world: impl AsRef<Path>) -> Result<LayoutFlavor, WorldError> {
+pub(crate) fn detect_flavor(world: impl AsRef<Path>) -> Result<LayoutFlavor, WorldError> {
     // Trio first: a Bukkit container root may hold a stray `dimensions/`
     // directory (migration leftovers, a plugin), and deriving vanilla
     // namespaces from it would restore into a tree the server never reads.
@@ -342,7 +342,7 @@ fn scan_dimensions(
 /// folders are found) or a single world folder for vanilla ones - but the
 /// same path on every run, since non-default namespaces hash
 /// root-relative paths.
-pub fn discover(world: impl AsRef<Path>) -> Result<Vec<RegionRef>, WorldError> {
+pub(crate) fn discover(world: impl AsRef<Path>) -> Result<Vec<RegionRef>, WorldError> {
     if !world.as_ref().is_dir() {
         return Err(WorldError::io(
             world.as_ref(),
@@ -452,7 +452,7 @@ const fn kind_dir(kind: RegionKind) -> Option<&'static str> {
 /// file is absent - and must prefer same-dimension siblings over flavor
 /// derivation whenever any exist, since folders may have moved since the
 /// backup (e.g. across a 26.1 migration).
-pub fn derive_path(
+pub(crate) fn derive_path(
     world: impl AsRef<Path>,
     flavor: &LayoutFlavor,
     dim: Dimension,

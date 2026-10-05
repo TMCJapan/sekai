@@ -1,5 +1,6 @@
 //! End-to-end snapshot pruning over real world folders and SQLite stores.
 
+use sekai_app::HostWorktree;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -62,29 +63,29 @@ fn blob_count(store: impl AsRef<Path>) -> usize {
 async fn prune_folds_and_gc_reclaims() {
     use sekai_app::TagName;
     let root = tempdir("lifecycle");
-    let world = root.join("world");
+    let mut world = HostWorktree::new(root.join("world"));
     let store_dir = root.join("store");
     let store = store_dir.to_string_lossy().into_owned();
-    let region = world.join("region/r.0.0.mca");
+    let region = world.as_ref().join("region/r.0.0.mca");
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
 
     // Three snapshots with distinct payloads; the oldest is tagged.
     write_region(&region, &[(0, 0, vec![3, 1])]);
     instance
-        .world_mut(&world)
+        .world_mut(&mut world)
         .backup(backup_options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
     write_region(&region, &[(0, 0, vec![3, 2])]);
     instance
-        .world_mut(&world)
+        .world_mut(&mut world)
         .backup(backup_options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
     write_region(&region, &[(0, 0, vec![3, 3])]);
     instance
-        .world_mut(&world)
+        .world_mut(&mut world)
         .backup(backup_options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
@@ -113,7 +114,7 @@ async fn prune_folds_and_gc_reclaims() {
 
     // Retained snapshots still restore faithfully through fallback.
     let (rolled, _) = instance
-        .world_mut(&world)
+        .world_mut(&mut world)
         .rollback(
             snapshots[1].id,
             sekai_app::RollbackOptions::default(),
@@ -136,13 +137,13 @@ async fn prune_folds_and_gc_reclaims() {
 async fn prune_before_ref_and_empty_guards() {
     use sekai_app::SnapshotId;
     let root = tempdir("guards");
-    let world = root.join("world");
+    let mut world = HostWorktree::new(root.join("world"));
     let store = root.join("store").to_string_lossy().into_owned();
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     for payload in [vec![3, 1], vec![3, 2], vec![3, 3]] {
-        write_region(world.join("region/r.0.0.mca"), &[(0, 0, payload)]);
+        write_region(world.as_ref().join("region/r.0.0.mca"), &[(0, 0, payload)]);
         instance
-            .world_mut(&world)
+            .world_mut(&mut world)
             .backup(backup_options(), sekai_app::Scope::World, |_| {})
             .await
             .unwrap();
