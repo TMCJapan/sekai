@@ -67,14 +67,17 @@ impl SekaiInstance {
     /// `scope` is exported. `progress` fires as files complete; it must be
     /// `'static` because the file pass runs on a blocking pool (pass a
     /// `move` closure owning its state).
-    pub async fn export(
+    pub async fn export<T: WorldTree>(
         &self,
-        out: &impl WorldTree,
+        out: &T,
         snapshot: SnapshotId,
         options: ExportOptions,
         scope: Scope,
         progress: impl Fn(ExportProgress) + Send + 'static,
-    ) -> Result<(ExportReport, ExportTimings), AppError> {
+    ) -> Result<(ExportReport, ExportTimings), AppError>
+    where
+        AppError: From<T::Error>,
+    {
         let total_started = Instant::now();
 
         if !out.is_empty()? {
@@ -130,11 +133,14 @@ struct ExportJob<T: WorldTree> {
 
 /// Rebuild every snapshot region file under `out`. Blocking: file reads,
 /// writes, and swaps belong on a blocking pool, never on an async worker.
-fn export_files(
-    job: ExportJob<impl WorldTree>,
+fn export_files<T: WorldTree>(
+    job: ExportJob<T>,
     timestamp: u32,
     progress: impl Fn(ExportProgress),
-) -> Result<ExportReport, AppError> {
+) -> Result<ExportReport, AppError>
+where
+    AppError: From<T::Error>,
+{
     let ExportJob {
         groups,
         options,

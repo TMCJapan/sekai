@@ -74,21 +74,17 @@ impl HostWorldTree {
 }
 
 impl WorldTree for HostWorldTree {
-    fn is_empty(&self) -> Result<bool, std::io::Error> {
+    type Error = WorldError;
+
+    fn is_empty(&self) -> Result<bool, Self::Error> {
         match std::fs::read_dir(&self.root) {
             Ok(mut entries) => Ok(entries.next().is_none()),
             Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(true),
-            Err(source) => Err(std::io::Error::new(
-                source.kind(),
-                format!(
-                    "failed to inspect export target {}: {source}",
-                    self.root.display()
-                ),
-            )),
+            Err(source) => Err(WorldError::io(&self.root, source)),
         }
     }
 
-    fn discover(&self) -> Result<Vec<RegionRef>, WorldError> {
+    fn discover(&self) -> Result<Vec<RegionRef>, Self::Error> {
         discover::discover(&self.root, self.bukkit_base.as_deref())
     }
 
@@ -98,7 +94,7 @@ impl WorldTree for HostWorldTree {
         kind: RegionKind,
         region_x: i32,
         region_z: i32,
-    ) -> Result<PathBuf, WorldError> {
+    ) -> Result<PathBuf, Self::Error> {
         self.dirs.region_path(dim, kind, region_x, region_z)
     }
 }
@@ -109,14 +105,22 @@ impl WorldTree for HostWorldTree {
 /// can accept any world implementation. Handles are cheap to clone: blocking
 /// operations run on a blocking pool, and a borrow cannot cross
 /// `spawn_blocking`, so callers clone the handle into the task.
+///
+/// The associated [`WorldTree::Error`] keeps the trait implementable outside
+/// this crate: consumers choose their own failure type and convert it at
+/// their boundary - `sekai-app` operations require
+/// `AppError: From<WorldTree::Error>`.
 pub trait WorldTree: Sync + Send + Clone + 'static {
-    fn is_empty(&self) -> Result<bool, std::io::Error>;
-    fn discover(&self) -> Result<Vec<RegionRef>, WorldError>;
+    /// Failure type for every operation on this tree.
+    type Error: std::error::Error;
+
+    fn is_empty(&self) -> Result<bool, Self::Error>;
+    fn discover(&self) -> Result<Vec<RegionRef>, Self::Error>;
     fn derive_path(
         &self,
         dim: Dimension,
         kind: RegionKind,
         region_x: i32,
         region_z: i32,
-    ) -> Result<PathBuf, WorldError>;
+    ) -> Result<PathBuf, Self::Error>;
 }

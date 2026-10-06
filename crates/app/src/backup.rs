@@ -164,7 +164,10 @@ struct FileOutcome {
     timing: RegionTiming,
 }
 
-impl<T: WorldTree> WorldHandleMut<'_, T> {
+impl<T: WorldTree> WorldHandleMut<'_, T>
+where
+    AppError: From<T::Error>,
+{
     /// Scan the bound world and record it as a new snapshot in the store,
     /// additionally returning per-phase timings.
     ///
@@ -243,14 +246,17 @@ struct Prepared {
 ///
 /// Under `dry_run` blobs are probed instead of stored, so the staged rows
 /// are the same numbers a real backup would commit.
-async fn prepare(
+async fn prepare<T: WorldTree>(
     store: &sekai_storage::SqliteStore,
-    world: &impl WorldTree,
+    world: &T,
     options: &BackupOptions,
     scope: &Scope,
     progress: impl Fn(BackupProgress) + Send,
     dry_run: bool,
-) -> Result<Prepared, AppError> {
+) -> Result<Prepared, AppError>
+where
+    AppError: From<T::Error>,
+{
     // Whole-world observation walks and opens files: clone the handle and
     // run it on the blocking pool.
     let world_handle = world.clone();
@@ -300,7 +306,10 @@ async fn prepare(
     })
 }
 
-impl<T: WorldTree> WorldHandle<'_, T> {
+impl<T: WorldTree> WorldHandle<'_, T>
+where
+    AppError: From<T::Error>,
+{
     /// Preview what a backup would record, without writing anything: no CAS
     /// puts, no metadata commit. Read-only against both world and store.
     ///
@@ -318,7 +327,10 @@ impl<T: WorldTree> WorldHandle<'_, T> {
     }
 }
 
-impl<T: WorldTree> WorldHandleMut<'_, T> {
+impl<T: WorldTree> WorldHandleMut<'_, T>
+where
+    AppError: From<T::Error>,
+{
     /// Preview what a backup would record; see [`WorldHandle::status`].
     pub async fn status(
         &self,
@@ -331,13 +343,16 @@ impl<T: WorldTree> WorldHandleMut<'_, T> {
 }
 
 /// Preview implementation shared by read-only and read-write handles.
-async fn status_impl(
+async fn status_impl<T: WorldTree>(
     store: &sekai_storage::SqliteStore,
-    world: &impl WorldTree,
+    world: &T,
     options: StatusOptions,
     scope: Scope,
     progress: impl Fn(BackupProgress) + Send,
-) -> Result<(StatusReport, StatusTimings), AppError> {
+) -> Result<(StatusReport, StatusTimings), AppError>
+where
+    AppError: From<T::Error>,
+{
     let total = Instant::now();
 
     // Diff views are preview-irrelevant: always skip the decode work.
@@ -392,7 +407,10 @@ struct Observed {
 
 /// Discover every region file and fingerprint it. Blocking: file walks and
 /// opens belong on a blocking pool, never on an async worker.
-fn observe(world: &impl WorldTree) -> Result<Observed, AppError> {
+fn observe<T: WorldTree>(world: &T) -> Result<Observed, AppError>
+where
+    AppError: From<T::Error>,
+{
     let discover_started = Instant::now();
     let regions = world.discover()?;
     let discover = discover_started.elapsed();

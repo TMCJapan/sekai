@@ -91,7 +91,10 @@ pub struct RollbackOptions {
     pub on_missing_file: MissingFilePolicy,
 }
 
-impl<T: WorldTree> WorldHandleMut<'_, T> {
+impl<T: WorldTree> WorldHandleMut<'_, T>
+where
+    AppError: From<T::Error>,
+{
     /// Rebuild the bound world from `snapshot`, returning execution report
     /// and per-phase timings.
     ///
@@ -189,11 +192,14 @@ struct RollbackJob<T> {
 /// post-snapshot files deleted unless kept by [`RollbackOptions`].
 /// Blocking: file reads, writes, and swaps belong on a blocking pool,
 /// never on an async worker.
-fn rollback_files(
-    job: RollbackJob<impl WorldTree>,
+fn rollback_files<T: WorldTree>(
+    job: RollbackJob<T>,
     timestamp: u32,
     progress: impl Fn(RollbackProgress),
-) -> Result<RollbackReport, AppError> {
+) -> Result<RollbackReport, AppError>
+where
+    AppError: From<T::Error>,
+{
     let RollbackJob {
         groups,
         tombstones,
@@ -360,12 +366,15 @@ fn merge_live_chunks(
 
 /// Target path for a snapshot-known region whose file is missing on disk,
 /// per [`MissingFilePolicy`].
-fn resolve_target(
+fn resolve_target<T: WorldTree>(
     discovered: &BTreeMap<RegionKey, PathBuf>,
-    world: &impl WorldTree,
+    world: &T,
     key: &RegionKey,
     policy: MissingFilePolicy,
-) -> Result<PathBuf, AppError> {
+) -> Result<PathBuf, AppError>
+where
+    AppError: From<T::Error>,
+{
     match policy {
         MissingFilePolicy::Error => Err(sekai_world::WorldError::UnknownRegionPath {
             dim: key.dim,
@@ -385,11 +394,14 @@ fn resolve_target(
 /// since the backup, e.g. across a 26.1 migration); only derives from the
 /// resolved layout when no sibling exists. Non-derivable namespaces fail
 /// loudly instead of writing somewhere wrong.
-fn sibling_or_derived(
+fn sibling_or_derived<T: WorldTree>(
     discovered: &BTreeMap<RegionKey, PathBuf>,
-    world: &impl WorldTree,
+    world: &T,
     key: &RegionKey,
-) -> Result<PathBuf, AppError> {
+) -> Result<PathBuf, AppError>
+where
+    AppError: From<T::Error>,
+{
     if let Some(path) = sekai_world::sibling_path(discovered, key) {
         return Ok(path);
     }
