@@ -19,7 +19,8 @@ pub async fn run(
     selection: &Selection,
     out: ReportOut,
 ) -> anyhow::Result<()> {
-    let world = HostWorldTree::new(&world_path);
+    let world = HostWorldTree::new(&world_path)
+        .with_context(|| format!("failed to inspect world {}", world_path.as_ref().display()))?;
     let scope = selection.owned_scope();
     let bar = progress_bar(progress);
     let owned = bar.clone();

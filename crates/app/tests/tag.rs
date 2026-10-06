@@ -38,7 +38,7 @@ async fn tag_create_list_resolve_delete() {
     use sekai_app::TagName;
     let root = tempdir("crud");
     let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path);
+    let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     write_region(world_path.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
 
@@ -86,13 +86,12 @@ async fn tag_create_list_resolve_delete() {
     assert!(instance.resolve_snapshot_ref("nope").await.is_err());
 
     // Rollback accepts the tag ref end to end.
-    let out = HostWorldTree::new(root.join("exported"));
+    let out = HostWorldTree::new_legacy(root.join("exported"));
     let id = instance.resolve_snapshot_ref("@stable").await.unwrap();
     let (report, _) = instance
         .export(
             &out,
             id,
-            sekai_app::LayoutFlavor::Legacy,
             sekai_app::ExportOptions::default(),
             sekai_app::Scope::World,
             |_| {},
@@ -113,7 +112,7 @@ async fn tag_missing_snapshot_is_an_error() {
     let root = tempdir("missing");
     let store = root.join("store").to_string_lossy().into_owned();
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
-    let mut world = HostWorldTree::new(root.join("world"));
+    let mut world = HostWorldTree::new(root.join("world")).unwrap();
     instance
         .world_mut(&mut world)
         .backup(

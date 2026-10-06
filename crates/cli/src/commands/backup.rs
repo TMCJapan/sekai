@@ -42,7 +42,8 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let scope = selection.owned_scope();
     let fresh_store = !store_preexists(store);
-    let mut world = HostWorldTree::new(&world_path);
+    let mut world = HostWorldTree::new(&world_path)
+        .with_context(|| format!("failed to inspect world {}", world_path.as_ref().display()))?;
     let bar = progress_bar(progress);
     let mut instance = sekai_app::SekaiInstance::init(store)
         .await

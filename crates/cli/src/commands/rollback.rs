@@ -45,7 +45,8 @@ pub async fn run(
     flags: &RollbackFlags,
     out: ReportOut,
 ) -> anyhow::Result<()> {
-    let mut world = HostWorldTree::new(&world_path);
+    let mut world = HostWorldTree::new(&world_path)
+        .with_context(|| format!("failed to inspect world {}", world_path.as_ref().display()))?;
     let mut instance = sekai_app::SekaiInstance::open(store)
         .await
         .with_context(|| format!("rollback of {} failed", world_path.as_ref().display()))?;

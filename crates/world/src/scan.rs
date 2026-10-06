@@ -7,9 +7,10 @@ use std::time::{Duration, Instant};
 
 use sekai_core::{Dimension, RegionKind};
 
-use crate::discover::{RegionRef, discover};
+use crate::discover::RegionRef;
 use crate::error::WorldError;
 use crate::observation::{content_hash_of_bytes, hex_hash, mtime_ms_from_metadata};
+use crate::{HostWorldTree, WorldTree};
 
 /// One region file observed on disk.
 #[derive(Debug, Clone)]
@@ -76,7 +77,7 @@ pub struct ScanReport {
 pub fn scan_world(world: impl AsRef<Path>) -> Result<ScanReport, WorldError> {
     let total_started = Instant::now();
     let discover_started = Instant::now();
-    let regions = discover(world)?;
+    let regions = HostWorldTree::new(world)?.discover()?;
     let discover = discover_started.elapsed();
     let mut read = Duration::ZERO;
     let mut parse = Duration::ZERO;

@@ -60,7 +60,7 @@ const fn options() -> sekai_app::StatusOptions {
 async fn status_reports_clean_world() {
     let root = tempdir("clean");
     let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path);
+    let mut world = HostWorldTree::new(&world_path).unwrap();
     let store_dir = root.join("store");
     let store = store_dir.to_string_lossy().into_owned();
     write_region(world_path.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
@@ -94,7 +94,7 @@ async fn status_reports_clean_world() {
 async fn status_counts_changes_without_writing() {
     let root = tempdir("dirty");
     let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path);
+    let mut world = HostWorldTree::new(&world_path).unwrap();
     let store_dir = root.join("store");
     let store = store_dir.to_string_lossy().into_owned();
     write_region(world_path.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
@@ -155,7 +155,7 @@ async fn status_counts_changes_without_writing() {
 async fn status_counts_tombstones() {
     let root = tempdir("tomb");
     let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path);
+    let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world_path.join("region/r.0.0.mca");
     write_region(&region, &[(0, 0, vec![3, 1]), (1, 0, vec![3, 2])]);

@@ -2,7 +2,7 @@
 
 use sekai_core::{Dimension, RegionKey, RegionKind};
 use sekai_world::{
-    HostWorldTree, LayoutFlavor, WorldTree, atomic_swap, fingerprint_file, open_image, scan_world,
+    HostWorldTree, WorldTree, atomic_swap, fingerprint_file, open_image, scan_world,
 };
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -40,7 +40,6 @@ fn write(path: impl AsRef<Path>, bytes: &[u8]) {
 #[test]
 fn discovers_legacy_and_new_layouts() {
     let world_path = tempdir("layouts");
-    let world = HostWorldTree::new(&world_path);
     let image = one_chunk_image();
     // Legacy triple.
     write(world_path.join("region/r.0.0.mca"), &image);
@@ -58,6 +57,8 @@ fn discovers_legacy_and_new_layouts() {
     // Foreign files are ignored.
     write(world_path.join("region/notes.txt"), b"nope");
 
+    // Layout resolution happens once, against the tree on disk.
+    let world = HostWorldTree::new(&world_path).unwrap();
     let mut found = world.discover().unwrap();
     found.sort_by_key(|r| (r.dim.raw(), r.kind.raw(), r.region_x, r.region_z));
     let keys: Vec<_> = found
@@ -78,14 +79,19 @@ fn discovers_legacy_and_new_layouts() {
     assert_ne!(custom[0].dim, Dimension::NETHER);
     assert_ne!(custom[0].dim, Dimension::END);
     assert_eq!(found.len(), 5);
-    assert_eq!(world.detect_flavor().unwrap(), LayoutFlavor::New);
+    // An existing `dimensions/` tree elects 26.1 derivation.
+    assert_eq!(
+        world
+            .derive_path(Dimension::OVERWORLD, RegionKind::REGION, 2, 0)
+            .unwrap(),
+        world_path.join("dimensions/minecraft/overworld/region/r.2.0.mca")
+    );
     cleanup(&world_path);
 }
 
 #[test]
 fn discovers_bukkit_nesting() {
     let world_path = tempdir("bukkit");
-    let world = HostWorldTree::new(&world_path);
     let image = one_chunk_image();
     write(world_path.join("world/region/r.0.0.mca"), &image);
     write(
@@ -96,6 +102,8 @@ fn discovers_bukkit_nesting() {
         world_path.join("world_the_end/DIM1/region/r.0.0.mca"),
         &image,
     );
+
+    let world = HostWorldTree::new(&world_path).unwrap();
     let found = world.discover().unwrap();
     assert_eq!(found.len(), 3);
     let at = |dim, kind| {
@@ -118,11 +126,18 @@ fn discovers_bukkit_nesting() {
         at(Dimension::END, RegionKind::REGION),
         world_path.join("world_the_end/DIM1/region/r.0.0.mca")
     );
+    // The elected trio drives derivation.
     assert_eq!(
-        world.detect_flavor().unwrap(),
-        LayoutFlavor::Bukkit {
-            base: "world".to_owned()
-        }
+        world
+            .derive_path(Dimension::OVERWORLD, RegionKind::REGION, 0, 0)
+            .unwrap(),
+        world_path.join("world/region/r.0.0.mca")
+    );
+    assert_eq!(
+        world
+            .derive_path(Dimension::NETHER, RegionKind::REGION, 0, 0)
+            .unwrap(),
+        world_path.join("world_nether/DIM-1/region/r.0.0.mca")
     );
     cleanup(&world_path);
 }
@@ -131,11 +146,12 @@ fn discovers_bukkit_nesting() {
 fn discovers_custom_level_name_trio() {
     // `level-name: srv` servers use srv/srv_nether/srv_the_end.
     let root_path = tempdir("levelname");
-    let root = HostWorldTree::new(&root_path);
     let image = one_chunk_image();
     write(root_path.join("srv/region/r.0.0.mca"), &image);
     write(root_path.join("srv_nether/DIM-1/region/r.0.0.mca"), &image);
     write(root_path.join("srv_the_end/DIM1/region/r.0.0.mca"), &image);
+
+    let root = HostWorldTree::new(&root_path).unwrap();
     let found = root.discover().unwrap();
     assert_eq!(found.len(), 3);
     assert!(
@@ -146,24 +162,10 @@ fn discovers_custom_level_name_trio() {
     );
     assert!(found.iter().any(|r| r.dim == Dimension::NETHER
         && r.path == root_path.join("srv_nether/DIM-1/region/r.0.0.mca")));
-    assert_eq!(
-        root.detect_flavor().unwrap(),
-        LayoutFlavor::Bukkit {
-            base: "srv".to_owned()
-        }
-    );
     // Derivation follows the custom base.
     assert_eq!(
-        root.derive_path(
-            &LayoutFlavor::Bukkit {
-                base: "srv".to_owned()
-            },
-            Dimension::NETHER,
-            RegionKind::REGION,
-            0,
-            0
-        )
-        .unwrap(),
+        root.derive_path(Dimension::NETHER, RegionKind::REGION, 0, 0)
+            .unwrap(),
         root_path.join("srv_nether/DIM-1/region/r.0.0.mca")
     );
     cleanup(&root_path);
@@ -174,7 +176,6 @@ fn multiverse_worlds_never_collide() {
     // Main trio keeps vanilla codes; extra world folders hash theirs, so
     // same-environment worlds cannot silently share coordinates.
     let root_path = tempdir("multiverse");
-    let root = HostWorldTree::new(&root_path);
     let image = one_chunk_image();
     write(root_path.join("world/region/r.0.0.mca"), &image);
     write(
@@ -183,6 +184,8 @@ fn multiverse_worlds_never_collide() {
     );
     write(root_path.join("sky/region/r.0.0.mca"), &image);
     write(root_path.join("sky_nether/DIM-1/region/r.0.0.mca"), &image);
+
+    let root = HostWorldTree::new(&root_path).unwrap();
     let found = root.discover().unwrap();
     assert_eq!(found.len(), 4);
     let dims: Vec<_> = found.iter().map(|r| r.dim).collect();
@@ -206,15 +209,7 @@ fn multiverse_worlds_never_collide() {
     assert_eq!(keys.len(), 4);
     // Hashed dims are not derivable; rollback uses discovered folders.
     assert!(matches!(
-        root.derive_path(
-            &LayoutFlavor::Bukkit {
-                base: "world".to_owned()
-            },
-            hashed[0].dim,
-            RegionKind::REGION,
-            0,
-            0
-        ),
+        root.derive_path(hashed[0].dim, RegionKind::REGION, 0, 0),
         Err(sekai_world::WorldError::UnknownRegionPath { .. })
     ));
     cleanup(&root_path);
@@ -225,7 +220,6 @@ fn trio_wins_over_conversion_leftovers() {
     // A stale root-level DIM-1 next to a live Bukkit trio: the trio is live
     // server data, the leftover is pre-migration residue.
     let root_path = tempdir("stale");
-    let root = HostWorldTree::new(&root_path);
     let mut stale = one_chunk_image();
     stale[8192 + 4] = 9;
     let mut live = one_chunk_image();
@@ -233,6 +227,8 @@ fn trio_wins_over_conversion_leftovers() {
     write(root_path.join("DIM-1/region/r.0.0.mca"), &stale);
     write(root_path.join("world/region/r.1.0.mca"), &one_chunk_image());
     write(root_path.join("world_nether/DIM-1/region/r.0.0.mca"), &live);
+
+    let root = HostWorldTree::new(&root_path).unwrap();
     let found = root.discover().unwrap();
     let nether: Vec<_> = found
         .iter()
@@ -249,7 +245,6 @@ fn empty_overworld_keeps_the_trio_namespaces() {
     // directory but no files in it. Namespaces must not flip to hashed
     // codes just because the overworld holds nothing right now.
     let root_path = tempdir("empty-overworld");
-    let root = HostWorldTree::new(&root_path);
     let image = one_chunk_image();
     std::fs::create_dir_all(root_path.join("world/region")).unwrap();
     write(
@@ -261,12 +256,16 @@ fn empty_overworld_keeps_the_trio_namespaces() {
         &image,
     );
 
-    let flavor = root.detect_flavor().unwrap();
+    // An empty `region/` directory already elects the trio, so resolving
+    // now keeps the vanilla namespaces even though no file exists yet.
+    let root = HostWorldTree::new(&root_path).unwrap();
+
+    // The empty overworld still elects the trio: derivation targets the
+    // `world/` folder rather than hashed codes.
     assert_eq!(
-        flavor,
-        LayoutFlavor::Bukkit {
-            base: "world".to_owned()
-        }
+        root.derive_path(Dimension::OVERWORLD, RegionKind::REGION, 0, 0)
+            .unwrap(),
+        root_path.join("world/region/r.0.0.mca")
     );
 
     // The same siblings keep their vanilla codes whether or not the
@@ -285,7 +284,11 @@ fn empty_overworld_keeps_the_trio_namespaces() {
     );
 
     write(root_path.join("world/region/r.0.0.mca"), &image);
-    assert_eq!(root.detect_flavor().unwrap(), flavor);
+    assert_eq!(
+        root.derive_path(Dimension::OVERWORLD, RegionKind::REGION, 0, 0)
+            .unwrap(),
+        root_path.join("world/region/r.0.0.mca")
+    );
     assert_eq!(nether(&root), empty);
 
     let over: Vec<_> = root
@@ -305,7 +308,6 @@ fn level_name_wins_over_a_leftover_world_folder() {
     // server loads `survival`, so its files must keep the vanilla codes and
     // the leftover must not be promoted to OVERWORLD.
     let root_path = tempdir("levelname-leftover");
-    let root = HostWorldTree::new(&root_path);
     let live = one_chunk_image();
     let mut stale = one_chunk_image();
     stale[8192 + 4] = 9;
@@ -324,11 +326,12 @@ fn level_name_wins_over_a_leftover_world_folder() {
         &stale,
     );
 
+    let root = HostWorldTree::new(&root_path).unwrap();
+    // `level-name` wins: derivation targets the survival folder.
     assert_eq!(
-        root.detect_flavor().unwrap(),
-        LayoutFlavor::Bukkit {
-            base: "survival".to_owned()
-        }
+        root.derive_path(Dimension::OVERWORLD, RegionKind::REGION, 1, 0)
+            .unwrap(),
+        root_path.join("survival/region/r.1.0.mca")
     );
     let found = root.discover().unwrap();
     let over: Vec<_> = found
@@ -357,7 +360,6 @@ fn stray_dimensions_dir_does_not_hijack_a_bukkit_root() {
     // residue, a plugin) must not make the root look like a 26.1 vanilla
     // world: rollback would then restore into a tree the server ignores.
     let root_path = tempdir("stray-dimensions");
-    let root = HostWorldTree::new(&root_path);
     let image = one_chunk_image();
     write(root_path.join("world/region/r.0.0.mca"), &image);
     write(
@@ -366,21 +368,11 @@ fn stray_dimensions_dir_does_not_hijack_a_bukkit_root() {
     );
     std::fs::create_dir_all(root_path.join("dimensions/minecraft/the_nether")).unwrap();
 
+    let root = HostWorldTree::new(&root_path).unwrap();
+    // The elected trio wins over the stray `dimensions/` tree.
     assert_eq!(
-        root.detect_flavor().unwrap(),
-        LayoutFlavor::Bukkit {
-            base: "world".to_owned()
-        }
-    );
-    assert_eq!(
-        root.derive_path(
-            &root.detect_flavor().unwrap(),
-            Dimension::NETHER,
-            RegionKind::REGION,
-            0,
-            0
-        )
-        .unwrap(),
+        root.derive_path(Dimension::NETHER, RegionKind::REGION, 0, 0)
+            .unwrap(),
         root_path.join("world_nether/DIM-1/region/r.0.0.mca")
     );
     cleanup(&root_path);
@@ -392,7 +384,7 @@ fn duplicate_coordinate_names_resolve_deterministically() {
     // file must follow a fixed rule (lowest name first), never directory
     // iteration order.
     let root_path = tempdir("dup-coords");
-    let root = HostWorldTree::new(&root_path);
+    let root = HostWorldTree::new(&root_path).unwrap();
     let mut second = one_chunk_image();
     second[8192 + 4] = 7;
     write(root_path.join("region/r.0.0.mca"), &one_chunk_image());
@@ -414,7 +406,7 @@ fn nested_vanilla_copy_gets_hashed_codes() {
     // A full vanilla world copied under the root keeps working under hashed
     // namespaces instead of colliding with the outer namespaces.
     let root_path = tempdir("nested");
-    let root = HostWorldTree::new(&root_path);
+    let root = HostWorldTree::new(&root_path).unwrap();
     let image = one_chunk_image();
     write(root_path.join("region/r.0.0.mca"), &image);
     write(root_path.join("old/region/r.0.0.mca"), &image);
@@ -437,7 +429,7 @@ fn nested_vanilla_copy_gets_hashed_codes() {
 #[test]
 fn missing_world_is_an_error() {
     let world_path = tempdir("gone");
-    let world = HostWorldTree::new(&world_path);
+    let world = HostWorldTree::new(&world_path).unwrap();
     cleanup(&world_path);
     assert!(matches!(
         world.discover(),
@@ -446,44 +438,37 @@ fn missing_world_is_an_error() {
 }
 
 #[test]
-fn derives_both_layouts() {
-    let world = HostWorldTree::new("/w");
+fn derives_all_layouts() {
+    let legacy = HostWorldTree::new_legacy("/w");
     assert_eq!(
-        world
-            .derive_path(
-                &LayoutFlavor::Legacy,
-                Dimension::NETHER,
-                RegionKind::REGION,
-                -1,
-                2
-            )
+        legacy
+            .derive_path(Dimension::NETHER, RegionKind::REGION, -1, 2)
             .unwrap(),
         Path::new("/w/DIM-1/region/r.-1.2.mca")
     );
+
+    let modern = HostWorldTree::new_dimensions("/w");
     assert_eq!(
-        world
-            .derive_path(&LayoutFlavor::New, Dimension::END, RegionKind::POI, 0, 0)
+        modern
+            .derive_path(Dimension::END, RegionKind::POI, 0, 0)
             .unwrap(),
         Path::new("/w/dimensions/minecraft/the_end/poi/r.0.0.mca")
     );
+
+    let bukkit = HostWorldTree::new_bukkit("/w", "srv");
+    assert_eq!(
+        bukkit
+            .derive_path(Dimension::OVERWORLD, RegionKind::REGION, 0, 0)
+            .unwrap(),
+        Path::new("/w/srv/region/r.0.0.mca")
+    );
+
     assert!(matches!(
-        world.derive_path(
-            &LayoutFlavor::New,
-            Dimension::new(4242),
-            RegionKind::REGION,
-            0,
-            0
-        ),
+        modern.derive_path(Dimension::new(4242), RegionKind::REGION, 0, 0),
         Err(sekai_world::WorldError::UnknownRegionPath { .. })
     ));
     assert!(matches!(
-        world.derive_path(
-            &LayoutFlavor::Legacy,
-            Dimension::OVERWORLD,
-            RegionKind::new(9),
-            0,
-            0
-        ),
+        legacy.derive_path(Dimension::OVERWORLD, RegionKind::new(9), 0, 0),
         Err(sekai_world::WorldError::UnknownRegionPath { .. })
     ));
 }

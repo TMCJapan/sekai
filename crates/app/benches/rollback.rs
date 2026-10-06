@@ -13,7 +13,7 @@ fn benches(c: &mut Criterion) {
     c.bench_function("rollback/small", |b| {
         let root = tempdir("rollback-small");
         let world_path = root.join("world");
-        let mut world = HostWorldTree::new(&world_path);
+        let mut world = HostWorldTree::new(&world_path).expect("world resolves");
         generate(&world_path, &SMALL);
         let store = root.join("store").to_string_lossy().into_owned();
         let mut instance = rt
@@ -40,7 +40,7 @@ fn benches(c: &mut Criterion) {
 
     c.bench_function("rollback/corpus", |b| {
         let world_path = corpus_world();
-        let mut world = HostWorldTree::new(&world_path);
+        let mut world = HostWorldTree::new(&world_path).expect("world resolves");
         let root = world_path.parent().unwrap().to_path_buf();
         let store = root.join("store").to_string_lossy().into_owned();
         let mut instance = rt

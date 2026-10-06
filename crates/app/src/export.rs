@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use sekai_core::{BlobHash, ChunkCoord, RegionKey, Scope, SnapshotId};
 use sekai_storage::FileCas;
-use sekai_world::{LayoutFlavor, WorldTree};
+use sekai_world::WorldTree;
 
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
@@ -61,7 +61,9 @@ impl SekaiInstance {
     /// report and per-phase timings.
     ///
     /// `out` is created when missing and must otherwise be empty; anything
-    /// else fails loudly so export can never clobber existing data. Only
+    /// else fails loudly so export can never clobber existing data. Its
+    /// layout comes from how it was constructed (for example
+    /// `HostWorldTree::new_legacy` or `HostWorldTree::new_bukkit`). Only
     /// `scope` is exported. `progress` fires as files complete; it must be
     /// `'static` because the file pass runs on a blocking pool (pass a
     /// `move` closure owning its state).
@@ -69,7 +71,6 @@ impl SekaiInstance {
         &self,
         out: &impl WorldTree,
         snapshot: SnapshotId,
-        flavor: LayoutFlavor,
         options: ExportOptions,
         scope: Scope,
         progress: impl Fn(ExportProgress) + Send + 'static,
@@ -102,7 +103,6 @@ impl SekaiInstance {
             options,
             cas: store.cas().clone(),
             out: out.clone(),
-            flavor,
         };
 
         let files_started = Instant::now();
@@ -126,7 +126,6 @@ struct ExportJob<T: WorldTree> {
     options: ExportOptions,
     cas: FileCas,
     out: T,
-    flavor: LayoutFlavor,
 }
 
 /// Rebuild every snapshot region file under `out`. Blocking: file reads,
@@ -141,7 +140,6 @@ fn export_files(
         options,
         cas,
         out,
-        flavor,
     } = job;
 
     let mut report = ExportReport {
@@ -152,7 +150,7 @@ fn export_files(
     let mut files_done = 0usize;
     let mut blob_buf = Vec::new();
     for (key, rows) in &groups {
-        let path = out.derive_path(&flavor, key.dim, key.kind, key.rx, key.rz)?;
+        let path = out.derive_path(key.dim, key.kind, key.rx, key.rz)?;
         let mut writer = sekai_anvil::RegionBuilder::new(key.rx, key.rz, timestamp)?;
         for (coord, hash) in rows {
             if !fetch_or_skip(&cas, hash, options.on_missing_blob, &mut blob_buf)? {

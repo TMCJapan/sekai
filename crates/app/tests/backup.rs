@@ -30,7 +30,7 @@ fn cleanup(dir: impl AsRef<Path>) {
 async fn gc_refuses_while_a_backup_holds_the_store() {
     let root = tempdir("gc-guard");
     let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path);
+    let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store");
     let store_url = store.to_string_lossy().into_owned();
     write_region(
@@ -133,7 +133,7 @@ fn options() -> BackupOptions {
 async fn backup_list_rollback_round_trip() {
     let root = tempdir("roundtrip");
     let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path);
+    let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world_path.join("region/r.0.0.mca");
     let other = world_path.join("region/r.1.0.mca");
@@ -204,7 +204,7 @@ async fn backup_list_rollback_round_trip() {
 async fn deleted_region_file_tombstones_once() {
     let root = tempdir("vanished-file");
     let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path);
+    let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let doomed = world_path.join("poi/r.0.0.mca");
     write_region(
@@ -262,7 +262,7 @@ async fn scoped_backup_records_no_spurious_tombstones() {
     use sekai_app::{ChunkCoord, Dimension, RegionKind, Scope};
     let root = tempdir("scoped");
     let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path);
+    let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let over = world_path.join("region/r.0.0.mca");
     let nether = world_path.join("DIM-1/region/r.0.0.mca");
@@ -335,7 +335,7 @@ async fn scoped_rollback_leaves_other_dimensions_untouched() {
     use sekai_app::{Dimension, Scope};
     let root = tempdir("scoped-rollback");
     let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path);
+    let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let over = world_path.join("region/r.0.0.mca");
     let nether = world_path.join("DIM-1/region/r.0.0.mca");
@@ -412,7 +412,7 @@ async fn scoped_rollback_leaves_other_dimensions_untouched() {
 async fn strict_rollback_removes_post_snapshot_files() {
     let root = tempdir("strict");
     let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path);
+    let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let kept = world_path.join("region/r.0.0.mca");
     write_region(&kept, &[(0, 0, vec![3, 1])]);
@@ -476,7 +476,7 @@ async fn keep_options_preserve_post_snapshot_data() {
     use sekai_app::RollbackOptions;
     let root = tempdir("keep-post");
     let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path);
+    let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let known = world_path.join("region/r.0.0.mca");
     write_region(&known, &[(0, 0, vec![3, 1])]);
@@ -519,7 +519,7 @@ async fn keep_tombstoned_chunks_preserves_live_bytes() {
     use sekai_app::RollbackOptions;
     let root = tempdir("keep-tomb");
     let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path);
+    let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world_path.join("region/r.0.0.mca");
     write_region(&region, &[(0, 0, vec![3, 1]), (1, 0, vec![3, 2])]);
@@ -581,7 +581,7 @@ async fn keep_tombstoned_chunks_leaves_fully_tombstoned_files() {
     use sekai_app::RollbackOptions;
     let root = tempdir("keep-tomb-file");
     let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path);
+    let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world_path.join("region/r.0.0.mca");
     write_region(&region, &[(0, 0, vec![3, 1])]);
@@ -637,7 +637,7 @@ async fn missing_blob_abort_is_default_and_skip_recovers() {
     use sekai_app::{MissingBlobPolicy, RollbackOptions};
     let root = tempdir("missing-blob");
     let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path);
+    let mut world = HostWorldTree::new(&world_path).unwrap();
     let store_dir = root.join("store");
     let store = store_dir.to_string_lossy().into_owned();
     let region = world_path.join("region/r.0.0.mca");
@@ -705,7 +705,7 @@ async fn missing_file_error_policy_refuses_to_guess() {
     use sekai_app::{MissingFilePolicy, RollbackOptions};
     let root = tempdir("missing-file");
     let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path);
+    let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world_path.join("region/r.0.0.mca");
     write_region(&region, &[(0, 0, vec![3, 1])]);
@@ -767,7 +767,7 @@ async fn with_diff_records_diff_hashes() {
     use sekai_core::MetaStore as _;
     let root = tempdir("diff");
     let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path);
+    let mut world = HostWorldTree::new(&world_path).unwrap();
     let store_dir = root.join("store");
     let store_url = store_dir.to_string_lossy().into_owned();
     // Minimal zlib NBT: type byte 2 + zlib("<nbt>") is not valid NBT, so
@@ -815,7 +815,7 @@ async fn progress_fires_per_changed_file() {
     use std::sync::{Arc, Mutex};
     let root = tempdir("progress");
     let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path);
+    let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     write_region(world_path.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
     write_region(world_path.join("region/r.1.0.mca"), &[(32, 0, vec![3, 2])]);
@@ -843,7 +843,7 @@ async fn errors_surface_loudly() {
     let store = root.join("store").to_string_lossy().into_owned();
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     // Missing world.
-    let mut missing = HostWorldTree::new(root.join("nope"));
+    let mut missing = HostWorldTree::new(root.join("nope")).unwrap();
     assert!(
         instance
             .world_mut(&mut missing)
@@ -852,7 +852,7 @@ async fn errors_surface_loudly() {
             .is_err()
     );
     // Unknown snapshot (empty store is created on open, then lookup fails).
-    let mut world = HostWorldTree::new(root.join("world"));
+    let mut world = HostWorldTree::new(root.join("world")).unwrap();
     assert!(
         instance
             .world_mut(&mut world)
@@ -872,7 +872,7 @@ async fn errors_surface_loudly() {
 async fn gc_runs_and_returns_timings() {
     let root = tempdir("gc");
     let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path);
+    let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     write_region(world_path.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
 
@@ -900,7 +900,7 @@ async fn progress_events_cover_rollback_diff_and_gc() {
     use std::sync::{Arc, Mutex};
     let root = tempdir("progress-events");
     let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path);
+    let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     write_region(
         world_path.join("region/r.0.0.mca"),
@@ -987,7 +987,7 @@ async fn rollback_progress_completes_for_tombstone_only_region() {
     use std::sync::{Arc, Mutex};
     let root = tempdir("progress-tombstone-only");
     let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path);
+    let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
 
     let doomed = world_path.join("poi/r.0.0.mca");
@@ -1059,7 +1059,7 @@ async fn diff_chunk_between_snapshots() {
 
     let root = tempdir("diff_chunk");
     let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path);
+    let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world_path.join("region/r.0.0.mca");
 
@@ -1119,7 +1119,7 @@ async fn diff_world_chunk_with_snapshot() {
 
     let root = tempdir("diff_world_chunk");
     let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path);
+    let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world_path.join("region/r.0.0.mca");
 
@@ -1159,7 +1159,7 @@ async fn backs_up_region_with_trailing_partial_sector() {
     // referenced run is intact.
     let root = tempdir("partial-tail");
     let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path);
+    let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world_path.join("region/r.0.0.mca");
     write_region(&region, &[(0, 0, vec![3, 1])]);
@@ -1186,7 +1186,7 @@ async fn corrupt_region_names_its_file() {
     // Genuine corruption still fails loudly, now naming the file.
     let root = tempdir("corrupt-names-file");
     let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path);
+    let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world_path.join("region/r.0.0.mca");
     write_region(&region, &[(0, 0, vec![3, 1])]);
@@ -1238,7 +1238,7 @@ async fn sparse_entities_chunk_diffs_empty_without_error() {
     use sekai_app::{ChunkCoord, Dimension, RegionKind};
     let root = tempdir("sparse-entities");
     let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path);
+    let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     // Dense terrain only; no entities/poi files at all.
     write_region(
@@ -1277,7 +1277,7 @@ async fn created_and_deleted_chunks_diff_as_added_removed() {
     use sekai_app::{ChunkCoord, Dimension, RegionKind};
     let root = tempdir("created-deleted");
     let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path);
+    let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let entities = world_path.join("entities/r.0.0.mca");
     let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::ENTITIES, 0, 0);
@@ -1341,7 +1341,7 @@ async fn all_kinds_round_trip() {
     for kind in [RegionKind::REGION, RegionKind::ENTITIES, RegionKind::POI] {
         let root = tempdir(&format!("kind-{}", kind_dir(kind)));
         let world_path = root.join("world");
-        let mut world = HostWorldTree::new(&world_path);
+        let mut world = HostWorldTree::new(&world_path).unwrap();
         let store = root.join("store").to_string_lossy().into_owned();
         let file = world_path.join(format!("{}/r.0.0.mca", kind_dir(kind)));
         let coord = ChunkCoord::new(Dimension::OVERWORLD, kind, 0, 0);
@@ -1393,7 +1393,7 @@ async fn rect_and_kind_scopes_limit_ingest() {
     use sekai_app::{Area, Dimension, Rect, RegionKind, Scope};
     let root = tempdir("rect-kind");
     let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path);
+    let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     write_region(
         world_path.join("region/r.0.0.mca"),
@@ -1480,7 +1480,7 @@ async fn real_world_corpus_round_trip() {
 
     let root = tempdir("corpus");
     let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path);
+    let mut world = HostWorldTree::new(&world_path).unwrap();
     copy_dir(corpus_path(), &world_path);
     let store = root.join("store").to_string_lossy().into_owned();
 
@@ -1560,7 +1560,7 @@ async fn randomized_backup_rollback_round_trip() {
     for seed in 1..=SEEDS {
         let root = tempdir(&format!("model{seed}"));
         let world_path = root.join("world");
-        let mut world = HostWorldTree::new(&world_path);
+        let mut world = HostWorldTree::new(&world_path).unwrap();
         std::fs::create_dir_all(&world_path).unwrap();
         let store = root.join("store").to_string_lossy().into_owned();
         let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
