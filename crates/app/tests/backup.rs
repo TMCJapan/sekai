@@ -1705,7 +1705,7 @@ fn materialize(world_root: impl AsRef<Path>, model: &ChunkMaps, files: &[(&str, 
     }
 }
 
-fn read_world(world: &HostWorldTree, world_path: &Path) -> ChunkMaps {
+fn read_world(world: &HostWorldTree, world_path: impl AsRef<Path>) -> ChunkMaps {
     world
         .discover()
         .unwrap()
@@ -1714,7 +1714,7 @@ fn read_world(world: &HostWorldTree, world_path: &Path) -> ChunkMaps {
             // `/` regardless of platform, so the keys match the model's.
             let rel = region
                 .path
-                .strip_prefix(world_path)
+                .strip_prefix(world_path.as_ref())
                 .unwrap_or(&region.path)
                 .components()
                 .map(|c| c.as_os_str().to_string_lossy())

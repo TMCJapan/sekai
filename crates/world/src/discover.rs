@@ -58,7 +58,8 @@ pub(crate) struct DimensionDirs {
 impl DimensionDirs {
     /// Legacy single-folder layout: `<root>/`, `<root>/DIM-1`,
     /// `<root>/DIM1`.
-    pub(crate) fn legacy(root: &Path) -> Self {
+    pub(crate) fn legacy(root: impl AsRef<Path>) -> Self {
+        let root = root.as_ref();
         Self {
             overworld: root.to_path_buf(),
             nether: root.join("DIM-1"),
@@ -67,7 +68,8 @@ impl DimensionDirs {
     }
 
     /// 26.1 vanilla layout: `<root>/dimensions/minecraft/<name>`.
-    pub(crate) fn dimensions(root: &Path) -> Self {
+    pub(crate) fn dimensions(root: impl AsRef<Path>) -> Self {
+        let root = root.as_ref();
         let minecraft = root.join("dimensions").join("minecraft");
         Self {
             overworld: minecraft.join("overworld"),
@@ -78,7 +80,8 @@ impl DimensionDirs {
 
     /// Bukkit-family layout around `base`: `<root>/<base>`,
     /// `<root>/<base>_nether/DIM-1`, `<root>/<base>_the_end/DIM1`.
-    pub(crate) fn bukkit(root: &Path, base: &str) -> Self {
+    pub(crate) fn bukkit(root: impl AsRef<Path>, base: &str) -> Self {
+        let root = root.as_ref();
         Self {
             overworld: root.join(base),
             nether: root.join(format!("{base}_nether")).join("DIM-1"),
