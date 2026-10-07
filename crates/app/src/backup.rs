@@ -412,7 +412,10 @@ where
     AppError: From<T::Error>,
 {
     let discover_started = Instant::now();
-    let regions = world.discover()?;
+    let mut regions = Vec::new();
+    for dim in world.get_dims()? {
+        regions.extend(world.get_regions(dim)?);
+    }
     let discover = discover_started.elapsed();
 
     let fingerprint_started = Instant::now();

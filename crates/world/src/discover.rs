@@ -197,6 +197,21 @@ enum InsertPolicy {
     Overwrite,
 }
 
+/// One directory to scan for one dimension, with how a duplicate coordinate
+/// against an earlier root of the same dimension resolves.
+struct RootSpec {
+    dir: PathBuf,
+    policy: InsertPolicy,
+}
+
+/// Scan plan: ordered roots per dimension, in precedence order.
+type ScanPlan = BTreeMap<Dimension, Vec<RootSpec>>;
+
+/// Record a scan root for `dim`; call order is precedence order.
+fn push_root(plan: &mut ScanPlan, dim: Dimension, dir: PathBuf, policy: InsertPolicy) {
+    plan.entry(dim).or_default().push(RootSpec { dir, policy });
+}
+
 fn scan_dim_root(
     root: impl AsRef<Path>,
     dim: Dimension,
@@ -369,16 +384,16 @@ fn tree_dim(ns_name: &str, dim_name: &str) -> Option<Dimension> {
     }
 }
 
-/// Scan `dimensions/<ns>/<name>/<kind>/r.*.mca` under `dims_dir`.
+/// Plan scan roots for a `dimensions/<ns>/<name>/<kind>` tree.
 ///
 /// `rel_prefix` is the root-relative folder path (`""` for the root
 /// itself); non-vanilla trees hash `{prefix}/dimensions/<ns>/<name>`.
 /// Vanilla `(namespace, name)` pairs always map to vanilla codes so history
 /// survives 26.1-style migrations.
-fn scan_dimensions(
+fn plan_dimensions(
+    plan: &mut ScanPlan,
     dims_dir: impl AsRef<Path>,
     rel_prefix: &str,
-    found: &mut BTreeMap<(Dimension, RegionKind, i32, i32), RegionRef>,
 ) -> Result<(), WorldError> {
     for ns in read_dir_opt(dims_dir)? {
         if !is_dir(&ns)? {
@@ -404,24 +419,24 @@ fn scan_dimensions(
                 };
                 sekai_core::resolve_custom_dimension(&rel)
             });
-            scan_dim_root(name.path(), dim, found, InsertPolicy::Overwrite)?;
+            push_root(plan, dim, name.path(), InsertPolicy::Overwrite);
         }
     }
     Ok(())
 }
 
-/// Find every `.mca` under `root` with its namespace.
+/// Map every dimension under `root` to its ordered scan roots.
 ///
-/// Missing world root is an error; missing candidate subdirectories are
-/// simply skipped. `bukkit_base` is the trio election from [`resolve`];
-/// live server data wins over conversion leftovers. Pass a server root for
-/// Bukkit-family servers (all world folders are found) or a single world
-/// folder for vanilla ones - but the same path on every run, since
-/// non-default namespaces hash root-relative paths.
-pub(crate) fn discover(
-    root: impl AsRef<Path>,
-    bukkit_base: Option<&str>,
-) -> Result<Vec<RegionRef>, WorldError> {
+/// Mirrors the traversal without reading region files: each dimension gets
+/// the same roots in the same precedence order, so scanning one dimension's
+/// roots reproduces the whole-tree result for that dimension. Missing world
+/// root is an error; missing candidate subdirectories are simply skipped.
+/// `bukkit_base` is the trio election from [`resolve`]; live server data
+/// wins over conversion leftovers. Pass a server root for Bukkit-family
+/// servers (all world folders are found) or a single world folder for
+/// vanilla ones - but the same path on every run, since non-default
+/// namespaces hash root-relative paths.
+fn plan(root: impl AsRef<Path>, bukkit_base: Option<&str>) -> Result<ScanPlan, WorldError> {
     let root = root.as_ref();
     if !root.is_dir() {
         return Err(WorldError::io(
@@ -429,37 +444,48 @@ pub(crate) fn discover(
             std::io::Error::new(std::io::ErrorKind::NotFound, "world directory not found"),
         ));
     }
-    let mut found = BTreeMap::new();
+    let mut plan = ScanPlan::new();
     // Vanilla roots at the argument itself.
-    for (dir, dim) in [
-        (root.to_path_buf(), Dimension::OVERWORLD),
-        (root.join("DIM-1"), Dimension::NETHER),
-        (root.join("DIM1"), Dimension::END),
-    ] {
-        scan_dim_root(&dir, dim, &mut found, InsertPolicy::KeepExisting)?;
-    }
+    push_root(
+        &mut plan,
+        Dimension::OVERWORLD,
+        root.to_path_buf(),
+        InsertPolicy::KeepExisting,
+    );
+    push_root(
+        &mut plan,
+        Dimension::NETHER,
+        root.join("DIM-1"),
+        InsertPolicy::KeepExisting,
+    );
+    push_root(
+        &mut plan,
+        Dimension::END,
+        root.join("DIM1"),
+        InsertPolicy::KeepExisting,
+    );
     // Bukkit trio: live server data wins over conversion leftovers above.
     if let Some(base) = bukkit_base {
         let over = root.join(base);
-        scan_dim_root(
-            &over,
+        push_root(
+            &mut plan,
             Dimension::OVERWORLD,
-            &mut found,
+            over.clone(),
             InsertPolicy::Overwrite,
-        )?;
-        scan_dim_root(
-            root.join(format!("{base}_nether")).join("DIM-1"),
+        );
+        push_root(
+            &mut plan,
             Dimension::NETHER,
-            &mut found,
+            root.join(format!("{base}_nether")).join("DIM-1"),
             InsertPolicy::Overwrite,
-        )?;
-        scan_dim_root(
-            root.join(format!("{base}_the_end")).join("DIM1"),
+        );
+        push_root(
+            &mut plan,
             Dimension::END,
-            &mut found,
+            root.join(format!("{base}_the_end")).join("DIM1"),
             InsertPolicy::Overwrite,
-        )?;
-        scan_dimensions(over.join("dimensions"), base, &mut found)?;
+        );
+        plan_dimensions(&mut plan, over.join("dimensions"), base)?;
     }
     // Other world folders: hashed namespaces, never colliding silently.
     let trio: [String; 3] = bukkit_base.map_or_else(Default::default, |base| {
@@ -486,25 +512,81 @@ pub(crate) fn discover(
         let Some(rel) = rel_name(root, entry.path()) else {
             continue;
         };
-        let dim = sekai_core::resolve_custom_dimension(&rel);
-        scan_dim_root(entry.path(), dim, &mut found, InsertPolicy::KeepExisting)?;
-        scan_dim_root(
-            entry.path().join("DIM-1"),
+        push_root(
+            &mut plan,
+            sekai_core::resolve_custom_dimension(&rel),
+            entry.path(),
+            InsertPolicy::KeepExisting,
+        );
+        push_root(
+            &mut plan,
             sekai_core::resolve_custom_dimension(&format!("{rel}/DIM-1")),
-            &mut found,
+            entry.path().join("DIM-1"),
             InsertPolicy::KeepExisting,
-        )?;
-        scan_dim_root(
-            entry.path().join("DIM1"),
+        );
+        push_root(
+            &mut plan,
             sekai_core::resolve_custom_dimension(&format!("{rel}/DIM1")),
-            &mut found,
+            entry.path().join("DIM1"),
             InsertPolicy::KeepExisting,
-        )?;
-        scan_dimensions(entry.path().join("dimensions"), &rel, &mut found)?;
+        );
+        plan_dimensions(&mut plan, entry.path().join("dimensions"), &rel)?;
     }
     // Root-level dimensions tree (vanilla 26.1+ single world).
-    scan_dimensions(root.join("dimensions"), "", &mut found)?;
+    plan_dimensions(&mut plan, root.join("dimensions"), "")?;
+    Ok(plan)
+}
+
+/// Every dimension holding at least one region file under `root`.
+pub(crate) fn dimensions(
+    root: impl AsRef<Path>,
+    bukkit_base: Option<&str>,
+) -> Result<Vec<Dimension>, WorldError> {
+    let plan = plan(root, bukkit_base)?;
+    let mut dims = Vec::new();
+    for (dim, roots) in plan {
+        for spec in &roots {
+            if root_has_regions(&spec.dir)? {
+                dims.push(dim);
+                break;
+            }
+        }
+    }
+    Ok(dims)
+}
+
+/// Every region file of `dim` under `root`, ordered by kind and
+/// coordinates.
+pub(crate) fn regions(
+    root: impl AsRef<Path>,
+    bukkit_base: Option<&str>,
+    dim: Dimension,
+) -> Result<Vec<RegionRef>, WorldError> {
+    let plan = plan(root, bukkit_base)?;
+    let mut found = BTreeMap::new();
+    for spec in plan.get(&dim).into_iter().flatten() {
+        scan_dim_root(&spec.dir, dim, &mut found, spec.policy)?;
+    }
     Ok(found.into_values().collect())
+}
+
+/// Whether any `<kind>/r.*.mca` file exists directly under `dir`.
+fn root_has_regions(dir: impl AsRef<Path>) -> Result<bool, WorldError> {
+    for (_, kind_dir) in KIND_DIRS {
+        for entry in read_dir_opt(dir.as_ref().join(kind_dir))? {
+            if !is_file(&entry)? {
+                continue;
+            }
+            let file_name = entry.file_name();
+            let Some(name) = file_name.to_str() else {
+                continue;
+            };
+            if sekai_anvil::parse_region_name(name).is_ok() {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 const fn kind_dir(kind: RegionKind) -> Option<&'static str> {
