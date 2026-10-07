@@ -26,7 +26,13 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
     type Error: std::error::Error;
 
     fn is_empty(&self) -> Result<bool, Self::Error>;
-    fn discover(&self) -> Result<Vec<RegionRef>, Self::Error>;
+
+    /// Every dimension holding at least one region file, ordered by code.
+    fn get_dims(&self) -> Result<Vec<Dimension>, Self::Error>;
+
+    /// Every region file inside `dim`, ordered by kind and coordinates.
+    fn get_regions(&self, dim: Dimension) -> Result<Vec<RegionRef>, Self::Error>;
+
     fn derive_path(
         &self,
         dim: Dimension,

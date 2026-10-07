@@ -46,7 +46,11 @@ impl WorldTree for FakeWorld {
         self.check().map(|()| true)
     }
 
-    fn discover(&self) -> Result<Vec<RegionRef>, Self::Error> {
+    fn get_dims(&self) -> Result<Vec<Dimension>, Self::Error> {
+        self.check().map(|()| Vec::new())
+    }
+
+    fn get_regions(&self, _dim: Dimension) -> Result<Vec<RegionRef>, Self::Error> {
         self.check().map(|()| Vec::new())
     }
 
@@ -64,8 +68,14 @@ impl WorldTree for FakeWorld {
 
 #[test]
 fn custom_tree_serves_the_app_layer() {
+    let world = FakeWorld { fail: false };
+    assert_eq!(world.get_dims().unwrap(), [] as [Dimension; 0]);
     assert_eq!(
-        world_chunk_coords(&FakeWorld { fail: false }).unwrap(),
+        world.get_regions(Dimension::OVERWORLD).unwrap(),
+        [] as [RegionRef; 0]
+    );
+    assert_eq!(
+        world_chunk_coords(&world).unwrap(),
         [] as [sekai_app::ChunkCoord; 0]
     );
 }
