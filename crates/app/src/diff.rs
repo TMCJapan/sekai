@@ -57,10 +57,13 @@ impl SekaiInstance {
 /// Fetch raw (still compressed) chunk payload directly from a world directory.
 /// Returns `None` when the region file or chunk entry is absent; corrupt
 /// files still fail loudly.
-fn read_world_chunk_compressed(
-    world: &impl WorldTree,
+fn read_world_chunk_compressed<T: WorldTree>(
+    world: &T,
     coord: &ChunkCoord,
-) -> Result<Option<Vec<u8>>, AppError> {
+) -> Result<Option<Vec<u8>>, AppError>
+where
+    AppError: From<T::Error>,
+{
     let rx = coord.region_x();
     let rz = coord.region_z();
 
@@ -181,7 +184,10 @@ impl SekaiInstance {
 }
 
 /// Chunk coordinates present on disk in `world`.
-pub fn world_chunk_coords(world: &impl WorldTree) -> Result<Vec<ChunkCoord>, AppError> {
+pub fn world_chunk_coords<T: WorldTree>(world: &T) -> Result<Vec<ChunkCoord>, AppError>
+where
+    AppError: From<T::Error>,
+{
     let mut coords = Vec::new();
     for region in world.discover()? {
         let bytes = sekai_world::open_image(&region.path)?;
@@ -232,7 +238,10 @@ fn decompress_or_empty(compressed: Option<Vec<u8>>) -> Result<Vec<u8>, AppError>
     compressed.map_or_else(|| Ok(EMPTY_COMPOUND.to_vec()), |c| decompress_chunk(&c))
 }
 
-impl<T: WorldTree> WorldHandle<'_, T> {
+impl<T: WorldTree> WorldHandle<'_, T>
+where
+    AppError: From<T::Error>,
+{
     /// Compute AST diff for a chunk coordinate between the bound world state
     /// and a snapshot.
     ///
@@ -290,7 +299,10 @@ impl<T: WorldTree> WorldHandle<'_, T> {
     }
 }
 
-impl<T: WorldTree> WorldHandleMut<'_, T> {
+impl<T: WorldTree> WorldHandleMut<'_, T>
+where
+    AppError: From<T::Error>,
+{
     /// Compute AST diff for one chunk; see [`WorldHandle::diff_world_chunk`].
     pub async fn diff_world_chunk(
         &self,
@@ -331,7 +343,10 @@ impl DiffSource for SnapshotDiff<'_> {
     }
 }
 
-impl<T: WorldTree> DiffSource for &T {
+impl<T: WorldTree> DiffSource for &T
+where
+    AppError: From<T::Error>,
+{
     fn payload(
         &self,
         coord: &ChunkCoord,
