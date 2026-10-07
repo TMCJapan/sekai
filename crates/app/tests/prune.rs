@@ -63,10 +63,11 @@ fn blob_count(store: impl AsRef<Path>) -> usize {
 async fn prune_folds_and_gc_reclaims() {
     use sekai_app::TagName;
     let root = tempdir("lifecycle");
-    let mut world = HostWorldTree::new(root.join("world"));
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
     let store_dir = root.join("store");
     let store = store_dir.to_string_lossy().into_owned();
-    let region = world.as_ref().join("region/r.0.0.mca");
+    let region = world_path.join("region/r.0.0.mca");
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
 
@@ -137,11 +138,12 @@ async fn prune_folds_and_gc_reclaims() {
 async fn prune_before_ref_and_empty_guards() {
     use sekai_app::SnapshotId;
     let root = tempdir("guards");
-    let mut world = HostWorldTree::new(root.join("world"));
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     for payload in [vec![3, 1], vec![3, 2], vec![3, 3]] {
-        write_region(world.as_ref().join("region/r.0.0.mca"), &[(0, 0, payload)]);
+        write_region(world_path.join("region/r.0.0.mca"), &[(0, 0, payload)]);
         instance
             .world_mut(&mut world)
             .backup(backup_options(), sekai_app::Scope::World, |_| {})

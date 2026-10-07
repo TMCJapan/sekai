@@ -24,7 +24,8 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
     let broad = selection.has_broad_areas() || coords.is_empty();
     let (diffs, timings) = match args.target() {
         DiffTarget::World { world, snapshot } => {
-            let world = HostWorldTree::new(world);
+            let world = HostWorldTree::new(world)
+                .with_context(|| format!("failed to inspect world {}", world.display()))?;
             if broad {
                 coords.append(&mut sekai_app::world_chunk_coords(&world)?);
             }

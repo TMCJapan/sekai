@@ -17,13 +17,13 @@ pub struct ExportFlags {
     pub on_missing_blob: OnMissingBlob,
 }
 
-fn map_flavor(flags: &ExportFlags) -> sekai_app::LayoutFlavor {
+/// World tree matching the requested output layout. Export targets do not
+/// exist yet, so the layout cannot be detected and must be chosen.
+fn output_tree(flags: &ExportFlags, out_dir: impl AsRef<Path>) -> HostWorldTree {
     match flags.flavor {
-        ExportFlavor::Legacy => sekai_app::LayoutFlavor::Legacy,
-        ExportFlavor::New => sekai_app::LayoutFlavor::New,
-        ExportFlavor::Bukkit => sekai_app::LayoutFlavor::Bukkit {
-            base: flags.base.clone(),
-        },
+        ExportFlavor::Legacy => HostWorldTree::new_legacy(out_dir),
+        ExportFlavor::New => HostWorldTree::new_dimensions(out_dir),
+        ExportFlavor::Bukkit => HostWorldTree::new_bukkit(out_dir, flags.base.clone()),
     }
 }
 
@@ -45,7 +45,7 @@ pub async fn run(
     flags: &ExportFlags,
     out: ReportOut,
 ) -> anyhow::Result<()> {
-    let world = HostWorldTree::new(out_dir.as_ref());
+    let world = output_tree(flags, out_dir.as_ref());
     let instance = sekai_app::SekaiInstance::open(store)
         .await
         .with_context(|| {
@@ -59,12 +59,11 @@ pub async fn run(
         .await
         .with_context(|| format!("snapshot {snapshot} failed to resolve"))?;
     let scope = selection.owned_scope();
-    let flavor = map_flavor(flags);
     let options = map_options(flags.on_missing_blob);
     let bar = progress_bar(progress);
     let owned = bar.clone();
     let (report, timings) = instance
-        .export(&world, id, flavor, options, scope, move |update| {
+        .export(&world, id, options, scope, move |update| {
             report_progress(
                 owned.as_ref(),
                 update.files_done,
@@ -176,32 +175,52 @@ mod tests {
     }
 
     #[test]
-    fn maps_export_flavor() {
-        let base = ExportFlags {
-            flavor: ExportFlavor::Bukkit,
-            base: "myworld".to_owned(),
+    fn builds_output_tree_per_flavor() {
+        use sekai_app::{Dimension, RegionKind, WorldTree as _};
+        let flags = |flavor, base: &str| ExportFlags {
+            flavor,
+            base: base.to_owned(),
             on_missing_blob: OnMissingBlob::Abort,
         };
+
+        let legacy = output_tree(&flags(ExportFlavor::Legacy, "ignored"), "/out");
         assert_eq!(
-            map_flavor(&base),
-            sekai_app::LayoutFlavor::Bukkit {
-                base: "myworld".to_owned()
-            }
+            legacy
+                .derive_path(Dimension::NETHER, RegionKind::REGION, 0, 0)
+                .unwrap(),
+            Path::new("/out/DIM-1/region/r.0.0.mca")
         );
-        for (flavor, expected) in [
-            (ExportFlavor::Legacy, sekai_app::LayoutFlavor::Legacy),
-            (ExportFlavor::New, sekai_app::LayoutFlavor::New),
+
+        let modern = output_tree(&flags(ExportFlavor::New, "ignored"), "/out");
+        assert_eq!(
+            modern
+                .derive_path(Dimension::END, RegionKind::POI, 0, 0)
+                .unwrap(),
+            Path::new("/out/dimensions/minecraft/the_end/poi/r.0.0.mca")
+        );
+
+        let bukkit = output_tree(&flags(ExportFlavor::Bukkit, "myworld"), "/out");
+        assert_eq!(
+            bukkit
+                .derive_path(Dimension::OVERWORLD, RegionKind::REGION, 1, 2)
+                .unwrap(),
+            Path::new("/out/myworld/region/r.1.2.mca")
+        );
+    }
+
+    #[test]
+    fn maps_missing_blob_policy() {
+        for (mode, expected) in [
+            (OnMissingBlob::Abort, sekai_app::MissingBlobPolicy::Abort),
+            (
+                OnMissingBlob::SkipChunk,
+                sekai_app::MissingBlobPolicy::SkipChunk,
+            ),
         ] {
-            let flags = ExportFlags {
-                flavor,
-                base: "ignored".to_owned(),
-                on_missing_blob: OnMissingBlob::SkipChunk,
-            };
-            assert_eq!(map_flavor(&flags), expected);
             assert_eq!(
-                map_options(flags.on_missing_blob),
+                map_options(mode),
                 sekai_app::ExportOptions {
-                    on_missing_blob: sekai_app::MissingBlobPolicy::SkipChunk,
+                    on_missing_blob: expected,
                 }
             );
         }

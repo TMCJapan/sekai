@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use sekai_core::{BlobHash, ChunkCoord, RegionKey, RollbackReport, Scope, SnapshotId};
 use sekai_storage::FileCas;
-use sekai_world::{LayoutFlavor, WorldTree};
+use sekai_world::WorldTree;
 
 use crate::error::AppError;
 use crate::instance::WorldHandleMut;
@@ -30,7 +30,7 @@ pub struct RollbackTimings {
     pub total: Duration,
     /// Rollback plan resolution from metadata.
     pub plan: Duration,
-    /// World flavor detection and region discovery.
+    /// Region discovery.
     pub discover: Duration,
     /// Rebuilding MCA files, restoring chunks from CAS, and removing post-snapshot files.
     pub rollback_files: Duration,
@@ -129,12 +129,11 @@ impl<T: WorldTree> WorldHandleMut<'_, T> {
         let mut tombstones = plan.tombstones;
         tombstones.retain(|key, _| scope.matches_region(*key));
 
-        // Flavor detection and discovery walk the filesystem: clone the
-        // handle and run both on the blocking pool.
+        // Discovery walks the filesystem: clone the handle and run it on
+        // the blocking pool.
         let discover_started = Instant::now();
         let world_handle = world.clone();
-        let (flavor, mut discovered) = tokio::task::spawn_blocking(move || {
-            let flavor = world_handle.detect_flavor()?;
+        let mut discovered = tokio::task::spawn_blocking(move || {
             let discovered: BTreeMap<RegionKey, PathBuf> = world_handle
                 .discover()?
                 .into_iter()
@@ -145,7 +144,7 @@ impl<T: WorldTree> WorldHandleMut<'_, T> {
                     )
                 })
                 .collect();
-            Ok::<_, AppError>((flavor, discovered))
+            Ok::<_, AppError>(discovered)
         })
         .await??;
         let discover_dt = discover_started.elapsed();
@@ -157,7 +156,6 @@ impl<T: WorldTree> WorldHandleMut<'_, T> {
             options,
             cas: store.cas().clone(),
             world: world.clone(),
-            flavor,
             discovered,
         };
 
@@ -184,7 +182,6 @@ struct RollbackJob<T> {
     options: RollbackOptions,
     cas: FileCas,
     world: T,
-    flavor: LayoutFlavor,
     discovered: BTreeMap<RegionKey, PathBuf>,
 }
 
@@ -203,7 +200,6 @@ fn rollback_files(
         options,
         cas,
         world,
-        flavor,
         discovered,
     } = job;
     let mut keys: BTreeSet<RegionKey> = discovered.keys().copied().collect();
@@ -237,9 +233,7 @@ fn rollback_files(
                     progressed(&report);
                     continue;
                 }
-                Some(_) => {
-                    resolve_target(&discovered, &world, &flavor, &key, options.on_missing_file)?
-                }
+                Some(_) => resolve_target(&discovered, &world, &key, options.on_missing_file)?,
             },
         };
         let Some(rows) = rows else {
@@ -369,7 +363,6 @@ fn merge_live_chunks(
 fn resolve_target(
     discovered: &BTreeMap<RegionKey, PathBuf>,
     world: &impl WorldTree,
-    flavor: &LayoutFlavor,
     key: &RegionKey,
     policy: MissingFilePolicy,
 ) -> Result<PathBuf, AppError> {
@@ -381,10 +374,8 @@ fn resolve_target(
             region_z: key.rz,
         }
         .into()),
-        MissingFilePolicy::DerivedOnly => {
-            Ok(world.derive_path(flavor, key.dim, key.kind, key.rx, key.rz)?)
-        }
-        MissingFilePolicy::SiblingFirst => sibling_or_derived(discovered, world, flavor, key),
+        MissingFilePolicy::DerivedOnly => Ok(world.derive_path(key.dim, key.kind, key.rx, key.rz)?),
+        MissingFilePolicy::SiblingFirst => sibling_or_derived(discovered, world, key),
     }
 }
 
@@ -392,16 +383,15 @@ fn resolve_target(
 ///
 /// Prefers a same-dimension sibling's directory (folders may have moved
 /// since the backup, e.g. across a 26.1 migration); only derives from the
-/// layout flavor when no sibling exists. Non-derivable namespaces fail
+/// resolved layout when no sibling exists. Non-derivable namespaces fail
 /// loudly instead of writing somewhere wrong.
 fn sibling_or_derived(
     discovered: &BTreeMap<RegionKey, PathBuf>,
     world: &impl WorldTree,
-    flavor: &LayoutFlavor,
     key: &RegionKey,
 ) -> Result<PathBuf, AppError> {
     if let Some(path) = sekai_world::sibling_path(discovered, key) {
         return Ok(path);
     }
-    Ok(world.derive_path(flavor, key.dim, key.kind, key.rx, key.rz)?)
+    Ok(world.derive_path(key.dim, key.kind, key.rx, key.rz)?)
 }

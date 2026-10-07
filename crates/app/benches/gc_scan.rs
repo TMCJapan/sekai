@@ -12,8 +12,9 @@ fn benches(c: &mut Criterion) {
 
     c.bench_function("gc-plan/small", |b| {
         let root = tempdir("gc-small");
-        let mut world = HostWorldTree::new(root.join("world"));
-        generate(&world, &SMALL);
+        let world_path = root.join("world");
+        let mut world = HostWorldTree::new(&world_path).expect("world resolves");
+        generate(&world_path, &SMALL);
         let store = root.join("store").to_string_lossy().into_owned();
         let mut instance = rt
             .block_on(sekai_app::SekaiInstance::init(&store))
