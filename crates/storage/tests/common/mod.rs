@@ -102,6 +102,38 @@ where
     assert!(!meta.untag(&alpha).await.unwrap());
 }
 
+/// Dimension registry: vanilla codes are pinned, names are unique, and
+/// resolution is idempotent with fresh codes outside the reserved range.
+pub async fn dimension_registry<M>(meta: &mut M)
+where
+    M: MetaStore,
+    M::Error: core::fmt::Debug,
+{
+    for (name, dim) in [
+        ("minecraft:overworld", Dimension::OVERWORLD),
+        ("minecraft:the_nether", Dimension::NETHER),
+        ("minecraft:the_end", Dimension::END),
+    ] {
+        assert_eq!(meta.lookup_dimension(name).await.unwrap(), Some(dim));
+        assert_eq!(meta.resolve_dimension(name).await.unwrap(), dim);
+    }
+
+    assert_eq!(meta.lookup_dimension("aether:sky").await.unwrap(), None);
+    let sky = meta.resolve_dimension("aether:sky").await.unwrap();
+    assert!(
+        sky.raw() >= 3,
+        "custom names never take reserved vanilla codes"
+    );
+    assert_eq!(meta.resolve_dimension("aether:sky").await.unwrap(), sky);
+
+    let folder = meta.resolve_dimension("./plugin").await.unwrap();
+    assert_ne!(folder, sky);
+    assert_eq!(
+        meta.lookup_dimension("./plugin").await.unwrap(),
+        Some(folder)
+    );
+}
+
 /// Fresh-row visits and per-snapshot statistics.
 pub async fn fresh_stats<M>(meta: &mut M)
 where

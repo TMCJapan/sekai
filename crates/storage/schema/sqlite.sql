@@ -3,6 +3,22 @@ CREATE TABLE snapshots(
     created_at_ms INTEGER NOT NULL
 );
 
+-- Dimension identity registry: game-unique names (`minecraft:overworld`,
+-- `aether:sky`) and layout-derived keys (`./plugin-folder`) mapped to
+-- stable integer codes. Codes 0..=2 stay reserved for the vanilla trio,
+-- matching the compiled-in `Dimension` constants; every other name gets
+-- the next auto-increment code, so history rows keep narrow INTEGER
+-- columns and `Dimension` stays a `Copy` newtype.
+CREATE TABLE dimensions(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE
+);
+
+INSERT INTO dimensions (id, name) VALUES
+    (0, 'minecraft:overworld'),
+    (1, 'minecraft:the_nether'),
+    (2, 'minecraft:the_end');
+
 CREATE TABLE chunk_history(
     snapshot_id INTEGER NOT NULL REFERENCES snapshots(id),
     dim INTEGER NOT NULL,
