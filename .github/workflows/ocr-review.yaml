@@ -58,14 +58,14 @@ jobs:
           # OpenAI-compatible default when the variable is unset.
           llm_use_anthropic: ${{ vars.OCR_LLM_USE_ANTHROPIC || 'false' }}
           # NVIDIA NIM's DeepSeek serving stalls requests that do not carry
-          # chat_template_kwargs (it never starts reasoning, so the request dies
-          # on the header timeout). This replaces the action's default body,
-          # which NIM ignores, and keeps thinking on: NIM hangs on
-          # `enable_thinking: false` as well.
-          llm_extra_body: '{"chat_template_kwargs": {"thinking": true, "enable_thinking": true}}'
-          # NIM's DeepSeek serving is intermittently slow, so the 300s default
-          # per-request timeout is too eager; the task deadline must stay above
-          # the request timeout.
+          # chat_template_kwargs, and its gateway 504s any non-streaming request
+          # that has not finished in ~300s. Streaming keeps the connection alive
+          # while tokens flow, and thinking must stay on: NIM hangs on
+          # `enable_thinking: false`. `reasoning_effort: low` bounds how long
+          # each agentic round thinks, which is what makes a review fit inside
+          # the job timeout.
+          llm_extra_body: '{"chat_template_kwargs": {"thinking": true, "enable_thinking": true, "reasoning_effort": "low"}, "stream": true}'
+          # Cap for streamed generations; the task deadline must stay above it.
           llm_timeout: '600'
           review_task_timeout: '30'
           # Update the summary in place and skip inline comments that overlap
