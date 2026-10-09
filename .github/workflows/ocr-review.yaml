@@ -36,7 +36,8 @@ jobs:
   review:
     name: AI review
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Room for slow NIM requests on several files plus checkout and setup.
+    timeout-minutes: 60
     # Drafts are skipped to save tokens; `ready_for_review` above starts the
     # first review once the PR is marked ready.
     if: github.event.pull_request.draft == false
@@ -56,6 +57,17 @@ jobs:
           # An empty input selects the Anthropic protocol, so fall back to the
           # OpenAI-compatible default when the variable is unset.
           llm_use_anthropic: ${{ vars.OCR_LLM_USE_ANTHROPIC || 'false' }}
+          # NVIDIA NIM's DeepSeek serving stalls requests that do not carry
+          # chat_template_kwargs (it never starts reasoning, so the request dies
+          # on the header timeout). This replaces the action's default body,
+          # which NIM ignores, and keeps thinking on: NIM hangs on
+          # `enable_thinking: false` as well.
+          llm_extra_body: '{"chat_template_kwargs": {"thinking": true, "enable_thinking": true}}'
+          # NIM's DeepSeek serving is intermittently slow, so the 300s default
+          # per-request timeout is too eager; the task deadline must stay above
+          # the request timeout.
+          llm_timeout: '600'
+          review_task_timeout: '30'
           # Update the summary in place and skip inline comments that overlap
           # ones from earlier runs, so re-pushes do not duplicate findings.
           sticky_summary: 'true'
