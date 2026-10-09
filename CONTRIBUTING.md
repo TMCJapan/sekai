@@ -5,7 +5,7 @@ This project is organized as a Cargo workspace under `crates/`:
 ```text
 .
 └── crates
-    ├── util            # Shared value types: coordinates, hashes, history records (no_std, zero dependencies)
+    ├── util            # Shared value types: coordinates, dimension keys, hashes, history records (no_std, zero dependencies)
     ├── anvil           # Pure Anvil sector codec + decompression (no_std + alloc, ex-mca)
     ├── nbt             # Pure NBT parse/diff views over raw NBT bytes (no_std + alloc, hand-rolled parser)
     ├── core            # Use-case policy API over shared types (no_std + alloc, depends on util/anvil/nbt)
@@ -35,9 +35,9 @@ Rules:
   Cargo package cycle.
 - `util` is a dependency leaf: zero external dependencies, pure data plus
   total validation only (no hashing backends, no codecs, no ports, no
-  orchestration). `anvil`/`nbt` name util types directly (`Dimension`
-  custom ids, `DiffHash` digests); `core` composes them and re-exports
-  every util type at its root so downstream paths stay stable.
+  orchestration). `nbt` names `DiffHash` directly; `core` composes the
+  pure crates and re-exports every util type at its root so downstream
+  paths stay stable.
 - `anvil` never calls `nbt`. `core`/`app` drives `anvil`'s decompressed raw
   NBT bytes into `nbt` (opt-in diff path), keeping the pure DAG acyclic and
   the backup hot path decode-free. Compression framing is MCA spec and lives
@@ -95,9 +95,9 @@ any exception in the PR body.
 - **Pure-crate dependency allowlist** (keep this list minimal and
   `no_std`-gated):
   - `util`: nothing. New dependencies need explicit justification.
-  - `anvil`: `sekai-util` (shared dimension codes), `miniz_oxide` (zlib/raw-inflate), `crc32fast` (gzip footer),
+  - `anvil`: `miniz_oxide` (zlib/raw-inflate), `crc32fast` (gzip footer),
     `lz4_flex` block API (lz4-java stream bodies), `twox-hash` (lz4-java
-    block checksums), `blake3` (header/dimension digests, all with
+    block checksums), `blake3` (content digests, all with
     `default-features = false`).
   - `nbt`: `sekai-util` (shared `DiffHash`) plus `blake3` with
     `default-features = false` for the canonical digest. No `serde`:

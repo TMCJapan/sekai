@@ -242,7 +242,7 @@ where
     for id in ids {
         let mut rows = Vec::new();
         meta.visit_snapshot_chunks(*id, |entry| {
-            rows.push((entry.coord, entry.blob));
+            rows.push((entry.coord.clone(), entry.blob));
             true
         })
         .await
@@ -268,7 +268,7 @@ where
             stage_present(coord(32, 0), BlobHash([2; 32])),
         ],
         None,
-        &[fp0, fp1],
+        &[fp0.clone(), fp1.clone()],
         &[],
     )
     .await
@@ -279,7 +279,7 @@ where
     let observed = [
         Observation {
             key: key(0, 0),
-            fingerprint: changed,
+            fingerprint: changed.clone(),
         },
         Observation {
             key: key(1, 0),

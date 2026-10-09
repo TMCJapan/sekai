@@ -24,13 +24,13 @@ fn effective_at(rows: &[ChunkHistoryEntry], snapshot: SnapshotId) -> Vec<ChunkHi
     for row in rows {
         if row.snapshot <= snapshot {
             latest
-                .entry(row.coord)
+                .entry(row.coord.clone())
                 .and_modify(|kept| {
                     if row.snapshot > kept.snapshot {
-                        *kept = *row;
+                        *kept = row.clone();
                     }
                 })
-                .or_insert(*row);
+                .or_insert_with(|| row.clone());
         }
     }
     latest.into_values().collect()
@@ -89,7 +89,7 @@ impl MetaStore for MemMeta {
         diff: Option<&DiffHash>,
     ) -> impl Future<Output = Result<(), MemError>> + Send {
         self.rows.push(ChunkHistoryEntry::new(
-            *coord,
+            coord.clone(),
             snapshot,
             blob.copied(),
             diff.copied(),
@@ -109,7 +109,7 @@ impl MetaStore for MemMeta {
             .iter()
             .filter(|row| row.snapshot <= snapshot && row.coord == *coord)
             .max_by_key(|row| row.snapshot)
-            .copied()))
+            .cloned()))
     }
 
     fn lookup_snapshot(
@@ -184,7 +184,7 @@ impl MetaStore for MemMeta {
         let id = self.create_snapshot(created_at_ms).await?;
         for entry in entries {
             self.rows.push(ChunkHistoryEntry::new(
-                entry.coord,
+                entry.coord.clone(),
                 id,
                 entry.blob,
                 entry.diff,
@@ -210,7 +210,7 @@ impl MetaStore for MemMeta {
         }
         for fp in fingerprints {
             let entry = RegionStateEntry {
-                fingerprint: *fp,
+                fingerprint: fp.clone(),
                 snapshot_id: id,
             };
             if let Some(state) = self.states.iter_mut().find(|s| s.fingerprint.key == fp.key) {
@@ -280,7 +280,7 @@ impl MetaStore for MemMeta {
         let mut kept: Vec<ChunkHistoryEntry> = Vec::new();
         for row in &self.rows {
             if row.snapshot != from {
-                kept.push(*row);
+                kept.push(row.clone());
                 continue;
             }
             let superseded = self.rows.iter().any(|other| {
@@ -289,7 +289,7 @@ impl MetaStore for MemMeta {
             if superseded {
                 dropped += 1;
             } else {
-                let mut moved = *row;
+                let mut moved = row.clone();
                 moved.snapshot = into;
                 kept.push(moved);
                 folded += 1;

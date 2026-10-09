@@ -55,7 +55,7 @@ pub struct Previous {
 }
 
 /// One region file observed on disk by the adapter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Observation {
     /// Which region file was observed.
     pub key: RegionKey,
@@ -115,7 +115,7 @@ pub async fn plan_backup<M: MetaStore>(
             // the same tombstone row on every later backup and count a
             // vanished chunk as present.
             if entry.blob.is_some() {
-                universe.insert(entry.coord);
+                universe.insert(entry.coord.clone());
             }
             true
         })
@@ -123,7 +123,7 @@ pub async fn plan_backup<M: MetaStore>(
     }
     let mut states: BTreeMap<RegionKey, RegionStateEntry> = BTreeMap::new();
     for state in meta.load_region_states().await? {
-        states.insert(state.fingerprint.key, state);
+        states.insert(state.fingerprint.key.clone(), state);
     }
     let previous = Previous {
         snapshot,
@@ -137,23 +137,23 @@ pub async fn plan_backup<M: MetaStore>(
         discovered: BTreeSet::new(),
     };
     for obs in observed {
-        if !scope.matches_region(obs.key) {
+        if !scope.matches_region(&obs.key) {
             continue;
         }
-        plan.discovered.insert(obs.key);
+        plan.discovered.insert(obs.key.clone());
         if previous
             .states
             .get(&obs.key)
             .is_some_and(|state| obs.fingerprint.matches_state(state))
         {
-            plan.carries.push(obs.key);
+            plan.carries.push(obs.key.clone());
         } else {
-            plan.ingest.push(obs.key);
+            plan.ingest.push(obs.key.clone());
         }
     }
     for state in previous.states.values() {
-        let key = state.fingerprint.key;
-        if scope.matches_region(key) && !plan.discovered.contains(&key) {
+        let key = state.fingerprint.key.clone();
+        if scope.matches_region(&key) && !plan.discovered.contains(&key) {
             plan.removed.push(key);
         }
     }
@@ -195,18 +195,18 @@ pub fn assemble(plan: Plan, previous: &Previous, ingested: Ingested, scope: &Sco
     // A carried file is still on disk, so its coordinates count as present
     // without being read again.
     if !plan.carries.is_empty() {
-        let skipped: BTreeSet<RegionKey> = plan.carries.iter().copied().collect();
+        let skipped: BTreeSet<RegionKey> = plan.carries.iter().cloned().collect();
         for coord in &previous.universe {
-            if scope.contains(*coord) && skipped.contains(&RegionKey::of(*coord)) {
-                present.insert(*coord);
+            if scope.contains(coord) && skipped.contains(&RegionKey::of(coord.clone())) {
+                present.insert(coord.clone());
             }
         }
     }
     // Present before, absent from this scan: the coordinate just vanished.
     let mut tombstones = 0usize;
     for coord in &previous.universe {
-        if scope.contains(*coord) && !present.contains(coord) {
-            entries.push(SnapshotEntry::new(*coord, None, None));
+        if scope.contains(coord) && !present.contains(coord) {
+            entries.push(SnapshotEntry::new(coord.clone(), None, None));
             tombstones += 1;
         }
     }
@@ -316,7 +316,7 @@ mod tests {
                 stage_present(coord(32, 0), BlobHash([2; 32])),
             ],
             None,
-            &[fp0, fp1],
+            &[fp0.clone(), fp1.clone()],
             &[],
         ))
         .unwrap();
@@ -326,7 +326,7 @@ mod tests {
         let observed = [
             Observation {
                 key: key(0, 0),
-                fingerprint: changed,
+                fingerprint: changed.clone(),
             },
             Observation {
                 key: key(1, 0),
@@ -417,7 +417,7 @@ mod tests {
                 stage_present(coord(32, 0), BlobHash([2; 32])),
             ],
             None,
-            &[fp0, fp1],
+            &[fp0, fp1.clone()],
             &[],
         ))
         .unwrap();
@@ -428,7 +428,7 @@ mod tests {
             &meta,
             &[Observation {
                 key: key(1, 0),
-                fingerprint: fp1,
+                fingerprint: fp1.clone(),
             }],
             &Scope::World,
         ))
@@ -482,7 +482,7 @@ mod tests {
                 stage_present(nether_coord(0, 0), BlobHash([2; 32])),
             ],
             None,
-            &[fp_over, fp_nether],
+            &[fp_over.clone(), fp_nether.clone()],
             &[],
         ))
         .unwrap();
@@ -491,7 +491,7 @@ mod tests {
         // disk), but the overworld scope sees neither ingest nor removal.
         let observed = [Observation {
             key: nether_key(0, 0),
-            fingerprint: fp_nether,
+            fingerprint: fp_nether.clone(),
         }];
         let scope = Scope::dimension(NETHER);
         let (_, plan) = crate::support::block_on(plan_backup(&meta, &observed, &scope)).unwrap();
@@ -566,7 +566,7 @@ mod tests {
             .entries
             .iter()
             .filter(|entry| entry.blob.is_none())
-            .map(|entry| entry.coord)
+            .map(|entry| entry.coord.clone())
             .collect();
         assert_eq!(tombstoned, alloc::vec![coord(1, 0)]);
 

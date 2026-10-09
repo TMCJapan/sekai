@@ -1,4 +1,4 @@
-//! World layout discovery: find every `.mca` and name its namespace.
+//! World layout discovery: find every `.mca` and name its dimension.
 //!
 //! Rationale: three server families share the `.mca` format but not the
 //! directory layout. Vanilla uses one folder (`region/`, `DIM-1/`,
@@ -8,16 +8,19 @@
 //! `base` is `level-name` (`world` by default); Paper 26.1+ migrates to the
 //! vanilla layout. Plugin worlds (Multiverse et al.) are arbitrary folders.
 //!
-//! Namespaces follow one rule: the exact default trio and vanilla trees
-//! keep vanilla codes (derivable, history-stable); every other folder gets
-//! a stable hash of its root-relative path, so distinct worlds can never
-//! silently share coordinates. Non-derivable codes surface
-//! `UnknownRegionPath` for missing files instead of writing somewhere
-//! wrong; rollback restores those through their discovered folders.
+//! Dimension keys follow one rule: a derivable official id keeps its
+//! namespaced form (`minecraft:overworld`, `aether:sky`), which the game
+//! guarantees unique; every other folder is keyed by its root-relative path
+//! with a `./` prefix (`./sky`, `./sky/DIM-1`). The prefix makes folder keys
+//! disjoint from namespaced ids by construction, and the path itself is
+//! unique within a tree, so distinct worlds never silently share
+//! coordinates. Non-derivable keys surface `UnknownRegionPath` for missing
+//! files instead of writing somewhere wrong; rollback restores those through
+//! their discovered folders.
 //!
 //! Trio detection only runs on container roots (arguments that are not
 //! world folders themselves), so a lone nested folder can never steal the
-//! vanilla namespace of the root's own content.
+//! vanilla key of the root's own content.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -27,12 +30,12 @@ use sekai_core::{Dimension, RegionKey, RegionKind};
 
 use crate::error::WorldError;
 
-/// One region file found on disk with its global namespace.
+/// One region file found on disk with its global dimension key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegionRef {
     /// Full file path.
     pub path: PathBuf,
-    /// Dimension namespace.
+    /// Dimension key.
     pub dim: Dimension,
     /// Region family.
     pub kind: RegionKind,
@@ -89,31 +92,33 @@ impl DimensionDirs {
         }
     }
 
-    /// Directory holding `<kind>/` for `dim`, when its namespace is
-    /// derivable. Hashed custom dimensions are one-way: `None`.
-    fn get(&self, dim: Dimension) -> Option<&Path> {
-        match dim {
-            Dimension::OVERWORLD => Some(&self.overworld),
-            Dimension::NETHER => Some(&self.nether),
-            Dimension::END => Some(&self.end),
-            _ => None,
+    /// Directory holding `<kind>/` for `dim`, when its key is derivable.
+    /// Folder keys are one-way: `None`.
+    fn get(&self, dim: &Dimension) -> Option<&Path> {
+        if *dim == Dimension::OVERWORLD {
+            Some(&self.overworld)
+        } else if *dim == Dimension::NETHER {
+            Some(&self.nether)
+        } else if *dim == Dimension::END {
+            Some(&self.end)
+        } else {
+            None
         }
     }
 
     /// Canonical path for one region file under these resolved directories.
     ///
-    /// Only vanilla namespaces are derivable; hashed custom dimensions
-    /// surface [`WorldError::UnknownRegionPath`] instead of writing
-    /// somewhere wrong.
+    /// Only the vanilla trio is derivable; folder keys surface
+    /// [`WorldError::UnknownRegionPath`] instead of writing somewhere wrong.
     pub(crate) fn region_path(
         &self,
-        dim: Dimension,
+        dim: &Dimension,
         kind: RegionKind,
         region_x: i32,
         region_z: i32,
     ) -> Result<PathBuf, WorldError> {
         let unknown = || WorldError::UnknownRegionPath {
-            dim,
+            dim: dim.clone(),
             kind,
             region_x,
             region_z,
@@ -131,12 +136,12 @@ impl DimensionDirs {
 ///
 /// Trio election comes first: a Bukkit container root may hold a stray
 /// `dimensions/` directory (migration leftovers, a plugin), and deriving
-/// vanilla namespaces from it would restore into a tree the server never
-/// reads. Otherwise an existing `dimensions/` directory selects the 26.1
-/// layout, else legacy.
+/// vanilla keys from it would restore into a tree the server never reads.
+/// Otherwise an existing `dimensions/` directory selects the 26.1 layout,
+/// else legacy.
 ///
-/// Pass the same root on every run: namespace codes for non-default
-/// folders derive from root-relative paths.
+/// Pass the same root on every run: folder keys for non-default folders
+/// are root-relative.
 pub(crate) fn resolve(
     root: impl AsRef<Path>,
 ) -> Result<(DimensionDirs, Option<String>), WorldError> {
@@ -199,7 +204,7 @@ enum InsertPolicy {
 
 fn scan_dim_root(
     root: impl AsRef<Path>,
-    dim: Dimension,
+    dim: &Dimension,
     found: &mut BTreeMap<(Dimension, RegionKind, i32, i32), RegionRef>,
     policy: InsertPolicy,
 ) -> Result<(), WorldError> {
@@ -221,14 +226,14 @@ fn scan_dim_root(
             let Ok((region_x, region_z)) = sekai_anvil::parse_region_name(name) else {
                 continue;
             };
+            let key = (dim.clone(), kind, region_x, region_z);
             let reference = RegionRef {
                 path: entry.path(),
-                dim,
+                dim: dim.clone(),
                 kind,
                 region_x,
                 region_z,
             };
-            let key = (dim, kind, region_x, region_z);
             match policy {
                 InsertPolicy::Overwrite => {
                     found.insert(key, reference);
@@ -280,12 +285,13 @@ fn is_top_world_folder(dir: impl AsRef<Path>) -> Result<bool, WorldError> {
 /// Only complete trios (`<base>`, `<base>_nether`, `<base>_the_end`)
 /// elect the Bukkit layout; a lone folder (e.g. a Multiverse world `sky/`)
 /// without its `_nether`/`_the_end` siblings is treated as a plugin world
-/// and hashed, avoiding a silent namespace flip if siblings appear later.
+/// and keyed by its folder path, avoiding a silent key flip if siblings
+/// appear later.
 ///
 /// The overworld candidate is recognized structurally (its own `region/`
 /// directory, which a server creates whether or not it holds files yet):
-/// requiring stored region files would flip the whole world to hashed
-/// namespaces the moment the overworld is emptied or briefly unsaved.
+/// requiring stored region files would flip the whole world to folder keys
+/// the moment the overworld is emptied or briefly unsaved.
 fn bukkit_base(world: impl AsRef<Path>) -> Result<Option<String>, WorldError> {
     let mut trio: Vec<String> = Vec::new();
     for entry in read_dir_opt(world.as_ref())? {
@@ -359,25 +365,22 @@ fn rel_name(world: impl AsRef<Path>, path: impl AsRef<Path>) -> Option<String> {
     Some(out)
 }
 
-/// Vanilla namespace for a `(namespace, name)` dimensions tree, if any.
-fn tree_dim(ns_name: &str, dim_name: &str) -> Option<Dimension> {
+/// Official dimension id for a `dimensions/<ns>/<name>` tree: the vanilla
+/// trio keeps its vanilla ids, every other pair is the namespaced id the
+/// game itself uses.
+fn tree_dim(ns_name: &str, dim_name: &str) -> Dimension {
     match (ns_name, dim_name) {
-        ("minecraft", "overworld") => Some(Dimension::OVERWORLD),
-        ("minecraft", "the_nether") => Some(Dimension::NETHER),
-        ("minecraft", "the_end") => Some(Dimension::END),
-        _ => None,
+        ("minecraft", "overworld") => Dimension::OVERWORLD,
+        ("minecraft", "the_nether") => Dimension::NETHER,
+        ("minecraft", "the_end") => Dimension::END,
+        _ => Dimension::id(ns_name, dim_name),
     }
 }
 
-/// Scan `dimensions/<ns>/<name>/<kind>/r.*.mca` under `dims_dir`.
-///
-/// `rel_prefix` is the root-relative folder path (`""` for the root
-/// itself); non-vanilla trees hash `{prefix}/dimensions/<ns>/<name>`.
-/// Vanilla `(namespace, name)` pairs always map to vanilla codes so history
-/// survives 26.1-style migrations.
+/// Scan `dimensions/<ns>/<name>/<kind>/r.*.mca` under `dims_dir`, keyed by
+/// each dimension's namespaced id.
 fn scan_dimensions(
     dims_dir: impl AsRef<Path>,
-    rel_prefix: &str,
     found: &mut BTreeMap<(Dimension, RegionKind, i32, i32), RegionRef>,
 ) -> Result<(), WorldError> {
     for ns in read_dir_opt(dims_dir)? {
@@ -396,28 +399,21 @@ fn scan_dimensions(
             let Some(dim_name) = dim_file_name.to_str() else {
                 continue;
             };
-            let dim = tree_dim(ns_name, dim_name).unwrap_or_else(|| {
-                let rel = if rel_prefix.is_empty() {
-                    format!("dimensions/{ns_name}/{dim_name}")
-                } else {
-                    format!("{rel_prefix}/dimensions/{ns_name}/{dim_name}")
-                };
-                sekai_core::resolve_custom_dimension(&rel)
-            });
-            scan_dim_root(name.path(), dim, found, InsertPolicy::Overwrite)?;
+            let dim = tree_dim(ns_name, dim_name);
+            scan_dim_root(name.path(), &dim, found, InsertPolicy::Overwrite)?;
         }
     }
     Ok(())
 }
 
-/// Find every `.mca` under `root` with its namespace.
+/// Find every `.mca` under `root` with its dimension key.
 ///
 /// Missing world root is an error; missing candidate subdirectories are
 /// simply skipped. `bukkit_base` is the trio election from [`resolve`];
 /// live server data wins over conversion leftovers. Pass a server root for
 /// Bukkit-family servers (all world folders are found) or a single world
-/// folder for vanilla ones - but the same path on every run, since
-/// non-default namespaces hash root-relative paths.
+/// folder for vanilla ones - but the same path on every run, since folder
+/// keys are root-relative.
 pub(crate) fn discover(
     root: impl AsRef<Path>,
     bukkit_base: Option<&str>,
@@ -436,32 +432,33 @@ pub(crate) fn discover(
         (root.join("DIM-1"), Dimension::NETHER),
         (root.join("DIM1"), Dimension::END),
     ] {
-        scan_dim_root(&dir, dim, &mut found, InsertPolicy::KeepExisting)?;
+        scan_dim_root(&dir, &dim, &mut found, InsertPolicy::KeepExisting)?;
     }
     // Bukkit trio: live server data wins over conversion leftovers above.
     if let Some(base) = bukkit_base {
         let over = root.join(base);
         scan_dim_root(
             &over,
-            Dimension::OVERWORLD,
+            &Dimension::OVERWORLD,
             &mut found,
             InsertPolicy::Overwrite,
         )?;
         scan_dim_root(
             root.join(format!("{base}_nether")).join("DIM-1"),
-            Dimension::NETHER,
+            &Dimension::NETHER,
             &mut found,
             InsertPolicy::Overwrite,
         )?;
         scan_dim_root(
             root.join(format!("{base}_the_end")).join("DIM1"),
-            Dimension::END,
+            &Dimension::END,
             &mut found,
             InsertPolicy::Overwrite,
         )?;
-        scan_dimensions(over.join("dimensions"), base, &mut found)?;
+        scan_dimensions(over.join("dimensions"), &mut found)?;
     }
-    // Other world folders: hashed namespaces, never colliding silently.
+    // Other world folders: root-relative folder keys, never colliding with
+    // a namespaced id.
     let trio: [String; 3] = bukkit_base.map_or_else(Default::default, |base| {
         [
             base.to_owned(),
@@ -486,24 +483,26 @@ pub(crate) fn discover(
         let Some(rel) = rel_name(root, entry.path()) else {
             continue;
         };
-        let dim = sekai_core::resolve_custom_dimension(&rel);
-        scan_dim_root(entry.path(), dim, &mut found, InsertPolicy::KeepExisting)?;
+        let dim = Dimension::folder(&rel);
+        scan_dim_root(entry.path(), &dim, &mut found, InsertPolicy::KeepExisting)?;
+        let nether = Dimension::folder(&format!("{rel}/DIM-1"));
         scan_dim_root(
             entry.path().join("DIM-1"),
-            sekai_core::resolve_custom_dimension(&format!("{rel}/DIM-1")),
+            &nether,
             &mut found,
             InsertPolicy::KeepExisting,
         )?;
+        let end = Dimension::folder(&format!("{rel}/DIM1"));
         scan_dim_root(
             entry.path().join("DIM1"),
-            sekai_core::resolve_custom_dimension(&format!("{rel}/DIM1")),
+            &end,
             &mut found,
             InsertPolicy::KeepExisting,
         )?;
-        scan_dimensions(entry.path().join("dimensions"), &rel, &mut found)?;
+        scan_dimensions(entry.path().join("dimensions"), &mut found)?;
     }
     // Root-level dimensions tree (vanilla 26.1+ single world).
-    scan_dimensions(root.join("dimensions"), "", &mut found)?;
+    scan_dimensions(root.join("dimensions"), &mut found)?;
     Ok(found.into_values().collect())
 }
 

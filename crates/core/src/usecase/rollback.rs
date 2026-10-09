@@ -71,14 +71,14 @@ pub async fn plan_rollback<M: MetaStore>(
     meta.visit_snapshot_chunks(snapshot, |entry| {
         if let Some(blob) = entry.blob {
             groups
-                .entry(RegionKey::of(entry.coord))
+                .entry(RegionKey::of(entry.coord.clone()))
                 .or_default()
-                .push((entry.coord, blob));
+                .push((entry.coord.clone(), blob));
         } else {
             tombstones
-                .entry(RegionKey::of(entry.coord))
+                .entry(RegionKey::of(entry.coord.clone()))
                 .or_default()
-                .push(entry.coord);
+                .push(entry.coord.clone());
         }
         true
     })
@@ -109,9 +109,9 @@ mod tests {
         let id = block_on(meta.apply_snapshot_incremental(
             1_000,
             &[
-                SnapshotEntry::new(a, Some(BlobHash([1; 32])), None),
-                SnapshotEntry::new(b, Some(BlobHash([2; 32])), None),
-                SnapshotEntry::new(gone, None, None),
+                SnapshotEntry::new(a.clone(), Some(BlobHash([1; 32])), None),
+                SnapshotEntry::new(b.clone(), Some(BlobHash([2; 32])), None),
+                SnapshotEntry::new(gone.clone(), None, None),
             ],
             None,
             &[],

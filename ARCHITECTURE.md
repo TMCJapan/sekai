@@ -41,10 +41,10 @@ sekai-util (no_std, zero-dependency: coordinates, hashes, history value
 
 | Crate | `std` | `async` | Role |
 |---|---|---|---|
-| `sekai-util` | `no_std`, zero external dependencies | no | Shared value types: coordinates, hashes, region/history/snapshot/gc records, hex errors. Pure data plus total validation only. |
-| `sekai-anvil` | `no_std` + `alloc` | no | Pure Anvil sector codec including decompression. `&[u8]` sector payload in, raw NBT bytes out; also builds `Vec<u8>` images. Compression framing is MCA spec knowledge, so it lives here. No `Path`, no `fs`. Names custom dimensions with util `Dimension`. |
+| `sekai-util` | `no_std`, zero external dependencies | no | Shared value types: coordinates, dimension keys, hashes, region/history/snapshot/gc records, hex errors. Pure data plus total validation only. |
+| `sekai-anvil` | `no_std` + `alloc` | no | Pure Anvil sector codec including decompression. `&[u8]` sector payload in, raw NBT bytes out; also builds `Vec<u8>` images. Compression framing is MCA spec knowledge, so it lives here. No `Path`, no `fs`, no dimension knowledge. |
 | `sekai-nbt` | `no_std` + `alloc` | no | Pure `raw NBT bytes -> diff view`. Hand-rolled NBT parser (no `Serialize` by design; output uses SNBT), tag filtering, canonical digest returning util `DiffHash`. Never sees compression. |
-| `sekai-core` | `no_std` + `alloc` | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_rollback`, `gc plan`/`apply`) plus composition helpers (`hash_blob`, `resolve_custom_dimension`, storage ports). Composes `anvil`/`nbt` over util types and re-exports them, so downstream paths stay stable. |
+| `sekai-core` | `no_std` + `alloc` | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_rollback`, `gc plan`/`apply`) plus composition helpers (`hash_blob`, storage ports). Composes `anvil`/`nbt` over util types and re-exports them, so downstream paths stay stable. |
 | `sekai-storage` | `std` + tokio | yes (RPITIT) | Single crate: async `BlobStore`/`MetaStore` traits (owned by `core::port`, re-exported from the `api` module), file CAS (`cas` module, `blobs/ab/cdef...` retained by design), and feature-gated DB backends (`sqlite` module ships; `mysql`/`postgres` modules reserved as stubs). Depends on `core`. Backend modules mirror the future split so extraction stays mechanical. |
 | `sekai-world` | `std` | yes (I/O) / sync pure helpers where trivial | Filesystem owner: world discovery, fingerprint observation, read-only scans, atomic swaps. |
 | `sekai-app` | `std` + tokio | yes | Composition/orchestration library for third parties: parallel ingest, clocks, timing, progress callbacks. |
@@ -71,9 +71,8 @@ rules:
 
 - `util` holds pure data plus total validation only: no hashing backends,
   no codecs, no ports, no orchestration. It depends on nothing.
-- `anvil`/`nbt` implement over util types (`Dimension` custom ids,
-  `DiffHash` digests); `core` composes them (`hash_blob`,
-  `resolve_custom_dimension`, storage ports, use cases).
+- `anvil`/`nbt` implement over util types (`DiffHash` digests); `core`
+  composes them (`hash_blob`, storage ports, use cases).
 - `core` re-exports every util type at its root, so downstream paths
   (`sekai_core::ChunkCoord`, ...) keep working; `world`/`storage`/`app`
   continue to import through `core`.
@@ -124,16 +123,21 @@ folder for vanilla ones — the same path on every run.
   contents (`level.dat`, `DIM-1`/`DIM1` nesting, or kind directories
   holding region files).
 
-Namespaces: the default trio and `minecraft/*` trees keep vanilla codes
-(derivable, history-stable, migration-continuous); every other folder
-hashes its root-relative path so distinct worlds never silently share
-coordinates. Trio detection runs on container roots only, so a nested
-folder can never steal the vanilla namespace. Opening a tree classifies
-the root and resolves each derivable dimension directory once; operations
-then use those resolved paths and never re-inspect the layout. Missing
-files under non-derivable codes fail loudly (`UnknownRegionPath`); rollback
-restores those through their discovered folders, preferring same-dimension
-siblings over derived paths when folders moved since the backup.
+Dimension keys: a derivable official id keeps its namespaced form
+(`minecraft:overworld`, `minecraft:the_nether`, `minecraft:the_end`, and
+`dimensions/<ns>/<name>` trees become `<ns>:<name>`), which the game
+guarantees unique and which survives folder moves and layout migrations.
+Every other folder - plugin worlds and nested copies - is keyed by its
+root-relative path with a `./` prefix (`./sky`, `./sky/DIM-1`); the
+prefix keeps folder keys disjoint from namespaced ids by construction, and
+the path is unique within a tree. Trio detection runs on container roots
+only, so a nested folder can never steal the vanilla key. Opening a tree
+classifies the root and resolves each derivable dimension directory once;
+operations then use those resolved paths and never re-inspect the layout.
+Missing files under non-derivable keys fail loudly (`UnknownRegionPath`);
+rollback restores those through their discovered folders, preferring
+same-dimension siblings over derived paths when folders moved since the
+backup.
 
 # Data & Hashing Model
 

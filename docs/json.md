@@ -190,7 +190,7 @@ size cap: a huge rectangle enumerates every chunk inside it.
 
 ```jsonc
 [
-  {"coord": {"dim": 0, "kind": 0, "x": 1, "z": 2}, "entries": [
+  {"coord": {"dim": "minecraft:overworld", "kind": 0, "x": 1, "z": 2}, "entries": [
     {"path": "Status", "type": "modified", "old": "\"full\"", "new": "\"empty\""}
   ]}
 ]
@@ -198,8 +198,10 @@ size cap: a huge rectangle enumerates every chunk inside it.
 
 `type` is `added` (`val`), `removed` (`val`), or `modified`
 (`old`+`new`). Values are SNBT strings, always complete (human
-`--show-values` truncation does not apply here). `coord` uses raw
-integer `dim`/`kind` codes, matching `scan`.
+`--show-values` truncation does not apply here). `coord` uses the
+dimension key string (`namespace:path`, or `./folder` for
+layout-derived dimensions) and the raw integer `kind` code, matching
+`scan`.
 
 A chunk absent (or tombstoned) on a side diffs as an empty compound
 there: absent on both sides yields no entries, present on one side
@@ -281,10 +283,10 @@ the next `gc`.
 ```jsonc
 {
   "result": [
-    {"path": "/w/region/r.0.0.mca", "dim": 0, "kind": 0,
+    {"path": "/w/region/r.0.0.mca", "dim": "minecraft:overworld", "kind": 0,
      "region_x": 0, "region_z": 0, "size": 12345, "mtime_ms": 1700000000000,
      "chunks": 60, "content_hash": "ab12..."},
-    {"path": "/w/region/r.1.0.mca", "dim": 0, "kind": 0,
+    {"path": "/w/region/r.1.0.mca", "dim": "./sky/DIM-1", "kind": 0,
      "region_x": 1, "region_z": 0, "size": 8192, "mtime_ms": null,
      "chunks": 0, "content_hash": "cd34..."}
   ],
@@ -294,10 +296,12 @@ the next `gc`.
 }
 ```
 
-`dim`/`kind` are raw integer codes; `mtime_ms` is `null` when the
-platform cannot provide a timestamp. `skipped` lists files that were
-discovered but could not be read or parsed, so a partial inventory is
-never mistaken for a complete one; it is empty for a healthy world.
+`dim` is the dimension key string (`namespace:path`, or `./folder` for
+layout-derived dimensions); `kind` is a raw integer code; `mtime_ms` is
+`null` when the platform cannot provide a timestamp. `skipped` lists files
+that were discovered but could not be read or parsed, so a partial
+inventory is never mistaken for a complete one; it is empty for a healthy
+world.
 
 With `--timing` the entries move under `entries` and the timing block is
 appended:
