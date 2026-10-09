@@ -1,0 +1,63 @@
+name: OpenCodeReview
+
+# AI code review for pull requests using OpenCodeReview
+# (https://github.com/alibaba/open-code-review). It reviews the base-to-head
+# diff and posts inline comments plus a sticky summary comment on the PR.
+#
+# `pull_request_target` instead of `pull_request` so the LLM secrets are
+# available for PRs opened from forks. The event is safe here because only the
+# default branch's copy of this workflow runs, and neither this file nor the
+# action executes code from the PR: OCR fetches the head's git objects and
+# reviews the diff as data.
+#
+# Required configuration (Settings -> Secrets and variables -> Actions):
+#   secret    OCR_LLM_URL            LLM API endpoint
+#   secret    OCR_LLM_AUTH_TOKEN     API token for that endpoint
+#   variable  OCR_LLM_MODEL          Model name
+#   variable  OCR_LLM_USE_ANTHROPIC  'true' for Anthropic Claude,
+#                                    'false' for an OpenAI-compatible endpoint
+#                                    (defaults to 'false' when unset)
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# A push before the previous review finishes makes its comments stale; cancel
+# it instead of paying for a review of a head the PR has moved past.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    name: AI review
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Drafts are skipped to save tokens; `ready_for_review` above starts the
+    # first review once the PR is marked ready.
+    if: github.event.pull_request.draft == false
+
+    steps:
+      # No `actions/checkout` step: the action checks out the trusted base and
+      # fetches the PR head itself.
+      - name: Run OpenCodeReview
+        # Bump `ocr_version` together with this pin; Dependabot tracks the SHA
+        # (and the `# v1.12.13` comment) but not the input.
+        uses: alibaba/open-code-review@fabbdb296b0d97e2140ada8d54ca7d6d6d1d7ad4 # v1.12.13
+        with:
+          ocr_version: '1.12.13'
+          llm_url: ${{ secrets.OCR_LLM_URL }}
+          llm_auth_token: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
+          llm_model: ${{ vars.OCR_LLM_MODEL }}
+          # An empty input selects the Anthropic protocol, so fall back to the
+          # OpenAI-compatible default when the variable is unset.
+          llm_use_anthropic: ${{ vars.OCR_LLM_USE_ANTHROPIC || 'false' }}
+          # Update the summary in place and skip inline comments that overlap
+          # ones from earlier runs, so re-pushes do not duplicate findings.
+          sticky_summary: 'true'
+          incremental: 'true'
+          upload_artifacts: 'true'
