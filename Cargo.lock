@@ -1023,7 +1023,6 @@ dependencies = [
  "criterion",
  "lz4_flex",
  "miniz_oxide",
- "sekai-util",
  "twox-hash",
 ]
 

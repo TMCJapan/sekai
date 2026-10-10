@@ -17,7 +17,7 @@ use crate::{HostWorldTree, WorldTree};
 pub struct RegionScanEntry {
     /// Full file path.
     pub path: PathBuf,
-    /// Dimension namespace.
+    /// Dimension key.
     pub dim: Dimension,
     /// Region family.
     pub kind: RegionKind,
@@ -133,7 +133,7 @@ fn parse_entry(
         .map_err(|source| WorldError::io(&region.path, std::io::Error::other(source)))?;
     Ok(RegionScanEntry {
         path: region.path.clone(),
-        dim: region.dim,
+        dim: region.dim.clone(),
         kind: region.kind,
         region_x: region.region_x,
         region_z: region.region_z,

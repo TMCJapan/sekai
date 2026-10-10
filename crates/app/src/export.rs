@@ -4,8 +4,8 @@
 //! [`core`](sekai_core::usecase::rollback) plan) but never touches the
 //! live world: every file lands under `out` at its layout-derived path,
 //! so the destination must be missing or empty. Tombstones produce no
-//! files; only vanilla namespaces are derivable (custom dimensions fail
-//! loudly with the offending coordinates, as in rollback).
+//! files; only the vanilla trio is derivable (custom and folder-keyed
+//! dimensions fail loudly with the offending coordinates, as in rollback).
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
@@ -99,7 +99,7 @@ impl SekaiInstance {
         let timestamp = u32::try_from(plan.created_at_ms / 1000).unwrap_or(u32::MAX);
 
         let mut groups = plan.groups;
-        groups.retain(|key, _| scope.matches_region(*key));
+        groups.retain(|key, _| scope.matches_region(key));
 
         let job = ExportJob {
             groups,
@@ -156,7 +156,7 @@ where
     let mut files_done = 0usize;
     let mut blob_buf = Vec::new();
     for (key, rows) in &groups {
-        let path = out.derive_path(key.dim, key.kind, key.rx, key.rz)?;
+        let path = out.derive_path(key.dim.clone(), key.kind, key.rx, key.rz)?;
         let mut writer = sekai_anvil::RegionBuilder::new(key.rx, key.rz, timestamp)?;
         for (coord, hash) in rows {
             if !fetch_or_skip(&cas, hash, options.on_missing_blob, &mut blob_buf)? {

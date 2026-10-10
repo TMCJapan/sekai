@@ -12,9 +12,10 @@ layout. Pass the same path on every run:
 - **Plugin worlds** (Multiverse et al.): arbitrary folders, detected by
   their contents.
 
-The full namespace rules live in
+The full key rules live in
 [ARCHITECTURE.md](https://github.com/tmcjapan/sekai/blob/main/ARCHITECTURE.md) ("World Layouts"). Two practical
-consequences: custom-dimension folders are content-hashed, so renaming
-one orphans its history; and rollback restores moved folders through
-discovered siblings when possible, failing loudly
+consequences: vanilla dimensions and `dimensions/<ns>/<name>` trees keep
+their namespaced ids (`minecraft:overworld`, `aether:sky`) across layout
+migrations, so their history survives moves; and rollback restores moved
+folders through discovered siblings when possible, failing loudly
 (`UnknownRegionPath`) rather than writing somewhere wrong.

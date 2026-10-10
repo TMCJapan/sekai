@@ -19,10 +19,10 @@ pub enum WorldError {
     /// Region image failed to parse or build.
     #[error("region image error: {0}")]
     Anvil(#[from] sekai_anvil::AnvilError),
-    /// No directory mapping exists for this namespace.
-    #[error("cannot derive region path for dim {dim_code}, kind {kind_code}, r.{region_x}.{region_z}", dim_code = dim.raw(), kind_code = kind.raw())]
+    /// No directory mapping exists for this dimension key.
+    #[error("cannot derive region path for dim {dim}, kind {kind_code}, r.{region_x}.{region_z}", kind_code = kind.raw())]
     UnknownRegionPath {
-        /// Dimension namespace.
+        /// Dimension key.
         dim: Dimension,
         /// Region family.
         kind: RegionKind,

@@ -4,9 +4,9 @@ use crate::dimension::Dimension;
 use crate::region_kind::RegionKind;
 
 /// Global chunk identity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ChunkCoord {
-    /// Dimension namespace.
+    /// Dimension key.
     pub dim: Dimension,
     /// Region family.
     pub kind: RegionKind,
@@ -23,12 +23,12 @@ impl ChunkCoord {
     }
 
     /// Owning region X (`x.div_euclid(32)`, correct for negatives).
-    pub const fn region_x(self) -> i32 {
+    pub const fn region_x(&self) -> i32 {
         self.x.div_euclid(32)
     }
 
     /// Owning region Z.
-    pub const fn region_z(self) -> i32 {
+    pub const fn region_z(&self) -> i32 {
         self.z.div_euclid(32)
     }
 }

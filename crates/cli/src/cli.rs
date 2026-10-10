@@ -495,13 +495,13 @@ impl Selection {
         self.areas
             .iter()
             .filter_map(|spec| match spec.area {
-                DimArea::Chunk(xz) => Some((spec.dim, xz)),
+                DimArea::Chunk(xz) => Some((spec.dim.clone(), xz)),
                 _ => None,
             })
             .flat_map(|(dim, xz)| {
                 kinds
                     .iter()
-                    .map(move |kind| ChunkCoord::new(dim, *kind, xz.x, xz.z))
+                    .map(move |kind| ChunkCoord::new(dim.clone(), *kind, xz.x, xz.z))
             })
             .collect()
     }
@@ -532,21 +532,19 @@ impl Selection {
         let mut areas: Vec<(Dimension, Area)> = Vec::new();
         for spec in &self.areas {
             match spec.area {
-                DimArea::All => areas.push((spec.dim, Area::All)),
-                DimArea::Rect(rect) => areas.push((spec.dim, Area::Rect(rect))),
+                DimArea::All => areas.push((spec.dim.clone(), Area::All)),
+                DimArea::Rect(rect) => areas.push((spec.dim.clone(), Area::Rect(rect))),
                 DimArea::Chunk(xz) => {
+                    let coords = chunks.entry(spec.dim.clone()).or_default();
                     for kind in &kinds {
-                        chunks
-                            .entry(spec.dim)
-                            .or_default()
-                            .push(ChunkCoord::new(spec.dim, *kind, xz.x, xz.z));
+                        coords.push(ChunkCoord::new(spec.dim.clone(), *kind, xz.x, xz.z));
                     }
                 }
             }
         }
         for region in &self.region {
             areas.push((
-                region.dim,
+                region.dim.clone(),
                 Area::Rect(Rect::region(region.at.x, region.at.z)),
             ));
         }
@@ -558,7 +556,7 @@ impl Selection {
 }
 
 /// One `--in` area: whole dimension, single chunk, or rectangle.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct AreaSpec {
     /// Selected dimension.
     pub dim: Dimension,
@@ -581,35 +579,44 @@ impl std::str::FromStr for AreaSpec {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (dim, rest) = match s.split_once(':') {
-            Some((dim, rest)) => (
-                dim.parse::<Dimension>().map_err(|_| {
-                    format!("invalid dimension {dim:?} in {s:?}, expected DIM[:X,Z|X0,Z0..X1,Z1]")
-                })?,
-                rest,
-            ),
-            None => (
-                s.parse::<Dimension>().map_err(|_| {
-                    format!("invalid dimension {s:?}, expected DIM[:X,Z|X0,Z0..X1,Z1]")
-                })?,
-                "",
-            ),
-        };
-        let area = if rest.is_empty() {
-            DimArea::All
-        } else if let Some((first, second)) = rest.split_once("..") {
-            let from = parse_pair(first, s)?;
-            let to = parse_pair(second, s)?;
-            DimArea::Rect(Rect::new(from.x, from.z, to.x, to.z))
-        } else {
-            DimArea::Chunk(parse_pair(rest, s)?)
-        };
-        Ok(Self { dim, area })
+        // Dimension ids contain `:`, so the area suffix is peeled from the
+        // right: a trailing `X,Z` / `X0,Z0..X1,Z1` after the last colon is
+        // the area; anything else stays part of the dimension key.
+        if let Some((dim, rest)) = s.rsplit_once(':')
+            && (rest.contains(',') || rest.contains(".."))
+        {
+            let area = parse_area(rest, s)?;
+            let dim = dim.parse::<Dimension>().map_err(|_| {
+                format!("invalid dimension {dim:?} in {s:?}, expected DIM[:X,Z|X0,Z0..X1,Z1]")
+            })?;
+            return Ok(Self { dim, area });
+        }
+        let dim = s
+            .parse::<Dimension>()
+            .map_err(|_| format!("invalid dimension {s:?}, expected DIM[:X,Z|X0,Z0..X1,Z1]"))?;
+        Ok(Self {
+            dim,
+            area: DimArea::All,
+        })
+    }
+}
+
+/// Parse a non-empty `X,Z` or `X0,Z0..X1,Z1` area suffix.
+fn parse_area(rest: &str, whole: &str) -> Result<DimArea, String> {
+    if rest.is_empty() {
+        return Err(format!("empty area in {whole:?}"));
+    }
+    if let Some((first, second)) = rest.split_once("..") {
+        let from = parse_pair(first, whole)?;
+        let to = parse_pair(second, whole)?;
+        Ok(DimArea::Rect(Rect::new(from.x, from.z, to.x, to.z)))
+    } else {
+        Ok(DimArea::Chunk(parse_pair(rest, whole)?))
     }
 }
 
 /// One `--region DIM:RX,RZ` entry.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct RegionSpec {
     /// Selected dimension.
     pub dim: Dimension,
@@ -621,8 +628,10 @@ impl std::str::FromStr for RegionSpec {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // Peel the coordinates from the right so namespaced dimension ids
+        // (`aether:sky:1,-1`) stay intact.
         let (dim, rest) = s
-            .split_once(':')
+            .rsplit_once(':')
             .ok_or_else(|| format!("expected DIM:RX,RZ, got {s:?}"))?;
         Ok(Self {
             dim: dim

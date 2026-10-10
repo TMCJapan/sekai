@@ -3,7 +3,7 @@
 use super::{BlobHash, ChunkCoord, DiffHash, SnapshotId};
 
 /// History row for one snapshot and chunk.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChunkHistoryEntry {
     /// Which chunk this row describes.
     pub coord: ChunkCoord,
@@ -32,7 +32,7 @@ impl ChunkHistoryEntry {
     }
 
     /// Whether this row is a tombstone (chunk absent at this snapshot).
-    pub const fn is_tombstone(self) -> bool {
+    pub const fn is_tombstone(&self) -> bool {
         self.blob.is_none()
     }
 }
@@ -45,7 +45,8 @@ mod tests {
     #[test]
     fn tombstone_detection() {
         let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::REGION, 0, 0);
-        let present = ChunkHistoryEntry::new(coord, SnapshotId(1), Some(BlobHash([1; 32])), None);
+        let present =
+            ChunkHistoryEntry::new(coord.clone(), SnapshotId(1), Some(BlobHash([1; 32])), None);
         assert!(!present.is_tombstone());
         let tomb = ChunkHistoryEntry::new(coord, SnapshotId(2), None, None);
         assert!(tomb.is_tombstone());
