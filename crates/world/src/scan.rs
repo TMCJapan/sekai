@@ -77,7 +77,11 @@ pub struct ScanReport {
 pub fn scan_world(world: impl AsRef<Path>) -> Result<ScanReport, WorldError> {
     let total_started = Instant::now();
     let discover_started = Instant::now();
-    let regions = HostWorldTree::new(world)?.discover()?;
+    let tree = HostWorldTree::new(world)?;
+    let mut regions = Vec::new();
+    for dim in tree.get_dims()? {
+        regions.extend(tree.get_regions(dim)?);
+    }
     let discover = discover_started.elapsed();
     let mut read = Duration::ZERO;
     let mut parse = Duration::ZERO;

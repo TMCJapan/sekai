@@ -25,8 +25,8 @@ pub struct HostWorldTree {
 impl HostWorldTree {
     /// Classify the tree rooted at `root` and resolve its layout.
     ///
-    /// A missing root resolves as an empty legacy tree and later discovery
-    /// fails loudly; an unreadable root fails here.
+    /// A missing root resolves as an empty legacy tree and later dimension
+    /// enumeration fails loudly; an unreadable root fails here.
     pub fn new(root: impl AsRef<Path>) -> Result<Self, WorldError> {
         let (dirs, bukkit_base) = discover::resolve(&root)?;
         Ok(Self {
@@ -84,8 +84,12 @@ impl WorldTree for HostWorldTree {
         }
     }
 
-    fn discover(&self) -> Result<Vec<RegionRef>, Self::Error> {
-        discover::discover(&self.root, self.bukkit_base.as_deref())
+    fn get_dims(&self) -> Result<Vec<Dimension>, Self::Error> {
+        discover::dimensions(&self.root, self.bukkit_base.as_deref())
+    }
+
+    fn get_regions(&self, dim: Dimension) -> Result<Vec<RegionRef>, Self::Error> {
+        discover::regions(&self.root, self.bukkit_base.as_deref(), dim)
     }
 
     fn derive_path(
@@ -115,7 +119,13 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
     type Error: std::error::Error;
 
     fn is_empty(&self) -> Result<bool, Self::Error>;
-    fn discover(&self) -> Result<Vec<RegionRef>, Self::Error>;
+
+    /// Every dimension holding at least one region file, ordered by code.
+    fn get_dims(&self) -> Result<Vec<Dimension>, Self::Error>;
+
+    /// Every region file inside `dim`, ordered by kind and coordinates.
+    fn get_regions(&self, dim: Dimension) -> Result<Vec<RegionRef>, Self::Error>;
+
     fn derive_path(
         &self,
         dim: Dimension,

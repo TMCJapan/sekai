@@ -67,10 +67,11 @@ where
     let rx = coord.region_x();
     let rz = coord.region_z();
 
-    let regions = world.discover()?;
-    let Some(region_ref) = regions.into_iter().find(|r| {
-        r.dim == coord.dim && r.kind == coord.kind && r.region_x == rx && r.region_z == rz
-    }) else {
+    let Some(region_ref) = world
+        .get_regions(coord.dim)?
+        .into_iter()
+        .find(|r| r.kind == coord.kind && r.region_x == rx && r.region_z == rz)
+    else {
         return Ok(None);
     };
 
@@ -189,20 +190,23 @@ where
     AppError: From<T::Error>,
 {
     let mut coords = Vec::new();
-    for region in world.discover()? {
-        let bytes = sekai_world::open_image(&region.path)?;
-        let failed = |source| AppError::RegionFailed {
-            path: region.path.clone(),
-            source,
-        };
-        let image = sekai_anvil::RegionImage::from_bytes(bytes, region.region_x, region.region_z)
-            .map_err(&failed)?;
-        image
-            .visit_chunks(|chunk| {
-                coords.push(ChunkCoord::new(region.dim, region.kind, chunk.x, chunk.z));
-                true
-            })
-            .map_err(&failed)?;
+    for dim in world.get_dims()? {
+        for region in world.get_regions(dim)? {
+            let bytes = sekai_world::open_image(&region.path)?;
+            let failed = |source| AppError::RegionFailed {
+                path: region.path.clone(),
+                source,
+            };
+            let image =
+                sekai_anvil::RegionImage::from_bytes(bytes, region.region_x, region.region_z)
+                    .map_err(&failed)?;
+            image
+                .visit_chunks(|chunk| {
+                    coords.push(ChunkCoord::new(region.dim, region.kind, chunk.x, chunk.z));
+                    true
+                })
+                .map_err(&failed)?;
+        }
     }
     coords.sort();
     coords.dedup();

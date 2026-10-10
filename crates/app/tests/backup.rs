@@ -1706,9 +1706,11 @@ fn materialize(world_root: impl AsRef<Path>, model: &ChunkMaps, files: &[(&str, 
 }
 
 fn read_world(world: &HostWorldTree, world_path: impl AsRef<Path>) -> ChunkMaps {
-    world
-        .discover()
-        .unwrap()
+    let mut regions = Vec::new();
+    for dim in world.get_dims().unwrap() {
+        regions.extend(world.get_regions(dim).unwrap());
+    }
+    regions
         .into_iter()
         .map(|region| {
             // `/` regardless of platform, so the keys match the model's.

@@ -37,6 +37,15 @@ fn write(path: impl AsRef<Path>, bytes: &[u8]) {
     std::fs::write(path, bytes).unwrap();
 }
 
+/// Every region of every dimension, in dimension order.
+fn discover(world: &HostWorldTree) -> Vec<sekai_world::RegionRef> {
+    let mut regions = Vec::new();
+    for dim in world.get_dims().unwrap() {
+        regions.extend(world.get_regions(dim).unwrap());
+    }
+    regions
+}
+
 #[test]
 fn discovers_legacy_and_new_layouts() {
     let world_path = tempdir("layouts");
@@ -59,7 +68,7 @@ fn discovers_legacy_and_new_layouts() {
 
     // Layout resolution happens once, against the tree on disk.
     let world = HostWorldTree::new(&world_path).unwrap();
-    let mut found = world.discover().unwrap();
+    let mut found = discover(&world);
     found.sort_by_key(|r| (r.dim.raw(), r.kind.raw(), r.region_x, r.region_z));
     let keys: Vec<_> = found
         .iter()
@@ -90,6 +99,25 @@ fn discovers_legacy_and_new_layouts() {
 }
 
 #[test]
+fn get_dims_lists_only_occupied_dimensions() {
+    let world_path = tempdir("get-dims");
+    let image = one_chunk_image();
+    write(world_path.join("region/r.0.0.mca"), &image);
+    write(world_path.join("DIM1/region/r.1.0.mca"), &image);
+
+    let world = HostWorldTree::new(&world_path).unwrap();
+    assert_eq!(
+        world.get_dims().unwrap(),
+        vec![Dimension::OVERWORLD, Dimension::END]
+    );
+    let over = world.get_regions(Dimension::OVERWORLD).unwrap();
+    assert_eq!(over.len(), 1);
+    assert_eq!(over[0].path, world_path.join("region/r.0.0.mca"));
+    assert!(world.get_regions(Dimension::NETHER).unwrap().is_empty());
+    cleanup(&world_path);
+}
+
+#[test]
 fn discovers_bukkit_nesting() {
     let world_path = tempdir("bukkit");
     let image = one_chunk_image();
@@ -104,7 +132,7 @@ fn discovers_bukkit_nesting() {
     );
 
     let world = HostWorldTree::new(&world_path).unwrap();
-    let found = world.discover().unwrap();
+    let found = discover(&world);
     assert_eq!(found.len(), 3);
     let at = |dim, kind| {
         found
@@ -152,7 +180,7 @@ fn discovers_custom_level_name_trio() {
     write(root_path.join("srv_the_end/DIM1/region/r.0.0.mca"), &image);
 
     let root = HostWorldTree::new(&root_path).unwrap();
-    let found = root.discover().unwrap();
+    let found = discover(&root);
     assert_eq!(found.len(), 3);
     assert!(
         found
@@ -186,7 +214,7 @@ fn multiverse_worlds_never_collide() {
     write(root_path.join("sky_nether/DIM-1/region/r.0.0.mca"), &image);
 
     let root = HostWorldTree::new(&root_path).unwrap();
-    let found = root.discover().unwrap();
+    let found = discover(&root);
     assert_eq!(found.len(), 4);
     let dims: Vec<_> = found.iter().map(|r| r.dim).collect();
     assert!(dims.contains(&Dimension::OVERWORLD));
@@ -229,7 +257,7 @@ fn trio_wins_over_conversion_leftovers() {
     write(root_path.join("world_nether/DIM-1/region/r.0.0.mca"), &live);
 
     let root = HostWorldTree::new(&root_path).unwrap();
-    let found = root.discover().unwrap();
+    let found = discover(&root);
     let nether: Vec<_> = found
         .iter()
         .filter(|r| r.dim == Dimension::NETHER)
@@ -271,8 +299,7 @@ fn empty_overworld_keeps_the_trio_namespaces() {
     // The same siblings keep their vanilla codes whether or not the
     // overworld holds files.
     let nether = |root: &HostWorldTree| {
-        root.discover()
-            .unwrap()
+        discover(root)
             .into_iter()
             .find(|r| r.dim == Dimension::NETHER)
             .map(|r| r.path)
@@ -291,9 +318,7 @@ fn empty_overworld_keeps_the_trio_namespaces() {
     );
     assert_eq!(nether(&root), empty);
 
-    let over: Vec<_> = root
-        .discover()
-        .unwrap()
+    let over: Vec<_> = discover(&root)
         .into_iter()
         .filter(|r| r.dim == Dimension::OVERWORLD)
         .collect();
@@ -333,7 +358,7 @@ fn level_name_wins_over_a_leftover_world_folder() {
             .unwrap(),
         root_path.join("survival/region/r.1.0.mca")
     );
-    let found = root.discover().unwrap();
+    let found = discover(&root);
     let over: Vec<_> = found
         .iter()
         .filter(|r| r.dim == Dimension::OVERWORLD)
@@ -390,11 +415,11 @@ fn duplicate_coordinate_names_resolve_deterministically() {
     write(root_path.join("region/r.0.0.mca"), &one_chunk_image());
     write(root_path.join("region/r.00.00.mca"), &second);
 
-    let found = root.discover().unwrap();
+    let found = discover(&root);
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].path, root_path.join("region/r.0.0.mca"));
     for _ in 0..8 {
-        let again = root.discover().unwrap();
+        let again = discover(&root);
         assert_eq!(again.len(), 1);
         assert_eq!(again[0].path, root_path.join("region/r.0.0.mca"));
     }
@@ -411,7 +436,7 @@ fn nested_vanilla_copy_gets_hashed_codes() {
     write(root_path.join("region/r.0.0.mca"), &image);
     write(root_path.join("old/region/r.0.0.mca"), &image);
     write(root_path.join("old/DIM-1/region/r.0.0.mca"), &image);
-    let found = root.discover().unwrap();
+    let found = discover(&root);
     assert_eq!(found.len(), 3);
     assert!(
         found
@@ -432,7 +457,11 @@ fn missing_world_is_an_error() {
     let world = HostWorldTree::new(&world_path).unwrap();
     cleanup(&world_path);
     assert!(matches!(
-        world.discover(),
+        world.get_dims(),
+        Err(sekai_world::WorldError::Io { .. })
+    ));
+    assert!(matches!(
+        world.get_regions(Dimension::OVERWORLD),
         Err(sekai_world::WorldError::Io { .. })
     ));
 }
