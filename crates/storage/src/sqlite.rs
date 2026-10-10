@@ -17,7 +17,7 @@ use crate::api::{StorageError, Store, io_error};
 use crate::cas::FileCas;
 
 /// Managed schema version (`PRAGMA user_version`).
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 const SCHEMA: &str = include_str!("../schema/sqlite.sql");
 
@@ -130,6 +130,13 @@ fn i64_to_u64(value: i64, column: &'static str) -> Result<u64, StorageError> {
 /// Fallible `i64` row ID -> domain `SnapshotId`.
 fn snapshot_id_from_i64(id: i64) -> Result<SnapshotId, StorageError> {
     i64_to_u64(id, "id").map(SnapshotId)
+}
+
+/// Fallible `i64` registry ID -> domain `Dimension`.
+fn dimension_from_i64(id: i64) -> Result<Dimension, StorageError> {
+    i32::try_from(id)
+        .map(Dimension::new)
+        .map_err(|_| StorageError::InvalidDimensionCode { value: id })
 }
 
 /// Read an `i32` column with a loud error on out-of-range values.
@@ -314,6 +321,29 @@ impl sekai_core::MetaStore for SqliteMeta {
             .fetch_optional(&self.pool)
             .await?;
         row.map(|row| decode_snapshot(&row)).transpose()
+    }
+
+    async fn resolve_dimension(&mut self, name: &str) -> Result<Dimension, StorageError> {
+        // Single upsert: the unique name either returns its existing row
+        // or takes the next auto-increment code, so concurrent callers
+        // cannot race between a lookup and an insert.
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO dimensions (name) VALUES (?)
+             ON CONFLICT(name) DO UPDATE SET name = excluded.name
+             RETURNING id",
+        )
+        .bind(name)
+        .fetch_one(&self.pool)
+        .await?;
+        dimension_from_i64(id)
+    }
+
+    async fn lookup_dimension(&self, name: &str) -> Result<Option<Dimension>, StorageError> {
+        let id: Option<i64> = sqlx::query_scalar("SELECT id FROM dimensions WHERE name = ?")
+            .bind(name)
+            .fetch_optional(&self.pool)
+            .await?;
+        id.map(dimension_from_i64).transpose()
     }
 
     async fn visit_snapshot_chunks<F>(
@@ -705,6 +735,36 @@ mod tests {
             })
         ));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn dimension_registry_pins_vanilla_and_auto_increments() {
+        use sekai_core::MetaStore as _;
+        let mut meta = memory_meta().await;
+        assert_eq!(
+            meta.lookup_dimension("minecraft:overworld").await.unwrap(),
+            Some(Dimension::OVERWORLD)
+        );
+        assert_eq!(
+            meta.lookup_dimension("minecraft:the_nether").await.unwrap(),
+            Some(Dimension::NETHER)
+        );
+        assert_eq!(
+            meta.lookup_dimension("minecraft:the_end").await.unwrap(),
+            Some(Dimension::END)
+        );
+        assert_eq!(meta.lookup_dimension("aether:sky").await.unwrap(), None);
+
+        let sky = meta.resolve_dimension("aether:sky").await.unwrap();
+        assert!(sky.raw() >= 3, "vanilla codes stay reserved");
+        assert_eq!(meta.resolve_dimension("aether:sky").await.unwrap(), sky);
+
+        let folder = meta.resolve_dimension("./plugin").await.unwrap();
+        assert!(folder.raw() > sky.raw(), "fresh names take the next code");
+        assert_eq!(
+            meta.lookup_dimension("./plugin").await.unwrap(),
+            Some(folder)
+        );
     }
 
     #[tokio::test]

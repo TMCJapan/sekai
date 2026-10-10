@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 use core::future::Future;
 use sekai_util::{
-    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, FoldOutcome,
+    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, Dimension, FoldOutcome,
     RegionFingerprint, RegionKey, RegionStateEntry, Snapshot, SnapshotEntry, SnapshotId,
     SnapshotTag, TagName,
 };
@@ -45,6 +45,25 @@ pub trait MetaStore {
     /// Highest-ID snapshot, or `None` when no backup has run yet.
     fn latest_snapshot(&self)
     -> impl Future<Output = Result<Option<Snapshot>, Self::Error>> + Send;
+
+    /// Stable code for a dimension name, registering the name on first
+    /// sight: repeated calls with the same name return the same code, and
+    /// fresh names get the next auto-increment code. Backends reserve
+    /// `0..=2` for the vanilla trio, so custom names never alias vanilla
+    /// history. Names are canonical `namespace:path` / `./folder` keys;
+    /// callers normalize before registering.
+    fn resolve_dimension(
+        &mut self,
+        name: &str,
+    ) -> impl Future<Output = Result<Dimension, Self::Error>> + Send;
+
+    /// Registered code for a dimension name, or `None` when the name was
+    /// never registered. Read-only callers use this to translate stored
+    /// or user-supplied names without materializing a registry row.
+    fn lookup_dimension(
+        &self,
+        name: &str,
+    ) -> impl Future<Output = Result<Option<Dimension>, Self::Error>> + Send;
 
     /// Visit effective rows of one snapshot: exactly one row per
     /// coordinate known at `snapshot` (the nearest row at or before it),

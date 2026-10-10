@@ -52,6 +52,9 @@ pub enum StorageError {
     /// Stored history integer does not fit its domain type.
     #[error("stored history column {column} has out-of-range value: {value}")]
     InvalidHistoryValue { column: &'static str, value: i64 },
+    /// Stored dimension registry code does not fit the domain type.
+    #[error("stored dimension code is out of range: {value}")]
+    InvalidDimensionCode { value: i64 },
     /// Stored tag name fails validation.
     #[error("stored tag name is invalid: {name}")]
     InvalidTagName { name: String },
