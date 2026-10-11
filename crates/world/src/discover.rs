@@ -415,14 +415,21 @@ fn tree_dim(ns_name: &str, dim_name: &str) -> Option<Dimension> {
     }
 }
 
-/// Dimension code for the elected world's `dimensions/<ns>/<name>` tree.
+/// Dimension code for the elected world's `dimensions/<ns>/<name>` tree,
+/// or `None` for pairs already scanned through the layout's vanilla
+/// directories.
 ///
 /// `minecraft/overworld`, `minecraft/the_nether`, and `minecraft/the_end`
-/// keep vanilla codes so history survives 26.1-style migrations; every
-/// other pair hashes its `<namespace>:<name>` identifier.
-fn elected_dimension(ns_name: &str, dim_name: &str) -> Dimension {
-    tree_dim(ns_name, dim_name)
-        .unwrap_or_else(|| sekai_core::resolve_custom_dimension(&format!("{ns_name}:{dim_name}")))
+/// keep vanilla codes so history survives 26.1-style migrations, but
+/// rescanning them here would read every trio directory twice; every other
+/// pair hashes its `<namespace>:<name>` identifier.
+fn elected_dimension(ns_name: &str, dim_name: &str) -> Option<Dimension> {
+    if tree_dim(ns_name, dim_name).is_some() {
+        return None;
+    }
+    Some(sekai_core::resolve_custom_dimension(&format!(
+        "{ns_name}:{dim_name}"
+    )))
 }
 
 /// Dimension code inside a plugin world named `base`.
@@ -440,10 +447,10 @@ fn plugin_dimension(base: &str, ns_name: &str, dim_name: &str) -> Dimension {
 }
 
 /// Scan a `dimensions/<ns>/<name>` tree, naming every dimension through
-/// `dimension`.
+/// `dimension`; `None` skips a pair that another pass already covered.
 fn scan_dimension_trees(
     dims_dir: impl AsRef<Path>,
-    dimension: impl Fn(&str, &str) -> Dimension,
+    dimension: impl Fn(&str, &str) -> Option<Dimension>,
     found: &mut Found,
 ) -> Result<(), WorldError> {
     for ns in read_dir_opt(dims_dir)? {
@@ -462,7 +469,10 @@ fn scan_dimension_trees(
             let Some(dim_name) = dim_file_name.to_str() else {
                 continue;
             };
-            scan_dim_root(name.path(), dimension(ns_name, dim_name), found)?;
+            let Some(dim) = dimension(ns_name, dim_name) else {
+                continue;
+            };
+            scan_dim_root(name.path(), dim, found)?;
         }
     }
     Ok(())
@@ -515,7 +525,7 @@ fn scan_plugin_worlds(
         if dir.join("dimensions").is_dir() {
             scan_dimension_trees(
                 dir.join("dimensions"),
-                |ns, dim| plugin_dimension(name, ns, dim),
+                |ns, dim| Some(plugin_dimension(name, ns, dim)),
                 found,
             )?;
         } else {
