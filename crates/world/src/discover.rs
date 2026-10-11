@@ -71,14 +71,15 @@ pub(crate) enum Layout {
 
 impl Layout {
     /// The three derivable vanilla dimension directories of this layout.
-    pub(crate) fn vanilla_dirs(&self, root: &Path) -> [(Dimension, PathBuf); 3] {
+    pub(crate) fn vanilla_dirs(&self, root: impl AsRef<Path>) -> [(Dimension, PathBuf); 3] {
+        let root = root.as_ref();
         match self {
             Self::LegacyVanilla => [
                 (Dimension::OVERWORLD, root.to_path_buf()),
                 (Dimension::NETHER, root.join("DIM-1")),
                 (Dimension::END, root.join("DIM1")),
             ],
-            Self::Vanilla => minecraft_trio(&root.join("dimensions").join("minecraft")),
+            Self::Vanilla => minecraft_trio(root.join("dimensions").join("minecraft")),
             Self::LegacyPaper { base } => [
                 (Dimension::OVERWORLD, root.join(base)),
                 (
@@ -91,13 +92,14 @@ impl Layout {
                 ),
             ],
             Self::Paper { base } => {
-                minecraft_trio(&root.join(base).join("dimensions").join("minecraft"))
+                minecraft_trio(root.join(base).join("dimensions").join("minecraft"))
             }
         }
     }
 
     /// The elected `dimensions/<ns>/<name>` tree, when the layout has one.
-    pub(crate) fn dimensions_dir(&self, root: &Path) -> Option<PathBuf> {
+    pub(crate) fn dimensions_dir(&self, root: impl AsRef<Path>) -> Option<PathBuf> {
+        let root = root.as_ref();
         match self {
             Self::Vanilla => Some(root.join("dimensions")),
             Self::Paper { base } => Some(root.join(base).join("dimensions")),
@@ -125,7 +127,7 @@ impl Layout {
     /// somewhere wrong.
     pub(crate) fn region_path(
         &self,
-        root: &Path,
+        root: impl AsRef<Path>,
         dim: Dimension,
         kind: RegionKind,
         region_x: i32,
@@ -150,7 +152,8 @@ impl Layout {
 }
 
 /// `dimensions/minecraft/<name>` directories for the three vanilla dims.
-fn minecraft_trio(minecraft: &Path) -> [(Dimension, PathBuf); 3] {
+fn minecraft_trio(minecraft: impl AsRef<Path>) -> [(Dimension, PathBuf); 3] {
+    let minecraft = minecraft.as_ref();
     [
         (Dimension::OVERWORLD, minecraft.join("overworld")),
         (Dimension::NETHER, minecraft.join("the_nether")),
@@ -438,7 +441,12 @@ fn scan_dimension_trees(
 /// world, the logical dimension names the dimension. Bukkit-style
 /// `<base>_nether`/`<base>_the_end` siblings are consumed by their base so
 /// they are never discovered twice.
-fn scan_plugin_worlds(root: &Path, skip: &[String], found: &mut Found) -> Result<(), WorldError> {
+fn scan_plugin_worlds(
+    root: impl AsRef<Path>,
+    skip: &[String],
+    found: &mut Found,
+) -> Result<(), WorldError> {
+    let root = root.as_ref();
     let mut skipped: BTreeSet<String> = RESERVED_SUBDIRS.iter().map(|s| (*s).to_owned()).collect();
     skipped.extend(skip.iter().cloned());
 
