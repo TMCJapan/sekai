@@ -42,71 +42,81 @@ pub struct RegionRef {
     pub region_z: i32,
 }
 
-/// Derivation targets for the three vanilla dimensions, resolved once per
-/// tree at construction.
+/// The single layout elected for a root.
 ///
-/// Every supported server family maps onto one directory per dimension that
-/// holds its `<kind>/r.x.z.mca` files; once resolved, no operation needs to
-/// know which family the tree came from.
+/// Exactly one layout is ever respected: files belonging to any other
+/// layout (migration leftovers, a stray `dimensions/` tree) are ignored
+/// instead of being merged or overwritten.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DimensionDirs {
-    overworld: PathBuf,
-    nether: PathBuf,
-    end: PathBuf,
+pub(crate) enum Layout {
+    /// Legacy vanilla world: `<root>/`, `<root>/DIM-1`, `<root>/DIM1`.
+    LegacyVanilla,
+    /// Vanilla 26.1 world: `<root>/dimensions/minecraft/<name>`.
+    Vanilla,
+    /// Legacy Bukkit container: `<base>/`, `<base>_nether/DIM-1`,
+    /// `<base>_the_end/DIM1`.
+    LegacyPaper { base: String },
+    /// Paper 26.1+ container: `<base>/dimensions/minecraft/<name>`.
+    Paper { base: String },
 }
 
-impl DimensionDirs {
-    /// Legacy single-folder layout: `<root>/`, `<root>/DIM-1`,
-    /// `<root>/DIM1`.
-    pub(crate) fn legacy(root: impl AsRef<Path>) -> Self {
-        let root = root.as_ref();
-        Self {
-            overworld: root.to_path_buf(),
-            nether: root.join("DIM-1"),
-            end: root.join("DIM1"),
+impl Layout {
+    /// The three derivable vanilla dimension directories of this layout.
+    pub(crate) fn vanilla_dirs(&self, root: &Path) -> [(Dimension, PathBuf); 3] {
+        match self {
+            Self::LegacyVanilla => [
+                (Dimension::OVERWORLD, root.to_path_buf()),
+                (Dimension::NETHER, root.join("DIM-1")),
+                (Dimension::END, root.join("DIM1")),
+            ],
+            Self::Vanilla => minecraft_trio(&root.join("dimensions").join("minecraft")),
+            Self::LegacyPaper { base } => [
+                (Dimension::OVERWORLD, root.join(base)),
+                (
+                    Dimension::NETHER,
+                    root.join(format!("{base}_nether")).join("DIM-1"),
+                ),
+                (
+                    Dimension::END,
+                    root.join(format!("{base}_the_end")).join("DIM1"),
+                ),
+            ],
+            Self::Paper { base } => {
+                minecraft_trio(&root.join(base).join("dimensions").join("minecraft"))
+            }
         }
     }
 
-    /// 26.1 vanilla layout: `<root>/dimensions/minecraft/<name>`.
-    pub(crate) fn dimensions(root: impl AsRef<Path>) -> Self {
-        let root = root.as_ref();
-        let minecraft = root.join("dimensions").join("minecraft");
-        Self {
-            overworld: minecraft.join("overworld"),
-            nether: minecraft.join("the_nether"),
-            end: minecraft.join("the_end"),
-        }
-    }
-
-    /// Bukkit-family layout around `base`: `<root>/<base>`,
-    /// `<root>/<base>_nether/DIM-1`, `<root>/<base>_the_end/DIM1`.
-    pub(crate) fn bukkit(root: impl AsRef<Path>, base: &str) -> Self {
-        let root = root.as_ref();
-        Self {
-            overworld: root.join(base),
-            nether: root.join(format!("{base}_nether")).join("DIM-1"),
-            end: root.join(format!("{base}_the_end")).join("DIM1"),
-        }
-    }
-
-    /// Directory holding `<kind>/` for `dim`, when its namespace is
-    /// derivable. Hashed custom dimensions are one-way: `None`.
-    fn get(&self, dim: Dimension) -> Option<&Path> {
-        match dim {
-            Dimension::OVERWORLD => Some(&self.overworld),
-            Dimension::NETHER => Some(&self.nether),
-            Dimension::END => Some(&self.end),
+    /// The elected `dimensions/<ns>/<name>` tree, when the layout has one.
+    pub(crate) fn dimensions_dir(&self, root: &Path) -> Option<PathBuf> {
+        match self {
+            Self::Vanilla => Some(root.join("dimensions")),
+            Self::Paper { base } => Some(root.join(base).join("dimensions")),
             _ => None,
         }
     }
 
-    /// Canonical path for one region file under these resolved directories.
+    /// Base folders of the elected layout; they are part of the election
+    /// and must not be rediscovered as plugin worlds.
+    pub(crate) fn trio_names(&self) -> Vec<String> {
+        match self {
+            Self::LegacyPaper { base } | Self::Paper { base } => vec![
+                base.clone(),
+                format!("{base}_nether"),
+                format!("{base}_the_end"),
+            ],
+            _ => Vec::new(),
+        }
+    }
+
+    /// Canonical path for one region file under the elected layout.
     ///
     /// Only vanilla namespaces are derivable; hashed custom dimensions
     /// surface [`WorldError::UnknownRegionPath`] instead of writing
     /// somewhere wrong.
     pub(crate) fn region_path(
         &self,
+        root: &Path,
         dim: Dimension,
         kind: RegionKind,
         region_x: i32,
@@ -118,37 +128,53 @@ impl DimensionDirs {
             region_x,
             region_z,
         };
-        let root = self.get(dim).ok_or_else(unknown)?;
+        let dir = self
+            .vanilla_dirs(root)
+            .into_iter()
+            .find_map(|(d, dir)| (d == dim).then_some(dir))
+            .ok_or_else(unknown)?;
         let kind_dir = kind_dir(kind).ok_or_else(unknown)?;
-        Ok(root
+        Ok(dir
             .join(kind_dir)
             .join(format!("r.{region_x}.{region_z}.mca")))
     }
 }
 
-/// Classify `root` and resolve every derivable dimension directory,
-/// returning them together with the elected Bukkit overworld folder.
+/// `dimensions/minecraft/<name>` directories for the three vanilla dims.
+fn minecraft_trio(minecraft: &Path) -> [(Dimension, PathBuf); 3] {
+    [
+        (Dimension::OVERWORLD, minecraft.join("overworld")),
+        (Dimension::NETHER, minecraft.join("the_nether")),
+        (Dimension::END, minecraft.join("the_end")),
+    ]
+}
+
+/// Elect the single layout for `root`.
 ///
 /// Trio election comes first: a Bukkit container root may hold a stray
 /// `dimensions/` directory (migration leftovers, a plugin), and deriving
 /// vanilla namespaces from it would restore into a tree the server never
-/// reads. Otherwise an existing `dimensions/` directory selects the 26.1
-/// layout, else legacy.
+/// reads. A complete trio whose base holds a `dimensions/` directory is
+/// Paper 26.1+; otherwise it is the legacy Bukkit layout. World roots
+/// (arguments that are world folders themselves) elect vanilla 26.1 when
+/// they hold a `dimensions/` tree, legacy otherwise.
 ///
-/// Pass the same root on every run: namespace codes for non-default
-/// folders derive from root-relative paths.
-pub(crate) fn resolve(
-    root: impl AsRef<Path>,
-) -> Result<(DimensionDirs, Option<String>), WorldError> {
+/// Pass the same root on every run: the election depends on the tree on
+/// disk.
+pub(crate) fn resolve(root: impl AsRef<Path>) -> Result<Layout, WorldError> {
     let root = root.as_ref();
-    let container = !is_top_world_folder(root)?;
-    if container && let Some(base) = bukkit_base(root)? {
-        return Ok((DimensionDirs::bukkit(root, &base), Some(base)));
+    if !is_top_world_folder(root)?
+        && let Some(base) = bukkit_base(root)?
+    {
+        if root.join(&base).join("dimensions").is_dir() {
+            return Ok(Layout::Paper { base });
+        }
+        return Ok(Layout::LegacyPaper { base });
     }
     if root.join("dimensions").is_dir() {
-        return Ok((DimensionDirs::dimensions(root), None));
+        return Ok(Layout::Vanilla);
     }
-    Ok((DimensionDirs::legacy(root), None))
+    Ok(Layout::LegacyVanilla)
 }
 
 const KIND_DIRS: [(RegionKind, &str); 3] = [
@@ -369,6 +395,48 @@ fn tree_dim(ns_name: &str, dim_name: &str) -> Option<Dimension> {
     }
 }
 
+/// Dimension code for the elected world's `dimensions/<ns>/<name>` tree.
+///
+/// `minecraft/overworld`, `minecraft/the_nether`, and `minecraft/the_end`
+/// keep vanilla codes so history survives 26.1-style migrations; every
+/// other pair hashes its `<namespace>:<name>` identifier.
+fn elected_dimension(ns_name: &str, dim_name: &str) -> Dimension {
+    tree_dim(ns_name, dim_name)
+        .unwrap_or_else(|| sekai_core::resolve_custom_dimension(&format!("{ns_name}:{dim_name}")))
+}
+
+/// Scan the elected world's `dimensions/<ns>/<name>` tree.
+fn scan_elected_dimensions(
+    dims_dir: impl AsRef<Path>,
+    found: &mut BTreeMap<(Dimension, RegionKind, i32, i32), RegionRef>,
+) -> Result<(), WorldError> {
+    for ns in read_dir_opt(dims_dir)? {
+        if !is_dir(&ns)? {
+            continue;
+        }
+        let ns_file_name = ns.file_name();
+        let Some(ns_name) = ns_file_name.to_str() else {
+            continue;
+        };
+        for name in read_dir_opt(ns.path())? {
+            if !is_dir(&name)? {
+                continue;
+            }
+            let dim_file_name = name.file_name();
+            let Some(dim_name) = dim_file_name.to_str() else {
+                continue;
+            };
+            scan_dim_root(
+                name.path(),
+                elected_dimension(ns_name, dim_name),
+                found,
+                InsertPolicy::KeepExisting,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// Scan `dimensions/<ns>/<name>/<kind>/r.*.mca` under `dims_dir`.
 ///
 /// `rel_prefix` is the root-relative folder path (`""` for the root
@@ -412,15 +480,14 @@ fn scan_dimensions(
 
 /// Find every `.mca` under `root` with its namespace.
 ///
-/// Missing world root is an error; missing candidate subdirectories are
-/// simply skipped. `bukkit_base` is the trio election from [`resolve`];
-/// live server data wins over conversion leftovers. Pass a server root for
-/// Bukkit-family servers (all world folders are found) or a single world
-/// folder for vanilla ones - but the same path on every run, since
-/// non-default namespaces hash root-relative paths.
+/// Only the elected [`Layout`] is scanned; files belonging to any other
+/// layout (conversion leftovers, a stray `dimensions/` tree) stay
+/// invisible. Other world folders (Multiverse et al.) are still found,
+/// each under its own hashed namespaces. Missing world root is an error;
+/// missing candidate subdirectories are simply skipped.
 pub(crate) fn discover(
     root: impl AsRef<Path>,
-    bukkit_base: Option<&str>,
+    layout: &Layout,
 ) -> Result<Vec<RegionRef>, WorldError> {
     let root = root.as_ref();
     if !root.is_dir() {
@@ -430,45 +497,14 @@ pub(crate) fn discover(
         ));
     }
     let mut found = BTreeMap::new();
-    // Vanilla roots at the argument itself.
-    for (dir, dim) in [
-        (root.to_path_buf(), Dimension::OVERWORLD),
-        (root.join("DIM-1"), Dimension::NETHER),
-        (root.join("DIM1"), Dimension::END),
-    ] {
+    for (dim, dir) in layout.vanilla_dirs(root) {
         scan_dim_root(&dir, dim, &mut found, InsertPolicy::KeepExisting)?;
     }
-    // Bukkit trio: live server data wins over conversion leftovers above.
-    if let Some(base) = bukkit_base {
-        let over = root.join(base);
-        scan_dim_root(
-            &over,
-            Dimension::OVERWORLD,
-            &mut found,
-            InsertPolicy::Overwrite,
-        )?;
-        scan_dim_root(
-            root.join(format!("{base}_nether")).join("DIM-1"),
-            Dimension::NETHER,
-            &mut found,
-            InsertPolicy::Overwrite,
-        )?;
-        scan_dim_root(
-            root.join(format!("{base}_the_end")).join("DIM1"),
-            Dimension::END,
-            &mut found,
-            InsertPolicy::Overwrite,
-        )?;
-        scan_dimensions(over.join("dimensions"), base, &mut found)?;
+    if let Some(dims_dir) = layout.dimensions_dir(root) {
+        scan_elected_dimensions(dims_dir, &mut found)?;
     }
     // Other world folders: hashed namespaces, never colliding silently.
-    let trio: [String; 3] = bukkit_base.map_or_else(Default::default, |base| {
-        [
-            base.to_owned(),
-            format!("{base}_nether"),
-            format!("{base}_the_end"),
-        ]
-    });
+    let trio = layout.trio_names();
     for entry in read_dir_opt(root)? {
         if !is_dir(&entry)? {
             continue;
@@ -502,8 +538,6 @@ pub(crate) fn discover(
         )?;
         scan_dimensions(entry.path().join("dimensions"), &rel, &mut found)?;
     }
-    // Root-level dimensions tree (vanilla 26.1+ single world).
-    scan_dimensions(root.join("dimensions"), "", &mut found)?;
     Ok(found.into_values().collect())
 }
 

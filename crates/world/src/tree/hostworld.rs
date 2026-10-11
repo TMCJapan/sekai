@@ -3,48 +3,40 @@ use std::path::{Path, PathBuf};
 use sekai_core::{Dimension, RegionKind};
 
 use super::WorldTree;
-use crate::discover::{self, DimensionDirs};
+use crate::discover::{self, Layout};
 use crate::{RegionRef, WorldError};
 
 /// A [`WorldTree`] rooted at a local directory.
 ///
-/// [`HostWorldTree::new`] classifies the root once and resolves every
-/// derivable dimension directory: an elected Bukkit trio wins over a stray
-/// `dimensions/` directory, otherwise an existing `dimensions/` directory
-/// selects the 26.1 tree, else the legacy single-folder layout. The resolved
-/// directories are stored, so operations never re-inspect the layout. The
-/// root is stored as given, never canonicalized.
+/// [`HostWorldTree::new`] elects exactly one layout (Paper, legacy Bukkit,
+/// vanilla 26.1, or legacy vanilla) and stores it; operations never
+/// re-inspect the layout, and files from any non-elected layout stay
+/// invisible. The root is stored as given, never canonicalized.
 #[derive(Clone)]
 pub struct HostWorldTree {
     root: PathBuf,
-    dirs: DimensionDirs,
-    /// Elected Bukkit overworld folder on container roots: discovery uses it
-    /// so live server data wins over conversion leftovers.
-    bukkit_base: Option<String>,
+    layout: Layout,
 }
 
 impl HostWorldTree {
-    /// Classify the tree rooted at `root` and resolve its layout.
+    /// Elect the layout of the tree rooted at `root`.
     ///
     /// A missing root resolves as an empty legacy tree and later discovery
     /// fails loudly; an unreadable root fails here.
     pub fn new(root: impl AsRef<Path>) -> Result<Self, WorldError> {
-        let (dirs, bukkit_base) = discover::resolve(&root)?;
+        let root = root.as_ref();
         Ok(Self {
-            root: root.as_ref().to_path_buf(),
-            dirs,
-            bukkit_base,
+            root: root.to_path_buf(),
+            layout: discover::resolve(root)?,
         })
     }
 
     /// Fresh output tree in the legacy single-folder layout (`region/`,
     /// `DIM-1/`, `DIM1/`), for roots that do not exist yet (export).
     pub fn new_legacy(root: impl AsRef<Path>) -> Self {
-        let root = root.as_ref();
         Self {
-            root: root.to_path_buf(),
-            dirs: DimensionDirs::legacy(root),
-            bukkit_base: None,
+            root: root.as_ref().to_path_buf(),
+            layout: Layout::LegacyVanilla,
         }
     }
 
@@ -52,11 +44,9 @@ impl HostWorldTree {
     /// (`dimensions/minecraft/<name>/`), for roots that do not exist yet
     /// (export).
     pub fn new_dimensions(root: impl AsRef<Path>) -> Self {
-        let root = root.as_ref();
         Self {
-            root: root.to_path_buf(),
-            dirs: DimensionDirs::dimensions(root),
-            bukkit_base: None,
+            root: root.as_ref().to_path_buf(),
+            layout: Layout::Vanilla,
         }
     }
 
@@ -64,12 +54,9 @@ impl HostWorldTree {
     /// (`<base>/`, `<base>_nether/DIM-1/`, `<base>_the_end/DIM1/`), for
     /// roots that do not exist yet (export).
     pub fn new_bukkit(root: impl AsRef<Path>, base: impl Into<String>) -> Self {
-        let root = root.as_ref();
-        let base = base.into();
         Self {
-            root: root.to_path_buf(),
-            dirs: DimensionDirs::bukkit(root, &base),
-            bukkit_base: Some(base),
+            root: root.as_ref().to_path_buf(),
+            layout: Layout::LegacyPaper { base: base.into() },
         }
     }
 }
@@ -86,7 +73,7 @@ impl WorldTree for HostWorldTree {
     }
 
     fn discover(&self) -> Result<Vec<RegionRef>, Self::Error> {
-        discover::discover(&self.root, self.bukkit_base.as_deref())
+        discover::discover(&self.root, &self.layout)
     }
 
     fn derive_path(
@@ -96,6 +83,7 @@ impl WorldTree for HostWorldTree {
         region_x: i32,
         region_z: i32,
     ) -> Result<PathBuf, Self::Error> {
-        self.dirs.region_path(dim, kind, region_x, region_z)
+        self.layout
+            .region_path(&self.root, dim, kind, region_x, region_z)
     }
 }
