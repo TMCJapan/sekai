@@ -79,7 +79,7 @@ fn dimensions_tree_elects_vanilla_layout() {
     );
     assert_eq!((overworld[0].region_x, overworld[0].region_z), (2, 0));
 
-    // Datapack/plugin dimensions hash their `<namespace>:<name>` pair.
+    // Datapack dimensions hash their `<namespace>:<name>` pair.
     let custom: Vec<_> = found
         .iter()
         .filter(|r| r.region_x == 0 && r.region_z == 1)
@@ -299,17 +299,18 @@ fn multiverse_worlds_never_collide() {
     let dims: Vec<_> = found.iter().map(|r| r.dim).collect();
     assert!(dims.contains(&Dimension::OVERWORLD));
     assert!(dims.contains(&Dimension::NETHER));
-    // The plugin trio is keyed `plugin:<base>:<logical dimension>`, so it
-    // can never alias the main world's coordinates or a datapack identity.
+    // The plugin trio is keyed `<base>:minecraft:<logical dimension>`, so
+    // it can never alias the main world's coordinates or a datapack
+    // identity.
     let sky: Vec<_> = found
         .iter()
-        .filter(|r| r.dim == resolve_custom_dimension("plugin:sky:overworld"))
+        .filter(|r| r.dim == resolve_custom_dimension("sky:minecraft:overworld"))
         .collect();
     assert_eq!(sky.len(), 1);
     assert_eq!(sky[0].path, root_path.join("sky/region/r.0.0.mca"));
     let sky_nether: Vec<_> = found
         .iter()
-        .filter(|r| r.dim == resolve_custom_dimension("plugin:sky:the_nether"))
+        .filter(|r| r.dim == resolve_custom_dimension("sky:minecraft:the_nether"))
         .collect();
     assert_eq!(sky_nether.len(), 1);
     assert_eq!(
@@ -327,7 +328,7 @@ fn multiverse_worlds_never_collide() {
     // Hashed dims are not derivable; rollback uses discovered folders.
     assert!(matches!(
         root.derive_path(
-            resolve_custom_dimension("plugin:sky:overworld"),
+            resolve_custom_dimension("sky:minecraft:overworld"),
             RegionKind::REGION,
             0,
             0
@@ -363,8 +364,41 @@ fn plugin_world_base_never_aliases_a_datapack_namespace() {
             && r.path == root_path.join("dimensions/aether/overworld/region/r.0.0.mca")
     }));
     assert!(found.iter().any(|r| {
-        r.dim == resolve_custom_dimension("plugin:aether:overworld")
+        r.dim == resolve_custom_dimension("aether:minecraft:overworld")
             && r.path == root_path.join("aether/dimensions/minecraft/overworld/region/r.0.0.mca")
+    }));
+    cleanup(&root_path);
+}
+
+#[test]
+fn plugin_datapack_dimensions_stay_world_scoped() {
+    // The same `<namespace>:<name>` under two worlds is two separate data
+    // folders. Scoping plugin worlds by `<base>:<namespace>:<name>` keeps
+    // both visible; sharing the unqualified identity would silently shadow
+    // one, and rollback could then restore through the wrong world's
+    // sibling directory.
+    let root_path = tempdir("datapack-scope");
+    let image = one_chunk_image();
+    write(
+        root_path.join("dimensions/aether/sky/region/r.0.0.mca"),
+        &image,
+    );
+    write(root_path.join("sky/level.dat"), b"");
+    write(
+        root_path.join("sky/dimensions/aether/sky/region/r.0.0.mca"),
+        &image,
+    );
+
+    let root = HostWorldTree::new(&root_path).unwrap();
+    let found = root.discover().unwrap();
+    assert_eq!(found.len(), 2, "one file shadowed the other: {found:?}");
+    assert!(found.iter().any(|r| {
+        r.dim == resolve_custom_dimension("aether:sky")
+            && r.path == root_path.join("dimensions/aether/sky/region/r.0.0.mca")
+    }));
+    assert!(found.iter().any(|r| {
+        r.dim == resolve_custom_dimension("sky:aether:sky")
+            && r.path == root_path.join("sky/dimensions/aether/sky/region/r.0.0.mca")
     }));
     cleanup(&root_path);
 }
@@ -506,12 +540,12 @@ fn level_name_wins_over_a_leftover_world_folder() {
         root_path.join("survival_nether/DIM-1/region/r.0.0.mca")
     );
     // The leftover trio still works as a plugin world under hashed
-    // `plugin:<base>:<logical dimension>` keys, without stealing vanilla
+    // `<base>:minecraft:<logical dimension>` keys, without stealing vanilla
     // codes.
     assert_eq!(found.len(), 4);
     let leftover_over: Vec<_> = found
         .iter()
-        .filter(|r| r.dim == resolve_custom_dimension("plugin:world:overworld"))
+        .filter(|r| r.dim == resolve_custom_dimension("world:minecraft:overworld"))
         .collect();
     assert_eq!(leftover_over.len(), 1);
     assert_eq!(
@@ -520,7 +554,7 @@ fn level_name_wins_over_a_leftover_world_folder() {
     );
     let leftover_nether: Vec<_> = found
         .iter()
-        .filter(|r| r.dim == resolve_custom_dimension("plugin:world:the_nether"))
+        .filter(|r| r.dim == resolve_custom_dimension("world:minecraft:the_nether"))
         .collect();
     assert_eq!(leftover_nether.len(), 1);
     assert_eq!(
@@ -580,7 +614,7 @@ fn duplicate_coordinate_names_resolve_deterministically() {
 #[test]
 fn nested_vanilla_copy_gets_hashed_codes() {
     // A full vanilla world copied under the root keeps working as a plugin
-    // world under hashed `plugin:<base>:<logical dimension>` namespaces
+    // world under hashed `<base>:minecraft:<logical dimension>` namespaces
     // instead of colliding with the outer namespaces.
     let root_path = tempdir("nested");
     let root = HostWorldTree::new(&root_path).unwrap();
@@ -601,11 +635,11 @@ fn nested_vanilla_copy_gets_hashed_codes() {
         entries[0].path.clone()
     };
     assert_eq!(
-        at(resolve_custom_dimension("plugin:old:overworld")),
+        at(resolve_custom_dimension("old:minecraft:overworld")),
         root_path.join("old/region/r.0.0.mca")
     );
     assert_eq!(
-        at(resolve_custom_dimension("plugin:old:the_nether")),
+        at(resolve_custom_dimension("old:minecraft:the_nether")),
         root_path.join("old/DIM-1/region/r.0.0.mca")
     );
     cleanup(&root_path);

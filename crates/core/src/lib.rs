@@ -36,13 +36,13 @@ pub fn hash_blob(payload: &[u8]) -> BlobHash {
     BlobHash(*blake3::hash(payload).as_bytes())
 }
 
-/// Stable `Dimension` for a `<namespace>:<name>` dimension identifier.
+/// Stable `Dimension` for a dimension identifier.
 ///
-/// Datapack dimensions keep their `<namespace>:<name>` pair; a plugin
-/// world names its own dimensions `plugin:<base>:<logical dimension>`.
-/// Hashes the identifier via `anvil`; a hash colliding with a reserved
-/// vanilla code is remapped away so custom dimensions can never alias
-/// vanilla history.
+/// The elected world's datapack dimensions use their `<namespace>:<name>`
+/// pair; every dimension of a plugin world is scoped to the world as
+/// `<base>:<namespace>:<name>`. Hashes the identifier via `anvil`; a hash
+/// colliding with a reserved vanilla code is remapped away so custom
+/// dimensions can never alias vanilla history.
 pub fn resolve_custom_dimension(identifier: &str) -> Dimension {
     let dim = sekai_anvil::custom_dimension_id(identifier);
     if dim == Dimension::OVERWORLD || dim == Dimension::NETHER || dim == Dimension::END {
