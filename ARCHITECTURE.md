@@ -138,9 +138,9 @@ world names its dimensions `<base>:<logical dimension>` (its
 `<base>_nether/DIM-1` is `<base>:the_nether`), so distinct worlds never
 silently share coordinates. Trio detection runs on container roots only,
 so a nested folder can never steal the vanilla namespace. Opening a tree
-elects the layout and resolves each derivable dimension directory once;
-operations then use those resolved paths and never re-inspect the layout.
-Missing files under non-derivable codes fail loudly
+elects the layout once; path derivation computes each dimension directory
+directly from it, never re-inspecting the tree to re-elect. Missing files
+under non-derivable codes fail loudly
 (`UnknownRegionPath`); rollback restores those through their discovered
 folders, preferring same-dimension siblings over derived paths when
 folders moved since the backup.

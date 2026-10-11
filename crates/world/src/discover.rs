@@ -139,11 +139,26 @@ impl Layout {
             region_x,
             region_z,
         };
-        let dir = self
-            .vanilla_dirs(root)
-            .into_iter()
-            .find_map(|(d, dir)| (d == dim).then_some(dir))
-            .ok_or_else(unknown)?;
+        let root = root.as_ref();
+        // Derive exactly the requested directory: building the whole
+        // `vanilla_dirs` array (with its `format!` siblings) on every
+        // per-region derivation is needless allocation.
+        let dir = match self {
+            Self::LegacyVanilla => match dim {
+                Dimension::OVERWORLD => root.to_path_buf(),
+                Dimension::NETHER => root.join("DIM-1"),
+                Dimension::END => root.join("DIM1"),
+                _ => return Err(unknown()),
+            },
+            Self::Vanilla => minecraft_dim(root, dim).ok_or_else(unknown)?,
+            Self::LegacyPaper { base } => match dim {
+                Dimension::OVERWORLD => root.join(base),
+                Dimension::NETHER => root.join(format!("{base}_nether")).join("DIM-1"),
+                Dimension::END => root.join(format!("{base}_the_end")).join("DIM1"),
+                _ => return Err(unknown()),
+            },
+            Self::Paper { base } => minecraft_dim(root.join(base), dim).ok_or_else(unknown)?,
+        };
         let kind_dir = kind_dir(kind).ok_or_else(unknown)?;
         Ok(dir
             .join(kind_dir)
@@ -159,6 +174,24 @@ fn minecraft_trio(minecraft: impl AsRef<Path>) -> [(Dimension, PathBuf); 3] {
         (Dimension::NETHER, minecraft.join("the_nether")),
         (Dimension::END, minecraft.join("the_end")),
     ]
+}
+
+/// `dimensions/minecraft/<name>` directory of a vanilla dimension under
+/// `world`.
+fn minecraft_dim(world: impl AsRef<Path>, dim: Dimension) -> Option<PathBuf> {
+    let name = match dim {
+        Dimension::OVERWORLD => "overworld",
+        Dimension::NETHER => "the_nether",
+        Dimension::END => "the_end",
+        _ => return None,
+    };
+    Some(
+        world
+            .as_ref()
+            .join("dimensions")
+            .join("minecraft")
+            .join(name),
+    )
 }
 
 /// Elect the single layout for `root`.
