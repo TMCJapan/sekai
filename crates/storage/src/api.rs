@@ -38,7 +38,8 @@ pub enum StorageError {
     },
     /// A writing run holds the store; `gc` must not run alongside it.
     #[error(
-        "store is in use by a running backup (marker {path}{holder}): a backup writes blobs before it commits the rows that reference them, so collecting now would unlink blobs the next commit still needs. Wait for it to finish, or remove the marker if no backup is running."
+        "store is in use by a running backup (marker {path}{holder}): a backup writes blobs before it commits the rows that reference them, so collecting now would unlink blobs the next commit still needs. Wait for it to finish, or remove the marker if no backup is running.",
+        path = path.display()
     )]
     StoreBusy {
         /// Marker file that was found.

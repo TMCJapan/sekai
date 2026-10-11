@@ -103,6 +103,38 @@ jobs:
       - name: Clippy
         run: cargo clippy ${{ matrix.packages }} --target ${{ matrix.target }} --no-default-features -- -D warnings
 
+  features:
+    name: Feature combinations (cargo-hack)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Setup Rust toolchain and cache
+        uses: ./.github/actions/setup-rust
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ""
+          components: clippy
+          cache-key: features
+
+      # After the cache step on purpose: `rust-cache` restores `~/.cargo/bin`,
+      # which is where `install-action` drops the binary.
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@83ac0ad63c0167e6f06796fab0fce28db1bf3db0
+        with:
+          tool: cargo-hack
+
+      # `--each-feature` walks default, `--no-default-features`, every single
+      # backend feature, and `--all-features` per package. Only the crates that
+      # declare backend features are listed; the pure crates have none, and
+      # their default-feature clippy pass already runs in `test`.
+      # `--no-dev-deps` keeps dev-only dependencies (tokio, criterion) out of
+      # feature resolution.
+      - name: Check feature combinations
+        run: cargo hack clippy -p sekai-storage -p sekai-app -p sekai-cli --each-feature --no-dev-deps -- -D warnings
+
   # Split from `dist` below so the checks and the release build get a runner
   # each.
   rustdoc:

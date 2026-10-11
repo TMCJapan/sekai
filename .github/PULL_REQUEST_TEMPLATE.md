@@ -28,6 +28,7 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo clippy -p sekai-util -p sekai-anvil -p sekai-nbt -p sekai-core --target thumbv7m-none-eabi -- -D warnings
 cargo clippy -p sekai-util -p sekai-anvil -p sekai-nbt -p sekai-core --target wasm32-unknown-unknown -- -D warnings
+cargo hack clippy -p sekai-storage -p sekai-app -p sekai-cli --each-feature --no-dev-deps -- -D warnings
 cargo nextest run --workspace
 cargo deny check
 cargo machete
