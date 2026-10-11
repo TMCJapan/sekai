@@ -32,9 +32,10 @@ impl ContentHasher {
     }
 }
 
-/// Stable dimension identifier derived from a custom dimension path.
-pub fn custom_dimension_id(relative: &str) -> Dimension {
-    let digest = blake3::hash(relative.as_bytes());
+/// Stable dimension identifier derived from a `<namespace>:<name>`
+/// dimension identifier.
+pub fn custom_dimension_id(identifier: &str) -> Dimension {
+    let digest = blake3::hash(identifier.as_bytes());
 
     let b = digest.as_bytes();
     Dimension::new(i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
@@ -66,10 +67,10 @@ mod tests {
 
     #[test]
     fn custom_ids_are_stable() {
-        let a = custom_dimension_id("dimensions/aether/sky");
+        let a = custom_dimension_id("aether:sky");
 
-        assert_eq!(a, custom_dimension_id("dimensions/aether/sky",));
+        assert_eq!(a, custom_dimension_id("aether:sky",));
 
-        assert_ne!(a, custom_dimension_id("dimensions/aether/other",));
+        assert_ne!(a, custom_dimension_id("aether:other",));
     }
 }

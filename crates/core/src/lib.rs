@@ -36,13 +36,14 @@ pub fn hash_blob(payload: &[u8]) -> BlobHash {
     BlobHash(*blake3::hash(payload).as_bytes())
 }
 
-/// Stable `Dimension` for a custom `dimensions/<ns>/<name>` path.
+/// Stable `Dimension` for a `<namespace>:<name>` dimension identifier.
 ///
-/// Hashes the relative path via `anvil`; a hash colliding with a reserved
-/// vanilla code is remapped away so custom dimensions can never alias
-/// vanilla history.
-pub fn resolve_custom_dimension(relative: &str) -> Dimension {
-    let dim = sekai_anvil::custom_dimension_id(relative);
+/// Datapack dimensions keep their `<namespace>:<name>` pair; a plugin
+/// world names its dimensions `<base>:<logical dimension>`. Hashes the
+/// identifier via `anvil`; a hash colliding with a reserved vanilla code is
+/// remapped away so custom dimensions can never alias vanilla history.
+pub fn resolve_custom_dimension(identifier: &str) -> Dimension {
+    let dim = sekai_anvil::custom_dimension_id(identifier);
     if dim == Dimension::OVERWORLD || dim == Dimension::NETHER || dim == Dimension::END {
         Dimension::new(dim.raw().wrapping_add(0x0100_0000))
     } else {
@@ -105,9 +106,9 @@ mod tests {
 
     #[test]
     fn custom_dimensions_are_stable_and_reserved_free() {
-        let a = resolve_custom_dimension("dimensions/aether/sky");
-        assert_eq!(a, resolve_custom_dimension("dimensions/aether/sky"));
-        assert_ne!(a, resolve_custom_dimension("dimensions/aether/other"));
+        let a = resolve_custom_dimension("aether:sky");
+        assert_eq!(a, resolve_custom_dimension("aether:sky"));
+        assert_ne!(a, resolve_custom_dimension("aether:other"));
         assert_ne!(a, Dimension::OVERWORLD);
         assert_ne!(a, Dimension::NETHER);
         assert_ne!(a, Dimension::END);

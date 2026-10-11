@@ -1,16 +1,25 @@
 //! World layout discovery: find every `.mca` and name its namespace.
 //!
-//! Rationale: three server families share the `.mca` format but not the
-//! directory layout. Vanilla uses one folder (`region/`, `DIM-1/`,
-//! `DIM1/`, and since 26.1 `dimensions/minecraft/<name>/`). Bukkit-family
-//! servers (Bukkit/Spigot/Paper/Purpur, pre-26.1 layout) split dimensions
-//! into `<base>/`, `<base>_nether/DIM-1/`, `<base>_the_end/DIM1/`, where
-//! `base` is `level-name` (`world` by default); Paper 26.1+ migrates to the
-//! vanilla layout. Plugin worlds (Multiverse et al.) are arbitrary folders.
+//! Rationale: four layouts share the `.mca` format but not the directory
+//! layout. Legacy vanilla uses one folder (`region/`, `DIM-1/`, `DIM1/`);
+//! vanilla 26.1 moved everything under `dimensions/minecraft/<name>/`.
+//! Bukkit-family servers (Bukkit/Spigot/Paper/Purpur, pre-26.1 layout)
+//! split dimensions into `<base>/`, `<base>_nether/DIM-1/`,
+//! `<base>_the_end/DIM1/`, where `base` is `level-name` (`world` by
+//! default); Paper 26.1+ keeps the split base folder but moves the world
+//! into `<base>/dimensions/minecraft/<name>/`.
 //!
-//! Namespaces follow one rule: the exact default trio and vanilla trees
-//! keep vanilla codes (derivable, history-stable); every other folder gets
-//! a stable hash of its root-relative path, so distinct worlds can never
+//! Exactly one layout is elected per root ([`resolve`]) and only its files
+//! are discovered: leftovers from any other layout stay invisible instead
+//! of being merged or overwritten. Plugin worlds (Multiverse et al.)
+//! beside the elected one are still discovered, each electing its own
+//! single layout.
+//!
+//! Namespaces follow one rule: the elected world's default trio and
+//! `minecraft/*` tree keep vanilla codes (derivable, history-stable,
+//! migration-continuous). Datapack and plugin dimensions hash their
+//! `<namespace>:<name>` identifier, and a plugin world names its
+//! dimensions `<base>:<logical dimension>`, so distinct worlds can never
 //! silently share coordinates. Non-derivable codes surface
 //! `UnknownRegionPath` for missing files instead of writing somewhere
 //! wrong; rollback restores those through their discovered folders.

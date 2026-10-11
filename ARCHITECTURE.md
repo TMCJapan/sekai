@@ -110,30 +110,40 @@ the hot path stays decode-free.
 
 ## World Layouts
 
-Three server families share the `.mca` format but not the directory
-layout. Pass a server root for Bukkit-family servers or a single world
-folder for vanilla ones — the same path on every run.
+Four layouts share the `.mca` format but not the directory layout. Pass
+a server root for Bukkit-family servers or a single world folder for
+vanilla ones — the same path on every run.
 
-- Vanilla: one folder (`region/`, `DIM-1/`, `DIM1/`, and since 26.1
-  `dimensions/minecraft/<name>/`).
-- Bukkit-family (Bukkit/Spigot/Paper/Purpur, pre-26.1 layout): split
-  folders `<base>/`, `<base>_nether/DIM-1/`, `<base>_the_end/DIM1/`,
-  where `base` is `level-name` (`world` by default). Paper 26.1+
-  migrates to the vanilla layout.
-- Plugin worlds (Multiverse et al.): arbitrary folders, detected by
-  contents (`level.dat`, `DIM-1`/`DIM1` nesting, or kind directories
-  holding region files).
+- Legacy vanilla: one folder (`region/`, `DIM-1/`, `DIM1/`).
+- Vanilla 26.1: `dimensions/minecraft/<name>/`.
+- Legacy Bukkit-family (Bukkit/Spigot/Paper/Purpur, pre-26.1 layout):
+  split folders `<base>/`, `<base>_nether/DIM-1/`,
+  `<base>_the_end/DIM1/`, where `base` is `level-name` (`world` by
+  default).
+- Paper 26.1+: the split `<base>/` folder holding
+  `dimensions/minecraft/<name>/`.
+- Plugin worlds (Multiverse et al.): arbitrary world folders beside the
+  elected one, detected by contents (`level.dat`, `DIM-1`/`DIM1`
+  nesting, or kind directories holding region files).
 
-Namespaces: the default trio and `minecraft/*` trees keep vanilla codes
-(derivable, history-stable, migration-continuous); every other folder
-hashes its root-relative path so distinct worlds never silently share
-coordinates. Trio detection runs on container roots only, so a nested
-folder can never steal the vanilla namespace. Opening a tree classifies
-the root and resolves each derivable dimension directory once; operations
-then use those resolved paths and never re-inspect the layout. Missing
-files under non-derivable codes fail loudly (`UnknownRegionPath`); rollback
-restores those through their discovered folders, preferring same-dimension
-siblings over derived paths when folders moved since the backup.
+Exactly one layout is elected when a tree is opened, and only its files
+are discovered: leftovers from any other layout (conversion residue, a
+stray `dimensions/` tree) stay invisible instead of being merged or
+overwritten. Plugin worlds still each elect their own single layout.
+
+Namespaces: the elected world's default trio and `minecraft/*` trees keep
+vanilla codes (derivable, history-stable, migration-continuous). Datapack
+and plugin dimensions hash their `<namespace>:<name>` identifier; a plugin
+world names its dimensions `<base>:<logical dimension>` (its
+`<base>_nether/DIM-1` is `<base>:the_nether`), so distinct worlds never
+silently share coordinates. Trio detection runs on container roots only,
+so a nested folder can never steal the vanilla namespace. Opening a tree
+elects the layout and resolves each derivable dimension directory once;
+operations then use those resolved paths and never re-inspect the layout.
+Missing files under non-derivable codes fail loudly
+(`UnknownRegionPath`); rollback restores those through their discovered
+folders, preferring same-dimension siblings over derived paths when
+folders moved since the backup.
 
 # Data & Hashing Model
 
