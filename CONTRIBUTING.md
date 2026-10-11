@@ -173,6 +173,9 @@ cargo clippy -p sekai-util -p sekai-anvil -p sekai-nbt -p sekai-core --target wa
 # Run all unit and integration tests (default backend)
 cargo nextest run --workspace
 
+# Feature-combination lint: default, none, each backend, all
+cargo hack clippy -p sekai-storage -p sekai-app -p sekai-cli --each-feature --no-dev-deps -- -D warnings
+
 # Backend matrix (when touching storage backends)
 cargo nextest run -p sekai-storage
 cargo nextest run -p sekai-storage --no-default-features --features backend-sqlite
