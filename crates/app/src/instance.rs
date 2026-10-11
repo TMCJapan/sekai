@@ -7,6 +7,14 @@
 //! work, [`WorldHandleMut`] for runs that write (backup, rollback), so write
 //! exclusivity shows in the type.
 
+// A build with no compiled backend has nothing left to await in `open`/`init`,
+// but their future-returning signatures are part of the API across every
+// feature combination.
+#![cfg_attr(
+    not(feature = "backend-sqlite"),
+    allow(clippy::unused_async, clippy::unused_async_trait_impl)
+)]
+
 use sekai_core::{Snapshot, SnapshotId};
 use sekai_world::WorldTree;
 
@@ -25,14 +33,16 @@ impl SekaiInstance {
     /// was never initialized fails without creating anything: only
     /// [`Self::init`] materializes a store.
     pub async fn open(store_url: &str) -> Result<Self, AppError> {
-        let (kind, rest) = sekai_storage::parse_backend_url(store_url)?;
-        // `Sqlite` is currently the only variant; the pattern becomes
-        // refutable once stub backends land, and anything else fails below.
         #[cfg(feature = "backend-sqlite")]
-        if kind == sekai_storage::BackendKind::Sqlite {
-            return Ok(Self {
-                store: sekai_storage::open_sqlite(rest).await?,
-            });
+        {
+            let (kind, rest) = sekai_storage::parse_backend_url(store_url)?;
+            // `Sqlite` is currently the only variant; the pattern becomes
+            // refutable once stub backends land, and anything else fails below.
+            if kind == sekai_storage::BackendKind::Sqlite {
+                return Ok(Self {
+                    store: sekai_storage::open_sqlite(rest).await?,
+                });
+            }
         }
         Err(sekai_storage::StorageError::UnsupportedBackend {
             url: store_url.to_owned(),
@@ -46,12 +56,14 @@ impl SekaiInstance {
     /// must go through [`Self::open`] so a missing store fails loudly instead
     /// of leaving an empty store behind.
     pub async fn init(store_url: &str) -> Result<Self, AppError> {
-        let (kind, rest) = sekai_storage::parse_backend_url(store_url)?;
         #[cfg(feature = "backend-sqlite")]
-        if kind == sekai_storage::BackendKind::Sqlite {
-            return Ok(Self {
-                store: sekai_storage::init_sqlite(rest).await?,
-            });
+        {
+            let (kind, rest) = sekai_storage::parse_backend_url(store_url)?;
+            if kind == sekai_storage::BackendKind::Sqlite {
+                return Ok(Self {
+                    store: sekai_storage::init_sqlite(rest).await?,
+                });
+            }
         }
         Err(sekai_storage::StorageError::UnsupportedBackend {
             url: store_url.to_owned(),
