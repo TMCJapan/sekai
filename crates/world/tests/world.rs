@@ -1,6 +1,6 @@
 //! World filesystem behavior: discovery, fingerprints, scans, swaps.
 
-use sekai_core::{Dimension, RegionKey, RegionKind};
+use sekai_core::{Dimension, RegionKey, RegionKind, resolve_custom_dimension};
 use sekai_world::{
     HostWorldTree, WorldTree, atomic_swap, fingerprint_file, open_image, scan_world,
 };
@@ -38,14 +38,17 @@ fn write(path: impl AsRef<Path>, bytes: &[u8]) {
 }
 
 #[test]
-fn discovers_legacy_and_new_layouts() {
+fn dimensions_tree_elects_vanilla_layout() {
+    // A 26.1 vanilla world keeps every dimension under `dimensions/`; legacy
+    // files still sitting at the root are pre-migration leftovers and must
+    // not be scanned once exactly one layout is elected.
     let world_path = tempdir("layouts");
     let image = one_chunk_image();
-    // Legacy triple.
+    // Leftovers from the pre-26.1 layout.
     write(world_path.join("region/r.0.0.mca"), &image);
     write(world_path.join("DIM-1/region/r.0.0.mca"), &image);
     write(world_path.join("DIM1/entities/r.1.0.mca"), &image);
-    // New layout.
+    // The elected 26.1 tree.
     write(
         world_path.join("dimensions/minecraft/overworld/region/r.2.0.mca"),
         &image,
@@ -57,29 +60,38 @@ fn discovers_legacy_and_new_layouts() {
     // Foreign files are ignored.
     write(world_path.join("region/notes.txt"), b"nope");
 
-    // Layout resolution happens once, against the tree on disk.
     let world = HostWorldTree::new(&world_path).unwrap();
-    let mut found = world.discover().unwrap();
-    found.sort_by_key(|r| (r.dim.raw(), r.kind.raw(), r.region_x, r.region_z));
-    let keys: Vec<_> = found
+    let found = world.discover().unwrap();
+    assert_eq!(
+        found.len(),
+        2,
+        "only the elected layout is discovered: {found:?}"
+    );
+
+    let overworld: Vec<_> = found
         .iter()
-        .map(|r| (r.dim, r.kind, r.region_x, r.region_z))
+        .filter(|r| r.dim == Dimension::OVERWORLD)
         .collect();
-    assert!(keys.contains(&(Dimension::OVERWORLD, RegionKind::REGION, 0, 0)));
-    assert!(keys.contains(&(Dimension::NETHER, RegionKind::REGION, 0, 0)));
-    assert!(keys.contains(&(Dimension::END, RegionKind::ENTITIES, 1, 0)));
-    assert!(keys.contains(&(Dimension::OVERWORLD, RegionKind::REGION, 2, 0)));
-    // Custom dimension resolves stably through discovery.
+    assert_eq!(overworld.len(), 1);
+    assert_eq!(
+        overworld[0].path,
+        world_path.join("dimensions/minecraft/overworld/region/r.2.0.mca")
+    );
+    assert_eq!((overworld[0].region_x, overworld[0].region_z), (2, 0));
+
+    // Datapack/plugin dimensions hash their `<namespace>:<name>` pair.
     let custom: Vec<_> = found
         .iter()
         .filter(|r| r.region_x == 0 && r.region_z == 1)
         .collect();
     assert_eq!(custom.len(), 1);
-    assert_ne!(custom[0].dim, Dimension::OVERWORLD);
-    assert_ne!(custom[0].dim, Dimension::NETHER);
-    assert_ne!(custom[0].dim, Dimension::END);
-    assert_eq!(found.len(), 5);
-    // An existing `dimensions/` tree elects 26.1 derivation.
+    assert_eq!(custom[0].dim, resolve_custom_dimension("aether:sky"));
+    assert_eq!(
+        custom[0].path,
+        world_path.join("dimensions/aether/sky/region/r.0.1.mca")
+    );
+
+    // Derivation targets the elected 26.1 tree.
     assert_eq!(
         world
             .derive_path(Dimension::OVERWORLD, RegionKind::REGION, 2, 0)
@@ -87,6 +99,102 @@ fn discovers_legacy_and_new_layouts() {
         world_path.join("dimensions/minecraft/overworld/region/r.2.0.mca")
     );
     cleanup(&world_path);
+}
+
+#[test]
+fn discovers_legacy_vanilla_layout() {
+    let world_path = tempdir("legacy-vanilla");
+    let image = one_chunk_image();
+    write(world_path.join("region/r.0.0.mca"), &image);
+    write(world_path.join("DIM-1/region/r.0.0.mca"), &image);
+    write(world_path.join("DIM1/entities/r.1.0.mca"), &image);
+
+    let world = HostWorldTree::new(&world_path).unwrap();
+    let found = world.discover().unwrap();
+    assert_eq!(found.len(), 3);
+    let at = |dim, kind| {
+        found
+            .iter()
+            .find(|r| r.dim == dim && r.kind == kind)
+            .unwrap()
+            .path
+            .clone()
+    };
+    assert_eq!(
+        at(Dimension::OVERWORLD, RegionKind::REGION),
+        world_path.join("region/r.0.0.mca")
+    );
+    assert_eq!(
+        at(Dimension::NETHER, RegionKind::REGION),
+        world_path.join("DIM-1/region/r.0.0.mca")
+    );
+    assert_eq!(
+        at(Dimension::END, RegionKind::ENTITIES),
+        world_path.join("DIM1/entities/r.1.0.mca")
+    );
+    assert_eq!(
+        world
+            .derive_path(Dimension::NETHER, RegionKind::REGION, 0, 0)
+            .unwrap(),
+        world_path.join("DIM-1/region/r.0.0.mca")
+    );
+    cleanup(&world_path);
+}
+
+#[test]
+fn discovers_paper_26_1_layout_under_level_name() {
+    // Paper 26.1+ keeps splitting worlds by `level-name`, but the world
+    // folder now holds the 26.1 `dimensions/` tree. Pre-migration leftovers
+    // next to it must not be scanned.
+    let root_path = tempdir("paper-dimensions");
+    let image = one_chunk_image();
+    write(
+        root_path.join("server.properties"),
+        b"level-name=survival\n",
+    );
+    write(
+        root_path.join("survival/dimensions/minecraft/overworld/region/r.0.0.mca"),
+        &image,
+    );
+    write(
+        root_path.join("survival/dimensions/minecraft/the_nether/region/r.0.0.mca"),
+        &image,
+    );
+    write(
+        root_path.join("survival/dimensions/aether/sky/region/r.0.1.mca"),
+        &image,
+    );
+    write(root_path.join("survival/region/r.9.9.mca"), &image);
+    write(
+        root_path.join("survival_nether/DIM-1/region/r.9.9.mca"),
+        &image,
+    );
+
+    let root = HostWorldTree::new(&root_path).unwrap();
+    let found = root.discover().unwrap();
+    assert_eq!(
+        found.len(),
+        3,
+        "only the elected layout is discovered: {found:?}"
+    );
+    assert!(found.iter().any(|r| {
+        r.dim == Dimension::OVERWORLD
+            && r.path == root_path.join("survival/dimensions/minecraft/overworld/region/r.0.0.mca")
+    }));
+    assert!(found.iter().any(|r| {
+        r.dim == Dimension::NETHER
+            && r.path == root_path.join("survival/dimensions/minecraft/the_nether/region/r.0.0.mca")
+    }));
+    assert!(found.iter().any(|r| {
+        r.dim == resolve_custom_dimension("aether:sky")
+            && r.path == root_path.join("survival/dimensions/aether/sky/region/r.0.1.mca")
+    }));
+    assert_eq!(
+        root.derive_path(Dimension::OVERWORLD, RegionKind::REGION, 0, 0)
+            .unwrap(),
+        root_path.join("survival/dimensions/minecraft/overworld/region/r.0.0.mca")
+    );
+    cleanup(&root_path);
 }
 
 #[test]
@@ -191,14 +299,23 @@ fn multiverse_worlds_never_collide() {
     let dims: Vec<_> = found.iter().map(|r| r.dim).collect();
     assert!(dims.contains(&Dimension::OVERWORLD));
     assert!(dims.contains(&Dimension::NETHER));
-    let hashed: Vec<_> = found
+    // The plugin trio is keyed by its base folder and the logical dimension
+    // names, so it can never alias the main world's coordinates.
+    let sky: Vec<_> = found
         .iter()
-        .filter(|r| {
-            r.dim != Dimension::OVERWORLD && r.dim != Dimension::NETHER && r.dim != Dimension::END
-        })
+        .filter(|r| r.dim == resolve_custom_dimension("sky:overworld"))
         .collect();
-    assert_eq!(hashed.len(), 2);
-    assert_ne!(hashed[0].dim, hashed[1].dim);
+    assert_eq!(sky.len(), 1);
+    assert_eq!(sky[0].path, root_path.join("sky/region/r.0.0.mca"));
+    let sky_nether: Vec<_> = found
+        .iter()
+        .filter(|r| r.dim == resolve_custom_dimension("sky:the_nether"))
+        .collect();
+    assert_eq!(sky_nether.len(), 1);
+    assert_eq!(
+        sky_nether[0].path,
+        root_path.join("sky_nether/DIM-1/region/r.0.0.mca")
+    );
     // No two entries share a key: nothing was silently dropped.
     let mut keys: Vec<_> = found
         .iter()
@@ -209,16 +326,22 @@ fn multiverse_worlds_never_collide() {
     assert_eq!(keys.len(), 4);
     // Hashed dims are not derivable; rollback uses discovered folders.
     assert!(matches!(
-        root.derive_path(hashed[0].dim, RegionKind::REGION, 0, 0),
+        root.derive_path(
+            resolve_custom_dimension("sky:overworld"),
+            RegionKind::REGION,
+            0,
+            0
+        ),
         Err(sekai_world::WorldError::UnknownRegionPath { .. })
     ));
     cleanup(&root_path);
 }
 
 #[test]
-fn trio_wins_over_conversion_leftovers() {
-    // A stale root-level DIM-1 next to a live Bukkit trio: the trio is live
-    // server data, the leftover is pre-migration residue.
+fn root_level_leftovers_are_not_scanned() {
+    // A stale root-level DIM-1 next to a live Bukkit trio: exactly one
+    // layout is respected, so the leftover is ignored entirely instead of
+    // being merged or overwritten.
     let root_path = tempdir("stale");
     let mut stale = one_chunk_image();
     stale[8192 + 4] = 9;
@@ -230,6 +353,7 @@ fn trio_wins_over_conversion_leftovers() {
 
     let root = HostWorldTree::new(&root_path).unwrap();
     let found = root.discover().unwrap();
+    assert_eq!(found.len(), 2, "the leftover must stay invisible");
     let nether: Vec<_> = found
         .iter()
         .filter(|r| r.dim == Dimension::NETHER)
@@ -349,8 +473,27 @@ fn level_name_wins_over_a_leftover_world_folder() {
         nether[0].path,
         root_path.join("survival_nether/DIM-1/region/r.0.0.mca")
     );
-    // The leftover trio is still discoverable, under its own namespace.
+    // The leftover trio still works as a plugin world under hashed
+    // `<base>:<logical dimension>` keys, without stealing vanilla codes.
     assert_eq!(found.len(), 4);
+    let leftover_over: Vec<_> = found
+        .iter()
+        .filter(|r| r.dim == resolve_custom_dimension("world:overworld"))
+        .collect();
+    assert_eq!(leftover_over.len(), 1);
+    assert_eq!(
+        leftover_over[0].path,
+        root_path.join("world/region/r.9.9.mca")
+    );
+    let leftover_nether: Vec<_> = found
+        .iter()
+        .filter(|r| r.dim == resolve_custom_dimension("world:the_nether"))
+        .collect();
+    assert_eq!(leftover_nether.len(), 1);
+    assert_eq!(
+        leftover_nether[0].path,
+        root_path.join("world_nether/DIM-1/region/r.0.0.mca")
+    );
     cleanup(&root_path);
 }
 
@@ -403,8 +546,9 @@ fn duplicate_coordinate_names_resolve_deterministically() {
 
 #[test]
 fn nested_vanilla_copy_gets_hashed_codes() {
-    // A full vanilla world copied under the root keeps working under hashed
-    // namespaces instead of colliding with the outer namespaces.
+    // A full vanilla world copied under the root keeps working as a plugin
+    // world under hashed `<base>:<logical dimension>` namespaces instead of
+    // colliding with the outer namespaces.
     let root_path = tempdir("nested");
     let root = HostWorldTree::new(&root_path).unwrap();
     let image = one_chunk_image();
@@ -418,11 +562,19 @@ fn nested_vanilla_copy_gets_hashed_codes() {
             .iter()
             .any(|r| r.dim == Dimension::OVERWORLD && r.path == root_path.join("region/r.0.0.mca"))
     );
-    let hashed = found
-        .iter()
-        .filter(|r| r.dim != Dimension::OVERWORLD)
-        .count();
-    assert_eq!(hashed, 2);
+    let at = |dim| {
+        let entries: Vec<_> = found.iter().filter(|r| r.dim == dim).collect();
+        assert_eq!(entries.len(), 1);
+        entries[0].path.clone()
+    };
+    assert_eq!(
+        at(resolve_custom_dimension("old:overworld")),
+        root_path.join("old/region/r.0.0.mca")
+    );
+    assert_eq!(
+        at(resolve_custom_dimension("old:the_nether")),
+        root_path.join("old/DIM-1/region/r.0.0.mca")
+    );
     cleanup(&root_path);
 }
 
