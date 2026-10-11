@@ -128,9 +128,9 @@ where
         // Scope before the blocking pass: out-of-scope regions are dropped
         // from both sides, so the file pass below cannot tell they exist.
         let mut groups = plan.groups;
-        groups.retain(|key, _| scope.matches_region(*key));
+        groups.retain(|key, _| scope.matches_region(key));
         let mut tombstones = plan.tombstones;
-        tombstones.retain(|key, _| scope.matches_region(*key));
+        tombstones.retain(|key, _| scope.matches_region(key));
 
         // Discovery walks the filesystem: clone the handle and run it on
         // the blocking pool.
@@ -151,7 +151,7 @@ where
         })
         .await??;
         let discover_dt = discover_started.elapsed();
-        discovered.retain(|key, _| scope.matches_region(*key));
+        discovered.retain(|key, _| scope.matches_region(key));
 
         let job = RollbackJob {
             groups,
@@ -208,9 +208,9 @@ where
         world,
         discovered,
     } = job;
-    let mut keys: BTreeSet<RegionKey> = discovered.keys().copied().collect();
-    keys.extend(groups.keys().copied());
-    keys.extend(tombstones.keys().copied());
+    let mut keys: BTreeSet<RegionKey> = discovered.keys().cloned().collect();
+    keys.extend(groups.keys().cloned());
+    keys.extend(tombstones.keys().cloned());
 
     let mut report = RollbackReport {
         files_written: 0,
@@ -377,13 +377,15 @@ where
 {
     match policy {
         MissingFilePolicy::Error => Err(sekai_world::WorldError::UnknownRegionPath {
-            dim: key.dim,
+            dim: key.dim.clone(),
             kind: key.kind,
             region_x: key.rx,
             region_z: key.rz,
         }
         .into()),
-        MissingFilePolicy::DerivedOnly => Ok(world.derive_path(key.dim, key.kind, key.rx, key.rz)?),
+        MissingFilePolicy::DerivedOnly => {
+            Ok(world.derive_path(key.dim.clone(), key.kind, key.rx, key.rz)?)
+        }
         MissingFilePolicy::SiblingFirst => sibling_or_derived(discovered, world, key),
     }
 }
@@ -392,7 +394,7 @@ where
 ///
 /// Prefers a same-dimension sibling's directory (folders may have moved
 /// since the backup, e.g. across a 26.1 migration); only derives from the
-/// resolved layout when no sibling exists. Non-derivable namespaces fail
+/// resolved layout when no sibling exists. Non-derivable keys fail
 /// loudly instead of writing somewhere wrong.
 fn sibling_or_derived<T: WorldTree>(
     discovered: &BTreeMap<RegionKey, PathBuf>,
@@ -405,5 +407,5 @@ where
     if let Some(path) = sekai_world::sibling_path(discovered, key) {
         return Ok(path);
     }
-    Ok(world.derive_path(key.dim, key.kind, key.rx, key.rz)?)
+    Ok(world.derive_path(key.dim.clone(), key.kind, key.rx, key.rz)?)
 }

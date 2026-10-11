@@ -14,6 +14,26 @@ impl fmt::Display for ParseCodeError {
 
 impl core::error::Error for ParseCodeError {}
 
+/// Dimension key validation failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DimensionError {
+    /// Key was empty.
+    Empty,
+    /// Key was neither a `namespace:path` id nor a `./`-prefixed folder key.
+    Invalid,
+}
+
+impl fmt::Display for DimensionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "dimension key is empty"),
+            Self::Invalid => write!(f, "invalid dimension id or ./folder key"),
+        }
+    }
+}
+
+impl core::error::Error for DimensionError {}
+
 /// Hex decoding error for 32-byte hashes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HexError {

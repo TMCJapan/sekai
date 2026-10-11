@@ -60,24 +60,22 @@ fn discovers_legacy_and_new_layouts() {
     // Layout resolution happens once, against the tree on disk.
     let world = HostWorldTree::new(&world_path).unwrap();
     let mut found = world.discover().unwrap();
-    found.sort_by_key(|r| (r.dim.raw(), r.kind.raw(), r.region_x, r.region_z));
+    found.sort_by_key(|r| (r.dim.clone(), r.kind.raw(), r.region_x, r.region_z));
     let keys: Vec<_> = found
         .iter()
-        .map(|r| (r.dim, r.kind, r.region_x, r.region_z))
+        .map(|r| (r.dim.clone(), r.kind, r.region_x, r.region_z))
         .collect();
     assert!(keys.contains(&(Dimension::OVERWORLD, RegionKind::REGION, 0, 0)));
     assert!(keys.contains(&(Dimension::NETHER, RegionKind::REGION, 0, 0)));
     assert!(keys.contains(&(Dimension::END, RegionKind::ENTITIES, 1, 0)));
     assert!(keys.contains(&(Dimension::OVERWORLD, RegionKind::REGION, 2, 0)));
-    // Custom dimension resolves stably through discovery.
+    // Custom dimensions keep their namespaced id.
     let custom: Vec<_> = found
         .iter()
         .filter(|r| r.region_x == 0 && r.region_z == 1)
         .collect();
     assert_eq!(custom.len(), 1);
-    assert_ne!(custom[0].dim, Dimension::OVERWORLD);
-    assert_ne!(custom[0].dim, Dimension::NETHER);
-    assert_ne!(custom[0].dim, Dimension::END);
+    assert_eq!(custom[0].dim, Dimension::new("aether:sky"));
     assert_eq!(found.len(), 5);
     // An existing `dimensions/` tree elects 26.1 derivation.
     assert_eq!(
@@ -173,8 +171,9 @@ fn discovers_custom_level_name_trio() {
 
 #[test]
 fn multiverse_worlds_never_collide() {
-    // Main trio keeps vanilla codes; extra world folders hash theirs, so
-    // same-environment worlds cannot silently share coordinates.
+    // Main trio keeps vanilla ids; extra world folders keep their
+    // root-relative folder keys, so same-environment worlds cannot silently
+    // share coordinates.
     let root_path = tempdir("multiverse");
     let image = one_chunk_image();
     write(root_path.join("world/region/r.0.0.mca"), &image);
@@ -188,28 +187,28 @@ fn multiverse_worlds_never_collide() {
     let root = HostWorldTree::new(&root_path).unwrap();
     let found = root.discover().unwrap();
     assert_eq!(found.len(), 4);
-    let dims: Vec<_> = found.iter().map(|r| r.dim).collect();
+    let dims: Vec<_> = found.iter().map(|r| r.dim.clone()).collect();
     assert!(dims.contains(&Dimension::OVERWORLD));
     assert!(dims.contains(&Dimension::NETHER));
-    let hashed: Vec<_> = found
+    let folder: Vec<_> = found
         .iter()
         .filter(|r| {
             r.dim != Dimension::OVERWORLD && r.dim != Dimension::NETHER && r.dim != Dimension::END
         })
         .collect();
-    assert_eq!(hashed.len(), 2);
-    assert_ne!(hashed[0].dim, hashed[1].dim);
+    assert_eq!(folder.len(), 2);
+    assert_ne!(folder[0].dim, folder[1].dim);
     // No two entries share a key: nothing was silently dropped.
     let mut keys: Vec<_> = found
         .iter()
-        .map(|r| (r.dim, r.kind, r.region_x, r.region_z))
+        .map(|r| (r.dim.clone(), r.kind, r.region_x, r.region_z))
         .collect();
     keys.sort();
     keys.dedup();
     assert_eq!(keys.len(), 4);
-    // Hashed dims are not derivable; rollback uses discovered folders.
+    // Folder keys are not derivable; rollback uses discovered folders.
     assert!(matches!(
-        root.derive_path(hashed[0].dim, RegionKind::REGION, 0, 0),
+        root.derive_path(folder[0].dim.clone(), RegionKind::REGION, 0, 0),
         Err(sekai_world::WorldError::UnknownRegionPath { .. })
     ));
     cleanup(&root_path);
@@ -240,10 +239,10 @@ fn trio_wins_over_conversion_leftovers() {
 }
 
 #[test]
-fn empty_overworld_keeps_the_trio_namespaces() {
+fn empty_overworld_keeps_the_trio_keys() {
     // A freshly created (or briefly emptied) overworld has a `region/`
-    // directory but no files in it. Namespaces must not flip to hashed
-    // codes just because the overworld holds nothing right now.
+    // directory but no files in it. Keys must not flip to folder paths just
+    // because the overworld holds nothing right now.
     let root_path = tempdir("empty-overworld");
     let image = one_chunk_image();
     std::fs::create_dir_all(root_path.join("world/region")).unwrap();
@@ -257,11 +256,11 @@ fn empty_overworld_keeps_the_trio_namespaces() {
     );
 
     // An empty `region/` directory already elects the trio, so resolving
-    // now keeps the vanilla namespaces even though no file exists yet.
+    // now keeps the vanilla keys even though no file exists yet.
     let root = HostWorldTree::new(&root_path).unwrap();
 
     // The empty overworld still elects the trio: derivation targets the
-    // `world/` folder rather than hashed codes.
+    // `world/` folder rather than folder keys.
     assert_eq!(
         root.derive_path(Dimension::OVERWORLD, RegionKind::REGION, 0, 0)
             .unwrap(),
@@ -349,7 +348,7 @@ fn level_name_wins_over_a_leftover_world_folder() {
         nether[0].path,
         root_path.join("survival_nether/DIM-1/region/r.0.0.mca")
     );
-    // The leftover trio is still discoverable, under its own namespace.
+    // The leftover trio is still discoverable, under its own folder keys.
     assert_eq!(found.len(), 4);
     cleanup(&root_path);
 }
@@ -402,9 +401,9 @@ fn duplicate_coordinate_names_resolve_deterministically() {
 }
 
 #[test]
-fn nested_vanilla_copy_gets_hashed_codes() {
-    // A full vanilla world copied under the root keeps working under hashed
-    // namespaces instead of colliding with the outer namespaces.
+fn nested_vanilla_copy_gets_folder_keys() {
+    // A full vanilla world copied under the root keeps working under its
+    // folder keys instead of colliding with the outer ids.
     let root_path = tempdir("nested");
     let root = HostWorldTree::new(&root_path).unwrap();
     let image = one_chunk_image();
@@ -418,11 +417,15 @@ fn nested_vanilla_copy_gets_hashed_codes() {
             .iter()
             .any(|r| r.dim == Dimension::OVERWORLD && r.path == root_path.join("region/r.0.0.mca"))
     );
-    let hashed = found
+    let folder = found
         .iter()
         .filter(|r| r.dim != Dimension::OVERWORLD)
         .count();
-    assert_eq!(hashed, 2);
+    assert_eq!(folder, 2);
+    assert!(
+        found.iter().any(|r| r.dim == Dimension::folder("old")
+            && r.path == root_path.join("old/region/r.0.0.mca"))
+    );
     cleanup(&root_path);
 }
 
@@ -464,7 +467,7 @@ fn derives_all_layouts() {
     );
 
     assert!(matches!(
-        modern.derive_path(Dimension::new(4242), RegionKind::REGION, 0, 0),
+        modern.derive_path(Dimension::new("aether:sky"), RegionKind::REGION, 0, 0),
         Err(sekai_world::WorldError::UnknownRegionPath { .. })
     ));
     assert!(matches!(
@@ -479,8 +482,8 @@ fn fingerprints_are_stable_and_change_sensitive() {
     let path = world.join("region/r.0.0.mca");
     write(&path, &one_chunk_image());
     let key = RegionKey::new(Dimension::OVERWORLD, RegionKind::REGION, 0, 0);
-    let a = fingerprint_file(&path, key).unwrap();
-    assert_eq!(a, fingerprint_file(&path, key).unwrap());
+    let a = fingerprint_file(&path, key.clone()).unwrap();
+    assert_eq!(a, fingerprint_file(&path, key.clone()).unwrap());
     // Same size, new header content: must mismatch.
     let mut other = one_chunk_image();
     other[0] ^= 0xFF;
@@ -489,7 +492,7 @@ fn fingerprints_are_stable_and_change_sensitive() {
     write(&path, &other);
     assert_ne!(
         a.content_hash,
-        fingerprint_file(&path, key).unwrap().content_hash
+        fingerprint_file(&path, key.clone()).unwrap().content_hash
     );
     // Missing file is an I/O error, not a fingerprint.
     cleanup(&world);
@@ -515,7 +518,7 @@ fn fingerprint_sees_a_payload_edit_with_preserved_size_and_mtime() {
     let original = one_chunk_image();
     write(&path, &original);
     set_mtime(&path, stamp);
-    let before = fingerprint_file(&path, key).unwrap();
+    let before = fingerprint_file(&path, key.clone()).unwrap();
 
     // Rewrite the chunk payload in place, keeping the compressed length, so
     // the location table and the file size stay byte-identical.

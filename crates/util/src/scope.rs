@@ -101,15 +101,15 @@ pub enum Area {
 }
 
 impl Area {
-    fn contains(&self, coord: ChunkCoord) -> bool {
+    fn contains(&self, coord: &ChunkCoord) -> bool {
         match self {
             Self::All => true,
             Self::Rect(rect) => rect.contains(coord.x, coord.z),
-            Self::Chunks(chunks) => chunks.contains(&coord),
+            Self::Chunks(chunks) => chunks.contains(coord),
         }
     }
 
-    fn matches_region(&self, key: RegionKey) -> bool {
+    fn matches_region(&self, key: &RegionKey) -> bool {
         match self {
             Self::All => true,
             Self::Rect(rect) => rect.overlaps_region(key.rx, key.rz),
@@ -157,7 +157,7 @@ impl Scope {
     }
 
     /// Whether a chunk coordinate falls inside the scope.
-    pub fn contains(&self, coord: ChunkCoord) -> bool {
+    pub fn contains(&self, coord: &ChunkCoord) -> bool {
         match self {
             Self::World => true,
             Self::Kinds(kinds) => kinds.contains(&coord.kind),
@@ -171,7 +171,7 @@ impl Scope {
     }
 
     /// Whether a region file falls inside the scope.
-    pub fn matches_region(&self, key: RegionKey) -> bool {
+    pub fn matches_region(&self, key: &RegionKey) -> bool {
         match self {
             Self::World => true,
             Self::Kinds(kinds) => kinds.contains(&key.kind),
@@ -200,17 +200,17 @@ mod tests {
     #[test]
     fn world_matches_everything() {
         let scope = Scope::World;
-        assert!(scope.contains(ChunkCoord::new(NETHER, REGION, -1, -1)));
-        assert!(scope.matches_region(RegionKey::new(NETHER, REGION, -1, -1)));
+        assert!(scope.contains(&ChunkCoord::new(NETHER, REGION, -1, -1)));
+        assert!(scope.matches_region(&RegionKey::new(NETHER, REGION, -1, -1)));
     }
 
     #[test]
-    fn dimension_selects_namespace_only() {
+    fn dimension_selects_key_only() {
         let scope = Scope::dimension(NETHER);
-        assert!(scope.contains(ChunkCoord::new(NETHER, REGION, 0, 0)));
-        assert!(!scope.contains(ChunkCoord::new(OVER, REGION, 0, 0)));
-        assert!(scope.matches_region(RegionKey::new(NETHER, REGION, 0, 0)));
-        assert!(!scope.matches_region(RegionKey::new(OVER, REGION, 0, 0)));
+        assert!(scope.contains(&ChunkCoord::new(NETHER, REGION, 0, 0)));
+        assert!(!scope.contains(&ChunkCoord::new(OVER, REGION, 0, 0)));
+        assert!(scope.matches_region(&RegionKey::new(NETHER, REGION, 0, 0)));
+        assert!(!scope.matches_region(&RegionKey::new(OVER, REGION, 0, 0)));
     }
 
     #[test]
@@ -272,12 +272,12 @@ mod tests {
             kinds: alloc::vec![REGION],
             areas: alloc::vec![(OVER, Area::Chunks(listed))],
         };
-        assert!(scope.contains(ChunkCoord::new(OVER, REGION, 0, 0)));
-        assert!(!scope.contains(ChunkCoord::new(OVER, REGION, 1, 0)));
-        assert!(scope.matches_region(RegionKey::new(OVER, REGION, 0, 0)));
-        assert!(scope.matches_region(RegionKey::new(OVER, REGION, 1, 0)));
-        assert!(!scope.matches_region(RegionKey::new(OVER, REGION, 2, 0)));
-        assert!(!scope.matches_region(RegionKey::new(NETHER, REGION, 0, 0)));
+        assert!(scope.contains(&ChunkCoord::new(OVER, REGION, 0, 0)));
+        assert!(!scope.contains(&ChunkCoord::new(OVER, REGION, 1, 0)));
+        assert!(scope.matches_region(&RegionKey::new(OVER, REGION, 0, 0)));
+        assert!(scope.matches_region(&RegionKey::new(OVER, REGION, 1, 0)));
+        assert!(!scope.matches_region(&RegionKey::new(OVER, REGION, 2, 0)));
+        assert!(!scope.matches_region(&RegionKey::new(NETHER, REGION, 0, 0)));
     }
 
     #[test]
@@ -286,22 +286,22 @@ mod tests {
             kinds: alloc::vec![ENTITIES],
             areas: alloc::vec![(OVER, Area::All)],
         };
-        assert!(scope.contains(ChunkCoord::new(OVER, ENTITIES, 0, 0)));
-        assert!(!scope.contains(ChunkCoord::new(OVER, REGION, 0, 0)));
-        assert!(!scope.matches_region(RegionKey::new(OVER, REGION, 0, 0)));
+        assert!(scope.contains(&ChunkCoord::new(OVER, ENTITIES, 0, 0)));
+        assert!(!scope.contains(&ChunkCoord::new(OVER, REGION, 0, 0)));
+        assert!(!scope.matches_region(&RegionKey::new(OVER, REGION, 0, 0)));
     }
 
     #[test]
     fn kinds_scope_covers_every_dimension() {
         let scope = Scope::Kinds(alloc::vec![ENTITIES]);
-        assert!(scope.contains(ChunkCoord::new(NETHER, ENTITIES, 7, -7)));
-        assert!(!scope.contains(ChunkCoord::new(OVER, REGION, 0, 0)));
-        assert!(scope.matches_region(RegionKey::new(END, ENTITIES, 0, 0)));
-        assert!(!scope.matches_region(RegionKey::new(OVER, POI_REGION, 0, 0)));
+        assert!(scope.contains(&ChunkCoord::new(NETHER, ENTITIES, 7, -7)));
+        assert!(!scope.contains(&ChunkCoord::new(OVER, REGION, 0, 0)));
+        assert!(scope.matches_region(&RegionKey::new(END, ENTITIES, 0, 0)));
+        assert!(!scope.matches_region(&RegionKey::new(OVER, POI_REGION, 0, 0)));
         // An empty family list selects nothing rather than everything.
         let empty = Scope::Kinds(alloc::vec![]);
-        assert!(!empty.contains(ChunkCoord::new(OVER, REGION, 0, 0)));
-        assert!(!empty.matches_region(RegionKey::new(OVER, REGION, 0, 0)));
+        assert!(!empty.contains(&ChunkCoord::new(OVER, REGION, 0, 0)));
+        assert!(!empty.matches_region(&RegionKey::new(OVER, REGION, 0, 0)));
     }
 
     #[test]
@@ -310,7 +310,7 @@ mod tests {
             kinds: Scope::all_kinds(),
             areas: alloc::vec![],
         };
-        assert!(!scope.contains(ChunkCoord::new(OVER, REGION, 0, 0)));
-        assert!(!scope.matches_region(RegionKey::new(OVER, REGION, 0, 0)));
+        assert!(!scope.contains(&ChunkCoord::new(OVER, REGION, 0, 0)));
+        assert!(!scope.matches_region(&RegionKey::new(OVER, REGION, 0, 0)));
     }
 }

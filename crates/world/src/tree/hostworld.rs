@@ -96,6 +96,6 @@ impl WorldTree for HostWorldTree {
         region_x: i32,
         region_z: i32,
     ) -> Result<PathBuf, Self::Error> {
-        self.dirs.region_path(dim, kind, region_x, region_z)
+        self.dirs.region_path(&dim, kind, region_x, region_z)
     }
 }

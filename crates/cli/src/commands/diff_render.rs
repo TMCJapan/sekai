@@ -20,7 +20,7 @@ pub struct DiffEntryJson {
 
 #[derive(Serialize)]
 pub struct CoordJson {
-    pub dim: i32,
+    pub dim: String,
     pub kind: i32,
     pub x: i32,
     pub z: i32,
@@ -37,7 +37,7 @@ pub fn diff_group_payload(diffs: &[&ChunkDiff]) -> Vec<DiffGroupJson> {
         .iter()
         .map(|diff| DiffGroupJson {
             coord: CoordJson {
-                dim: diff.coord.dim.raw(),
+                dim: diff.coord.dim.to_string(),
                 kind: diff.coord.kind.raw(),
                 x: diff.coord.x,
                 z: diff.coord.z,
@@ -88,7 +88,7 @@ pub fn render_diff_grouped(diffs: &[&ChunkDiff], show_values: bool, style: Style
     diffs
         .iter()
         .map(|diff| {
-            let coord = diff.coord;
+            let coord = &diff.coord;
             let header = format!(
                 "chunk {}/{} ({}, {}):",
                 coord.dim, coord.kind, coord.x, coord.z

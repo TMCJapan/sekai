@@ -52,7 +52,7 @@ pub fn run_scan(world: impl AsRef<Path>, output: TimingArgs, style: Styler) -> a
         println!(
             "{} dim={} kind={} region=r.{}.{} size={} mtime={} chunks={} content={}",
             entry.path.display(),
-            entry.dim.raw(),
+            entry.dim,
             kind_name(entry.kind),
             entry.region_x,
             entry.region_z,
@@ -95,7 +95,7 @@ fn skipped_suffix(skipped: &[sekai_app::ScanSkip]) -> String {
 #[derive(Serialize)]
 struct ScanEntryJson {
     path: String,
-    dim: i32,
+    dim: String,
     kind: i32,
     region_x: i32,
     region_z: i32,
@@ -157,7 +157,7 @@ fn scan_payload(entries: &[sekai_app::RegionScanEntry]) -> Vec<ScanEntryJson> {
         .iter()
         .map(|entry| ScanEntryJson {
             path: entry.path.to_string_lossy().into_owned(),
-            dim: entry.dim.raw(),
+            dim: entry.dim.to_string(),
             kind: entry.kind.raw(),
             region_x: entry.region_x,
             region_z: entry.region_z,

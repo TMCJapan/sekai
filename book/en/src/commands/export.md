@@ -20,5 +20,6 @@ The snapshot argument accepts `<id>` or `@tag` (see [Tags](tags.md)).
   [Scope selection](../scope.md).
 - `--on-missing-blob skip-chunk` skips chunks whose blob is missing
   (default `abort`, as in rollback).
-- Only vanilla namespaces are derivable; custom dimensions fail loudly
-  (`UnknownRegionPath`) instead of landing somewhere wrong.
+- Only the vanilla trio is derivable; custom-dimension and folder-keyed
+  regions fail loudly (`UnknownRegionPath`) instead of landing somewhere
+  wrong.

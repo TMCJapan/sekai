@@ -17,7 +17,7 @@ use crate::api::{StorageError, Store, io_error};
 use crate::cas::FileCas;
 
 /// Managed schema version (`PRAGMA user_version`).
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 const SCHEMA: &str = include_str!("../schema/sqlite.sql");
 
@@ -138,6 +138,12 @@ fn i32_col(row: &sqlx::sqlite::SqliteRow, column: &'static str) -> Result<i32, S
     i64_to_i32(value, column)
 }
 
+/// Read a dimension key column.
+fn dim_col(row: &sqlx::sqlite::SqliteRow, column: &'static str) -> Result<Dimension, StorageError> {
+    let value: String = row.try_get(column)?;
+    Ok(Dimension::new(value))
+}
+
 /// Read a 32-byte hash column.
 fn hash32(bytes: Vec<u8>) -> Result<[u8; 32], StorageError> {
     bytes
@@ -163,7 +169,7 @@ fn millis_col(row: &sqlx::sqlite::SqliteRow, column: &'static str) -> Result<u64
 /// Decode one `chunk_history` row.
 fn decode_history(row: &sqlx::sqlite::SqliteRow) -> Result<ChunkHistoryEntry, StorageError> {
     let coord = ChunkCoord::new(
-        Dimension::new(i32_col(row, "dim")?),
+        dim_col(row, "dim")?,
         RegionKind::new(i32_col(row, "kind")?),
         i32_col(row, "cx")?,
         i32_col(row, "cz")?,
@@ -181,7 +187,7 @@ fn decode_history(row: &sqlx::sqlite::SqliteRow) -> Result<ChunkHistoryEntry, St
 /// Decode one `region_state` row.
 fn decode_state(row: &sqlx::sqlite::SqliteRow) -> Result<RegionStateEntry, StorageError> {
     let key = RegionKey::new(
-        Dimension::new(i32_col(row, "dim")?),
+        dim_col(row, "dim")?,
         RegionKind::new(i32_col(row, "kind")?),
         i32_col(row, "rx")?,
         i32_col(row, "rz")?,
@@ -267,7 +273,7 @@ impl sekai_core::MetaStore for SqliteMeta {
     ) -> Result<(), StorageError> {
         sqlx::query(INSERT_CHUNK_SQL)
             .bind(snap_param(snapshot)?)
-            .bind(i64::from(coord.dim.raw()))
+            .bind(coord.dim.as_str())
             .bind(i64::from(coord.kind.raw()))
             .bind(i64::from(coord.x))
             .bind(i64::from(coord.z))
@@ -291,7 +297,7 @@ impl sekai_core::MetaStore for SqliteMeta {
              WHERE dim = ? AND kind = ? AND cx = ? AND cz = ? AND snapshot_id <= ?
              ORDER BY snapshot_id DESC LIMIT 1",
         )
-        .bind(i64::from(coord.dim.raw()))
+        .bind(coord.dim.as_str())
         .bind(i64::from(coord.kind.raw()))
         .bind(i64::from(coord.x))
         .bind(i64::from(coord.z))
@@ -533,7 +539,7 @@ impl sekai_core::MetaStore for SqliteMeta {
         for entry in entries {
             sqlx::query(INSERT_CHUNK_SQL)
                 .bind(id)
-                .bind(i64::from(entry.coord.dim.raw()))
+                .bind(entry.coord.dim.as_str())
                 .bind(i64::from(entry.coord.kind.raw()))
                 .bind(i64::from(entry.coord.x))
                 .bind(i64::from(entry.coord.z))
@@ -565,7 +571,7 @@ impl sekai_core::MetaStore for SqliteMeta {
                         qb.push(" OR ");
                     }
                     qb.push("(dim = ");
-                    qb.push_bind(i64::from(key.dim.raw()));
+                    qb.push_bind(key.dim.as_str());
                     qb.push(" AND kind = ");
                     qb.push_bind(i64::from(key.kind.raw()));
                     qb.push(" AND cx BETWEEN ");
@@ -588,7 +594,7 @@ impl sekai_core::MetaStore for SqliteMeta {
                      WHERE dim = ? AND kind = ? AND rx = ? AND rz = ?",
                 )
                 .bind(id)
-                .bind(i64::from(key.dim.raw()))
+                .bind(key.dim.as_str())
                 .bind(i64::from(key.kind.raw()))
                 .bind(i64::from(key.rx))
                 .bind(i64::from(key.rz))
@@ -609,7 +615,7 @@ impl sekai_core::MetaStore for SqliteMeta {
                    mtime_ms = excluded.mtime_ms, size = excluded.size,
                    content_hash = excluded.content_hash, snapshot_id = excluded.snapshot_id",
             )
-            .bind(i64::from(fp.key.dim.raw()))
+            .bind(fp.key.dim.as_str())
             .bind(i64::from(fp.key.kind.raw()))
             .bind(i64::from(fp.key.rx))
             .bind(i64::from(fp.key.rz))
@@ -624,7 +630,7 @@ impl sekai_core::MetaStore for SqliteMeta {
             sqlx::query(
                 "DELETE FROM region_state WHERE dim = ? AND kind = ? AND rx = ? AND rz = ?",
             )
-            .bind(i64::from(key.dim.raw()))
+            .bind(key.dim.as_str())
             .bind(i64::from(key.kind.raw()))
             .bind(i64::from(key.rx))
             .bind(i64::from(key.rz))
@@ -712,7 +718,7 @@ mod tests {
         let mut meta = memory_meta().await;
         let key = RegionKey::new(Dimension::OVERWORLD, RegionKind::REGION, 0, 0);
         let fp = RegionFingerprint {
-            key,
+            key: key.clone(),
             mtime_ms: Some(1),
             size: 8192,
             content_hash: [7; 32],
@@ -720,9 +726,9 @@ mod tests {
         let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::REGION, 0, 0);
         meta.apply_snapshot_incremental(
             1_000,
-            &[stage_present(coord, BlobHash([1; 32]))],
+            &[stage_present(coord.clone(), BlobHash([1; 32]))],
             None,
-            &[fp],
+            std::slice::from_ref(&fp),
             &[],
         )
         .await
@@ -734,8 +740,8 @@ mod tests {
         let (previous, plan) = plan_backup(
             &meta,
             &[Observation {
-                key,
-                fingerprint: fp,
+                key: key.clone(),
+                fingerprint: fp.clone(),
             }],
             &Scope::World,
         )
@@ -747,7 +753,7 @@ mod tests {
             plan,
             &previous,
             Ingested {
-                entries: vec![stage_present(coord, BlobHash([1; 32]))],
+                entries: vec![stage_present(coord.clone(), BlobHash([1; 32]))],
                 present: BTreeSet::from([coord]),
                 new_blobs: 0,
                 fingerprints: vec![fp],
@@ -776,29 +782,29 @@ mod tests {
         meta.apply_snapshot_incremental(
             1_000,
             &[
-                stage_present(c0, BlobHash([1; 32])),
-                stage_present(c1, BlobHash([2; 32])),
+                stage_present(c0.clone(), BlobHash([1; 32])),
+                stage_present(c1.clone(), BlobHash([2; 32])),
             ],
             None,
-            &[fp(key0), fp(key1)],
+            &[fp(key0.clone()), fp(key1.clone())],
             &[],
         )
         .await
         .unwrap();
 
         // Second backup: region 0 changes, region 1 carries.
-        let mut changed = fp(key0);
+        let mut changed = fp(key0.clone());
         changed.size += 1;
         let (previous, plan) = plan_backup(
             &meta,
             &[
                 Observation {
                     key: key0,
-                    fingerprint: changed,
+                    fingerprint: changed.clone(),
                 },
                 Observation {
+                    fingerprint: fp(key1.clone()),
                     key: key1,
-                    fingerprint: fp(key1),
                 },
             ],
             &Scope::World,
@@ -809,7 +815,7 @@ mod tests {
             plan,
             &previous,
             Ingested {
-                entries: vec![stage_present(c0, BlobHash([9; 32]))],
+                entries: vec![stage_present(c0.clone(), BlobHash([9; 32]))],
                 present: BTreeSet::from([c0]),
                 new_blobs: 1,
                 fingerprints: vec![changed],
@@ -835,5 +841,35 @@ mod tests {
             .unwrap();
         assert_eq!(kept.blob, Some(BlobHash([2; 32])));
         assert_eq!(kept.snapshot, SnapshotId(1));
+    }
+
+    #[tokio::test]
+    async fn namespaced_and_folder_dimension_keys_round_trip() {
+        use sekai_core::MetaStore as _;
+        let mut meta = memory_meta().await;
+        let custom = Dimension::new("aether:sky");
+        let folder = Dimension::folder("sky/DIM-1");
+        let coord = ChunkCoord::new(custom.clone(), RegionKind::REGION, 5, -7);
+        let folder_coord = ChunkCoord::new(folder.clone(), RegionKind::REGION, 0, 0);
+        let id = meta
+            .apply_snapshot_incremental(
+                1_000,
+                &[
+                    stage_present(coord.clone(), BlobHash([1; 32])),
+                    stage_present(folder_coord.clone(), BlobHash([2; 32])),
+                ],
+                None,
+                &[],
+                &[],
+            )
+            .await
+            .unwrap()
+            .id;
+        let got = meta.lookup_chunk(id, &coord).await.unwrap().unwrap();
+        assert_eq!(got.coord.dim, custom);
+        assert_eq!(got.blob, Some(BlobHash([1; 32])));
+        let got = meta.lookup_chunk(id, &folder_coord).await.unwrap().unwrap();
+        assert_eq!(got.coord.dim, folder);
+        assert_eq!(got.blob, Some(BlobHash([2; 32])));
     }
 }

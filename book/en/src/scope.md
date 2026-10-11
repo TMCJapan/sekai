@@ -11,7 +11,11 @@ sekai --store ./sekai-store diff 1 2 --in overworld:0,0
 sekai --store ./sekai-store export 3 ./restored --region overworld:0,0
 ```
 
-- `--in DIM` selects a whole dimension; `--in DIM:x,z` one chunk;
+- `DIM` is a dimension key: a vanilla alias (`overworld`, `nether`,
+  `end`), an official namespaced id (`minecraft:overworld`,
+  `aether:sky`), or a `./`-prefixed root-relative folder key for
+  layout-derived dimensions (`./sky`, `./sky/DIM-1`). `--in DIM` selects
+  a whole dimension; `--in DIM:x,z` one chunk;
   `--in DIM:x0,z0..x1,z1` an inclusive chunk rectangle.
 - `--region DIM:RX,RZ` selects every chunk of one region file
   (rectangle shorthand).

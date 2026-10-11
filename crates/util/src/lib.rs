@@ -1,5 +1,5 @@
-//! Shared domain vocabulary: coordinates, namespaces, hashes, scopes, and
-//! the record types every other crate passes around.
+//! Shared domain vocabulary: coordinates, dimension keys, hashes, scopes,
+//! and the record types every other crate passes around.
 //!
 //! Pure data plus the invariants that belong to it (coordinate arithmetic,
 //! hex encoding, tag validation); no I/O and no policy.
@@ -22,7 +22,7 @@ pub mod tag;
 
 pub use chunk_coord::ChunkCoord;
 pub use dimension::Dimension;
-pub use error::{HexError, ParseCodeError, TagNameError};
+pub use error::{DimensionError, HexError, ParseCodeError, TagNameError};
 pub use gc::GcPlan;
 pub use hash::{BlobHash, DiffHash};
 pub use history::ChunkHistoryEntry;

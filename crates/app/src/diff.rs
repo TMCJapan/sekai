@@ -111,7 +111,13 @@ impl SekaiInstance {
         ignore: Option<&[&str]>,
     ) -> Result<Vec<NbtDiffEntry>, AppError> {
         let (diffs, _) = self
-            .diff_chunks(old_snapshot, new_snapshot, &[*coord], ignore, |_| {})
+            .diff_chunks(
+                old_snapshot,
+                new_snapshot,
+                std::slice::from_ref(coord),
+                ignore,
+                |_| {},
+            )
             .await?;
         Ok(diffs
             .into_iter()
@@ -175,7 +181,7 @@ impl SekaiInstance {
         self.store
             .meta()
             .visit_snapshot_chunks(snapshot, |entry| {
-                coords.push(entry.coord);
+                coords.push(entry.coord.clone());
                 true
             })
             .await?;
@@ -199,7 +205,12 @@ where
             .map_err(&failed)?;
         image
             .visit_chunks(|chunk| {
-                coords.push(ChunkCoord::new(region.dim, region.kind, chunk.x, chunk.z));
+                coords.push(ChunkCoord::new(
+                    region.dim.clone(),
+                    region.kind,
+                    chunk.x,
+                    chunk.z,
+                ));
                 true
             })
             .map_err(&failed)?;
@@ -253,7 +264,7 @@ where
         ignore: Option<&[&str]>,
     ) -> Result<Vec<NbtDiffEntry>, AppError> {
         let (diffs, _) = self
-            .diff_world_chunks(snapshot, &[*coord], ignore, |_| {})
+            .diff_world_chunks(snapshot, std::slice::from_ref(coord), ignore, |_| {})
             .await?;
         Ok(diffs
             .into_iter()
@@ -385,7 +396,7 @@ async fn diff_coords(
             chunks_total: coords.len(),
         });
         out.push(ChunkDiff {
-            coord: *coord,
+            coord: coord.clone(),
             entries,
         });
     }

@@ -242,19 +242,18 @@ mod tests {
     fn counts_fresh_and_effective_rows() {
         use sekai_util::{BlobHash, ChunkCoord, Dimension, RegionKind};
         let mut meta = MemMeta::default();
-        let over = Dimension::OVERWORLD;
         let region = RegionKind::REGION;
         let first = block_on(meta.create_snapshot(100)).unwrap();
         block_on(meta.record_chunk(
             first,
-            &ChunkCoord::new(over, region, 0, 0),
+            &ChunkCoord::new(Dimension::OVERWORLD, region, 0, 0),
             Some(&BlobHash([1; 32])),
             None,
         ))
         .unwrap();
         block_on(meta.record_chunk(
             first,
-            &ChunkCoord::new(over, region, 1, 0),
+            &ChunkCoord::new(Dimension::OVERWORLD, region, 1, 0),
             Some(&BlobHash([1; 32])),
             None,
         ))
@@ -262,13 +261,18 @@ mod tests {
         let second = block_on(meta.create_snapshot(200)).unwrap();
         block_on(meta.record_chunk(
             second,
-            &ChunkCoord::new(over, region, 0, 0),
+            &ChunkCoord::new(Dimension::OVERWORLD, region, 0, 0),
             Some(&BlobHash([2; 32])),
             None,
         ))
         .unwrap();
-        block_on(meta.record_chunk(second, &ChunkCoord::new(over, region, 1, 0), None, None))
-            .unwrap();
+        block_on(meta.record_chunk(
+            second,
+            &ChunkCoord::new(Dimension::OVERWORLD, region, 1, 0),
+            None,
+            None,
+        ))
+        .unwrap();
 
         assert_eq!(
             block_on(snapshot_stats(&meta, first)).unwrap(),

@@ -276,7 +276,7 @@ where
         .into_iter()
         .zip(observed.observations.iter())
     {
-        files.insert(obs.key, (region, obs.fingerprint));
+        files.insert(obs.key.clone(), (region, obs.fingerprint.clone()));
     }
     // Changed files in discovery order; carries need no file access.
     let changed: Vec<Changed> = plan
@@ -418,11 +418,14 @@ where
     let fingerprint_started = Instant::now();
     let mut observed: Vec<Observation> = Vec::with_capacity(regions.len());
     for region in &regions {
-        let key = RegionKey::new(region.dim, region.kind, region.region_x, region.region_z);
-        observed.push(Observation {
-            key,
-            fingerprint: sekai_world::fingerprint_file(&region.path, key)?,
-        });
+        let key = RegionKey::new(
+            region.dim.clone(),
+            region.kind,
+            region.region_x,
+            region.region_z,
+        );
+        let fingerprint = sekai_world::fingerprint_file(&region.path, key.clone())?;
+        observed.push(Observation { key, fingerprint });
     }
     Ok(Observed {
         regions,
@@ -746,8 +749,8 @@ fn ingest_timed(
     chunk: sekai_anvil::Chunk<'_>,
     ctx: &mut ChunkIngestCtx<'_>,
 ) -> Result<(Duration, Duration), AppError> {
-    let coord = ChunkCoord::new(ctx.region.dim, ctx.region.kind, chunk.x, chunk.z);
-    if !ctx.scope.contains(coord) {
+    let coord = ChunkCoord::new(ctx.region.dim.clone(), ctx.region.kind, chunk.x, chunk.z);
+    if !ctx.scope.contains(&coord) {
         return Ok((Duration::ZERO, Duration::ZERO));
     }
     let hash_started = Instant::now();
@@ -769,8 +772,11 @@ fn ingest_timed(
         *ctx.new_blobs += 1;
     }
     let cas_elapsed = cas_started.elapsed();
-    ctx.entries
-        .push(SnapshotEntry::new(coord, Some(hash), diff.flatten()));
+    ctx.entries.push(SnapshotEntry::new(
+        coord.clone(),
+        Some(hash),
+        diff.flatten(),
+    ));
     ctx.present.insert(coord);
     Ok((hash_elapsed, cas_elapsed))
 }

@@ -2,10 +2,10 @@
 
 use super::{BlobHash, ChunkCoord, DiffHash, Dimension, RegionKind, SnapshotId};
 
-/// Identity of one region file within its namespace.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Identity of one region file within its dimension.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RegionKey {
-    /// Dimension namespace.
+    /// Dimension key.
     pub dim: Dimension,
     /// Region family.
     pub kind: RegionKind,
@@ -22,13 +22,15 @@ impl RegionKey {
     }
 
     /// Region identity owning a chunk coordinate.
-    pub const fn of(coord: ChunkCoord) -> Self {
-        Self::new(coord.dim, coord.kind, coord.region_x(), coord.region_z())
+    pub fn of(coord: ChunkCoord) -> Self {
+        let rx = coord.region_x();
+        let rz = coord.region_z();
+        Self::new(coord.dim, coord.kind, rx, rz)
     }
 }
 
 /// Fingerprint observed on disk during backup planning.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegionFingerprint {
     /// Which file this fingerprint describes.
     pub key: RegionKey,
@@ -41,7 +43,7 @@ pub struct RegionFingerprint {
 }
 
 /// Persisted fingerprint of the last ingested file state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegionStateEntry {
     /// The fingerprint as observed when `snapshot_id` confirmed it.
     pub fingerprint: RegionFingerprint,
@@ -63,7 +65,7 @@ impl RegionFingerprint {
 }
 
 /// Chunk state staged for a snapshot commit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotEntry {
     /// Which chunk this fact describes.
     pub coord: ChunkCoord,

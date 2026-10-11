@@ -192,7 +192,7 @@ async fn resolve_snapshot_pair(
 }
 
 fn scoped_coords(mut coords: Vec<ChunkCoord>, scope: &Scope) -> Vec<ChunkCoord> {
-    coords.retain(|coord| scope.contains(*coord));
+    coords.retain(|coord| scope.contains(coord));
     coords.sort();
     coords.dedup();
     coords

@@ -11,7 +11,7 @@ sekai --store ./sekai-store diff 1 2 --in overworld:0,0
 sekai --store ./sekai-store export 3 ./restored --region overworld:0,0
 ```
 
-- `--in DIM`: ディメンション全体を選択します。`--in DIM:x,z` は指定した1チャンク、`--in DIM:x0,z0..x1,z1` は両端を含む矩形範囲のチャンクを選択します。
+- `DIM`: ディメンションキーです。バニラのエイリアス（`overworld`, `nether`, `end`）、公式の名前空間ID（`minecraft:overworld`, `aether:sky`）、またはレイアウト由来ディメンション用の `./` 接頭辞付きルート相対フォルダキー（`./sky`, `./sky/DIM-1`）を指定できます。`--in DIM` はディメンション全体、`--in DIM:x,z` は指定した1チャンク、`--in DIM:x0,z0..x1,z1` は両端を含む矩形範囲のチャンクを選択します。
 - `--region DIM:RX,RZ`: 指定したリージョンファイル内のすべてのチャンクを選択します（チャンク矩形指定の短縮記法）。
 - `--kind`: リージョンの種別（`region`, `entities`, `poi`）を選択します。他のスコープ指定なしで単独で指定した場合、ワールド全体の中からその種別のみに対象を絞り込みます。
 

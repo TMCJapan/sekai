@@ -166,7 +166,7 @@ where
             let mut state: BTreeMap<ChunkCoord, BlobHash> = BTreeMap::new();
             block_on(meta.visit_snapshot_chunks(*id, |entry| {
                 if let Some(blob) = entry.blob {
-                    state.insert(entry.coord, blob);
+                    state.insert(entry.coord.clone(), blob);
                 }
                 true
             }))

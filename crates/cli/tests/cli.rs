@@ -215,7 +215,7 @@ fn parses_diff_command() {
     assert!(Cli::try_parse_from(["sekai", "diff", "--dimension"]).is_err());
     assert!(Cli::try_parse_from(["sekai", "backup", "w", "--dim", "nether"]).is_err());
     assert!(Cli::try_parse_from(["sekai", "diff", "--in", "bogus"]).is_err());
-    assert!(Cli::try_parse_from(["sekai", "diff", "--in", "overworld:bogus"]).is_err());
+    assert!(Cli::try_parse_from(["sekai", "diff", "--in", "overworld:1,bogus"]).is_err());
     assert!(Cli::try_parse_from(["sekai", "diff", "--in", "overworld:1,2,3"]).is_err());
     assert!(Cli::try_parse_from(["sekai", "diff", "--region", "0,0"]).is_err());
 }
@@ -279,6 +279,17 @@ fn parses_area_specs() {
 
     let region: RegionSpec = "overworld:1,-1".parse().expect("region parses");
     assert_eq!(region.dim, Dimension::OVERWORLD);
+
+    // Namespaced ids keep their colons: the area suffix is peeled from the
+    // right, so custom dimensions scope like vanilla ones.
+    let custom: AreaSpec = "aether:sky".parse().expect("custom whole parses");
+    assert_eq!(custom.dim, Dimension::new("aether:sky"));
+    assert!(matches!(custom.area, DimArea::All));
+    let custom: AreaSpec = "aether:sky:10,-5".parse().expect("custom chunk parses");
+    assert_eq!(custom.dim, Dimension::new("aether:sky"));
+    assert!(matches!(custom.area, DimArea::Chunk(_)));
+    let custom: RegionSpec = "aether:sky:1,-1".parse().expect("custom region parses");
+    assert_eq!(custom.dim, Dimension::new("aether:sky"));
 
     assert!("overworld:1,2,3".parse::<AreaSpec>().is_err());
     assert!("overworld:1..2".parse::<AreaSpec>().is_err());
@@ -344,13 +355,13 @@ fn selection_owned_scope_round_trips() {
     };
     let scope = kinds.owned_scope();
     assert!(matches!(scope, Scope::Kinds(ref k) if k == &[sekai_app::RegionKind::REGION]));
-    assert!(scope.contains(sekai_app::ChunkCoord::new(
+    assert!(scope.contains(&sekai_app::ChunkCoord::new(
         Dimension::NETHER,
         sekai_app::RegionKind::REGION,
         4,
         4
     )));
-    assert!(!scope.contains(sekai_app::ChunkCoord::new(
+    assert!(!scope.contains(&sekai_app::ChunkCoord::new(
         Dimension::NETHER,
         sekai_app::RegionKind::POI,
         4,
@@ -370,8 +381,8 @@ fn selection_owned_scope_round_trips() {
     let scope = chunks.owned_scope();
     let coord =
         sekai_app::ChunkCoord::new(Dimension::OVERWORLD, sekai_app::RegionKind::REGION, 1, -2);
-    assert!(scope.contains(coord));
-    assert!(!scope.contains(sekai_app::ChunkCoord::new(
+    assert!(scope.contains(&coord));
+    assert!(!scope.contains(&sekai_app::ChunkCoord::new(
         Dimension::OVERWORLD,
         sekai_app::RegionKind::REGION,
         2,

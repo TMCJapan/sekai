@@ -5,7 +5,7 @@ CREATE TABLE snapshots(
 
 CREATE TABLE chunk_history(
     snapshot_id INTEGER NOT NULL REFERENCES snapshots(id),
-    dim INTEGER NOT NULL,
+    dim TEXT NOT NULL,
     kind INTEGER NOT NULL,
     cx INTEGER NOT NULL,
     cz INTEGER NOT NULL,
@@ -21,7 +21,7 @@ CREATE INDEX idx_history_coord
 -- file and what the file looked like. Re-observed from live world files
 -- when wiped, so they never need data migration.
 CREATE TABLE region_state(
-    dim INTEGER NOT NULL,
+    dim TEXT NOT NULL,
     kind INTEGER NOT NULL,
     rx INTEGER NOT NULL,
     rz INTEGER NOT NULL,
