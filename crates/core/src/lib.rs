@@ -39,9 +39,10 @@ pub fn hash_blob(payload: &[u8]) -> BlobHash {
 /// Stable `Dimension` for a `<namespace>:<name>` dimension identifier.
 ///
 /// Datapack dimensions keep their `<namespace>:<name>` pair; a plugin
-/// world names its dimensions `<base>:<logical dimension>`. Hashes the
-/// identifier via `anvil`; a hash colliding with a reserved vanilla code is
-/// remapped away so custom dimensions can never alias vanilla history.
+/// world names its own dimensions `plugin:<base>:<logical dimension>`.
+/// Hashes the identifier via `anvil`; a hash colliding with a reserved
+/// vanilla code is remapped away so custom dimensions can never alias
+/// vanilla history.
 pub fn resolve_custom_dimension(identifier: &str) -> Dimension {
     let dim = sekai_anvil::custom_dimension_id(identifier);
     if dim == Dimension::OVERWORLD || dim == Dimension::NETHER || dim == Dimension::END {

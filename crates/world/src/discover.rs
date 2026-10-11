@@ -17,10 +17,10 @@
 //!
 //! Namespaces follow one rule: the elected world's default trio and
 //! `minecraft/*` tree keep vanilla codes (derivable, history-stable,
-//! migration-continuous). Datapack and plugin dimensions hash their
-//! `<namespace>:<name>` identifier, and a plugin world names its
-//! dimensions `<base>:<logical dimension>`, so distinct worlds can never
-//! silently share coordinates. Non-derivable codes surface
+//! migration-continuous). Datapack dimensions hash their
+//! `<namespace>:<name>` identifier, and a plugin world names its own
+//! dimensions `plugin:<base>:<logical dimension>`, so distinct producers
+//! can never silently share coordinates. Non-derivable codes surface
 //! `UnknownRegionPath` for missing files instead of writing somewhere
 //! wrong; rollback restores those through their discovered folders.
 //!
@@ -427,15 +427,16 @@ fn elected_dimension(ns_name: &str, dim_name: &str) -> Dimension {
 
 /// Dimension code inside a plugin world named `base`.
 ///
-/// The world's own `minecraft/*` tree hashes `<base>:<name>` so it can
-/// never alias the elected world's vanilla codes; datapack dimensions keep
-/// their `<namespace>:<name>` identity.
+/// The world's own `minecraft/*` tree hashes `plugin:<base>:<name>` so it
+/// can never alias the elected world's vanilla codes or a datapack
+/// `<namespace>:<name>` identity; datapack dimensions keep that identity.
 fn plugin_dimension(base: &str, ns_name: &str, dim_name: &str) -> Dimension {
-    if ns_name == "minecraft" {
-        sekai_core::resolve_custom_dimension(&format!("{base}:{dim_name}"))
+    let identifier = if ns_name == "minecraft" {
+        format!("plugin:{base}:{dim_name}")
     } else {
-        sekai_core::resolve_custom_dimension(&format!("{ns_name}:{dim_name}"))
-    }
+        format!("{ns_name}:{dim_name}")
+    };
+    sekai_core::resolve_custom_dimension(&identifier)
 }
 
 /// Scan a `dimensions/<ns>/<name>` tree, naming every dimension through
@@ -470,8 +471,9 @@ fn scan_dimension_trees(
 /// Scan plugin worlds (Multiverse et al.) beside the elected world.
 ///
 /// Each plugin world elects exactly one of the four layouts itself and
-/// keeps every dimension under hashed namespaces: the base folder names the
-/// world, the logical dimension names the dimension. Bukkit-style
+/// keeps every dimension under hashed namespaces: its own dimensions are
+/// `plugin:<base>:<logical dimension>`, datapack trees keep
+/// `<namespace>:<name>`. Bukkit-style
 /// `<base>_nether`/`<base>_the_end` siblings are consumed by their base so
 /// they are never discovered twice.
 fn scan_plugin_worlds(

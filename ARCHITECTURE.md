@@ -133,10 +133,10 @@ overwritten. Plugin worlds still each elect their own single layout.
 
 Namespaces: the elected world's default trio and `minecraft/*` trees keep
 vanilla codes (derivable, history-stable, migration-continuous). Datapack
-and plugin dimensions hash their `<namespace>:<name>` identifier; a plugin
-world names its dimensions `<base>:<logical dimension>` (its
-`<base>_nether/DIM-1` is `<base>:the_nether`), so distinct worlds never
-silently share coordinates. Trio detection runs on container roots only,
+dimensions hash their `<namespace>:<name>` identifier; a plugin world
+names its own dimensions `plugin:<base>:<logical dimension>` (its
+`<base>_nether/DIM-1` is `plugin:<base>:the_nether`), so distinct
+producers never silently share coordinates. Trio detection runs on container roots only,
 so a nested folder can never steal the vanilla namespace. Opening a tree
 elects the layout once; path derivation computes each dimension directory
 directly from it, never re-inspecting the tree to re-elect. Missing files
