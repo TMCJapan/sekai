@@ -19,7 +19,7 @@
 //! world folders themselves), so a lone nested folder can never steal the
 //! vanilla namespace of the root's own content.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -217,17 +217,13 @@ fn resolved_meta(entry: &fs::DirEntry) -> Option<fs::Metadata> {
     fs::metadata(entry.path()).ok()
 }
 
-#[derive(Clone, Copy)]
-enum InsertPolicy {
-    KeepExisting,
-    Overwrite,
-}
+/// Every region file found so far, keyed by its global namespace.
+type Found = BTreeMap<(Dimension, RegionKind, i32, i32), RegionRef>;
 
 fn scan_dim_root(
     root: impl AsRef<Path>,
     dim: Dimension,
-    found: &mut BTreeMap<(Dimension, RegionKind, i32, i32), RegionRef>,
-    policy: InsertPolicy,
+    found: &mut Found,
 ) -> Result<(), WorldError> {
     for (kind, kind_dir) in KIND_DIRS {
         // Sorted by name so that two files spelling the same coordinates
@@ -254,15 +250,9 @@ fn scan_dim_root(
                 region_x,
                 region_z,
             };
-            let key = (dim, kind, region_x, region_z);
-            match policy {
-                InsertPolicy::Overwrite => {
-                    found.insert(key, reference);
-                }
-                InsertPolicy::KeepExisting => {
-                    found.entry(key).or_insert(reference);
-                }
-            }
+            found
+                .entry((dim, kind, region_x, region_z))
+                .or_insert(reference);
         }
     }
     Ok(())
@@ -370,21 +360,6 @@ fn level_name(world: impl AsRef<Path>) -> Option<String> {
     })
 }
 
-/// Root-relative `/`-joined path for stable hashing, or `None` for
-/// non-UTF-8 names (skipped like everywhere else here).
-fn rel_name(world: impl AsRef<Path>, path: impl AsRef<Path>) -> Option<String> {
-    let rel = path.as_ref().strip_prefix(world).ok()?;
-    let mut out = String::new();
-    for (i, comp) in rel.components().enumerate() {
-        let s = comp.as_os_str().to_str()?;
-        if i > 0 {
-            out.push('/');
-        }
-        out.push_str(s);
-    }
-    Some(out)
-}
-
 /// Vanilla namespace for a `(namespace, name)` dimensions tree, if any.
 fn tree_dim(ns_name: &str, dim_name: &str) -> Option<Dimension> {
     match (ns_name, dim_name) {
@@ -405,10 +380,25 @@ fn elected_dimension(ns_name: &str, dim_name: &str) -> Dimension {
         .unwrap_or_else(|| sekai_core::resolve_custom_dimension(&format!("{ns_name}:{dim_name}")))
 }
 
-/// Scan the elected world's `dimensions/<ns>/<name>` tree.
-fn scan_elected_dimensions(
+/// Dimension code inside a plugin world named `base`.
+///
+/// The world's own `minecraft/*` tree hashes `<base>:<name>` so it can
+/// never alias the elected world's vanilla codes; datapack dimensions keep
+/// their `<namespace>:<name>` identity.
+fn plugin_dimension(base: &str, ns_name: &str, dim_name: &str) -> Dimension {
+    if ns_name == "minecraft" {
+        sekai_core::resolve_custom_dimension(&format!("{base}:{dim_name}"))
+    } else {
+        sekai_core::resolve_custom_dimension(&format!("{ns_name}:{dim_name}"))
+    }
+}
+
+/// Scan a `dimensions/<ns>/<name>` tree, naming every dimension through
+/// `dimension`.
+fn scan_dimension_trees(
     dims_dir: impl AsRef<Path>,
-    found: &mut BTreeMap<(Dimension, RegionKind, i32, i32), RegionRef>,
+    dimension: impl Fn(&str, &str) -> Dimension,
+    found: &mut Found,
 ) -> Result<(), WorldError> {
     for ns in read_dir_opt(dims_dir)? {
         if !is_dir(&ns)? {
@@ -426,54 +416,78 @@ fn scan_elected_dimensions(
             let Some(dim_name) = dim_file_name.to_str() else {
                 continue;
             };
-            scan_dim_root(
-                name.path(),
-                elected_dimension(ns_name, dim_name),
-                found,
-                InsertPolicy::KeepExisting,
-            )?;
+            scan_dim_root(name.path(), dimension(ns_name, dim_name), found)?;
         }
     }
     Ok(())
 }
 
-/// Scan `dimensions/<ns>/<name>/<kind>/r.*.mca` under `dims_dir`.
+/// Scan plugin worlds (Multiverse et al.) beside the elected world.
 ///
-/// `rel_prefix` is the root-relative folder path (`""` for the root
-/// itself); non-vanilla trees hash `{prefix}/dimensions/<ns>/<name>`.
-/// Vanilla `(namespace, name)` pairs always map to vanilla codes so history
-/// survives 26.1-style migrations.
-fn scan_dimensions(
-    dims_dir: impl AsRef<Path>,
-    rel_prefix: &str,
-    found: &mut BTreeMap<(Dimension, RegionKind, i32, i32), RegionRef>,
-) -> Result<(), WorldError> {
-    for ns in read_dir_opt(dims_dir)? {
-        if !is_dir(&ns)? {
+/// Each plugin world elects exactly one of the four layouts itself and
+/// keeps every dimension under hashed namespaces: the base folder names the
+/// world, the logical dimension names the dimension. Bukkit-style
+/// `<base>_nether`/`<base>_the_end` siblings are consumed by their base so
+/// they are never discovered twice.
+fn scan_plugin_worlds(root: &Path, skip: &[String], found: &mut Found) -> Result<(), WorldError> {
+    let mut skipped: BTreeSet<String> = RESERVED_SUBDIRS.iter().map(|s| (*s).to_owned()).collect();
+    skipped.extend(skip.iter().cloned());
+
+    // Sorted so a `<base>` is always seen before its `_nether`/`_the_end`
+    // siblings and consumes them deterministically.
+    let mut entries = read_dir_opt(root)?;
+    entries.sort_by_key(fs::DirEntry::file_name);
+    for entry in entries {
+        if !is_dir(&entry)? {
             continue;
         }
-        let ns_file_name = ns.file_name();
-        let Some(ns_name) = ns_file_name.to_str() else {
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
             continue;
         };
-        for name in read_dir_opt(ns.path())? {
-            if !is_dir(&name)? {
-                continue;
-            }
-            let dim_file_name = name.file_name();
-            let Some(dim_name) = dim_file_name.to_str() else {
-                continue;
-            };
-            let dim = tree_dim(ns_name, dim_name).unwrap_or_else(|| {
-                let rel = if rel_prefix.is_empty() {
-                    format!("dimensions/{ns_name}/{dim_name}")
-                } else {
-                    format!("{rel_prefix}/dimensions/{ns_name}/{dim_name}")
-                };
-                sekai_core::resolve_custom_dimension(&rel)
-            });
-            scan_dim_root(name.path(), dim, found, InsertPolicy::Overwrite)?;
+        if skipped.contains(name) {
+            continue;
         }
+        let dir = entry.path();
+        let siblings = root.join(format!("{name}_nether")).is_dir()
+            || root.join(format!("{name}_the_end")).is_dir();
+        let is_world = if siblings {
+            is_bukkit_overworld(&dir)?
+        } else {
+            is_world_folder(&dir)?
+        };
+        if !is_world {
+            continue;
+        }
+
+        if dir.join("dimensions").is_dir() {
+            scan_dimension_trees(
+                dir.join("dimensions"),
+                |ns, dim| plugin_dimension(name, ns, dim),
+                found,
+            )?;
+        } else {
+            let over = plugin_dimension(name, "minecraft", "overworld");
+            scan_dim_root(&dir, over, found)?;
+            let nether = if siblings {
+                root.join(format!("{name}_nether")).join("DIM-1")
+            } else {
+                dir.join("DIM-1")
+            };
+            scan_dim_root(
+                &nether,
+                plugin_dimension(name, "minecraft", "the_nether"),
+                found,
+            )?;
+            let end = if siblings {
+                root.join(format!("{name}_the_end")).join("DIM1")
+            } else {
+                dir.join("DIM1")
+            };
+            scan_dim_root(&end, plugin_dimension(name, "minecraft", "the_end"), found)?;
+        }
+        skipped.insert(format!("{name}_nether"));
+        skipped.insert(format!("{name}_the_end"));
     }
     Ok(())
 }
@@ -496,48 +510,14 @@ pub(crate) fn discover(
             std::io::Error::new(std::io::ErrorKind::NotFound, "world directory not found"),
         ));
     }
-    let mut found = BTreeMap::new();
+    let mut found = Found::new();
     for (dim, dir) in layout.vanilla_dirs(root) {
-        scan_dim_root(&dir, dim, &mut found, InsertPolicy::KeepExisting)?;
+        scan_dim_root(&dir, dim, &mut found)?;
     }
     if let Some(dims_dir) = layout.dimensions_dir(root) {
-        scan_elected_dimensions(dims_dir, &mut found)?;
+        scan_dimension_trees(dims_dir, elected_dimension, &mut found)?;
     }
-    // Other world folders: hashed namespaces, never colliding silently.
-    let trio = layout.trio_names();
-    for entry in read_dir_opt(root)? {
-        if !is_dir(&entry)? {
-            continue;
-        }
-        let file_name = entry.file_name();
-        let Some(name) = file_name.to_str() else {
-            continue;
-        };
-        if RESERVED_SUBDIRS.contains(&name) || trio.iter().any(|t| t == name) {
-            continue;
-        }
-        if !is_world_folder(entry.path())? {
-            continue;
-        }
-        let Some(rel) = rel_name(root, entry.path()) else {
-            continue;
-        };
-        let dim = sekai_core::resolve_custom_dimension(&rel);
-        scan_dim_root(entry.path(), dim, &mut found, InsertPolicy::KeepExisting)?;
-        scan_dim_root(
-            entry.path().join("DIM-1"),
-            sekai_core::resolve_custom_dimension(&format!("{rel}/DIM-1")),
-            &mut found,
-            InsertPolicy::KeepExisting,
-        )?;
-        scan_dim_root(
-            entry.path().join("DIM1"),
-            sekai_core::resolve_custom_dimension(&format!("{rel}/DIM1")),
-            &mut found,
-            InsertPolicy::KeepExisting,
-        )?;
-        scan_dimensions(entry.path().join("dimensions"), &rel, &mut found)?;
-    }
+    scan_plugin_worlds(root, &layout.trio_names(), &mut found)?;
     Ok(found.into_values().collect())
 }
 
