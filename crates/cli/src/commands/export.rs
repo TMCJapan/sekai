@@ -23,7 +23,7 @@ fn output_tree(flags: &ExportFlags, out_dir: impl AsRef<Path>) -> HostWorldTree 
     match flags.flavor {
         ExportFlavor::Legacy => HostWorldTree::new_legacy(out_dir),
         ExportFlavor::New => HostWorldTree::new_dimensions(out_dir),
-        ExportFlavor::Bukkit => HostWorldTree::new_bukkit(out_dir, flags.base.clone()),
+        ExportFlavor::Bukkit => HostWorldTree::new_bukkit_legacy(out_dir, flags.base.clone()),
     }
 }
 

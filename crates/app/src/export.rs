@@ -63,7 +63,7 @@ impl SekaiInstance {
     /// `out` is created when missing and must otherwise be empty; anything
     /// else fails loudly so export can never clobber existing data. Its
     /// layout comes from how it was constructed (for example
-    /// `HostWorldTree::new_legacy` or `HostWorldTree::new_bukkit`). Only
+    /// `HostWorldTree::new_legacy` or `HostWorldTree::new_bukkit_legacy`). Only
     /// `scope` is exported. `progress` fires as files complete; it must be
     /// `'static` because the file pass runs on a blocking pool (pass a
     /// `move` closure owning its state).

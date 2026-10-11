@@ -160,7 +160,7 @@ async fn export_honors_layout_and_scope() {
 
     // Bukkit layout, whole world.
     let bukkit_path = root.join("bukkit");
-    let bukkit = HostWorldTree::new_bukkit(&bukkit_path, "myworld");
+    let bukkit = HostWorldTree::new_bukkit_legacy(&bukkit_path, "myworld");
     let (report, _) = instance
         .export(
             &bukkit,

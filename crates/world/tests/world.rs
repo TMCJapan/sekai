@@ -37,6 +37,70 @@ fn write(path: impl AsRef<Path>, bytes: &[u8]) {
     std::fs::write(path, bytes).unwrap();
 }
 
+/// Elected variant tag, for assertions that read better than `matches!`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LayoutTag {
+    Vanilla,
+    VanillaLegacy,
+    Bukkit,
+    BukkitLegacy,
+}
+
+const fn layout_of(world: &HostWorldTree) -> LayoutTag {
+    match world {
+        HostWorldTree::Vanilla { .. } => LayoutTag::Vanilla,
+        HostWorldTree::VanillaLegacy { .. } => LayoutTag::VanillaLegacy,
+        HostWorldTree::Bukkit { .. } => LayoutTag::Bukkit,
+        HostWorldTree::BukkitLegacy { .. } => LayoutTag::BukkitLegacy,
+    }
+}
+
+#[test]
+fn new_elects_the_narrowest_matching_layout() {
+    // Empty and legacy-only roots fall back to legacy vanilla.
+    let empty = tempdir("elect-empty");
+    assert_eq!(
+        layout_of(&HostWorldTree::new(&empty).unwrap()),
+        LayoutTag::VanillaLegacy
+    );
+    cleanup(&empty);
+
+    let legacy = tempdir("elect-legacy");
+    write(legacy.join("region/r.0.0.mca"), &one_chunk_image());
+    assert_eq!(
+        layout_of(&HostWorldTree::new(&legacy).unwrap()),
+        LayoutTag::VanillaLegacy
+    );
+    cleanup(&legacy);
+
+    // A 26.1 `dimensions/minecraft` tree elects vanilla 26.1.
+    let modern = tempdir("elect-261");
+    std::fs::create_dir_all(modern.join("dimensions/minecraft/overworld")).unwrap();
+    let world = HostWorldTree::new(&modern).unwrap();
+    assert_eq!(layout_of(&world), LayoutTag::Vanilla);
+    assert_eq!(world.root(), modern);
+    cleanup(&modern);
+
+    // A complete Bukkit trio elects the legacy Bukkit layout...
+    let bukkit = tempdir("elect-bukkit");
+    std::fs::create_dir_all(bukkit.join("world/region")).unwrap();
+    std::fs::create_dir_all(bukkit.join("world_nether/DIM-1")).unwrap();
+    let world = HostWorldTree::new(&bukkit).unwrap();
+    assert!(
+        matches!(world, HostWorldTree::BukkitLegacy { ref base, .. } if base == "world"),
+        "expected the legacy Bukkit layout"
+    );
+
+    // ...and a 26.1 tree inside its base elects the 26.1 Bukkit layout.
+    std::fs::create_dir_all(bukkit.join("world/dimensions/minecraft/overworld")).unwrap();
+    let world = HostWorldTree::new(&bukkit).unwrap();
+    assert!(
+        matches!(world, HostWorldTree::Bukkit { ref base, .. } if base == "world"),
+        "expected the 26.1 Bukkit layout"
+    );
+    cleanup(&bukkit);
+}
+
 #[test]
 fn dimensions_tree_elects_vanilla_layout() {
     // A 26.1 vanilla world keeps every dimension under `dimensions/`; legacy
@@ -61,6 +125,7 @@ fn dimensions_tree_elects_vanilla_layout() {
     write(world_path.join("region/notes.txt"), b"nope");
 
     let world = HostWorldTree::new(&world_path).unwrap();
+    assert_eq!(layout_of(&world), LayoutTag::Vanilla);
     let found = world.discover().unwrap();
     assert_eq!(
         found.len(),
@@ -102,6 +167,43 @@ fn dimensions_tree_elects_vanilla_layout() {
 }
 
 #[test]
+fn datapack_only_dimensions_keep_the_legacy_layout() {
+    // Pre-26.1 worlds already store datapack dimensions under
+    // `dimensions/<ns>/<name>`; only `dimensions/minecraft` marks a 26.1
+    // tree. The legacy trio at the root must stay visible.
+    let world_path = tempdir("legacy-datapacks");
+    let image = one_chunk_image();
+    write(world_path.join("region/r.0.0.mca"), &image);
+    write(world_path.join("DIM-1/region/r.0.0.mca"), &image);
+    write(
+        world_path.join("dimensions/aether/sky/region/r.0.1.mca"),
+        &image,
+    );
+
+    let world = HostWorldTree::new(&world_path).unwrap();
+    assert_eq!(layout_of(&world), LayoutTag::VanillaLegacy);
+    let found = world.discover().unwrap();
+    assert_eq!(found.len(), 3, "a live file disappeared: {found:?}");
+    assert!(found.iter().any(|r| {
+        r.dim == Dimension::OVERWORLD && r.path == world_path.join("region/r.0.0.mca")
+    }));
+    assert!(found.iter().any(|r| {
+        r.dim == Dimension::NETHER && r.path == world_path.join("DIM-1/region/r.0.0.mca")
+    }));
+    assert!(found.iter().any(|r| {
+        r.dim == resolve_custom_dimension("aether:sky")
+            && r.path == world_path.join("dimensions/aether/sky/region/r.0.1.mca")
+    }));
+    assert_eq!(
+        world
+            .derive_path(Dimension::OVERWORLD, RegionKind::REGION, 0, 0)
+            .unwrap(),
+        world_path.join("region/r.0.0.mca")
+    );
+    cleanup(&world_path);
+}
+
+#[test]
 fn discovers_legacy_vanilla_layout() {
     let world_path = tempdir("legacy-vanilla");
     let image = one_chunk_image();
@@ -110,6 +212,7 @@ fn discovers_legacy_vanilla_layout() {
     write(world_path.join("DIM1/entities/r.1.0.mca"), &image);
 
     let world = HostWorldTree::new(&world_path).unwrap();
+    assert_eq!(layout_of(&world), LayoutTag::VanillaLegacy);
     let found = world.discover().unwrap();
     assert_eq!(found.len(), 3);
     let at = |dim, kind| {
@@ -171,6 +274,10 @@ fn discovers_paper_26_1_layout_under_level_name() {
     );
 
     let root = HostWorldTree::new(&root_path).unwrap();
+    assert!(
+        matches!(root, HostWorldTree::Bukkit { ref base, .. } if base == "survival"),
+        "expected the 26.1 Bukkit layout"
+    );
     let found = root.discover().unwrap();
     assert_eq!(
         found.len(),
@@ -212,6 +319,7 @@ fn discovers_bukkit_nesting() {
     );
 
     let world = HostWorldTree::new(&world_path).unwrap();
+    assert_eq!(layout_of(&world), LayoutTag::BukkitLegacy);
     let found = world.discover().unwrap();
     assert_eq!(found.len(), 3);
     let at = |dim, kind| {
@@ -260,6 +368,10 @@ fn discovers_custom_level_name_trio() {
     write(root_path.join("srv_the_end/DIM1/region/r.0.0.mca"), &image);
 
     let root = HostWorldTree::new(&root_path).unwrap();
+    assert!(
+        matches!(root, HostWorldTree::BukkitLegacy { ref base, .. } if base == "srv"),
+        "expected the legacy Bukkit layout"
+    );
     let found = root.discover().unwrap();
     assert_eq!(found.len(), 3);
     assert!(
@@ -280,6 +392,91 @@ fn discovers_custom_level_name_trio() {
 }
 
 #[test]
+fn minecraft_tree_in_a_bukkit_base_elects_the_bukkit_layout() {
+    // Paper 26.1+ keeps the split base folder but moves the world into
+    // `<base>/dimensions/minecraft`. The migrated tree wins, and the legacy
+    // files left behind at `<base>/region` and `<base>_nether` stay
+    // invisible instead of shadowing it.
+    let root_path = tempdir("paper-migrated");
+    let image = one_chunk_image();
+    write(
+        root_path.join("world/dimensions/minecraft/overworld/region/r.0.0.mca"),
+        &image,
+    );
+    write(
+        root_path.join("world/dimensions/minecraft/the_end/region/r.0.0.mca"),
+        &image,
+    );
+    write(root_path.join("world/region/r.9.9.mca"), &image);
+    write(
+        root_path.join("world_nether/DIM-1/region/r.9.9.mca"),
+        &image,
+    );
+
+    let root = HostWorldTree::new(&root_path).unwrap();
+    assert!(
+        matches!(root, HostWorldTree::Bukkit { ref base, .. } if base == "world"),
+        "expected the 26.1 Bukkit layout"
+    );
+    let found = root.discover().unwrap();
+    assert_eq!(found.len(), 2, "leftovers must stay invisible: {found:?}");
+    assert!(found.iter().any(|r| {
+        r.dim == Dimension::OVERWORLD
+            && r.path == root_path.join("world/dimensions/minecraft/overworld/region/r.0.0.mca")
+    }));
+    assert!(found.iter().any(|r| {
+        r.dim == Dimension::END
+            && r.path == root_path.join("world/dimensions/minecraft/the_end/region/r.0.0.mca")
+    }));
+    assert_eq!(
+        root.derive_path(Dimension::NETHER, RegionKind::REGION, 0, 0)
+            .unwrap(),
+        root_path.join("world/dimensions/minecraft/the_nether/region/r.0.0.mca")
+    );
+    cleanup(&root_path);
+}
+
+#[test]
+fn bukkit_datapack_dimensions_stay_visible() {
+    // A pre-26.1 Bukkit base keeps its datapack dimensions under
+    // `<base>/dimensions/<ns>/<name>`; their presence must neither elect the
+    // 26.1 layout nor hide the live split trio.
+    let root_path = tempdir("bukkit-datapacks");
+    let image = one_chunk_image();
+    write(root_path.join("world/region/r.0.0.mca"), &image);
+    write(
+        root_path.join("world_nether/DIM-1/region/r.0.0.mca"),
+        &image,
+    );
+    write(
+        root_path.join("world/dimensions/aether/sky/region/r.0.1.mca"),
+        &image,
+    );
+
+    let root = HostWorldTree::new(&root_path).unwrap();
+    assert_eq!(layout_of(&root), LayoutTag::BukkitLegacy);
+    let found = root.discover().unwrap();
+    assert_eq!(found.len(), 3, "a live file disappeared: {found:?}");
+    assert!(found.iter().any(|r| {
+        r.dim == Dimension::OVERWORLD && r.path == root_path.join("world/region/r.0.0.mca")
+    }));
+    assert!(found.iter().any(|r| {
+        r.dim == Dimension::NETHER
+            && r.path == root_path.join("world_nether/DIM-1/region/r.0.0.mca")
+    }));
+    assert!(found.iter().any(|r| {
+        r.dim == resolve_custom_dimension("aether:sky")
+            && r.path == root_path.join("world/dimensions/aether/sky/region/r.0.1.mca")
+    }));
+    assert_eq!(
+        root.derive_path(Dimension::OVERWORLD, RegionKind::REGION, 0, 0)
+            .unwrap(),
+        root_path.join("world/region/r.0.0.mca")
+    );
+    cleanup(&root_path);
+}
+
+#[test]
 fn multiverse_worlds_never_collide() {
     // Main trio keeps vanilla codes; extra world folders hash theirs, so
     // same-environment worlds cannot silently share coordinates.
@@ -294,6 +491,7 @@ fn multiverse_worlds_never_collide() {
     write(root_path.join("sky_nether/DIM-1/region/r.0.0.mca"), &image);
 
     let root = HostWorldTree::new(&root_path).unwrap();
+    assert_eq!(layout_of(&root), LayoutTag::BukkitLegacy);
     let found = root.discover().unwrap();
     assert_eq!(found.len(), 4);
     let dims: Vec<_> = found.iter().map(|r| r.dim).collect();
@@ -404,6 +602,69 @@ fn plugin_datapack_dimensions_stay_world_scoped() {
 }
 
 #[test]
+fn plugin_worlds_elect_their_own_layout() {
+    // Plugin worlds beside the elected one each elect one layout too: a
+    // nested 26.1 world reads `dimensions/minecraft`, a nested legacy world
+    // reads its `region/` trio, and both keep datapack dimensions under
+    // world-scoped namespaces. Non-elected leftovers stay invisible.
+    let root_path = tempdir("plugin-election");
+    let image = one_chunk_image();
+    write(root_path.join("region/r.0.0.mca"), &image);
+    write(root_path.join("sky/level.dat"), b"");
+    write(
+        root_path.join("sky/dimensions/minecraft/overworld/region/r.0.0.mca"),
+        &image,
+    );
+    write(
+        root_path.join("sky/dimensions/aether/sky/region/r.0.0.mca"),
+        &image,
+    );
+    write(root_path.join("sky/region/r.9.9.mca"), &image);
+    write(root_path.join("old/region/r.0.0.mca"), &image);
+    write(root_path.join("old/DIM-1/region/r.0.0.mca"), &image);
+    write(
+        root_path.join("old/dimensions/aether/sky/region/r.0.0.mca"),
+        &image,
+    );
+
+    let root = HostWorldTree::new(&root_path).unwrap();
+    assert_eq!(layout_of(&root), LayoutTag::VanillaLegacy);
+    let found = root.discover().unwrap();
+    assert_eq!(found.len(), 6, "unexpected set: {found:?}");
+    let has = |key: &str, path: PathBuf| {
+        let dim = resolve_custom_dimension(key);
+        found.iter().any(|r| r.dim == dim && r.path == path)
+    };
+    assert!(has(
+        "sky:minecraft:overworld",
+        root_path.join("sky/dimensions/minecraft/overworld/region/r.0.0.mca")
+    ));
+    assert!(has(
+        "sky:aether:sky",
+        root_path.join("sky/dimensions/aether/sky/region/r.0.0.mca")
+    ));
+    assert!(has(
+        "old:minecraft:overworld",
+        root_path.join("old/region/r.0.0.mca")
+    ));
+    assert!(has(
+        "old:minecraft:the_nether",
+        root_path.join("old/DIM-1/region/r.0.0.mca")
+    ));
+    assert!(has(
+        "old:aether:sky",
+        root_path.join("old/dimensions/aether/sky/region/r.0.0.mca")
+    ));
+    // The nested 26.1 world ignores its own legacy leftovers.
+    assert!(
+        !found
+            .iter()
+            .any(|r| r.path == root_path.join("sky/region/r.9.9.mca"))
+    );
+    cleanup(&root_path);
+}
+
+#[test]
 fn root_level_leftovers_are_not_scanned() {
     // A stale root-level DIM-1 next to a live Bukkit trio: exactly one
     // layout is respected, so the leftover is ignored entirely instead of
@@ -418,6 +679,7 @@ fn root_level_leftovers_are_not_scanned() {
     write(root_path.join("world_nether/DIM-1/region/r.0.0.mca"), &live);
 
     let root = HostWorldTree::new(&root_path).unwrap();
+    assert_eq!(layout_of(&root), LayoutTag::BukkitLegacy);
     let found = root.discover().unwrap();
     assert_eq!(found.len(), 2, "the leftover must stay invisible");
     let nether: Vec<_> = found
@@ -449,6 +711,7 @@ fn empty_overworld_keeps_the_trio_namespaces() {
     // An empty `region/` directory already elects the trio, so resolving
     // now keeps the vanilla namespaces even though no file exists yet.
     let root = HostWorldTree::new(&root_path).unwrap();
+    assert_eq!(layout_of(&root), LayoutTag::BukkitLegacy);
 
     // The empty overworld still elects the trio: derivation targets the
     // `world/` folder rather than hashed codes.
@@ -517,6 +780,10 @@ fn level_name_wins_over_a_leftover_world_folder() {
     );
 
     let root = HostWorldTree::new(&root_path).unwrap();
+    assert!(
+        matches!(root, HostWorldTree::BukkitLegacy { ref base, .. } if base == "survival"),
+        "expected the legacy Bukkit layout"
+    );
     // `level-name` wins: derivation targets the survival folder.
     assert_eq!(
         root.derive_path(Dimension::OVERWORLD, RegionKind::REGION, 1, 0)
@@ -565,9 +832,9 @@ fn level_name_wins_over_a_leftover_world_folder() {
 }
 
 #[test]
-fn stray_dimensions_dir_does_not_hijack_a_bukkit_root() {
-    // A `dimensions/` directory left at a Bukkit container root (migration
-    // residue, a plugin) must not make the root look like a 26.1 vanilla
+fn stray_minecraft_tree_does_not_hijack_a_bukkit_root() {
+    // A `dimensions/minecraft` tree left at a Bukkit container root
+    // (migration residue, a plugin) must not make the root look like a 26.1
     // world: rollback would then restore into a tree the server ignores.
     let root_path = tempdir("stray-dimensions");
     let image = one_chunk_image();
@@ -576,10 +843,16 @@ fn stray_dimensions_dir_does_not_hijack_a_bukkit_root() {
         root_path.join("world_nether/DIM-1/region/r.0.0.mca"),
         &image,
     );
-    std::fs::create_dir_all(root_path.join("dimensions/minecraft/the_nether")).unwrap();
+    write(
+        root_path.join("dimensions/minecraft/the_nether/region/r.0.0.mca"),
+        &image,
+    );
 
     let root = HostWorldTree::new(&root_path).unwrap();
-    // The elected trio wins over the stray `dimensions/` tree.
+    assert_eq!(layout_of(&root), LayoutTag::BukkitLegacy);
+    // The elected trio wins over the stray 26.1 tree.
+    let found = root.discover().unwrap();
+    assert_eq!(found.len(), 2, "the stray tree must stay invisible");
     assert_eq!(
         root.derive_path(Dimension::NETHER, RegionKind::REGION, 0, 0)
             .unwrap(),
@@ -659,6 +932,8 @@ fn missing_world_is_an_error() {
 #[test]
 fn derives_all_layouts() {
     let legacy = HostWorldTree::new_legacy("/w");
+    assert_eq!(layout_of(&legacy), LayoutTag::VanillaLegacy);
+    assert_eq!(legacy.root(), Path::new("/w"));
     assert_eq!(
         legacy
             .derive_path(Dimension::NETHER, RegionKind::REGION, -1, 2)
@@ -667,6 +942,7 @@ fn derives_all_layouts() {
     );
 
     let modern = HostWorldTree::new_dimensions("/w");
+    assert_eq!(layout_of(&modern), LayoutTag::Vanilla);
     assert_eq!(
         modern
             .derive_path(Dimension::END, RegionKind::POI, 0, 0)
@@ -675,8 +951,18 @@ fn derives_all_layouts() {
     );
 
     let bukkit = HostWorldTree::new_bukkit("/w", "srv");
+    assert_eq!(layout_of(&bukkit), LayoutTag::Bukkit);
     assert_eq!(
         bukkit
+            .derive_path(Dimension::OVERWORLD, RegionKind::REGION, 0, 0)
+            .unwrap(),
+        Path::new("/w/srv/dimensions/minecraft/overworld/region/r.0.0.mca")
+    );
+
+    let bukkit_legacy = HostWorldTree::new_bukkit_legacy("/w", "srv");
+    assert_eq!(layout_of(&bukkit_legacy), LayoutTag::BukkitLegacy);
+    assert_eq!(
+        bukkit_legacy
             .derive_path(Dimension::OVERWORLD, RegionKind::REGION, 0, 0)
             .unwrap(),
         Path::new("/w/srv/region/r.0.0.mca")

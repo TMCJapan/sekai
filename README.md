@@ -83,7 +83,7 @@ caller.
 Pass your server root (for Bukkit-family servers like Spigot, Paper, or Purpur)
 or a single world directory (for Vanilla). Sekai automatically detects
 Vanilla layouts (`region/`, `DIM-1/`, `DIM1/`, `dimensions/minecraft/...`),
-pre-26.1 split Bukkit layouts, and custom plugin world folders.
+pre-26.1 and 26.1 split Bukkit layouts, and custom plugin world folders.
 
 See `ARCHITECTURE.md` for the design, `CONTRIBUTING.md` for development
 guidelines, and the user guide
