@@ -665,6 +665,60 @@ fn plugin_worlds_elect_their_own_layout() {
 }
 
 #[test]
+fn plugin_siblings_stay_consumed_without_overworld_files() {
+    // A plugin trio whose base folder exists but currently holds no
+    // overworld files (emptied, half-copied, or freshly cloned): the
+    // `_nether`/`_the_end` siblings must already belong to the base, so
+    // their codes stay `<base>:minecraft:*` and never flip to standalone
+    // `<base>_nether:minecraft:*` worlds once the overworld reappears.
+    let root_path = tempdir("empty-plugin-base");
+    let image = one_chunk_image();
+    write(root_path.join("region/r.0.0.mca"), &image);
+    std::fs::create_dir_all(root_path.join("sky")).unwrap();
+    write(root_path.join("sky_nether/DIM-1/region/r.0.0.mca"), &image);
+    write(root_path.join("sky_the_end/DIM1/region/r.0.0.mca"), &image);
+
+    let root = HostWorldTree::new(&root_path).unwrap();
+    assert_eq!(layout_of(&root), LayoutTag::VanillaLegacy);
+    let found = root.discover().unwrap();
+    assert_eq!(found.len(), 3, "unexpected set: {found:?}");
+    assert!(found.iter().any(|r| {
+        r.dim == resolve_custom_dimension("sky:minecraft:the_nether")
+            && r.path == root_path.join("sky_nether/DIM-1/region/r.0.0.mca")
+    }));
+    assert!(found.iter().any(|r| {
+        r.dim == resolve_custom_dimension("sky:minecraft:the_end")
+            && r.path == root_path.join("sky_the_end/DIM1/region/r.0.0.mca")
+    }));
+    // The empty base consumed its siblings: none was rediscovered as a
+    // standalone plugin world.
+    let allowed = [
+        Dimension::OVERWORLD,
+        resolve_custom_dimension("sky:minecraft:the_nether"),
+        resolve_custom_dimension("sky:minecraft:the_end"),
+    ];
+    assert!(
+        found.iter().all(|r| allowed.contains(&r.dim)),
+        "siblings were discovered as standalone worlds: {found:?}"
+    );
+
+    // The overworld reappears: only it is added; the sibling codes are
+    // unchanged.
+    write(root_path.join("sky/region/r.0.0.mca"), &image);
+    let found = root.discover().unwrap();
+    assert_eq!(found.len(), 4, "unexpected set: {found:?}");
+    assert!(found.iter().any(|r| {
+        r.dim == resolve_custom_dimension("sky:minecraft:overworld")
+            && r.path == root_path.join("sky/region/r.0.0.mca")
+    }));
+    assert!(found.iter().any(|r| {
+        r.dim == resolve_custom_dimension("sky:minecraft:the_nether")
+            && r.path == root_path.join("sky_nether/DIM-1/region/r.0.0.mca")
+    }));
+    cleanup(&root_path);
+}
+
+#[test]
 fn root_level_leftovers_are_not_scanned() {
     // A stale root-level DIM-1 next to a live Bukkit trio: exactly one
     // layout is respected, so the leftover is ignored entirely instead of

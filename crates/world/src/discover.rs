@@ -374,8 +374,10 @@ fn scan_dimension_trees(
 /// keeps every dimension under hashed namespaces scoped to the world:
 /// `<base>:<namespace>:<name>` (its own trio is
 /// `<base>:minecraft:<logical dimension>`). Bukkit-style
-/// `<base>_nether`/`<base>_the_end` siblings are consumed by their base so
-/// they are never discovered twice.
+/// `<base>_nether`/`<base>_the_end` siblings are consumed by their base -
+/// even while it holds no overworld files yet - so they are never
+/// discovered twice and never reassigned to standalone world codes when
+/// the overworld reappears.
 fn scan_plugin_worlds(
     root: impl AsRef<Path>,
     skip: &[String],
@@ -401,14 +403,14 @@ fn scan_plugin_worlds(
             continue;
         }
         let dir = entry.path();
+        // `_nether`/`_the_end` siblings elect their base even when it
+        // currently holds no overworld files (an emptied, half-copied, or
+        // freshly cloned overworld): consuming them here keeps their
+        // `<base>:minecraft:*` codes stable instead of reassigning them as
+        // standalone worlds once the overworld reappears.
         let siblings = root.join(format!("{name}_nether")).is_dir()
             || root.join(format!("{name}_the_end")).is_dir();
-        let is_world = if siblings {
-            is_bukkit_overworld(&dir)?
-        } else {
-            is_world_folder(&dir)?
-        };
-        if !is_world {
+        if !siblings && !is_world_folder(&dir)? {
             continue;
         }
         // Each plugin world elects its own single layout: a 26.1 tree
