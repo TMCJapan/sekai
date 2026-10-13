@@ -12,6 +12,5 @@ mod tree;
 pub use discover::{RegionRef, sibling_path};
 pub use error::WorldError;
 pub use fingerprint::{file_mtime_ms, fingerprint_file};
-pub use scan::{RegionScanEntry, ScanReport, ScanSkip, ScanTimings, scan_world};
 pub use swap::{atomic_swap, open_image};
 pub use tree::{HostWorldTree, WorldTree};

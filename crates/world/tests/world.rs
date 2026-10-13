@@ -1,9 +1,7 @@
 //! World filesystem behavior: discovery, fingerprints, scans, swaps.
 
 use sekai_core::{Dimension, RegionKey, RegionKind};
-use sekai_world::{
-    HostWorldTree, WorldTree, atomic_swap, fingerprint_file, open_image, scan_world,
-};
+use sekai_world::{HostWorldTree, WorldTree, atomic_swap, fingerprint_file, open_image};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 

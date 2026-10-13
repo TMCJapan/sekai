@@ -21,8 +21,6 @@ mod prune;
 mod rollback;
 mod tag;
 
-use std::path::Path;
-
 pub use backup::{
     BackupOptions, BackupProgress, BackupTimings, RegionTiming, StatusOptions, StatusReport,
     StatusTimings,
@@ -41,14 +39,4 @@ pub use sekai_core::{
     NbtChange, NbtDiffEntry, NbtValue, PrunePlan, PruneReport, Rect, RegionKey, RegionKind,
     RollbackReport, Scope, Snapshot, SnapshotId, SnapshotStats, SnapshotTag, TagName,
 };
-pub use sekai_world::{
-    HostWorldTree, RegionScanEntry, ScanReport, ScanSkip, ScanTimings, WorldTree,
-};
-
-/// Read-only inspection of every region file under `world`, additionally
-/// returning per-phase timings and any files that could not be inspected.
-///
-/// Never writes to the world or the store.
-pub fn scan(world: impl AsRef<Path>) -> Result<ScanReport, AppError> {
-    Ok(sekai_world::scan_world(world)?)
-}
+pub use sekai_world::{HostWorldTree, WorldTree};
