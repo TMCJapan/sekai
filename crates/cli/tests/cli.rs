@@ -402,7 +402,7 @@ fn selection_describe_summarizes() {
 }
 
 #[test]
-fn parses_timing_and_debug_scan() {
+fn parses_timing_and_json_flags() {
     let cli = Cli::try_parse_from(["sekai", "backup", "--timing", "world"])
         .expect("backup --timing parses");
     assert!(matches!(
