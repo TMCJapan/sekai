@@ -33,30 +33,52 @@ impl HostWorldTree {
 
     /// Fresh output tree in the legacy single-folder layout (`region/`,
     /// `DIM-1/`, `DIM1/`), for roots that do not exist yet (export).
-    pub fn new_legacy(_root: impl AsRef<Path>) -> Self {
-        // TODO
+    pub fn new_legacy(root: impl AsRef<Path>) -> Self {
+        let root = root.as_ref();
         Self {
-            dirs: BTreeMap::new(),
+            dirs: [
+                (Dimension::OVERWORLD, root.to_path_buf()),
+                (Dimension::NETHER, root.join("DIM-1")),
+                (Dimension::END, root.join("DIM1")),
+            ]
+            .into(),
         }
     }
 
     /// Fresh output tree in the 26.1 layout
     /// (`dimensions/minecraft/<name>/`), for roots that do not exist yet
     /// (export).
-    pub fn new_dimensions(_root: impl AsRef<Path>) -> Self {
-        // TODO
+    pub fn new_dimensions(root: impl AsRef<Path>) -> Self {
+        let minecraft = root.as_ref().join("dimensions").join("minecraft");
         Self {
-            dirs: BTreeMap::new(),
+            dirs: [
+                (Dimension::OVERWORLD, minecraft.join("overworld")),
+                (Dimension::NETHER, minecraft.join("the_nether")),
+                (Dimension::END, minecraft.join("the_end")),
+            ]
+            .into(),
         }
     }
 
     /// Fresh output tree in the Bukkit split-folder layout around `base`
     /// (`<base>/`, `<base>_nether/DIM-1/`, `<base>_the_end/DIM1/`), for
     /// roots that do not exist yet (export).
-    pub fn new_bukkit(_root: impl AsRef<Path>, _base: impl Into<String>) -> Self {
-        // TODO
+    pub fn new_bukkit(root: impl AsRef<Path>, base: impl Into<String>) -> Self {
+        let root = root.as_ref();
+        let base = base.into();
         Self {
-            dirs: BTreeMap::new(),
+            dirs: [
+                (Dimension::OVERWORLD, root.join(&base)),
+                (
+                    Dimension::NETHER,
+                    root.join(format!("{base}_nether")).join("DIM-1"),
+                ),
+                (
+                    Dimension::END,
+                    root.join(format!("{base}_the_end")).join("DIM1"),
+                ),
+            ]
+            .into(),
         }
     }
 }

@@ -29,7 +29,7 @@ sekai (bin, thin: clap parse + print + exit code)
     -> sekai-core (no_std + alloc: use-case policy API over shared types)
       -> sekai-anvil (no_std + alloc: pure sector codec, decompress)
       -> sekai-nbt (no_std + alloc: pure parse/diff)
-    -> sekai-world (std: filesystem owner - discover/fingerprint/scan/swap)
+    -> sekai-world (std: filesystem owner - discover/fingerprint/swap)
       -> sekai-anvil + sekai-core (types only)
     -> sekai-storage (std + tokio: async MetaStore/BlobStore traits,
                       file CAS, and feature-gated DB backends)
@@ -46,7 +46,7 @@ sekai-util (no_std, zero-dependency: coordinates, hashes, history value
 | `sekai-nbt` | `no_std` + `alloc` | no | Pure `raw NBT bytes -> diff view`. Hand-rolled NBT parser (no `Serialize` by design; output uses SNBT), tag filtering, canonical digest returning util `DiffHash`. Never sees compression. |
 | `sekai-core` | `no_std` + `alloc` | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_rollback`, `gc plan`/`apply`) plus composition helpers (`hash_blob`, `resolve_custom_dimension`, storage ports). Composes `anvil`/`nbt` over util types and re-exports them, so downstream paths stay stable. |
 | `sekai-storage` | `std` + tokio | yes (RPITIT) | Single crate: async `BlobStore`/`MetaStore` traits (owned by `core::port`, re-exported from the `api` module), file CAS (`cas` module, `blobs/ab/cdef...` retained by design), and feature-gated DB backends (`sqlite` module ships; `mysql`/`postgres` modules reserved as stubs). Depends on `core`. Backend modules mirror the future split so extraction stays mechanical. |
-| `sekai-world` | `std` | yes (I/O) / sync pure helpers where trivial | Filesystem owner: world discovery, fingerprint observation, read-only scans, atomic swaps. |
+| `sekai-world` | `std` | yes (I/O) / sync pure helpers where trivial | Filesystem owner: world discovery, fingerprint observation, atomic swaps. |
 | `sekai-app` | `std` + tokio | yes | Composition/orchestration library for third parties: parallel ingest, clocks, timing, progress callbacks. |
 | `sekai` bin (`sekai-cli` package) | `std` + tokio | yes | Thin clap wrapper over `sekai-app`. No logic. Binary name stays `sekai`; package name stays `sekai-cli` so existing CI/artifact names keep working. |
 

@@ -1,4 +1,4 @@
-//! World filesystem behavior: discovery, fingerprints, scans, swaps.
+//! World filesystem behavior: discovery, fingerprints, swaps.
 
 use sekai_core::{Dimension, RegionKey, RegionKind};
 use sekai_world::{HostWorldTree, WorldTree, atomic_swap, fingerprint_file, open_image};
@@ -208,7 +208,7 @@ fn multiverse_worlds_never_collide() {
     // Hashed dims are not derivable; rollback uses discovered folders.
     assert!(matches!(
         root.derive_path(hashed[0].dim, RegionKind::REGION, 0, 0),
-        Err(sekai_world::WorldError::UnknownRegionPath { .. })
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound
     ));
     cleanup(&root_path);
 }
@@ -431,7 +431,7 @@ fn missing_world_is_an_error() {
     cleanup(&world_path);
     assert!(matches!(
         world.discover(),
-        Err(sekai_world::WorldError::Io { .. })
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound
     ));
 }
 
@@ -463,11 +463,11 @@ fn derives_all_layouts() {
 
     assert!(matches!(
         modern.derive_path(Dimension::new(4242), RegionKind::REGION, 0, 0),
-        Err(sekai_world::WorldError::UnknownRegionPath { .. })
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound
     ));
     assert!(matches!(
         legacy.derive_path(Dimension::OVERWORLD, RegionKind::new(9), 0, 0),
-        Err(sekai_world::WorldError::UnknownRegionPath { .. })
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound
     ));
 }
 
@@ -553,47 +553,6 @@ fn set_mtime(path: impl AsRef<Path>, time: std::time::SystemTime) {
         .expect("file is writable");
     let times = std::fs::FileTimes::new().set_modified(time);
     file.set_times(times).expect("mtime is settable");
-}
-
-#[test]
-fn scan_counts_chunks_without_writing() {
-    let world = tempdir("scan");
-    write(world.join("region/r.0.0.mca"), &one_chunk_image());
-    write(world.join("region/r.1.0.mca"), &[0u8; 8192]);
-    write(world.join("region/r.2.0.mca"), &[]);
-    let report = scan_world(&world).unwrap();
-    let mut entries = report.entries;
-    entries.sort_by_key(|e| e.region_x);
-    assert!(report.skipped.is_empty());
-    assert_eq!(entries.len(), 3);
-    assert_eq!(entries[0].chunks, 1);
-    assert_eq!(entries[0].file_bytes % 4096, 0);
-    assert_eq!(entries[0].content_hash.len(), 64);
-    assert_eq!(entries[1].chunks, 0);
-    assert_eq!(entries[2].chunks, 0);
-    assert_eq!(entries[2].file_bytes, 0);
-    let timings = report.timings;
-    assert!(timings.total >= timings.discover + timings.read + timings.parse);
-    cleanup(&world);
-}
-
-/// A corrupt file must be reported, not silently dropped: an inventory
-/// that undercounts is worse than one that fails.
-#[test]
-fn scan_reports_unreadable_files() {
-    let world = tempdir("scan-corrupt");
-    write(world.join("region/r.0.0.mca"), &one_chunk_image());
-    // Truncated below the 8 KiB header: unreadable, but discoverable.
-    write(world.join("region/r.1.0.mca"), &[7u8; 100]);
-    let report = scan_world(&world).unwrap();
-    assert_eq!(report.entries.len(), 1);
-    assert_eq!(report.skipped.len(), 1);
-    assert!(report.skipped[0].path.ends_with("r.1.0.mca"));
-    assert!(
-        !report.skipped[0].reason.is_empty(),
-        "a skip must carry a reason"
-    );
-    cleanup(&world);
 }
 
 #[test]

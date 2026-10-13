@@ -40,7 +40,6 @@ read-only flows.
 | `diff/small-all` | 72.6 ms | ~200 chunks, self-diff; per-chunk CAS opens dominate |
 | `diff/corpus-all` | 655 ms | 1189 chunks, self-diff |
 | `gc-plan/small` | 2.1 ms | read-only plan, repeatable |
-| `scan/corpus` | 8.2 ms | read-only, 10 MiB world |
 
 Rule-of-thumb estimates per subcommand (same machine class):
 

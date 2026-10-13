@@ -1,9 +1,9 @@
-//! Integration benchmarks for garbage collection and scanning.
+//! Integration benchmarks for garbage collection.
 
 #[path = "common.rs"]
 mod common;
 
-use common::{SMALL, corpus_world, generate, options, runtime, tempdir};
+use common::{SMALL, generate, options, runtime, tempdir};
 use criterion::{Criterion, criterion_group, criterion_main};
 use sekai_app::{HostWorldTree, Scope};
 
@@ -29,15 +29,6 @@ fn benches(c: &mut Criterion) {
         // covered by unit tests.
         b.iter(|| {
             rt.block_on(instance.gc_plan()).expect("gc plan works");
-        });
-        std::fs::remove_dir_all(&root).ok();
-    });
-
-    c.bench_function("scan/corpus", |b| {
-        let world = corpus_world();
-        let root = world.parent().unwrap().to_path_buf();
-        b.iter(|| {
-            sekai_app::scan(&world).expect("scan works");
         });
         std::fs::remove_dir_all(&root).ok();
     });
