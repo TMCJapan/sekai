@@ -7,8 +7,8 @@ body:
     attributes:
       value: |
         For backup-path slowdowns, include `backup --timing` output measured
-        with a release build. Debug builds are not comparable. Rollback, GC,
-        diff, and `debug scan` also accept `--timing`; add `--json` for the
+        with a release build. Debug builds are not comparable. Every command
+        except `list` and `tag` accepts `--timing`; add `--json` for the
         machine-readable report.
   - type: input
     id: version
@@ -32,8 +32,9 @@ body:
       label: Measurement conditions
       description: >
         Release or debug build, world size (bytes, region file count, chunk
-        count from `debug scan`), store filesystem and disk type, number of
-        existing snapshots, cold or warm page cache, how many runs were taken.
+        count from `backup --timing --json`), store filesystem and disk type,
+        number of existing snapshots, cold or warm page cache, how many runs
+        were taken.
       placeholder: |
         release build, 127MB / 53 files / 15237 chunks,
         store on ext4 (HDD), 3 snapshots, warm cache, best of 3 runs
