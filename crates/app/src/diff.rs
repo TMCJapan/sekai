@@ -79,9 +79,9 @@ where
         path: region_ref.path.clone(),
         source,
     };
-    let image = sekai_anvil::RegionImage::from_bytes(bytes, rx, rz).map_err(&failed)?;
+    let image = sekai_anvil::RegionImage::from_bytes(bytes, rx, rz).map_err(failed)?;
 
-    let payload = image.chunk_payload(coord.x, coord.z).map_err(&failed)?;
+    let payload = image.chunk_payload(coord.x, coord.z).map_err(failed)?;
     Ok(payload.map(<[u8]>::to_vec))
 }
 
@@ -196,13 +196,13 @@ where
             source,
         };
         let image = sekai_anvil::RegionImage::from_bytes(bytes, region.region_x, region.region_z)
-            .map_err(&failed)?;
+            .map_err(failed)?;
         image
             .visit_chunks(|chunk| {
                 coords.push(ChunkCoord::new(region.dim, region.kind, chunk.x, chunk.z));
                 true
             })
-            .map_err(&failed)?;
+            .map_err(failed)?;
     }
     coords.sort();
     coords.dedup();
