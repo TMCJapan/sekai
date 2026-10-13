@@ -57,7 +57,6 @@ Rule-of-thumb estimates per subcommand (same machine class):
 - `diff`: ~0.5 ms per chunk, dominated by per-chunk CAS file opens
   (batching opportunity, untracked).
 - `gc plan`: a few ms at small scale; grows with history length.
-- `debug scan`: disk-read bound, ~1 ms per MiB here.
 
 ## World-level measurement
 

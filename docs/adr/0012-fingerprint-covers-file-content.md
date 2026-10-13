@@ -43,6 +43,6 @@ path with a full verify behind a flag (a flag nobody sets is the bug again).
 A same-size payload edit under a preserved mtime is now ingested, pinned by
 `fingerprint_sees_a_payload_edit_with_preserved_size_and_mtime`. Plans that
 stored a 4 KiB header hash do not match the new column, so the first backup
-after upgrading re-ingests once - derived state, by design. `debug scan`
-reports the same digest under its new name, and no reader of a store has to
-care: nothing outside `region_state` depends on it.
+after upgrading re-ingests once - derived state, by design. Only the column
+name moved; no reader of a store has to care, since nothing outside
+`region_state` depends on it.

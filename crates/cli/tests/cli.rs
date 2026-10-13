@@ -2,8 +2,8 @@ use clap::Parser as _;
 use sekai_app::Dimension;
 use sekai_cli::{
     cli::{
-        Cli, Command, DebugCommand, DiffArgs, ExportFlavor, OnMissingBlob, OnMissingFile,
-        Selection, SnapshotRef, TagCommand, TimingArgs,
+        Cli, Command, DiffArgs, ExportFlavor, OnMissingBlob, OnMissingFile, Selection, SnapshotRef,
+        TagCommand, TimingArgs,
     },
     style::ColorChoice,
 };
@@ -402,7 +402,7 @@ fn selection_describe_summarizes() {
 }
 
 #[test]
-fn parses_timing_and_debug_scan() {
+fn parses_timing_and_json_flags() {
     let cli = Cli::try_parse_from(["sekai", "backup", "--timing", "world"])
         .expect("backup --timing parses");
     assert!(matches!(
@@ -635,24 +635,6 @@ fn parses_timing_and_debug_scan() {
             },
             ..
         })
-    ));
-
-    let cli = Cli::try_parse_from(["sekai", "debug", "scan", "world"]).expect("debug scan parses");
-    assert!(matches!(cli.command, Command::Debug { .. }));
-
-    let cli = Cli::try_parse_from(["sekai", "debug", "scan", "world", "--timing", "--json"])
-        .expect("scan --timing --json parses");
-    assert!(matches!(
-        cli.command,
-        Command::Debug {
-            debug: DebugCommand::Scan {
-                output: TimingArgs {
-                    timing: true,
-                    json: true,
-                },
-                ..
-            }
-        }
     ));
 }
 

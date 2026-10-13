@@ -23,13 +23,11 @@ carries the bare result only.
 | `diff` | single array, grouped array (multi), or timed object | table + JSON block | `--in`/`--region` select chunks; one chunk keeps the single shape |
 | `gc` | report or dry-run plan (+timings with `--timing`) | table + JSON block | dry-run timings carry `plan_ms`; `apply_ms` is `0` |
 | `prune` | report or dry-run plan (+timings with `--timing`) | table + JSON block | dry-run lists IDs; blobs are never unlinked, run `gc` after |
-| `debug scan` | `{result, skipped}` (+timings with `--timing`) | table + JSON block | `skipped` lists files that could not be read or parsed |
 
 Without `--timing`, `--json` emits the bare result. With `--timing`,
-reports that would be bare arrays (`diff`, `scan`) are promoted to an
-object holding the array (`diffs`/`entries`/`result`) plus the timing
-block; object reports (backup/status/rollback/export/gc/prune) append the
-block in place.
+the report that would be a bare array (`diff`) is promoted to an object
+holding the array (`diffs`) plus the timing block; object reports
+(backup/status/rollback/export/gc/prune) append the block in place.
 
 ## Envelope
 
@@ -42,7 +40,7 @@ Every invocation prints exactly one JSON object to stdout:
 {"command": "<name>", "status": "error", "error": "<full context chain>"}
 ```
 
-`command` is one of `backup`, `status`, `rollback`, `list`, `export`, `tag`, `prune`, `diff`, `gc`, `scan`.
+`command` is one of `backup`, `status`, `rollback`, `list`, `export`, `tag`, `prune`, `diff`, `gc`.
 The error string is the full anyhow context chain (outermost message
 first, then `Caused by:` lines), JSON-escaped.
 
@@ -85,6 +83,7 @@ With `--timing` the `total_ms`/`phases`/`regions` block is appended:
      "open_ms": 1, "ingest_ms": 20, "hash_ms": 2, "cas_ms": 15}
   ]
 }
+```
 
 ### `status`
 
@@ -101,7 +100,6 @@ With `--timing` the `total_ms`/`phases`/`regions` block is appended:
 The `total_ms`/`phases` block appears only with `--timing`.
 `latest` is `null` when no snapshot exists yet. Counts describe what a
 backup would record; nothing is written.
-```
 
 ### `rollback`
 
@@ -199,7 +197,7 @@ size cap: a huge rectangle enumerates every chunk inside it.
 `type` is `added` (`val`), `removed` (`val`), or `modified`
 (`old`+`new`). Values are SNBT strings, always complete (human
 `--show-values` truncation does not apply here). `coord` uses raw
-integer `dim`/`kind` codes, matching `scan`.
+integer `dim`/`kind` codes.
 
 A chunk absent (or tombstoned) on a side diffs as an empty compound
 there: absent on both sides yields no entries, present on one side
@@ -275,41 +273,6 @@ Dry-run (`prune --dry-run --json`) lists snapshot IDs instead;
 
 Pruning never unlinks blobs: dereferenced payloads stay in CAS until
 the next `gc`.
-
-### `scan` (`debug scan`)
-
-```jsonc
-{
-  "result": [
-    {"path": "/w/region/r.0.0.mca", "dim": 0, "kind": 0,
-     "region_x": 0, "region_z": 0, "size": 12345, "mtime_ms": 1700000000000,
-     "chunks": 60, "content_hash": "ab12..."},
-    {"path": "/w/region/r.1.0.mca", "dim": 0, "kind": 0,
-     "region_x": 1, "region_z": 0, "size": 8192, "mtime_ms": null,
-     "chunks": 0, "content_hash": "cd34..."}
-  ],
-  "skipped": [
-    {"path": "/w/region/r.2.0.mca", "reason": "truncated region image: 100 bytes, need at least 8192"}
-  ]
-}
-```
-
-`dim`/`kind` are raw integer codes; `mtime_ms` is `null` when the
-platform cannot provide a timestamp. `skipped` lists files that were
-discovered but could not be read or parsed, so a partial inventory is
-never mistaken for a complete one; it is empty for a healthy world.
-
-With `--timing` the entries move under `entries` and the timing block is
-appended:
-
-```jsonc
-{
-  "entries": [],
-  "skipped": [],
-  "total_ms": 30,
-  "phases": {"discover_ms": 1, "read_ms": 20, "parse_ms": 8}
-}
-```
 
 ## Compatibility promise
 

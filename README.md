@@ -57,9 +57,6 @@ sekai --store ./sekai-store gc
 # Rebuild snapshot 1 into a fresh directory (live world untouched)
 sekai --store ./sekai-store export 1 ./restored
 
-# Inspect region files without touching anything
-sekai debug scan ./world
-
 ```
 
 Every command accepts `--json` for a single-document machine-readable

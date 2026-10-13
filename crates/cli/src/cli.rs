@@ -182,11 +182,6 @@ pub enum Command {
         #[arg(long, conflicts_with_all = ["json", "dry_run"])]
         progress: bool,
     },
-    /// Read-only inspection helpers (never write to world or store).
-    Debug {
-        #[command(subcommand)]
-        debug: DebugCommand,
-    },
 }
 
 impl Command {
@@ -202,9 +197,6 @@ impl Command {
             Self::Prune { .. } => "prune",
             Self::Diff(_) => "diff",
             Self::Gc { .. } => "gc",
-            Self::Debug { debug } => match debug {
-                DebugCommand::Scan { .. } => "scan",
-            },
         }
     }
 
@@ -221,9 +213,6 @@ impl Command {
             Self::List { json, .. } => *json,
             Self::Tag { action } => action.output_json(),
             Self::Diff(args) => args.output.json,
-            Self::Debug { debug } => match debug {
-                DebugCommand::Scan { output, .. } => output.json,
-            },
         }
     }
 }
@@ -652,18 +641,4 @@ fn parse_pair(s: &str, whole: &str) -> Result<Xz, String> {
 pub struct Xz {
     pub x: i32,
     pub z: i32,
-}
-
-#[derive(Debug, Subcommand)]
-pub enum DebugCommand {
-    /// List region files with size, mtime, chunk count, and content hash.
-    ///
-    /// Read-only: never writes to the world or the store.
-    Scan {
-        /// World directory to inspect.
-        world: PathBuf,
-        /// Human or JSON rendering plus optional phase timings.
-        #[command(flatten)]
-        output: TimingArgs,
-    },
 }
