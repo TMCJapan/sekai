@@ -83,6 +83,7 @@ With `--timing` the `total_ms`/`phases`/`regions` block is appended:
      "open_ms": 1, "ingest_ms": 20, "hash_ms": 2, "cas_ms": 15}
   ]
 }
+```
 
 ### `status`
 
@@ -99,7 +100,6 @@ With `--timing` the `total_ms`/`phases`/`regions` block is appended:
 The `total_ms`/`phases` block appears only with `--timing`.
 `latest` is `null` when no snapshot exists yet. Counts describe what a
 backup would record; nothing is written.
-```
 
 ### `rollback`
 
