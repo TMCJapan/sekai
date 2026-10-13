@@ -12,6 +12,9 @@ use crate::{RegionRef, WorldError};
 
 #[derive(Clone)]
 pub struct HostWorldTree {
+    /// Base path as passed by the caller. Discovery fails loudly when it is
+    /// missing, while missing dimension/kind subdirectories are skipped.
+    root: PathBuf,
     dirs: BTreeMap<Dimension, PathBuf>,
 }
 
@@ -40,7 +43,10 @@ impl HostWorldTree {
             }
             None => return Ok(Self::new_legacy(root)),
         };
-        Ok(Self { dirs })
+        Ok(Self {
+            root: root.to_path_buf(),
+            dirs,
+        })
     }
 
     /// Fresh output tree in the legacy single-folder layout (`region/`,
@@ -48,6 +54,7 @@ impl HostWorldTree {
     pub fn new_legacy(root: impl AsRef<Path>) -> Self {
         let root = root.as_ref();
         Self {
+            root: root.to_path_buf(),
             dirs: [
                 (Dimension::OVERWORLD, root.to_path_buf()),
                 (Dimension::NETHER, root.join("DIM-1")),
@@ -61,8 +68,10 @@ impl HostWorldTree {
     /// (`dimensions/minecraft/<name>/`), for roots that do not exist yet
     /// (export).
     pub fn new_dimensions(root: impl AsRef<Path>) -> Self {
-        let minecraft = root.as_ref().join("dimensions").join("minecraft");
+        let root = root.as_ref();
+        let minecraft = root.join("dimensions").join("minecraft");
         Self {
+            root: root.to_path_buf(),
             dirs: [
                 (Dimension::OVERWORLD, minecraft.join("overworld")),
                 (Dimension::NETHER, minecraft.join("the_nether")),
@@ -79,6 +88,7 @@ impl HostWorldTree {
         let root = root.as_ref();
         let base = base.into();
         Self {
+            root: root.to_path_buf(),
             dirs: [
                 (Dimension::OVERWORLD, root.join(&base)),
                 (
@@ -110,6 +120,13 @@ impl WorldTree for HostWorldTree {
     }
 
     fn discover(&self) -> Result<Vec<RegionRef>, Self::Error> {
+        if !self.root.is_dir() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("world directory not found: {}", self.root.display()),
+            ));
+        }
+
         const KIND_DIRS: [(RegionKind, &str); 3] = [
             (RegionKind::REGION, "region"),
             (RegionKind::ENTITIES, "entities"),
@@ -124,7 +141,11 @@ impl WorldTree for HostWorldTree {
                 // parses as region 0,0) resolve the same way on every run instead
                 // of following directory order.
                 let path = dir.join(kind_dir);
-                let entries = std::fs::read_dir(&path)?.collect::<Result<Vec<_>, _>>()?;
+                let entries = match std::fs::read_dir(&path) {
+                    Ok(entries) => entries.collect::<Result<Vec<_>, _>>()?,
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
+                    Err(err) => return Err(err),
+                };
                 for entry in entries {
                     if !std::fs::metadata(entry.path())?.is_file() {
                         continue;
