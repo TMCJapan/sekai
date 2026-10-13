@@ -29,9 +29,6 @@ sekai --store ./sekai-store gc
 
 # スナップショット 1 を新しいディレクトリに復元（稼働中のワールドには影響しません）
 sekai --store ./sekai-store export 1 ./restored
-
-# データを変更せずにリージョンファイルを検証・検査
-sekai debug scan ./world
 ```
 
 `--store` にはバックアップストアのディレクトリパスを指定します（`backup` のみが存在しない場合に自動作成し、他のコマンドはエラーになります）。

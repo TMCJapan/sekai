@@ -30,9 +30,6 @@ sekai --store ./sekai-store gc
 
 # Rebuild snapshot 1 into a fresh directory (live world untouched)
 sekai --store ./sekai-store export 1 ./restored
-
-# Inspect region files without touching anything
-sekai debug scan ./world
 ```
 
 `--store` names the backup store directory (`backup` creates it when

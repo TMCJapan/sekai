@@ -52,9 +52,6 @@ sekai --store ./sekai-store gc
 
 # スナップショット 1 を新しいディレクトリに復元（稼働中のワールドには影響しません）
 sekai --store ./sekai-store export 1 ./restored
-
-# データを変更せずにリージョンファイルを検証・検査
-sekai debug scan ./world
 ```
 
 すべてのコマンドは `--json` オプションに対応しており、単一の機械可読な JSON レポートを出力できます。また、`list` と `tag` を除くすべてのコマンドは `--timing` オプションでフェーズごとの処理時間内訳を表示できます（両方を組み合わせることで、所要時間付きの JSON が得られます）。さらに、`backup`、`status`、`rollback`、`diff`、`export`、`gc`、`prune` では `--progress` を指定すると標準エラー出力に進捗バーを表示できます（`--json` との併用は不可）。

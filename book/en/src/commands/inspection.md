@@ -6,7 +6,6 @@ These commands never write to the world or the store.
 sekai --store ./sekai-store list
 sekai --store ./sekai-store status ./world
 sekai --store ./sekai-store diff 1 2 --in overworld:0,0
-sekai debug scan ./world
 ```
 
 - `list` prints snapshots oldest first with raw Unix-millis timestamps
@@ -31,7 +30,3 @@ sekai debug scan ./world
   errors (see [ADR-0006](https://github.com/tmcjapan/sekai/blob/main/docs/adr/0006-diff-missing-as-empty.md));
   only corrupt payloads and missing blobs fail loudly. `--show-values`
   prints concrete old/new values in human output.
-- `debug scan` lists region files with size, mtime, chunk count, and
-  content hash, plus per-phase timings with `--timing`. Files that cannot be
-  read or parsed are reported as skipped (with the reason) instead of
-  vanishing, so a partial inventory never reads as a complete one.

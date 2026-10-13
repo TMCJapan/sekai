@@ -213,7 +213,7 @@ cargo build -p sekai-cli --release
 File bugs, features, and performance reports with the issue templates in
 `.github/ISSUE_TEMPLATE/` (English only). Performance reports must include
 the affected command's `--timing` output from a release build
-(`--timing` exists on `backup`/`rollback`/`gc`/`diff`/`debug scan`;
+(`--timing` exists on every command except `list` and `tag`;
 for backup-path slowdowns prefer `--timing --json`, which alone carries
 the per-region breakdown); bug reports include it only for speed aspects,
 never for pure correctness bugs; questions belong in
