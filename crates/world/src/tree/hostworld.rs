@@ -1,34 +1,46 @@
+mod detect;
+mod vanilla;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use sekai_anvil::custom_dimension_id;
 use sekai_core::{Dimension, RegionKind};
 
 use super::WorldTree;
 use crate::{RegionRef, WorldError};
 
-/// A [`WorldTree`] rooted at a local directory.
-///
-/// [`HostWorldTree::new`] classifies the root once and resolves every
-/// derivable dimension directory: an elected Bukkit trio wins over a stray
-/// `dimensions/` directory, otherwise an existing `dimensions/` directory
-/// selects the 26.1 tree, else the legacy single-folder layout. The resolved
-/// directories are stored, so operations never re-inspect the layout. The
-/// root is stored as given, never canonicalized.
 #[derive(Clone)]
 pub struct HostWorldTree {
     dirs: BTreeMap<Dimension, PathBuf>,
 }
 
 impl HostWorldTree {
-    /// Classify the tree rooted at `root` and resolve its layout.
-    ///
-    /// A missing root resolves as an empty legacy tree and later discovery
-    /// fails loudly; an unreadable root fails here.
-    pub fn new(_root: impl AsRef<Path>) -> Result<Self, WorldError> {
-        // TODO: detect world layout and collect.
-        Ok(Self {
-            dirs: BTreeMap::new(),
-        })
+    pub fn new(root: impl AsRef<Path>) -> Result<Self, WorldError> {
+        let root = root.as_ref();
+        let dirs = match detect::detect(root) {
+            Some(detect::Layout::Bukkit(base)) => {
+                vanilla::collect_dimentions(root.join(base)).unwrap()
+            }
+            Some(detect::Layout::BukkitLegacy(base)) => {
+                panic!("legacy bukkit layout is not supported. {base:?}")
+            }
+            Some(detect::Layout::Vanilla) => vanilla::collect_dimentions(root).unwrap(),
+            Some(detect::Layout::VanillaLegacy) => {
+                let mut dirs = vanilla::collect_dimentions(root).unwrap();
+                dirs.extend([
+                    (
+                        custom_dimension_id("minecraft:overworld"),
+                        root.to_path_buf(),
+                    ),
+                    (custom_dimension_id("minecraft:nether"), root.join("DIM-1")),
+                    (custom_dimension_id("minecraft:the_end"), root.join("DIM1")),
+                ]);
+                dirs
+            }
+            None => return Ok(Self::new_legacy(root)),
+        };
+        Ok(Self { dirs })
     }
 
     /// Fresh output tree in the legacy single-folder layout (`region/`,
