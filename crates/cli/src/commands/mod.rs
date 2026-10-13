@@ -1,7 +1,6 @@
 //! Subcommand execution dispatcher and output control wrappers.
 
 mod backup;
-mod debug;
 mod diff;
 mod diff_render;
 mod export;
@@ -13,7 +12,7 @@ mod rollback;
 mod status;
 mod tag;
 
-use crate::cli::{Cli, Command, DebugCommand, TimingArgs};
+use crate::cli::{Cli, Command, TimingArgs};
 use crate::style::Styler;
 
 /// Output controls shared by report commands (backup, rollback, gc).
@@ -161,8 +160,5 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
             )
             .await
         }
-        Command::Debug { debug } => match debug {
-            DebugCommand::Scan { world, output } => debug::run_scan(world, *output, style),
-        },
     }
 }
