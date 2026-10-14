@@ -9,37 +9,38 @@ pub(super) enum Layout {
 
 pub(super) fn detect(root: impl AsRef<Path>) -> Option<Layout> {
     let root = root.as_ref();
-    let text = fs::read_to_string(root.join("server.properties")).ok()?;
-    let base = text.lines().find_map(|line| {
-        line.trim()
-            .strip_prefix("level-name=")
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-    })?;
+    if let Ok(text) = fs::read_to_string(root.join("server.properties")) {
+        let base = text.lines().find_map(|line| {
+            line.trim()
+                .strip_prefix("level-name=")
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        })?;
 
-    if is_world_folder_any(&[
-        root.join(base)
-            .join("dimensions")
-            .join("minecraft")
-            .join("overworld"),
-        root.join(base)
-            .join("dimensions")
-            .join("minecraft")
-            .join("nether"),
-        root.join(base)
-            .join("dimensions")
-            .join("minecraft")
-            .join("the_end"),
-    ]) {
-        return Some(Layout::Bukkit(base.to_owned()));
-    }
+        if is_world_folder_any(&[
+            root.join(base)
+                .join("dimensions")
+                .join("minecraft")
+                .join("overworld"),
+            root.join(base)
+                .join("dimensions")
+                .join("minecraft")
+                .join("nether"),
+            root.join(base)
+                .join("dimensions")
+                .join("minecraft")
+                .join("the_end"),
+        ]) {
+            return Some(Layout::Bukkit(base.to_owned()));
+        }
 
-    if is_world_folder_any(&[
-        root.join(base),
-        root.join(format!("{base}_nether")).join("DIM-1"),
-        root.join(format!("{base}_the_end")).join("DIM1"),
-    ]) {
-        return Some(Layout::BukkitLegacy(base.to_owned()));
+        if is_world_folder_any(&[
+            root.join(base),
+            root.join(format!("{base}_nether")).join("DIM-1"),
+            root.join(format!("{base}_the_end")).join("DIM1"),
+        ]) {
+            return Some(Layout::BukkitLegacy(base.to_owned()));
+        }
     }
 
     if is_world_folder_any(&[

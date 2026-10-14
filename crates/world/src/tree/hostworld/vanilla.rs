@@ -10,10 +10,13 @@ pub(super) fn collect_dimentions(
     root: impl AsRef<Path>,
 ) -> std::io::Result<BTreeMap<Dimension, PathBuf>> {
     let mut dims = BTreeMap::new();
-    for namespace in std::fs::read_dir(root)? {
+    for namespace in std::fs::read_dir(root).map_or_default(std::iter::Iterator::collect::<Vec<_>>)
+    {
         let namespace = namespace?;
         let ns_filename = namespace.file_name();
-        for dimension in std::fs::read_dir(namespace.path())? {
+        for dimension in std::fs::read_dir(namespace.path())
+            .map_or_default(std::iter::Iterator::collect::<Vec<_>>)
+        {
             let dimension = dimension?;
             let dim_filename = dimension.file_name();
             let (Some(ns), Some(dim)) = (ns_filename.to_str(), dim_filename.to_str()) else {

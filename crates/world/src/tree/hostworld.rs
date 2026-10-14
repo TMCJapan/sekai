@@ -23,14 +23,16 @@ impl HostWorldTree {
         let root = root.as_ref();
         let dirs = match detect::detect(root) {
             Some(detect::Layout::Bukkit(base)) => {
-                vanilla::collect_dimentions(root.join(base)).unwrap()
+                vanilla::collect_dimentions(root.join(base).join("dimensions")).unwrap()
             }
             Some(detect::Layout::BukkitLegacy(base)) => {
                 panic!("legacy bukkit layout is not supported. {base:?}")
             }
-            Some(detect::Layout::Vanilla) => vanilla::collect_dimentions(root).unwrap(),
+            Some(detect::Layout::Vanilla) => {
+                vanilla::collect_dimentions(root.join("dimensions")).unwrap()
+            }
             Some(detect::Layout::VanillaLegacy) => {
-                let mut dirs = vanilla::collect_dimentions(root).unwrap();
+                let mut dirs = vanilla::collect_dimentions(root.join("dimensions")).unwrap();
                 dirs.extend([
                     (
                         custom_dimension_id("minecraft:overworld"),
@@ -120,6 +122,12 @@ impl WorldTree for HostWorldTree {
     }
 
     fn discover(&self) -> Result<Vec<RegionRef>, Self::Error> {
+        const KIND_DIRS: [(RegionKind, &str); 3] = [
+            (RegionKind::REGION, "region"),
+            (RegionKind::ENTITIES, "entities"),
+            (RegionKind::POI, "poi"),
+        ];
+
         if !self.root.is_dir() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -127,25 +135,21 @@ impl WorldTree for HostWorldTree {
             ));
         }
 
-        const KIND_DIRS: [(RegionKind, &str); 3] = [
-            (RegionKind::REGION, "region"),
-            (RegionKind::ENTITIES, "entities"),
-            (RegionKind::POI, "poi"),
-        ];
-
         let mut res = Vec::new();
         for (dim, dir) in &self.dirs {
             for (kind, kind_dir) in KIND_DIRS {
+                let mut regions = BTreeMap::new();
                 // Sorted by name so that two files spelling the same coordinates
                 // (`r.0.0.mca` and `r.00.00.mca`, both of which the game itself
                 // parses as region 0,0) resolve the same way on every run instead
                 // of following directory order.
                 let path = dir.join(kind_dir);
-                let entries = match std::fs::read_dir(&path) {
-                    Ok(entries) => entries.collect::<Result<Vec<_>, _>>()?,
+                let mut entries = match std::fs::read_dir(&path) {
+                    Ok(entries) => entries.collect::<Result<Vec<_>, _>>(),
                     Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
-                    Err(err) => return Err(err),
-                };
+                    Err(err) => Err(err),
+                }?;
+                entries.sort_unstable_by_key(std::fs::DirEntry::file_name);
                 for entry in entries {
                     if !std::fs::metadata(entry.path())?.is_file() {
                         continue;
@@ -164,8 +168,9 @@ impl WorldTree for HostWorldTree {
                         region_x,
                         region_z,
                     };
-                    res.push(reference);
+                    regions.entry((region_x, region_z)).or_insert(reference);
                 }
+                res.extend(regions.into_values());
             }
         }
         Ok(res)

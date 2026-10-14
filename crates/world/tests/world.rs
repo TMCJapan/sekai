@@ -1,7 +1,7 @@
 //! World filesystem behavior: discovery, fingerprints, swaps.
 
 use sekai_core::{Dimension, RegionKey, RegionKind};
-use sekai_world::{HostWorldTree, WorldTree, atomic_swap, fingerprint_file, open_image};
+use sekai_world::{HostWorldTree, RegionRef, WorldTree, atomic_swap, fingerprint_file, open_image};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -35,15 +35,57 @@ fn write(path: impl AsRef<Path>, bytes: &[u8]) {
     std::fs::write(path, bytes).unwrap();
 }
 
+/// Discovered files sorted by path, for order-independent assertions.
+fn paths_of(found: &[RegionRef]) -> Vec<PathBuf> {
+    let mut paths: Vec<_> = found.iter().map(|r| r.path.clone()).collect();
+    paths.sort();
+    paths
+}
+
+/// Every discovered file derives back to its own path: the tree resolved
+/// each observed dimension directory at construction.
+fn assert_derives_back(tree: &HostWorldTree, found: &[RegionRef]) {
+    for r in found {
+        assert_eq!(
+            tree.derive_path(r.dim, r.kind, r.region_x, r.region_z)
+                .unwrap(),
+            r.path
+        );
+    }
+}
+
+/// This branch makes no exception for the vanilla trio: observed dimension
+/// ids are path hashes, never the reserved codes.
+fn assert_hash_ids(found: &[RegionRef]) {
+    for r in found {
+        assert!(
+            ![Dimension::OVERWORLD, Dimension::NETHER, Dimension::END].contains(&r.dim),
+            "observed dimension uses a reserved code: {}",
+            r.path.display()
+        );
+    }
+}
+
+/// Same path, same id: reopening the root reproduces every discovered id.
+fn assert_stable_ids(root: &Path, found: &[RegionRef]) {
+    let reopened = HostWorldTree::new(root).unwrap().discover().unwrap();
+    let mut once: Vec<_> = found.iter().map(|r| (r.path.clone(), r.dim)).collect();
+    let mut again: Vec<_> = reopened.iter().map(|r| (r.path.clone(), r.dim)).collect();
+    once.sort();
+    again.sort();
+    assert_eq!(once, again);
+}
+
 #[test]
-fn discovers_legacy_and_new_layouts() {
+fn observes_a_single_layout_per_root() {
+    // A root holding both a 26.1 `dimensions/` tree and legacy folders is
+    // resolved once: the dimensions tree is the observed layout and the
+    // legacy files stay out of discovery.
     let world_path = tempdir("layouts");
     let image = one_chunk_image();
-    // Legacy triple.
     write(world_path.join("region/r.0.0.mca"), &image);
     write(world_path.join("DIM-1/region/r.0.0.mca"), &image);
     write(world_path.join("DIM1/entities/r.1.0.mca"), &image);
-    // New layout.
     write(
         world_path.join("dimensions/minecraft/overworld/region/r.2.0.mca"),
         &image,
@@ -52,327 +94,332 @@ fn discovers_legacy_and_new_layouts() {
         world_path.join("dimensions/aether/sky/region/r.0.1.mca"),
         &image,
     );
-    // Foreign files are ignored.
     write(world_path.join("region/notes.txt"), b"nope");
-
-    // Layout resolution happens once, against the tree on disk.
-    let world = HostWorldTree::new(&world_path).unwrap();
-    let mut found = world.discover().unwrap();
-    found.sort_by_key(|r| (r.dim.raw(), r.kind.raw(), r.region_x, r.region_z));
-    let keys: Vec<_> = found
-        .iter()
-        .map(|r| (r.dim, r.kind, r.region_x, r.region_z))
-        .collect();
-    assert!(keys.contains(&(Dimension::OVERWORLD, RegionKind::REGION, 0, 0)));
-    assert!(keys.contains(&(Dimension::NETHER, RegionKind::REGION, 0, 0)));
-    assert!(keys.contains(&(Dimension::END, RegionKind::ENTITIES, 1, 0)));
-    assert!(keys.contains(&(Dimension::OVERWORLD, RegionKind::REGION, 2, 0)));
-    // Custom dimension resolves stably through discovery.
-    let custom: Vec<_> = found
-        .iter()
-        .filter(|r| r.region_x == 0 && r.region_z == 1)
-        .collect();
-    assert_eq!(custom.len(), 1);
-    assert_ne!(custom[0].dim, Dimension::OVERWORLD);
-    assert_ne!(custom[0].dim, Dimension::NETHER);
-    assert_ne!(custom[0].dim, Dimension::END);
-    assert_eq!(found.len(), 5);
-    // An existing `dimensions/` tree elects 26.1 derivation.
-    assert_eq!(
-        world
-            .derive_path(Dimension::OVERWORLD, RegionKind::REGION, 2, 0)
-            .unwrap(),
-        world_path.join("dimensions/minecraft/overworld/region/r.2.0.mca")
-    );
-    cleanup(&world_path);
-}
-
-#[test]
-fn discovers_bukkit_nesting() {
-    let world_path = tempdir("bukkit");
-    let image = one_chunk_image();
-    write(world_path.join("world/region/r.0.0.mca"), &image);
-    write(
-        world_path.join("world_nether/DIM-1/region/r.0.0.mca"),
-        &image,
-    );
-    write(
-        world_path.join("world_the_end/DIM1/region/r.0.0.mca"),
-        &image,
-    );
 
     let world = HostWorldTree::new(&world_path).unwrap();
     let found = world.discover().unwrap();
-    assert_eq!(found.len(), 3);
-    let at = |dim, kind| {
-        found
-            .iter()
-            .find(|r| r.dim == dim && r.kind == kind)
-            .unwrap()
-            .path
-            .clone()
-    };
-    assert_eq!(
-        at(Dimension::OVERWORLD, RegionKind::REGION),
-        world_path.join("world/region/r.0.0.mca")
-    );
-    assert_eq!(
-        at(Dimension::NETHER, RegionKind::REGION),
-        world_path.join("world_nether/DIM-1/region/r.0.0.mca")
-    );
-    assert_eq!(
-        at(Dimension::END, RegionKind::REGION),
-        world_path.join("world_the_end/DIM1/region/r.0.0.mca")
-    );
-    // The elected trio drives derivation.
-    assert_eq!(
-        world
-            .derive_path(Dimension::OVERWORLD, RegionKind::REGION, 0, 0)
-            .unwrap(),
-        world_path.join("world/region/r.0.0.mca")
-    );
-    assert_eq!(
-        world
-            .derive_path(Dimension::NETHER, RegionKind::REGION, 0, 0)
-            .unwrap(),
-        world_path.join("world_nether/DIM-1/region/r.0.0.mca")
-    );
+    let overworld = world_path.join("dimensions/minecraft/overworld/region/r.2.0.mca");
+    let custom = world_path.join("dimensions/aether/sky/region/r.0.1.mca");
+    assert_eq!(paths_of(&found), vec![custom.clone(), overworld.clone()]);
+
+    // Two folders, two distinct path-derived ids.
+    let over = found.iter().find(|r| r.path == overworld).unwrap();
+    let sky = found.iter().find(|r| r.path == custom).unwrap();
+    assert_ne!(over.dim, sky.dim);
+
+    assert_hash_ids(&found);
+    assert_derives_back(&world, &found);
+    assert_stable_ids(&world_path, &found);
     cleanup(&world_path);
 }
 
 #[test]
-fn discovers_custom_level_name_trio() {
-    // `level-name: srv` servers use srv/srv_nether/srv_the_end.
-    let root_path = tempdir("levelname");
+fn discovers_a_legacy_single_folder_world() {
+    let world_path = tempdir("legacy");
     let image = one_chunk_image();
-    write(root_path.join("srv/region/r.0.0.mca"), &image);
-    write(root_path.join("srv_nether/DIM-1/region/r.0.0.mca"), &image);
-    write(root_path.join("srv_the_end/DIM1/region/r.0.0.mca"), &image);
+    write(world_path.join("region/r.0.0.mca"), &image);
+    write(world_path.join("DIM-1/region/r.0.0.mca"), &image);
+    write(world_path.join("DIM1/entities/r.1.0.mca"), &image);
+    write(world_path.join("region/notes.txt"), b"nope");
+
+    let world = HostWorldTree::new(&world_path).unwrap();
+    let found = world.discover().unwrap();
+    assert_eq!(
+        paths_of(&found),
+        vec![
+            world_path.join("DIM-1/region/r.0.0.mca"),
+            world_path.join("DIM1/entities/r.1.0.mca"),
+            world_path.join("region/r.0.0.mca"),
+        ]
+    );
+    let nether = found
+        .iter()
+        .find(|r| r.path == world_path.join("DIM-1/region/r.0.0.mca"))
+        .unwrap();
+    let over = found
+        .iter()
+        .find(|r| r.path == world_path.join("region/r.0.0.mca"))
+        .unwrap();
+    assert_ne!(nether.dim, over.dim);
+    assert_hash_ids(&found);
+    assert_derives_back(&world, &found);
+    assert_stable_ids(&world_path, &found);
+    cleanup(&world_path);
+}
+
+#[test]
+fn discovers_a_bukkit_level_name_world() {
+    // `level-name=world`: the observed layout is the 26.1 tree nested
+    // under the level-name folder.
+    let root_path = tempdir("bukkit");
+    let image = one_chunk_image();
+    write(root_path.join("server.properties"), b"level-name=world\n");
+    write(
+        root_path.join("world/dimensions/minecraft/overworld/region/r.0.0.mca"),
+        &image,
+    );
+    write(
+        root_path.join("world/dimensions/minecraft/the_nether/region/r.0.0.mca"),
+        &image,
+    );
+    write(
+        root_path.join("world/dimensions/minecraft/the_end/region/r.0.0.mca"),
+        &image,
+    );
 
     let root = HostWorldTree::new(&root_path).unwrap();
     let found = root.discover().unwrap();
-    assert_eq!(found.len(), 3);
-    assert!(
-        found
-            .iter()
-            .any(|r| r.dim == Dimension::OVERWORLD
-                && r.path == root_path.join("srv/region/r.0.0.mca"))
-    );
-    assert!(found.iter().any(|r| r.dim == Dimension::NETHER
-        && r.path == root_path.join("srv_nether/DIM-1/region/r.0.0.mca")));
-    // Derivation follows the custom base.
     assert_eq!(
-        root.derive_path(Dimension::NETHER, RegionKind::REGION, 0, 0)
-            .unwrap(),
-        root_path.join("srv_nether/DIM-1/region/r.0.0.mca")
+        paths_of(&found),
+        vec![
+            root_path.join("world/dimensions/minecraft/overworld/region/r.0.0.mca"),
+            root_path.join("world/dimensions/minecraft/the_end/region/r.0.0.mca"),
+            root_path.join("world/dimensions/minecraft/the_nether/region/r.0.0.mca"),
+        ]
     );
+    assert_hash_ids(&found);
+    assert_derives_back(&root, &found);
+    assert_stable_ids(&root_path, &found);
     cleanup(&root_path);
 }
 
 #[test]
-fn multiverse_worlds_never_collide() {
-    // Main trio keeps vanilla codes; extra world folders hash theirs, so
-    // same-environment worlds cannot silently share coordinates.
+fn discovers_a_custom_level_name_world() {
+    // `level-name=srv`: the observed layout follows the configured base,
+    // including its custom dimensions.
+    let root_path = tempdir("levelname");
+    let image = one_chunk_image();
+    write(
+        root_path.join("server.properties"),
+        b"motd=x\nlevel-name=srv\n",
+    );
+    write(
+        root_path.join("srv/dimensions/minecraft/overworld/region/r.0.0.mca"),
+        &image,
+    );
+    write(
+        root_path.join("srv/dimensions/minecraft/the_nether/region/r.0.0.mca"),
+        &image,
+    );
+    write(
+        root_path.join("srv/dimensions/aeon/deep/region/r.0.1.mca"),
+        &image,
+    );
+
+    let root = HostWorldTree::new(&root_path).unwrap();
+    let found = root.discover().unwrap();
+    assert_eq!(
+        paths_of(&found),
+        vec![
+            root_path.join("srv/dimensions/aeon/deep/region/r.0.1.mca"),
+            root_path.join("srv/dimensions/minecraft/overworld/region/r.0.0.mca"),
+            root_path.join("srv/dimensions/minecraft/the_nether/region/r.0.0.mca"),
+        ]
+    );
+    let custom = found
+        .iter()
+        .find(|r| r.path == root_path.join("srv/dimensions/aeon/deep/region/r.0.1.mca"))
+        .unwrap();
+    let over = found
+        .iter()
+        .find(|r| r.path == root_path.join("srv/dimensions/minecraft/overworld/region/r.0.0.mca"))
+        .unwrap();
+    assert_ne!(custom.dim, over.dim);
+    assert_hash_ids(&found);
+    assert_derives_back(&root, &found);
+    cleanup(&root_path);
+}
+
+#[test]
+fn other_world_folders_are_not_observed() {
+    // A Multiverse-style sibling world is a separate tree; only the
+    // level-name world belongs to this one.
     let root_path = tempdir("multiverse");
     let image = one_chunk_image();
-    write(root_path.join("world/region/r.0.0.mca"), &image);
+    write(root_path.join("server.properties"), b"level-name=world\n");
     write(
-        root_path.join("world_nether/DIM-1/region/r.0.0.mca"),
+        root_path.join("world/dimensions/minecraft/overworld/region/r.0.0.mca"),
+        &image,
+    );
+    write(
+        root_path.join("world/dimensions/minecraft/the_nether/region/r.0.0.mca"),
         &image,
     );
     write(root_path.join("sky/region/r.0.0.mca"), &image);
-    write(root_path.join("sky_nether/DIM-1/region/r.0.0.mca"), &image);
+    write(root_path.join("sky/DIM-1/region/r.0.0.mca"), &image);
 
     let root = HostWorldTree::new(&root_path).unwrap();
     let found = root.discover().unwrap();
-    assert_eq!(found.len(), 4);
-    let dims: Vec<_> = found.iter().map(|r| r.dim).collect();
-    assert!(dims.contains(&Dimension::OVERWORLD));
-    assert!(dims.contains(&Dimension::NETHER));
-    let hashed: Vec<_> = found
-        .iter()
-        .filter(|r| {
-            r.dim != Dimension::OVERWORLD && r.dim != Dimension::NETHER && r.dim != Dimension::END
-        })
-        .collect();
-    assert_eq!(hashed.len(), 2);
-    assert_ne!(hashed[0].dim, hashed[1].dim);
-    // No two entries share a key: nothing was silently dropped.
-    let mut keys: Vec<_> = found
-        .iter()
-        .map(|r| (r.dim, r.kind, r.region_x, r.region_z))
-        .collect();
-    keys.sort();
-    keys.dedup();
-    assert_eq!(keys.len(), 4);
-    // Hashed dims are not derivable; rollback uses discovered folders.
-    assert!(matches!(
-        root.derive_path(hashed[0].dim, RegionKind::REGION, 0, 0),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound
-    ));
+    assert_eq!(
+        paths_of(&found),
+        vec![
+            root_path.join("world/dimensions/minecraft/overworld/region/r.0.0.mca"),
+            root_path.join("world/dimensions/minecraft/the_nether/region/r.0.0.mca"),
+        ]
+    );
+    assert_hash_ids(&found);
     cleanup(&root_path);
 }
 
 #[test]
-fn trio_wins_over_conversion_leftovers() {
-    // A stale root-level DIM-1 next to a live Bukkit trio: the trio is live
-    // server data, the leftover is pre-migration residue.
-    let root_path = tempdir("stale");
-    let mut stale = one_chunk_image();
-    stale[8192 + 4] = 9;
-    let mut live = one_chunk_image();
-    live[8192 + 4] = 7;
-    write(root_path.join("DIM-1/region/r.0.0.mca"), &stale);
-    write(root_path.join("world/region/r.1.0.mca"), &one_chunk_image());
-    write(root_path.join("world_nether/DIM-1/region/r.0.0.mca"), &live);
-
-    let root = HostWorldTree::new(&root_path).unwrap();
-    let found = root.discover().unwrap();
-    let nether: Vec<_> = found
-        .iter()
-        .filter(|r| r.dim == Dimension::NETHER)
-        .collect();
-    assert_eq!(nether.len(), 1);
-    assert_eq!(open_image(&nether[0].path).unwrap()[8192 + 4], 7);
-    cleanup(&root_path);
-}
-
-#[test]
-fn empty_overworld_keeps_the_trio_namespaces() {
-    // A freshly created (or briefly emptied) overworld has a `region/`
-    // directory but no files in it. Namespaces must not flip to hashed
-    // codes just because the overworld holds nothing right now.
-    let root_path = tempdir("empty-overworld");
+fn legacy_leftovers_stay_out_of_a_bukkit_layout() {
+    // Conversion residue at the server root or inside the level-name
+    // folder is not part of the observed 26.1 layout.
+    let root_path = tempdir("bukkit-leftovers");
     let image = one_chunk_image();
-    std::fs::create_dir_all(root_path.join("world/region")).unwrap();
+    write(root_path.join("server.properties"), b"level-name=world\n");
     write(
-        root_path.join("world_nether/DIM-1/region/r.0.0.mca"),
+        root_path.join("world/dimensions/minecraft/overworld/region/r.0.0.mca"),
         &image,
     );
     write(
-        root_path.join("world_the_end/DIM1/region/r.0.0.mca"),
+        root_path.join("world/dimensions/minecraft/the_nether/region/r.0.0.mca"),
         &image,
     );
+    write(root_path.join("world/region/r.9.9.mca"), &image);
+    write(root_path.join("DIM-1/region/r.9.9.mca"), &image);
 
-    // An empty `region/` directory already elects the trio, so resolving
-    // now keeps the vanilla namespaces even though no file exists yet.
     let root = HostWorldTree::new(&root_path).unwrap();
-
-    // The empty overworld still elects the trio: derivation targets the
-    // `world/` folder rather than hashed codes.
+    let found = root.discover().unwrap();
     assert_eq!(
-        root.derive_path(Dimension::OVERWORLD, RegionKind::REGION, 0, 0)
-            .unwrap(),
-        root_path.join("world/region/r.0.0.mca")
+        paths_of(&found),
+        vec![
+            root_path.join("world/dimensions/minecraft/overworld/region/r.0.0.mca"),
+            root_path.join("world/dimensions/minecraft/the_nether/region/r.0.0.mca"),
+        ]
+    );
+    assert_hash_ids(&found);
+    assert_derives_back(&root, &found);
+    cleanup(&root_path);
+}
+
+#[test]
+fn empty_dimension_directories_stay_collected() {
+    // Dimension directories are resolved at construction, so an empty
+    // (freshly created or briefly emptied) overworld still belongs to the
+    // layout and picks up files written later.
+    let root_path = tempdir("empty-dim");
+    let image = one_chunk_image();
+    std::fs::create_dir_all(root_path.join("dimensions/minecraft/overworld/region")).unwrap();
+    write(
+        root_path.join("dimensions/minecraft/the_nether/region/r.0.0.mca"),
+        &image,
+    );
+    write(
+        root_path.join("dimensions/minecraft/the_end/region/r.0.0.mca"),
+        &image,
     );
 
-    // The same siblings keep their vanilla codes whether or not the
-    // overworld holds files.
-    let nether = |root: &HostWorldTree| {
-        root.discover()
-            .unwrap()
-            .into_iter()
-            .find(|r| r.dim == Dimension::NETHER)
-            .map(|r| r.path)
-    };
-    let empty = nether(&root);
-    assert_eq!(
-        empty,
-        Some(root_path.join("world_nether/DIM-1/region/r.0.0.mca"))
+    let root = HostWorldTree::new(&root_path).unwrap();
+    write(
+        root_path.join("dimensions/minecraft/overworld/region/r.0.0.mca"),
+        &image,
     );
 
-    write(root_path.join("world/region/r.0.0.mca"), &image);
+    let found = root.discover().unwrap();
     assert_eq!(
-        root.derive_path(Dimension::OVERWORLD, RegionKind::REGION, 0, 0)
-            .unwrap(),
-        root_path.join("world/region/r.0.0.mca")
+        paths_of(&found),
+        vec![
+            root_path.join("dimensions/minecraft/overworld/region/r.0.0.mca"),
+            root_path.join("dimensions/minecraft/the_end/region/r.0.0.mca"),
+            root_path.join("dimensions/minecraft/the_nether/region/r.0.0.mca"),
+        ]
     );
-    assert_eq!(nether(&root), empty);
-
-    let over: Vec<_> = root
-        .discover()
-        .unwrap()
-        .into_iter()
-        .filter(|r| r.dim == Dimension::OVERWORLD)
-        .collect();
-    assert_eq!(over.len(), 1);
-    assert_eq!(over[0].path, root_path.join("world/region/r.0.0.mca"));
+    assert_hash_ids(&found);
+    assert_derives_back(&root, &found);
+    assert_stable_ids(&root_path, &found);
     cleanup(&root_path);
 }
 
 #[test]
 fn level_name_wins_over_a_leftover_world_folder() {
-    // `level-name=survival` with a stale `world/` trio still on disk: the
-    // server loads `survival`, so its files must keep the vanilla codes and
-    // the leftover must not be promoted to OVERWORLD.
+    // `level-name=survival` with a stale `world/` tree still on disk: the
+    // server loads survival, so only its layout is observed.
     let root_path = tempdir("levelname-leftover");
-    let live = one_chunk_image();
-    let mut stale = one_chunk_image();
-    stale[8192 + 4] = 9;
+    let image = one_chunk_image();
     write(
         root_path.join("server.properties"),
         b"motd=x\nlevel-name=survival\n",
     );
-    write(root_path.join("survival/region/r.1.0.mca"), &live);
     write(
-        root_path.join("survival_nether/DIM-1/region/r.0.0.mca"),
-        &live,
+        root_path.join("survival/dimensions/minecraft/overworld/region/r.1.0.mca"),
+        &image,
     );
-    write(root_path.join("world/region/r.9.9.mca"), &stale);
     write(
-        root_path.join("world_nether/DIM-1/region/r.0.0.mca"),
-        &stale,
+        root_path.join("survival/dimensions/minecraft/the_nether/region/r.0.0.mca"),
+        &image,
+    );
+    write(
+        root_path.join("world/dimensions/minecraft/overworld/region/r.9.9.mca"),
+        &image,
+    );
+    write(
+        root_path.join("world/dimensions/minecraft/the_nether/region/r.0.0.mca"),
+        &image,
     );
 
     let root = HostWorldTree::new(&root_path).unwrap();
-    // `level-name` wins: derivation targets the survival folder.
-    assert_eq!(
-        root.derive_path(Dimension::OVERWORLD, RegionKind::REGION, 1, 0)
-            .unwrap(),
-        root_path.join("survival/region/r.1.0.mca")
-    );
     let found = root.discover().unwrap();
-    let over: Vec<_> = found
-        .iter()
-        .filter(|r| r.dim == Dimension::OVERWORLD)
-        .collect();
-    assert_eq!(over.len(), 1);
-    assert_eq!(over[0].path, root_path.join("survival/region/r.1.0.mca"));
-    let nether: Vec<_> = found
-        .iter()
-        .filter(|r| r.dim == Dimension::NETHER)
-        .collect();
-    assert_eq!(nether.len(), 1);
     assert_eq!(
-        nether[0].path,
-        root_path.join("survival_nether/DIM-1/region/r.0.0.mca")
+        paths_of(&found),
+        vec![
+            root_path.join("survival/dimensions/minecraft/overworld/region/r.1.0.mca"),
+            root_path.join("survival/dimensions/minecraft/the_nether/region/r.0.0.mca"),
+        ]
     );
-    // The leftover trio is still discoverable, under its own namespace.
-    assert_eq!(found.len(), 4);
+    assert_hash_ids(&found);
+    assert_derives_back(&root, &found);
     cleanup(&root_path);
 }
 
 #[test]
 fn stray_dimensions_dir_does_not_hijack_a_bukkit_root() {
-    // A `dimensions/` directory left at a Bukkit container root (migration
-    // residue, a plugin) must not make the root look like a 26.1 vanilla
-    // world: rollback would then restore into a tree the server ignores.
+    // A `dimensions/` tree left at the server root (migration residue, a
+    // plugin) must not displace the level-name world's own layout.
     let root_path = tempdir("stray-dimensions");
     let image = one_chunk_image();
-    write(root_path.join("world/region/r.0.0.mca"), &image);
+    write(root_path.join("server.properties"), b"level-name=world\n");
     write(
-        root_path.join("world_nether/DIM-1/region/r.0.0.mca"),
+        root_path.join("world/dimensions/minecraft/overworld/region/r.0.0.mca"),
         &image,
     );
-    std::fs::create_dir_all(root_path.join("dimensions/minecraft/the_nether")).unwrap();
+    write(
+        root_path.join("world/dimensions/minecraft/the_nether/region/r.0.0.mca"),
+        &image,
+    );
+    write(
+        root_path.join("dimensions/minecraft/the_nether/region/r.9.9.mca"),
+        &image,
+    );
 
     let root = HostWorldTree::new(&root_path).unwrap();
-    // The elected trio wins over the stray `dimensions/` tree.
+    let found = root.discover().unwrap();
     assert_eq!(
-        root.derive_path(Dimension::NETHER, RegionKind::REGION, 0, 0)
-            .unwrap(),
-        root_path.join("world_nether/DIM-1/region/r.0.0.mca")
+        paths_of(&found),
+        vec![
+            root_path.join("world/dimensions/minecraft/overworld/region/r.0.0.mca"),
+            root_path.join("world/dimensions/minecraft/the_nether/region/r.0.0.mca"),
+        ]
     );
+    assert_hash_ids(&found);
+    cleanup(&root_path);
+}
+
+#[test]
+fn nested_world_folders_are_not_observed() {
+    // A full vanilla world copied under the observed one stays out:
+    // single-layout observation never walks into nested folders.
+    let root_path = tempdir("nested");
+    let image = one_chunk_image();
+    write(root_path.join("region/r.0.0.mca"), &image);
+    write(root_path.join("old/region/r.0.0.mca"), &image);
+    write(root_path.join("old/DIM-1/region/r.0.0.mca"), &image);
+
+    let root = HostWorldTree::new(&root_path).unwrap();
+    let found = root.discover().unwrap();
+    assert_eq!(paths_of(&found), vec![root_path.join("region/r.0.0.mca")]);
+    assert_hash_ids(&found);
+    assert_derives_back(&root, &found);
     cleanup(&root_path);
 }
 
@@ -396,31 +443,6 @@ fn duplicate_coordinate_names_resolve_deterministically() {
         assert_eq!(again.len(), 1);
         assert_eq!(again[0].path, root_path.join("region/r.0.0.mca"));
     }
-    cleanup(&root_path);
-}
-
-#[test]
-fn nested_vanilla_copy_gets_hashed_codes() {
-    // A full vanilla world copied under the root keeps working under hashed
-    // namespaces instead of colliding with the outer namespaces.
-    let root_path = tempdir("nested");
-    let root = HostWorldTree::new(&root_path).unwrap();
-    let image = one_chunk_image();
-    write(root_path.join("region/r.0.0.mca"), &image);
-    write(root_path.join("old/region/r.0.0.mca"), &image);
-    write(root_path.join("old/DIM-1/region/r.0.0.mca"), &image);
-    let found = root.discover().unwrap();
-    assert_eq!(found.len(), 3);
-    assert!(
-        found
-            .iter()
-            .any(|r| r.dim == Dimension::OVERWORLD && r.path == root_path.join("region/r.0.0.mca"))
-    );
-    let hashed = found
-        .iter()
-        .filter(|r| r.dim != Dimension::OVERWORLD)
-        .count();
-    assert_eq!(hashed, 2);
     cleanup(&root_path);
 }
 
