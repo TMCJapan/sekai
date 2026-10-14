@@ -69,7 +69,7 @@ fn assert_hash_ids(found: &[RegionRef]) {
 }
 
 /// Same path, same id: reopening the root reproduces every discovered id.
-fn assert_stable_ids(root: &Path, found: &[RegionRef]) {
+fn assert_stable_ids(root: impl AsRef<Path>, found: &[RegionRef]) {
     let reopened = HostWorldTree::new(root).unwrap().discover().unwrap();
     let mut once: Vec<_> = found.iter().map(|r| (r.path.clone(), r.dim)).collect();
     let mut again: Vec<_> = reopened.iter().map(|r| (r.path.clone(), r.dim)).collect();

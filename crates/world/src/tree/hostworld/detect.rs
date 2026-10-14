@@ -56,7 +56,8 @@ pub(super) fn detect(root: impl AsRef<Path>) -> Option<Layout> {
 /// The file is untrusted input: only uncommented `key=value` lines with
 /// that exact key count, and the value is trimmed of surrounding spaces.
 /// An unreadable or unconfigured file is simply "not set".
-fn level_name(root: &Path) -> Option<String> {
+fn level_name(root: impl AsRef<Path>) -> Option<String> {
+    let root = root.as_ref();
     let text = fs::read_to_string(root.join("server.properties")).ok()?;
     text.lines().find_map(|line| {
         line.trim()
