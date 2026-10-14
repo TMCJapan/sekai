@@ -23,16 +23,20 @@ impl HostWorldTree {
         let root = root.as_ref();
         let dirs = match detect::detect(root) {
             Some(detect::Layout::Bukkit(base)) => {
-                vanilla::collect_dimentions(root.join(base).join("dimensions")).unwrap()
+                collect_dimensions(root.join(base).join("dimensions"))?
             }
             Some(detect::Layout::BukkitLegacy(base)) => {
-                panic!("legacy bukkit layout is not supported. {base:?}")
+                return Err(WorldError::io(
+                    root,
+                    std::io::Error::new(
+                        std::io::ErrorKind::Unsupported,
+                        format!("legacy bukkit layout is not supported: {base}"),
+                    ),
+                ));
             }
-            Some(detect::Layout::Vanilla) => {
-                vanilla::collect_dimentions(root.join("dimensions")).unwrap()
-            }
+            Some(detect::Layout::Vanilla) => collect_dimensions(root.join("dimensions"))?,
             Some(detect::Layout::VanillaLegacy) => {
-                let mut dirs = vanilla::collect_dimentions(root.join("dimensions")).unwrap();
+                let mut dirs = collect_dimensions(root.join("dimensions"))?;
                 dirs.extend([
                     (
                         custom_dimension_id("minecraft:overworld"),
@@ -105,6 +109,12 @@ impl HostWorldTree {
             .into(),
         }
     }
+}
+
+/// Collect dimension directories, attaching the failing path to I/O errors.
+fn collect_dimensions(dir: impl AsRef<Path>) -> Result<BTreeMap<Dimension, PathBuf>, WorldError> {
+    let dir = dir.as_ref();
+    vanilla::collect_dimensions(dir).map_err(|source| WorldError::io(dir, source))
 }
 
 impl WorldTree for HostWorldTree {

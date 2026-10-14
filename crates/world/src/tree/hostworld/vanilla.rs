@@ -6,7 +6,7 @@ use std::{
 use sekai_anvil::custom_dimension_id;
 use sekai_core::Dimension;
 
-pub(super) fn collect_dimentions(
+pub(super) fn collect_dimensions(
     root: impl AsRef<Path>,
 ) -> std::io::Result<BTreeMap<Dimension, PathBuf>> {
     let mut dims = BTreeMap::new();

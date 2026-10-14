@@ -1,7 +1,9 @@
 //! World filesystem behavior: discovery, fingerprints, swaps.
 
 use sekai_core::{Dimension, RegionKey, RegionKind};
-use sekai_world::{HostWorldTree, RegionRef, WorldTree, atomic_swap, fingerprint_file, open_image};
+use sekai_world::{
+    HostWorldTree, RegionRef, WorldError, WorldTree, atomic_swap, fingerprint_file, open_image,
+};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -258,6 +260,23 @@ fn other_world_folders_are_not_observed() {
         ]
     );
     assert_hash_ids(&found);
+    cleanup(&root_path);
+}
+
+#[test]
+fn legacy_bukkit_layout_is_unsupported() {
+    // `level-name=world` with only the legacy split folders: detected as
+    // Bukkit legacy, which is not supported yet. The tree must report it as
+    // an Unsupported error rather than panicking.
+    let root_path = tempdir("bukkit-legacy");
+    let image = one_chunk_image();
+    write(root_path.join("server.properties"), b"level-name=world\n");
+    write(root_path.join("world/region/r.0.0.mca"), &image);
+
+    assert!(matches!(
+        HostWorldTree::new(&root_path),
+        Err(WorldError::Io { source, .. }) if source.kind() == std::io::ErrorKind::Unsupported
+    ));
     cleanup(&root_path);
 }
 
