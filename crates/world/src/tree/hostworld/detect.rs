@@ -25,7 +25,7 @@ pub(super) fn detect(root: impl AsRef<Path>) -> Option<Layout> {
             root.join(base)
                 .join("dimensions")
                 .join("minecraft")
-                .join("nether"),
+                .join("the_nether"),
             root.join(base)
                 .join("dimensions")
                 .join("minecraft")
@@ -45,7 +45,7 @@ pub(super) fn detect(root: impl AsRef<Path>) -> Option<Layout> {
 
     if is_world_folder_any(&[
         root.join("dimensions").join("minecraft").join("overworld"),
-        root.join("dimensions").join("minecraft").join("nether"),
+        root.join("dimensions").join("minecraft").join("the_nether"),
         root.join("dimensions").join("minecraft").join("the_end"),
     ]) {
         return Some(Layout::Vanilla);
