@@ -9,37 +9,30 @@ pub(super) enum Layout {
 
 pub(super) fn detect(root: impl AsRef<Path>) -> Option<Layout> {
     let root = root.as_ref();
-    if let Ok(text) = fs::read_to_string(root.join("server.properties")) {
-        let base = text.lines().find_map(|line| {
-            line.trim()
-                .strip_prefix("level-name=")
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-        })?;
-
+    if let Some(base) = level_name(root) {
         if is_world_folder_any(&[
-            root.join(base)
+            root.join(&base)
                 .join("dimensions")
                 .join("minecraft")
                 .join("overworld"),
-            root.join(base)
+            root.join(&base)
                 .join("dimensions")
                 .join("minecraft")
                 .join("the_nether"),
-            root.join(base)
+            root.join(&base)
                 .join("dimensions")
                 .join("minecraft")
                 .join("the_end"),
         ]) {
-            return Some(Layout::Bukkit(base.to_owned()));
+            return Some(Layout::Bukkit(base));
         }
 
         if is_world_folder_any(&[
-            root.join(base),
+            root.join(&base),
             root.join(format!("{base}_nether")).join("DIM-1"),
             root.join(format!("{base}_the_end")).join("DIM1"),
         ]) {
-            return Some(Layout::BukkitLegacy(base.to_owned()));
+            return Some(Layout::BukkitLegacy(base));
         }
     }
 
@@ -56,6 +49,22 @@ pub(super) fn detect(root: impl AsRef<Path>) -> Option<Layout> {
     }
 
     None
+}
+
+/// `level-name` from a Bukkit/Paper `server.properties`, when readable.
+///
+/// The file is untrusted input: only uncommented `key=value` lines with
+/// that exact key count, and the value is trimmed of surrounding spaces.
+/// An unreadable or unconfigured file is simply "not set".
+fn level_name(root: &Path) -> Option<String> {
+    let text = fs::read_to_string(root.join("server.properties")).ok()?;
+    text.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("level-name=")
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+    })
 }
 
 fn is_world_folder_any(dirs: &[impl AsRef<Path>]) -> bool {
