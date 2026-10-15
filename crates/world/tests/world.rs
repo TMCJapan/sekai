@@ -580,6 +580,25 @@ fn duplicate_coordinate_names_resolve_deterministically() {
     cleanup(&root_path);
 }
 
+#[cfg(unix)]
+#[test]
+fn unresolvable_entries_are_skipped_not_fatal() {
+    // A dangling symlink inside a kind directory must not abort the whole
+    // discovery: one unreadable entry cannot make the world un-backupable.
+    let world_path = tempdir("dangling");
+    write(world_path.join("region/r.0.0.mca"), &one_chunk_image());
+    std::os::unix::fs::symlink(
+        world_path.join("missing-target"),
+        world_path.join("region/r.1.0.mca"),
+    )
+    .unwrap();
+
+    let world = HostWorldTree::new(&world_path).unwrap();
+    let found = world.discover().unwrap();
+    assert_eq!(paths_of(&found), vec![world_path.join("region/r.0.0.mca")]);
+    cleanup(&world_path);
+}
+
 #[test]
 fn missing_world_is_an_error() {
     let world_path = tempdir("gone");

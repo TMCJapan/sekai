@@ -51,3 +51,10 @@ pub(super) fn read_dir_opt(dir: impl AsRef<Path>) -> std::io::Result<Vec<std::fs
 pub(super) fn is_dir(entry: &std::fs::DirEntry) -> bool {
     std::fs::metadata(entry.path()).is_ok_and(|meta| meta.is_dir())
 }
+
+/// Whether the entry is a regular file, following symlinks like the game
+/// does; an unresolvable entry (dangling link, permission denied) is
+/// skipped rather than failing the whole discovery.
+pub(super) fn is_file(entry: &std::fs::DirEntry) -> bool {
+    std::fs::metadata(entry.path()).is_ok_and(|meta| meta.is_file())
+}

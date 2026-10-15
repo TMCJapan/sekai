@@ -172,7 +172,7 @@ impl WorldTree for HostWorldTree {
                 }?;
                 entries.sort_unstable_by_key(std::fs::DirEntry::file_name);
                 for entry in entries {
-                    if !std::fs::metadata(entry.path())?.is_file() {
+                    if !vanilla::is_file(&entry) {
                         continue;
                     }
                     let file_name = entry.file_name();
