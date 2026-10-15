@@ -342,6 +342,19 @@ fn vanilla_dimensions_stay_out_of_a_legacy_bukkit_world() {
 
 #[test]
 fn legacy_bukkit_keeps_vanilla_legacy_dimension_ids() {
+    fn dims(root: impl AsRef<Path>) -> Vec<Dimension> {
+        let mut dims: Vec<_> = HostWorldTree::new(root)
+            .unwrap()
+            .discover()
+            .unwrap()
+            .iter()
+            .map(|r| r.dim)
+            .collect();
+        dims.sort_unstable();
+        dims.dedup();
+        dims
+    }
+
     // The split layout shares the single-folder layout's identities (the
     // trio and every `<namespace>:<path>` key), so a world keeps one
     // history when it moves between vanilla and Bukkit trees.
@@ -366,18 +379,6 @@ fn legacy_bukkit_keeps_vanilla_legacy_dimension_ids() {
         write(legacy_path.join(dir).join("r.0.0.mca"), &image);
     }
 
-    let dims = |root: &Path| {
-        let mut dims: Vec<_> = HostWorldTree::new(root)
-            .unwrap()
-            .discover()
-            .unwrap()
-            .iter()
-            .map(|r| r.dim)
-            .collect();
-        dims.sort_unstable();
-        dims.dedup();
-        dims
-    };
     assert_eq!(dims(&root_path), dims(&legacy_path));
     cleanup(&root_path);
     cleanup(&legacy_path);

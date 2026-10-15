@@ -25,7 +25,8 @@ use crate::WorldError;
 ///
 /// Ids hash the same canonical names as the single-folder layout so a world
 /// keeps its history when it moves between vanilla and Bukkit trees.
-pub(super) fn fixed_dirs(root: &Path, base: &str) -> [(Dimension, PathBuf); 3] {
+pub(super) fn fixed_dirs(root: impl AsRef<Path>, base: &str) -> [(Dimension, PathBuf); 3] {
+    let root = root.as_ref();
     [
         (custom_dimension_id("minecraft:overworld"), root.join(base)),
         (
@@ -48,9 +49,10 @@ pub(super) fn fixed_dirs(root: &Path, base: &str) -> [(Dimension, PathBuf); 3] {
 /// pre-migration vanilla residue: the server moves it into a sibling folder
 /// at startup and reads only the moved location.
 pub(super) fn collect_custom_dimensions(
-    root: &Path,
+    root: impl AsRef<Path>,
     base: &str,
 ) -> Result<BTreeMap<Dimension, PathBuf>, WorldError> {
+    let root = root.as_ref();
     let prefix = format!("{base}_");
     let mut dims = BTreeMap::new();
     for entry in read_dir_opt(root).map_err(|source| WorldError::io(root, source))? {
