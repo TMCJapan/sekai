@@ -6,6 +6,8 @@ updates:
       interval: "cron"
       cronjob: "8 7 * * 1"
       timezone: "UTC"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 10
 
   - package-ecosystem: "pip"
@@ -14,6 +16,8 @@ updates:
       interval: "cron"
       cronjob: "8 7 * * 1"
       timezone: "UTC"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 10
 
   - package-ecosystem: "cargo"
@@ -22,4 +26,6 @@ updates:
       interval: "cron"
       cronjob: "8 7 * * 1"
       timezone: "UTC"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 10

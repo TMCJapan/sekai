@@ -14,8 +14,13 @@ runs:
   steps:
     - name: Build CLI (release)
       shell: bash
-      run: cargo build -p sekai-cli --release --target ${{ inputs.target }}
+      env:
+        TARGET: ${{ inputs.target }}
+      run: cargo build -p sekai-cli --release --target "$TARGET"
 
     - name: Package CLI
       shell: bash
-      run: tar -czf sekai-${{ inputs.target }}.tar.gz -C target/${{ inputs.target }}/release sekai${{ runner.os == 'Windows' && '.exe' || '' }}
+      env:
+        TARGET: ${{ inputs.target }}
+        EXE_SUFFIX: ${{ runner.os == 'Windows' && '.exe' || '' }}
+      run: tar -czf "sekai-$TARGET.tar.gz" -C "target/$TARGET/release" "sekai$EXE_SUFFIX"

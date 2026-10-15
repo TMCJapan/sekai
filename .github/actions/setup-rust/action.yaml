@@ -18,6 +18,13 @@ inputs:
   cache-key:
     description: rust-cache key suffix
     required: true
+  lookup-only:
+    description: >-
+      Passed to rust-cache: check whether a cache entry exists without
+      restoring it. Release callers set this so a cache entry that an
+      untrusted run could have written cannot influence the build.
+    required: false
+    default: "false"
 
 runs:
   using: composite
@@ -33,3 +40,4 @@ runs:
       uses: Swatinem/rust-cache@f0d9c3887740aee45f6153b24b3a6b815192ec16
       with:
         key: ${{ inputs.cache-key }}
+        lookup-only: ${{ inputs.lookup-only }}
