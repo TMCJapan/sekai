@@ -1,25 +1,12 @@
-//! World layout discovery: find every `.mca` and name its namespace.
+//! Region references and movement-tolerant path lookup.
 //!
-//! Rationale: three server families share the `.mca` format but not the
-//! directory layout. Vanilla uses one folder (`region/`, `DIM-1/`,
-//! `DIM1/`, and since 26.1 `dimensions/minecraft/<name>/`). Bukkit-family
-//! servers (Bukkit/Spigot/Paper/Purpur, pre-26.1 layout) split dimensions
-//! into `<base>/`, `<base>_nether/DIM-1/`, `<base>_the_end/DIM1/`, where
-//! `base` is `level-name` (`world` by default), and give each datapack
-//! dimension its own `<base>_<namespace>_<path>/dimensions/<namespace>/<path>/`
-//! world folder; Paper 26.1+ migrates to the vanilla layout. Plugin worlds
-//! (Multiverse et al.) are arbitrary folders.
-//!
-//! Namespaces follow one rule: the exact default trio and vanilla trees
-//! keep vanilla codes (derivable, history-stable); every other folder gets
-//! a stable hash of its root-relative path, so distinct worlds can never
-//! silently share coordinates. Non-derivable codes surface
-//! `UnknownRegionPath` for missing files instead of writing somewhere
-//! wrong; rollback restores those through their discovered folders.
-//!
-//! Trio detection only runs on container roots (arguments that are not
-//! world folders themselves), so a lone nested folder can never steal the
-//! vanilla namespace of the root's own content.
+//! Layout detection and dimension collection live in `tree::hostworld`:
+//! opening a tree classifies the root once, collects one directory per
+//! observed dimension, and hashes each dimension's canonical
+//! `<namespace>:<name>` key into a stable [`Dimension`] id - the vanilla
+//! trio included - so a world keeps its ids when it moves between layouts.
+//! This module keeps the value type carried by that discovery
+//! ([`RegionRef`]) and the sibling lookup for files whose folders moved.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

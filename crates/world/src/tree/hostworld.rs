@@ -1,3 +1,19 @@
+//! Host-layout classification and dimension maps.
+//!
+//! Three server families share the `.mca` format but not the directory
+//! layout: one vanilla world folder (`region/`, `DIM-1/`, `DIM1/`, or a
+//! 26.1 `dimensions/minecraft/<name>/` tree), a pre-26.1 Bukkit server
+//! root (`<base>/`, `<base>_nether/DIM-1/`, `<base>_the_end/DIM1/`, plus
+//! one `<base>_<namespace>_<path>` sibling per datapack dimension, `base`
+//! from `level-name`), or an arbitrary plugin world folder. `detect`
+//! classifies a root once; each arm below collects the dimension
+//! directories that layout uses.
+//!
+//! Every observed dimension is keyed by a hash of its canonical
+//! `<namespace>:<name>` id (`minecraft:overworld`, `minecraft:the_nether`,
+//! and `minecraft:the_end` for the trio), so ids stay stable when a world
+//! moves between layouts.
+
 mod bukkit;
 mod detect;
 mod vanilla;
