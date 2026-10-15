@@ -38,7 +38,15 @@ impl ContentHasher {
 /// Every observed dimension is keyed this way, the vanilla trio included:
 /// `custom_dimension_id("minecraft:overworld")` is [`Dimension::OVERWORLD`].
 pub fn custom_dimension_id(key: &str) -> Dimension {
-    let digest = blake3::hash(key.as_bytes());
+    custom_dimension_id_bytes(key.as_bytes())
+}
+
+/// [`custom_dimension_id`] over raw key bytes.
+///
+/// Used for keys built from directory names that are not valid UTF-8; for
+/// valid UTF-8 the bytes are the string's own, so both entry points agree.
+pub fn custom_dimension_id_bytes(key: &[u8]) -> Dimension {
+    let digest = blake3::hash(key);
 
     let b = digest.as_bytes();
     Dimension::new(i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
@@ -90,5 +98,19 @@ mod tests {
             custom_dimension_id("minecraft:the_nether")
         );
         assert_eq!(Dimension::END, custom_dimension_id("minecraft:the_end"));
+    }
+
+    /// Raw-byte keys hash like string keys, and a non-UTF-8 name must not
+    /// collapse onto its lossy spelling.
+    #[test]
+    fn raw_byte_keys_match_string_keys() {
+        assert_eq!(
+            custom_dimension_id_bytes(b"aether:sky"),
+            custom_dimension_id("aether:sky")
+        );
+        assert_ne!(
+            custom_dimension_id_bytes(b"aether:sky-\xff"),
+            custom_dimension_id_bytes("aether:sky-\u{fffd}".as_bytes())
+        );
     }
 }

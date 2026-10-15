@@ -114,6 +114,46 @@ fn observes_a_single_layout_per_root() {
     cleanup(&world_path);
 }
 
+#[cfg(unix)]
+#[test]
+fn non_utf8_dimension_names_stay_discovered() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    // Unix directory names are raw bytes: neither a non-UTF-8 namespace nor
+    // a non-UTF-8 dimension folder may be dropped from the tree.
+    let world_path = tempdir("non-utf8");
+    let image = one_chunk_image();
+    let overworld = world_path.join("dimensions/minecraft/overworld/region/r.9.9.mca");
+    let namespace = world_path
+        .join("dimensions")
+        .join(OsStr::from_bytes(b"ae\xffther"));
+    let dimension = world_path
+        .join("dimensions")
+        .join("aether")
+        .join(OsStr::from_bytes(b"sky-\xff"));
+    write(&overworld, &image);
+    write(namespace.join("sky/region/r.0.0.mca"), &image);
+    write(dimension.join("region/r.0.1.mca"), &image);
+
+    let world = HostWorldTree::new(&world_path).unwrap();
+    let found = world.discover().unwrap();
+    assert_eq!(
+        paths_of(&found),
+        vec![
+            dimension.join("region/r.0.1.mca"),
+            namespace.join("sky/region/r.0.0.mca"),
+            overworld,
+        ]
+    );
+    // Distinct ids: the byte-named dimensions and the vanilla trio do not
+    // collapse into one another.
+    assert_eq!(discovered_dims(&world_path).len(), 3);
+    assert_derives_back(&world, &found);
+    assert_stable_ids(&world_path, &found);
+    cleanup(&world_path);
+}
+
 #[test]
 fn discovers_a_legacy_single_folder_world() {
     let world_path = tempdir("legacy");

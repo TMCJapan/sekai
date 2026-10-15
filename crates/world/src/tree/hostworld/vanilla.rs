@@ -1,9 +1,10 @@
 use std::{
     collections::BTreeMap,
+    ffi::OsStr,
     path::{Path, PathBuf},
 };
 
-use sekai_anvil::custom_dimension_id;
+use sekai_anvil::custom_dimension_id_bytes;
 use sekai_core::Dimension;
 
 pub(super) fn collect_dimensions(
@@ -14,24 +15,29 @@ pub(super) fn collect_dimensions(
         if !is_dir(&namespace) {
             continue;
         }
-        let ns_filename = namespace.file_name();
+        let namespace_name = namespace.file_name();
         for dimension in read_dir_opt(namespace.path())? {
             if !is_dir(&dimension) {
                 continue;
             }
-            let dim_filename = dimension.file_name();
-            let (Some(ns), Some(dim)) = (ns_filename.to_str(), dim_filename.to_str()) else {
-                continue;
-            };
-
-            dims.insert(
-                custom_dimension_id(&format!("{ns}:{dim}")),
-                dimension.path(),
-            );
+            let key = canonical_key(&namespace_name, &dimension.file_name());
+            dims.insert(custom_dimension_id_bytes(&key), dimension.path());
         }
     }
 
     Ok(dims)
+}
+
+/// Canonical `<namespace>:<name>` key of two directory names.
+///
+/// Directory names are arbitrary file-system bytes (`OsStr` encoding is a
+/// self-synchronizing superset of UTF-8), so a name that is not valid UTF-8
+/// still keys a stable id instead of dropping the dimension.
+fn canonical_key(namespace: &OsStr, name: &OsStr) -> Vec<u8> {
+    let mut key = namespace.as_encoded_bytes().to_vec();
+    key.push(b':');
+    key.extend_from_slice(name.as_encoded_bytes());
+    key
 }
 
 /// Directory entries, treating only a missing directory as empty. Other
