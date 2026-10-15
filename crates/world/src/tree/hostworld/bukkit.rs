@@ -15,7 +15,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use sekai_anvil::custom_dimension_id;
 use sekai_core::Dimension;
 
 use super::vanilla::{self, is_dir, read_dir_opt};
@@ -23,18 +22,19 @@ use crate::WorldError;
 
 /// Fixed overworld/nether/end directories of the split layout around `base`.
 ///
-/// Ids hash the same canonical names as the single-folder layout so a world
-/// keeps its history when it moves between vanilla and Bukkit trees.
+/// The trio carries the vanilla constants, the same hashed ids the
+/// single-folder layout resolves, so a world keeps its history when it moves
+/// between vanilla and Bukkit trees.
 pub(super) fn fixed_dirs(root: impl AsRef<Path>, base: &str) -> [(Dimension, PathBuf); 3] {
     let root = root.as_ref();
     [
-        (custom_dimension_id("minecraft:overworld"), root.join(base)),
+        (Dimension::OVERWORLD, root.join(base)),
         (
-            custom_dimension_id("minecraft:the_nether"),
+            Dimension::NETHER,
             root.join(format!("{base}_nether")).join("DIM-1"),
         ),
         (
-            custom_dimension_id("minecraft:the_end"),
+            Dimension::END,
             root.join(format!("{base}_the_end")).join("DIM1"),
         ),
     ]

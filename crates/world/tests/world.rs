@@ -54,18 +54,6 @@ fn assert_derives_back(tree: &HostWorldTree, found: &[RegionRef]) {
     }
 }
 
-/// This branch makes no exception for the vanilla trio: hash-derived
-/// layouts never use the reserved codes.
-fn assert_hash_ids(found: &[RegionRef]) {
-    for r in found {
-        assert!(
-            ![Dimension::OVERWORLD, Dimension::NETHER, Dimension::END].contains(&r.dim),
-            "observed dimension uses a reserved code: {}",
-            r.path.display()
-        );
-    }
-}
-
 /// Same path, same id: reopening the root reproduces every discovered id.
 fn assert_stable_ids(root: impl AsRef<Path>, found: &[RegionRef]) {
     let reopened = HostWorldTree::new(root).unwrap().discover().unwrap();
@@ -121,7 +109,6 @@ fn observes_a_single_layout_per_root() {
     let sky = found.iter().find(|r| r.path == custom).unwrap();
     assert_ne!(over.dim, sky.dim);
 
-    assert_hash_ids(&found);
     assert_derives_back(&world, &found);
     assert_stable_ids(&world_path, &found);
     cleanup(&world_path);
@@ -155,7 +142,8 @@ fn discovers_a_legacy_single_folder_world() {
         .find(|r| r.path == world_path.join("region/r.0.0.mca"))
         .unwrap();
     assert_ne!(nether.dim, over.dim);
-    assert_hash_ids(&found);
+    assert_eq!(over.dim, Dimension::OVERWORLD);
+    assert_eq!(nether.dim, Dimension::NETHER);
     assert_derives_back(&world, &found);
     assert_stable_ids(&world_path, &found);
     cleanup(&world_path);
@@ -191,7 +179,6 @@ fn discovers_a_bukkit_level_name_world() {
             root_path.join("world/dimensions/minecraft/the_nether/region/r.0.0.mca"),
         ]
     );
-    assert_hash_ids(&found);
     assert_derives_back(&root, &found);
     assert_stable_ids(&root_path, &found);
     cleanup(&root_path);
@@ -239,7 +226,6 @@ fn discovers_a_custom_level_name_world() {
         .find(|r| r.path == root_path.join("srv/dimensions/minecraft/overworld/region/r.0.0.mca"))
         .unwrap();
     assert_ne!(custom.dim, over.dim);
-    assert_hash_ids(&found);
     assert_derives_back(&root, &found);
     cleanup(&root_path);
 }
@@ -271,7 +257,6 @@ fn other_world_folders_are_not_observed() {
             root_path.join("world/dimensions/minecraft/the_nether/region/r.0.0.mca"),
         ]
     );
-    assert_hash_ids(&found);
     cleanup(&root_path);
 }
 
@@ -317,7 +302,6 @@ fn discovers_a_legacy_bukkit_world() {
         .find(|r| r.path == root_path.join("world/region/r.0.0.mca"))
         .unwrap();
     assert_ne!(custom.dim, over.dim);
-    assert_hash_ids(&found);
     assert_derives_back(&root, &found);
     assert_stable_ids(&root_path, &found);
     cleanup(&root_path);
@@ -443,7 +427,6 @@ fn legacy_leftovers_stay_out_of_a_bukkit_layout() {
             root_path.join("world/dimensions/minecraft/the_nether/region/r.0.0.mca"),
         ]
     );
-    assert_hash_ids(&found);
     assert_derives_back(&root, &found);
     cleanup(&root_path);
 }
@@ -480,7 +463,6 @@ fn empty_dimension_directories_stay_collected() {
             root_path.join("dimensions/minecraft/the_nether/region/r.0.0.mca"),
         ]
     );
-    assert_hash_ids(&found);
     assert_derives_back(&root, &found);
     assert_stable_ids(&root_path, &found);
     cleanup(&root_path);
@@ -522,7 +504,6 @@ fn level_name_wins_over_a_leftover_world_folder() {
             root_path.join("survival/dimensions/minecraft/the_nether/region/r.0.0.mca"),
         ]
     );
-    assert_hash_ids(&found);
     assert_derives_back(&root, &found);
     cleanup(&root_path);
 }
@@ -556,7 +537,6 @@ fn stray_dimensions_dir_does_not_hijack_a_bukkit_root() {
             root_path.join("world/dimensions/minecraft/the_nether/region/r.0.0.mca"),
         ]
     );
-    assert_hash_ids(&found);
     cleanup(&root_path);
 }
 
@@ -573,7 +553,6 @@ fn nested_world_folders_are_not_observed() {
     let root = HostWorldTree::new(&root_path).unwrap();
     let found = root.discover().unwrap();
     assert_eq!(paths_of(&found), vec![root_path.join("region/r.0.0.mca")]);
-    assert_hash_ids(&found);
     assert_derives_back(&root, &found);
     cleanup(&root_path);
 }
@@ -646,6 +625,47 @@ fn derives_all_layouts() {
         legacy.derive_path(Dimension::OVERWORLD, RegionKind::new(9), 0, 0),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound
     ));
+}
+
+/// Export derives each stored region's path through a constructor tree
+/// (`new_legacy`, `new_dimensions`, `new_bukkit`), so the constructors have
+/// to key the vanilla trio exactly as discovery does for the same layout.
+#[test]
+fn output_trees_share_discovered_ids() {
+    let image = one_chunk_image();
+
+    let legacy_path = tempdir("output-ids-legacy");
+    write(legacy_path.join("region/r.0.0.mca"), &image);
+    write(legacy_path.join("DIM-1/region/r.-1.2.mca"), &image);
+    write(legacy_path.join("DIM1/poi/r.1.0.mca"), &image);
+
+    let modern_path = tempdir("output-ids-26.1");
+    write(
+        modern_path.join("dimensions/minecraft/the_nether/region/r.2.0.mca"),
+        &image,
+    );
+
+    let bukkit_path = tempdir("output-ids-bukkit");
+    write(bukkit_path.join("server.properties"), b"level-name=srv\n");
+    write(bukkit_path.join("srv/region/r.0.0.mca"), &image);
+    write(
+        bukkit_path.join("srv_nether/DIM-1/region/r.3.0.mca"),
+        &image,
+    );
+
+    for (root, out) in [
+        (&legacy_path, HostWorldTree::new_legacy(&legacy_path)),
+        (&modern_path, HostWorldTree::new_dimensions(&modern_path)),
+        (&bukkit_path, HostWorldTree::new_bukkit(&bukkit_path, "srv")),
+    ] {
+        let found = HostWorldTree::new(root).unwrap().discover().unwrap();
+        assert!(!found.is_empty());
+        assert_derives_back(&out, &found);
+    }
+
+    cleanup(legacy_path);
+    cleanup(modern_path);
+    cleanup(bukkit_path);
 }
 
 #[test]

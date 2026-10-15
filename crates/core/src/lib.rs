@@ -38,9 +38,9 @@ pub fn hash_blob(payload: &[u8]) -> BlobHash {
 
 /// Stable `Dimension` for a custom `dimensions/<ns>/<name>` path.
 ///
-/// Hashes the relative path via `anvil`; a hash colliding with a reserved
-/// vanilla code is remapped away so custom dimensions can never alias
-/// vanilla history.
+/// Hashes the relative path via `anvil`; a hash colliding with a vanilla
+/// trio id is remapped away so custom dimensions can never alias vanilla
+/// history.
 pub fn resolve_custom_dimension(relative: &str) -> Dimension {
     let dim = sekai_anvil::custom_dimension_id(relative);
     if dim == Dimension::OVERWORLD || dim == Dimension::NETHER || dim == Dimension::END {
@@ -104,7 +104,7 @@ mod tests {
     }
 
     #[test]
-    fn custom_dimensions_are_stable_and_reserved_free() {
+    fn custom_dimensions_are_stable_and_distinct_from_the_trio() {
         let a = resolve_custom_dimension("dimensions/aether/sky");
         assert_eq!(a, resolve_custom_dimension("dimensions/aether/sky"));
         assert_ne!(a, resolve_custom_dimension("dimensions/aether/other"));

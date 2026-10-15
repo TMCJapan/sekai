@@ -126,16 +126,19 @@ folder for vanilla ones — the same path on every run.
   contents (`level.dat`, `DIM-1`/`DIM1` nesting, or kind directories
   holding region files).
 
-Namespaces: the default trio and `minecraft/*` trees keep vanilla codes
-(derivable, history-stable, migration-continuous); every other folder
-hashes its root-relative path so distinct worlds never silently share
-coordinates. Trio detection runs on container roots only, so a nested
-folder can never steal the vanilla namespace. Opening a tree classifies
-the root and resolves each derivable dimension directory once; operations
-then use those resolved paths and never re-inspect the layout. Missing
-files under non-derivable codes fail loudly (`UnknownRegionPath`); rollback
-restores those through their discovered folders, preferring same-dimension
-siblings over derived paths when folders moved since the backup.
+Namespaces: every observed dimension is keyed by a hash of its canonical
+`<namespace>:<name>` id; the default trio hashes to the `Dimension`
+constants (`OVERWORLD`/`NETHER`/`END`), so ids are history-stable across
+layout changes (legacy, 26.1, Bukkit) and distinct dimensions never
+silently share coordinates. Trio detection runs on container roots only,
+so a nested folder can never steal the vanilla namespace. Opening a tree
+classifies the root and resolves one directory per observed dimension
+once; operations then use those resolved paths and never re-inspect the
+layout. Region paths are derivable only for the ids a tree resolved;
+anything else fails loudly (`UnknownRegionPath`) instead of writing
+somewhere wrong, and rollback restores those files through their
+discovered folders, preferring same-dimension siblings over derived paths
+when folders moved since the backup.
 
 # Data & Hashing Model
 

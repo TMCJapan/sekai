@@ -12,7 +12,9 @@
 //! Every observed dimension is keyed by a hash of its canonical
 //! `<namespace>:<name>` id (`minecraft:overworld`, `minecraft:the_nether`,
 //! and `minecraft:the_end` for the trio), so ids stay stable when a world
-//! moves between layouts.
+//! moves between layouts. The trio's hashes are the `Dimension::OVERWORLD`/
+//! `NETHER`/`END` constants, the ids every layout and the scoped operations
+//! use.
 
 mod bukkit;
 mod detect;
@@ -21,7 +23,6 @@ mod vanilla;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use sekai_anvil::custom_dimension_id;
 use sekai_core::{Dimension, RegionKind};
 
 use super::WorldTree;
@@ -51,15 +52,9 @@ impl HostWorldTree {
             Some(detect::Layout::VanillaLegacy) => {
                 let mut dirs = collect_dimensions(root.join("dimensions"))?;
                 dirs.extend([
-                    (
-                        custom_dimension_id("minecraft:overworld"),
-                        root.to_path_buf(),
-                    ),
-                    (
-                        custom_dimension_id("minecraft:the_nether"),
-                        root.join("DIM-1"),
-                    ),
-                    (custom_dimension_id("minecraft:the_end"), root.join("DIM1")),
+                    (Dimension::OVERWORLD, root.to_path_buf()),
+                    (Dimension::NETHER, root.join("DIM-1")),
+                    (Dimension::END, root.join("DIM1")),
                 ]);
                 dirs
             }
