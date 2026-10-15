@@ -118,8 +118,10 @@ folder for vanilla ones — the same path on every run.
   `dimensions/minecraft/<name>/`).
 - Bukkit-family (Bukkit/Spigot/Paper/Purpur, pre-26.1 layout): split
   folders `<base>/`, `<base>_nether/DIM-1/`, `<base>_the_end/DIM1/`,
-  where `base` is `level-name` (`world` by default). Paper 26.1+
-  migrates to the vanilla layout.
+  where `base` is `level-name` (`world` by default); each datapack
+  dimension `<namespace>:<path>` gets its own sibling world folder
+  `<base>_<namespace>_<path>/dimensions/<namespace>/<path>/`.
+  Paper 26.1+ migrates to the vanilla layout.
 - Plugin worlds (Multiverse et al.): arbitrary folders, detected by
   contents (`level.dat`, `DIM-1`/`DIM1` nesting, or kind directories
   holding region files).

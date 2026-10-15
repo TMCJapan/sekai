@@ -1,9 +1,7 @@
 //! World filesystem behavior: discovery, fingerprints, swaps.
 
 use sekai_core::{Dimension, RegionKey, RegionKind};
-use sekai_world::{
-    HostWorldTree, RegionRef, WorldError, WorldTree, atomic_swap, fingerprint_file, open_image,
-};
+use sekai_world::{HostWorldTree, RegionRef, WorldTree, atomic_swap, fingerprint_file, open_image};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -264,20 +262,125 @@ fn other_world_folders_are_not_observed() {
 }
 
 #[test]
-fn legacy_bukkit_layout_is_unsupported() {
-    // `level-name=world` with only the legacy split folders: detected as
-    // Bukkit legacy, which is not supported yet. The tree must report it as
-    // an Unsupported error rather than panicking.
+fn discovers_a_legacy_bukkit_world() {
+    // `level-name=world`: the fixed split folders plus a datapack
+    // dimension in its own sibling world folder, with the data one level
+    // deeper in `dimensions/kingdoms/spawn`. A sibling folder without a
+    // `dimensions/` tree is a plugin world, not a dimension.
     let root_path = tempdir("bukkit-legacy");
     let image = one_chunk_image();
     write(root_path.join("server.properties"), b"level-name=world\n");
     write(root_path.join("world/region/r.0.0.mca"), &image);
+    write(
+        root_path.join("world_nether/DIM-1/region/r.0.0.mca"),
+        &image,
+    );
+    write(
+        root_path.join("world_the_end/DIM1/entities/r.1.0.mca"),
+        &image,
+    );
+    write(
+        root_path.join("world_kingdoms_spawn/dimensions/kingdoms/spawn/region/r.0.1.mca"),
+        &image,
+    );
+    write(root_path.join("world_backup/region/r.9.9.mca"), &image);
 
-    assert!(matches!(
-        HostWorldTree::new(&root_path),
-        Err(WorldError::Io { source, .. }) if source.kind() == std::io::ErrorKind::Unsupported
-    ));
+    let root = HostWorldTree::new(&root_path).unwrap();
+    let found = root.discover().unwrap();
+    let spawn = root_path.join("world_kingdoms_spawn/dimensions/kingdoms/spawn/region/r.0.1.mca");
+    assert_eq!(
+        paths_of(&found),
+        vec![
+            root_path.join("world/region/r.0.0.mca"),
+            spawn.clone(),
+            root_path.join("world_nether/DIM-1/region/r.0.0.mca"),
+            root_path.join("world_the_end/DIM1/entities/r.1.0.mca"),
+        ]
+    );
+    let custom = found.iter().find(|r| r.path == spawn).unwrap();
+    let over = found
+        .iter()
+        .find(|r| r.path == root_path.join("world/region/r.0.0.mca"))
+        .unwrap();
+    assert_ne!(custom.dim, over.dim);
+    assert_hash_ids(&found);
+    assert_derives_back(&root, &found);
+    assert_stable_ids(&root_path, &found);
     cleanup(&root_path);
+}
+
+#[test]
+fn vanilla_dimensions_stay_out_of_a_legacy_bukkit_world() {
+    // A `world/dimensions/` tree is the pre-migration vanilla location:
+    // the server moves it into a sibling world folder on startup and reads
+    // only the moved location, so the residue stays out of discovery.
+    let root_path = tempdir("bukkit-legacy-residue");
+    let image = one_chunk_image();
+    write(root_path.join("server.properties"), b"level-name=world\n");
+    write(root_path.join("world/region/r.0.0.mca"), &image);
+    write(
+        root_path.join("world_nether/DIM-1/region/r.0.0.mca"),
+        &image,
+    );
+    write(
+        root_path.join("world/dimensions/kingdoms/spawn/region/r.0.1.mca"),
+        &image,
+    );
+
+    let root = HostWorldTree::new(&root_path).unwrap();
+    let found = root.discover().unwrap();
+    assert_eq!(
+        paths_of(&found),
+        vec![
+            root_path.join("world/region/r.0.0.mca"),
+            root_path.join("world_nether/DIM-1/region/r.0.0.mca"),
+        ]
+    );
+    assert_derives_back(&root, &found);
+    cleanup(&root_path);
+}
+
+#[test]
+fn legacy_bukkit_keeps_vanilla_legacy_dimension_ids() {
+    // The split layout shares the single-folder layout's identities (the
+    // trio and every `<namespace>:<path>` key), so a world keeps one
+    // history when it moves between vanilla and Bukkit trees.
+    let root_path = tempdir("bukkit-legacy-ids");
+    let legacy_path = tempdir("vanilla-legacy-ids");
+    let image = one_chunk_image();
+    write(root_path.join("server.properties"), b"level-name=world\n");
+    for dir in [
+        "world/region",
+        "world_nether/DIM-1/region",
+        "world_the_end/DIM1/region",
+        "world_kingdoms_spawn/dimensions/kingdoms/spawn/region",
+    ] {
+        write(root_path.join(dir).join("r.0.0.mca"), &image);
+    }
+    for dir in [
+        "region",
+        "DIM-1/region",
+        "DIM1/region",
+        "dimensions/kingdoms/spawn/region",
+    ] {
+        write(legacy_path.join(dir).join("r.0.0.mca"), &image);
+    }
+
+    let dims = |root: &Path| {
+        let mut dims: Vec<_> = HostWorldTree::new(root)
+            .unwrap()
+            .discover()
+            .unwrap()
+            .iter()
+            .map(|r| r.dim)
+            .collect();
+        dims.sort_unstable();
+        dims.dedup();
+        dims
+    };
+    assert_eq!(dims(&root_path), dims(&legacy_path));
+    cleanup(&root_path);
+    cleanup(&legacy_path);
 }
 
 #[test]

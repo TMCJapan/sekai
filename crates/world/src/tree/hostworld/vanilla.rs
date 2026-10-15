@@ -37,7 +37,7 @@ pub(super) fn collect_dimensions(
 /// Directory entries, treating only a missing directory as empty. Other
 /// I/O failures still surface: a dimension that cannot be listed must not
 /// silently drop out of the tree.
-fn read_dir_opt(dir: impl AsRef<Path>) -> std::io::Result<Vec<std::fs::DirEntry>> {
+pub(super) fn read_dir_opt(dir: impl AsRef<Path>) -> std::io::Result<Vec<std::fs::DirEntry>> {
     match std::fs::read_dir(dir) {
         Ok(entries) => entries.collect(),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
@@ -48,6 +48,6 @@ fn read_dir_opt(dir: impl AsRef<Path>) -> std::io::Result<Vec<std::fs::DirEntry>
 /// Whether the entry is a directory, following symlinks like the game
 /// does; an unresolvable entry (dangling link, permission denied) is
 /// skipped rather than failing the whole collection.
-fn is_dir(entry: &std::fs::DirEntry) -> bool {
+pub(super) fn is_dir(entry: &std::fs::DirEntry) -> bool {
     std::fs::metadata(entry.path()).is_ok_and(|meta| meta.is_dir())
 }

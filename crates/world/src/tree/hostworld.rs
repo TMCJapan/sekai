@@ -1,3 +1,4 @@
+mod bukkit;
 mod detect;
 mod vanilla;
 
@@ -26,13 +27,9 @@ impl HostWorldTree {
                 collect_dimensions(root.join(base).join("dimensions"))?
             }
             Some(detect::Layout::BukkitLegacy(base)) => {
-                return Err(WorldError::io(
-                    root,
-                    std::io::Error::new(
-                        std::io::ErrorKind::Unsupported,
-                        format!("legacy bukkit layout is not supported: {base}"),
-                    ),
-                ));
+                let mut dirs = bukkit::collect_custom_dimensions(root, &base)?;
+                dirs.extend(bukkit::fixed_dirs(root, &base));
+                dirs
             }
             Some(detect::Layout::Vanilla) => collect_dimensions(root.join("dimensions"))?,
             Some(detect::Layout::VanillaLegacy) => {

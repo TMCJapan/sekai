@@ -5,8 +5,10 @@
 //! `DIM1/`, and since 26.1 `dimensions/minecraft/<name>/`). Bukkit-family
 //! servers (Bukkit/Spigot/Paper/Purpur, pre-26.1 layout) split dimensions
 //! into `<base>/`, `<base>_nether/DIM-1/`, `<base>_the_end/DIM1/`, where
-//! `base` is `level-name` (`world` by default); Paper 26.1+ migrates to the
-//! vanilla layout. Plugin worlds (Multiverse et al.) are arbitrary folders.
+//! `base` is `level-name` (`world` by default), and give each datapack
+//! dimension its own `<base>_<namespace>_<path>/dimensions/<namespace>/<path>/`
+//! world folder; Paper 26.1+ migrates to the vanilla layout. Plugin worlds
+//! (Multiverse et al.) are arbitrary folders.
 //!
 //! Namespaces follow one rule: the exact default trio and vanilla trees
 //! keep vanilla codes (derivable, history-stable); every other folder gets

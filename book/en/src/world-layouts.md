@@ -8,7 +8,9 @@ layout. Pass the same path on every run:
 - **Bukkit-family** (Bukkit/Spigot/Paper/Purpur, pre-26.1 layout): the
   server root, holding `<base>/`, `<base>_nether/DIM-1/`, and
   `<base>_the_end/DIM1/`, where `base` is the `level-name` (`world` by
-  default). Paper 26.1+ migrates to the vanilla layout.
+  default). Each datapack dimension `<namespace>:<path>` lives in its own
+  sibling folder `<base>_<namespace>_<path>/dimensions/<namespace>/<path>/`.
+  Paper 26.1+ migrates to the vanilla layout.
 - **Plugin worlds** (Multiverse et al.): arbitrary folders, detected by
   their contents.
 
