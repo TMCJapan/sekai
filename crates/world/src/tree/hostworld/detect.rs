@@ -80,9 +80,12 @@ fn is_world_folder(dir: impl AsRef<Path>) -> std::io::Result<bool> {
         return Ok(false);
     }
     for kind_dir in ["region", "entities", "poi"] {
-        for entry in std::fs::read_dir(dir.join(kind_dir))? {
+        let Ok(entries) = std::fs::read_dir(dir.join(kind_dir)) else {
+            continue;
+        };
+        for entry in entries {
             let entry = entry?;
-            if !entry.metadata()?.is_file() {
+            if !std::fs::metadata(entry.path())?.is_file() {
                 continue;
             }
             let filename = entry.file_name();
