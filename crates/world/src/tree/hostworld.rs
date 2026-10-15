@@ -39,7 +39,10 @@ impl HostWorldTree {
                         custom_dimension_id("minecraft:overworld"),
                         root.to_path_buf(),
                     ),
-                    (custom_dimension_id("minecraft:nether"), root.join("DIM-1")),
+                    (
+                        custom_dimension_id("minecraft:the_nether"),
+                        root.join("DIM-1"),
+                    ),
                     (custom_dimension_id("minecraft:the_end"), root.join("DIM1")),
                 ]);
                 dirs

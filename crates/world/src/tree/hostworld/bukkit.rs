@@ -30,7 +30,7 @@ pub(super) fn fixed_dirs(root: impl AsRef<Path>, base: &str) -> [(Dimension, Pat
     [
         (custom_dimension_id("minecraft:overworld"), root.join(base)),
         (
-            custom_dimension_id("minecraft:nether"),
+            custom_dimension_id("minecraft:the_nether"),
             root.join(format!("{base}_nether")).join("DIM-1"),
         ),
         (

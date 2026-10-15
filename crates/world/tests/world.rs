@@ -54,8 +54,8 @@ fn assert_derives_back(tree: &HostWorldTree, found: &[RegionRef]) {
     }
 }
 
-/// This branch makes no exception for the vanilla trio: observed dimension
-/// ids are path hashes, never the reserved codes.
+/// This branch makes no exception for the vanilla trio: hash-derived
+/// layouts never use the reserved codes.
 fn assert_hash_ids(found: &[RegionRef]) {
     for r in found {
         assert!(
@@ -74,6 +74,20 @@ fn assert_stable_ids(root: impl AsRef<Path>, found: &[RegionRef]) {
     once.sort();
     again.sort();
     assert_eq!(once, again);
+}
+
+/// One id per distinct dimension observed under `root`.
+fn discovered_dims(root: impl AsRef<Path>) -> Vec<Dimension> {
+    let mut dims: Vec<_> = HostWorldTree::new(root)
+        .unwrap()
+        .discover()
+        .unwrap()
+        .iter()
+        .map(|r| r.dim)
+        .collect();
+    dims.sort_unstable();
+    dims.dedup();
+    dims
 }
 
 #[test]
@@ -342,19 +356,6 @@ fn vanilla_dimensions_stay_out_of_a_legacy_bukkit_world() {
 
 #[test]
 fn legacy_bukkit_keeps_vanilla_legacy_dimension_ids() {
-    fn dims(root: impl AsRef<Path>) -> Vec<Dimension> {
-        let mut dims: Vec<_> = HostWorldTree::new(root)
-            .unwrap()
-            .discover()
-            .unwrap()
-            .iter()
-            .map(|r| r.dim)
-            .collect();
-        dims.sort_unstable();
-        dims.dedup();
-        dims
-    }
-
     // The split layout shares the single-folder layout's identities (the
     // trio and every `<namespace>:<path>` key), so a world keeps one
     // history when it moves between vanilla and Bukkit trees.
@@ -379,8 +380,39 @@ fn legacy_bukkit_keeps_vanilla_legacy_dimension_ids() {
         write(legacy_path.join(dir).join("r.0.0.mca"), &image);
     }
 
-    assert_eq!(dims(&root_path), dims(&legacy_path));
+    assert_eq!(discovered_dims(&root_path), discovered_dims(&legacy_path));
     cleanup(&root_path);
+    cleanup(&legacy_path);
+}
+
+#[test]
+fn modern_tree_keeps_legacy_dimension_ids() {
+    // The 26.1 `dimensions/` tree and the single-folder layout name the
+    // same dimensions (`minecraft:overworld`, `minecraft:the_nether`,
+    // `minecraft:the_end`) plus every `<namespace>:<path>` key, so a world
+    // keeps one history across a migration in either direction.
+    let modern_path = tempdir("vanilla-26.1-ids");
+    let legacy_path = tempdir("vanilla-legacy-ids-modern");
+    let image = one_chunk_image();
+    for dir in [
+        "dimensions/minecraft/overworld/region",
+        "dimensions/minecraft/the_nether/region",
+        "dimensions/minecraft/the_end/region",
+        "dimensions/kingdoms/spawn/region",
+    ] {
+        write(modern_path.join(dir).join("r.0.0.mca"), &image);
+    }
+    for dir in [
+        "region",
+        "DIM-1/region",
+        "DIM1/region",
+        "dimensions/kingdoms/spawn/region",
+    ] {
+        write(legacy_path.join(dir).join("r.0.0.mca"), &image);
+    }
+
+    assert_eq!(discovered_dims(&modern_path), discovered_dims(&legacy_path));
+    cleanup(&modern_path);
     cleanup(&legacy_path);
 }
 
