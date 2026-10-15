@@ -294,8 +294,12 @@ reinterpretation.
 
 ## Schema
 
-Shared across backends (`snapshots`, `chunk_history`, `region_state`;
-`SCHEMA_VERSION` gate; pre-release policy = recreate, don't migrate).
+Shared across backends (`snapshots`, `chunk_history`, `region_state`,
+`dimensions`; `SCHEMA_VERSION` gate; pre-release policy = recreate, don't
+migrate). `dimensions` is the name-to-code registry: namespaced /
+folder dimension names map to stable integer codes, with `0..=2` reserved
+for the vanilla trio so history columns stay `INTEGER` and `Dimension`
+stays a `Copy` newtype.
 The `cas` module stays independent of the DB backend modules so future
 object-store CAS swaps don't touch metadata code.
 
