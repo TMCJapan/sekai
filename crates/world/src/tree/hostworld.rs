@@ -133,11 +133,16 @@ impl WorldTree for HostWorldTree {
 
     fn is_empty(&self) -> Result<bool, Self::Error> {
         for path in self.dirs.values() {
-            return match std::fs::read_dir(path).map(|mut entries| entries.next().is_some()) {
-                Ok(true) => Ok(false),
-                Err(source) if source.kind() != std::io::ErrorKind::NotFound => Err(source),
-                _ => continue,
-            };
+            match std::fs::read_dir(path) {
+                Ok(mut entries) => {
+                    if entries.next().is_some() {
+                        return Ok(false);
+                    }
+                }
+                // A directory that does not exist yet holds nothing.
+                Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+                Err(source) => return Err(source),
+            }
         }
         Ok(true)
     }
