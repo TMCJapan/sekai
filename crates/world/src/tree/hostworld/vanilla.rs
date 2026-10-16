@@ -32,11 +32,22 @@ pub(super) fn collect_dimensions(
 ///
 /// Directory names are arbitrary file-system bytes (`OsStr` encoding is a
 /// self-synchronizing superset of UTF-8), so a name that is not valid UTF-8
-/// still keys a stable id instead of dropping the dimension.
+/// still keys a stable id instead of dropping the dimension. `\` and `:`
+/// inside a component are backslash-escaped, keeping the join injective
+/// even when a directory name contains the separator.
 fn canonical_key(namespace: &OsStr, name: &OsStr) -> Vec<u8> {
-    let mut key = namespace.as_encoded_bytes().to_vec();
-    key.push(b':');
-    key.extend_from_slice(name.as_encoded_bytes());
+    let mut key = Vec::new();
+    for (index, component) in [namespace, name].into_iter().enumerate() {
+        if index > 0 {
+            key.push(b':');
+        }
+        for &byte in component.as_encoded_bytes() {
+            if byte == b'\\' || byte == b':' {
+                key.push(b'\\');
+            }
+            key.push(byte);
+        }
+    }
     key
 }
 
@@ -63,4 +74,30 @@ pub(super) fn is_dir(entry: &std::fs::DirEntry) -> bool {
 /// skipped rather than failing the whole discovery.
 pub(super) fn is_file(entry: &std::fs::DirEntry) -> bool {
     std::fs::metadata(entry.path()).is_ok_and(|meta| meta.is_file())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_key_keeps_distinct_pairs_distinct() {
+        // A `:` may appear in a Unix directory name; the join must not fuse
+        // `("a", "b:c")` and `("a:b", "c")` onto one dimension.
+        assert_ne!(
+            canonical_key(OsStr::new("a"), OsStr::new("b:c")),
+            canonical_key(OsStr::new("a:b"), OsStr::new("c"))
+        );
+    }
+
+    #[test]
+    fn canonical_key_keeps_plain_names_unchanged() {
+        // Escaping must not move ordinary ids: the vanilla trio's
+        // precomputed hashes depend on the plain `<namespace>:<name>`
+        // spelling.
+        assert_eq!(
+            canonical_key(OsStr::new("minecraft"), OsStr::new("overworld")),
+            b"minecraft:overworld".to_vec()
+        );
+    }
 }
