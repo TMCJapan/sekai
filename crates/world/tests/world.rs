@@ -2,6 +2,7 @@
 
 use sekai_core::{Dimension, RegionKey, RegionKind};
 use sekai_world::{HostWorldTree, RegionRef, WorldTree, atomic_swap, fingerprint_file, open_image};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -76,6 +77,19 @@ fn discovered_dims(root: impl AsRef<Path>) -> Vec<Dimension> {
     dims.sort_unstable();
     dims.dedup();
     dims
+}
+
+/// Every discovered dimension mapped to its region file's path. The id
+/// fixtures below hold exactly one file per dimension.
+fn dim_paths(root: impl AsRef<Path>) -> BTreeMap<Dimension, PathBuf> {
+    let mut paths = BTreeMap::new();
+    for r in HostWorldTree::new(root).unwrap().discover().unwrap() {
+        assert!(
+            paths.insert(r.dim, r.path).is_none(),
+            "fixtures hold one region file per dimension"
+        );
+    }
+    paths
 }
 
 #[test]
@@ -412,7 +426,43 @@ fn legacy_bukkit_keeps_vanilla_legacy_dimension_ids() {
         write(legacy_path.join(dir).join("r.0.0.mca"), &image);
     }
 
-    assert_eq!(discovered_dims(&root_path), discovered_dims(&legacy_path));
+    let custom = sekai_anvil::custom_dimension_id("kingdoms:spawn");
+    assert_eq!(
+        dim_paths(&root_path),
+        BTreeMap::from([
+            (
+                Dimension::OVERWORLD,
+                root_path.join("world/region/r.0.0.mca")
+            ),
+            (
+                Dimension::NETHER,
+                root_path.join("world_nether/DIM-1/region/r.0.0.mca")
+            ),
+            (
+                Dimension::END,
+                root_path.join("world_the_end/DIM1/region/r.0.0.mca")
+            ),
+            (
+                custom,
+                root_path.join("world_kingdoms_spawn/dimensions/kingdoms/spawn/region/r.0.0.mca")
+            ),
+        ])
+    );
+    assert_eq!(
+        dim_paths(&legacy_path),
+        BTreeMap::from([
+            (Dimension::OVERWORLD, legacy_path.join("region/r.0.0.mca")),
+            (
+                Dimension::NETHER,
+                legacy_path.join("DIM-1/region/r.0.0.mca")
+            ),
+            (Dimension::END, legacy_path.join("DIM1/region/r.0.0.mca")),
+            (
+                custom,
+                legacy_path.join("dimensions/kingdoms/spawn/region/r.0.0.mca")
+            ),
+        ])
+    );
     cleanup(&root_path);
     cleanup(&legacy_path);
 }
@@ -443,7 +493,43 @@ fn modern_tree_keeps_legacy_dimension_ids() {
         write(legacy_path.join(dir).join("r.0.0.mca"), &image);
     }
 
-    assert_eq!(discovered_dims(&modern_path), discovered_dims(&legacy_path));
+    let custom = sekai_anvil::custom_dimension_id("kingdoms:spawn");
+    assert_eq!(
+        dim_paths(&modern_path),
+        BTreeMap::from([
+            (
+                Dimension::OVERWORLD,
+                modern_path.join("dimensions/minecraft/overworld/region/r.0.0.mca")
+            ),
+            (
+                Dimension::NETHER,
+                modern_path.join("dimensions/minecraft/the_nether/region/r.0.0.mca")
+            ),
+            (
+                Dimension::END,
+                modern_path.join("dimensions/minecraft/the_end/region/r.0.0.mca")
+            ),
+            (
+                custom,
+                modern_path.join("dimensions/kingdoms/spawn/region/r.0.0.mca")
+            ),
+        ])
+    );
+    assert_eq!(
+        dim_paths(&legacy_path),
+        BTreeMap::from([
+            (Dimension::OVERWORLD, legacy_path.join("region/r.0.0.mca")),
+            (
+                Dimension::NETHER,
+                legacy_path.join("DIM-1/region/r.0.0.mca")
+            ),
+            (Dimension::END, legacy_path.join("DIM1/region/r.0.0.mca")),
+            (
+                custom,
+                legacy_path.join("dimensions/kingdoms/spawn/region/r.0.0.mca")
+            ),
+        ])
+    );
     cleanup(&modern_path);
     cleanup(&legacy_path);
 }
