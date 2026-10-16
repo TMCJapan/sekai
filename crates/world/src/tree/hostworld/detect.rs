@@ -54,8 +54,9 @@ pub(super) fn detect(root: impl AsRef<Path>) -> Option<Layout> {
 /// `level-name` from a Bukkit/Paper `server.properties`, when readable.
 ///
 /// The file is untrusted input: only uncommented `key=value` lines with
-/// that exact key count, and the value is trimmed of surrounding spaces.
-/// An unreadable or unconfigured file is simply "not set".
+/// that exact key count, the value is trimmed of surrounding spaces, and
+/// anything but one plain directory name is ignored like an unreadable
+/// file - the layout must never follow a corrupted value out of the root.
 fn level_name(root: impl AsRef<Path>) -> Option<String> {
     let root = root.as_ref();
     let text = fs::read_to_string(root.join("server.properties")).ok()?;
@@ -63,9 +64,17 @@ fn level_name(root: impl AsRef<Path>) -> Option<String> {
         line.trim()
             .strip_prefix("level-name=")
             .map(str::trim)
-            .filter(|value| !value.is_empty())
+            .filter(|value| is_plain_dir_name(value))
             .map(ToOwned::to_owned)
     })
+}
+
+/// Whether `value` is a single ordinary directory name: not empty, not
+/// `.`/`..`, and no `/` or `\` - so no absolute spelling passes on any
+/// supported platform. The value is joined onto the observed root, and a
+/// single plain component can never leave it.
+fn is_plain_dir_name(value: &str) -> bool {
+    !value.is_empty() && value != "." && value != ".." && !value.contains(['/', '\\'])
 }
 
 fn is_world_folder_any(dirs: &[impl AsRef<Path>]) -> bool {
@@ -98,4 +107,23 @@ fn is_world_folder(dir: impl AsRef<Path>) -> std::io::Result<bool> {
         }
     }
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_plain_dir_name;
+
+    #[test]
+    fn only_plain_directory_names_pass() {
+        assert!(is_plain_dir_name("world"));
+        assert!(is_plain_dir_name("my world"));
+        assert!(is_plain_dir_name("world..2"));
+        assert!(!is_plain_dir_name(""));
+        assert!(!is_plain_dir_name("."));
+        assert!(!is_plain_dir_name(".."));
+        assert!(!is_plain_dir_name("../escape"));
+        assert!(!is_plain_dir_name("nested/world"));
+        assert!(!is_plain_dir_name("nested\\world"));
+        assert!(!is_plain_dir_name("/absolute"));
+    }
 }

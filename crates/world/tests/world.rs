@@ -549,6 +549,34 @@ fn level_name_wins_over_a_leftover_world_folder() {
 }
 
 #[test]
+fn an_escaping_level_name_stays_out_of_the_layout() {
+    // `server.properties` is untrusted: a value like `../escape` must not
+    // point the layout outside the observed root, even when the target
+    // happens to exist on disk.
+    let base_path = tempdir("levelname-escape");
+    let root_path = base_path.join("root");
+    let image = one_chunk_image();
+    write(
+        root_path.join("server.properties"),
+        b"level-name=../escape\n",
+    );
+    write(
+        root_path.join("dimensions/minecraft/overworld/region/r.0.0.mca"),
+        &image,
+    );
+    write(base_path.join("escape/region/r.9.9.mca"), &image);
+
+    let root = HostWorldTree::new(&root_path).unwrap();
+    let found = root.discover().unwrap();
+    assert_eq!(
+        paths_of(&found),
+        vec![root_path.join("dimensions/minecraft/overworld/region/r.0.0.mca")]
+    );
+    assert_derives_back(&root, &found);
+    cleanup(&base_path);
+}
+
+#[test]
 fn stray_dimensions_dir_does_not_hijack_a_bukkit_root() {
     // A `dimensions/` tree left at the server root (migration residue, a
     // plugin) must not displace the level-name world's own layout.

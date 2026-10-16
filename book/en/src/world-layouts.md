@@ -25,7 +25,10 @@ Opening a world classifies the root once:
 
 1. Sekai reads `server.properties` at the root, when present, and takes
    the first uncommented `level-name=` line; the value is trimmed, and a
-   missing, unreadable, or empty value counts as "no name".
+   missing, unreadable, or unusable value counts as "no name" — unusable
+   means empty, or anything but one plain directory name (no separators,
+   no `.`/`..`), so a corrupted file cannot point the layout outside the
+   observed root.
 2. A directory counts as a *world folder* when `region/`, `entities/`, or
    `poi/` inside it holds at least one parseable `r.<x>.<z>.mca` file.
 3. Candidates are checked in order and the first match wins:
