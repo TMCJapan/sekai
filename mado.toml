@@ -1,0 +1,58 @@
+# mado configuration. Deviations from the defaults, and why:
+#
+# - MD013 (line length) is disabled: prose is not wrapped to a column.
+#   `book/ja` keeps one sentence per line, and mado measures bytes, so
+#   most Japanese sentences would trip an 80-byte limit.
+# - MD025 (multiple top-level headers) is disabled: AGENTS.md,
+#   ARCHITECTURE.md, and CONTRIBUTING.md deliberately use several `#`
+#   sections as top-level parts.
+# - MD007 uses two spaces, the repository's nested list indentation.
+# - MD029 expects sequentially numbered ordered lists, matching the
+#   book pages.
+# Everything else keeps mado's defaults.
+
+[lint]
+rules = [
+  "MD001",
+  "MD002",
+  "MD003",
+  "MD004",
+  "MD005",
+  "MD006",
+  "MD007",
+  "MD009",
+  "MD010",
+  "MD012",
+  "MD014",
+  "MD018",
+  "MD019",
+  "MD020",
+  "MD021",
+  "MD022",
+  "MD023",
+  "MD024",
+  "MD026",
+  "MD027",
+  "MD028",
+  "MD029",
+  "MD030",
+  "MD031",
+  "MD032",
+  "MD033",
+  "MD034",
+  "MD035",
+  "MD036",
+  "MD037",
+  "MD038",
+  "MD039",
+  "MD040",
+  "MD041",
+  "MD046",
+  "MD047",
+]
+
+[lint.md007]
+indent = 2
+
+[lint.md029]
+style = "ordered"

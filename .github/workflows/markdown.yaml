@@ -1,0 +1,23 @@
+name: Markdown checks
+
+permissions:
+  contents: read
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  markdown:
+    name: Lint with mado
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        submodules: false
+
+    - name: Lint Markdown files
+      uses: akiomik/mado@6642676268ddaad6187482ef57d95e218c6b865c
