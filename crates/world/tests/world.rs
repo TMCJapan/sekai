@@ -66,6 +66,7 @@ fn assert_stable_ids(root: impl AsRef<Path>, found: &[RegionRef]) {
 }
 
 /// One id per distinct dimension observed under `root`.
+#[cfg(unix)]
 fn discovered_dims(root: impl AsRef<Path>) -> Vec<Dimension> {
     let mut dims: Vec<_> = HostWorldTree::new(root)
         .unwrap()
