@@ -133,7 +133,15 @@ fn non_utf8_dimension_names_stay_discovered() {
         .join("aether")
         .join(OsStr::from_bytes(b"sky-\xff"));
     write(&overworld, &image);
-    write(namespace.join("sky/region/r.0.0.mca"), &image);
+    let namespace_region = namespace.join("sky/region");
+    // macOS rejects file names that are not valid UTF-8 (EILSEQ), so the
+    // fixture only exists where the file system admits raw bytes; the
+    // byte-keying itself stays unit-tested in `sekai-anvil`.
+    if std::fs::create_dir_all(&namespace_region).is_err() {
+        cleanup(&world_path);
+        return;
+    }
+    write(namespace_region.join("r.0.0.mca"), &image);
     write(dimension.join("region/r.0.1.mca"), &image);
 
     let world = HostWorldTree::new(&world_path).unwrap();
