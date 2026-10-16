@@ -9,7 +9,10 @@
 # - MD007 uses two spaces, the repository's nested list indentation.
 # - MD029 expects sequentially numbered ordered lists, matching the
 #   book pages.
-# Everything else keeps mado's defaults.
+#
+# Everything else keeps mado's defaults. mado has no rule-exclusion
+# option, so `rules` is an explicit allowlist: a rule added by a future
+# mado release stays off until it is listed here.
 
 [lint]
 rules = [
