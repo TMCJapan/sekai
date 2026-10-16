@@ -209,18 +209,25 @@ impl WorldTree for HostWorldTree {
         region_x: i32,
         region_z: i32,
     ) -> Result<PathBuf, Self::Error> {
-        let root = self.dirs.get(&dim).ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::NotFound, "unknown dimension")
-        })?;
+        // Mirrors `WorldError::UnknownRegionPath`; the CLI troubleshooting
+        // entry refers to this wording.
+        let cannot_derive = || {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "cannot derive region path for dim {}, kind {}, r.{region_x}.{region_z}",
+                    dim.raw(),
+                    kind.raw()
+                ),
+            )
+        };
+        let root = self.dirs.get(&dim).ok_or_else(cannot_derive)?;
 
         let kind_dir = match kind {
             RegionKind::REGION => "region",
             RegionKind::ENTITIES => "entities",
             RegionKind::POI => "poi",
-            _ => Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "unknown region path",
-            ))?,
+            _ => return Err(cannot_derive()),
         };
 
         Ok(root

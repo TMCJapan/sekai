@@ -835,14 +835,29 @@ fn derives_all_layouts() {
         Path::new("/w/srv/region/r.0.0.mca")
     );
 
-    assert!(matches!(
-        modern.derive_path(Dimension::new(4242), RegionKind::REGION, 0, 0),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound
-    ));
-    assert!(matches!(
-        legacy.derive_path(Dimension::OVERWORLD, RegionKind::new(9), 0, 0),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound
-    ));
+    let err = modern
+        .derive_path(Dimension::new(4242), RegionKind::REGION, 0, 0)
+        .unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "cannot derive region path for dim 4242, kind {}, r.0.0",
+            RegionKind::REGION.raw()
+        )
+    );
+
+    let err = legacy
+        .derive_path(Dimension::OVERWORLD, RegionKind::new(9), 0, 0)
+        .unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    assert_eq!(
+        err.to_string(),
+        format!(
+            "cannot derive region path for dim {}, kind 9, r.0.0",
+            Dimension::OVERWORLD.raw()
+        )
+    );
 }
 
 /// Export derives each stored region's path through a constructor tree
