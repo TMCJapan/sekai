@@ -1,5 +1,8 @@
 use std::{fs, path::Path};
 
+use super::vanilla;
+use crate::WorldError;
+
 pub(super) enum Layout {
     Vanilla,
     VanillaLegacy,
@@ -7,7 +10,7 @@ pub(super) enum Layout {
     BukkitLegacy(String),
 }
 
-pub(super) fn detect(root: impl AsRef<Path>) -> Option<Layout> {
+pub(super) fn detect(root: impl AsRef<Path>) -> Result<Option<Layout>, WorldError> {
     let root = root.as_ref();
     if let Some(base) = level_name(root) {
         if is_world_folder_any(&[
@@ -23,16 +26,16 @@ pub(super) fn detect(root: impl AsRef<Path>) -> Option<Layout> {
                 .join("dimensions")
                 .join("minecraft")
                 .join("the_end"),
-        ]) {
-            return Some(Layout::Bukkit(base));
+        ])? {
+            return Ok(Some(Layout::Bukkit(base)));
         }
 
         if is_world_folder_any(&[
             root.join(&base),
             root.join(format!("{base}_nether")).join("DIM-1"),
             root.join(format!("{base}_the_end")).join("DIM1"),
-        ]) {
-            return Some(Layout::BukkitLegacy(base));
+        ])? {
+            return Ok(Some(Layout::BukkitLegacy(base)));
         }
     }
 
@@ -40,15 +43,15 @@ pub(super) fn detect(root: impl AsRef<Path>) -> Option<Layout> {
         root.join("dimensions").join("minecraft").join("overworld"),
         root.join("dimensions").join("minecraft").join("the_nether"),
         root.join("dimensions").join("minecraft").join("the_end"),
-    ]) {
-        return Some(Layout::Vanilla);
+    ])? {
+        return Ok(Some(Layout::Vanilla));
     }
 
-    if is_world_folder_any(&[root.to_path_buf(), root.join("DIM-1"), root.join("DIM1")]) {
-        return Some(Layout::VanillaLegacy);
+    if is_world_folder_any(&[root.to_path_buf(), root.join("DIM-1"), root.join("DIM1")])? {
+        return Ok(Some(Layout::VanillaLegacy));
     }
 
-    None
+    Ok(None)
 }
 
 /// `level-name` from a Bukkit/Paper `server.properties`, when readable.
@@ -77,24 +80,40 @@ fn is_plain_dir_name(value: &str) -> bool {
     !value.is_empty() && value != "." && value != ".." && !value.contains(['/', '\\'])
 }
 
-fn is_world_folder_any(dirs: &[impl AsRef<Path>]) -> bool {
-    dirs.iter()
-        .map(is_world_folder)
-        .any(|x| *x.as_ref().unwrap_or(&false))
+/// Whether any candidate is a world folder, checked in order: the first
+/// `true` wins, and a candidate that cannot be inspected fails the call -
+/// silently answering `false` would misclassify the layout and open the
+/// wrong tree.
+fn is_world_folder_any(dirs: &[impl AsRef<Path>]) -> Result<bool, WorldError> {
+    for dir in dirs {
+        if is_world_folder(dir)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
-fn is_world_folder(dir: impl AsRef<Path>) -> std::io::Result<bool> {
+/// Whether `dir` is a world folder: one of `region/`, `entities/`, `poi/`
+/// holds a parseable region file.
+///
+/// A missing candidate simply is not one; any other failure to inspect it
+/// fails the call. Kind directories are listed like `vanilla::read_dir_opt`
+/// (only `NotFound` means absent), and an unreadable entry is skipped the
+/// same way discovery skips it, so one broken link cannot flip the layout.
+fn is_world_folder(dir: impl AsRef<Path>) -> Result<bool, WorldError> {
     let dir = dir.as_ref();
-    if !dir.is_dir() {
-        return Ok(false);
+    match fs::metadata(dir) {
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => return Ok(false),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(source) => return Err(WorldError::io(dir, source)),
     }
     for kind_dir in ["region", "entities", "poi"] {
-        let Ok(entries) = std::fs::read_dir(dir.join(kind_dir)) else {
-            continue;
-        };
+        let path = dir.join(kind_dir);
+        let entries =
+            vanilla::read_dir_opt(&path).map_err(|source| WorldError::io(&path, source))?;
         for entry in entries {
-            let entry = entry?;
-            if !std::fs::metadata(entry.path())?.is_file() {
+            if !vanilla::is_file(&entry) {
                 continue;
             }
             let filename = entry.file_name();

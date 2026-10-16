@@ -45,7 +45,10 @@ none of the above                                            → empty legacy la
 Only the first matching layout is observed: leftovers of another layout
 (for example legacy folders next to a 26.1 `dimensions/` tree) stay out of
 discovery. A root that matches nothing yet becomes an empty legacy-layout
-world; discovery of a missing root still fails loudly.
+world; discovery of a missing root still fails loudly. A directory that
+cannot be inspected (permission denied, or a kind directory that cannot
+be listed) fails the open loudly as well, instead of silently changing
+the observed layout.
 
 ## The dimension map
 

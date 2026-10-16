@@ -39,7 +39,7 @@ pub struct HostWorldTree {
 impl HostWorldTree {
     pub fn new(root: impl AsRef<Path>) -> Result<Self, WorldError> {
         let root = root.as_ref();
-        let dirs = match detect::detect(root) {
+        let dirs = match detect::detect(root)? {
             Some(detect::Layout::Bukkit(base)) => {
                 collect_dimensions(root.join(base).join("dimensions"))?
             }

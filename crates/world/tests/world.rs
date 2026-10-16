@@ -577,6 +577,69 @@ fn an_escaping_level_name_stays_out_of_the_layout() {
 }
 
 #[test]
+fn an_unlistable_kind_directory_is_an_error() {
+    // A kind directory that cannot be listed must not silently downgrade
+    // the layout: the world would open as a different tree - or an empty
+    // one - and later backups would miss its data.
+    let world_path = tempdir("kinds-unlistable");
+    write(world_path.join("region"), b"not a directory");
+
+    assert!(matches!(
+        HostWorldTree::new(&world_path),
+        Err(sekai_world::WorldError::Io { .. })
+    ));
+    cleanup(&world_path);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_permission_denied_kind_directory_is_an_error() {
+    use std::os::unix::fs::PermissionsExt;
+    let world_path = tempdir("kinds-denied");
+    let region = world_path.join("region");
+    write(region.join("r.0.0.mca"), &one_chunk_image());
+    std::fs::set_permissions(&region, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let result = HostWorldTree::new(&world_path);
+    // A user that bypasses mode bits (running as root) cannot make the
+    // fixture unreadable; the expectation only holds where the mode applies.
+    let denied = std::fs::read_dir(&region).is_err();
+
+    std::fs::set_permissions(&region, std::fs::Permissions::from_mode(0o755)).unwrap();
+    if denied {
+        assert!(matches!(result, Err(sekai_world::WorldError::Io { .. })));
+    }
+    cleanup(&world_path);
+}
+
+#[cfg(unix)]
+#[test]
+fn a_broken_entry_does_not_hide_a_bukkit_trio() {
+    // The overworld's `region/` holds a dangling link and its `entities/`
+    // holds a real file: the broken entry is skipped exactly as discovery
+    // skips it, so the trio is still recognized and nothing is lost.
+    let root_path = tempdir("bukkit-broken-entry");
+    let image = one_chunk_image();
+    write(root_path.join("server.properties"), b"level-name=world\n");
+    std::fs::create_dir_all(root_path.join("world/region")).unwrap();
+    std::os::unix::fs::symlink(
+        root_path.join("missing-target"),
+        root_path.join("world/region/r.0.0.mca"),
+    )
+    .unwrap();
+    write(root_path.join("world/entities/r.0.0.mca"), &image);
+
+    let root = HostWorldTree::new(&root_path).unwrap();
+    let found = root.discover().unwrap();
+    assert_eq!(
+        paths_of(&found),
+        vec![root_path.join("world/entities/r.0.0.mca")]
+    );
+    assert_derives_back(&root, &found);
+    cleanup(&root_path);
+}
+
+#[test]
 fn stray_dimensions_dir_does_not_hijack_a_bukkit_root() {
     // A `dimensions/` tree left at the server root (migration residue, a
     // plugin) must not displace the level-name world's own layout.
