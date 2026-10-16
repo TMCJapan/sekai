@@ -8,9 +8,10 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Match `ci.yaml`: supersede PR runs, keep `main` runs intact.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   markdown:

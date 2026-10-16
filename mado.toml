@@ -11,8 +11,9 @@
 #   book pages.
 #
 # Everything else keeps mado's defaults. mado has no rule-exclusion
-# option, so `rules` is an explicit allowlist: a rule added by a future
-# mado release stays off until it is listed here.
+# option, so `rules` is an explicit allowlist. The pinned action version
+# in `.github/workflows/markdown.yaml` keeps the rule set stable, so this
+# list only needs revisiting when that pin is bumped.
 
 [lint]
 rules = [
