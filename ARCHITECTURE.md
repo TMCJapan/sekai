@@ -44,7 +44,7 @@ sekai-util (no_std, zero-dependency: coordinates, hashes, history value
 | `sekai-util` | `no_std`, zero external dependencies | no | Shared value types: coordinates, hashes, region/history/snapshot/gc records, hex errors. Pure data plus total validation only. |
 | `sekai-anvil` | `no_std` + `alloc` | no | Pure Anvil sector codec including decompression. `&[u8]` sector payload in, raw NBT bytes out; also builds `Vec<u8>` images. Compression framing is MCA spec knowledge, so it lives here. No `Path`, no `fs`. Names custom dimensions with util `Dimension`. |
 | `sekai-nbt` | `no_std` + `alloc` | no | Pure `raw NBT bytes -> diff view`. Hand-rolled NBT parser (no `Serialize` by design; output uses SNBT), tag filtering, canonical digest returning util `DiffHash`. Never sees compression. |
-| `sekai-core` | `no_std` + `alloc` | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_rollback`, `gc plan`/`apply`) plus composition helpers (`hash_blob`, `resolve_custom_dimension`, storage ports). Composes `anvil`/`nbt` over util types and re-exports them, so downstream paths stay stable. |
+| `sekai-core` | `no_std` + `alloc` | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_rollback`, `gc plan`/`apply`) plus composition helpers (`hash_blob`, storage ports). Composes `anvil`/`nbt` over util types and re-exports them, so downstream paths stay stable. |
 | `sekai-storage` | `std` + tokio | yes (RPITIT) | Single crate: async `BlobStore`/`MetaStore` traits (owned by `core::port`, re-exported from the `api` module), file CAS (`cas` module, `blobs/ab/cdef...` retained by design), and feature-gated DB backends (`sqlite` module ships; `mysql`/`postgres` modules reserved as stubs). Depends on `core`. Backend modules mirror the future split so extraction stays mechanical. |
 | `sekai-world` | `std` | yes (I/O) / sync pure helpers where trivial | Filesystem owner: world discovery, fingerprint observation, atomic swaps. |
 | `sekai-app` | `std` + tokio | yes | Composition/orchestration library for third parties: parallel ingest, clocks, timing, progress callbacks. |
@@ -72,8 +72,8 @@ rules:
 - `util` holds pure data plus total validation only: no hashing backends,
   no codecs, no ports, no orchestration. It depends on nothing.
 - `anvil`/`nbt` implement over util types (`Dimension` custom ids,
-  `DiffHash` digests); `core` composes them (`hash_blob`,
-  `resolve_custom_dimension`, storage ports, use cases).
+  `DiffHash` digests); `core` composes them (`hash_blob`, storage ports,
+  use cases).
 - `core` re-exports every util type at its root, so downstream paths
   (`sekai_core::ChunkCoord`, ...) keep working; `world`/`storage`/`app`
   continue to import through `core`.
