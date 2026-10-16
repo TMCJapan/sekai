@@ -1,6 +1,6 @@
 # Sekai
 
-*Read this in [English](README.md).*
+Read this in [English](README.md).
 
 ワールドの現在の状態をスナップショットとして記録し、任意の時点へ素早くロールバックします。
 

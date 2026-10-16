@@ -156,7 +156,6 @@ any exception in the PR body.
 
 Before submitting a Pull Request, make sure your changes pass all checks:
 
-
 ```bash
 # Format check
 cargo fmt --all -- --check
