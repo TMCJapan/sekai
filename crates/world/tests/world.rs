@@ -640,6 +640,66 @@ fn a_broken_entry_does_not_hide_a_bukkit_trio() {
 }
 
 #[test]
+fn a_bukkit_trio_without_server_properties_is_still_elected() {
+    // No `server.properties` (deleted, or the server never wrote one):
+    // the split trio is elected from structure alone.
+    let root_path = tempdir("bukkit-no-props");
+    let image = one_chunk_image();
+    write(root_path.join("world/region/r.0.0.mca"), &image);
+    write(
+        root_path.join("world_nether/DIM-1/region/r.0.0.mca"),
+        &image,
+    );
+    write(
+        root_path.join("world_the_end/DIM1/entities/r.1.0.mca"),
+        &image,
+    );
+
+    let root = HostWorldTree::new(&root_path).unwrap();
+    let found = root.discover().unwrap();
+    assert_eq!(
+        paths_of(&found),
+        vec![
+            root_path.join("world/region/r.0.0.mca"),
+            root_path.join("world_nether/DIM-1/region/r.0.0.mca"),
+            root_path.join("world_the_end/DIM1/entities/r.1.0.mca"),
+        ]
+    );
+    assert_derives_back(&root, &found);
+    assert_stable_ids(&root_path, &found);
+    cleanup(&root_path);
+}
+
+#[test]
+fn a_26_1_bukkit_tree_without_server_properties_is_still_elected() {
+    // A migrated 26.1 tree without `server.properties`: the base is
+    // elected by its nested `dimensions/` folder.
+    let root_path = tempdir("bukkit-26.1-no-props");
+    let image = one_chunk_image();
+    write(
+        root_path.join("world/dimensions/minecraft/overworld/region/r.0.0.mca"),
+        &image,
+    );
+    write(
+        root_path.join("world/dimensions/minecraft/the_nether/region/r.0.0.mca"),
+        &image,
+    );
+
+    let root = HostWorldTree::new(&root_path).unwrap();
+    let found = root.discover().unwrap();
+    assert_eq!(
+        paths_of(&found),
+        vec![
+            root_path.join("world/dimensions/minecraft/overworld/region/r.0.0.mca"),
+            root_path.join("world/dimensions/minecraft/the_nether/region/r.0.0.mca"),
+        ]
+    );
+    assert_derives_back(&root, &found);
+    assert_stable_ids(&root_path, &found);
+    cleanup(&root_path);
+}
+
+#[test]
 fn stray_dimensions_dir_does_not_hijack_a_bukkit_root() {
     // A `dimensions/` tree left at the server root (migration residue, a
     // plugin) must not displace the level-name world's own layout.

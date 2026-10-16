@@ -31,10 +31,14 @@ Opening a world classifies the root once:
    observed root.
 2. A directory counts as a *world folder* when `region/`, `entities/`, or
    `poi/` inside it holds at least one parseable `r.<x>.<z>.mca` file.
-3. Candidates are checked in order and the first match wins:
+3. Bukkit candidate bases are tried first: the `level-name` base when one
+   is known, otherwise bases elected from structure alone — a folder
+   nesting a `dimensions/` tree, or one with a `_nether` or `_the_end`
+   sibling folder (`world` wins ties, then lexical order). The first
+   match wins:
 
 ```text
-level-name found?
+Bukkit candidate bases (level-name, else elected from structure)
   ├─ <base>/dimensions/minecraft/<name>/ is a world folder?  → Bukkit, 26.1 layout
   └─ <base>/, <base>_nether/DIM-1, <base>_the_end/DIM1?      → Bukkit, split layout
 dimensions/minecraft/<name>/ is a world folder?              → Vanilla, 26.1 layout

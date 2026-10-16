@@ -12,7 +12,7 @@ pub(super) enum Layout {
 
 pub(super) fn detect(root: impl AsRef<Path>) -> Result<Option<Layout>, WorldError> {
     let root = root.as_ref();
-    if let Some(base) = level_name(root) {
+    for base in bukkit_bases(root)? {
         if is_world_folder_any(&[
             root.join(&base)
                 .join("dimensions")
@@ -52,6 +52,47 @@ pub(super) fn detect(root: impl AsRef<Path>) -> Result<Option<Layout>, WorldErro
     }
 
     Ok(None)
+}
+
+/// Candidate Bukkit bases, most authoritative first.
+///
+/// A usable `level-name` is the only candidate - the server decides.
+/// Without one (missing or unreadable `server.properties`, or an unusable
+/// value), bases are elected from directory structure alone: a folder
+/// nesting a `dimensions/` tree, or one with a `_nether`/`_the_end`
+/// sibling world. The game default `world` wins ties; the rest keep
+/// lexical order, so the pick is deterministic. Election only proposes
+/// candidates - the world-folder checks below decide.
+fn bukkit_bases(root: impl AsRef<Path>) -> Result<Vec<String>, WorldError> {
+    let root = root.as_ref();
+    if let Some(base) = level_name(root) {
+        return Ok(vec![base]);
+    }
+
+    let mut bases = Vec::new();
+    for entry in vanilla::read_dir_opt(root).map_err(|source| WorldError::io(root, source))? {
+        if !vanilla::is_dir(&entry) {
+            continue;
+        }
+        let file_name = entry.file_name();
+        let Some(name) = file_name.to_str() else {
+            continue;
+        };
+        if matches!(name, "dimensions" | "DIM-1" | "DIM1") {
+            continue; // the layout's own subdirectories, never a base
+        }
+        let path = entry.path();
+        let sibling_trio = path.with_file_name(format!("{name}_nether")).is_dir()
+            || path.with_file_name(format!("{name}_the_end")).is_dir();
+        if sibling_trio || path.join("dimensions").is_dir() {
+            bases.push(name.to_owned());
+        }
+    }
+    bases.sort();
+    if let Some(pos) = bases.iter().position(|base| base == "world") {
+        bases.swap(0, pos);
+    }
+    Ok(bases)
 }
 
 /// `level-name` from a Bukkit/Paper `server.properties`, when readable.
