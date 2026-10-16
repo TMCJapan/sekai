@@ -1,12 +1,18 @@
 name: Spell checks
 
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
 permissions:
   contents: read
 
-on:
-  push:
-  pull_request:
-  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 env:
   CLICOLOR: 1
@@ -15,11 +21,13 @@ jobs:
   spelling:
     name: Spell check with typos
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
     - name: Checkout repository
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       with:
+        persist-credentials: false
         submodules: false
 
     - name: Spell check repository

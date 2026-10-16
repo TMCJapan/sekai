@@ -12,6 +12,15 @@ on:
 permissions:
   contents: read
 
+# A newer release waits for the running one instead of cancelling it, so a
+# release is never left half-published.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+# Releases must not restore caches that other runs can write.
+cache-mode: none
+
 env:
   CARGO_TERM_COLOR: always
   # Keep in sync with `rust-toolchain.toml`.
@@ -21,6 +30,7 @@ jobs:
   check-tag:
     name: Check tag matches package version
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     outputs:
       tag: ${{ steps.resolve.outputs.tag }}
@@ -29,9 +39,11 @@ jobs:
     steps:
       - name: Resolve tag
         id: resolve
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ inputs.tag }}"
+            TAG="$INPUT_TAG"
           else
             TAG="${GITHUB_REF_NAME}"
           fi
@@ -44,6 +56,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          persist-credentials: false
           ref: ${{ steps.resolve.outputs.tag }}
 
       # The tag, the workspace version, and the internal path
@@ -69,11 +82,13 @@ jobs:
     name: Gate (clippy + tests)
     needs: check-tag
     runs-on: ubuntu-latest
+    timeout-minutes: 45
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          persist-credentials: false
           ref: ${{ needs.check-tag.outputs.tag }}
 
       - name: Setup Rust toolchain and cache
@@ -83,9 +98,8 @@ jobs:
           targets: ""
           components: clippy
           cache-key: release-test
+          lookup-only: true
 
-      # After the cache step on purpose: `rust-cache` restores `~/.cargo/bin`,
-      # which is where `install-action` drops the binary.
       - name: Install cargo-nextest
         uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe
         with:
@@ -101,6 +115,7 @@ jobs:
     name: CLI / ${{ matrix.name }}
     needs: check-tag
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
 
     strategy:
       fail-fast: false
@@ -130,6 +145,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          persist-credentials: false
           ref: ${{ needs.check-tag.outputs.tag }}
 
       - name: Setup Rust toolchain and cache
@@ -139,6 +155,7 @@ jobs:
           targets: ${{ matrix.target }}
           components: ""
           cache-key: release-${{ matrix.target }}
+          lookup-only: true
 
       - name: Build and package CLI
         uses: ./.github/actions/package-cli
@@ -177,6 +194,7 @@ jobs:
     name: GitHub Release
     needs: [check-tag, test, dist]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     permissions:
       contents: write

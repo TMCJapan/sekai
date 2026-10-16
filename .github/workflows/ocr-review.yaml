@@ -16,11 +16,14 @@ on:
   # Use pull_request_target instead of pull_request so that secrets are
   # available even for PRs from forks. This is safe because OCR only reads
   # the diff and does not execute any code from the PR.
+  # jactionlint ignore=dangerous-triggers
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
+  # Posting the review as pull request comments is what this scope is for.
+  # jactionlint ignore=excessive-permissions
   pull-requests: write
 
 concurrency:

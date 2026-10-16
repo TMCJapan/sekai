@@ -24,11 +24,14 @@ jobs:
   lint:
     name: Format & dependency audit
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - parallel:
           - name: Checkout repository
             uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+            with:
+              persist-credentials: false
           - name: Install cargo-deny and cargo-machete
             uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe
             with:
@@ -59,9 +62,12 @@ jobs:
   ast-grep:
     name: AST grep rules
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - name: Install ast-grep
         uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe
         with:
@@ -74,6 +80,7 @@ jobs:
   portability:
     name: Library / ${{ matrix.name }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     strategy:
       fail-fast: false
@@ -89,6 +96,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Setup Rust toolchain and cache
         uses: ./.github/actions/setup-rust
@@ -106,10 +115,13 @@ jobs:
   features:
     name: Feature combinations (cargo-hack)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Setup Rust toolchain and cache
         uses: ./.github/actions/setup-rust
@@ -140,10 +152,13 @@ jobs:
   rustdoc:
     name: API docs (rustdoc)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Setup Rust toolchain and cache
         uses: ./.github/actions/setup-rust
@@ -159,6 +174,7 @@ jobs:
   test:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
 
     strategy:
       fail-fast: false
@@ -187,6 +203,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       # Keyed apart from `dist`: this job only ever fills the dev profile, and
       # a cache shared with the release build would thrash on every run.
@@ -216,10 +234,13 @@ jobs:
   docs:
     name: User guide (mdbook)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Check doc links and guide parity
         run: python3 .github/scripts/check-docs.py
@@ -246,6 +267,7 @@ jobs:
     needs: docs
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     permissions:
       pages: write
@@ -265,6 +287,7 @@ jobs:
   dist:
     name: CLI / ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
 
     strategy:
       fail-fast: false
@@ -293,6 +316,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
 
       - name: Setup Rust toolchain and cache
         uses: ./.github/actions/setup-rust
