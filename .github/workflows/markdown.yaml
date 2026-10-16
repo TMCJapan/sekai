@@ -1,0 +1,30 @@
+name: Markdown checks
+
+permissions:
+  contents: read
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# Match `ci.yaml`: supersede PR runs, keep `main` runs intact.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  markdown:
+    name: Lint with mado
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+        submodules: false
+
+    - name: Lint Markdown files
+      uses: akiomik/mado@6642676268ddaad6187482ef57d95e218c6b865c

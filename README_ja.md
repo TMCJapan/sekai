@@ -1,6 +1,6 @@
 # Sekai
 
-*Read this in [English](README.md).*
+Read this in [English](README.md).
 
 ワールドの現在の状態をスナップショットとして記録し、任意の時点へ素早くロールバックします。
 
@@ -64,6 +64,6 @@ sekai --store ./sekai-store export 1 ./restored
 
 `sekai` はサーバープロセスを直接操作しません。バックアップ前後のセーブ停止や再開などの連携処理は、呼び出し側（スクリプトや管理者）で行ってください。
 
-引数にはサーバーのルートディレクトリ（Spigot、Paper、Purpur などの Bukkit 系）または単一のワールドディレクトリ（Vanilla）を指定します。Sekai は Vanilla のレイアウト（`region/`, `DIM-1/`, `DIM1/`, `dimensions/minecraft/...`）、26.1 より前の Bukkit 分割レイアウト、およびカスタムプラグインのワールドフォルダを自動検出します。
+引数にはサーバーのルートディレクトリ（Spigot、Paper、Purpur などの Bukkit 系）または単一のワールドディレクトリ（Vanilla）を指定します。Sekai は Vanilla のレイアウト（`region/`, `DIM-1/`, `DIM1/`, `dimensions/minecraft/...`）、Bukkit の分割レイアウト（26.1 以前と以降の両方）、およびカスタムプラグインのワールドフォルダを自動検出します。
 
 設計思想については `ARCHITECTURE.md` を、開発ガイドラインについては `CONTRIBUTING.md` を、詳しい運用方法についてはユーザーガイド（[English](https://tmcjapan.github.io/sekai/en/)、[日本語](https://tmcjapan.github.io/sekai/ja/)）を参照してください。機械可読な出力の仕様は `docs/json.md` に記載されています。

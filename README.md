@@ -1,6 +1,6 @@
 # Sekai
 
-*Read this in [日本語](README_ja.md).*
+Read this in [日本語](README_ja.md).
 
 Save the current state of the world as a snapshot and roll back to any of them quickly.
 
@@ -71,16 +71,16 @@ nothing selected means the whole world. See `docs/json.md` for the
 output contract.
 
 > [!Note]
-> If you want to perform a full secondary backup of all your snapshots and storage, 
+> If you want to perform a full secondary backup of all your snapshots and storage,
 > simply copy or archive the entire directory specified by `--store` to an external location.
 
 `sekai` never touches the server process; save coordination belongs to the
-caller. 
+caller.
 
 Pass your server root (for Bukkit-family servers like Spigot, Paper, or Purpur)
 or a single world directory (for Vanilla). Sekai automatically detects
 Vanilla layouts (`region/`, `DIM-1/`, `DIM1/`, `dimensions/minecraft/...`),
-pre-26.1 split Bukkit layouts, and custom plugin world folders.
+pre-26.1 and 26.1 split Bukkit layouts, and custom plugin world folders.
 
 See `ARCHITECTURE.md` for the design, `CONTRIBUTING.md` for development
 guidelines, and the user guide
