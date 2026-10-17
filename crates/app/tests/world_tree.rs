@@ -84,4 +84,10 @@ fn custom_tree_serves_the_app_layer() {
 fn custom_tree_error_crosses_the_app_boundary() {
     let error = world_chunk_coords(&FakeWorld { fail: true }).unwrap_err();
     assert!(error.to_string().contains("fake world failed: unplugged"));
+    // `get_regions` fails through the same boundary, not only `get_dims`.
+    assert!(
+        FakeWorld { fail: true }
+            .get_regions(Dimension::OVERWORLD)
+            .is_err()
+    );
 }
