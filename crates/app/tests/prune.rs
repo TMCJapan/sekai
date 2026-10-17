@@ -111,7 +111,10 @@ async fn prune_folds_and_gc_reclaims() {
     let remaining = instance.list_snapshots().await.unwrap();
     assert_eq!(remaining.len(), 2);
     // The tag died with its snapshot by cascade.
-    assert!(instance.list_tags().await.unwrap().is_empty());
+    assert_eq!(
+        instance.list_tags().await.unwrap(),
+        [] as [sekai_app::SnapshotTag; 0]
+    );
 
     // Retained snapshots still restore faithfully through fallback.
     let (rolled, _) = instance

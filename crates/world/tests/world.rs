@@ -979,7 +979,7 @@ fn output_trees_share_discovered_ids() {
         (&bukkit_path, HostWorldTree::new_bukkit(&bukkit_path, "srv")),
     ] {
         let found = HostWorldTree::new(root).unwrap().discover().unwrap();
-        assert!(!found.is_empty());
+        assert_ne!(found, [] as [sekai_world::RegionRef; 0]);
         assert_derives_back(&out, &found);
     }
 
@@ -1088,7 +1088,7 @@ fn atomic_swap_replaces_and_cleans_up() {
         .map(|e| e.file_name().to_string_lossy().into_owned())
         .filter(|n| n.contains(".tmp-"))
         .collect();
-    assert!(leftovers.is_empty());
+    assert_eq!(leftovers, [] as [std::string::String; 0]);
     // Missing parents are created.
     let nested = world.join("DIM-1/region/r.5.5.mca");
     atomic_swap(&nested, b"data").unwrap();

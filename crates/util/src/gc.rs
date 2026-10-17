@@ -31,7 +31,7 @@ mod tests {
     #[test]
     fn gc_plan_construction() {
         let empty = GcPlan::new(Vec::new(), 10);
-        assert!(empty.orphans.is_empty());
+        assert_eq!(empty.orphans, [] as [BlobHash; 0]);
         assert_eq!(empty.examined, 10);
 
         let plan = GcPlan::new(alloc::vec![BlobHash([1; 32])], 3);

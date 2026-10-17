@@ -234,7 +234,7 @@ mod tests {
         ]);
 
         let diffs = diff(&old, &new, &["InhabitedTime"]);
-        assert!(diffs.is_empty());
+        assert_eq!(diffs, [] as [NbtDiffEntry; 0]);
     }
 
     #[test]

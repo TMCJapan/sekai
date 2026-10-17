@@ -294,7 +294,10 @@ fn parses_selection_for_backup_and_rollback() {
     assert!(matches!(cli.command, Command::Backup { .. }));
     if let Command::Backup { selection, .. } = &cli.command {
         assert!(selection.has_broad_areas());
-        assert!(selection.explicit_chunks().is_empty());
+        assert_eq!(
+            selection.explicit_chunks(),
+            [] as [sekai_app::ChunkCoord; 0]
+        );
     } else {
         panic!("expected backup");
     }

@@ -273,6 +273,6 @@ mod tests {
         // An empty store plans empty instead of erroring.
         let empty = MemMeta::default();
         let plan = block_on(prune_plan(&empty, &BTreeSet::new())).unwrap();
-        assert!(plan.delete.is_empty());
+        assert_eq!(plan.delete, [] as [sekai_util::SnapshotId; 0]);
     }
 }
