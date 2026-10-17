@@ -28,9 +28,15 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
     fn is_empty(&self) -> Result<bool, Self::Error>;
 
     /// Every dimension that may hold regions, ordered by code.
+    ///
+    /// Dimensions that belong to the tree but hold no region file yet are
+    /// still listed; only dimensions outside the tree's layout are omitted.
     fn get_dims(&self) -> Result<Vec<Dimension>, Self::Error>;
 
     /// Every region file inside `dim`, ordered by kind and coordinates.
+    ///
+    /// A `dim` that is not part of this tree (not returned by
+    /// [`WorldTree::get_dims`]) yields an empty vector, not an error.
     fn get_regions(&self, dim: Dimension) -> Result<Vec<RegionRef>, Self::Error>;
 
     fn derive_path(
