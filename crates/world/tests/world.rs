@@ -143,12 +143,18 @@ fn get_dims_lists_every_layout_dimension() {
     write(world_path.join("DIM1/region/r.1.0.mca"), &image);
 
     let world = HostWorldTree::new(&world_path).unwrap();
-    // Ordered by raw code; the absent nether directory is still listed and
-    // simply discovers no regions.
-    assert_eq!(
-        world.get_dims().unwrap(),
-        vec![Dimension::END, Dimension::OVERWORLD, Dimension::NETHER]
-    );
+    // Every layout dimension is listed - the absent nether directory
+    // included; it simply discovers no regions.
+    let dims = world.get_dims().unwrap();
+    assert_eq!(dims.len(), 3);
+    for dim in [Dimension::OVERWORLD, Dimension::NETHER, Dimension::END] {
+        assert!(dims.contains(&dim), "missing layout dimension {dim:?}");
+    }
+    // The trait contract is "ordered by code"; derive it from `raw()` rather
+    // than pinning the map's iteration order as a literal.
+    let mut ordered = dims.clone();
+    ordered.sort_unstable_by_key(|dim| dim.raw());
+    assert_eq!(dims, ordered, "dimensions are ordered by raw code");
     let over = world.get_regions(Dimension::OVERWORLD).unwrap();
     assert_eq!(over.len(), 1);
     assert_eq!(over[0].path, world_path.join("region/r.0.0.mca"));
