@@ -34,16 +34,3 @@ pub(crate) fn content_hash_of(reader: &mut impl Read) -> std::io::Result<[u8; 32
     }
     Ok(hasher.finalize())
 }
-
-pub(crate) fn content_hash_of_bytes(bytes: &[u8]) -> [u8; 32] {
-    sekai_anvil::content_hash(bytes)
-}
-
-pub(crate) fn hex_hash(bytes: &[u8; 32]) -> String {
-    use core::fmt::Write;
-    let mut out = String::with_capacity(64);
-    for b in bytes {
-        let _ = write!(out, "{b:02x}");
-    }
-    out
-}

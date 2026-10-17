@@ -29,7 +29,7 @@ sekai (bin, thin: clap parse + print + exit code)
     -> sekai-core (no_std + alloc: use-case policy API over shared types)
       -> sekai-anvil (no_std + alloc: pure sector codec, decompress)
       -> sekai-nbt (no_std + alloc: pure parse/diff)
-    -> sekai-world (std: filesystem owner - discover/fingerprint/scan/swap)
+    -> sekai-world (std: filesystem owner - discover/fingerprint/swap)
       -> sekai-anvil + sekai-core (types only)
     -> sekai-storage (std + tokio: async MetaStore/BlobStore traits,
                       file CAS, and feature-gated DB backends)
@@ -44,9 +44,9 @@ sekai-util (no_std, zero-dependency: coordinates, hashes, history value
 | `sekai-util` | `no_std`, zero external dependencies | no | Shared value types: coordinates, hashes, region/history/snapshot/gc records, hex errors. Pure data plus total validation only. |
 | `sekai-anvil` | `no_std` + `alloc` | no | Pure Anvil sector codec including decompression. `&[u8]` sector payload in, raw NBT bytes out; also builds `Vec<u8>` images. Compression framing is MCA spec knowledge, so it lives here. No `Path`, no `fs`. Names custom dimensions with util `Dimension`. |
 | `sekai-nbt` | `no_std` + `alloc` | no | Pure `raw NBT bytes -> diff view`. Hand-rolled NBT parser (no `Serialize` by design; output uses SNBT), tag filtering, canonical digest returning util `DiffHash`. Never sees compression. |
-| `sekai-core` | `no_std` + `alloc` | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_rollback`, `gc plan`/`apply`) plus composition helpers (`hash_blob`, `resolve_custom_dimension`, storage ports). Composes `anvil`/`nbt` over util types and re-exports them, so downstream paths stay stable. |
+| `sekai-core` | `no_std` + `alloc` | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_rollback`, `gc plan`/`apply`) plus composition helpers (`hash_blob`, storage ports). Composes `anvil`/`nbt` over util types and re-exports them, so downstream paths stay stable. |
 | `sekai-storage` | `std` + tokio | yes (RPITIT) | Single crate: async `BlobStore`/`MetaStore` traits (owned by `core::port`, re-exported from the `api` module), file CAS (`cas` module, `blobs/ab/cdef...` retained by design), and feature-gated DB backends (`sqlite` module ships; `mysql`/`postgres` modules reserved as stubs). Depends on `core`. Backend modules mirror the future split so extraction stays mechanical. |
-| `sekai-world` | `std` | yes (I/O) / sync pure helpers where trivial | Filesystem owner: world discovery, fingerprint observation, read-only scans, atomic swaps. |
+| `sekai-world` | `std` | yes (I/O) / sync pure helpers where trivial | Filesystem owner: world discovery, fingerprint observation, atomic swaps. |
 | `sekai-app` | `std` + tokio | yes | Composition/orchestration library for third parties: parallel ingest, clocks, timing, progress callbacks. |
 | `sekai` bin (`sekai-cli` package) | `std` + tokio | yes | Thin clap wrapper over `sekai-app`. No logic. Binary name stays `sekai`; package name stays `sekai-cli` so existing CI/artifact names keep working. |
 
@@ -72,8 +72,8 @@ rules:
 - `util` holds pure data plus total validation only: no hashing backends,
   no codecs, no ports, no orchestration. It depends on nothing.
 - `anvil`/`nbt` implement over util types (`Dimension` custom ids,
-  `DiffHash` digests); `core` composes them (`hash_blob`,
-  `resolve_custom_dimension`, storage ports, use cases).
+  `DiffHash` digests); `core` composes them (`hash_blob`, storage ports,
+  use cases).
 - `core` re-exports every util type at its root, so downstream paths
   (`sekai_core::ChunkCoord`, ...) keep working; `world`/`storage`/`app`
   continue to import through `core`.
@@ -118,22 +118,27 @@ folder for vanilla ones — the same path on every run.
   `dimensions/minecraft/<name>/`).
 - Bukkit-family (Bukkit/Spigot/Paper/Purpur, pre-26.1 layout): split
   folders `<base>/`, `<base>_nether/DIM-1/`, `<base>_the_end/DIM1/`,
-  where `base` is `level-name` (`world` by default). Paper 26.1+
-  migrates to the vanilla layout.
+  where `base` is `level-name` (`world` by default); each datapack
+  dimension `<namespace>:<path>` gets its own sibling world folder
+  `<base>_<namespace>_<path>/dimensions/<namespace>/<path>/`.
+  Paper 26.1+ migrates to the vanilla layout.
 - Plugin worlds (Multiverse et al.): arbitrary folders, detected by
   contents (`level.dat`, `DIM-1`/`DIM1` nesting, or kind directories
   holding region files).
 
-Namespaces: the default trio and `minecraft/*` trees keep vanilla codes
-(derivable, history-stable, migration-continuous); every other folder
-hashes its root-relative path so distinct worlds never silently share
-coordinates. Trio detection runs on container roots only, so a nested
-folder can never steal the vanilla namespace. Opening a tree classifies
-the root and resolves each derivable dimension directory once; operations
-then use those resolved paths and never re-inspect the layout. Missing
-files under non-derivable codes fail loudly (`UnknownRegionPath`); rollback
-restores those through their discovered folders, preferring same-dimension
-siblings over derived paths when folders moved since the backup.
+Namespaces: every observed dimension is keyed by a hash of its canonical
+`<namespace>:<name>` id; the default trio hashes to the `Dimension`
+constants (`OVERWORLD`/`NETHER`/`END`), so ids are history-stable across
+layout changes (legacy, 26.1, Bukkit) and distinct dimensions never
+silently share coordinates. Trio detection runs on container roots only,
+so a nested folder can never steal the vanilla namespace. Opening a tree
+classifies the root and resolves one directory per observed dimension
+once; operations then use those resolved paths and never re-inspect the
+layout. Region paths are derivable only for the ids a tree resolved;
+anything else fails loudly (`UnknownRegionPath`) instead of writing
+somewhere wrong, and rollback restores those files through their
+discovered folders, preferring same-dimension siblings over derived paths
+when folders moved since the backup.
 
 # Data & Hashing Model
 

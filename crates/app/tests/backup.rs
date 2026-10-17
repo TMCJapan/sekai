@@ -330,6 +330,40 @@ async fn scoped_backup_records_no_spurious_tombstones() {
     cleanup(&root);
 }
 
+/// A world that exists when the tree is opened is classified rather than
+/// treated as the missing-world fallback, and its trio keeps the constants
+/// scoped operations address by name.
+#[tokio::test]
+async fn scoped_backup_addresses_a_detected_trio_world() {
+    use sekai_app::{Dimension, Scope};
+    let root = tempdir("scoped-detected");
+    let world_path = root.join("world");
+    let store = root.join("store").to_string_lossy().into_owned();
+    // 26.1 layout, written before the tree is opened so `new` classifies it
+    // (an unrecognizable root falls back to the legacy tree).
+    write_region(
+        world_path.join("dimensions/minecraft/overworld/region/r.0.0.mca"),
+        &[(0, 0, vec![3, 1]), (1, 0, vec![3, 2])],
+    );
+    write_region(
+        world_path.join("dimensions/minecraft/the_nether/region/r.0.0.mca"),
+        &[(0, 0, vec![3, 3])],
+    );
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let (report, _) = instance
+        .world_mut(&mut world)
+        .backup(options(), Scope::dimension(Dimension::OVERWORLD), |_| {})
+        .await
+        .unwrap();
+    // Only the overworld chunks: the scope must address the discovered
+    // overworld, not silently match nothing (or the nether).
+    assert_eq!(report.chunks, 2);
+    assert_eq!(report.tombstones, 0);
+    cleanup(&root);
+}
+
 #[tokio::test]
 async fn scoped_rollback_leaves_other_dimensions_untouched() {
     use sekai_app::{Dimension, Scope};

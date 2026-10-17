@@ -17,7 +17,7 @@ use crate::api::{StorageError, Store, io_error};
 use crate::cas::FileCas;
 
 /// Managed schema version (`PRAGMA user_version`).
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 const SCHEMA: &str = include_str!("../schema/sqlite.sql");
 

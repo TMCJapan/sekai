@@ -4,17 +4,25 @@ use crate::error::ParseCodeError;
 use core::fmt;
 use core::str::FromStr;
 
-/// Dimension namespace code. `0..=2` are reserved for vanilla dimensions.
+/// Dimension namespace code.
+///
+/// Every dimension, the vanilla trio included, is keyed by the hash of its
+/// canonical `<namespace>:<name>` id, so a world keeps one identity when it
+/// moves between layouts. The trio's hashes are the constants below; no code
+/// range is reserved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Dimension(i32);
 
 impl Dimension {
-    /// Vanilla overworld.
-    pub const OVERWORLD: Self = Self(0);
-    /// Vanilla nether.
-    pub const NETHER: Self = Self(1);
-    /// Vanilla end.
-    pub const END: Self = Self(2);
+    /// Vanilla overworld, keyed by `custom_dimension_id("minecraft:overworld")`.
+    ///
+    /// The values are precomputed because `util` has no hash dependency;
+    /// `sekai-anvil` pins them to `custom_dimension_id` by test.
+    pub const OVERWORLD: Self = Self(-817_260_936);
+    /// Vanilla nether, keyed by `custom_dimension_id("minecraft:the_nether")`.
+    pub const NETHER: Self = Self(285_963_005);
+    /// Vanilla end, keyed by `custom_dimension_id("minecraft:the_end")`.
+    pub const END: Self = Self(-1_750_732_570);
 
     /// Wrap a raw code.
     pub const fn new(raw: i32) -> Self {
@@ -32,6 +40,7 @@ impl FromStr for Dimension {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_lowercase().as_str() {
+            // `0`/`1`/`2` stay accepted: they spelled the trio's old code values.
             "ow" | "overworld" | "0" => Ok(Self::OVERWORLD),
             "ne" | "nether" | "the_nether" | "dim-1" | "1" => Ok(Self::NETHER),
             "end" | "the_end" | "dim1" | "2" => Ok(Self::END),
@@ -93,10 +102,16 @@ mod tests {
     }
 
     #[test]
-    fn raw_codes_round_trip() {
-        assert_eq!(Dimension::OVERWORLD.raw(), 0);
-        assert_eq!(Dimension::NETHER.raw(), 1);
-        assert_eq!(Dimension::END.raw(), 2);
+    fn trio_ids_are_distinct_hashes() {
+        // The trio is hashed like every other dimension, so the ids must
+        // never collide with each other or repeat a positional code.
+        let mut raws = [
+            Dimension::OVERWORLD.raw(),
+            Dimension::NETHER.raw(),
+            Dimension::END.raw(),
+        ];
+        raws.sort_unstable();
+        assert!(raws.windows(2).all(|pair| pair[0] != pair[1]));
         assert_eq!(Dimension::new(42).raw(), 42);
     }
 }
