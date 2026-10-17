@@ -117,7 +117,7 @@ async fn cas_skips_foreign_and_temp_names() {
     assert_eq!(seen, vec![hash]);
     let mut out = Vec::new();
     assert!(cas.fetch_into(&BlobHash([9; 32]), &mut out).await.is_err());
-    assert!(out.is_empty());
+    assert_eq!(out, [] as [u8; 0]);
     cleanup(&dir);
 }
 

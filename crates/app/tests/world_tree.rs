@@ -64,10 +64,9 @@ impl WorldTree for FakeWorld {
 
 #[test]
 fn custom_tree_serves_the_app_layer() {
-    assert!(
-        world_chunk_coords(&FakeWorld { fail: false })
-            .unwrap()
-            .is_empty()
+    assert_eq!(
+        world_chunk_coords(&FakeWorld { fail: false }).unwrap(),
+        [] as [sekai_app::ChunkCoord; 0]
     );
 }
 

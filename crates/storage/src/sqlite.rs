@@ -741,7 +741,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(plan.carries.is_empty());
+        assert_eq!(plan.carries, [] as [sekai_core::RegionKey; 0]);
         assert_eq!(plan.ingest, vec![key]);
         let staged = assemble(
             plan,

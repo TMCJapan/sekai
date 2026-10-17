@@ -102,7 +102,10 @@ async fn tag_create_list_resolve_delete() {
 
     assert!(instance.delete_tag(&name).await.unwrap());
     assert!(!instance.delete_tag(&name).await.unwrap());
-    assert!(instance.list_tags().await.unwrap().is_empty());
+    assert_eq!(
+        instance.list_tags().await.unwrap(),
+        [] as [sekai_app::SnapshotTag; 0]
+    );
     cleanup(&root);
 }
 

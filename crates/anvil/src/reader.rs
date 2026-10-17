@@ -225,7 +225,7 @@ mod tests {
     fn zero_length_image_is_empty_region() {
         let image = RegionImage::from_bytes(Vec::new(), 0, 0).unwrap();
 
-        assert!(image.image().is_empty());
+        assert_eq!(image.image(), []);
 
         let mut count = 0;
 

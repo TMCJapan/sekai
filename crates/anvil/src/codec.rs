@@ -387,7 +387,7 @@ mod tests {
                 Err(AnvilError::Gzip),
                 "{junk} junk bytes accepted"
             );
-            assert!(out.is_empty());
+            assert_eq!(out, [] as [u8; 0]);
         }
     }
 

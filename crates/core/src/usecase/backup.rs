@@ -299,9 +299,9 @@ mod tests {
             crate::support::block_on(plan_backup(&meta, &observed, &Scope::World)).unwrap();
         assert!(previous.snapshot.is_none());
         assert!(previous.universe.is_empty());
-        assert!(plan.carries.is_empty());
+        assert_eq!(plan.carries, [] as [sekai_util::RegionKey; 0]);
         assert_eq!(plan.ingest, alloc::vec![key(0, 0)]);
-        assert!(plan.removed.is_empty());
+        assert_eq!(plan.removed, [] as [sekai_util::RegionKey; 0]);
     }
 
     #[test]
@@ -337,7 +337,7 @@ mod tests {
             crate::support::block_on(plan_backup(&meta, &observed, &Scope::World)).unwrap();
         assert_eq!(plan.carries, alloc::vec![key(1, 0)]);
         assert_eq!(plan.ingest, alloc::vec![key(0, 0)]);
-        assert!(plan.removed.is_empty());
+        assert_eq!(plan.removed, [] as [sekai_util::RegionKey; 0]);
 
         let staged = assemble(
             plan,
@@ -398,7 +398,7 @@ mod tests {
         let report =
             crate::support::block_on(commit(&mut meta, &previous, &staged, 2_000)).unwrap();
         assert_eq!(report.tombstones, 2);
-        assert!(meta.states.is_empty());
+        assert_eq!(meta.states, [] as [sekai_util::RegionStateEntry; 0]);
         let tomb = crate::support::block_on(meta.lookup_chunk(report.snapshot, &coord(0, 0)))
             .unwrap()
             .unwrap();
@@ -456,7 +456,7 @@ mod tests {
         .unwrap();
         assert_eq!(previous.universe, BTreeSet::from([coord(32, 0)]));
         let staged = assemble(plan, &previous, Ingested::default(), &Scope::World);
-        assert!(staged.entries.is_empty());
+        assert_eq!(staged.entries, [] as [sekai_util::SnapshotEntry; 0]);
         assert_eq!(staged.tombstones, 0);
         assert_eq!(staged.chunks, 1);
 
@@ -496,8 +496,8 @@ mod tests {
         let scope = Scope::dimension(NETHER);
         let (_, plan) = crate::support::block_on(plan_backup(&meta, &observed, &scope)).unwrap();
         assert_eq!(plan.carries, alloc::vec![nether_key(0, 0)]);
-        assert!(plan.ingest.is_empty());
-        assert!(plan.removed.is_empty());
+        assert_eq!(plan.ingest, [] as [sekai_util::RegionKey; 0]);
+        assert_eq!(plan.removed, [] as [sekai_util::RegionKey; 0]);
 
         // Out-of-scope observations never enter the plan at all.
         let observed = [
@@ -548,7 +548,7 @@ mod tests {
         let (previous, plan) =
             crate::support::block_on(plan_backup(&meta, &observed, &scope)).unwrap();
         assert_eq!(plan.ingest, alloc::vec![key(0, 0)]);
-        assert!(plan.removed.is_empty());
+        assert_eq!(plan.removed, [] as [sekai_util::RegionKey; 0]);
         let staged = assemble(
             plan,
             &previous,

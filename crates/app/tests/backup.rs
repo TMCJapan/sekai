@@ -298,7 +298,7 @@ async fn scoped_backup_records_no_spurious_tombstones() {
         .diff_chunk(snapshots[0].id, snapshots[1].id, &nether_coord, None)
         .await
         .unwrap();
-    assert!(diffs.is_empty());
+    assert_eq!(diffs, [] as [sekai_app::NbtDiffEntry; 0]);
 
     // Vanish one in-scope chunk: exactly that tombstone is recorded.
     write_region(&over, &[(0, 0, payload)]);
@@ -326,7 +326,7 @@ async fn scoped_backup_records_no_spurious_tombstones() {
         .diff_chunk(snapshots[0].id, snapshots[3].id, &nether_coord, None)
         .await
         .unwrap();
-    assert!(diffs.is_empty());
+    assert_eq!(diffs, [] as [sekai_app::NbtDiffEntry; 0]);
     cleanup(&root);
 }
 
@@ -698,7 +698,7 @@ async fn missing_blob_abort_is_default_and_skip_recovers() {
             }
         }
     }
-    assert!(!blobs.is_empty());
+    assert_ne!(blobs, [] as [std::path::PathBuf; 0]);
     for blob in &blobs {
         std::fs::remove_file(blob).unwrap();
     }
@@ -730,7 +730,7 @@ async fn missing_blob_abort_is_default_and_skip_recovers() {
         .unwrap();
     assert_eq!(rolled.files_written, 1);
     assert_eq!(rolled.chunks_restored, 0);
-    assert!(read_coords(&region).is_empty());
+    assert_eq!(read_coords(&region), [] as [(i32, i32); 0]);
     cleanup(&root);
 }
 
@@ -918,7 +918,7 @@ async fn gc_runs_and_returns_timings() {
         .unwrap();
 
     let (plan, plan_timings) = instance.gc_plan().await.unwrap();
-    assert!(plan.orphans.is_empty());
+    assert_eq!(plan.orphans, [] as [sekai_app::BlobHash; 0]);
     assert_eq!(plan_timings.apply, std::time::Duration::ZERO);
 
     let (report, timings) = instance.gc(|_| {}).await.unwrap();
@@ -1295,13 +1295,13 @@ async fn sparse_entities_chunk_diffs_empty_without_error() {
             .diff_chunk(snapshots[0].id, snapshots[0].id, &coord, None)
             .await
             .unwrap();
-        assert!(diffs.is_empty());
+        assert_eq!(diffs, [] as [sekai_app::NbtDiffEntry; 0]);
         let world_diffs = instance
             .world(&world)
             .diff_world_chunk(None, &coord, None)
             .await
             .unwrap();
-        assert!(world_diffs.is_empty());
+        assert_eq!(world_diffs, [] as [sekai_app::NbtDiffEntry; 0]);
     }
     cleanup(&root);
 }
@@ -1341,7 +1341,7 @@ async fn created_and_deleted_chunks_diff_as_added_removed() {
         .diff_chunk(snapshots[0].id, snapshots[1].id, &coord, None)
         .await
         .unwrap();
-    assert!(!diffs.is_empty());
+    assert_ne!(diffs, [] as [sekai_app::NbtDiffEntry; 0]);
     assert!(
         diffs
             .iter()
@@ -1360,7 +1360,7 @@ async fn created_and_deleted_chunks_diff_as_added_removed() {
         .diff_chunk(snapshots[1].id, snapshots[2].id, &coord, None)
         .await
         .unwrap();
-    assert!(!diffs.is_empty());
+    assert_ne!(diffs, [] as [sekai_app::NbtDiffEntry; 0]);
     assert!(
         diffs
             .iter()
