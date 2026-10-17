@@ -46,7 +46,11 @@ impl WorldTree for FakeWorld {
         self.check().map(|()| true)
     }
 
-    fn discover(&self) -> Result<Vec<RegionRef>, Self::Error> {
+    fn get_dims(&self) -> Result<Vec<Dimension>, Self::Error> {
+        self.check().map(|()| Vec::new())
+    }
+
+    fn get_regions(&self, _dim: Dimension) -> Result<Vec<RegionRef>, Self::Error> {
         self.check().map(|()| Vec::new())
     }
 
@@ -64,8 +68,14 @@ impl WorldTree for FakeWorld {
 
 #[test]
 fn custom_tree_serves_the_app_layer() {
+    let world = FakeWorld { fail: false };
+    assert_eq!(world.get_dims().unwrap(), [] as [Dimension; 0]);
     assert_eq!(
-        world_chunk_coords(&FakeWorld { fail: false }).unwrap(),
+        world.get_regions(Dimension::OVERWORLD).unwrap(),
+        [] as [RegionRef; 0]
+    );
+    assert_eq!(
+        world_chunk_coords(&world).unwrap(),
         [] as [sekai_app::ChunkCoord; 0]
     );
 }
@@ -74,4 +84,10 @@ fn custom_tree_serves_the_app_layer() {
 fn custom_tree_error_crosses_the_app_boundary() {
     let error = world_chunk_coords(&FakeWorld { fail: true }).unwrap_err();
     assert!(error.to_string().contains("fake world failed: unplugged"));
+    // `get_regions` fails through the same boundary, not only `get_dims`.
+    assert!(
+        FakeWorld { fail: true }
+            .get_regions(Dimension::OVERWORLD)
+            .is_err()
+    );
 }

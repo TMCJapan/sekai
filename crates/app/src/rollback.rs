@@ -137,16 +137,19 @@ where
         let discover_started = Instant::now();
         let world_handle = world.clone();
         let mut discovered = tokio::task::spawn_blocking(move || {
-            let discovered: BTreeMap<RegionKey, PathBuf> = world_handle
-                .discover()?
-                .into_iter()
-                .map(|r| {
-                    (
-                        RegionKey::new(r.dim, r.kind, r.region_x, r.region_z),
-                        r.path,
-                    )
-                })
-                .collect();
+            let mut discovered: BTreeMap<RegionKey, PathBuf> = BTreeMap::new();
+            for dim in world_handle.get_dims()? {
+                for r in world_handle.get_regions(dim)? {
+                    let key = RegionKey::new(r.dim, r.kind, r.region_x, r.region_z);
+                    // A tree reporting the same region twice would drop one
+                    // path here silently; fail loudly in debug builds instead.
+                    debug_assert!(
+                        !discovered.contains_key(&key),
+                        "world tree enumerated a duplicate region"
+                    );
+                    discovered.insert(key, r.path);
+                }
+            }
             Ok::<_, AppError>(discovered)
         })
         .await??;

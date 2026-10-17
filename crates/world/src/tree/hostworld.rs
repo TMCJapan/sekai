@@ -28,6 +28,13 @@ use sekai_core::{Dimension, RegionKind};
 use super::WorldTree;
 use crate::{RegionRef, WorldError};
 
+/// Kind directories scanned for region files, in output order.
+const KIND_DIRS: [(RegionKind, &str); 3] = [
+    (RegionKind::REGION, "region"),
+    (RegionKind::ENTITIES, "entities"),
+    (RegionKind::POI, "poi"),
+];
+
 #[derive(Clone)]
 pub struct HostWorldTree {
     /// Base path as passed by the caller. Discovery fails loudly when it is
@@ -120,6 +127,19 @@ impl HostWorldTree {
             .into(),
         }
     }
+
+    /// Fail when the root is missing: resolution treats one as an empty
+    /// legacy tree for fresh output, but enumeration must not silently
+    /// answer "nothing" for a world that vanished.
+    fn check_root(&self) -> Result<(), std::io::Error> {
+        if self.root.is_dir() {
+            return Ok(());
+        }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("world directory not found: {}", self.root.display()),
+        ))
+    }
 }
 
 /// Collect dimension directories, attaching the failing path to I/O errors.
@@ -147,57 +167,47 @@ impl WorldTree for HostWorldTree {
         Ok(true)
     }
 
-    fn discover(&self) -> Result<Vec<RegionRef>, Self::Error> {
-        const KIND_DIRS: [(RegionKind, &str); 3] = [
-            (RegionKind::REGION, "region"),
-            (RegionKind::ENTITIES, "entities"),
-            (RegionKind::POI, "poi"),
-        ];
+    fn get_dims(&self) -> Result<Vec<Dimension>, Self::Error> {
+        self.check_root()?;
+        Ok(self.dirs.keys().copied().collect())
+    }
 
-        if !self.root.is_dir() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("world directory not found: {}", self.root.display()),
-            ));
-        }
+    fn get_regions(&self, dim: Dimension) -> Result<Vec<RegionRef>, Self::Error> {
+        self.check_root()?;
+        let Some(dir) = self.dirs.get(&dim) else {
+            return Ok(Vec::new());
+        };
 
         let mut res = Vec::new();
-        for (dim, dir) in &self.dirs {
-            for (kind, kind_dir) in KIND_DIRS {
-                let mut regions = BTreeMap::new();
-                // Sorted by name so that two files spelling the same coordinates
-                // (`r.0.0.mca` and `r.00.00.mca`, both of which the game itself
-                // parses as region 0,0) resolve the same way on every run instead
-                // of following directory order.
-                let path = dir.join(kind_dir);
-                let mut entries = match std::fs::read_dir(&path) {
-                    Ok(entries) => entries.collect::<Result<Vec<_>, _>>(),
-                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
-                    Err(err) => Err(err),
-                }?;
-                entries.sort_unstable_by_key(std::fs::DirEntry::file_name);
-                for entry in entries {
-                    if !vanilla::is_file(&entry) {
-                        continue;
-                    }
-                    let file_name = entry.file_name();
-                    let Some(name) = file_name.to_str() else {
-                        continue;
-                    };
-                    let Ok((region_x, region_z)) = sekai_anvil::parse_region_name(name) else {
-                        continue;
-                    };
-                    let reference = RegionRef {
-                        path: entry.path(),
-                        dim: *dim,
-                        kind,
-                        region_x,
-                        region_z,
-                    };
-                    regions.entry((region_x, region_z)).or_insert(reference);
+        for (kind, kind_dir) in KIND_DIRS {
+            let mut regions = BTreeMap::new();
+            // Sorted by name so that two files spelling the same coordinates
+            // (`r.0.0.mca` and `r.00.00.mca`, both of which the game itself
+            // parses as region 0,0) resolve the same way on every run instead
+            // of following directory order.
+            let mut entries = vanilla::read_dir_opt(dir.join(kind_dir))?;
+            entries.sort_unstable_by_key(std::fs::DirEntry::file_name);
+            for entry in entries {
+                if !vanilla::is_file(&entry) {
+                    continue;
                 }
-                res.extend(regions.into_values());
+                let file_name = entry.file_name();
+                let Some(name) = file_name.to_str() else {
+                    continue;
+                };
+                let Ok((region_x, region_z)) = sekai_anvil::parse_region_name(name) else {
+                    continue;
+                };
+                let reference = RegionRef {
+                    path: entry.path(),
+                    dim,
+                    kind,
+                    region_x,
+                    region_z,
+                };
+                regions.entry((region_x, region_z)).or_insert(reference);
             }
+            res.extend(regions.into_values());
         }
         Ok(res)
     }
