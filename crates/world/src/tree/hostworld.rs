@@ -148,25 +148,6 @@ fn collect_dimensions(dir: impl AsRef<Path>) -> Result<BTreeMap<Dimension, PathB
     vanilla::collect_dimensions(dir).map_err(|source| WorldError::io(dir, source))
 }
 
-/// Whether any parseable region file sits directly under `dir`.
-fn has_regions(dir: impl AsRef<Path>) -> Result<bool, std::io::Error> {
-    for (_, kind_dir) in KIND_DIRS {
-        for entry in vanilla::read_dir_opt(dir.as_ref().join(kind_dir))? {
-            if !vanilla::is_file(&entry) {
-                continue;
-            }
-            let file_name = entry.file_name();
-            let Some(name) = file_name.to_str() else {
-                continue;
-            };
-            if sekai_anvil::parse_region_name(name).is_ok() {
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
-}
-
 impl WorldTree for HostWorldTree {
     type Error = std::io::Error;
 
@@ -188,13 +169,7 @@ impl WorldTree for HostWorldTree {
 
     fn get_dims(&self) -> Result<Vec<Dimension>, Self::Error> {
         self.check_root()?;
-        let mut dims = Vec::new();
-        for (dim, dir) in &self.dirs {
-            if has_regions(dir)? {
-                dims.push(*dim);
-            }
-        }
-        Ok(dims)
+        Ok(self.dirs.keys().copied().collect())
     }
 
     fn get_regions(&self, dim: Dimension) -> Result<Vec<RegionRef>, Self::Error> {

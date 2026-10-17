@@ -36,7 +36,7 @@ fn write(path: impl AsRef<Path>, bytes: &[u8]) {
     std::fs::write(path, bytes).unwrap();
 }
 
-/// Every region of every occupied dimension, in dimension and kind order.
+/// Every region across every enumerated dimension, in dimension and kind order.
 fn discover(world: &HostWorldTree) -> Vec<RegionRef> {
     let mut regions = Vec::new();
     for dim in world.get_dims().unwrap() {
@@ -136,17 +136,18 @@ fn observes_a_single_layout_per_root() {
 }
 
 #[test]
-fn get_dims_lists_only_occupied_dimensions() {
+fn get_dims_lists_every_layout_dimension() {
     let world_path = tempdir("get-dims");
     let image = one_chunk_image();
     write(world_path.join("region/r.0.0.mca"), &image);
     write(world_path.join("DIM1/region/r.1.0.mca"), &image);
 
     let world = HostWorldTree::new(&world_path).unwrap();
-    // Ordered by raw code; the empty (missing) nether directory stays out.
+    // Ordered by raw code; the absent nether directory is still listed and
+    // simply discovers no regions.
     assert_eq!(
         world.get_dims().unwrap(),
-        vec![Dimension::END, Dimension::OVERWORLD]
+        vec![Dimension::END, Dimension::OVERWORLD, Dimension::NETHER]
     );
     let over = world.get_regions(Dimension::OVERWORLD).unwrap();
     assert_eq!(over.len(), 1);

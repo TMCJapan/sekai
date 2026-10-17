@@ -27,7 +27,7 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
 
     fn is_empty(&self) -> Result<bool, Self::Error>;
 
-    /// Every dimension holding at least one region file, ordered by code.
+    /// Every dimension that may hold regions, ordered by code.
     fn get_dims(&self) -> Result<Vec<Dimension>, Self::Error>;
 
     /// Every region file inside `dim`, ordered by kind and coordinates.
