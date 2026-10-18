@@ -36,17 +36,6 @@ pub enum StorageError {
         /// Store root that was expected to hold `meta.sqlite`.
         path: PathBuf,
     },
-    /// A writing run holds the store; `gc` must not run alongside it.
-    #[error(
-        "store is in use by a running backup (marker {path}{holder}): a backup writes blobs before it commits the rows that reference them, so collecting now would unlink blobs the next commit still needs. Wait for it to finish, or remove the marker if no backup is running.",
-        path = path.display()
-    )]
-    StoreBusy {
-        /// Marker file that was found.
-        path: PathBuf,
-        /// Contents recorded by the run holding it.
-        holder: String,
-    },
     /// Another operation holds a conflicting lock on the store.
     #[error(
         "store is in use by another sekai operation (lock {path}): retry once it finishes",
