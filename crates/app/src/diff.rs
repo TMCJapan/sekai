@@ -288,7 +288,7 @@ where
         let total_started = Instant::now();
         let snapshot_id = match snapshot {
             Some(id) => id,
-            None => self.instance.latest_snapshot_id().await?,
+            None => self.instance.latest_snapshot_id_unlocked().await?,
         };
 
         let ignore_set = ignore.unwrap_or(DEFAULT_IGNORED);

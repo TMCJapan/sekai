@@ -128,6 +128,11 @@ impl SekaiInstance {
     /// Latest snapshot ID; fails when the store has no snapshots.
     pub async fn latest_snapshot_id(&self) -> Result<SnapshotId, AppError> {
         let _lock = self.lock_store(StoreLockMode::Shared)?;
+        self.latest_snapshot_id_unlocked().await
+    }
+
+    /// [`Self::latest_snapshot_id`] for operations already holding a lock.
+    pub(crate) async fn latest_snapshot_id_unlocked(&self) -> Result<SnapshotId, AppError> {
         sekai_core::usecase::snapshot::latest_snapshot_id(self.store.meta())
             .await
             .map_err(AppError::Snapshot)?

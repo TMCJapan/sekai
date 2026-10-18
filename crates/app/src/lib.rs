@@ -39,4 +39,4 @@ pub use sekai_core::{
     NbtChange, NbtDiffEntry, NbtValue, PrunePlan, PruneReport, Rect, RegionKey, RegionKind,
     RollbackReport, Scope, Snapshot, SnapshotId, SnapshotStats, SnapshotTag, TagName,
 };
-pub use sekai_world::{HostWorldTree, WorldTree};
+pub use sekai_world::{HostWorldTree, WorldLock, WorldLockMode, WorldTree};
