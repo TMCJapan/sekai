@@ -36,7 +36,9 @@ fn write(path: impl AsRef<Path>, bytes: &[u8]) {
     std::fs::write(path, bytes).unwrap();
 }
 
-/// Every region across every enumerated dimension, in dimension and kind order.
+/// Every region of the world: dimensions in ascending raw-code order
+/// (`get_dims`), and within each dimension in `region`, `entities`,
+/// `poi` order (`get_regions`).
 fn discover(world: &HostWorldTree) -> Vec<RegionRef> {
     let mut regions = Vec::new();
     for dim in world.get_dims().unwrap() {
