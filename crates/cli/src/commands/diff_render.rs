@@ -21,7 +21,7 @@ pub struct DiffEntryJson {
 #[derive(Serialize)]
 pub struct CoordJson {
     pub dim: i32,
-    pub kind: i32,
+    pub kind: u8,
     pub x: i32,
     pub z: i32,
 }

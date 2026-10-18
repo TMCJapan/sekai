@@ -2,43 +2,54 @@
 
 use core::{fmt, str::FromStr};
 
-use crate::error::ParseCodeError;
-
 /// Region family identifier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct RegionKind(i32);
+pub enum RegionKind {
+    Region,
+    Entities,
+    Poi,
+}
 
 impl RegionKind {
-    /// Block data (`region/`).
-    pub const REGION: Self = Self(0);
-    /// Entity data (`entities/`).
-    pub const ENTITIES: Self = Self(1);
-    /// Points of interest (`poi/`).
-    pub const POI: Self = Self(2);
-
-    /// Wrap a raw code.
-    pub const fn new(raw: i32) -> Self {
-        Self(raw)
+    pub const fn new(id: i32) -> Result<Self, UnknownRegionKind> {
+        match id {
+            0 => Ok(Self::Region),
+            1 => Ok(Self::Entities),
+            2 => Ok(Self::Poi),
+            _ => Err(UnknownRegionKind),
+        }
     }
 
-    /// Raw code (for binary columns and directory names).
-    pub const fn raw(self) -> i32 {
-        self.0
+    pub const fn raw(self) -> u8 {
+        match self {
+            Self::Region => 0,
+            Self::Entities => 1,
+            Self::Poi => 2,
+        }
     }
 }
 
+/// Error returned when a code or name does not map to a known region kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct UnknownRegionKind;
+
+impl fmt::Display for UnknownRegionKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "unknown region kind: expected region, entities, or poi")
+    }
+}
+
+impl core::error::Error for UnknownRegionKind {}
+
 impl FromStr for RegionKind {
-    type Err = ParseCodeError;
+    type Err = UnknownRegionKind;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_ascii_lowercase().as_str() {
-            "region" | "0" => Ok(Self::REGION),
-            "entities" | "1" => Ok(Self::ENTITIES),
-            "poi" | "2" => Ok(Self::POI),
-            other => other
-                .parse::<i32>()
-                .map(Self::new)
-                .map_err(|_| ParseCodeError(())),
+            "region" | "0" => Ok(Self::Region),
+            "entities" | "1" => Ok(Self::Entities),
+            "poi" | "2" => Ok(Self::Poi),
+            _ => Err(UnknownRegionKind),
         }
     }
 }
@@ -46,10 +57,9 @@ impl FromStr for RegionKind {
 impl fmt::Display for RegionKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            Self::REGION => write!(f, "region"),
-            Self::ENTITIES => write!(f, "entities"),
-            Self::POI => write!(f, "poi"),
-            other => write!(f, "{}", other.0),
+            Self::Region => write!(f, "region"),
+            Self::Entities => write!(f, "entities"),
+            Self::Poi => write!(f, "poi"),
         }
     }
 }
@@ -62,35 +72,35 @@ mod tests {
 
     #[test]
     fn parses_region_kind_names() {
-        assert_eq!("region".parse(), Ok(RegionKind::REGION));
-        assert_eq!("REGION".parse(), Ok(RegionKind::REGION));
-        assert_eq!("entities".parse(), Ok(RegionKind::ENTITIES));
-        assert_eq!("poi".parse(), Ok(RegionKind::POI));
-        assert_eq!("POI".parse(), Ok(RegionKind::POI));
-        assert_eq!("0".parse(), Ok(RegionKind::REGION));
-        assert_eq!("1".parse(), Ok(RegionKind::ENTITIES));
-        assert_eq!("2".parse(), Ok(RegionKind::POI));
-        assert_eq!("9".parse(), Ok(RegionKind::new(9)));
-        assert_eq!(RegionKind::from_str("blocks"), Err(ParseCodeError(())));
-        assert_eq!(RegionKind::from_str(""), Err(ParseCodeError(())));
+        assert_eq!("region".parse(), Ok(RegionKind::Region));
+        assert_eq!("REGION".parse(), Ok(RegionKind::Region));
+        assert_eq!("entities".parse(), Ok(RegionKind::Entities));
+        assert_eq!("poi".parse(), Ok(RegionKind::Poi));
+        assert_eq!("POI".parse(), Ok(RegionKind::Poi));
+        assert_eq!("0".parse(), Ok(RegionKind::Region));
+        assert_eq!("1".parse(), Ok(RegionKind::Entities));
+        assert_eq!("2".parse(), Ok(RegionKind::Poi));
+        assert_eq!("9".parse::<RegionKind>(), Err(UnknownRegionKind));
+        assert_eq!(RegionKind::from_str("blocks"), Err(UnknownRegionKind));
+        assert_eq!(RegionKind::from_str(""), Err(UnknownRegionKind));
     }
 
     #[test]
     fn displays_region_kind_names() {
-        assert_eq!(RegionKind::REGION.to_string(), "region");
-        assert_eq!(RegionKind::ENTITIES.to_string(), "entities");
-        assert_eq!(RegionKind::POI.to_string(), "poi");
-        assert_eq!(RegionKind::new(9).to_string(), "9");
-        for kind in [RegionKind::REGION, RegionKind::ENTITIES, RegionKind::POI] {
+        assert_eq!(RegionKind::Region.to_string(), "region");
+        assert_eq!(RegionKind::Entities.to_string(), "entities");
+        assert_eq!(RegionKind::Poi.to_string(), "poi");
+        assert_eq!(RegionKind::new(9), Err(UnknownRegionKind));
+        for kind in [RegionKind::Region, RegionKind::Entities, RegionKind::Poi] {
             assert_eq!(kind.to_string().parse(), Ok(kind));
         }
     }
 
     #[test]
     fn raw_codes_round_trip() {
-        assert_eq!(RegionKind::REGION.raw(), 0);
-        assert_eq!(RegionKind::ENTITIES.raw(), 1);
-        assert_eq!(RegionKind::POI.raw(), 2);
-        assert_eq!(RegionKind::new(9).raw(), 9);
+        assert_eq!(RegionKind::Region.raw(), 0);
+        assert_eq!(RegionKind::Entities.raw(), 1);
+        assert_eq!(RegionKind::Poi.raw(), 2);
+        assert_eq!(RegionKind::new(0).unwrap().raw(), 0);
     }
 }

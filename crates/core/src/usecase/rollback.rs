@@ -98,7 +98,7 @@ mod tests {
     use sekai_util::{Dimension, RegionKind, SnapshotEntry};
 
     const OVER: Dimension = Dimension::OVERWORLD;
-    const REGION: RegionKind = RegionKind::REGION;
+    const REGION: RegionKind = RegionKind::Region;
 
     #[test]
     fn resolves_present_rows_grouped_by_region() {

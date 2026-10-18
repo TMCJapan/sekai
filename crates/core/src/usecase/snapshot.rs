@@ -243,7 +243,7 @@ mod tests {
         use sekai_util::{BlobHash, ChunkCoord, Dimension, RegionKind};
         let mut meta = MemMeta::default();
         let over = Dimension::OVERWORLD;
-        let region = RegionKind::REGION;
+        let region = RegionKind::Region;
         let first = block_on(meta.create_snapshot(100)).unwrap();
         block_on(meta.record_chunk(
             first,
