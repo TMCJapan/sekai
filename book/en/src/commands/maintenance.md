@@ -17,11 +17,14 @@ GC removes only orphan blobs, never metadata; snapshot deletion is
 
 `gc` refuses while a `backup` is running: a backup writes blobs before it
 commits the rows that reference them, so collecting in that window would
-unlink blobs the next commit still needs. The error names the
-`backup.inflight` marker in the store root — delete it only if no backup is
-actually running (a crashed one leaves it behind). `backup` itself is never
-blocked by a stale marker. See
-[ADR-0011](https://github.com/tmcjapan/sekai/blob/main/docs/adr/0011-backup-run-marker.md).
+unlink blobs the next commit still needs. `prune` likewise refuses while
+anything else uses the store, and nothing else starts while it runs.
+Refusals are immediate (`store is in use by another sekai operation`);
+retry once the other command finishes. The locks live in `writer.lock`
+and `store.lock` in the store root and are released by the OS even when
+a command crashes, so there is nothing to clean up. A `backup.inflight`
+file left by older versions is no longer used and can be deleted. See
+[ADR-0014](https://github.com/tmcjapan/sekai/blob/main/docs/adr/0014-file-locks.md).
 
 ## Pruning snapshots
 

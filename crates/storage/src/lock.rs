@@ -14,7 +14,7 @@
 //! the next process lock a fresh inode and walk straight past the holder.
 //!
 //! `flock`/`LockFileEx` locks are released by the OS when the holding
-//! process dies, so a crashed run can never wedge the store.
+//! process dies, so a crashed run can never wedge the store. See ADR-0014.
 
 use std::fs::{File, OpenOptions, TryLockError};
 use std::path::Path;

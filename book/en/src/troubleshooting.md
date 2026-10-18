@@ -12,6 +12,11 @@
   `--on-missing-file error` refusing to guess. Run it against a world
   tree with the same folder layout the backup came from so sibling
   derivation can work, or accept that the region cannot be placed.
+- `store is in use by another sekai operation` / `world is in use by
+  another sekai operation` — another command holds a conflicting lock
+  (for example `gc` during a backup, or `status` during a rollback of the
+  same world). Retry once it finishes; locks are released by the OS even
+  after a crash, so there is no lock file to delete.
 - `unsupported schema version` — the store was written by a newer (or
   older) binary. The project is pre-release: recreate the store, don't
   migrate.

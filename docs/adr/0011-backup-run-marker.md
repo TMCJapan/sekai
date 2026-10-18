@@ -1,6 +1,6 @@
 # ADR-0011: A backup run marker keeps `gc` out of the write window
 
-- Status: Accepted
+- Status: Superseded by ADR-0014
 - Date: 2026-09-26
 
 ## Context

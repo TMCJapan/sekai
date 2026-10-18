@@ -21,3 +21,5 @@ between. Diff views stay off in previews.
 
 One ingest path serves both flows, so preview numbers cannot rot.
 `status` never writes to the world or the store by construction.
+Amended by ADR-0014: it may create the world's `.sekai.lock`, but never
+writes region data or store contents.
