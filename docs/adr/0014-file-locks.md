@@ -29,7 +29,7 @@ deleted:
 | Mode | `writer.lock` | `store.lock` | Operations |
 |---|---|---|---|
 | shared | - | shared | list, status, diff, export, rollback, tags, prune plan |
-| writer | exclusive | shared | backup, gc plan/apply, store creation |
+| writer | exclusive | shared | backup, gc plan/apply, creating a missing store |
 | exclusive | exclusive | exclusive | prune apply |
 
 Readers and a backup therefore run side by side. `gc` stays compatible
@@ -39,14 +39,15 @@ only under the exclusive mode.
 A world folder holds `.sekai.lock` in the root the caller passed:
 backup, status, and diff take it shared, rollback exclusive. Export
 output stays unlocked, since it is new and empty by contract. A shared
-world lock degrades to unguarded when the file can be neither created
-nor opened, so read-only worlds stay readable. `WorldTree::lock` defaults
-to unguarded, so third-party trees keep compiling.
+world lock degrades to unguarded so read-only worlds stay readable (see
+Consequences for the exact condition). `WorldTree::lock` defaults to
+unguarded, so third-party trees keep compiling.
 
 Locks are taken per operation, at each public `sekai-app` method's
-entry, never in `open`/`init`; an idle instance blocks nobody. Blocking
-file passes own a share of the locks, because a cancelled future cannot
-abort a blocking task that already started.
+entry. `open` never locks, and `init` locks only while it creates a
+missing store, so an idle instance blocks nobody. Blocking file passes
+own a share of the locks, because a cancelled future cannot abort a
+blocking task that already started.
 
 ## Consequences
 
@@ -55,6 +56,13 @@ abort a blocking task that already started.
   new binaries do not exclude each other.
 - `status` and `diff` may create `.sekai.lock` in the world root, which
   amends ADR-0010's "never writes" to "never writes region data".
+- Cancellation safety covers the blocking file passes only. A library
+  caller that drops a future during a metadata commit (backup, prune)
+  releases the lock while the database may still finish that commit. The
+  CLI is unaffected: Ctrl-C ends the whole process.
+- A shared world lock degrades to unguarded only when its file is absent
+  and cannot be created (permission denied, read-only filesystem). An
+  existing lock file the user cannot open is an error.
 - Separate operations are not atomic together. The CLI resolves a
   snapshot reference, then runs the command, and a `prune` can slip in
   between. Commands that check snapshot existence fail loudly; known gaps

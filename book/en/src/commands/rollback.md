@@ -35,3 +35,7 @@ Each behavior is configurable without changing the default:
   `--timing`/`--json` as usual.
 - Before rebuilding, the CLI echoes the target snapshot, scope, and
   policy to stderr (human output only).
+- A rollback fails immediately, without waiting, while another command
+  reads or rewrites the same world (`backup`, `status`, world-side
+  `diff`, another rollback) or while `prune` runs on the store. Nothing
+  is written in that case; retry once the other command finishes.

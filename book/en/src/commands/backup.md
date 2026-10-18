@@ -18,6 +18,11 @@ chunks.
   [Inspection](inspection.md).
 - When the store directory is created by the backup, the CLI says so
   on stderr (human output only).
+- A backup fails immediately, without waiting, while another backup,
+  `gc`, or `prune` uses the same store, or while a rollback rewrites the
+  same world. Readers (`list`, `status`, `diff`, `export`) never block it.
+  A scheduled backup that hits this simply retries on its next run; see
+  [Maintenance](maintenance.md).
 
 Unchanged regions are skipped by fingerprint; unchanged chunks inside
 changed regions resolve through fallback and cost no new blobs. A backup
