@@ -12,6 +12,7 @@
 //! partial world would be worse than writing none. Keep-policies in
 //! [`RollbackOptions`] relax each of those strict behaviors explicitly.
 
+use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -137,16 +138,30 @@ where
         let discover_started = Instant::now();
         let world_handle = world.clone();
         let mut discovered = tokio::task::spawn_blocking(move || {
-            let discovered: BTreeMap<RegionKey, PathBuf> = world_handle
-                .discover()?
-                .into_iter()
-                .map(|r| {
-                    (
-                        RegionKey::new(r.dim, r.kind, r.region_x, r.region_z),
-                        r.path,
-                    )
-                })
-                .collect();
+            let mut discovered: BTreeMap<RegionKey, PathBuf> = BTreeMap::new();
+            for dim in world_handle.get_dims()? {
+                for r in world_handle.get_regions(dim)? {
+                    // A tree reporting one region twice would leave one
+                    // spelling of the file un-rebuilt (or undeleted); report
+                    // both paths instead of silently dropping one.
+                    match discovered.entry(RegionKey::new(r.dim, r.kind, r.region_x, r.region_z)) {
+                        Entry::Vacant(entry) => {
+                            entry.insert(r.path);
+                        }
+                        Entry::Occupied(entry) => {
+                            return Err(AppError::Io(std::io::Error::new(
+                                std::io::ErrorKind::InvalidData,
+                                format!(
+                                    "world tree enumerated region {:?} twice ({} and {})",
+                                    entry.key(),
+                                    entry.get().display(),
+                                    r.path.display(),
+                                ),
+                            )));
+                        }
+                    }
+                }
+            }
             Ok::<_, AppError>(discovered)
         })
         .await??;

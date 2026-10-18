@@ -21,15 +21,17 @@ impl From<FakeError> for AppError {
     }
 }
 
-/// A tree serving no regions, with a switch for failing every operation.
+/// A tree that enumerates one dimension and serves no regions, with a
+/// switch failing either discovery call.
 #[derive(Clone)]
 struct FakeWorld {
-    fail: bool,
+    fail_dims: bool,
+    fail_regions: bool,
 }
 
 impl FakeWorld {
-    const fn check(&self) -> Result<(), FakeError> {
-        if self.fail {
+    const fn check(fail: bool) -> Result<(), FakeError> {
+        if fail {
             Err(FakeError {
                 reason: "unplugged",
             })
@@ -43,11 +45,15 @@ impl WorldTree for FakeWorld {
     type Error = FakeError;
 
     fn is_empty(&self) -> Result<bool, Self::Error> {
-        self.check().map(|()| true)
+        Ok(true)
     }
 
-    fn discover(&self) -> Result<Vec<RegionRef>, Self::Error> {
-        self.check().map(|()| Vec::new())
+    fn get_dims(&self) -> Result<Vec<Dimension>, Self::Error> {
+        Self::check(self.fail_dims).map(|()| vec![Dimension::OVERWORLD])
+    }
+
+    fn get_regions(&self, _dim: Dimension) -> Result<Vec<RegionRef>, Self::Error> {
+        Self::check(self.fail_regions).map(|()| Vec::new())
     }
 
     fn derive_path(
@@ -57,21 +63,39 @@ impl WorldTree for FakeWorld {
         _region_x: i32,
         _region_z: i32,
     ) -> Result<PathBuf, Self::Error> {
-        self.check()
-            .map(|()| PathBuf::from("/fake/region/r.0.0.mca"))
+        Ok(PathBuf::from("/fake/region/r.0.0.mca"))
     }
 }
 
 #[test]
 fn custom_tree_serves_the_app_layer() {
+    // Enumeration splits across `get_dims` and `get_regions`: the fake lists
+    // one empty dimension, and the app layer walks both calls.
+    let world = FakeWorld {
+        fail_dims: false,
+        fail_regions: false,
+    };
     assert_eq!(
-        world_chunk_coords(&FakeWorld { fail: false }).unwrap(),
+        world_chunk_coords(&world).unwrap(),
         [] as [sekai_app::ChunkCoord; 0]
     );
 }
 
 #[test]
 fn custom_tree_error_crosses_the_app_boundary() {
-    let error = world_chunk_coords(&FakeWorld { fail: true }).unwrap_err();
+    let error = world_chunk_coords(&FakeWorld {
+        fail_dims: true,
+        fail_regions: false,
+    })
+    .unwrap_err();
+    assert!(error.to_string().contains("fake world failed: unplugged"));
+
+    // `get_regions` fails through the same boundary, not only `get_dims`:
+    // `get_dims` succeeds and the app layer forwards its dimension.
+    let error = world_chunk_coords(&FakeWorld {
+        fail_dims: false,
+        fail_regions: true,
+    })
+    .unwrap_err();
     assert!(error.to_string().contains("fake world failed: unplugged"));
 }
