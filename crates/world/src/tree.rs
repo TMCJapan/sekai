@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use sekai_core::{Dimension, RegionKind};
 
-use crate::RegionRef;
+use crate::{RegionRef, WorldLock, WorldLockMode};
 
 pub use hostworld::HostWorldTree;
 
@@ -34,4 +34,14 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
         region_x: i32,
         region_z: i32,
     ) -> Result<PathBuf, Self::Error>;
+
+    /// Lock the tree against other sekai operations in `mode`, held until
+    /// the returned guard drops.
+    ///
+    /// `Ok(None)` means the operation runs unguarded. That is the default,
+    /// so an implementation that keeps it shares no exclusion with other
+    /// processes; [`WorldLock::acquire`] provides the file-lock form.
+    fn lock(&self, _mode: WorldLockMode) -> Result<Option<WorldLock>, Self::Error> {
+        Ok(None)
+    }
 }

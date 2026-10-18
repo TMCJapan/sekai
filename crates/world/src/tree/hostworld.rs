@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use sekai_core::{Dimension, RegionKind};
 
 use super::WorldTree;
-use crate::{RegionRef, WorldError};
+use crate::{RegionRef, WorldError, WorldLock, WorldLockMode};
 
 #[derive(Clone)]
 pub struct HostWorldTree {
@@ -233,5 +233,9 @@ impl WorldTree for HostWorldTree {
         Ok(root
             .join(kind_dir)
             .join(format!("r.{region_x}.{region_z}.mca")))
+    }
+
+    fn lock(&self, mode: WorldLockMode) -> Result<Option<WorldLock>, Self::Error> {
+        WorldLock::acquire(self.root.join(WorldLock::FILE_NAME), mode)
     }
 }

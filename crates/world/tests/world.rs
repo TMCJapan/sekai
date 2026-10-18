@@ -1,7 +1,10 @@
 //! World filesystem behavior: discovery, fingerprints, swaps.
 
 use sekai_core::{Dimension, RegionKey, RegionKind};
-use sekai_world::{HostWorldTree, RegionRef, WorldTree, atomic_swap, fingerprint_file, open_image};
+use sekai_world::{
+    HostWorldTree, RegionRef, WorldLock, WorldLockMode, WorldTree, atomic_swap, fingerprint_file,
+    open_image,
+};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -209,6 +212,26 @@ fn discovers_a_legacy_single_folder_world() {
     assert_eq!(nether.dim, Dimension::NETHER);
     assert_derives_back(&world, &found);
     assert_stable_ids(&world_path, &found);
+    cleanup(&world_path);
+}
+
+#[test]
+fn the_world_lock_lives_in_the_root_and_stays_out_of_discovery() {
+    let world_path = tempdir("lock");
+    write(world_path.join("region/r.0.0.mca"), &one_chunk_image());
+    let world = HostWorldTree::new(&world_path).unwrap();
+    let before = world.discover().unwrap();
+
+    let reader = world.lock(WorldLockMode::Shared).unwrap();
+    assert!(reader.is_some());
+    assert!(world_path.join(WorldLock::FILE_NAME).is_file());
+    assert!(world.lock(WorldLockMode::Exclusive).is_err());
+    drop(reader);
+
+    // A lock file left in the root changes neither layout nor discovery.
+    let reopened = HostWorldTree::new(&world_path).unwrap();
+    assert_eq!(paths_of(&reopened.discover().unwrap()), paths_of(&before));
+    assert!(reopened.lock(WorldLockMode::Exclusive).unwrap().is_some());
     cleanup(&world_path);
 }
 
