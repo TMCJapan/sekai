@@ -150,11 +150,11 @@ fn get_dims_lists_every_layout_dimension() {
     for dim in [Dimension::OVERWORLD, Dimension::NETHER, Dimension::END] {
         assert!(dims.contains(&dim), "missing layout dimension {dim:?}");
     }
-    // The trait contract is "ordered by code"; derive it from `raw()` rather
-    // than pinning the map's iteration order as a literal.
-    let mut ordered = dims.clone();
-    ordered.sort_unstable_by_key(|dim| dim.raw());
-    assert_eq!(dims, ordered, "dimensions are ordered by raw code");
+    // The trait contract is "ordered by code": pin the ascending raw-code
+    // order of the trio explicitly instead of checking self-sortedness.
+    let mut expected = [Dimension::OVERWORLD, Dimension::NETHER, Dimension::END];
+    expected.sort_unstable_by_key(|dim| dim.raw());
+    assert_eq!(dims, expected, "dimensions are ordered by raw code");
     let over = world.get_regions(Dimension::OVERWORLD).unwrap();
     assert_eq!(over.len(), 1);
     assert_eq!(over[0].path, world_path.join("region/r.0.0.mca"));
