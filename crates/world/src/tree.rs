@@ -27,10 +27,16 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
 
     fn is_empty(&self) -> Result<bool, Self::Error>;
 
-    /// Every dimension that may hold regions, ordered by code.
+    /// Every dimension that may hold regions, ordered by ascending
+    /// [`Dimension::raw`] code.
     ///
     /// Dimensions that belong to the tree but hold no region file yet are
     /// still listed; only dimensions outside the tree's layout are omitted.
+    ///
+    /// Raw codes are hashes of the canonical dimension ids, so this is not
+    /// the trio order (`OVERWORLD`, `NETHER`, `END`) that the previous
+    /// combined discovery yielded; per-dimension walks (backup, diff,
+    /// rollback) visit dimensions in raw-code order instead.
     fn get_dims(&self) -> Result<Vec<Dimension>, Self::Error>;
 
     /// Every region file inside `dim`, ordered by kind and coordinates.
