@@ -37,8 +37,9 @@ const KIND_DIRS: [(RegionKind, &str); 3] = [
 
 #[derive(Clone)]
 pub struct HostWorldTree {
-    /// Base path as passed by the caller. Discovery fails loudly when it is
-    /// missing, while missing dimension/kind subdirectories are skipped.
+    /// Base path as passed by the caller. Dimension enumeration fails
+    /// loudly when it is missing, while missing dimension/kind
+    /// subdirectories are skipped.
     root: PathBuf,
     dirs: BTreeMap<Dimension, PathBuf>,
 }
@@ -129,8 +130,10 @@ impl HostWorldTree {
     }
 
     /// Fail when the root is missing: resolution treats one as an empty
-    /// legacy tree for fresh output, but enumeration must not silently
-    /// answer "nothing" for a world that vanished.
+    /// legacy tree for fresh output, but dimension enumeration must not
+    /// silently answer "nothing" for a world that vanished. Region
+    /// enumeration stays a plain directory read instead, so output trees
+    /// can serve a root that does not exist yet.
     fn check_root(&self) -> Result<(), std::io::Error> {
         if self.root.is_dir() {
             return Ok(());
@@ -173,7 +176,6 @@ impl WorldTree for HostWorldTree {
     }
 
     fn get_regions(&self, dim: Dimension) -> Result<Vec<RegionRef>, Self::Error> {
-        self.check_root()?;
         let Some(dir) = self.dirs.get(&dim) else {
             return Ok(Vec::new());
         };

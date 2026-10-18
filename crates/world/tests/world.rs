@@ -926,14 +926,38 @@ fn missing_world_is_an_error() {
     let world_path = tempdir("gone");
     let world = HostWorldTree::new(&world_path).unwrap();
     cleanup(&world_path);
+    // Dimension enumeration fails loudly: a vanished world must not read
+    // as empty.
     assert!(matches!(
         world.get_dims(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound
     ));
-    assert!(matches!(
-        world.get_regions(Dimension::OVERWORLD),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound
-    ));
+    // Region enumeration is a plain directory read, and a missing root
+    // holds no regions.
+    assert_eq!(
+        world.get_regions(Dimension::OVERWORLD).unwrap(),
+        [] as [RegionRef; 0]
+    );
+}
+
+/// Export builds `new_legacy`/`new_dimensions`/`new_bukkit` trees for
+/// roots that do not exist yet, so region enumeration must answer empty
+/// instead of failing while the root is still missing.
+#[test]
+fn output_trees_serve_no_regions_before_creation() {
+    let root = tempdir("output-missing");
+    let missing = root.join("not-yet");
+    for tree in [
+        HostWorldTree::new_legacy(&missing),
+        HostWorldTree::new_dimensions(&missing),
+        HostWorldTree::new_bukkit(&missing, "srv"),
+    ] {
+        assert_eq!(
+            tree.get_regions(Dimension::OVERWORLD).unwrap(),
+            [] as [RegionRef; 0]
+        );
+    }
+    cleanup(&root);
 }
 
 #[test]
