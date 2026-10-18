@@ -37,10 +37,17 @@ pub type SqliteStore = Store<SqliteMeta, FileCas>;
 /// materializes a store, reserved for backup runs.
 ///
 /// Creation runs under the writer lock: two first backups racing on an
-/// empty root would otherwise both try to create the schema.
+/// empty root would otherwise both try to create the schema. An existing
+/// store takes no lock, like [`open_sqlite`]; operations lock themselves.
 pub async fn init_sqlite(root: impl AsRef<Path>) -> Result<SqliteStore, StorageError> {
-    std::fs::create_dir_all(root.as_ref()).map_err(|source| io_error(root.as_ref(), source))?;
-    let _creating = crate::lock::lock_store(root.as_ref(), crate::lock::StoreLockMode::Writer)?;
+    let root = root.as_ref();
+    if root.join("meta.sqlite").is_file() {
+        return connect_sqlite(root).await;
+    }
+    std::fs::create_dir_all(root).map_err(|source| io_error(root, source))?;
+    // A racer that finished creating in between is harmless: connecting
+    // to an initialized store is idempotent.
+    let _creating = crate::lock::lock_store(root, crate::lock::StoreLockMode::Writer)?;
     connect_sqlite(root).await
 }
 
@@ -698,6 +705,15 @@ mod tests {
         // Creation releases its lock, so the store is usable afterwards.
         init_sqlite(&dir).await.unwrap();
         crate::lock::lock_store(&dir, crate::lock::StoreLockMode::Exclusive).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn init_of_an_existing_store_takes_no_lock() {
+        let dir = tempdir("init-existing");
+        init_sqlite(&dir).await.unwrap();
+        let _held = crate::lock::lock_store(&dir, crate::lock::StoreLockMode::Exclusive).unwrap();
+        init_sqlite(&dir).await.unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

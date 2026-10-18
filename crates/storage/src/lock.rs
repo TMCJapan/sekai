@@ -166,7 +166,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_writer_attempt_leaves_the_holder_intact() {
+    fn a_failed_exclusive_attempt_releases_the_writer_lock() {
         let root = temp_root("partial");
         let _reader = lock_store(&root, Shared).unwrap();
         // Writer succeeds on `writer.lock` alone; exclusive fails on
