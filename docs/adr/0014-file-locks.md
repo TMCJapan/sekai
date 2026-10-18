@@ -63,6 +63,10 @@ blocking task that already started.
 - A shared world lock degrades to unguarded only when its file is absent
   and cannot be created (permission denied, read-only filesystem). An
   existing lock file the user cannot open is an error.
+- WASI has no std file locks (`try_lock` returns `Unsupported`), so every
+  operation fails there. This is deferred: `storage`/`world`/`app` are not
+  wasm targets, and porting them also needs SQLite and a threaded runtime
+  on wasm, so locking gets redesigned together with that port.
 - Separate operations are not atomic together. The CLI resolves a
   snapshot reference, then runs the command, and a `prune` can slip in
   between. Commands that check snapshot existence fail loudly; known gaps
