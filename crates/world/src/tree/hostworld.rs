@@ -35,6 +35,14 @@ const KIND_DIRS: [(RegionKind, &str); 3] = [
     (RegionKind::POI, "poi"),
 ];
 
+/// Directory of `kind` under a dimension directory.
+fn kind_dir(kind: RegionKind) -> Option<&'static str> {
+    KIND_DIRS
+        .iter()
+        .find(|(k, _)| *k == kind)
+        .map(|(_, dir)| *dir)
+}
+
 #[derive(Clone)]
 pub struct HostWorldTree {
     /// Base path as passed by the caller. Dimension enumeration fails
@@ -181,13 +189,13 @@ impl WorldTree for HostWorldTree {
         };
 
         let mut res = Vec::new();
-        for (kind, kind_dir) in KIND_DIRS {
+        for (kind, name) in KIND_DIRS {
             let mut regions = BTreeMap::new();
             // Sorted by name so that two files spelling the same coordinates
             // (`r.0.0.mca` and `r.00.00.mca`, both of which the game itself
             // parses as region 0,0) resolve the same way on every run instead
             // of following directory order.
-            let mut entries = vanilla::read_dir_opt(dir.join(kind_dir))?;
+            let mut entries = vanilla::read_dir_opt(dir.join(name))?;
             entries.sort_unstable_by_key(std::fs::DirEntry::file_name);
             for entry in entries {
                 if !vanilla::is_file(&entry) {
@@ -234,16 +242,8 @@ impl WorldTree for HostWorldTree {
             )
         };
         let root = self.dirs.get(&dim).ok_or_else(cannot_derive)?;
+        let name = kind_dir(kind).ok_or_else(cannot_derive)?;
 
-        let kind_dir = match kind {
-            RegionKind::REGION => "region",
-            RegionKind::ENTITIES => "entities",
-            RegionKind::POI => "poi",
-            _ => return Err(cannot_derive()),
-        };
-
-        Ok(root
-            .join(kind_dir)
-            .join(format!("r.{region_x}.{region_z}.mca")))
+        Ok(root.join(name).join(format!("r.{region_x}.{region_z}.mca")))
     }
 }
