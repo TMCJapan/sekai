@@ -6,6 +6,8 @@
 pub mod api;
 /// File CAS (`blobs/ab/cdef...`).
 pub mod cas;
+/// Store-wide process exclusion (`writer.lock`, `store.lock`).
+pub mod lock;
 /// Reserved MySQL backend stub.
 #[cfg(feature = "backend-mysql")]
 pub mod mysql;
@@ -20,6 +22,7 @@ pub mod sqlite;
 
 pub use api::{BackendKind, BlobStore, MetaStore, StorageError, Store, parse_backend_url};
 pub use cas::FileCas;
+pub use lock::{StoreLock, StoreLockMode};
 pub use runs::RunGuard;
 #[cfg(feature = "backend-sqlite")]
 pub use sqlite::{SqliteMeta, SqliteStore, init_sqlite, open_sqlite};

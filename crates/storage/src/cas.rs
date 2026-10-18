@@ -70,6 +70,14 @@ impl FileCas {
         &self.root
     }
 
+    /// Lock the store root in `mode`; see [`crate::lock`] for the matrix.
+    pub fn lock(
+        &self,
+        mode: crate::lock::StoreLockMode,
+    ) -> Result<crate::lock::StoreLock, StorageError> {
+        crate::lock::lock_store(&self.root, mode)
+    }
+
     /// Claim the store for a run that writes blobs (backup).
     ///
     /// The returned guard removes the marker on drop - including on an

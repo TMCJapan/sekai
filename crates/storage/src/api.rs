@@ -47,6 +47,15 @@ pub enum StorageError {
         /// Contents recorded by the run holding it.
         holder: String,
     },
+    /// Another operation holds a conflicting lock on the store.
+    #[error(
+        "store is in use by another sekai operation (lock {path}): retry once it finishes",
+        path = path.display()
+    )]
+    StoreLocked {
+        /// Lock file that could not be taken.
+        path: PathBuf,
+    },
     /// Stored hash bytes are not 32 bytes long.
     #[error("stored hash has invalid length: {len} bytes, expected 32")]
     InvalidHashLength { len: usize },

@@ -35,8 +35,12 @@ pub type SqliteStore = Store<SqliteMeta, FileCas>;
 /// The layout is `<root>/meta.sqlite` plus `<root>/blobs/`; initializing an
 /// existing store again is idempotent. This is the only path that
 /// materializes a store, reserved for backup runs.
+///
+/// Creation runs under the writer lock: two first backups racing on an
+/// empty root would otherwise both try to create the schema.
 pub async fn init_sqlite(root: impl AsRef<Path>) -> Result<SqliteStore, StorageError> {
     std::fs::create_dir_all(root.as_ref()).map_err(|source| io_error(root.as_ref(), source))?;
+    let _creating = crate::lock::lock_store(root.as_ref(), crate::lock::StoreLockMode::Writer)?;
     connect_sqlite(root).await
 }
 
@@ -679,6 +683,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[tokio::test]
+    async fn init_refuses_while_another_writer_holds_the_store() {
+        let dir = tempdir("init-locked");
+        let held = crate::lock::lock_store(&dir, crate::lock::StoreLockMode::Writer).unwrap();
+        assert!(matches!(
+            init_sqlite(&dir).await,
+            Err(StorageError::StoreLocked { .. })
+        ));
+        assert!(!dir.join("meta.sqlite").exists());
+        drop(held);
+        // Creation releases its lock, so the store is usable afterwards.
+        init_sqlite(&dir).await.unwrap();
+        crate::lock::lock_store(&dir, crate::lock::StoreLockMode::Exclusive).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
