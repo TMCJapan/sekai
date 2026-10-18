@@ -36,11 +36,14 @@ impl WorldLock {
     /// Lock the file at `path` in `mode`, failing immediately with
     /// [`io::ErrorKind::WouldBlock`] when another holder conflicts.
     ///
-    /// A shared lock degrades to `Ok(None)` (unguarded) when the file can
-    /// be neither created nor opened, so read-only worlds - snapshot
-    /// mounts, backup users without write access - stay readable. An
-    /// exclusive lock is taken only by operations that write the world
-    /// anyway, so failing to create its file is an error.
+    /// A shared lock degrades to `Ok(None)` (unguarded) only for read-only
+    /// worlds - snapshot mounts, backup users without write access - where
+    /// the file is absent and cannot be created; an existing one is locked
+    /// through a read-only handle. Any other failure, including an existing
+    /// file this user cannot open, is an error: silently running unguarded
+    /// would let a reader overlap another user's rollback. An exclusive lock
+    /// is taken only by operations that write the world anyway, so failing
+    /// to create its file is always an error.
     pub fn acquire(path: impl AsRef<Path>, mode: WorldLockMode) -> io::Result<Option<Self>> {
         let path = path.as_ref();
         let opened = OpenOptions::new()
@@ -49,18 +52,16 @@ impl WorldLock {
             .create(true)
             .truncate(false)
             .open(path);
-        let file = match (opened, mode) {
-            (Ok(file), _) => file,
-            (Err(source), WorldLockMode::Exclusive) => {
-                return Err(io::Error::new(
-                    source.kind(),
-                    format!("failed to open world lock {}: {source}", path.display()),
-                ));
+        let file = match opened {
+            Ok(file) => file,
+            Err(source) if mode == WorldLockMode::Shared && is_read_only(&source) => {
+                match File::open(path) {
+                    Ok(file) => file,
+                    Err(missing) if missing.kind() == io::ErrorKind::NotFound => return Ok(None),
+                    Err(source) => return Err(open_failed(path, &source)),
+                }
             }
-            (Err(_), WorldLockMode::Shared) => match File::open(path) {
-                Ok(file) => file,
-                Err(_) => return Ok(None),
-            },
+            Err(source) => return Err(open_failed(path, &source)),
         };
         let locked = match mode {
             WorldLockMode::Shared => file.try_lock_shared(),
@@ -78,6 +79,21 @@ impl WorldLock {
             Err(TryLockError::Error(source)) => Err(source),
         }
     }
+}
+
+/// Whether a failed create means the world cannot be written at all.
+fn is_read_only(err: &io::Error) -> bool {
+    matches!(
+        err.kind(),
+        io::ErrorKind::PermissionDenied | io::ErrorKind::ReadOnlyFilesystem
+    )
+}
+
+fn open_failed(path: &Path, source: &io::Error) -> io::Error {
+    io::Error::new(
+        source.kind(),
+        format!("failed to open world lock {}: {source}", path.display()),
+    )
 }
 
 impl Drop for WorldLock {
@@ -132,54 +148,62 @@ mod tests {
     }
 
     #[test]
-    fn a_writer_needs_a_lock_file() {
+    fn a_missing_world_is_an_error_not_a_read_only_one() {
         let root = temp_root("missing");
         let path = root.join("absent").join(WorldLock::FILE_NAME);
-        assert!(
-            WorldLock::acquire(&path, WorldLockMode::Shared)
-                .unwrap()
-                .is_none()
-        );
+        assert!(WorldLock::acquire(&path, WorldLockMode::Shared).is_err());
         assert!(WorldLock::acquire(&path, WorldLockMode::Exclusive).is_err());
         let _ = fs::remove_dir_all(&root);
     }
 
     #[cfg(unix)]
     #[test]
-    fn read_only_worlds_stay_readable() {
+    fn read_only_worlds_stay_readable_and_still_exclude() {
         use std::os::unix::fs::PermissionsExt as _;
 
         let root = temp_root("read-only");
         let existing = root.join("existing");
         let fresh = root.join("fresh");
-        fs::create_dir_all(&existing).unwrap();
-        fs::create_dir_all(&fresh).unwrap();
-        fs::write(existing.join(WorldLock::FILE_NAME), "").unwrap();
-        for dir in [&existing, &fresh] {
+        let unreadable = root.join("unreadable");
+        for dir in [&existing, &fresh, &unreadable] {
+            fs::create_dir_all(dir).unwrap();
+        }
+        let existing_lock = existing.join(WorldLock::FILE_NAME);
+        let unreadable_lock = unreadable.join(WorldLock::FILE_NAME);
+        // Taken before the world turns read-only: another user's rollback.
+        let writer = WorldLock::acquire(&existing_lock, WorldLockMode::Exclusive)
+            .unwrap()
+            .unwrap();
+        fs::write(&unreadable_lock, "").unwrap();
+        fs::set_permissions(&existing_lock, fs::Permissions::from_mode(0o444)).unwrap();
+        fs::set_permissions(&unreadable_lock, fs::Permissions::from_mode(0o000)).unwrap();
+        for dir in [&existing, &fresh, &unreadable] {
             fs::set_permissions(dir, fs::Permissions::from_mode(0o555)).unwrap();
         }
-        fs::set_permissions(
-            existing.join(WorldLock::FILE_NAME),
-            fs::Permissions::from_mode(0o444),
-        )
-        .unwrap();
 
         // Privileged users ignore permission bits; nothing to observe then.
         if fs::write(fresh.join("probe"), "").is_err() {
-            let lock =
-                WorldLock::acquire(existing.join(WorldLock::FILE_NAME), WorldLockMode::Shared);
-            assert!(
-                lock.unwrap().is_some(),
-                "an existing lock file is still honored"
+            let err = WorldLock::acquire(&existing_lock, WorldLockMode::Shared).unwrap_err();
+            assert_eq!(
+                err.kind(),
+                io::ErrorKind::WouldBlock,
+                "a read-only handle still sees the holder"
             );
+            drop(writer);
+            let lock = WorldLock::acquire(&existing_lock, WorldLockMode::Shared).unwrap();
+            assert!(lock.is_some(), "an existing lock file is still locked");
             let lock = WorldLock::acquire(fresh.join(WorldLock::FILE_NAME), WorldLockMode::Shared);
             assert!(
                 lock.unwrap().is_none(),
                 "no lock file degrades to unguarded"
             );
+            assert!(
+                WorldLock::acquire(&unreadable_lock, WorldLockMode::Shared).is_err(),
+                "a lock file this user cannot open never degrades"
+            );
         }
 
-        for dir in [&existing, &fresh] {
+        for dir in [&existing, &fresh, &unreadable] {
             fs::set_permissions(dir, fs::Permissions::from_mode(0o755)).unwrap();
         }
         let _ = fs::remove_dir_all(&root);

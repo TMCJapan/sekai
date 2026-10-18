@@ -40,7 +40,9 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
     ///
     /// `Ok(None)` means the operation runs unguarded. That is the default,
     /// so an implementation that keeps it shares no exclusion with other
-    /// processes; [`WorldLock::acquire`] provides the file-lock form.
+    /// processes; [`WorldLock::acquire`] provides the file-lock form, which
+    /// reports contention as [`std::io::ErrorKind::WouldBlock`] so callers
+    /// can tell "busy, retry" from a real failure.
     fn lock(&self, _mode: WorldLockMode) -> Result<Option<WorldLock>, Self::Error> {
         Ok(None)
     }
