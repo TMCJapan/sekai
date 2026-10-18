@@ -15,6 +15,7 @@
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sekai_core::usecase::backup::Ingested;
@@ -22,11 +23,11 @@ use sekai_core::{
     Assembled, BackupReport, ChunkCoord, Observation, Previous, RegionFingerprint, RegionKey,
     Scope, SnapshotEntry, SnapshotId,
 };
-use sekai_storage::FileCas;
-use sekai_world::{RegionRef, WorldTree};
+use sekai_storage::{FileCas, StoreLockMode};
+use sekai_world::{RegionRef, WorldLockMode, WorldTree};
 
 use crate::error::AppError;
-use crate::instance::{WorldHandle, WorldHandleMut};
+use crate::instance::{OperationLocks, WorldHandle, WorldHandleMut};
 
 /// Backup behavior knobs.
 #[derive(Debug, Clone, Default)]
@@ -182,10 +183,15 @@ where
         progress: impl Fn(BackupProgress) + Send,
     ) -> Result<(BackupReport, BackupTimings), AppError> {
         let total = Instant::now();
-        let store = &mut self.instance.store;
         // Held for the whole run: blobs reach the CAS before the rows that
         // reference them, so `gc` must not scan in that window.
-        let _run = store.cas().begin_run()?;
+        let locks = OperationLocks::acquire(
+            self.instance,
+            StoreLockMode::Writer,
+            self.world,
+            WorldLockMode::Shared,
+        )?;
+        let store = &mut self.instance.store;
 
         let Prepared {
             previous,
@@ -194,7 +200,7 @@ where
             discover,
             fingerprint,
             universe_load,
-        } = prepare(store, self.world, &options, &scope, progress, false).await?;
+        } = prepare(store, self.world, &options, &scope, progress, false, &locks).await?;
 
         let now_ms = now_ms()?;
         // Persist batched shard-directory renames before the metadata commit:
@@ -253,6 +259,7 @@ async fn prepare<T: WorldTree>(
     scope: &Scope,
     progress: impl Fn(BackupProgress) + Send,
     dry_run: bool,
+    locks: &Arc<OperationLocks>,
 ) -> Result<Prepared, AppError>
 where
     AppError: From<T::Error>,
@@ -292,6 +299,7 @@ where
         scope.clone(),
         progress,
         dry_run,
+        locks,
     )
     .await?;
     let staged = sekai_core::usecase::backup::assemble(plan, &previous, ingested, scope);
@@ -323,7 +331,21 @@ where
         scope: Scope,
         progress: impl Fn(BackupProgress) + Send,
     ) -> Result<(StatusReport, StatusTimings), AppError> {
-        status_impl(&self.instance.store, self.world, options, scope, progress).await
+        let locks = OperationLocks::acquire(
+            self.instance,
+            StoreLockMode::Shared,
+            self.world,
+            WorldLockMode::Shared,
+        )?;
+        status_impl(
+            &self.instance.store,
+            self.world,
+            options,
+            scope,
+            progress,
+            &locks,
+        )
+        .await
     }
 }
 
@@ -349,6 +371,7 @@ async fn status_impl<T: WorldTree>(
     options: StatusOptions,
     scope: Scope,
     progress: impl Fn(BackupProgress) + Send,
+    locks: &Arc<OperationLocks>,
 ) -> Result<(StatusReport, StatusTimings), AppError>
 where
     AppError: From<T::Error>,
@@ -367,7 +390,7 @@ where
         discover,
         fingerprint,
         universe_load,
-    } = prepare(store, world, &preview, &scope, progress, true).await?;
+    } = prepare(store, world, &preview, &scope, progress, true, locks).await?;
 
     let new_files = staged
         .fingerprints
@@ -498,6 +521,8 @@ struct IngestTimings {
 /// returning, so joining orders every durability barrier ahead of the
 /// metadata commit. The commit itself stays a single transaction; row merge
 /// order across workers is completion-order (DB-irrelevant, one txn).
+/// Each worker keeps `locks` alive until it returns, so a cancelled backup
+/// cannot hand the store to `gc` while blobs are still being written.
 async fn ingest_changed(
     changed: Vec<Changed>,
     cas_root: impl AsRef<Path>,
@@ -505,6 +530,7 @@ async fn ingest_changed(
     scope: Scope,
     progress: impl Fn(BackupProgress) + Send,
     dry_run: bool,
+    locks: &Arc<OperationLocks>,
 ) -> Result<(Ingested, IngestTimings), AppError> {
     let mut walk = RegionWalk {
         timings: Vec::with_capacity(changed.len()),
@@ -530,7 +556,9 @@ async fn ingest_changed(
         let with_diff = options.with_diff;
         let ignore_tags = options.ignore_tags.clone();
         let scope = scope.clone();
+        let locks = Arc::clone(locks);
         set.spawn_blocking(move || {
+            let _locks = locks;
             ingest_group(
                 group,
                 &cas_root,

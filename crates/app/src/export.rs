@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use sekai_core::{BlobHash, ChunkCoord, RegionKey, Scope, SnapshotId};
-use sekai_storage::FileCas;
+use sekai_storage::{FileCas, StoreLock, StoreLockMode};
 use sekai_world::WorldTree;
 
 use crate::error::AppError;
@@ -78,6 +78,9 @@ impl SekaiInstance {
     where
         AppError: From<T::Error>,
     {
+        // `out` stays unlocked: it is new and empty by contract, so nothing
+        // else has a reason to touch it.
+        let lock = self.lock_store(StoreLockMode::Shared)?;
         let total_started = Instant::now();
 
         if !out.is_empty()? {
@@ -106,6 +109,7 @@ impl SekaiInstance {
             options,
             cas: store.cas().clone(),
             out: out.clone(),
+            _lock: lock,
         };
 
         let files_started = Instant::now();
@@ -129,6 +133,9 @@ struct ExportJob<T: WorldTree> {
     options: ExportOptions,
     cas: FileCas,
     out: T,
+    /// Owned by the file pass so a cancelled export keeps `prune` out
+    /// until it stops reading blobs.
+    _lock: StoreLock,
 }
 
 /// Rebuild every snapshot region file under `out`. Blocking: file reads,
@@ -146,6 +153,7 @@ where
         options,
         cas,
         out,
+        _lock,
     } = job;
 
     let mut report = ExportReport {

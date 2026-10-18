@@ -6,10 +6,11 @@ use sekai_core::{
     BlobHash, BlobStore as _, ChunkCoord, DEFAULT_IGNORED, MetaStore, NbtDiffEntry, SnapshotId,
     diff_nbt,
 };
-use sekai_world::WorldTree;
+use sekai_storage::StoreLockMode;
+use sekai_world::{WorldLockMode, WorldTree};
 
 use crate::error::AppError;
-use crate::instance::{SekaiInstance, WorldHandle, WorldHandleMut};
+use crate::instance::{OperationLocks, SekaiInstance, WorldHandle, WorldHandleMut};
 
 /// Per-phase timings for chunk AST diffs. Informational only; never
 /// changes diff semantics.
@@ -33,6 +34,7 @@ impl SekaiInstance {
         new_hash: &BlobHash,
         ignore: Option<&[&str]>,
     ) -> Result<Vec<NbtDiffEntry>, AppError> {
+        let _lock = self.lock_store(StoreLockMode::Shared)?;
         let ignore_set = ignore.unwrap_or(DEFAULT_IGNORED);
 
         let mut old_compressed = Vec::new();
@@ -144,6 +146,7 @@ impl SekaiInstance {
         ignore: Option<&[&str]>,
         progress: impl FnMut(DiffProgress) + Send,
     ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
+        let _lock = self.lock_store(StoreLockMode::Shared)?;
         let total_started = Instant::now();
         let ignore_set = ignore.unwrap_or(DEFAULT_IGNORED);
         let mut timings = DiffTimings::default();
@@ -171,6 +174,7 @@ impl SekaiInstance {
         &self,
         snapshot: SnapshotId,
     ) -> Result<Vec<ChunkCoord>, AppError> {
+        let _lock = self.lock_store(StoreLockMode::Shared)?;
         let mut coords = Vec::new();
         self.store
             .meta()
@@ -188,6 +192,7 @@ pub fn world_chunk_coords<T: WorldTree>(world: &T) -> Result<Vec<ChunkCoord>, Ap
 where
     AppError: From<T::Error>,
 {
+    let _lock = world.lock(WorldLockMode::Shared)?;
     let mut coords = Vec::new();
     for region in world.discover()? {
         let bytes = sekai_world::open_image(&region.path)?;
@@ -274,6 +279,12 @@ where
         ignore: Option<&[&str]>,
         progress: impl FnMut(DiffProgress) + Send,
     ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
+        let _locks = OperationLocks::acquire(
+            self.instance,
+            StoreLockMode::Shared,
+            self.world,
+            WorldLockMode::Shared,
+        )?;
         let total_started = Instant::now();
         let snapshot_id = match snapshot {
             Some(id) => id,

@@ -14,14 +14,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use sekai_core::{BlobHash, ChunkCoord, RegionKey, RollbackReport, Scope, SnapshotId};
-use sekai_storage::FileCas;
-use sekai_world::WorldTree;
+use sekai_storage::{FileCas, StoreLockMode};
+use sekai_world::{WorldLockMode, WorldTree};
 
 use crate::error::AppError;
-use crate::instance::WorldHandleMut;
+use crate::instance::{OperationLocks, WorldHandleMut};
 
 /// Per-phase timings for rollback execution.
 #[derive(Debug, Clone, Default)]
@@ -112,6 +113,12 @@ where
         scope: Scope,
         progress: impl Fn(RollbackProgress) + Send + 'static,
     ) -> Result<(RollbackReport, RollbackTimings), AppError> {
+        let locks = OperationLocks::acquire(
+            self.instance,
+            StoreLockMode::Shared,
+            self.world,
+            WorldLockMode::Exclusive,
+        )?;
         let store = &self.instance.store;
         let world = &*self.world;
         let total_started = Instant::now();
@@ -160,6 +167,7 @@ where
             cas: store.cas().clone(),
             world: world.clone(),
             discovered,
+            _locks: locks,
         };
 
         let files_started = Instant::now();
@@ -186,6 +194,9 @@ struct RollbackJob<T> {
     cas: FileCas,
     world: T,
     discovered: BTreeMap<RegionKey, PathBuf>,
+    /// Owned by the file pass: it keeps writing after a cancelled future
+    /// is dropped, and must keep the world locked until it stops.
+    _locks: Arc<OperationLocks>,
 }
 
 /// Rebuild every region file: present rows from CAS blobs, tombstones and
@@ -207,6 +218,7 @@ where
         cas,
         world,
         discovered,
+        _locks,
     } = job;
     let mut keys: BTreeSet<RegionKey> = discovered.keys().copied().collect();
     keys.extend(groups.keys().copied());

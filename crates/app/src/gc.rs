@@ -3,6 +3,7 @@
 use std::time::{Duration, Instant};
 
 use sekai_core::{GcPlan, GcReport};
+use sekai_storage::StoreLockMode;
 
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
@@ -31,7 +32,11 @@ impl SekaiInstance {
     /// Inspect the store and return a plan of unreferenced orphan blobs,
     /// additionally returning per-phase timings (`apply` is zero: dry-run
     /// never unlinks).
+    ///
+    /// Refuses while a backup runs: its blobs reach the CAS before the rows
+    /// that reference them, so the plan would list them as orphans.
     pub async fn gc_plan(&self) -> Result<(GcPlan, GcTimings), AppError> {
+        let _lock = self.lock_store(StoreLockMode::Writer)?;
         let total_started = Instant::now();
         let (plan, plan_dt) = plan_within(self.store()).await?;
         let timings = GcTimings {
@@ -49,6 +54,7 @@ impl SekaiInstance {
         plan: &GcPlan,
         progress: impl FnMut(GcProgress) + Send,
     ) -> Result<(GcReport, GcTimings), AppError> {
+        let _lock = self.lock_store(StoreLockMode::Writer)?;
         let total_started = Instant::now();
         let (report, apply_dt) = apply_within(self.store_mut(), plan, progress).await?;
         let timings = GcTimings {
@@ -65,6 +71,9 @@ impl SekaiInstance {
         &mut self,
         progress: impl FnMut(GcProgress) + Send,
     ) -> Result<(GcReport, GcTimings), AppError> {
+        // One lock across both phases: a backup slipping in between would
+        // put blobs into the CAS that this very plan calls orphaned.
+        let _lock = self.lock_store(StoreLockMode::Writer)?;
         let total_started = Instant::now();
         let (plan, plan_dt) = plan_within(self.store()).await?;
         let (report, apply_dt) = apply_within(self.store_mut(), &plan, progress).await?;
@@ -77,9 +86,8 @@ impl SekaiInstance {
     }
 }
 
-/// Build the orphan plan against an open store, refusing a busy one.
+/// Build the orphan plan against an open store.
 async fn plan_within(store: &sekai_storage::SqliteStore) -> Result<(GcPlan, Duration), AppError> {
-    store.cas().ensure_idle()?;
     let started = Instant::now();
     let plan = sekai_core::usecase::gc::gc_plan(store.cas(), store.meta())
         .await
@@ -88,16 +96,11 @@ async fn plan_within(store: &sekai_storage::SqliteStore) -> Result<(GcPlan, Dura
 }
 
 /// Unlink `plan`'s orphans against an open store.
-///
-/// The busy check repeats here rather than trusting the planning pass: a
-/// backup that started in between would have put blobs into the CAS that
-/// this very plan calls orphaned.
 async fn apply_within(
     store: &mut sekai_storage::SqliteStore,
     plan: &GcPlan,
     mut progress: impl FnMut(GcProgress) + Send,
 ) -> Result<(GcReport, Duration), AppError> {
-    store.cas().ensure_idle()?;
     let started = Instant::now();
     let (cas, meta) = store.cas_and_meta();
     let report = sekai_core::usecase::gc::gc_apply(cas, meta, plan, |done, total| {
