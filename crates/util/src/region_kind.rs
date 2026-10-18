@@ -1,4 +1,8 @@
 //! Region family codes and their on-disk directory names.
+//!
+//! Codes are exactly `0` (`region`), `1` (`entities`), and `2` (`poi`).
+//! Anything else fails as [`UnknownRegionKind`]: an unknown family is never
+//! representable and never round-trips silently.
 
 use core::{fmt, str::FromStr};
 
@@ -11,6 +15,7 @@ pub enum RegionKind {
 }
 
 impl RegionKind {
+    /// Resolve a raw code (`0`/`1`/`2`); other codes are rejected.
     pub const fn new(id: i32) -> Result<Self, UnknownRegionKind> {
         match id {
             0 => Ok(Self::Region),
@@ -20,6 +25,7 @@ impl RegionKind {
         }
     }
 
+    /// Raw code (`0`/`1`/`2`) for metadata columns and JSON output.
     pub const fn raw(self) -> u8 {
         match self {
             Self::Region => 0,
@@ -101,6 +107,11 @@ mod tests {
         assert_eq!(RegionKind::Region.raw(), 0);
         assert_eq!(RegionKind::Entities.raw(), 1);
         assert_eq!(RegionKind::Poi.raw(), 2);
-        assert_eq!(RegionKind::new(0).unwrap().raw(), 0);
+        for kind in [RegionKind::Region, RegionKind::Entities, RegionKind::Poi] {
+            assert_eq!(RegionKind::new(i32::from(kind.raw())), Ok(kind));
+        }
+        for code in [-1, 3, i32::MAX] {
+            assert_eq!(RegionKind::new(code), Err(UnknownRegionKind));
+        }
     }
 }

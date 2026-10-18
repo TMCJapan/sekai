@@ -864,4 +864,27 @@ mod tests {
             Err(StorageError::UnknownRegionKind { kind: 9 })
         ));
     }
+
+    #[tokio::test]
+    async fn unknown_region_state_kind_fails_loudly() {
+        use sekai_core::MetaStore as _;
+        let mut meta = memory_meta().await;
+        let fingerprint = RegionFingerprint {
+            key: RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0),
+            mtime_ms: Some(1),
+            size: 8192,
+            content_hash: [7; 32],
+        };
+        meta.apply_snapshot_incremental(1_000, &[], None, &[fingerprint], &[])
+            .await
+            .unwrap();
+        sqlx::query("UPDATE region_state SET kind = 9")
+            .execute(&meta.pool)
+            .await
+            .unwrap();
+        assert!(matches!(
+            meta.load_region_states().await,
+            Err(StorageError::UnknownRegionKind { kind: 9 })
+        ));
+    }
 }
