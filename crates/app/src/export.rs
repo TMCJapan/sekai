@@ -61,7 +61,9 @@ impl SekaiInstance {
     /// report and per-phase timings.
     ///
     /// `out` is created when missing and must otherwise be empty; anything
-    /// else fails loudly so export can never clobber existing data. Its
+    /// else fails loudly so export can never clobber existing data. Nothing
+    /// locks `out`, so it must be dedicated to this export: a writer that
+    /// starts there after the emptiness check is not excluded. Its
     /// layout comes from how it was constructed (for example
     /// `HostWorldTree::new_legacy` or `HostWorldTree::new_bukkit`). Only
     /// `scope` is exported. `progress` fires as files complete; it must be

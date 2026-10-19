@@ -56,6 +56,12 @@ impl SekaiInstance {
 
     /// Execute a pruning plan, deleting snapshots oldest-first.
     /// `progress` fires per deleted snapshot.
+    ///
+    /// A plan from an earlier [`Self::prune_plan`] call stays applicable
+    /// after backups, which only add newer snapshots. If another prune
+    /// retired one of its snapshots first, applying fails with an
+    /// unknown-snapshot error rather than folding into the wrong one.
+    /// [`Self::prune`] plans and applies under one lock.
     pub async fn prune_apply(
         &mut self,
         plan: &PrunePlan,
