@@ -26,7 +26,13 @@ fn cleanup(dir: impl AsRef<Path>) {
 
 /// Minimal one-chunk region image bytes.
 fn one_chunk_image() -> Vec<u8> {
-    let mut builder = sekai_anvil::RegionBuilder::new(0, 0, 0).unwrap();
+    one_chunk_image_at(0)
+}
+
+/// The same image with a different timestamp: two files that differ by
+/// content while both stay valid region images.
+fn one_chunk_image_at(timestamp: u32) -> Vec<u8> {
+    let mut builder = sekai_anvil::RegionBuilder::new(0, 0, timestamp).unwrap();
     builder.stage_chunk(0, 0, &[2, 1, 2, 3]).unwrap();
     builder.image().unwrap()
 }
@@ -895,10 +901,12 @@ fn duplicate_coordinate_names_resolve_to_one_canonical_key() {
     // spelling, independent of directory iteration order.
     let root_path = tempdir("dup-coords");
     let root = HostWorldTree::new(&root_path).unwrap();
-    let mut second = one_chunk_image();
-    second[8192 + 4] = 7;
-    write(root_path.join("region/r.0.0.mca"), &one_chunk_image());
-    write(root_path.join("region/r.00.00.mca"), &second);
+    // The two spellings hold different content, so the winner is pinned by
+    // its bytes and not only by its name.
+    let canonical = one_chunk_image();
+    let alternate = one_chunk_image_at(1);
+    write(root_path.join("region/r.0.0.mca"), &canonical);
+    write(root_path.join("region/r.00.00.mca"), &alternate);
 
     let found = discover(&root);
     assert_eq!(found.len(), 1);
@@ -906,6 +914,18 @@ fn duplicate_coordinate_names_resolve_to_one_canonical_key() {
     assert_eq!(
         found[0].0,
         RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0)
+    );
+    assert_ne!(
+        sekai_anvil::content_hash(&canonical),
+        sekai_anvil::content_hash(&alternate),
+        "the two spellings must differ for the winner to mean anything"
+    );
+    assert_eq!(
+        fingerprint_file(&found[0].1, found[0].0)
+            .unwrap()
+            .content_hash,
+        sekai_anvil::content_hash(&canonical),
+        "the surviving file is the canonically spelled one, byte for byte"
     );
     for _ in 0..8 {
         let again = discover(&root);
