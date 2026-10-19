@@ -141,10 +141,13 @@ where
         tombstones.retain(|key, _| scope.matches_region(*key));
 
         // Discovery walks the filesystem: clone the handle and run it on
-        // the blocking pool.
+        // the blocking pool, owning a share of the locks like every
+        // blocking pass.
         let discover_started = Instant::now();
         let world_handle = world.clone();
+        let discovery_locks = Arc::clone(&locks);
         let mut discovered = tokio::task::spawn_blocking(move || {
+            let _locks = discovery_locks;
             let mut discovered: BTreeMap<RegionKey, PathBuf> = BTreeMap::new();
             for dim in world_handle.get_dims()? {
                 for r in world_handle.get_regions(dim)? {

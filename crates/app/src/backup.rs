@@ -265,9 +265,15 @@ where
     AppError: From<T::Error>,
 {
     // Whole-world observation walks and opens files: clone the handle and
-    // run it on the blocking pool.
+    // run it on the blocking pool, owning a share of the locks like every
+    // blocking pass.
     let world_handle = world.clone();
-    let observed = tokio::task::spawn_blocking(move || observe(&world_handle)).await??;
+    let observe_locks = Arc::clone(locks);
+    let observed = tokio::task::spawn_blocking(move || {
+        let _locks = observe_locks;
+        observe(&world_handle)
+    })
+    .await??;
     let discover = observed.discover;
     let fingerprint = observed.fingerprint;
 
