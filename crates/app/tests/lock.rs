@@ -162,7 +162,21 @@ impl Op {
             Self::GcPlan | Self::GcApply | Self::Gc | Self::Backup => Some(Writer),
             Self::PruneApply | Self::Prune => Some(Exclusive),
             Self::WorldChunkCoords => None,
-            _ => Some(Shared),
+            Self::ListSnapshots
+            | Self::LatestSnapshot
+            | Self::ListTags
+            | Self::CreateTag
+            | Self::DeleteTag
+            | Self::ResolveRef
+            | Self::SnapshotStats
+            | Self::SnapshotCoords
+            | Self::DiffBlobs
+            | Self::DiffChunks
+            | Self::Export
+            | Self::PrunePlan
+            | Self::Status
+            | Self::DiffWorld
+            | Self::Rollback => Some(Shared),
         }
     }
 
@@ -172,7 +186,23 @@ impl Op {
                 Some(WorldLockMode::Shared)
             }
             Self::Rollback => Some(WorldLockMode::Exclusive),
-            _ => None,
+            Self::ListSnapshots
+            | Self::LatestSnapshot
+            | Self::ListTags
+            | Self::CreateTag
+            | Self::DeleteTag
+            | Self::ResolveRef
+            | Self::SnapshotStats
+            | Self::SnapshotCoords
+            | Self::DiffBlobs
+            | Self::DiffChunks
+            | Self::Export
+            | Self::GcPlan
+            | Self::GcApply
+            | Self::Gc
+            | Self::PrunePlan
+            | Self::PruneApply
+            | Self::Prune => None,
         }
     }
 
@@ -267,6 +297,17 @@ fn assert_locked_out(blocked: bool, outcome: &Result<(), sekai_app::AppError>, c
 
 const fn store_compatible(held: StoreLockMode, wanted: StoreLockMode) -> bool {
     matches!((held, wanted), (Shared, Shared | Writer) | (Writer, Shared))
+}
+
+#[tokio::test]
+async fn every_operation_succeeds_with_nothing_held() {
+    // The baseline for both matrices: a failure there is a lock decision,
+    // never a fixture that cannot run the operation at all.
+    let mut fx = Fixture::new("baseline").await;
+    for op in Op::ALL {
+        let outcome = op.run(&mut fx).await;
+        assert_locked_out(false, &outcome, &format!("{op:?} with nothing held"));
+    }
 }
 
 #[tokio::test]
