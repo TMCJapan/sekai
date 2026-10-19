@@ -21,7 +21,7 @@ use sekai_core::{BlobHash, ChunkCoord, RegionKey, RegionKind, RollbackReport, Sc
 use sekai_storage::FileCas;
 use sekai_world::WorldTree;
 
-use crate::error::AppError;
+use crate::error::{AppError, duplicate_region};
 use crate::instance::WorldHandleMut;
 
 /// Per-phase timings for rollback execution.
@@ -150,14 +150,7 @@ where
                                 entry.insert(path);
                             }
                             Entry::Occupied(entry) => {
-                                return Err(AppError::Io(std::io::Error::new(
-                                    std::io::ErrorKind::InvalidData,
-                                    format!(
-                                        "world tree enumerated region {key:?} twice ({} and {})",
-                                        entry.get().display(),
-                                        path.display(),
-                                    ),
-                                )));
+                                return Err(duplicate_region(&key, entry.get(), &path));
                             }
                         }
                     }

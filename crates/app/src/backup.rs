@@ -25,7 +25,7 @@ use sekai_core::{
 use sekai_storage::FileCas;
 use sekai_world::WorldTree;
 
-use crate::error::AppError;
+use crate::error::{AppError, duplicate_region};
 use crate::instance::{WorldHandle, WorldHandleMut};
 
 /// Backup behavior knobs.
@@ -403,22 +403,6 @@ struct Observed {
     files: Vec<(PathBuf, Observation)>,
     discover: Duration,
     fingerprint: Duration,
-}
-
-/// Error for a tree that reports one region identity twice.
-fn duplicate_region(
-    key: &RegionKey,
-    first: impl AsRef<Path>,
-    second: impl AsRef<Path>,
-) -> AppError {
-    AppError::Io(std::io::Error::new(
-        std::io::ErrorKind::InvalidData,
-        format!(
-            "world tree enumerated region {key:?} twice ({} and {})",
-            first.as_ref().display(),
-            second.as_ref().display()
-        ),
-    ))
 }
 
 /// Discover every region file and fingerprint it. Blocking: file walks and

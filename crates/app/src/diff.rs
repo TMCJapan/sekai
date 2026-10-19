@@ -1,6 +1,7 @@
 //! Chunk AST diff operations over CAS and metadata stores.
 
 use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -10,7 +11,7 @@ use sekai_core::{
 };
 use sekai_world::WorldTree;
 
-use crate::error::AppError;
+use crate::error::{AppError, duplicate_region};
 use crate::instance::{SekaiInstance, WorldHandle, WorldHandleMut};
 
 /// Per-phase timings for chunk AST diffs. Informational only; never
@@ -187,15 +188,13 @@ where
     for dim in world.get_dims()? {
         for kind in RegionKind::ALL {
             for (key, path) in world.get_regions(dim, kind)? {
-                if let Some(previous) = regions.insert(key, path.clone()) {
-                    return Err(AppError::Io(std::io::Error::new(
-                        std::io::ErrorKind::InvalidData,
-                        format!(
-                            "world tree enumerated region {key:?} twice ({} and {})",
-                            previous.display(),
-                            path.display()
-                        ),
-                    )));
+                match regions.entry(key) {
+                    Entry::Vacant(entry) => {
+                        entry.insert(path);
+                    }
+                    Entry::Occupied(entry) => {
+                        return Err(duplicate_region(&key, entry.get(), &path));
+                    }
                 }
             }
         }
@@ -365,6 +364,8 @@ impl DiffSource for SnapshotDiff<'_> {
 }
 
 /// One diff run's world side: region paths resolved once, not per chunk.
+/// The set is a snapshot taken when the run starts, so a region created
+/// mid-run is treated as absent until the next diff.
 struct WorldDiff {
     regions: BTreeMap<RegionKey, PathBuf>,
 }

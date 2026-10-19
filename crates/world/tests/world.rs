@@ -79,11 +79,11 @@ fn assert_stable_ids(root: impl AsRef<Path>, found: &[(RegionKey, PathBuf)]) {
     let reopened = discover(&HostWorldTree::new(root).unwrap());
     let mut once: Vec<_> = found
         .iter()
-        .map(|(key, path)| (path.clone(), key.dim))
+        .map(|(key, path)| (path.clone(), *key))
         .collect();
     let mut again: Vec<_> = reopened
         .iter()
-        .map(|(key, path)| (path.clone(), key.dim))
+        .map(|(key, path)| (path.clone(), *key))
         .collect();
     once.sort();
     again.sort();
@@ -109,7 +109,7 @@ fn dim_paths(root: impl AsRef<Path>) -> BTreeMap<Dimension, PathBuf> {
     for (key, path) in discover(&HostWorldTree::new(root).unwrap()) {
         assert!(
             paths.insert(key.dim, path).is_none(),
-            "fixtures hold one region file per dimension"
+            "fixtures hold one region file per dimension (duplicate: {key:?})"
         );
     }
     paths
@@ -903,6 +903,10 @@ fn duplicate_coordinate_names_resolve_to_one_canonical_key() {
     let found = discover(&root);
     assert_eq!(found.len(), 1);
     assert_eq!(found[0].1, root_path.join("region/r.0.0.mca"));
+    assert_eq!(
+        found[0].0,
+        RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0)
+    );
     for _ in 0..8 {
         let again = discover(&root);
         assert_eq!(again.len(), 1);
@@ -955,22 +959,43 @@ fn unresolvable_entries_are_skipped_not_fatal() {
 }
 
 #[test]
-fn regions_are_ordered_by_coordinates() {
-    // Region enumeration walks each kind directory and reports keys in
-    // ascending coordinates, not file-name order (`r.10.0.mca` sorts
-    // before `r.2.0.mca` lexicographically).
+fn regions_are_ordered_by_kind_and_coordinates() {
+    // Region enumeration reports keys in ascending coordinates within a
+    // kind, not file-name order (`r.10.0.mca` sorts before `r.2.0.mca`
+    // lexicographically), and the kind walk follows `RegionKind::ALL`.
     let world_path = tempdir("region-order");
     let image = one_chunk_image();
     for name in ["r.10.0.mca", "r.2.0.mca", "r.-1.0.mca"] {
         write(world_path.join("region").join(name), &image);
     }
+    write(world_path.join("entities/r.5.0.mca"), &image);
+    write(world_path.join("poi/r.6.0.mca"), &image);
 
     let world = HostWorldTree::new(&world_path).unwrap();
-    let keys = world
-        .get_regions(Dimension::OVERWORLD, RegionKind::Region)
-        .unwrap();
-    let coords: Vec<_> = keys.iter().map(|(key, _)| (key.rx, key.rz)).collect();
-    assert_eq!(coords, [(-1, 0), (2, 0), (10, 0)]);
+    let expected = [
+        (RegionKind::Region, vec![(-1, 0), (2, 0), (10, 0)]),
+        (RegionKind::Entities, vec![(5, 0)]),
+        (RegionKind::Poi, vec![(6, 0)]),
+    ];
+    for (kind, coords) in expected {
+        let keys = world.get_regions(Dimension::OVERWORLD, kind).unwrap();
+        let actual: Vec<_> = keys.iter().map(|(key, _)| (key.rx, key.rz)).collect();
+        assert_eq!(actual, coords, "kind {kind:?}");
+    }
+    let kinds: Vec<_> = discover(&world)
+        .into_iter()
+        .map(|(key, _)| key.kind)
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            RegionKind::Region,
+            RegionKind::Region,
+            RegionKind::Region,
+            RegionKind::Entities,
+            RegionKind::Poi,
+        ]
+    );
     cleanup(&world_path);
 }
 

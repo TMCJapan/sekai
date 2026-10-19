@@ -1,6 +1,24 @@
 //! Composition failures with their source attached.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use sekai_core::RegionKey;
+
+/// Failure for a world tree that reports one region identity twice.
+pub(crate) fn duplicate_region(
+    key: &RegionKey,
+    first: impl AsRef<Path>,
+    second: impl AsRef<Path>,
+) -> AppError {
+    AppError::Io(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!(
+            "world tree enumerated region {key:?} twice ({} and {})",
+            first.as_ref().display(),
+            second.as_ref().display()
+        ),
+    ))
+}
 
 /// Failures while backing up, rolling back, or listing snapshots.
 #[derive(Debug, thiserror::Error)]

@@ -56,5 +56,9 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
 
     /// Layout-derived path of one region file, whether or not it exists on
     /// disk yet (export targets, restore targets for missing files).
+    ///
+    /// Output trees may point at roots that do not exist before export, so
+    /// unlike [`WorldTree::get_dims`] this does not require the root to be
+    /// present; callers writing to the result create parent directories.
     fn derive_path(&self, key: RegionKey) -> Result<PathBuf, Self::Error>;
 }
