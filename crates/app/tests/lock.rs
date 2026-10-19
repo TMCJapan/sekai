@@ -7,6 +7,7 @@ use sekai_app::{
     BackupOptions, BlobHash, ExportOptions, HostWorldTree, RollbackOptions, Scope, SekaiInstance,
     SnapshotId, StatusOptions, TagName, WorldLockMode, WorldTree,
 };
+use sekai_core::MetaStore as _;
 use sekai_storage::{StorageError, StoreLockMode};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -41,14 +42,17 @@ struct Fixture {
     world_path: PathBuf,
     world: HostWorldTree,
     instance: SekaiInstance,
+    /// A blob snapshot 1 references, for blob-level operations.
+    blob: BlobHash,
 }
 
 impl Fixture {
     async fn new(name: &str) -> Self {
         let root = tempdir(name);
         let world_path = root.join("world");
-        write_region(world_path.join("region/r.0.0.mca"), &[3, 1, 2, 3]);
-        write_region(world_path.join("region/r.1.0.mca"), &[3, 4, 5, 6]);
+        // Uncompressed (3) empty root compounds: valid chunks that decode.
+        write_region(world_path.join("region/r.0.0.mca"), &[3, 10, 0, 0, 0]);
+        write_region(world_path.join("region/r.1.0.mca"), &[3, 10, 0, 0, 0]);
         let mut world = HostWorldTree::new(&world_path).unwrap();
         let store = root.join("store").to_string_lossy().into_owned();
         let mut instance = SekaiInstance::init(&store).await.unwrap();
@@ -57,11 +61,21 @@ impl Fixture {
             .backup(BackupOptions::default(), Scope::World, |_| {})
             .await
             .unwrap();
+        let coord = instance.snapshot_chunk_coords(SnapshotId(1)).await.unwrap()[0];
+        let blob = instance
+            .store()
+            .meta()
+            .lookup_chunk(SnapshotId(1), &coord)
+            .await
+            .unwrap()
+            .and_then(|entry| entry.blob)
+            .unwrap();
         Self {
             root,
             world_path,
             world,
             instance,
+            blob,
         }
     }
 
@@ -161,8 +175,9 @@ impl Op {
         }
     }
 
-    /// Only whether it failed on a lock matters, so payloads are minimal
-    /// and content errors are fine.
+    /// Payloads are minimal but valid, so an operation the held lock lets
+    /// through must succeed. Prunes keep every snapshot, so the fixture
+    /// stays intact across the matrix.
     async fn run(self, fx: &mut Fixture) -> Result<(), sekai_app::AppError> {
         let id = SnapshotId(1);
         let tag = TagName::parse("held").unwrap();
@@ -180,10 +195,10 @@ impl Op {
             Self::ResolveRef => instance.resolve_snapshot_ref("1").await.map(drop),
             Self::SnapshotStats => instance.snapshot_stats(id).await.map(drop),
             Self::SnapshotCoords => instance.snapshot_chunk_coords(id).await.map(drop),
-            Self::DiffBlobs => {
-                let hash = BlobHash([0; 32]);
-                instance.diff_blobs(&hash, &hash, None).await.map(drop)
-            }
+            Self::DiffBlobs => instance
+                .diff_blobs(&fx.blob, &fx.blob, None)
+                .await
+                .map(drop),
             Self::DiffChunks => instance
                 .diff_chunks(id, id, &[], None, |_| {})
                 .await
@@ -201,7 +216,7 @@ impl Op {
                 instance.gc_apply(&plan, |_| {}).await.map(drop)
             }
             Self::Gc => instance.gc(|_| {}).await.map(drop),
-            Self::PrunePlan => instance.prune_plan(Some(1), None).await.map(drop),
+            Self::PrunePlan => instance.prune_plan(Some(u64::MAX), None).await.map(drop),
             Self::PruneApply => {
                 let plan = sekai_app::PrunePlan {
                     delete: Vec::new(),
@@ -209,7 +224,7 @@ impl Op {
                 };
                 instance.prune_apply(&plan, |_| {}).await.map(drop)
             }
-            Self::Prune => instance.prune(Some(1), None, |_| {}).await.map(drop),
+            Self::Prune => instance.prune(Some(u64::MAX), None, |_| {}).await.map(drop),
             Self::Backup => instance
                 .world_mut(&mut fx.world)
                 .backup(BackupOptions::default(), Scope::World, |_| {})
@@ -235,6 +250,19 @@ impl Op {
     }
 }
 
+/// A blocked operation fails on the lock; any other must succeed outright,
+/// so a content error cannot pass for (or hide) a lock decision.
+fn assert_locked_out(blocked: bool, outcome: &Result<(), sekai_app::AppError>, case: &str) {
+    if blocked {
+        assert!(
+            outcome.as_ref().is_err_and(is_lock_error),
+            "{case}: {outcome:?}"
+        );
+    } else {
+        assert!(outcome.is_ok(), "{case}: {outcome:?}");
+    }
+}
+
 const fn store_compatible(held: StoreLockMode, wanted: StoreLockMode) -> bool {
     matches!((held, wanted), (Shared, Shared | Writer) | (Writer, Shared))
 }
@@ -249,10 +277,10 @@ async fn every_operation_takes_its_store_mode() {
                 .store_mode()
                 .is_some_and(|wanted| !store_compatible(held, wanted));
             let outcome = op.run(&mut fx).await;
-            assert_eq!(
-                outcome.as_ref().is_err_and(is_lock_error),
+            assert_locked_out(
                 blocked,
-                "{op:?} while the store is held {held:?}: {outcome:?}"
+                &outcome,
+                &format!("{op:?} with the store held {held:?}"),
             );
         }
         drop(lock);
@@ -270,19 +298,11 @@ async fn every_operation_takes_its_world_mode() {
                 held == WorldLockMode::Exclusive || wanted == WorldLockMode::Exclusive
             });
             let outcome = op.run(&mut fx).await;
-            assert_eq!(
-                outcome.as_ref().is_err_and(is_lock_error),
+            assert_locked_out(
                 blocked,
-                "{op:?} while the world is held {held:?}: {outcome:?}"
+                &outcome,
+                &format!("{op:?} with the world held {held:?}"),
             );
-            // Content errors pass the check above, so a world operation
-            // that is let through must also succeed.
-            if op.world_mode().is_some() && !blocked {
-                assert!(
-                    outcome.is_ok(),
-                    "{op:?} while the world is held {held:?}: {outcome:?}"
-                );
-            }
         }
         drop(lock);
     }
@@ -329,11 +349,15 @@ async fn a_cancelled_rollback_keeps_the_world_locked_until_its_files_finish() {
         }
     }
     // The future is gone; its file pass is parked in `progress`.
-    assert!(other.lock(WorldLockMode::Exclusive).is_err());
+    assert!(matches!(
+        other.lock(WorldLockMode::Exclusive),
+        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock
+    ));
 
     drop(release);
     let deadline = Instant::now() + Duration::from_secs(10);
-    while other.lock(WorldLockMode::Exclusive).is_err() {
+    while let Err(err) = other.lock(WorldLockMode::Exclusive) {
+        assert_eq!(err.kind(), std::io::ErrorKind::WouldBlock, "{err}");
         assert!(Instant::now() < deadline, "the file pass never released");
         std::thread::sleep(Duration::from_millis(20));
     }
