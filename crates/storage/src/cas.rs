@@ -16,6 +16,7 @@ use core::future::Future;
 use sekai_core::BlobHash;
 
 use crate::api::{StorageError, io_error};
+use crate::lock::{StoreLock, StoreLockMode};
 
 /// Monotonic temp-file disambiguator within this process.
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -71,10 +72,7 @@ impl FileCas {
     }
 
     /// Lock the store root in `mode`; see [`crate::lock`] for the matrix.
-    pub fn lock(
-        &self,
-        mode: crate::lock::StoreLockMode,
-    ) -> Result<crate::lock::StoreLock, StorageError> {
+    pub fn lock(&self, mode: StoreLockMode) -> Result<StoreLock, StorageError> {
         crate::lock::lock_store(&self.root, mode)
     }
 
