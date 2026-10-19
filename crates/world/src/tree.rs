@@ -60,7 +60,8 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
     /// disk yet (export targets, restore targets for missing files).
     ///
     /// Output trees may point at roots that do not exist before export, so
-    /// unlike [`WorldTree::get_dims`] this does not require the root to be
-    /// present; callers writing to the result create parent directories.
+    /// this never touches the filesystem: the dimension only has to be part
+    /// of the layout. Callers writing to the result create parent
+    /// directories.
     fn derive_path(&self, key: RegionKey) -> Result<PathBuf, Self::Error>;
 }
