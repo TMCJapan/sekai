@@ -58,7 +58,7 @@ impl WorldLock {
                 Err(missing) if missing.kind() == io::ErrorKind::NotFound => {
                     return match mode {
                         WorldLockMode::Shared => Ok(None),
-                        WorldLockMode::Exclusive => Err(annotate("open", path, &source)),
+                        WorldLockMode::Exclusive => Err(annotate("create", path, &source)),
                     };
                 }
                 Err(source) => return Err(annotate("open", path, &source)),
