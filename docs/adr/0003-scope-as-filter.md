@@ -30,7 +30,9 @@ clone it.
 
 Scoped→full backup sequences record no spurious tombstones
 (property-tested). Rectangle enumeration cost is the caller's
-responsibility, documented in `docs/json.md`. Files on a scope's
-edge are re-read by every backup that reaches them until a covering
-backup restores their fingerprint; avoiding that would need per-area
-coverage in `region_state`, a schema change not worth its cost yet.
+responsibility, documented in `docs/json.md`. Once a file on a scope's
+edge changes, every scoped backup that reaches it re-reads it and
+re-records rows for its in-scope chunks, and `status` for that scope
+stays dirty, until a covering backup restores its fingerprint. Avoiding
+that would need per-area coverage in `region_state`, a schema change
+not worth its cost yet.

@@ -661,12 +661,23 @@ mod tests {
     }
 
     #[test]
-    fn covering_scope_keeps_the_fingerprint() {
-        let meta = MemMeta::default();
+    fn covering_scope_refreshes_the_fingerprint_so_later_backups_carry() {
+        let mut meta = MemMeta::default();
         let fp0 = fingerprint(key(0, 0));
+        crate::support::block_on(meta.apply_snapshot_incremental(
+            1_000,
+            &[stage_present(coord(0, 0), BlobHash([1; 32]))],
+            None,
+            &[fp0],
+            &[],
+        ))
+        .unwrap();
+
+        let mut changed = fp0;
+        changed.size += 1;
         let observed = [Observation {
             key: key(0, 0),
-            fingerprint: fp0,
+            fingerprint: changed,
         }];
         let scope = over_rect(Rect::region(0, 0));
         let (previous, plan) =
@@ -675,13 +686,24 @@ mod tests {
             plan,
             &previous,
             Ingested {
-                fingerprints: alloc::vec![fp0],
-                ..Ingested::default()
+                entries: alloc::vec![stage_present(coord(0, 0), BlobHash([9; 32]))],
+                present: BTreeSet::from([coord(0, 0)]),
+                new_blobs: 1,
+                fingerprints: alloc::vec![changed],
             },
             &scope,
         );
-        assert_eq!(staged.fingerprints, alloc::vec![fp0]);
+        assert_eq!(staged.fingerprints, alloc::vec![changed]);
         assert_eq!(staged.invalidated, [] as [RegionKey; 0]);
+        crate::support::block_on(commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        let fingerprints: alloc::vec::Vec<RegionFingerprint> =
+            meta.states.iter().map(|state| state.fingerprint).collect();
+        assert_eq!(fingerprints, alloc::vec![changed]);
+
+        let (_, plan) =
+            crate::support::block_on(plan_backup(&meta, &observed, &Scope::World)).unwrap();
+        assert_eq!(plan.carries, alloc::vec![key(0, 0)]);
+        assert_eq!(plan.ingest, [] as [RegionKey; 0]);
     }
 
     #[test]

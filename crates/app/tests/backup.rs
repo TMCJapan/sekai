@@ -1650,7 +1650,7 @@ async fn real_world_corpus_round_trip() {
 /// unread and never ingest the out-of-scope chunks.
 #[tokio::test]
 async fn partial_scope_leaves_the_rest_of_the_file_to_later_backups() {
-    use sekai_app::{Area, Dimension, Rect, StatusOptions};
+    use sekai_app::{Area, Dimension, Rect, RegionKey, RegionKind, StatusOptions};
     const REAL_WORLD_CHUNKS_COUNT: usize = 1024 + 151 + 14;
 
     let root = tempdir("partial-scope");
@@ -1664,12 +1664,20 @@ async fn partial_scope_leaves_the_rest_of_the_file_to_later_backups() {
         kinds: Scope::all_kinds(),
         areas: vec![(Dimension::OVERWORLD, Area::Rect(Rect::new(32, 32, 35, 35)))],
     };
+    let region = RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, 1, 1);
+    assert!(partial.matches_region(region) && !partial.covers_region(region));
+    let in_scope = sekai_app::world_chunk_coords(&world)
+        .unwrap()
+        .into_iter()
+        .filter(|coord| partial.contains(*coord))
+        .count();
     let (scoped, _) = instance
         .world_mut(&mut world)
         .backup(options(), partial, |_| {})
         .await
         .unwrap();
-    assert!(scoped.chunks < REAL_WORLD_CHUNKS_COUNT);
+    assert_eq!(scoped.chunks, in_scope);
+    assert!(in_scope < REAL_WORLD_CHUNKS_COUNT);
 
     let status_options = StatusOptions { concurrency: 1 };
     let (status, _) = instance
