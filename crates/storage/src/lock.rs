@@ -53,10 +53,10 @@ pub fn lock_store(root: impl AsRef<Path>, mode: StoreLockMode) -> Result<StoreLo
     let writer = match mode {
         StoreLockMode::Shared => None,
         StoreLockMode::Writer | StoreLockMode::Exclusive => {
-            Some(HeldLock::acquire(&root.join(WRITER_LOCK), true)?)
+            Some(HeldLock::acquire(root.join(WRITER_LOCK), true)?)
         }
     };
-    let store = HeldLock::acquire(&root.join(STORE_LOCK), mode == StoreLockMode::Exclusive)?;
+    let store = HeldLock::acquire(root.join(STORE_LOCK), mode == StoreLockMode::Exclusive)?;
     Ok(StoreLock {
         _writer: writer,
         _store: store,
@@ -67,7 +67,8 @@ pub fn lock_store(root: impl AsRef<Path>, mode: StoreLockMode) -> Result<StoreLo
 struct HeldLock(File);
 
 impl HeldLock {
-    fn acquire(path: &Path, exclusive: bool) -> Result<Self, StorageError> {
+    fn acquire(path: impl AsRef<Path>, exclusive: bool) -> Result<Self, StorageError> {
+        let path = path.as_ref();
         let file = OpenOptions::new()
             .read(true)
             .write(true)

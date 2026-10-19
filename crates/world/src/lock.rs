@@ -90,7 +90,8 @@ fn is_read_only(err: &io::Error) -> bool {
     )
 }
 
-fn annotate(action: &str, path: &Path, source: &io::Error) -> io::Error {
+fn annotate(action: &str, path: impl AsRef<Path>, source: &io::Error) -> io::Error {
+    let path = path.as_ref();
     io::Error::new(
         source.kind(),
         format!("failed to {action} world lock {}: {source}", path.display()),
