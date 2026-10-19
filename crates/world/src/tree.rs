@@ -4,9 +4,7 @@ mod hostworld;
 
 use std::path::PathBuf;
 
-use sekai_core::{Dimension, RegionKind};
-
-use crate::RegionRef;
+use sekai_core::{Dimension, RegionKey, RegionKind};
 
 pub use hostworld::HostWorldTree;
 
@@ -39,17 +37,13 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
     /// rollback) visit dimensions in raw-code order instead.
     fn get_dims(&self) -> Result<Vec<Dimension>, Self::Error>;
 
-    /// Every region file inside `dim`, ordered by kind and coordinates.
+    /// Every region file of `kind` inside `dim`, ordered by coordinates.
     ///
     /// A `dim` that is not part of this tree (not returned by
     /// [`WorldTree::get_dims`]) yields an empty vector, not an error.
-    fn get_regions(&self, dim: Dimension) -> Result<Vec<RegionRef>, Self::Error>;
+    fn get_regions(&self, dim: Dimension, kind: RegionKind) -> Result<Vec<RegionKey>, Self::Error>;
 
-    fn derive_path(
-        &self,
-        dim: Dimension,
-        kind: RegionKind,
-        region_x: i32,
-        region_z: i32,
-    ) -> Result<PathBuf, Self::Error>;
+    /// Layout-derived path of one region file, whether or not it exists on
+    /// disk yet (export targets).
+    fn derive_path(&self, key: RegionKey) -> Result<PathBuf, Self::Error>;
 }

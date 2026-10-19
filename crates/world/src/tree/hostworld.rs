@@ -20,16 +20,13 @@ mod bukkit;
 mod detect;
 mod vanilla;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use sekai_core::{Dimension, RegionKind};
+use sekai_core::{Dimension, RegionKey, RegionKind};
 
 use super::WorldTree;
-use crate::{RegionRef, WorldError};
-
-/// Region kinds scanned for region files, in output order.
-const KINDS: [RegionKind; 3] = [RegionKind::Region, RegionKind::Entities, RegionKind::Poi];
+use crate::WorldError;
 
 /// Directory of `kind` under a dimension directory.
 const fn kind_dir(kind: RegionKind) -> &'static str {
@@ -180,52 +177,36 @@ impl WorldTree for HostWorldTree {
         Ok(self.dirs.keys().copied().collect())
     }
 
-    fn get_regions(&self, dim: Dimension) -> Result<Vec<RegionRef>, Self::Error> {
+    fn get_regions(&self, dim: Dimension, kind: RegionKind) -> Result<Vec<RegionKey>, Self::Error> {
         let Some(dir) = self.dirs.get(&dim) else {
             return Ok(Vec::new());
         };
 
-        let mut res = Vec::new();
-        for kind in KINDS {
-            let name = kind_dir(kind);
-            let mut regions = BTreeMap::new();
-            // Sorted by name so that two files spelling the same coordinates
-            // (`r.0.0.mca` and `r.00.00.mca`, both of which the game itself
-            // parses as region 0,0) resolve the same way on every run instead
-            // of following directory order.
-            let mut entries = vanilla::read_dir_opt(dir.join(name))?;
-            entries.sort_unstable_by_key(std::fs::DirEntry::file_name);
-            for entry in entries {
-                if !vanilla::is_file(&entry) {
-                    continue;
-                }
-                let file_name = entry.file_name();
-                let Some(name) = file_name.to_str() else {
-                    continue;
-                };
-                let Ok((region_x, region_z)) = sekai_anvil::parse_region_name(name) else {
-                    continue;
-                };
-                let reference = RegionRef {
-                    path: entry.path(),
-                    dim,
-                    kind,
-                    region_x,
-                    region_z,
-                };
-                regions.entry((region_x, region_z)).or_insert(reference);
+        let name = kind_dir(kind);
+        let mut regions = BTreeSet::new();
+        for entry in vanilla::read_dir_opt(dir.join(name))? {
+            if !vanilla::is_file(&entry) {
+                continue;
             }
-            res.extend(regions.into_values());
+            let file_name = entry.file_name();
+            let Some(name) = file_name.to_str() else {
+                continue;
+            };
+            let Ok((rx, rz)) = sekai_anvil::parse_region_name(name) else {
+                continue;
+            };
+            // Two files may spell the same coordinates (`r.0.0.mca` and
+            // `r.00.00.mca`, both of which the game itself parses as region
+            // 0,0); the identity is the coordinates, so the key is reported
+            // once, ordered by coordinates like the old per-kind walk.
+            regions.insert(RegionKey { dim, kind, rx, rz });
         }
-        Ok(res)
+        Ok(regions.into_iter().collect())
     }
 
     fn derive_path(
         &self,
-        dim: Dimension,
-        kind: RegionKind,
-        region_x: i32,
-        region_z: i32,
+        RegionKey { dim, kind, rx, rz }: RegionKey,
     ) -> Result<PathBuf, Self::Error> {
         // Mirrors `WorldError::UnknownRegionPath`; the CLI troubleshooting
         // entry refers to this wording.
@@ -233,7 +214,7 @@ impl WorldTree for HostWorldTree {
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!(
-                    "cannot derive region path for dim {}, kind {}, r.{region_x}.{region_z}",
+                    "cannot derive region path for dim {}, kind {}, r.{rx}.{rz}",
                     dim.raw(),
                     kind.raw()
                 ),
@@ -242,6 +223,6 @@ impl WorldTree for HostWorldTree {
         let root = self.dirs.get(&dim).ok_or_else(cannot_derive)?;
         let name = kind_dir(kind);
 
-        Ok(root.join(name).join(format!("r.{region_x}.{region_z}.mca")))
+        Ok(root.join(name).join(format!("r.{rx}.{rz}.mca")))
     }
 }

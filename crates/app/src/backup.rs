@@ -20,10 +20,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sekai_core::usecase::backup::Ingested;
 use sekai_core::{
     Assembled, BackupReport, ChunkCoord, Observation, Previous, RegionFingerprint, RegionKey,
-    Scope, SnapshotEntry, SnapshotId,
+    RegionKind, Scope, SnapshotEntry, SnapshotId,
 };
 use sekai_storage::FileCas;
-use sekai_world::{RegionRef, WorldTree};
+use sekai_world::WorldTree;
 
 use crate::error::AppError;
 use crate::instance::{WorldHandle, WorldHandleMut};
@@ -147,8 +147,8 @@ pub struct RegionTiming {
     pub cas: Duration,
 }
 
-/// Changed file plus its fresh fingerprint, awaiting ingest.
-type Changed = (RegionRef, RegionFingerprint);
+/// Changed file path plus its fresh fingerprint, awaiting ingest.
+type Changed = (PathBuf, RegionFingerprint);
 
 /// One ingested file's staged rows, ready to merge into the walk.
 struct FileOutcome {
@@ -265,18 +265,14 @@ where
     let fingerprint = observed.fingerprint;
 
     let universe_started = Instant::now();
+    let observations: Vec<Observation> = observed.files.iter().map(|(_, obs)| *obs).collect();
     let (previous, plan) =
-        sekai_core::usecase::backup::plan_backup(store.meta(), &observed.observations, scope)
-            .await?;
+        sekai_core::usecase::backup::plan_backup(store.meta(), &observations, scope).await?;
     let universe_load = universe_started.elapsed();
 
-    let mut files: HashMap<RegionKey, Changed> = HashMap::with_capacity(observed.regions.len());
-    for (region, obs) in observed
-        .regions
-        .into_iter()
-        .zip(observed.observations.iter())
-    {
-        files.insert(obs.key, (region, obs.fingerprint));
+    let mut files: HashMap<RegionKey, Changed> = HashMap::with_capacity(observed.files.len());
+    for (path, observation) in observed.files {
+        files.insert(observation.key, (path, observation.fingerprint));
     }
     // Changed files in discovery order; carries need no file access.
     let changed: Vec<Changed> = plan
@@ -399,8 +395,8 @@ where
 
 // Whole-world observation: discovery plus fresh fingerprints.
 struct Observed {
-    regions: Vec<sekai_world::RegionRef>,
-    observations: Vec<Observation>,
+    /// Every discovered file with its fresh fingerprint.
+    files: Vec<(PathBuf, Observation)>,
     discover: Duration,
     fingerprint: Duration,
 }
@@ -414,22 +410,25 @@ where
     let discover_started = Instant::now();
     let mut regions = Vec::new();
     for dim in world.get_dims()? {
-        regions.extend(world.get_regions(dim)?);
+        for kind in [RegionKind::Region, RegionKind::Entities, RegionKind::Poi] {
+            for key in world.get_regions(dim, kind)? {
+                regions.push((key, world.derive_path(key)?));
+            }
+        }
     }
     let discover = discover_started.elapsed();
 
     let fingerprint_started = Instant::now();
-    let mut observed: Vec<Observation> = Vec::with_capacity(regions.len());
-    for region in &regions {
-        let key = RegionKey::new(region.dim, region.kind, region.region_x, region.region_z);
-        observed.push(Observation {
+    let mut files = Vec::with_capacity(regions.len());
+    for (key, path) in regions {
+        let observation = Observation {
             key,
-            fingerprint: sekai_world::fingerprint_file(&region.path, key)?,
-        });
+            fingerprint: sekai_world::fingerprint_file(&path, key)?,
+        };
+        files.push((path, observation));
     }
     Ok(Observed {
-        regions,
-        observations: observed,
+        files,
         discover,
         fingerprint: fingerprint_started.elapsed(),
     })
@@ -599,9 +598,9 @@ fn ingest_group(
 ) -> Result<(Vec<FileOutcome>, Duration), AppError> {
     let mut cas = FileCas::open(cas_root)?;
     let mut outcomes = Vec::with_capacity(group.len());
-    for (region, observed) in group {
+    for (path, observed) in group {
         let outcome = ingest_file(
-            &region,
+            &path,
             observed,
             &mut cas,
             with_diff,
@@ -635,7 +634,7 @@ fn merge_outcome(walk: &mut RegionWalk, outcome: FileOutcome) {
 }
 
 struct ChunkIngestCtx<'a> {
-    region: &'a RegionRef,
+    key: RegionKey,
     scope: &'a Scope,
     cas: &'a mut FileCas,
     scratch: &'a mut Vec<u8>,
@@ -652,7 +651,7 @@ struct ChunkIngestCtx<'a> {
 /// untouched and fallback keeps resolving them. Under `dry_run` blobs are
 /// probed, never stored.
 fn ingest_file(
-    region: &RegionRef,
+    path: &Path,
     observed: RegionFingerprint,
     cas: &mut FileCas,
     with_diff: bool,
@@ -660,15 +659,17 @@ fn ingest_file(
     scope: &Scope,
     dry_run: bool,
 ) -> Result<FileOutcome, AppError> {
+    let key = observed.key;
     let opened = Instant::now();
-    let bytes = sekai_world::open_image(&region.path)?;
+    let bytes = sekai_world::open_image(path)?;
     let open_elapsed = opened.elapsed();
     let file_bytes = bytes.len() as u64;
-    let image = sekai_anvil::RegionImage::from_bytes(bytes, region.region_x, region.region_z)
-        .map_err(|source| AppError::RegionFailed {
-            path: region.path.clone(),
+    let image = sekai_anvil::RegionImage::from_bytes(bytes, key.rx, key.rz).map_err(|source| {
+        AppError::RegionFailed {
+            path: path.to_path_buf(),
             source,
-        })?;
+        }
+    })?;
 
     let mut ignore_vec = Vec::new();
     let ignore: &[&str] = ignore_tags.map_or(sekai_nbt::DEFAULT_IGNORED, |tags| {
@@ -691,7 +692,7 @@ fn ingest_file(
                 return false;
             }
             let mut ctx = ChunkIngestCtx {
-                region,
+                key,
                 scope,
                 cas,
                 scratch: &mut scratch,
@@ -716,7 +717,7 @@ fn ingest_file(
             true
         })
         .map_err(|source| AppError::RegionFailed {
-            path: region.path.clone(),
+            path: path.to_path_buf(),
             source,
         })?;
     let ingest_elapsed = ingested.elapsed();
@@ -729,7 +730,7 @@ fn ingest_file(
         present,
         new_blobs,
         timing: RegionTiming {
-            path: region.path.clone(),
+            path: path.to_path_buf(),
             bytes: file_bytes,
             chunks,
             open: open_elapsed,
@@ -749,7 +750,7 @@ fn ingest_timed(
     chunk: sekai_anvil::Chunk<'_>,
     ctx: &mut ChunkIngestCtx<'_>,
 ) -> Result<(Duration, Duration), AppError> {
-    let coord = ChunkCoord::new(ctx.region.dim, ctx.region.kind, chunk.x, chunk.z);
+    let coord = ChunkCoord::new(ctx.key.dim, ctx.key.kind, chunk.x, chunk.z);
     if !ctx.scope.contains(coord) {
         return Ok((Duration::ZERO, Duration::ZERO));
     }

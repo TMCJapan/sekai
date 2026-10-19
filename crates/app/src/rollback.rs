@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use sekai_core::{BlobHash, ChunkCoord, RegionKey, RollbackReport, Scope, SnapshotId};
+use sekai_core::{BlobHash, ChunkCoord, RegionKey, RegionKind, RollbackReport, Scope, SnapshotId};
 use sekai_storage::FileCas;
 use sekai_world::WorldTree;
 
@@ -140,24 +140,26 @@ where
         let mut discovered = tokio::task::spawn_blocking(move || {
             let mut discovered: BTreeMap<RegionKey, PathBuf> = BTreeMap::new();
             for dim in world_handle.get_dims()? {
-                for r in world_handle.get_regions(dim)? {
-                    // A tree reporting one region twice would leave one
-                    // spelling of the file un-rebuilt (or undeleted); report
-                    // both paths instead of silently dropping one.
-                    match discovered.entry(RegionKey::new(r.dim, r.kind, r.region_x, r.region_z)) {
-                        Entry::Vacant(entry) => {
-                            entry.insert(r.path);
-                        }
-                        Entry::Occupied(entry) => {
-                            return Err(AppError::Io(std::io::Error::new(
-                                std::io::ErrorKind::InvalidData,
-                                format!(
-                                    "world tree enumerated region {:?} twice ({} and {})",
-                                    entry.key(),
-                                    entry.get().display(),
-                                    r.path.display(),
-                                ),
-                            )));
+                for kind in [RegionKind::Region, RegionKind::Entities, RegionKind::Poi] {
+                    for key in world_handle.get_regions(dim, kind)? {
+                        let path = world_handle.derive_path(key)?;
+                        // A tree reporting one region twice would leave one
+                        // spelling of the file un-rebuilt (or undeleted); report
+                        // both paths instead of silently dropping one.
+                        match discovered.entry(key) {
+                            Entry::Vacant(entry) => {
+                                entry.insert(path);
+                            }
+                            Entry::Occupied(entry) => {
+                                return Err(AppError::Io(std::io::Error::new(
+                                    std::io::ErrorKind::InvalidData,
+                                    format!(
+                                        "world tree enumerated region {key:?} twice ({} and {})",
+                                        entry.get().display(),
+                                        path.display(),
+                                    ),
+                                )));
+                            }
                         }
                     }
                 }
@@ -398,7 +400,7 @@ where
             region_z: key.rz,
         }
         .into()),
-        MissingFilePolicy::DerivedOnly => Ok(world.derive_path(key.dim, key.kind, key.rx, key.rz)?),
+        MissingFilePolicy::DerivedOnly => Ok(world.derive_path(*key)?),
         MissingFilePolicy::SiblingFirst => sibling_or_derived(discovered, world, key),
     }
 }
@@ -420,5 +422,5 @@ where
     if let Some(path) = sekai_world::sibling_path(discovered, key) {
         return Ok(path);
     }
-    Ok(world.derive_path(key.dim, key.kind, key.rx, key.rz)?)
+    Ok(world.derive_path(*key)?)
 }

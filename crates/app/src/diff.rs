@@ -3,8 +3,8 @@
 use std::time::{Duration, Instant};
 
 use sekai_core::{
-    BlobHash, BlobStore as _, ChunkCoord, DEFAULT_IGNORED, MetaStore, NbtDiffEntry, SnapshotId,
-    diff_nbt,
+    BlobHash, BlobStore as _, ChunkCoord, DEFAULT_IGNORED, MetaStore, NbtDiffEntry, RegionKind,
+    SnapshotId, diff_nbt,
 };
 use sekai_world::WorldTree;
 
@@ -67,17 +67,19 @@ where
     let rx = coord.region_x();
     let rz = coord.region_z();
 
-    let Some(region_ref) = world
-        .get_regions(coord.dim)?
+    let Some(region_key) = world
+        .get_regions(coord.dim, coord.kind)?
         .into_iter()
-        .find(|r| r.kind == coord.kind && r.region_x == rx && r.region_z == rz)
+        .find(|r| r.rx == rx && r.rz == rz)
     else {
         return Ok(None);
     };
 
-    let bytes = sekai_world::open_image(&region_ref.path)?;
+    let path = world.derive_path(region_key)?;
+
+    let bytes = sekai_world::open_image(&path)?;
     let failed = |source| AppError::RegionFailed {
-        path: region_ref.path.clone(),
+        path: path.clone(),
         source,
     };
     let image = sekai_anvil::RegionImage::from_bytes(bytes, rx, rz).map_err(failed)?;
@@ -191,21 +193,23 @@ where
 {
     let mut coords = Vec::new();
     for dim in world.get_dims()? {
-        for region in world.get_regions(dim)? {
-            let bytes = sekai_world::open_image(&region.path)?;
-            let failed = |source| AppError::RegionFailed {
-                path: region.path.clone(),
-                source,
-            };
-            let image =
-                sekai_anvil::RegionImage::from_bytes(bytes, region.region_x, region.region_z)
+        for kind in [RegionKind::Region, RegionKind::Entities, RegionKind::Poi] {
+            for key in world.get_regions(dim, kind)? {
+                let path = world.derive_path(key)?;
+                let bytes = sekai_world::open_image(&path)?;
+                let failed = |source| AppError::RegionFailed {
+                    path: path.clone(),
+                    source,
+                };
+                let image =
+                    sekai_anvil::RegionImage::from_bytes(bytes, key.rx, key.rz).map_err(failed)?;
+                image
+                    .visit_chunks(|chunk| {
+                        coords.push(ChunkCoord::new(key.dim, key.kind, chunk.x, chunk.z));
+                        true
+                    })
                     .map_err(failed)?;
-            image
-                .visit_chunks(|chunk| {
-                    coords.push(ChunkCoord::new(region.dim, region.kind, chunk.x, chunk.z));
-                    true
-                })
-                .map_err(failed)?;
+            }
         }
     }
     coords.sort();
