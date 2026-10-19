@@ -2,9 +2,11 @@
 //!
 //! Three hazards need it. A backup puts blobs into the CAS *before* it
 //! commits the rows that reference them, so a `gc` scanning in between
-//! unlinks live blobs. Two backups race on snapshot IDs. And
-//! `prune` deletes rows a reader may have resolved moments earlier, so a
-//! rollback could restore a partial snapshot.
+//! unlinks live blobs. Two backups plan against the same base snapshot,
+//! so the later commit leaves `region_state` fingerprints out of step
+//! with the effective rows. And `prune` deletes rows a reader may have
+//! resolved moments earlier, so a rollback could restore a partial
+//! snapshot.
 //!
 //! Two lock files in the store root encode the resulting matrix:
 //! `writer.lock` serializes the runs that change what blobs are needed
