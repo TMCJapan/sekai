@@ -65,6 +65,8 @@ results are discarded with the future.
 - A shared world lock degrades to unguarded only when its file is absent
   and cannot be created (permission denied, read-only filesystem). An
   existing lock file the user cannot open is an error.
+- The store lock never degrades: every lock file opens for writing, so a
+  store on a read-only mount fails every operation, reads included.
 - WASI has no std file locks (`try_lock` returns `Unsupported`), so every
   operation fails there. This is deferred: `storage`/`world`/`app` are not
   wasm targets, and porting them also needs SQLite and a threaded runtime
