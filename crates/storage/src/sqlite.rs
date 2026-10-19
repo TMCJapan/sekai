@@ -76,9 +76,16 @@ const CONNECT_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 /// Switching a fresh database into WAL needs an exclusive lock that
 /// SQLite's busy handler cannot wait on, so a connect racing another
 /// opener's switch fails with `SQLITE_BUSY` at once. Retry it as long as
-/// `busy_timeout` would have waited.
+/// `busy_timeout` would have waited. Extended codes (`SQLITE_BUSY_RECOVERY`
+/// while another opener replays the WAL, ...) share the primary code in
+/// their low byte.
 async fn connect_pool(options: SqliteConnectOptions) -> Result<SqlitePool, sqlx::Error> {
-    const SQLITE_BUSY: &str = "5";
+    const SQLITE_BUSY: i32 = 5;
+    let is_busy = |err: &dyn sqlx::error::DatabaseError| {
+        err.code()
+            .and_then(|code| code.parse::<i32>().ok())
+            .is_some_and(|code| code & 0xff == SQLITE_BUSY)
+    };
     let deadline = Instant::now() + CONNECT_BUSY_TIMEOUT;
     loop {
         match SqlitePoolOptions::new()
@@ -86,9 +93,7 @@ async fn connect_pool(options: SqliteConnectOptions) -> Result<SqlitePool, sqlx:
             .connect_with(options.clone())
             .await
         {
-            Err(sqlx::Error::Database(err))
-                if err.code().as_deref() == Some(SQLITE_BUSY) && Instant::now() < deadline =>
-            {
+            Err(sqlx::Error::Database(err)) if is_busy(&*err) && Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
             connected => return connected,
