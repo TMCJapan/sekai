@@ -28,6 +28,8 @@ const STORE_LOCK: &str = "store.lock";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreLockMode {
     /// Reads and tag edits: run alongside each other and alongside backups.
+    /// Tags never change which blobs rows reference, so editing them needs
+    /// no writer lock.
     Shared,
     /// Runs that write or collect blobs (`backup`, `gc`, store creation):
     /// one at a time, while readers keep going.
