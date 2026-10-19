@@ -287,7 +287,7 @@ async fn deleted_region_file_tombstones_once() {
 
 #[tokio::test]
 async fn scoped_backup_records_no_spurious_tombstones() {
-    use sekai_app::{ChunkCoord, Dimension, RegionKind, Scope};
+    use sekai_app::{ChunkCoord, Dimension, Scope};
     let root = tempdir("scoped");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -1339,7 +1339,7 @@ const fn kind_dir(kind: sekai_app::RegionKind) -> &'static str {
 
 #[tokio::test]
 async fn sparse_entities_chunk_diffs_empty_without_error() {
-    use sekai_app::{ChunkCoord, Dimension, RegionKind};
+    use sekai_app::{ChunkCoord, Dimension};
     let root = tempdir("sparse-entities");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -1378,7 +1378,7 @@ async fn sparse_entities_chunk_diffs_empty_without_error() {
 
 #[tokio::test]
 async fn created_and_deleted_chunks_diff_as_added_removed() {
-    use sekai_app::{ChunkCoord, Dimension, RegionKind};
+    use sekai_app::{ChunkCoord, Dimension};
     let root = tempdir("created-deleted");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -1441,7 +1441,7 @@ async fn created_and_deleted_chunks_diff_as_added_removed() {
 
 #[tokio::test]
 async fn all_kinds_round_trip() {
-    use sekai_app::{ChunkCoord, Dimension, RegionKind};
+    use sekai_app::{ChunkCoord, Dimension};
     for kind in RegionKind::ALL {
         let root = tempdir(&format!("kind-{}", kind_dir(kind)));
         let world_path = root.join("world");
@@ -1494,7 +1494,7 @@ async fn all_kinds_round_trip() {
 
 #[tokio::test]
 async fn rect_and_kind_scopes_limit_ingest() {
-    use sekai_app::{Area, Dimension, Rect, RegionKind, Scope};
+    use sekai_app::{Area, Dimension, Rect, Scope};
     let root = tempdir("rect-kind");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -1579,7 +1579,6 @@ fn copy_dir(src: impl AsRef<Path>, dst: impl AsRef<Path>) {
 
 #[tokio::test]
 async fn real_world_corpus_round_trip() {
-    use sekai_app::RegionKind;
     const REAL_WORLD_CHUNKS_COUNT: usize = 1024 + 151 + 14;
 
     let root = tempdir("corpus");
