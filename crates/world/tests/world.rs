@@ -216,6 +216,24 @@ fn discovers_a_legacy_single_folder_world() {
 }
 
 #[test]
+fn locking_a_missing_world_reports_the_missing_world() {
+    let root = tempdir("lock-missing");
+    let world = HostWorldTree::new(root.join("typo")).unwrap();
+    for mode in [WorldLockMode::Shared, WorldLockMode::Exclusive] {
+        let err = world.lock(mode).unwrap_err();
+        assert!(
+            err.to_string().contains("world directory not found"),
+            "{err}"
+        );
+    }
+    assert!(
+        !root.join("typo").exists(),
+        "locking must not create the world"
+    );
+    cleanup(&root);
+}
+
+#[test]
 fn the_world_lock_lives_in_the_root_and_stays_out_of_discovery() {
     let world_path = tempdir("lock");
     write(world_path.join("region/r.0.0.mca"), &one_chunk_image());

@@ -36,14 +36,14 @@ impl WorldLock {
     /// Lock the file at `path` in `mode`, failing immediately with
     /// [`io::ErrorKind::WouldBlock`] when another holder conflicts.
     ///
-    /// A shared lock degrades to `Ok(None)` (unguarded) only for read-only
-    /// worlds - snapshot mounts, backup users without write access - where
-    /// the file is absent and cannot be created; an existing one is locked
-    /// through a read-only handle. Any other failure, including an existing
-    /// file this user cannot open, is an error: silently running unguarded
-    /// would let a reader overlap another user's rollback. An exclusive lock
-    /// is taken only by operations that write the world anyway, so failing
-    /// to create its file is always an error.
+    /// A lock needs no write access, so an existing file this user may not
+    /// write - created by another user, or on a read-only mount - is locked
+    /// through a read-only handle in either mode. A shared lock degrades to
+    /// `Ok(None)` (unguarded) only when the file is absent and cannot be
+    /// created, so read-only worlds stay readable. Any other failure,
+    /// including an existing file this user cannot open at all, is an
+    /// error: silently running unguarded would let a reader overlap another
+    /// user's rollback.
     pub fn acquire(path: impl AsRef<Path>, mode: WorldLockMode) -> io::Result<Option<Self>> {
         let path = path.as_ref();
         let opened = OpenOptions::new()
@@ -54,14 +54,17 @@ impl WorldLock {
             .open(path);
         let file = match opened {
             Ok(file) => file,
-            Err(source) if mode == WorldLockMode::Shared && is_read_only(&source) => {
-                match File::open(path) {
-                    Ok(file) => file,
-                    Err(missing) if missing.kind() == io::ErrorKind::NotFound => return Ok(None),
-                    Err(source) => return Err(open_failed(path, &source)),
+            Err(source) if is_read_only(&source) => match File::open(path) {
+                Ok(file) => file,
+                Err(missing) if missing.kind() == io::ErrorKind::NotFound => {
+                    return match mode {
+                        WorldLockMode::Shared => Ok(None),
+                        WorldLockMode::Exclusive => Err(annotate("open", path, &source)),
+                    };
                 }
-            }
-            Err(source) => return Err(open_failed(path, &source)),
+                Err(source) => return Err(annotate("open", path, &source)),
+            },
+            Err(source) => return Err(annotate("open", path, &source)),
         };
         let locked = match mode {
             WorldLockMode::Shared => file.try_lock_shared(),
@@ -76,12 +79,12 @@ impl WorldLock {
                     path.display()
                 ),
             )),
-            Err(TryLockError::Error(source)) => Err(source),
+            Err(TryLockError::Error(source)) => Err(annotate("take", path, &source)),
         }
     }
 }
 
-/// Whether a failed create means the world cannot be written at all.
+/// Whether a failed create means this user cannot write the lock file.
 fn is_read_only(err: &io::Error) -> bool {
     matches!(
         err.kind(),
@@ -89,10 +92,10 @@ fn is_read_only(err: &io::Error) -> bool {
     )
 }
 
-fn open_failed(path: &Path, source: &io::Error) -> io::Error {
+fn annotate(action: &str, path: &Path, source: &io::Error) -> io::Error {
     io::Error::new(
         source.kind(),
-        format!("failed to open world lock {}: {source}", path.display()),
+        format!("failed to {action} world lock {}: {source}", path.display()),
     )
 }
 
@@ -153,6 +156,26 @@ mod tests {
         let path = root.join("absent").join(WorldLock::FILE_NAME);
         assert!(WorldLock::acquire(&path, WorldLockMode::Shared).is_err());
         assert!(WorldLock::acquire(&path, WorldLockMode::Exclusive).is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_lock_file_another_user_created_still_locks_exclusively() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let root = temp_root("foreign");
+        let path = root.join(WorldLock::FILE_NAME);
+        fs::write(&path, "").unwrap();
+        // What another user's umask-022 file looks like to this one.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o444)).unwrap();
+        if OpenOptions::new().write(true).open(&path).is_err() {
+            let writer = WorldLock::acquire(&path, WorldLockMode::Exclusive).unwrap();
+            assert!(writer.is_some());
+            let err = WorldLock::acquire(&path, WorldLockMode::Shared).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
+        }
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
         let _ = fs::remove_dir_all(&root);
     }
 

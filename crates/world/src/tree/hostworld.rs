@@ -154,12 +154,7 @@ impl WorldTree for HostWorldTree {
             (RegionKind::POI, "poi"),
         ];
 
-        if !self.root.is_dir() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("world directory not found: {}", self.root.display()),
-            ));
-        }
+        self.ensure_root()?;
 
         let mut res = Vec::new();
         for (dim, dir) in &self.dirs {
@@ -236,6 +231,21 @@ impl WorldTree for HostWorldTree {
     }
 
     fn lock(&self, mode: WorldLockMode) -> Result<Option<WorldLock>, Self::Error> {
+        // A mistyped world path should read as one, not as a lock failure.
+        self.ensure_root()?;
         WorldLock::acquire(self.root.join(WorldLock::FILE_NAME), mode)
+    }
+}
+
+impl HostWorldTree {
+    fn ensure_root(&self) -> std::io::Result<()> {
+        if self.root.is_dir() {
+            Ok(())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("world directory not found: {}", self.root.display()),
+            ))
+        }
     }
 }
