@@ -73,6 +73,11 @@ results are discarded with the future.
   snapshot reference, then runs the command, and a `prune` can slip in
   between. Commands that check snapshot existence fail loudly; known gaps
   are tracked separately.
+- `init` skips the lock once `meta.sqlite` exists, and so does `open`. A
+  caller arriving while another is still creating the schema therefore
+  fails with an SQL error instead of `StoreLocked`; nothing is corrupted.
+  This is the same pre-existing schema-creation race as `open` versus a
+  first `init`, tracked separately.
 - Two roots naming the same world (a Bukkit server root versus one of its
   world folders) get different lock files and do not exclude each other.
 - `SekaiInstance::store()`/`store_mut()` bypass locking, as escape

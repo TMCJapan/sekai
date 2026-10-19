@@ -36,9 +36,12 @@ pub type SqliteStore = Store<SqliteMeta, FileCas>;
 /// existing store again is idempotent. This is the only path that
 /// materializes a store, reserved for backup runs.
 ///
-/// Creation runs under the writer lock: two first backups racing on an
-/// empty root would otherwise both try to create the schema. An existing
-/// store takes no lock, like [`open_sqlite`]; operations lock themselves.
+/// Creation runs under the writer lock, so two first backups on an empty
+/// root cannot both create the schema. An existing store takes no lock,
+/// like [`open_sqlite`]; operations lock themselves. That leaves one known
+/// gap, shared with `open`: a caller that arrives while another is still
+/// creating sees `meta.sqlite` already present, skips the lock, and fails
+/// on the half-created schema with an SQL error (never corruption).
 pub async fn init_sqlite(root: impl AsRef<Path>) -> Result<SqliteStore, StorageError> {
     let root = root.as_ref();
     if root.join("meta.sqlite").is_file() {
