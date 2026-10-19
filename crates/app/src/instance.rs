@@ -126,12 +126,16 @@ impl SekaiInstance {
 
     /// Latest snapshot ID; fails when the store has no snapshots.
     pub async fn latest_snapshot_id(&self) -> Result<SnapshotId, AppError> {
-        let _lock = self.lock_store(StoreLockMode::Shared)?;
-        self.latest_snapshot_id_unlocked().await
+        let lock = self.lock_store(StoreLockMode::Shared)?;
+        self.latest_snapshot_id_locked(&lock).await
     }
 
-    /// [`Self::latest_snapshot_id`] for operations already holding a lock.
-    pub(crate) async fn latest_snapshot_id_unlocked(&self) -> Result<SnapshotId, AppError> {
+    /// [`Self::latest_snapshot_id`] for an operation that already holds
+    /// `_held`; asking for it makes the caller prove the lock exists.
+    pub(crate) async fn latest_snapshot_id_locked(
+        &self,
+        _held: &StoreLock,
+    ) -> Result<SnapshotId, AppError> {
         sekai_core::usecase::snapshot::latest_snapshot_id(self.store.meta())
             .await
             .map_err(AppError::Snapshot)?
@@ -144,7 +148,7 @@ impl SekaiInstance {
 /// must outlive the future until the file pass finishes.
 #[derive(Debug)]
 pub(crate) struct OperationLocks {
-    _store: StoreLock,
+    store: StoreLock,
     _world: Option<WorldLock>,
 }
 
@@ -161,9 +165,14 @@ impl OperationLocks {
         let store = instance.lock_store(store)?;
         let world = world.lock(world_mode)?;
         Ok(Arc::new(Self {
-            _store: store,
+            store,
             _world: world,
         }))
+    }
+
+    /// The store lock this operation holds.
+    pub(crate) const fn store(&self) -> &StoreLock {
+        &self.store
     }
 }
 

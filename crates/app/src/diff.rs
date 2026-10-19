@@ -290,7 +290,7 @@ where
         ignore: Option<&[&str]>,
         progress: impl FnMut(DiffProgress) + Send,
     ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
-        let _locks = OperationLocks::acquire(
+        let locks = OperationLocks::acquire(
             self.instance,
             StoreLockMode::Shared,
             self.world,
@@ -299,7 +299,11 @@ where
         let total_started = Instant::now();
         let snapshot_id = match snapshot {
             Some(id) => id,
-            None => self.instance.latest_snapshot_id_unlocked().await?,
+            None => {
+                self.instance
+                    .latest_snapshot_id_locked(locks.store())
+                    .await?
+            }
         };
 
         let ignore_set = ignore.unwrap_or(DEFAULT_IGNORED);
