@@ -29,7 +29,7 @@ deleted:
 | Mode | `writer.lock` | `store.lock` | Operations |
 |---|---|---|---|
 | shared | - | shared | list, status, diff, export, rollback, tags, prune plan |
-| writer | exclusive | shared | backup, gc plan/apply, creating a missing store |
+| writer | exclusive | shared | backup, gc plan/apply |
 | exclusive | exclusive | exclusive | prune apply |
 
 Readers and a backup therefore run side by side. `gc` stays compatible
@@ -44,12 +44,11 @@ Consequences for the exact condition). `WorldTree::lock` defaults to
 unguarded, so third-party trees keep compiling.
 
 Locks are taken per operation, at each public `sekai-app` method's
-entry. `open` never locks, and `init` locks only while it creates a
-missing store, so an idle instance blocks nobody. Blocking passes that
-write files or read blobs (backup ingest, rollback, export) own a share
-of the locks, because a cancelled future cannot abort a blocking task
-that already started. Read-only discovery passes need none: their
-results are discarded with the future.
+entry. `open` and `init` never lock, so an idle instance blocks nobody;
+concurrent first `init`s serialize schema creation inside SQLite
+instead. Every blocking pass (world discovery, backup ingest, rollback,
+export) owns a share of the locks, because a cancelled future cannot
+abort a blocking task that already started.
 
 ## Consequences
 
@@ -74,12 +73,9 @@ results are discarded with the future.
 - Separate operations are not atomic together. The CLI resolves a
   snapshot reference, then runs the command, and a `prune` can slip in
   between. Commands that check snapshot existence fail loudly; known gaps
-  are tracked separately.
-- `init` skips the lock once `meta.sqlite` exists, and so does `open`. A
-  caller arriving while another is still creating the schema therefore
-  fails with an SQL error instead of `StoreLocked`; nothing is corrupted.
-  This is the same pre-existing schema-creation race as `open` versus a
-  first `init`, tracked separately.
+  are tracked separately. Likewise `diff` against a world enumerates its
+  chunks under one world lock and diffs them under another, so a
+  rollback in between leaves the enumerated set stale.
 - Two roots naming the same world (a Bukkit server root versus one of its
   world folders) get different lock files and do not exclude each other.
 - `SekaiInstance::store()`/`store_mut()` bypass locking, as escape

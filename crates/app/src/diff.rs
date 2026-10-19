@@ -189,6 +189,10 @@ impl SekaiInstance {
 }
 
 /// Chunk coordinates present on disk in `world`.
+///
+/// Takes its own shared world lock, so coordinates handed to a later
+/// [`WorldHandle::diff_world_chunks`] go stale if a rollback runs in
+/// between (ADR-0014).
 pub fn world_chunk_coords<T: WorldTree>(world: &T) -> Result<Vec<ChunkCoord>, AppError>
 where
     AppError: From<T::Error>,

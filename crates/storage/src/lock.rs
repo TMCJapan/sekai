@@ -28,8 +28,10 @@ const STORE_LOCK: &str = "store.lock";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StoreLockMode {
     /// Reads and tag edits: run alongside each other and alongside backups.
-    /// Tags never change which blobs rows reference, so editing them needs
-    /// no writer lock.
+    /// Every blob a shared holder can resolve survives a concurrent `gc`,
+    /// which unlinks only blobs no row references, while rows disappear
+    /// only under [`Self::Exclusive`]. Tags never change which blobs rows
+    /// reference, so editing them needs no writer lock.
     Shared,
     /// Runs that write or collect blobs (`backup`, `gc`):
     /// one at a time, while readers keep going.
@@ -69,6 +71,9 @@ pub fn lock_store(root: impl AsRef<Path>, mode: StoreLockMode) -> Result<StoreLo
 struct HeldLock(File);
 
 impl HeldLock {
+    /// Unlike the world lock, this never falls back to a read-only handle
+    /// or runs unguarded: a store has no read-only use, so one on a
+    /// read-only mount fails here (ADR-0014).
     fn acquire(path: impl AsRef<Path>, exclusive: bool) -> Result<Self, StorageError> {
         let path = path.as_ref();
         let file = OpenOptions::new()
