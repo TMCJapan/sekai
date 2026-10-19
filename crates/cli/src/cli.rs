@@ -46,7 +46,7 @@ pub enum Command {
         #[command(flatten)]
         selection: Selection,
     },
-    /// Preview what a backup would record, without writing anything.
+    /// Preview what a backup would record, without recording anything.
     Status {
         /// World directory to preview.
         world: PathBuf,

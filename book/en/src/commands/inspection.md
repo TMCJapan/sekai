@@ -1,10 +1,11 @@
 # Inspection
 
-These commands never change region files or store contents. `status`
-and world-side `diff` may create an empty `.sekai.lock` in the world
-root and `store.lock` in the store root to coordinate with concurrent
-commands (see [Maintenance](maintenance.md)). On a read-only world they
-skip the world lock instead of failing.
+These commands never change region files or store contents. Like every
+command, they may create empty lock files to coordinate with concurrent
+commands: `store.lock` in the store root, and for `status` and
+world-side `diff` also `.sekai.lock` in the world root (see
+[Maintenance](maintenance.md)). On a read-only world they skip the world
+lock instead of failing.
 
 ```sh
 sekai --store ./sekai-store list

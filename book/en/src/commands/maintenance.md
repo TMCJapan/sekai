@@ -18,7 +18,8 @@ GC removes only orphan blobs, never metadata; snapshot deletion is
 `gc` refuses while a `backup` is running: a backup writes blobs before it
 commits the rows that reference them, so collecting in that window would
 unlink blobs the next commit still needs. `prune` likewise refuses while
-anything else uses the store, and nothing else starts while it runs.
+anything else uses the store, and nothing else starts while it runs;
+`prune --dry-run` only reads and runs alongside readers and backups.
 Refusals are immediate (`store is in use by another sekai operation`);
 retry once the other command finishes. The locks live in `writer.lock`
 and `store.lock` in the store root and are released by the OS even when

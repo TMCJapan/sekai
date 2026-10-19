@@ -45,9 +45,11 @@ unguarded, so third-party trees keep compiling.
 
 Locks are taken per operation, at each public `sekai-app` method's
 entry. `open` never locks, and `init` locks only while it creates a
-missing store, so an idle instance blocks nobody. Blocking file passes
-own a share of the locks, because a cancelled future cannot abort a
-blocking task that already started.
+missing store, so an idle instance blocks nobody. Blocking passes that
+write files or read blobs (backup ingest, rollback, export) own a share
+of the locks, because a cancelled future cannot abort a blocking task
+that already started. Read-only discovery passes need none: their
+results are discarded with the future.
 
 ## Consequences
 

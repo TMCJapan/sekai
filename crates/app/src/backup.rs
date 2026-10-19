@@ -318,8 +318,9 @@ impl<T: WorldTree> WorldHandle<'_, T>
 where
     AppError: From<T::Error>,
 {
-    /// Preview what a backup would record, without writing anything: no CAS
-    /// puts, no metadata commit. Read-only against both world and store.
+    /// Preview what a backup would record, without recording anything: no
+    /// CAS puts, no metadata commit, no region writes. Only lock files may
+    /// be created (ADR-0014).
     ///
     /// Only `scope` is previewed. `progress` fires as changed files
     /// complete. Staged rows are assembled exactly as backup would, then

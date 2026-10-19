@@ -15,7 +15,7 @@ carries the bare result only.
 | Command | `--json` | `--timing` | Notes |
 |---|---|---|---|
 | `backup` | report (+timings with `--timing`) | table + JSON block | regions list is timing detail, JSON-only |
-| `status` | preview (+timings with `--timing`) | table + JSON block | read-only: never writes to world or store |
+| `status` | preview (+timings with `--timing`) | table + JSON block | never records: no region data or store contents change |
 | `rollback` | report (+timings with `--timing`) | table + JSON block | |
 | `list` | snapshot array (+stats with `--stat`) | n/a | no phases exist |
 | `export` | report (+timings with `--timing`) | table + JSON block | |
