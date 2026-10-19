@@ -49,6 +49,12 @@ impl SekaiInstance {
 
     /// Execute a garbage collection plan, removing orphan blobs.
     /// `progress` fires per examined orphan candidate.
+    ///
+    /// Each candidate is re-verified against the store under this call's
+    /// lock, so a plan from an earlier [`Self::gc_plan`] never unlinks a
+    /// blob that a backup has referenced since; blobs orphaned after
+    /// planning wait for the next run. [`Self::gc`] does both under one
+    /// lock.
     pub async fn gc_apply(
         &mut self,
         plan: &GcPlan,
