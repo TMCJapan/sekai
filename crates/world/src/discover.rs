@@ -17,6 +17,10 @@ use sekai_core::RegionKey;
 /// Folders may have moved since the backup (e.g. across a 26.1 migration),
 /// so callers prefer this over derived paths whenever a same-dimension
 /// sibling exists.
+///
+/// `discovered` must hold the paths discovery observed: the sibling's
+/// *directory* is what this reuses, so derived paths would point the
+/// lookup at the layout's canonical directory instead of the live one.
 pub fn sibling_path(discovered: &BTreeMap<RegionKey, PathBuf>, key: &RegionKey) -> Option<PathBuf> {
     let sibling = discovered
         .iter()
