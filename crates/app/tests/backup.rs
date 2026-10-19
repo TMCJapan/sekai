@@ -129,6 +129,34 @@ fn options() -> BackupOptions {
     }
 }
 
+/// A parseable but non-canonical file name (`r.00.00.mca`) must be read
+/// from the path discovery found, not from the canonical `r.0.0.mca`.
+#[tokio::test]
+async fn backs_up_a_non_canonical_region_name() {
+    let root = tempdir("non-canonical-name");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    write_region(
+        world_path.join("region/r.00.00.mca"),
+        &[(0, 0, vec![3, 1, 2, 3])],
+    );
+
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let (report, timings) = instance
+        .world_mut(&mut world)
+        .backup(options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+    assert_eq!(report.chunks, 1);
+    assert_eq!(timings.regions.len(), 1);
+    assert_eq!(
+        timings.regions[0].path,
+        world_path.join("region/r.00.00.mca")
+    );
+    cleanup(&root);
+}
+
 #[tokio::test]
 async fn backup_list_rollback_round_trip() {
     let root = tempdir("roundtrip");
@@ -1186,6 +1214,47 @@ async fn diff_world_chunk_with_snapshot() {
     cleanup(&root);
 }
 
+/// Diff must read the discovered `r.00.00.mca`, not the canonical
+/// `r.0.0.mca` that does not exist on disk.
+#[tokio::test]
+async fn diffs_a_non_canonical_region_name() {
+    let root = tempdir("diff-non-canonical");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    let region = world_path.join("region/r.00.00.mca");
+
+    write_region(&region, &[(0, 0, vec![3, 1, 2, 3])]);
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    instance
+        .world_mut(&mut world)
+        .backup(options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+
+    write_region(&region, &[(0, 0, vec![3, 4, 5, 6])]);
+
+    let coord = sekai_app::ChunkCoord::new(
+        sekai_app::Dimension::OVERWORLD,
+        sekai_app::RegionKind::Region,
+        0,
+        0,
+    );
+    // The payloads are not valid NBT, so a successful read reports the
+    // decode failure; the absence of `RegionFailed` is what this pins.
+    let err = instance
+        .world(&world)
+        .diff_world_chunk(None, &coord, None)
+        .await
+        .expect_err("raw payload is not valid NBT");
+    assert!(
+        !matches!(err, sekai_app::AppError::RegionFailed { .. }),
+        "diff must read the discovered file, got: {err}"
+    );
+
+    cleanup(&root);
+}
+
 #[tokio::test]
 async fn backs_up_region_with_trailing_partial_sector() {
     // Real files can carry a torn tail (e.g. 1034 sectors + 188 bytes)
@@ -1370,7 +1439,7 @@ async fn created_and_deleted_chunks_diff_as_added_removed() {
 #[tokio::test]
 async fn all_kinds_round_trip() {
     use sekai_app::{ChunkCoord, Dimension, RegionKind};
-    for kind in [RegionKind::Region, RegionKind::Entities, RegionKind::Poi] {
+    for kind in RegionKind::ALL {
         let root = tempdir(&format!("kind-{}", kind_dir(kind)));
         let world_path = root.join("world");
         let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -1527,7 +1596,7 @@ async fn real_world_corpus_round_trip() {
 
     // Real NBT in every kind decodes: self-diffs are empty, not errors.
     let snapshots = instance.list_snapshots().await.unwrap();
-    for kind in [RegionKind::Region, RegionKind::Entities, RegionKind::Poi] {
+    for kind in RegionKind::ALL {
         let coords = sekai_app::world_chunk_coords(&world)
             .unwrap()
             .into_iter()
@@ -1740,9 +1809,9 @@ fn materialize(world_root: impl AsRef<Path>, model: &ChunkMaps, files: &[(&str, 
 fn read_world(world: &HostWorldTree, world_path: impl AsRef<Path>) -> ChunkMaps {
     let mut files = Vec::new();
     for dim in world.get_dims().unwrap() {
-        for kind in [RegionKind::Region, RegionKind::Entities, RegionKind::Poi] {
-            for key in world.get_regions(dim, kind).unwrap() {
-                files.push(world.derive_path(key).unwrap());
+        for kind in RegionKind::ALL {
+            for (_, path) in world.get_regions(dim, kind).unwrap() {
+                files.push(path);
             }
         }
     }

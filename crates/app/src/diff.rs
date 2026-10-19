@@ -1,10 +1,12 @@
 //! Chunk AST diff operations over CAS and metadata stores.
 
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use sekai_core::{
-    BlobHash, BlobStore as _, ChunkCoord, DEFAULT_IGNORED, MetaStore, NbtDiffEntry, RegionKind,
-    SnapshotId, diff_nbt,
+    BlobHash, BlobStore as _, ChunkCoord, DEFAULT_IGNORED, MetaStore, NbtDiffEntry, RegionKey,
+    RegionKind, SnapshotId, diff_nbt,
 };
 use sekai_world::WorldTree;
 
@@ -57,32 +59,21 @@ impl SekaiInstance {
 /// Fetch raw (still compressed) chunk payload directly from a world directory.
 /// Returns `None` when the region file or chunk entry is absent; corrupt
 /// files still fail loudly.
-fn read_world_chunk_compressed<T: WorldTree>(
-    world: &T,
+fn read_world_chunk_compressed(
+    regions: &BTreeMap<RegionKey, PathBuf>,
     coord: &ChunkCoord,
-) -> Result<Option<Vec<u8>>, AppError>
-where
-    AppError: From<T::Error>,
-{
-    let rx = coord.region_x();
-    let rz = coord.region_z();
-
-    let Some(region_key) = world
-        .get_regions(coord.dim, coord.kind)?
-        .into_iter()
-        .find(|r| r.rx == rx && r.rz == rz)
-    else {
+) -> Result<Option<Vec<u8>>, AppError> {
+    let key = RegionKey::of(*coord);
+    let Some(path) = regions.get(&key) else {
         return Ok(None);
     };
 
-    let path = world.derive_path(region_key)?;
-
-    let bytes = sekai_world::open_image(&path)?;
+    let bytes = sekai_world::open_image(path)?;
     let failed = |source| AppError::RegionFailed {
         path: path.clone(),
         source,
     };
-    let image = sekai_anvil::RegionImage::from_bytes(bytes, rx, rz).map_err(failed)?;
+    let image = sekai_anvil::RegionImage::from_bytes(bytes, key.rx, key.rz).map_err(failed)?;
 
     let payload = image.chunk_payload(coord.x, coord.z).map_err(failed)?;
     Ok(payload.map(<[u8]>::to_vec))
@@ -186,31 +177,51 @@ impl SekaiInstance {
     }
 }
 
+/// Every region file of `world` keyed by identity, using the paths
+/// discovery observed.
+fn world_region_paths<T: WorldTree>(world: &T) -> Result<BTreeMap<RegionKey, PathBuf>, AppError>
+where
+    AppError: From<T::Error>,
+{
+    let mut regions = BTreeMap::new();
+    for dim in world.get_dims()? {
+        for kind in RegionKind::ALL {
+            for (key, path) in world.get_regions(dim, kind)? {
+                if let Some(previous) = regions.insert(key, path.clone()) {
+                    return Err(AppError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!(
+                            "world tree enumerated region {key:?} twice ({} and {})",
+                            previous.display(),
+                            path.display()
+                        ),
+                    )));
+                }
+            }
+        }
+    }
+    Ok(regions)
+}
+
 /// Chunk coordinates present on disk in `world`.
 pub fn world_chunk_coords<T: WorldTree>(world: &T) -> Result<Vec<ChunkCoord>, AppError>
 where
     AppError: From<T::Error>,
 {
     let mut coords = Vec::new();
-    for dim in world.get_dims()? {
-        for kind in [RegionKind::Region, RegionKind::Entities, RegionKind::Poi] {
-            for key in world.get_regions(dim, kind)? {
-                let path = world.derive_path(key)?;
-                let bytes = sekai_world::open_image(&path)?;
-                let failed = |source| AppError::RegionFailed {
-                    path: path.clone(),
-                    source,
-                };
-                let image =
-                    sekai_anvil::RegionImage::from_bytes(bytes, key.rx, key.rz).map_err(failed)?;
-                image
-                    .visit_chunks(|chunk| {
-                        coords.push(ChunkCoord::new(key.dim, key.kind, chunk.x, chunk.z));
-                        true
-                    })
-                    .map_err(failed)?;
-            }
-        }
+    for (key, path) in world_region_paths(world)? {
+        let bytes = sekai_world::open_image(&path)?;
+        let failed = |source| AppError::RegionFailed {
+            path: path.clone(),
+            source,
+        };
+        let image = sekai_anvil::RegionImage::from_bytes(bytes, key.rx, key.rz).map_err(failed)?;
+        image
+            .visit_chunks(|chunk| {
+                coords.push(ChunkCoord::new(key.dim, key.kind, chunk.x, chunk.z));
+                true
+            })
+            .map_err(failed)?;
     }
     coords.sort();
     coords.dedup();
@@ -297,7 +308,9 @@ where
                 store: &self.instance.store,
                 id: snapshot_id,
             },
-            self.world,
+            WorldDiff {
+                regions: world_region_paths(self.world)?,
+            },
             progress,
             &mut timings,
         )
@@ -351,15 +364,17 @@ impl DiffSource for SnapshotDiff<'_> {
     }
 }
 
-impl<T: WorldTree> DiffSource for &T
-where
-    AppError: From<T::Error>,
-{
+/// One diff run's world side: region paths resolved once, not per chunk.
+struct WorldDiff {
+    regions: BTreeMap<RegionKey, PathBuf>,
+}
+
+impl DiffSource for WorldDiff {
     fn payload(
         &self,
         coord: &ChunkCoord,
     ) -> impl Future<Output = Result<Option<Vec<u8>>, AppError>> {
-        std::future::ready(read_world_chunk_compressed(*self, coord))
+        std::future::ready(read_world_chunk_compressed(&self.regions, coord))
     }
 }
 

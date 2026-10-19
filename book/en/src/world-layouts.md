@@ -91,12 +91,17 @@ yields the files a backup or rollback operates on:
 ```text
 dimension dir ─▶ region/ entities/ poi/
               ─▶ entries sorted by name
-              ─▶ keep r.<x>.<z>.mca files, first file per coordinate wins
-              ─▶ RegionRef { path, id, kind, x, z }
+              ─▶ keep parseable r.<x>.<z>.mca files,
+                 first file per coordinate wins
+              ─▶ (RegionKey { dim, kind, x, z }, actual path)
 ```
 
+- Each result carries the path discovery actually found, so non-canonical
+  spellings such as `r.00.00.mca` are read, backed up, and restored.
 - Name order decides ties: two files spelling the same coordinates
   (`r.0.0.mca` and `r.00.00.mca`) resolve the same way on every run.
+  `derive_path` still names the canonical `r.<x>.<z>.mca` for output
+  targets and for restoring a region whose file is missing.
 - Symlinks are followed, like the game does; a missing kind directory is
   read as empty, but a missing world root or an unreadable directory fails
   loudly instead of silently dropping a dimension.

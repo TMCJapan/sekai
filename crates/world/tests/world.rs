@@ -36,17 +36,14 @@ fn write(path: impl AsRef<Path>, bytes: &[u8]) {
     std::fs::write(path, bytes).unwrap();
 }
 
-/// Every region of the world as its discovered key and derived path:
+/// Every region of the world as its discovered key and on-disk path:
 /// dimensions in ascending raw-code order (`get_dims`), and within each
 /// dimension in `region`, `entities`, `poi` order (`get_regions`).
 fn discover(world: &HostWorldTree) -> Vec<(RegionKey, PathBuf)> {
     let mut regions = Vec::new();
     for dim in world.get_dims().unwrap() {
-        for kind in [RegionKind::Region, RegionKind::Entities, RegionKind::Poi] {
-            for key in world.get_regions(dim, kind).unwrap() {
-                let path = world.derive_path(key).unwrap();
-                regions.push((key, path));
-            }
+        for kind in RegionKind::ALL {
+            regions.extend(world.get_regions(dim, kind).unwrap());
         }
     }
     regions
@@ -68,8 +65,9 @@ fn key_at(found: &[(RegionKey, PathBuf)], path: impl AsRef<Path>) -> RegionKey {
         .0
 }
 
-/// Every discovered key derives back to its own path: the tree resolved
-/// each observed dimension directory at construction.
+/// Canonical fixtures: every discovered key derives back to its own path,
+/// because the tree resolved each observed dimension directory at
+/// construction. Non-canonical spellings are covered separately.
 fn assert_derives_back(tree: &HostWorldTree, found: &[(RegionKey, PathBuf)]) {
     for (key, path) in found {
         assert_eq!(&tree.derive_path(*key).unwrap(), path);
@@ -175,15 +173,12 @@ fn get_dims_lists_every_layout_dimension() {
         .get_regions(Dimension::OVERWORLD, RegionKind::Region)
         .unwrap();
     assert_eq!(over.len(), 1);
-    assert_eq!(
-        world.derive_path(over[0]).unwrap(),
-        world_path.join("region/r.0.0.mca")
-    );
+    assert_eq!(over[0].1, world_path.join("region/r.0.0.mca"));
     assert_eq!(
         world
             .get_regions(Dimension::NETHER, RegionKind::Region)
             .unwrap(),
-        [] as [RegionKey; 0]
+        [] as [(RegionKey, PathBuf); 0]
     );
     cleanup(&world_path);
 }
@@ -916,6 +911,30 @@ fn duplicate_coordinate_names_resolve_to_one_canonical_key() {
     cleanup(&root_path);
 }
 
+#[test]
+fn non_canonical_region_name_keeps_its_discovered_path() {
+    // `r.00.00.mca` parses as region (0,0). Discovery must report the file
+    // that exists, while `derive_path` keeps naming the canonical spelling
+    // used for output targets.
+    let world_path = tempdir("non-canonical");
+    let path = world_path.join("region/r.00.00.mca");
+    write(&path, &one_chunk_image());
+
+    let world = HostWorldTree::new(&world_path).unwrap();
+    let regions = world
+        .get_regions(Dimension::OVERWORLD, RegionKind::Region)
+        .unwrap();
+    assert_eq!(regions.len(), 1);
+    let (key, discovered) = &regions[0];
+    assert_eq!((key.rx, key.rz), (0, 0));
+    assert_eq!(discovered, &path);
+    assert_eq!(
+        world.derive_path(*key).unwrap(),
+        world_path.join("region/r.0.0.mca")
+    );
+    cleanup(&world_path);
+}
+
 #[cfg(unix)]
 #[test]
 fn unresolvable_entries_are_skipped_not_fatal() {
@@ -950,7 +969,7 @@ fn regions_are_ordered_by_coordinates() {
     let keys = world
         .get_regions(Dimension::OVERWORLD, RegionKind::Region)
         .unwrap();
-    let coords: Vec<_> = keys.iter().map(|key| (key.rx, key.rz)).collect();
+    let coords: Vec<_> = keys.iter().map(|(key, _)| (key.rx, key.rz)).collect();
     assert_eq!(coords, [(-1, 0), (2, 0), (10, 0)]);
     cleanup(&world_path);
 }
@@ -972,7 +991,7 @@ fn missing_world_is_an_error() {
         world
             .get_regions(Dimension::OVERWORLD, RegionKind::Region)
             .unwrap(),
-        [] as [RegionKey; 0]
+        [] as [(RegionKey, PathBuf); 0]
     );
 }
 
@@ -991,7 +1010,7 @@ fn output_trees_serve_no_regions_before_creation() {
         assert_eq!(
             tree.get_regions(Dimension::OVERWORLD, RegionKind::Region)
                 .unwrap(),
-            [] as [RegionKey; 0]
+            [] as [(RegionKey, PathBuf); 0]
         );
     }
     cleanup(&root);

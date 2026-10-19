@@ -55,7 +55,7 @@ impl WorldTree for FakeWorld {
         &self,
         _dim: Dimension,
         _kind: RegionKind,
-    ) -> Result<Vec<RegionKey>, Self::Error> {
+    ) -> Result<Vec<(RegionKey, PathBuf)>, Self::Error> {
         Self::check(self.fail_regions).map(|()| Vec::new())
     }
 

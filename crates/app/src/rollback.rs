@@ -140,9 +140,8 @@ where
         let mut discovered = tokio::task::spawn_blocking(move || {
             let mut discovered: BTreeMap<RegionKey, PathBuf> = BTreeMap::new();
             for dim in world_handle.get_dims()? {
-                for kind in [RegionKind::Region, RegionKind::Entities, RegionKind::Poi] {
-                    for key in world_handle.get_regions(dim, kind)? {
-                        let path = world_handle.derive_path(key)?;
+                for kind in RegionKind::ALL {
+                    for (key, path) in world_handle.get_regions(dim, kind)? {
                         // A tree reporting one region twice would leave one
                         // spelling of the file un-rebuilt (or undeleted); report
                         // both paths instead of silently dropping one.

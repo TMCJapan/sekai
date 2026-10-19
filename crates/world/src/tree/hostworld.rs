@@ -20,7 +20,7 @@ mod bukkit;
 mod detect;
 mod vanilla;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use sekai_core::{Dimension, RegionKey, RegionKind};
@@ -177,14 +177,24 @@ impl WorldTree for HostWorldTree {
         Ok(self.dirs.keys().copied().collect())
     }
 
-    fn get_regions(&self, dim: Dimension, kind: RegionKind) -> Result<Vec<RegionKey>, Self::Error> {
+    fn get_regions(
+        &self,
+        dim: Dimension,
+        kind: RegionKind,
+    ) -> Result<Vec<(RegionKey, PathBuf)>, Self::Error> {
         let Some(dir) = self.dirs.get(&dim) else {
             return Ok(Vec::new());
         };
 
         let name = kind_dir(kind);
-        let mut regions = BTreeSet::new();
-        for entry in vanilla::read_dir_opt(dir.join(name))? {
+        let mut regions = BTreeMap::new();
+        // Sorted by name so that two files spelling the same coordinates
+        // (`r.0.0.mca` and `r.00.00.mca`, both of which the game itself
+        // parses as region 0,0) resolve the same way on every run instead
+        // of following directory order.
+        let mut entries = vanilla::read_dir_opt(dir.join(name))?;
+        entries.sort_unstable_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
             if !vanilla::is_file(&entry) {
                 continue;
             }
@@ -195,13 +205,14 @@ impl WorldTree for HostWorldTree {
             let Ok((rx, rz)) = sekai_anvil::parse_region_name(name) else {
                 continue;
             };
-            // Two files may spell the same coordinates (`r.0.0.mca` and
-            // `r.00.00.mca`, both of which the game itself parses as region
-            // 0,0); the identity is the coordinates, so the key is reported
-            // once, ordered by coordinates like the old per-kind walk.
-            regions.insert(RegionKey { dim, kind, rx, rz });
+            // First name per coordinate wins; the BTreeMap keeps the result
+            // ordered by coordinates regardless of `RegionKey` field order.
+            regions.entry((rx, rz)).or_insert_with(|| entry.path());
         }
-        Ok(regions.into_iter().collect())
+        Ok(regions
+            .into_iter()
+            .map(|((rx, rz), path)| (RegionKey { dim, kind, rx, rz }, path))
+            .collect())
     }
 
     fn derive_path(

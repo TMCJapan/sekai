@@ -272,7 +272,11 @@ where
 
     let mut files: HashMap<RegionKey, Changed> = HashMap::with_capacity(observed.files.len());
     for (path, observation) in observed.files {
-        files.insert(observation.key, (path, observation.fingerprint));
+        if let Some((previous, _)) =
+            files.insert(observation.key, (path.clone(), observation.fingerprint))
+        {
+            return Err(duplicate_region(&observation.key, &previous, &path));
+        }
     }
     // Changed files in discovery order; carries need no file access.
     let changed: Vec<Changed> = plan
@@ -401,6 +405,22 @@ struct Observed {
     fingerprint: Duration,
 }
 
+/// Error for a tree that reports one region identity twice.
+fn duplicate_region(
+    key: &RegionKey,
+    first: impl AsRef<Path>,
+    second: impl AsRef<Path>,
+) -> AppError {
+    AppError::Io(std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!(
+            "world tree enumerated region {key:?} twice ({} and {})",
+            first.as_ref().display(),
+            second.as_ref().display()
+        ),
+    ))
+}
+
 /// Discover every region file and fingerprint it. Blocking: file walks and
 /// opens belong on a blocking pool, never on an async worker.
 fn observe<T: WorldTree>(world: &T) -> Result<Observed, AppError>
@@ -410,10 +430,8 @@ where
     let discover_started = Instant::now();
     let mut regions = Vec::new();
     for dim in world.get_dims()? {
-        for kind in [RegionKind::Region, RegionKind::Entities, RegionKind::Poi] {
-            for key in world.get_regions(dim, kind)? {
-                regions.push((key, world.derive_path(key)?));
-            }
+        for kind in RegionKind::ALL {
+            regions.extend(world.get_regions(dim, kind)?);
         }
     }
     let discover = discover_started.elapsed();

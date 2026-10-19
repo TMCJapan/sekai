@@ -37,13 +37,24 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
     /// rollback) visit dimensions in raw-code order instead.
     fn get_dims(&self) -> Result<Vec<Dimension>, Self::Error>;
 
-    /// Every region file of `kind` inside `dim`, ordered by coordinates.
+    /// Every region file of `kind` inside `dim` as its identity and the
+    /// actual on-disk path, ordered by coordinates.
+    ///
+    /// The path is the file discovery observed, not a layout-derived
+    /// spelling: it may be non-canonical (`r.00.00.mca`). One entry per
+    /// coordinate is reported; alternate spellings of the same coordinate
+    /// are deduplicated by the implementation.
     ///
     /// A `dim` that is not part of this tree (not returned by
-    /// [`WorldTree::get_dims`]) yields an empty vector, not an error.
-    fn get_regions(&self, dim: Dimension, kind: RegionKind) -> Result<Vec<RegionKey>, Self::Error>;
+    /// [`WorldTree::get_dims`]) yields an empty vector, not an error. The
+    /// same holds for a kind directory that is absent or was removed.
+    fn get_regions(
+        &self,
+        dim: Dimension,
+        kind: RegionKind,
+    ) -> Result<Vec<(RegionKey, PathBuf)>, Self::Error>;
 
     /// Layout-derived path of one region file, whether or not it exists on
-    /// disk yet (export targets).
+    /// disk yet (export targets, restore targets for missing files).
     fn derive_path(&self, key: RegionKey) -> Result<PathBuf, Self::Error>;
 }
