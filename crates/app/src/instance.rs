@@ -112,7 +112,6 @@ impl SekaiInstance {
         }
     }
 
-    /// Lock the store for one operation.
     pub(crate) fn lock_store(&self, mode: StoreLockMode) -> Result<StoreLock, AppError> {
         Ok(self.store.cas().lock(mode)?)
     }
@@ -140,8 +139,6 @@ impl SekaiInstance {
     }
 }
 
-/// Store and world locks one operation holds.
-///
 /// Shared (`Arc`) into the blocking tasks that touch files: a cancelled
 /// future cannot abort a blocking task that already started, so the locks
 /// must outlive the future until the file pass finishes.
@@ -152,7 +149,6 @@ pub(crate) struct OperationLocks {
 }
 
 impl OperationLocks {
-    /// Lock the store and then `world`, both for one operation.
     pub(crate) fn acquire<T: WorldTree>(
         instance: &SekaiInstance,
         store: StoreLockMode,

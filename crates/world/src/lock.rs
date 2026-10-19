@@ -30,7 +30,6 @@ pub enum WorldLockMode {
 pub struct WorldLock(File);
 
 impl WorldLock {
-    /// Lock file name inside a world root.
     pub const FILE_NAME: &str = ".sekai.lock";
 
     /// Lock the file at `path` in `mode`, failing immediately with
@@ -84,7 +83,6 @@ impl WorldLock {
     }
 }
 
-/// Whether a failed create means this user cannot write the lock file.
 fn is_read_only(err: &io::Error) -> bool {
     matches!(
         err.kind(),

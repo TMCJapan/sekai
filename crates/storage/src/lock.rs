@@ -21,9 +21,7 @@ use std::path::Path;
 
 use crate::api::{StorageError, io_error};
 
-/// Serializes runs that change which blobs are referenced.
 const WRITER_LOCK: &str = "writer.lock";
-/// Excludes readers while rows are being deleted.
 const STORE_LOCK: &str = "store.lock";
 
 /// How an operation uses the store.
@@ -169,8 +167,8 @@ mod tests {
     fn a_failed_exclusive_attempt_releases_the_writer_lock() {
         let root = temp_root("partial");
         let _reader = lock_store(&root, Shared).unwrap();
-        // Writer succeeds on `writer.lock` alone; exclusive fails on
-        // `store.lock` after taking `writer.lock`, and must drop it again.
+        // Exclusive takes `writer.lock` before failing on `store.lock`; a
+        // writer can only follow if that failure released it again.
         assert!(lock_store(&root, Exclusive).is_err());
         lock_store(&root, Writer).unwrap();
         let _ = fs::remove_dir_all(&root);

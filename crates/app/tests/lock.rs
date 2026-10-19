@@ -44,7 +44,6 @@ struct Fixture {
 }
 
 impl Fixture {
-    /// A store holding one backup of a two-region world.
     async fn new(name: &str) -> Self {
         let root = tempdir(name);
         let world_path = root.join("world");
@@ -158,8 +157,8 @@ impl Op {
         }
     }
 
-    /// Run the operation; only whether it failed on a lock matters, so
-    /// payloads are minimal and content errors are fine.
+    /// Only whether it failed on a lock matters, so payloads are minimal
+    /// and content errors are fine.
     async fn run(self, fx: &mut Fixture) -> Result<(), sekai_app::AppError> {
         let id = SnapshotId(1);
         let tag = TagName::parse("held").unwrap();
