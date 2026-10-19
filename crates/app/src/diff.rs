@@ -1,18 +1,18 @@
 //! Chunk AST diff operations over CAS and metadata stores.
 
 use std::collections::BTreeMap;
-use std::collections::btree_map::Entry;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use sekai_core::{
     BlobHash, BlobStore as _, ChunkCoord, DEFAULT_IGNORED, MetaStore, NbtDiffEntry, RegionKey,
-    RegionKind, SnapshotId, diff_nbt,
+    SnapshotId, diff_nbt,
 };
 use sekai_world::WorldTree;
 
-use crate::error::{AppError, duplicate_region};
+use crate::error::AppError;
 use crate::instance::{SekaiInstance, WorldHandle, WorldHandleMut};
+use crate::regions::discover_regions;
 
 /// Per-phase timings for chunk AST diffs. Informational only; never
 /// changes diff semantics.
@@ -178,37 +178,13 @@ impl SekaiInstance {
     }
 }
 
-/// Every region file of `world` keyed by identity, using the paths
-/// discovery observed.
-fn world_region_paths<T: WorldTree>(world: &T) -> Result<BTreeMap<RegionKey, PathBuf>, AppError>
-where
-    AppError: From<T::Error>,
-{
-    let mut regions = BTreeMap::new();
-    for dim in world.get_dims()? {
-        for kind in RegionKind::ALL {
-            for (key, path) in world.get_regions(dim, kind)? {
-                match regions.entry(key) {
-                    Entry::Vacant(entry) => {
-                        entry.insert(path);
-                    }
-                    Entry::Occupied(entry) => {
-                        return Err(duplicate_region(&key, entry.get(), &path));
-                    }
-                }
-            }
-        }
-    }
-    Ok(regions)
-}
-
 /// Chunk coordinates present on disk in `world`.
 pub fn world_chunk_coords<T: WorldTree>(world: &T) -> Result<Vec<ChunkCoord>, AppError>
 where
     AppError: From<T::Error>,
 {
     let mut coords = Vec::new();
-    for (key, path) in world_region_paths(world)? {
+    for (key, path) in discover_regions(world)? {
         let bytes = sekai_world::open_image(&path)?;
         let failed = |source| AppError::RegionFailed {
             path: path.clone(),
@@ -308,7 +284,7 @@ where
                 id: snapshot_id,
             },
             WorldDiff {
-                regions: world_region_paths(self.world)?,
+                regions: discover_regions(self.world)?,
             },
             progress,
             &mut timings,

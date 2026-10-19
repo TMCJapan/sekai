@@ -18,6 +18,7 @@ mod export;
 mod gc;
 mod instance;
 mod prune;
+mod regions;
 mod rollback;
 mod tag;
 

@@ -20,13 +20,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use sekai_core::usecase::backup::Ingested;
 use sekai_core::{
     Assembled, BackupReport, ChunkCoord, Observation, Previous, RegionFingerprint, RegionKey,
-    RegionKind, Scope, SnapshotEntry, SnapshotId,
+    Scope, SnapshotEntry, SnapshotId,
 };
 use sekai_storage::FileCas;
 use sekai_world::WorldTree;
 
-use crate::error::{AppError, duplicate_region};
+use crate::error::AppError;
 use crate::instance::{WorldHandle, WorldHandleMut};
+use crate::regions::discover_regions;
 
 /// Backup behavior knobs.
 #[derive(Debug, Clone, Default)]
@@ -272,13 +273,9 @@ where
 
     let mut files: HashMap<RegionKey, Changed> = HashMap::with_capacity(observed.files.len());
     for (path, observation) in observed.files {
-        if let Some((previous, _)) =
-            files.insert(observation.key, (path.clone(), observation.fingerprint))
-        {
-            return Err(duplicate_region(&observation.key, &previous, &path));
-        }
+        files.insert(observation.key, (path, observation.fingerprint));
     }
-    // Changed files in discovery order; carries need no file access.
+    // Changed files in key order; carries need no file access.
     let changed: Vec<Changed> = plan
         .ingest
         .iter()
@@ -412,12 +409,7 @@ where
     AppError: From<T::Error>,
 {
     let discover_started = Instant::now();
-    let mut regions = Vec::new();
-    for dim in world.get_dims()? {
-        for kind in RegionKind::ALL {
-            regions.extend(world.get_regions(dim, kind)?);
-        }
-    }
+    let regions = discover_regions(world)?;
     let discover = discover_started.elapsed();
 
     let fingerprint_started = Instant::now();

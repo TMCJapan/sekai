@@ -12,17 +12,17 @@
 //! partial world would be worse than writing none. Keep-policies in
 //! [`RollbackOptions`] relax each of those strict behaviors explicitly.
 
-use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use sekai_core::{BlobHash, ChunkCoord, RegionKey, RegionKind, RollbackReport, Scope, SnapshotId};
+use sekai_core::{BlobHash, ChunkCoord, RegionKey, RollbackReport, Scope, SnapshotId};
 use sekai_storage::FileCas;
 use sekai_world::WorldTree;
 
-use crate::error::{AppError, duplicate_region};
+use crate::error::AppError;
 use crate::instance::WorldHandleMut;
+use crate::regions::discover_regions;
 
 /// Per-phase timings for rollback execution.
 #[derive(Debug, Clone, Default)]
@@ -137,28 +137,8 @@ where
         // the blocking pool.
         let discover_started = Instant::now();
         let world_handle = world.clone();
-        let mut discovered = tokio::task::spawn_blocking(move || {
-            let mut discovered: BTreeMap<RegionKey, PathBuf> = BTreeMap::new();
-            for dim in world_handle.get_dims()? {
-                for kind in RegionKind::ALL {
-                    for (key, path) in world_handle.get_regions(dim, kind)? {
-                        // A tree reporting one region twice would leave one
-                        // spelling of the file un-rebuilt (or undeleted); report
-                        // both paths instead of silently dropping one.
-                        match discovered.entry(key) {
-                            Entry::Vacant(entry) => {
-                                entry.insert(path);
-                            }
-                            Entry::Occupied(entry) => {
-                                return Err(duplicate_region(&key, entry.get(), &path));
-                            }
-                        }
-                    }
-                }
-            }
-            Ok::<_, AppError>(discovered)
-        })
-        .await??;
+        let mut discovered =
+            tokio::task::spawn_blocking(move || discover_regions(&world_handle)).await??;
         let discover_dt = discover_started.elapsed();
         discovered.retain(|key, _| scope.matches_region(*key));
 
