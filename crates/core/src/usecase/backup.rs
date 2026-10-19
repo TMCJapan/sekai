@@ -261,7 +261,7 @@ mod tests {
 
     const OVER: Dimension = Dimension::OVERWORLD;
     const NETHER: Dimension = Dimension::NETHER;
-    const REGION: RegionKind = RegionKind::REGION;
+    const REGION: RegionKind = RegionKind::Region;
 
     const fn key(rx: i32, rz: i32) -> RegionKey {
         RegionKey::new(OVER, REGION, rx, rz)

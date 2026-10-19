@@ -39,11 +39,11 @@ mod tests {
 
     #[test]
     fn region_of_negative_coords() {
-        let c = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::REGION, -1, -33);
+        let c = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, -1, -33);
         assert_eq!((c.region_x(), c.region_z()), (-1, -2));
-        let c = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::REGION, 0, 31);
+        let c = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 0, 31);
         assert_eq!((c.region_x(), c.region_z()), (0, 0));
-        let c = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::REGION, 32, 32);
+        let c = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 32, 32);
         assert_eq!((c.region_x(), c.region_z()), (1, 1));
     }
 }

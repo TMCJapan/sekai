@@ -328,6 +328,11 @@ fn parses_selection_for_backup_and_rollback() {
     } else {
         panic!("expected backup");
     }
+
+    // Codes outside the known families are refused at parse time instead of
+    // widening into an unknown kind.
+    assert!(Cli::try_parse_from(["sekai", "backup", "w", "--kind", "9"]).is_err());
+    assert!(Cli::try_parse_from(["sekai", "backup", "w", "--kind", "blocks"]).is_err());
 }
 
 #[test]
@@ -342,20 +347,20 @@ fn selection_owned_scope_round_trips() {
     assert_eq!(base.owned_scope(), Scope::World);
     // `--kind` on its own narrows the whole world instead of being dropped.
     let kinds = Selection {
-        kind: vec![sekai_app::RegionKind::REGION],
+        kind: vec![sekai_app::RegionKind::Region],
         ..base.clone()
     };
     let scope = kinds.owned_scope();
-    assert!(matches!(scope, Scope::Kinds(ref k) if k == &[sekai_app::RegionKind::REGION]));
+    assert!(matches!(scope, Scope::Kinds(ref k) if k == &[sekai_app::RegionKind::Region]));
     assert!(scope.contains(sekai_app::ChunkCoord::new(
         Dimension::NETHER,
-        sekai_app::RegionKind::REGION,
+        sekai_app::RegionKind::Region,
         4,
         4
     )));
     assert!(!scope.contains(sekai_app::ChunkCoord::new(
         Dimension::NETHER,
-        sekai_app::RegionKind::POI,
+        sekai_app::RegionKind::Poi,
         4,
         4
     )));
@@ -367,16 +372,16 @@ fn selection_owned_scope_round_trips() {
     assert!(matches!(scope, Scope::Select { .. }));
     let chunks = Selection {
         areas: vec!["overworld:1,-2".parse().unwrap()],
-        kind: vec![sekai_app::RegionKind::REGION],
+        kind: vec![sekai_app::RegionKind::Region],
         ..base
     };
     let scope = chunks.owned_scope();
     let coord =
-        sekai_app::ChunkCoord::new(Dimension::OVERWORLD, sekai_app::RegionKind::REGION, 1, -2);
+        sekai_app::ChunkCoord::new(Dimension::OVERWORLD, sekai_app::RegionKind::Region, 1, -2);
     assert!(scope.contains(coord));
     assert!(!scope.contains(sekai_app::ChunkCoord::new(
         Dimension::OVERWORLD,
-        sekai_app::RegionKind::REGION,
+        sekai_app::RegionKind::Region,
         2,
         -2
     )));
@@ -396,7 +401,7 @@ fn selection_describe_summarizes() {
     let scoped = Selection {
         areas: vec!["nether".parse().unwrap(), "overworld:1,-2".parse().unwrap()],
         region: vec!["overworld:0,0".parse().unwrap()],
-        kind: vec![sekai_app::RegionKind::REGION, sekai_app::RegionKind::POI],
+        kind: vec![sekai_app::RegionKind::Region, sekai_app::RegionKind::Poi],
     };
     assert_eq!(
         scoped.describe(),

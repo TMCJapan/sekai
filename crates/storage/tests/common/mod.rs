@@ -14,7 +14,7 @@ use sekai_core::{
 use std::collections::BTreeSet;
 
 const OVER: Dimension = Dimension::OVERWORLD;
-const REGION: RegionKind = RegionKind::REGION;
+const REGION: RegionKind = RegionKind::Region;
 
 pub const fn key(rx: i32, rz: i32) -> RegionKey {
     RegionKey::new(OVER, REGION, rx, rz)

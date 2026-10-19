@@ -243,7 +243,7 @@ async fn scoped_backup_records_no_spurious_tombstones() {
     // The nether chunk still resolves through fallback to the full backup.
     let snapshots = instance.list_snapshots().await.unwrap();
     assert_eq!(snapshots.len(), 2);
-    let nether_coord = ChunkCoord::new(Dimension::NETHER, RegionKind::REGION, 0, 0);
+    let nether_coord = ChunkCoord::new(Dimension::NETHER, RegionKind::Region, 0, 0);
     let diffs = instance
         .diff_chunk(snapshots[0].id, snapshots[1].id, &nether_coord, None)
         .await
@@ -781,7 +781,7 @@ async fn with_diff_records_diff_hashes() {
             snapshots[0].id,
             &sekai_core::ChunkCoord::new(
                 sekai_core::Dimension::OVERWORLD,
-                sekai_core::RegionKind::REGION,
+                sekai_core::RegionKind::Region,
                 0,
                 0,
             ),
@@ -926,7 +926,7 @@ async fn progress_events_cover_rollback_diff_and_gc() {
 
     let coord = sekai_app::ChunkCoord::new(
         sekai_app::Dimension::OVERWORLD,
-        sekai_app::RegionKind::REGION,
+        sekai_app::RegionKind::Region,
         0,
         0,
     );
@@ -1070,7 +1070,7 @@ async fn diff_chunk_between_snapshots() {
 
     let coord = sekai_core::ChunkCoord::new(
         sekai_core::Dimension::OVERWORLD,
-        sekai_core::RegionKind::REGION,
+        sekai_core::RegionKind::Region,
         0,
         0,
     );
@@ -1119,7 +1119,7 @@ async fn diff_world_chunk_with_snapshot() {
 
     let coord = sekai_core::ChunkCoord::new(
         sekai_core::Dimension::OVERWORLD,
-        sekai_core::RegionKind::REGION,
+        sekai_core::RegionKind::Region,
         0,
         0,
     );
@@ -1207,13 +1207,11 @@ fn build_status_nbt(status: &str) -> Vec<u8> {
     payload
 }
 
-fn kind_dir(kind: sekai_app::RegionKind) -> &'static str {
-    if kind == sekai_app::RegionKind::ENTITIES {
-        "entities"
-    } else if kind == sekai_app::RegionKind::POI {
-        "poi"
-    } else {
-        "region"
+const fn kind_dir(kind: sekai_app::RegionKind) -> &'static str {
+    match kind {
+        sekai_app::RegionKind::Region => "region",
+        sekai_app::RegionKind::Entities => "entities",
+        sekai_app::RegionKind::Poi => "poi",
     }
 }
 
@@ -1239,7 +1237,7 @@ async fn sparse_entities_chunk_diffs_empty_without_error() {
     let snapshots = instance.list_snapshots().await.unwrap();
 
     // The sparse kinds have no (0,0): previously a loud error, now empty.
-    for kind in [RegionKind::ENTITIES, RegionKind::POI] {
+    for kind in [RegionKind::Entities, RegionKind::Poi] {
         let coord = ChunkCoord::new(Dimension::OVERWORLD, kind, 0, 0);
         let diffs = instance
             .diff_chunk(snapshots[0].id, snapshots[0].id, &coord, None)
@@ -1264,7 +1262,7 @@ async fn created_and_deleted_chunks_diff_as_added_removed() {
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let entities = world_path.join("entities/r.0.0.mca");
-    let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::ENTITIES, 0, 0);
+    let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Entities, 0, 0);
 
     // S1: no entities chunk.
     write_region(
@@ -1322,7 +1320,7 @@ async fn created_and_deleted_chunks_diff_as_added_removed() {
 #[tokio::test]
 async fn all_kinds_round_trip() {
     use sekai_app::{ChunkCoord, Dimension, RegionKind};
-    for kind in [RegionKind::REGION, RegionKind::ENTITIES, RegionKind::POI] {
+    for kind in [RegionKind::Region, RegionKind::Entities, RegionKind::Poi] {
         let root = tempdir(&format!("kind-{}", kind_dir(kind)));
         let world_path = root.join("world");
         let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -1402,7 +1400,7 @@ async fn rect_and_kind_scopes_limit_ingest() {
     // Rectangle over (0,0)-(1,0), region kind only: (32,0) and entities
     // stay out with no tombstones.
     let rect = Scope::Select {
-        kinds: vec![RegionKind::REGION],
+        kinds: vec![RegionKind::Region],
         areas: vec![(Dimension::OVERWORLD, Area::Rect(Rect::new(0, 0, 1, 0)))],
     };
     let (report, _) = instance
@@ -1415,7 +1413,7 @@ async fn rect_and_kind_scopes_limit_ingest() {
 
     // Kind filter alone: entities across the whole overworld.
     let entities = Scope::Select {
-        kinds: vec![RegionKind::ENTITIES],
+        kinds: vec![RegionKind::Entities],
         areas: vec![(Dimension::OVERWORLD, Area::All)],
     };
     let (report, _) = instance
@@ -1479,7 +1477,7 @@ async fn real_world_corpus_round_trip() {
 
     // Real NBT in every kind decodes: self-diffs are empty, not errors.
     let snapshots = instance.list_snapshots().await.unwrap();
-    for kind in [RegionKind::REGION, RegionKind::ENTITIES, RegionKind::POI] {
+    for kind in [RegionKind::Region, RegionKind::Entities, RegionKind::Poi] {
         let coords = sekai_app::world_chunk_coords(&world)
             .unwrap()
             .into_iter()
@@ -1690,9 +1688,11 @@ fn materialize(world_root: impl AsRef<Path>, model: &ChunkMaps, files: &[(&str, 
 }
 
 fn read_world(world: &HostWorldTree, world_path: impl AsRef<Path>) -> ChunkMaps {
-    world
-        .discover()
-        .unwrap()
+    let mut regions = Vec::new();
+    for dim in world.get_dims().unwrap() {
+        regions.extend(world.get_regions(dim).unwrap());
+    }
+    regions
         .into_iter()
         .map(|region| {
             // `/` regardless of platform, so the keys match the model's.

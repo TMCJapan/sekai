@@ -54,6 +54,12 @@ pub enum StorageError {
     /// Stored tag name fails validation.
     #[error("stored tag name is invalid: {name}")]
     InvalidTagName { name: String },
+    /// Stored region-family code does not name a known kind.
+    #[error("stored region kind is unknown: {kind}")]
+    UnknownRegionKind {
+        /// Code read from the `kind` column.
+        kind: i32,
+    },
     /// Millisecond timestamp does not fit `i64`.
     #[error("timestamp out of range: {0}")]
     InvalidTimestamp(u64),

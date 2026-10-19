@@ -117,7 +117,7 @@ mod tests {
     use sekai_util::{ChunkCoord, Dimension, RegionKind, SnapshotEntry};
 
     const OVER: Dimension = Dimension::OVERWORLD;
-    const REGION: RegionKind = RegionKind::REGION;
+    const REGION: RegionKind = RegionKind::Region;
 
     fn coord(x: i32, z: i32) -> ChunkCoord {
         ChunkCoord::new(OVER, REGION, x, z)

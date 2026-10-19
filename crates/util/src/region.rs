@@ -103,7 +103,7 @@ mod tests {
     use super::*;
 
     const fn key() -> RegionKey {
-        RegionKey::new(Dimension::OVERWORLD, RegionKind::REGION, 0, 0)
+        RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0)
     }
 
     const fn fingerprint() -> RegionFingerprint {
@@ -150,10 +150,10 @@ mod tests {
 
     #[test]
     fn region_key_of_chunk() {
-        let coord = ChunkCoord::new(Dimension::NETHER, RegionKind::POI, -33, 70);
+        let coord = ChunkCoord::new(Dimension::NETHER, RegionKind::Poi, -33, 70);
         assert_eq!(
             RegionKey::of(coord),
-            RegionKey::new(Dimension::NETHER, RegionKind::POI, -2, 2)
+            RegionKey::new(Dimension::NETHER, RegionKind::Poi, -2, 2)
         );
     }
 }

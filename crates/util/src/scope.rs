@@ -145,7 +145,7 @@ pub enum Scope {
 impl Scope {
     /// All three region families, for selections that do not narrow kinds.
     pub fn all_kinds() -> Vec<RegionKind> {
-        alloc::vec![RegionKind::REGION, RegionKind::ENTITIES, RegionKind::POI,]
+        alloc::vec![RegionKind::Region, RegionKind::Entities, RegionKind::Poi,]
     }
 
     /// Whole dimension in all region families.
@@ -193,9 +193,9 @@ mod tests {
     const OVER: Dimension = Dimension::OVERWORLD;
     const NETHER: Dimension = Dimension::NETHER;
     const END: Dimension = Dimension::END;
-    const REGION: RegionKind = RegionKind::REGION;
-    const ENTITIES: RegionKind = RegionKind::ENTITIES;
-    const POI_REGION: RegionKind = RegionKind::POI;
+    const REGION: RegionKind = RegionKind::Region;
+    const ENTITIES: RegionKind = RegionKind::Entities;
+    const POI_REGION: RegionKind = RegionKind::Poi;
 
     #[test]
     fn world_matches_everything() {
