@@ -4,8 +4,9 @@ These commands never change region files or store contents. Like every
 command, they may create empty lock files to coordinate with concurrent
 commands: `store.lock` in the store root, and for `status` and
 world-side `diff` also `.sekai.lock` in the world root (see
-[Maintenance](maintenance.md)). On a read-only world they skip the world
-lock instead of failing.
+[Maintenance](maintenance.md)). A read-only world still works: an
+existing `.sekai.lock` is locked through a read-only handle, and when
+none can be created the world lock is skipped.
 
 ```sh
 sekai --store ./sekai-store list
