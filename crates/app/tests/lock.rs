@@ -4,14 +4,15 @@
 //! concurrent runs here.
 
 use sekai_app::{
-    BackupOptions, BlobHash, ChunkCoord, Dimension, ExportOptions, HostWorldTree, RegionKind,
-    RollbackOptions, Scope, SekaiInstance, SnapshotId, StatusOptions, TagName, WorldLockMode,
-    WorldTree,
+    BackupOptions, BlobHash, ExportOptions, HostWorldTree, RollbackOptions, Scope, SekaiInstance,
+    SnapshotId, StatusOptions, TagName, WorldLockMode, WorldTree,
 };
 use sekai_storage::StoreLockMode;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+use StoreLockMode::{Exclusive, Shared, Writer};
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -81,14 +82,199 @@ impl Drop for Fixture {
     }
 }
 
-/// A chunk present in the fixture world.
-const fn chunk() -> ChunkCoord {
-    ChunkCoord::new(Dimension::OVERWORLD, RegionKind::REGION, 0, 0)
+fn is_lock_error(err: &sekai_app::AppError) -> bool {
+    err.to_string().contains("in use by another sekai")
 }
 
-fn assert_locked<T: std::fmt::Debug>(outcome: Result<T, sekai_app::AppError>) {
-    let err = outcome.unwrap_err();
-    assert!(err.to_string().contains("in use by another sekai"), "{err}");
+/// Every public operation, with the locks ADR-0014 assigns it.
+#[derive(Debug, Clone, Copy)]
+enum Op {
+    ListSnapshots,
+    LatestSnapshot,
+    ListTags,
+    CreateTag,
+    DeleteTag,
+    ResolveRef,
+    SnapshotStats,
+    SnapshotCoords,
+    DiffBlobs,
+    DiffChunks,
+    Export,
+    GcPlan,
+    GcApply,
+    Gc,
+    PrunePlan,
+    PruneApply,
+    Prune,
+    Backup,
+    Status,
+    DiffWorld,
+    Rollback,
+    WorldChunkCoords,
+}
+
+impl Op {
+    const ALL: [Self; 22] = [
+        Self::ListSnapshots,
+        Self::LatestSnapshot,
+        Self::ListTags,
+        Self::CreateTag,
+        Self::DeleteTag,
+        Self::ResolveRef,
+        Self::SnapshotStats,
+        Self::SnapshotCoords,
+        Self::DiffBlobs,
+        Self::DiffChunks,
+        Self::Export,
+        Self::GcPlan,
+        Self::GcApply,
+        Self::Gc,
+        Self::PrunePlan,
+        Self::PruneApply,
+        Self::Prune,
+        Self::Backup,
+        Self::Status,
+        Self::DiffWorld,
+        Self::Rollback,
+        Self::WorldChunkCoords,
+    ];
+
+    const fn store_mode(self) -> Option<StoreLockMode> {
+        match self {
+            Self::GcPlan | Self::GcApply | Self::Gc | Self::Backup => Some(Writer),
+            Self::PruneApply | Self::Prune => Some(Exclusive),
+            Self::WorldChunkCoords => None,
+            _ => Some(Shared),
+        }
+    }
+
+    const fn world_mode(self) -> Option<WorldLockMode> {
+        match self {
+            Self::Backup | Self::Status | Self::DiffWorld | Self::WorldChunkCoords => {
+                Some(WorldLockMode::Shared)
+            }
+            Self::Rollback => Some(WorldLockMode::Exclusive),
+            _ => None,
+        }
+    }
+
+    /// Run the operation; only whether it failed on a lock matters, so
+    /// payloads are minimal and content errors are fine.
+    async fn run(self, fx: &mut Fixture) -> Result<(), sekai_app::AppError> {
+        let id = SnapshotId(1);
+        let tag = TagName::parse("held").unwrap();
+        let export_dir = fx.root.join(format!(
+            "export-{}",
+            TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let instance = &mut fx.instance;
+        match self {
+            Self::ListSnapshots => instance.list_snapshots().await.map(drop),
+            Self::LatestSnapshot => instance.latest_snapshot_id().await.map(drop),
+            Self::ListTags => instance.list_tags().await.map(drop),
+            Self::CreateTag => instance.create_tag(&tag, id, true).await.map(drop),
+            Self::DeleteTag => instance.delete_tag(&tag).await.map(drop),
+            Self::ResolveRef => instance.resolve_snapshot_ref("1").await.map(drop),
+            Self::SnapshotStats => instance.snapshot_stats(id).await.map(drop),
+            Self::SnapshotCoords => instance.snapshot_chunk_coords(id).await.map(drop),
+            Self::DiffBlobs => {
+                let hash = BlobHash([0; 32]);
+                instance.diff_blobs(&hash, &hash, None).await.map(drop)
+            }
+            Self::DiffChunks => instance
+                .diff_chunks(id, id, &[], None, |_| {})
+                .await
+                .map(drop),
+            Self::Export => {
+                let out = HostWorldTree::new_legacy(export_dir);
+                let outcome = instance
+                    .export(&out, id, ExportOptions::default(), Scope::World, |_| {})
+                    .await;
+                outcome.map(drop)
+            }
+            Self::GcPlan => instance.gc_plan().await.map(drop),
+            Self::GcApply => {
+                let plan = sekai_app::GcPlan::new(Vec::new(), 0);
+                instance.gc_apply(&plan, |_| {}).await.map(drop)
+            }
+            Self::Gc => instance.gc(|_| {}).await.map(drop),
+            Self::PrunePlan => instance.prune_plan(Some(1), None).await.map(drop),
+            Self::PruneApply => {
+                let plan = sekai_app::PrunePlan {
+                    delete: Vec::new(),
+                    retained: vec![id],
+                };
+                instance.prune_apply(&plan, |_| {}).await.map(drop)
+            }
+            Self::Prune => instance.prune(Some(1), None, |_| {}).await.map(drop),
+            Self::Backup => instance
+                .world_mut(&mut fx.world)
+                .backup(BackupOptions::default(), Scope::World, |_| {})
+                .await
+                .map(drop),
+            Self::Status => instance
+                .world(&fx.world)
+                .status(StatusOptions::default(), Scope::World, |_| {})
+                .await
+                .map(drop),
+            Self::DiffWorld => instance
+                .world(&fx.world)
+                .diff_world_chunks(None, &[], None, |_| {})
+                .await
+                .map(drop),
+            Self::Rollback => instance
+                .world_mut(&mut fx.world)
+                .rollback(id, RollbackOptions::default(), Scope::World, |_| {})
+                .await
+                .map(drop),
+            Self::WorldChunkCoords => sekai_app::world_chunk_coords(&fx.world).map(drop),
+        }
+    }
+}
+
+const fn store_compatible(held: StoreLockMode, wanted: StoreLockMode) -> bool {
+    matches!((held, wanted), (Shared, Shared | Writer) | (Writer, Shared))
+}
+
+#[tokio::test]
+async fn every_operation_takes_its_store_mode() {
+    let mut fx = Fixture::new("store-matrix").await;
+    for held in [Shared, Writer, Exclusive] {
+        let lock = fx.hold_store(held);
+        for op in Op::ALL {
+            let blocked = op
+                .store_mode()
+                .is_some_and(|wanted| !store_compatible(held, wanted));
+            let outcome = op.run(&mut fx).await;
+            assert_eq!(
+                outcome.as_ref().is_err_and(is_lock_error),
+                blocked,
+                "{op:?} while the store is held {held:?}: {outcome:?}"
+            );
+        }
+        drop(lock);
+    }
+}
+
+#[tokio::test]
+async fn every_operation_takes_its_world_mode() {
+    let mut fx = Fixture::new("world-matrix").await;
+    let other = fx.other_world();
+    for held in [WorldLockMode::Shared, WorldLockMode::Exclusive] {
+        let lock = other.lock(held).unwrap();
+        for op in Op::ALL {
+            let blocked = op.world_mode().is_some_and(|wanted| {
+                held == WorldLockMode::Exclusive || wanted == WorldLockMode::Exclusive
+            });
+            let outcome = op.run(&mut fx).await;
+            assert_eq!(
+                outcome.as_ref().is_err_and(is_lock_error),
+                blocked,
+                "{op:?} while the world is held {held:?}: {outcome:?}"
+            );
+        }
+        drop(lock);
+    }
 }
 
 #[tokio::test]
@@ -102,159 +288,6 @@ async fn collection_and_pruning_do_not_trip_over_their_own_phases() {
     fx.instance.gc_apply(&plan, |_| {}).await.unwrap();
 }
 
-#[tokio::test]
-async fn a_writer_excludes_collection_and_backups_but_not_readers() {
-    let mut fx = Fixture::new("writer").await;
-    let _backup = fx.hold_store(StoreLockMode::Writer);
-
-    assert_locked(fx.instance.gc(|_| {}).await);
-    assert_locked(fx.instance.gc_plan().await);
-    assert_locked(fx.instance.prune(Some(1), None, |_| {}).await);
-    let Fixture {
-        instance, world, ..
-    } = &mut fx;
-    assert_locked(
-        instance
-            .world_mut(world)
-            .backup(BackupOptions::default(), Scope::World, |_| {})
-            .await,
-    );
-
-    // Readers run alongside a backup.
-    let latest = fx.instance.latest_snapshot_id().await.unwrap();
-    fx.instance.list_snapshots().await.unwrap();
-    fx.instance.snapshot_stats(latest).await.unwrap();
-    fx.instance.prune_plan(Some(1), None).await.unwrap();
-    fx.instance
-        .world(&fx.world)
-        .status(StatusOptions::default(), Scope::World, |_| {})
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
-async fn pruning_excludes_every_other_operation() {
-    let mut fx = Fixture::new("exclusive").await;
-    let id = SnapshotId(1);
-    let tag = TagName::parse("held").unwrap();
-    let (gc_plan, _) = fx.instance.gc_plan().await.unwrap();
-    let (prune_plan, _) = fx.instance.prune_plan(Some(1), None).await.unwrap();
-    let out = HostWorldTree::new_legacy(fx.root.join("export"));
-    let _prune = fx.hold_store(StoreLockMode::Exclusive);
-
-    let instance = &mut fx.instance;
-    assert_locked(instance.list_snapshots().await);
-    assert_locked(instance.latest_snapshot_id().await);
-    assert_locked(instance.list_tags().await);
-    assert_locked(instance.create_tag(&tag, id, false).await);
-    assert_locked(instance.delete_tag(&tag).await);
-    assert_locked(instance.resolve_snapshot_ref("1").await);
-    assert_locked(instance.snapshot_stats(id).await);
-    assert_locked(instance.snapshot_chunk_coords(id).await);
-    assert_locked(
-        instance
-            .diff_blobs(&BlobHash([0; 32]), &BlobHash([0; 32]), None)
-            .await,
-    );
-    assert_locked(instance.diff_chunk(id, id, &chunk(), None).await);
-    assert_locked(instance.diff_chunks(id, id, &[chunk()], None, |_| {}).await);
-    assert_locked(
-        instance
-            .export(&out, id, ExportOptions::default(), Scope::World, |_| {})
-            .await,
-    );
-    assert_locked(instance.gc_plan().await);
-    assert_locked(instance.gc_apply(&gc_plan, |_| {}).await);
-    assert_locked(instance.gc(|_| {}).await);
-    assert_locked(instance.prune_plan(Some(1), None).await);
-    assert_locked(instance.prune_apply(&prune_plan, |_| {}).await);
-    assert_locked(instance.prune(Some(1), None, |_| {}).await);
-
-    let Fixture {
-        instance, world, ..
-    } = &mut fx;
-    let mut handle = instance.world_mut(world);
-    assert_locked(
-        handle
-            .backup(BackupOptions::default(), Scope::World, |_| {})
-            .await,
-    );
-    assert_locked(
-        handle
-            .status(StatusOptions::default(), Scope::World, |_| {})
-            .await,
-    );
-    assert_locked(handle.diff_world_chunk(None, &chunk(), None).await);
-    assert_locked(
-        handle
-            .diff_world_chunks(None, &[chunk()], None, |_| {})
-            .await,
-    );
-    assert_locked(
-        handle
-            .rollback(id, RollbackOptions::default(), Scope::World, |_| {})
-            .await,
-    );
-}
-
-#[tokio::test]
-async fn a_rollback_excludes_world_readers_and_readers_exclude_a_rollback() {
-    let mut fx = Fixture::new("world").await;
-    let other = fx.other_world();
-
-    let reader = other.lock(WorldLockMode::Shared).unwrap();
-    let Fixture {
-        instance, world, ..
-    } = &mut fx;
-    assert_locked(
-        instance
-            .world_mut(world)
-            .rollback(
-                SnapshotId(1),
-                RollbackOptions::default(),
-                Scope::World,
-                |_| {},
-            )
-            .await,
-    );
-    // Readers share the world with each other.
-    let reading = fx.instance.world(&fx.world);
-    reading
-        .status(StatusOptions::default(), Scope::World, |_| {})
-        .await
-        .unwrap();
-    // No coordinates: the lock is under test, not decoding the fixture.
-    reading
-        .diff_world_chunks(None, &[], None, |_| {})
-        .await
-        .unwrap();
-    sekai_app::world_chunk_coords(&fx.world).unwrap();
-    drop(reader);
-
-    let _rollback = other.lock(WorldLockMode::Exclusive).unwrap();
-    let reading = fx.instance.world(&fx.world);
-    assert_locked(
-        reading
-            .status(StatusOptions::default(), Scope::World, |_| {})
-            .await,
-    );
-    assert_locked(
-        reading
-            .diff_world_chunks(None, &[chunk()], None, |_| {})
-            .await,
-    );
-    assert_locked(sekai_app::world_chunk_coords(&fx.world));
-    let Fixture {
-        instance, world, ..
-    } = &mut fx;
-    assert_locked(
-        instance
-            .world_mut(world)
-            .backup(BackupOptions::default(), Scope::World, |_| {})
-            .await,
-    );
-}
-
 /// A cancelled rollback future cannot stop its blocking file pass, so the
 /// pass itself must keep the world locked until it finishes.
 #[tokio::test]
@@ -262,6 +295,7 @@ async fn a_cancelled_rollback_keeps_the_world_locked_until_its_files_finish() {
     let mut fx = Fixture::new("cancel").await;
     let other = fx.other_world();
     let (started, files_running) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
 
     let Fixture {
         instance, world, ..
@@ -273,16 +307,18 @@ async fn a_cancelled_rollback_keeps_the_world_locked_until_its_files_finish() {
         Scope::World,
         move |_| {
             let _ = started.send(());
-            std::thread::sleep(Duration::from_millis(300));
+            // Parks the file pass until the test lets go (the sender drops).
+            let _ = released.recv();
         },
     );
     tokio::select! {
         outcome = rollback => panic!("the rollback must still be running: {outcome:?}"),
         _ = tokio::task::spawn_blocking(move || files_running.recv()) => {}
     }
-    // The future is gone; its file pass is still sleeping in `progress`.
+    // The future is gone; its file pass is parked in `progress`.
     assert!(other.lock(WorldLockMode::Exclusive).is_err());
 
+    drop(release);
     let deadline = Instant::now() + Duration::from_secs(10);
     while other.lock(WorldLockMode::Exclusive).is_err() {
         assert!(Instant::now() < deadline, "the file pass never released");
