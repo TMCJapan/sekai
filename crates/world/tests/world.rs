@@ -60,8 +60,12 @@ fn paths_of(found: &[(RegionKey, PathBuf)]) -> Vec<PathBuf> {
 }
 
 /// Key of the discovered file at `path`.
-fn key_at(found: &[(RegionKey, PathBuf)], path: &Path) -> RegionKey {
-    found.iter().find(|(_, p)| p.as_path() == path).unwrap().0
+fn key_at(found: &[(RegionKey, PathBuf)], path: impl AsRef<Path>) -> RegionKey {
+    found
+        .iter()
+        .find(|(_, p)| p.as_path() == path.as_ref())
+        .unwrap()
+        .0
 }
 
 /// Every discovered key derives back to its own path: the tree resolved
@@ -251,8 +255,8 @@ fn discovers_a_legacy_single_folder_world() {
             world_path.join("region/r.0.0.mca"),
         ]
     );
-    let nether = key_at(&found, &world_path.join("DIM-1/region/r.0.0.mca"));
-    let over = key_at(&found, &world_path.join("region/r.0.0.mca"));
+    let nether = key_at(&found, world_path.join("DIM-1/region/r.0.0.mca"));
+    let over = key_at(&found, world_path.join("region/r.0.0.mca"));
     assert_ne!(nether.dim, over.dim);
     assert_eq!(over.dim, Dimension::OVERWORLD);
     assert_eq!(nether.dim, Dimension::NETHER);
@@ -331,11 +335,11 @@ fn discovers_a_custom_level_name_world() {
     );
     let custom = key_at(
         &found,
-        &root_path.join("srv/dimensions/aeon/deep/region/r.0.1.mca"),
+        root_path.join("srv/dimensions/aeon/deep/region/r.0.1.mca"),
     );
     let over = key_at(
         &found,
-        &root_path.join("srv/dimensions/minecraft/overworld/region/r.0.0.mca"),
+        root_path.join("srv/dimensions/minecraft/overworld/region/r.0.0.mca"),
     );
     assert_ne!(custom.dim, over.dim);
     assert_derives_back(&root, &found);
@@ -409,7 +413,7 @@ fn discovers_a_legacy_bukkit_world() {
         ]
     );
     let custom = key_at(&found, &spawn);
-    let over = key_at(&found, &root_path.join("world/region/r.0.0.mca"));
+    let over = key_at(&found, root_path.join("world/region/r.0.0.mca"));
     assert_ne!(custom.dim, over.dim);
     assert_derives_back(&root, &found);
     assert_stable_ids(&root_path, &found);

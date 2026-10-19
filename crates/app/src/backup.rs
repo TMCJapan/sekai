@@ -651,7 +651,7 @@ struct ChunkIngestCtx<'a> {
 /// untouched and fallback keeps resolving them. Under `dry_run` blobs are
 /// probed, never stored.
 fn ingest_file(
-    path: &Path,
+    path: impl AsRef<Path>,
     observed: RegionFingerprint,
     cas: &mut FileCas,
     with_diff: bool,
@@ -659,6 +659,7 @@ fn ingest_file(
     scope: &Scope,
     dry_run: bool,
 ) -> Result<FileOutcome, AppError> {
+    let path = path.as_ref();
     let key = observed.key;
     let opened = Instant::now();
     let bytes = sekai_world::open_image(path)?;
