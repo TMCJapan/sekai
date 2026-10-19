@@ -967,7 +967,7 @@ fn derives_all_layouts() {
     let legacy = HostWorldTree::new_legacy("/w");
     assert_eq!(
         legacy
-            .derive_path(Dimension::NETHER, RegionKind::REGION, -1, 2)
+            .derive_path(Dimension::NETHER, RegionKind::Region, -1, 2)
             .unwrap(),
         Path::new("/w/DIM-1/region/r.-1.2.mca")
     );
@@ -975,7 +975,7 @@ fn derives_all_layouts() {
     let modern = HostWorldTree::new_dimensions("/w");
     assert_eq!(
         modern
-            .derive_path(Dimension::END, RegionKind::POI, 0, 0)
+            .derive_path(Dimension::END, RegionKind::Poi, 0, 0)
             .unwrap(),
         Path::new("/w/dimensions/minecraft/the_end/poi/r.0.0.mca")
     );
@@ -983,32 +983,20 @@ fn derives_all_layouts() {
     let bukkit = HostWorldTree::new_bukkit("/w", "srv");
     assert_eq!(
         bukkit
-            .derive_path(Dimension::OVERWORLD, RegionKind::REGION, 0, 0)
+            .derive_path(Dimension::OVERWORLD, RegionKind::Region, 0, 0)
             .unwrap(),
         Path::new("/w/srv/region/r.0.0.mca")
     );
 
     let err = modern
-        .derive_path(Dimension::new(4242), RegionKind::REGION, 0, 0)
+        .derive_path(Dimension::new(4242), RegionKind::Region, 0, 0)
         .unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     assert_eq!(
         err.to_string(),
         format!(
             "cannot derive region path for dim 4242, kind {}, r.0.0",
-            RegionKind::REGION.raw()
-        )
-    );
-
-    let err = legacy
-        .derive_path(Dimension::OVERWORLD, RegionKind::new(9), 0, 0)
-        .unwrap_err();
-    assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
-    assert_eq!(
-        err.to_string(),
-        format!(
-            "cannot derive region path for dim {}, kind 9, r.0.0",
-            Dimension::OVERWORLD.raw()
+            RegionKind::Region.raw()
         )
     );
 }
@@ -1059,7 +1047,7 @@ fn fingerprints_are_stable_and_change_sensitive() {
     let world = tempdir("fp");
     let path = world.join("region/r.0.0.mca");
     write(&path, &one_chunk_image());
-    let key = RegionKey::new(Dimension::OVERWORLD, RegionKind::REGION, 0, 0);
+    let key = RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
     let a = fingerprint_file(&path, key).unwrap();
     assert_eq!(a, fingerprint_file(&path, key).unwrap());
     // Same size, new header content: must mismatch.
@@ -1088,7 +1076,7 @@ fn fingerprints_are_stable_and_change_sensitive() {
 fn fingerprint_sees_a_payload_edit_with_preserved_size_and_mtime() {
     let world = tempdir("fp-payload");
     let path = world.join("region/r.0.0.mca");
-    let key = RegionKey::new(Dimension::OVERWORLD, RegionKind::REGION, 0, 0);
+    let key = RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
     // A fixed timestamp both writes are stamped with, so mtime cannot be the
     // signal that catches the edit.
     let stamp = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);

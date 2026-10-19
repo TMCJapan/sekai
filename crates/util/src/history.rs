@@ -44,7 +44,7 @@ mod tests {
 
     #[test]
     fn tombstone_detection() {
-        let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::REGION, 0, 0);
+        let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
         let present = ChunkHistoryEntry::new(coord, SnapshotId(1), Some(BlobHash([1; 32])), None);
         assert!(!present.is_tombstone());
         let tomb = ChunkHistoryEntry::new(coord, SnapshotId(2), None, None);

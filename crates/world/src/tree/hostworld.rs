@@ -28,19 +28,16 @@ use sekai_core::{Dimension, RegionKind};
 use super::WorldTree;
 use crate::{RegionRef, WorldError};
 
-/// Kind directories scanned for region files, in output order.
-const KIND_DIRS: [(RegionKind, &str); 3] = [
-    (RegionKind::REGION, "region"),
-    (RegionKind::ENTITIES, "entities"),
-    (RegionKind::POI, "poi"),
-];
+/// Region kinds scanned for region files, in output order.
+const KINDS: [RegionKind; 3] = [RegionKind::Region, RegionKind::Entities, RegionKind::Poi];
 
 /// Directory of `kind` under a dimension directory.
-fn kind_dir(kind: RegionKind) -> Option<&'static str> {
-    KIND_DIRS
-        .iter()
-        .find(|(k, _)| *k == kind)
-        .map(|(_, dir)| *dir)
+const fn kind_dir(kind: RegionKind) -> &'static str {
+    match kind {
+        RegionKind::Region => "region",
+        RegionKind::Entities => "entities",
+        RegionKind::Poi => "poi",
+    }
 }
 
 #[derive(Clone)]
@@ -189,7 +186,8 @@ impl WorldTree for HostWorldTree {
         };
 
         let mut res = Vec::new();
-        for (kind, name) in KIND_DIRS {
+        for kind in KINDS {
+            let name = kind_dir(kind);
             let mut regions = BTreeMap::new();
             // Sorted by name so that two files spelling the same coordinates
             // (`r.0.0.mca` and `r.00.00.mca`, both of which the game itself
@@ -242,7 +240,7 @@ impl WorldTree for HostWorldTree {
             )
         };
         let root = self.dirs.get(&dim).ok_or_else(cannot_derive)?;
-        let name = kind_dir(kind).ok_or_else(cannot_derive)?;
+        let name = kind_dir(kind);
 
         Ok(root.join(name).join(format!("r.{region_x}.{region_z}.mca")))
     }

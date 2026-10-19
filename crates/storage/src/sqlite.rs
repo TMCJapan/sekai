@@ -138,6 +138,15 @@ fn i32_col(row: &sqlx::sqlite::SqliteRow, column: &'static str) -> Result<i32, S
     i64_to_i32(value, column)
 }
 
+/// Read a region-kind column, rejecting codes the enum cannot represent.
+fn kind_col(
+    row: &sqlx::sqlite::SqliteRow,
+    column: &'static str,
+) -> Result<RegionKind, StorageError> {
+    let value = i32_col(row, column)?;
+    RegionKind::new(value).map_err(|_| StorageError::UnknownRegionKind { kind: value })
+}
+
 /// Read a 32-byte hash column.
 fn hash32(bytes: Vec<u8>) -> Result<[u8; 32], StorageError> {
     bytes
@@ -164,7 +173,7 @@ fn millis_col(row: &sqlx::sqlite::SqliteRow, column: &'static str) -> Result<u64
 fn decode_history(row: &sqlx::sqlite::SqliteRow) -> Result<ChunkHistoryEntry, StorageError> {
     let coord = ChunkCoord::new(
         Dimension::new(i32_col(row, "dim")?),
-        RegionKind::new(i32_col(row, "kind")?),
+        kind_col(row, "kind")?,
         i32_col(row, "cx")?,
         i32_col(row, "cz")?,
     );
@@ -182,7 +191,7 @@ fn decode_history(row: &sqlx::sqlite::SqliteRow) -> Result<ChunkHistoryEntry, St
 fn decode_state(row: &sqlx::sqlite::SqliteRow) -> Result<RegionStateEntry, StorageError> {
     let key = RegionKey::new(
         Dimension::new(i32_col(row, "dim")?),
-        RegionKind::new(i32_col(row, "kind")?),
+        kind_col(row, "kind")?,
         i32_col(row, "rx")?,
         i32_col(row, "rz")?,
     );
@@ -710,14 +719,14 @@ mod tests {
     #[tokio::test]
     async fn wiped_derived_state_degrades_to_full_ingest() {
         let mut meta = memory_meta().await;
-        let key = RegionKey::new(Dimension::OVERWORLD, RegionKind::REGION, 0, 0);
+        let key = RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
         let fp = RegionFingerprint {
             key,
             mtime_ms: Some(1),
             size: 8192,
             content_hash: [7; 32],
         };
-        let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::REGION, 0, 0);
+        let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
         meta.apply_snapshot_incremental(
             1_000,
             &[stage_present(coord, BlobHash([1; 32]))],
@@ -763,16 +772,16 @@ mod tests {
     async fn carry_writes_no_chunk_rows() {
         use sekai_core::MetaStore as _;
         let mut meta = memory_meta().await;
-        let key0 = RegionKey::new(Dimension::OVERWORLD, RegionKind::REGION, 0, 0);
-        let key1 = RegionKey::new(Dimension::OVERWORLD, RegionKind::REGION, 1, 0);
+        let key0 = RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
+        let key1 = RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, 1, 0);
         let fp = |key| RegionFingerprint {
             key,
             mtime_ms: Some(1),
             size: 8192,
             content_hash: [7; 32],
         };
-        let c0 = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::REGION, 0, 0);
-        let c1 = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::REGION, 32, 0);
+        let c0 = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
+        let c1 = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 32, 0);
         meta.apply_snapshot_incremental(
             1_000,
             &[
@@ -835,5 +844,47 @@ mod tests {
             .unwrap();
         assert_eq!(kept.blob, Some(BlobHash([2; 32])));
         assert_eq!(kept.snapshot, SnapshotId(1));
+    }
+
+    #[tokio::test]
+    async fn unknown_stored_kind_fails_loudly() {
+        use sekai_core::MetaStore as _;
+        let mut meta = memory_meta().await;
+        let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
+        let snapshot = meta
+            .apply_snapshot(1_000, &[stage_present(coord, BlobHash([1; 32]))])
+            .await
+            .unwrap();
+        sqlx::query("UPDATE chunk_history SET kind = 9")
+            .execute(&meta.pool)
+            .await
+            .unwrap();
+        assert!(matches!(
+            meta.visit_fresh_rows(snapshot, |_| true).await,
+            Err(StorageError::UnknownRegionKind { kind: 9 })
+        ));
+    }
+
+    #[tokio::test]
+    async fn unknown_region_state_kind_fails_loudly() {
+        use sekai_core::MetaStore as _;
+        let mut meta = memory_meta().await;
+        let fingerprint = RegionFingerprint {
+            key: RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0),
+            mtime_ms: Some(1),
+            size: 8192,
+            content_hash: [7; 32],
+        };
+        meta.apply_snapshot_incremental(1_000, &[], None, &[fingerprint], &[])
+            .await
+            .unwrap();
+        sqlx::query("UPDATE region_state SET kind = 9")
+            .execute(&meta.pool)
+            .await
+            .unwrap();
+        assert!(matches!(
+            meta.load_region_states().await,
+            Err(StorageError::UnknownRegionKind { kind: 9 })
+        ));
     }
 }
