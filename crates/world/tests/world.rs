@@ -292,6 +292,33 @@ fn the_world_lock_lives_in_the_root_and_stays_out_of_discovery() {
 }
 
 #[test]
+fn world_locks_stay_out_of_bukkit_layout_detection() {
+    // A server root is scanned for its level-name folder and datapack
+    // siblings; lock files at either root must not join that scan.
+    let root_path = tempdir("lock-bukkit");
+    write(root_path.join("server.properties"), b"level-name=world\n");
+    write(
+        root_path.join("world/dimensions/minecraft/overworld/region/r.0.0.mca"),
+        &one_chunk_image(),
+    );
+    let before = discover(&HostWorldTree::new(&root_path).unwrap());
+
+    for root in [root_path.clone(), root_path.join("world")] {
+        drop(
+            HostWorldTree::new(&root)
+                .unwrap()
+                .lock(WorldLockMode::Shared)
+                .unwrap(),
+        );
+        assert!(root.join(WorldLock::FILE_NAME).is_file());
+    }
+
+    let reopened = HostWorldTree::new(&root_path).unwrap();
+    assert_eq!(paths_of(&discover(&reopened)), paths_of(&before));
+    cleanup(&root_path);
+}
+
+#[test]
 fn discovers_a_bukkit_level_name_world() {
     // `level-name=world`: the observed layout is the 26.1 tree nested
     // under the level-name folder.

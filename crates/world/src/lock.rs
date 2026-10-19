@@ -203,8 +203,10 @@ mod tests {
             fs::set_permissions(dir, fs::Permissions::from_mode(0o555)).unwrap();
         }
 
-        // Privileged users ignore permission bits; nothing to observe then.
-        if fs::write(fresh.join("probe"), "").is_err() {
+        // Privileged users (and some filesystems) ignore permission bits;
+        // nothing to observe then.
+        if fs::write(fresh.join("probe"), "").is_err() && fs::File::open(&unreadable_lock).is_err()
+        {
             let err = WorldLock::acquire(&existing_lock, WorldLockMode::Shared).unwrap_err();
             assert_eq!(
                 err.kind(),
