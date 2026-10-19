@@ -108,7 +108,8 @@ impl SqliteMeta {
     /// Open (creating and version-gating) the database at `path`.
     ///
     /// The parent directory must already exist; this type never creates it
-    /// (directory layout is the store's concern).
+    /// (directory layout is the store's concern). Opening while another
+    /// opener creates the schema waits for it, up to the busy timeout.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
         let options = SqliteConnectOptions::new()
             .filename(path)
