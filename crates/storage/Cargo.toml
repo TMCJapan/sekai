@@ -13,7 +13,7 @@ workspace = true
 
 [features]
 default = ["backend-sqlite"]
-backend-sqlite = ["dep:sqlx"]
+backend-sqlite = ["dep:sqlx", "dep:tokio"]
 backend-mysql = []
 backend-postgres = []
 
@@ -21,6 +21,7 @@ backend-postgres = []
 sekai-core.workspace = true
 sqlx = { workspace = true, optional = true }
 thiserror.workspace = true
+tokio = { workspace = true, optional = true, features = ["time"] }
 
 [dev-dependencies]
 tokio.workspace = true

@@ -4,6 +4,7 @@
 //! metadata commit by the caller. The pool has one connection.
 
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use sekai_core::{
     ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, Dimension, FoldOutcome,
@@ -11,7 +12,9 @@ use sekai_core::{
     SnapshotId, SnapshotTag, TagName,
 };
 use sqlx::Row as _;
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteSynchronous};
+use sqlx::sqlite::{
+    SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
+};
 
 use crate::api::{StorageError, Store, io_error};
 use crate::cas::FileCas;
@@ -34,24 +37,11 @@ pub type SqliteStore = Store<SqliteMeta, FileCas>;
 ///
 /// The layout is `<root>/meta.sqlite` plus `<root>/blobs/`; initializing an
 /// existing store again is idempotent. This is the only path that
-/// materializes a store, reserved for backup runs.
-///
-/// Creation runs under the writer lock, so two first backups on an empty
-/// root cannot both create the schema. An existing store takes no lock,
-/// like [`open_sqlite`]; operations lock themselves. That leaves one known
-/// gap, shared with `open`: a caller that arrives while another is still
-/// creating sees `meta.sqlite` already present, skips the lock, and fails
-/// on the half-created schema with an SQL error (never corruption).
+/// materializes a store, reserved for backup runs. It takes no store lock:
+/// schema creation serializes inside SQLite (see [`SqliteMeta::open`]), so
+/// concurrent first initializations all succeed.
 pub async fn init_sqlite(root: impl AsRef<Path>) -> Result<SqliteStore, StorageError> {
-    let root = root.as_ref();
-    if root.join("meta.sqlite").is_file() {
-        return connect_sqlite(root).await;
-    }
-    std::fs::create_dir_all(root).map_err(|source| io_error(root, source))?;
-    // Creators hold this lock, so a racer that got here first has finished
-    // by the time it is ours, and connecting to an initialized store is
-    // idempotent.
-    let _creating = crate::lock::lock_store(root, crate::lock::StoreLockMode::Writer)?;
+    std::fs::create_dir_all(root.as_ref()).map_err(|source| io_error(root.as_ref(), source))?;
     connect_sqlite(root).await
 }
 
@@ -77,6 +67,43 @@ async fn connect_sqlite(root: impl AsRef<Path>) -> Result<SqliteStore, StorageEr
     Ok(Store::new(meta, cas))
 }
 
+/// How long a connect keeps retrying `SQLITE_BUSY`, matching sqlx's
+/// default `busy_timeout`.
+const CONNECT_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Connect the single-connection pool.
+///
+/// Switching a fresh database into WAL needs an exclusive lock that
+/// SQLite's busy handler cannot wait on, so a connect racing another
+/// opener's switch fails with `SQLITE_BUSY` at once. Retry it as long as
+/// `busy_timeout` would have waited.
+async fn connect_pool(options: SqliteConnectOptions) -> Result<SqlitePool, sqlx::Error> {
+    const SQLITE_BUSY: &str = "5";
+    let deadline = Instant::now() + CONNECT_BUSY_TIMEOUT;
+    loop {
+        match SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options.clone())
+            .await
+        {
+            Err(sqlx::Error::Database(err))
+                if err.code().as_deref() == Some(SQLITE_BUSY) && Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            connected => return connected,
+        }
+    }
+}
+
+async fn read_user_version<'c>(
+    executor: impl sqlx::SqliteExecutor<'c>,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar("PRAGMA user_version")
+        .fetch_one(executor)
+        .await
+}
+
 impl SqliteMeta {
     /// Open (creating and version-gating) the database at `path`.
     ///
@@ -89,26 +116,29 @@ impl SqliteMeta {
             .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Full)
             .foreign_keys(true);
-        let pool = sqlx::sqlite::SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
-            .await?;
-        let version: i64 = sqlx::query_scalar("PRAGMA user_version")
-            .fetch_one(&pool)
-            .await?;
+        let pool = connect_pool(options).await?;
+        let mut version = read_user_version(&pool).await?;
         if version == 0 {
-            // DDL and the version stamp commit together: a crash between
-            // them would leave a half-created schema that no later open can
-            // repair (the gate would demand a version the store never got).
-            let mut tx = pool.begin().await?;
-            sqlx::query(SCHEMA).execute(&mut *tx).await?;
-            sqlx::query(sqlx::AssertSqlSafe(format!(
-                "PRAGMA user_version = {SCHEMA_VERSION}"
-            )))
-            .execute(&mut *tx)
-            .await?;
+            // Re-read under the write lock: a concurrent opener that won the
+            // race has stamped the version by the time this one gets it, so
+            // the schema is created exactly once. DDL and the stamp commit
+            // together: a crash between them would leave a half-created
+            // schema that no later open can repair (the gate would demand a
+            // version the store never got).
+            let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+            version = read_user_version(&mut *tx).await?;
+            if version == 0 {
+                sqlx::query(SCHEMA).execute(&mut *tx).await?;
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "PRAGMA user_version = {SCHEMA_VERSION}"
+                )))
+                .execute(&mut *tx)
+                .await?;
+                version = SCHEMA_VERSION;
+            }
             tx.commit().await?;
-        } else if version != SCHEMA_VERSION {
+        }
+        if version != SCHEMA_VERSION {
             return Err(StorageError::UnsupportedSchema {
                 found: version,
                 supported: SCHEMA_VERSION,
@@ -705,37 +735,25 @@ mod tests {
         assert_eq!(version, SCHEMA_VERSION);
     }
 
-    #[tokio::test]
-    async fn init_refuses_while_another_writer_holds_the_store() {
-        let dir = tempdir("init-locked");
-        let held = crate::lock::lock_store(&dir, crate::lock::StoreLockMode::Writer).unwrap();
-        assert!(matches!(
-            init_sqlite(&dir).await,
-            Err(StorageError::StoreLocked { .. })
-        ));
-        assert!(!dir.join("meta.sqlite").exists());
-        drop(held);
-        // Creation releases its lock, so the store is usable afterwards.
-        init_sqlite(&dir).await.unwrap();
-        crate::lock::lock_store(&dir, crate::lock::StoreLockMode::Exclusive).unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[tokio::test]
-    async fn init_creates_alongside_a_shared_holder() {
-        let dir = tempdir("init-shared");
-        let _held = crate::lock::lock_store(&dir, crate::lock::StoreLockMode::Shared).unwrap();
-        init_sqlite(&dir).await.unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[tokio::test]
-    async fn init_of_an_existing_store_takes_no_lock() {
-        let dir = tempdir("init-existing");
-        init_sqlite(&dir).await.unwrap();
-        let _held = crate::lock::lock_store(&dir, crate::lock::StoreLockMode::Exclusive).unwrap();
-        init_sqlite(&dir).await.unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_first_inits_all_succeed() {
+        for round in 0..20 {
+            let dir = tempdir(&format!("init-race-{round}"));
+            std::fs::remove_dir_all(&dir).unwrap();
+            let inits: Vec<_> = (0..4)
+                .map(|_| tokio::spawn(init_sqlite(dir.clone())))
+                .collect();
+            for init in inits {
+                init.await.unwrap().unwrap();
+            }
+            let meta = open_sqlite(&dir).await.unwrap();
+            let version: i64 = sqlx::query_scalar("PRAGMA user_version")
+                .fetch_one(&meta.meta().pool)
+                .await
+                .unwrap();
+            assert_eq!(version, SCHEMA_VERSION);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     #[tokio::test]

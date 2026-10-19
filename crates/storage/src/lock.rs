@@ -31,7 +31,7 @@ pub enum StoreLockMode {
     /// Tags never change which blobs rows reference, so editing them needs
     /// no writer lock.
     Shared,
-    /// Runs that write or collect blobs (`backup`, `gc`, store creation):
+    /// Runs that write or collect blobs (`backup`, `gc`):
     /// one at a time, while readers keep going.
     Writer,
     /// Runs that delete rows (`prune`): nothing else may run.
