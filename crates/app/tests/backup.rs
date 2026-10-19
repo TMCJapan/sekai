@@ -1224,7 +1224,7 @@ async fn diffs_a_non_canonical_region_name() {
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world_path.join("region/r.00.00.mca");
 
-    write_region(&region, &[(0, 0, vec![3, 1, 2, 3])]);
+    write_region(&region, &[(0, 0, vec![3, 10, 0, 0, 0])]);
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
@@ -1240,15 +1240,18 @@ async fn diffs_a_non_canonical_region_name() {
         0,
         0,
     );
-    // The payloads are not valid NBT, so a successful read reports the
-    // decode failure; the absence of `RegionFailed` is what this pins.
+    // The snapshot side holds valid NBT, so the decode failure can only
+    // come from the world side: it proves the discovered file was read.
     let err = instance
         .world(&world)
         .diff_world_chunk(None, &coord, None)
         .await
         .expect_err("raw payload is not valid NBT");
     assert!(
-        !matches!(err, sekai_app::AppError::RegionFailed { .. }),
+        matches!(
+            err,
+            sekai_app::AppError::Nbt(sekai_nbt::NbtError::UnexpectedRoot(4))
+        ),
         "diff must read the discovered file, got: {err}"
     );
 
