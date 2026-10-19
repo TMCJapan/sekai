@@ -187,11 +187,8 @@ impl WorldTree for HostWorldTree {
         };
 
         let name = kind_dir(kind);
-        let mut regions = BTreeMap::new();
-        // Sorted by name so that two files spelling the same coordinates
-        // (`r.0.0.mca` and `r.00.00.mca`, both of which the game itself
-        // parses as region 0,0) resolve the same way on every run instead
-        // of following directory order.
+        let mut regions: BTreeMap<(i32, i32), PathBuf> = BTreeMap::new();
+        // Sorted by name so the reported pair is the same on every run.
         let mut entries = vanilla::read_dir_opt(dir.join(name))?;
         entries.sort_unstable_by_key(std::fs::DirEntry::file_name);
         for entry in entries {
@@ -205,9 +202,24 @@ impl WorldTree for HostWorldTree {
             let Ok((rx, rz)) = sekai_anvil::parse_region_name(name) else {
                 continue;
             };
-            // First name per coordinate wins; the BTreeMap keeps the result
-            // ordered by coordinates regardless of `RegionKey` field order.
-            regions.entry((rx, rz)).or_insert_with(|| entry.path());
+            let path = entry.path();
+            // Two spellings of one coordinate (`r.0.0.mca` and `r.00.00.mca`,
+            // both of which the game itself parses as region 0,0) are
+            // ambiguous: the game reads whichever file it finds, so the tool
+            // must not pick one and drop the other.
+            if let Some(previous) = regions.get(&(rx, rz)) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "two region files spell the same region ({rx},{rz}): {} and {}",
+                        previous.display(),
+                        path.display()
+                    ),
+                ));
+            }
+            // The BTreeMap keeps the result ordered by coordinates
+            // regardless of `RegionKey` field order.
+            regions.insert((rx, rz), path);
         }
         Ok(regions
             .into_iter()

@@ -895,42 +895,24 @@ fn nested_world_folders_are_not_observed() {
 }
 
 #[test]
-fn duplicate_coordinate_names_resolve_to_one_canonical_key() {
-    // `r.0.0.mca` and `r.00.00.mca` both parse as region (0,0). Discovery
-    // reports the coordinate once, and its derived path is the canonical
-    // spelling, independent of directory iteration order.
+fn duplicate_coordinate_names_are_rejected() {
+    // `r.0.0.mca` and `r.00.00.mca` both parse as region (0,0). Which one
+    // the game reads is not decidable from the name alone, so discovery
+    // fails loudly instead of picking one and dropping the other.
     let root_path = tempdir("dup-coords");
     let root = HostWorldTree::new(&root_path).unwrap();
-    // The two spellings hold different content, so the winner is pinned by
-    // its bytes and not only by its name.
-    let canonical = one_chunk_image();
-    let alternate = one_chunk_image_at(1);
-    write(root_path.join("region/r.0.0.mca"), &canonical);
-    write(root_path.join("region/r.00.00.mca"), &alternate);
+    write(root_path.join("region/r.0.0.mca"), &one_chunk_image());
+    write(root_path.join("region/r.00.00.mca"), &one_chunk_image_at(1));
 
-    let found = discover(&root);
-    assert_eq!(found.len(), 1);
-    assert_eq!(found[0].1, root_path.join("region/r.0.0.mca"));
-    assert_eq!(
-        found[0].0,
-        RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0)
-    );
-    assert_ne!(
-        sekai_anvil::content_hash(&canonical),
-        sekai_anvil::content_hash(&alternate),
-        "the two spellings must differ for the winner to mean anything"
-    );
-    assert_eq!(
-        fingerprint_file(&found[0].1, found[0].0)
-            .unwrap()
-            .content_hash,
-        sekai_anvil::content_hash(&canonical),
-        "the surviving file is the canonically spelled one, byte for byte"
-    );
     for _ in 0..8 {
-        let again = discover(&root);
-        assert_eq!(again.len(), 1);
-        assert_eq!(again[0].1, root_path.join("region/r.0.0.mca"));
+        let error = root
+            .get_regions(Dimension::OVERWORLD, RegionKind::Region)
+            .unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("r.0.0.mca") && message.contains("r.00.00.mca"),
+            "the error must name both files: {message}"
+        );
     }
     cleanup(&root_path);
 }

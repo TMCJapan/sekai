@@ -42,10 +42,10 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
     ///
     /// The path is the file discovery observed, not a layout-derived
     /// spelling: it may be non-canonical (`r.00.00.mca`). One entry per
-    /// coordinate is reported; alternate spellings of the same coordinate
-    /// are deduplicated by the implementation. Reporting one identity
-    /// twice breaks that contract, and callers reject it as a broken tree
-    /// instead of silently dropping a file.
+    /// coordinate is reported; two files spelling the same coordinate are
+    /// ambiguous and must fail rather than silently drop one of them.
+    /// Reporting one identity twice breaks that contract, and callers
+    /// reject it as a broken tree.
     ///
     /// A `dim` that is not part of this tree (not returned by
     /// [`WorldTree::get_dims`]) yields an empty vector, not an error. The
