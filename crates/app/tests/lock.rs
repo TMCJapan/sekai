@@ -61,15 +61,16 @@ impl Fixture {
             .backup(BackupOptions::default(), Scope::World, |_| {})
             .await
             .unwrap();
-        let coord = instance.snapshot_chunk_coords(SnapshotId(1)).await.unwrap()[0];
+        let coords = instance.snapshot_chunk_coords(SnapshotId(1)).await.unwrap();
+        let coord = coords.first().expect("the fixture snapshot holds chunks");
         let blob = instance
             .store()
             .meta()
-            .lookup_chunk(SnapshotId(1), &coord)
+            .lookup_chunk(SnapshotId(1), coord)
             .await
             .unwrap()
             .and_then(|entry| entry.blob)
-            .unwrap();
+            .expect("a present chunk references a blob");
         Self {
             root,
             world_path,
@@ -176,8 +177,9 @@ impl Op {
     }
 
     /// Payloads are minimal but valid, so an operation the held lock lets
-    /// through must succeed. Prunes keep every snapshot, so the fixture
-    /// stays intact across the matrix.
+    /// through must succeed. State only grows across the matrix: prunes
+    /// keep every snapshot, backups add newer ones, and rollbacks restore
+    /// snapshot 1, which every row keeps addressing.
     async fn run(self, fx: &mut Fixture) -> Result<(), sekai_app::AppError> {
         let id = SnapshotId(1);
         let tag = TagName::parse("held").unwrap();
