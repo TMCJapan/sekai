@@ -171,6 +171,9 @@ impl SekaiInstance {
     }
 
     /// Effective chunk coordinates of one snapshot (fallback-resolved set).
+    ///
+    /// Takes its own shared store lock, so coordinates handed to a later
+    /// [`Self::diff_chunks`] go stale if a prune runs in between (ADR-0014).
     pub async fn snapshot_chunk_coords(
         &self,
         snapshot: SnapshotId,

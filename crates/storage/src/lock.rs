@@ -2,7 +2,7 @@
 //!
 //! Three hazards need it. A backup puts blobs into the CAS *before* it
 //! commits the rows that reference them, so a `gc` scanning in between
-//! unlinks live blobs (ADR-0011). Two backups race on snapshot IDs. And
+//! unlinks live blobs. Two backups race on snapshot IDs. And
 //! `prune` deletes rows a reader may have resolved moments earlier, so a
 //! rollback could restore a partial snapshot.
 //!

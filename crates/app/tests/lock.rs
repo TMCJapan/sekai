@@ -313,8 +313,9 @@ async fn every_operation_takes_its_world_mode() {
 #[tokio::test]
 async fn collection_and_pruning_do_not_trip_over_their_own_phases() {
     let mut fx = Fixture::new("own-phases").await;
-    // `gc`/`prune` plan and apply under one lock; re-locking per phase
-    // would make them conflict with themselves.
+    // `gc`/`prune` plan and apply under the lock they already hold;
+    // taking a phase's lock again inside the run (say, `gc` going through
+    // `gc_plan`) would conflict with that hold.
     fx.instance.gc(|_| {}).await.unwrap();
     fx.instance.prune(Some(1), None, |_| {}).await.unwrap();
     let (plan, _) = fx.instance.gc_plan().await.unwrap();

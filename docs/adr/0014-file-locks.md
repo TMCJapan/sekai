@@ -73,9 +73,9 @@ abort a blocking task that already started.
 - Separate operations are not atomic together. The CLI resolves a
   snapshot reference, then runs the command, and a `prune` can slip in
   between. Commands that check snapshot existence fail loudly; known gaps
-  are tracked separately. Likewise `diff` against a world enumerates its
-  chunks under one world lock and diffs them under another, so a
-  rollback in between leaves the enumerated set stale.
+  are tracked separately. Likewise `diff` enumerates chunk coordinates
+  under one lock and diffs them under another, so a rollback (world side)
+  or prune (snapshot side) in between leaves the enumerated set stale.
 - Two roots naming the same world (a Bukkit server root versus one of its
   world folders) get different lock files and do not exclude each other.
 - `SekaiInstance::store()`/`store_mut()` bypass locking, as escape

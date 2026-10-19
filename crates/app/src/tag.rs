@@ -24,6 +24,10 @@ impl SekaiInstance {
         snapshot: SnapshotId,
         force: bool,
     ) -> Result<SnapshotTag, AppError> {
+        // The lock only keeps `prune` out. Lookup, untag, and insert are
+        // separate statements, so concurrent edits of one tag can
+        // interleave; that needs a transaction, not a stronger lock, and
+        // is tracked separately.
         let _lock = self.lock_store(StoreLockMode::Shared)?;
         if self.store.meta().lookup_snapshot(snapshot).await?.is_none() {
             return Err(AppError::SnapshotRef(
