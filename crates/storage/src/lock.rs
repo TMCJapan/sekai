@@ -25,7 +25,7 @@ const WRITER_LOCK: &str = "writer.lock";
 const STORE_LOCK: &str = "store.lock";
 
 /// How an operation uses the store.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StoreLockMode {
     /// Reads and tag edits: run alongside each other and alongside backups.
     /// Every blob a shared holder can resolve survives a concurrent `gc`,
@@ -165,7 +165,8 @@ mod tests {
         assert!(lock_store(&root, Shared).is_err());
         drop(held);
         lock_store(&root, Exclusive).unwrap();
-        // Lock files persist: deleting one would split future holders.
+        // Releasing keeps the lock files, since deleting one would let the
+        // next holder lock a fresh inode past a current one.
         assert!(root.join(WRITER_LOCK).is_file());
         assert!(root.join(STORE_LOCK).is_file());
         let _ = fs::remove_dir_all(&root);

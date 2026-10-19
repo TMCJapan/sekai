@@ -17,7 +17,7 @@ use std::io;
 use std::path::Path;
 
 /// How an operation uses a world.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WorldLockMode {
     /// Reads (backup, status, diff): run alongside each other.
     Shared,
@@ -40,9 +40,10 @@ impl WorldLock {
     /// through a read-only handle in either mode. A shared lock degrades to
     /// `Ok(None)` (unguarded) only when the file is absent and cannot be
     /// created, so read-only worlds stay readable. Any other failure,
-    /// including an existing file this user cannot open at all, is an
-    /// error: silently running unguarded would let a reader overlap another
-    /// user's rollback.
+    /// including an existing file this user cannot open at all or a
+    /// directory this user cannot search (where absence cannot be told),
+    /// is an error: silently running unguarded would let a reader overlap
+    /// another user's rollback.
     pub fn acquire(path: impl AsRef<Path>, mode: WorldLockMode) -> io::Result<Option<Self>> {
         let path = path.as_ref();
         let opened = OpenOptions::new()
@@ -153,8 +154,10 @@ mod tests {
     fn a_missing_world_is_an_error_not_a_read_only_one() {
         let root = temp_root("missing");
         let path = root.join("absent").join(WorldLock::FILE_NAME);
-        assert!(WorldLock::acquire(&path, WorldLockMode::Shared).is_err());
-        assert!(WorldLock::acquire(&path, WorldLockMode::Exclusive).is_err());
+        for mode in [WorldLockMode::Shared, WorldLockMode::Exclusive] {
+            let err = WorldLock::acquire(&path, mode).unwrap_err();
+            assert_eq!(err.kind(), io::ErrorKind::NotFound, "{mode:?}: {err}");
+        }
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -194,8 +197,8 @@ mod tests {
         let unreadable_lock = unreadable.join(WorldLock::FILE_NAME);
         // Taken before the world turns read-only: another user's rollback.
         let writer = WorldLock::acquire(&existing_lock, WorldLockMode::Exclusive)
-            .unwrap()
-            .unwrap();
+            .expect("a writable world creates its lock file")
+            .expect("nothing else holds it yet");
         fs::write(&unreadable_lock, "").unwrap();
         fs::set_permissions(&existing_lock, fs::Permissions::from_mode(0o444)).unwrap();
         fs::set_permissions(&unreadable_lock, fs::Permissions::from_mode(0o000)).unwrap();
