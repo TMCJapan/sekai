@@ -7,7 +7,7 @@ use sekai_app::{
     BackupOptions, BlobHash, ExportOptions, HostWorldTree, RollbackOptions, Scope, SekaiInstance,
     SnapshotId, StatusOptions, TagName, WorldLockMode, WorldTree,
 };
-use sekai_storage::StoreLockMode;
+use sekai_storage::{StorageError, StoreLockMode};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -82,7 +82,11 @@ impl Drop for Fixture {
 }
 
 fn is_lock_error(err: &sekai_app::AppError) -> bool {
-    err.to_string().contains("in use by another sekai")
+    match err {
+        sekai_app::AppError::Storage(StorageError::StoreLocked { .. }) => true,
+        sekai_app::AppError::Io(err) => err.kind() == std::io::ErrorKind::WouldBlock,
+        _ => false,
+    }
 }
 
 /// Every public operation, with the locks ADR-0014 assigns it.
@@ -320,7 +324,9 @@ async fn a_cancelled_rollback_keeps_the_world_locked_until_its_files_finish() {
     );
     tokio::select! {
         outcome = rollback => panic!("the rollback must still be running: {outcome:?}"),
-        _ = tokio::task::spawn_blocking(move || files_running.recv()) => {}
+        started = tokio::task::spawn_blocking(move || files_running.recv()) => {
+            assert!(matches!(started, Ok(Ok(()))), "the file pass never started: {started:?}");
+        }
     }
     // The future is gone; its file pass is parked in `progress`.
     assert!(other.lock(WorldLockMode::Exclusive).is_err());
