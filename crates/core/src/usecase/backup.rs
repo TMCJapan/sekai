@@ -87,8 +87,10 @@ pub struct Assembled {
     pub new_blobs: usize,
     /// Tombstone rows recorded for vanished chunks.
     pub tombstones: usize,
-    /// Fresh fingerprints for ingested files.
+    /// Fresh fingerprints for ingested files the scope fully covers.
     pub fingerprints: Vec<RegionFingerprint>,
+    /// Ingested files the scope covers only partly; their state rows drop.
+    pub invalidated: Vec<RegionKey>,
     /// Fingerprint-matched regions, carried from the previous snapshot.
     pub carries: Vec<RegionKey>,
     /// Stored regions gone from disk.
@@ -185,6 +187,12 @@ pub struct Ingested {
 /// fallback, so scoped backups never record spurious tombstones. Coordinates
 /// already tombstoned at the previous snapshot are absent from
 /// `Previous::universe` and therefore neither carried nor re-tombstoned.
+///
+/// A stored fingerprint promises that the whole file matches the latest
+/// history, which is what lets a later backup carry it unread. A partial
+/// ingest records only the in-scope chunks, so its fingerprint is dropped
+/// and any older state row is invalidated rather than left to match a
+/// file whose history it no longer describes.
 pub fn assemble(plan: Plan, previous: &Previous, ingested: Ingested, scope: &Scope) -> Assembled {
     let Ingested {
         mut entries,
@@ -192,6 +200,9 @@ pub fn assemble(plan: Plan, previous: &Previous, ingested: Ingested, scope: &Sco
         new_blobs,
         fingerprints,
     } = ingested;
+    let (fingerprints, partial): (Vec<_>, Vec<_>) = fingerprints
+        .into_iter()
+        .partition(|fp| scope.covers_region(fp.key));
     // A carried file is still on disk, so its coordinates count as present
     // without being read again.
     if !plan.carries.is_empty() {
@@ -216,6 +227,7 @@ pub fn assemble(plan: Plan, previous: &Previous, ingested: Ingested, scope: &Sco
         new_blobs,
         tombstones,
         fingerprints,
+        invalidated: partial.into_iter().map(|fp| fp.key).collect(),
         carries: plan.carries,
         removed: plan.removed,
     }
@@ -234,13 +246,21 @@ pub async fn commit<M: MetaStore>(
     let carry_from = previous
         .snapshot
         .map(|snapshot| (snapshot.id, staged.carries.as_slice()));
+    // Both drop state rows; they stay apart in `Assembled` so previews
+    // report only vanished files as deleted.
+    let dropped_states: Vec<RegionKey> = staged
+        .removed
+        .iter()
+        .chain(&staged.invalidated)
+        .copied()
+        .collect();
     let outcome: ApplyOutcome = meta
         .apply_snapshot_incremental(
             created_at_ms,
             &staged.entries,
             carry_from,
             &staged.fingerprints,
-            &staged.removed,
+            &dropped_states,
         )
         .await?;
     Ok(BackupReport {
@@ -257,7 +277,7 @@ pub async fn commit<M: MetaStore>(
 mod tests {
     use super::*;
     use crate::support::MemMeta;
-    use sekai_util::{ChunkHistoryEntry, Dimension, RegionKind};
+    use sekai_util::{Area, ChunkHistoryEntry, Dimension, Rect, RegionKind};
 
     const OVER: Dimension = Dimension::OVERWORLD;
     const NETHER: Dimension = Dimension::NETHER;
@@ -579,6 +599,89 @@ mod tests {
                 .unwrap()
                 .unwrap();
         assert_eq!(kept.blob, Some(BlobHash([3; 32])));
+    }
+
+    fn over_rect(rect: Rect) -> Scope {
+        Scope::Select {
+            kinds: alloc::vec![REGION],
+            areas: alloc::vec![(OVER, Area::Rect(rect))],
+        }
+    }
+
+    #[test]
+    fn partial_ingest_invalidates_state_so_full_backup_reingests() {
+        let mut meta = MemMeta::default();
+        let fp0 = fingerprint(key(0, 0));
+        crate::support::block_on(meta.apply_snapshot_incremental(
+            1_000,
+            &[
+                stage_present(coord(0, 0), BlobHash([1; 32])),
+                stage_present(coord(1, 0), BlobHash([2; 32])),
+            ],
+            None,
+            &[fp0],
+            &[],
+        ))
+        .unwrap();
+
+        // Both chunks changed on disk, but the scope reads only (0,0).
+        let mut changed = fp0;
+        changed.size += 1;
+        let observed = [Observation {
+            key: key(0, 0),
+            fingerprint: changed,
+        }];
+        let scope = over_rect(Rect::new(0, 0, 0, 0));
+        let (previous, plan) =
+            crate::support::block_on(plan_backup(&meta, &observed, &scope)).unwrap();
+        assert_eq!(plan.ingest, alloc::vec![key(0, 0)]);
+        let staged = assemble(
+            plan,
+            &previous,
+            Ingested {
+                entries: alloc::vec![stage_present(coord(0, 0), BlobHash([9; 32]))],
+                present: BTreeSet::from([coord(0, 0)]),
+                new_blobs: 1,
+                fingerprints: alloc::vec![changed],
+            },
+            &scope,
+        );
+        assert_eq!(staged.fingerprints, [] as [RegionFingerprint; 0]);
+        assert_eq!(staged.invalidated, alloc::vec![key(0, 0)]);
+        assert_eq!(staged.removed, [] as [RegionKey; 0]);
+        assert_eq!(staged.tombstones, 0);
+        crate::support::block_on(commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        assert_eq!(meta.states, [] as [RegionStateEntry; 0]);
+
+        // The unread (1,0) change must not be carried as unchanged.
+        let (_, plan) =
+            crate::support::block_on(plan_backup(&meta, &observed, &Scope::World)).unwrap();
+        assert_eq!(plan.carries, [] as [RegionKey; 0]);
+        assert_eq!(plan.ingest, alloc::vec![key(0, 0)]);
+    }
+
+    #[test]
+    fn covering_scope_keeps_the_fingerprint() {
+        let meta = MemMeta::default();
+        let fp0 = fingerprint(key(0, 0));
+        let observed = [Observation {
+            key: key(0, 0),
+            fingerprint: fp0,
+        }];
+        let scope = over_rect(Rect::region(0, 0));
+        let (previous, plan) =
+            crate::support::block_on(plan_backup(&meta, &observed, &scope)).unwrap();
+        let staged = assemble(
+            plan,
+            &previous,
+            Ingested {
+                fingerprints: alloc::vec![fp0],
+                ..Ingested::default()
+            },
+            &scope,
+        );
+        assert_eq!(staged.fingerprints, alloc::vec![fp0]);
+        assert_eq!(staged.invalidated, [] as [RegionKey; 0]);
     }
 
     #[test]

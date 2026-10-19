@@ -252,7 +252,9 @@ The scope is a filter, not a partition:
   through fallback from earlier snapshots; stored state rows outside the
   scope are never marked removed. A scoped backup therefore reads as the
   truth for its scope only - a file deleted inside the scope tombstones
-  its chunks, while anything outside is untouched.
+  its chunks, while anything outside is untouched. A file the scope covers
+  only partly records no fingerprint and drops its stored one, so the next
+  backup that reaches it reads it again instead of carrying unread chunks.
 - Scoped rollback rebuilds and deletes only inside the scope; files
   outside are never written, deleted, or otherwise touched.
 - Multi-chunk diff resolves coordinates from the snapshots (or world

@@ -61,6 +61,16 @@ impl Rect {
             && self.z0 <= region_last(rz)
             && region_first(rz) <= self.z1
     }
+
+    /// Whether this rectangle contains every chunk of region file `(rx, rz)`.
+    ///
+    /// Uses the same clamped spans as [`Rect::overlaps_region`].
+    pub const fn covers_region(self, rx: i32, rz: i32) -> bool {
+        self.x0 <= region_first(rx)
+            && region_last(rx) <= self.x1
+            && self.z0 <= region_first(rz)
+            && region_last(rz) <= self.z1
+    }
 }
 
 /// Largest region coordinate whose 32-chunk span still fits `i32`.
@@ -116,6 +126,16 @@ impl Area {
             Self::Chunks(chunks) => chunks
                 .iter()
                 .any(|coord| coord.region_x() == key.rx && coord.region_z() == key.rz),
+        }
+    }
+
+    const fn covers_region(&self, key: RegionKey) -> bool {
+        match self {
+            Self::All => true,
+            Self::Rect(rect) => rect.covers_region(key.rx, key.rz),
+            // Conservatively partial: a chunk list naming all 1024 chunks
+            // only costs a re-ingest, never wrong data.
+            Self::Chunks(_) => false,
         }
     }
 }
@@ -180,6 +200,25 @@ impl Scope {
                     && areas
                         .iter()
                         .any(|(dim, area)| *dim == key.dim && area.matches_region(key))
+            }
+        }
+    }
+
+    /// Whether the scope contains every chunk of a region file.
+    ///
+    /// Only a fully covered file may record its whole-file fingerprint: a
+    /// partial ingest leaves out-of-scope chunks unrecorded. Coverage by
+    /// the union of several areas is reported as partial, which costs a
+    /// re-ingest rather than correctness.
+    pub fn covers_region(&self, key: RegionKey) -> bool {
+        match self {
+            Self::World => true,
+            Self::Kinds(kinds) => kinds.contains(&key.kind),
+            Self::Select { kinds, areas } => {
+                kinds.contains(&key.kind)
+                    && areas
+                        .iter()
+                        .any(|(dim, area)| *dim == key.dim && area.covers_region(key))
             }
         }
     }
@@ -312,5 +351,42 @@ mod tests {
         };
         assert!(!scope.contains(ChunkCoord::new(OVER, REGION, 0, 0)));
         assert!(!scope.matches_region(RegionKey::new(OVER, REGION, 0, 0)));
+    }
+
+    #[test]
+    fn covers_region_requires_every_chunk() {
+        let key = RegionKey::new(OVER, REGION, 1, 1);
+        assert!(Scope::World.covers_region(key));
+        assert!(Scope::dimension(OVER).covers_region(key));
+        assert!(!Scope::dimension(NETHER).covers_region(key));
+        assert!(Scope::Kinds(alloc::vec![REGION]).covers_region(key));
+        assert!(!Scope::Kinds(alloc::vec![ENTITIES]).covers_region(key));
+
+        let rect = |rect| Scope::Select {
+            kinds: Scope::all_kinds(),
+            areas: alloc::vec![(OVER, Area::Rect(rect))],
+        };
+        assert!(rect(Rect::region(1, 1)).covers_region(key));
+        assert!(rect(Rect::new(0, 0, 95, 95)).covers_region(key));
+        assert!(!rect(Rect::new(32, 32, 35, 35)).covers_region(key));
+        assert!(!rect(Rect::new(33, 32, 63, 63)).covers_region(key));
+
+        let chunks = Scope::Select {
+            kinds: Scope::all_kinds(),
+            areas: alloc::vec![(
+                OVER,
+                Area::Chunks(alloc::vec![ChunkCoord::new(OVER, REGION, 32, 32)])
+            )],
+        };
+        assert!(chunks.matches_region(key));
+        assert!(!chunks.covers_region(key));
+    }
+
+    #[test]
+    fn region_rectangles_cover_themselves_at_the_range_edges() {
+        for r in [0, -1, 67_108_863, -67_108_864, i32::MAX, i32::MIN] {
+            assert!(Rect::region(r, r).covers_region(r, r), "region {r}");
+        }
+        assert!(!Rect::region(0, 0).covers_region(1, 0));
     }
 }

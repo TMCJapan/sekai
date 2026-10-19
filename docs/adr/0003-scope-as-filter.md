@@ -16,6 +16,10 @@ Scope is a filter, not a partition: `Scope::{World, Select{kinds,
 areas}}` with `Area::{All, Rect, Chunks}` per dimension; kinds apply
 uniformly. Out-of-scope coordinates record no rows and no tombstones
 (fallback resolves them); rollback never touches out-of-scope files.
+The filter extends to derived state: a region file the scope covers
+only partly records no fingerprint and drops its stored one, since
+a whole-file fingerprint would let a later backup carry chunks no
+snapshot ever read (#90).
 CLI takes repeatable `--in DIM[:x,z|x0,z0..x1,z1]` plus `--region
 DIM:RX,RZ` sugar and repeatable `--kind` (empty means all); empty
 selection is the whole world. Rectangles expand fully with no size
@@ -26,4 +30,7 @@ clone it.
 
 Scoped→full backup sequences record no spurious tombstones
 (property-tested). Rectangle enumeration cost is the caller's
-responsibility, documented in `docs/json.md`.
+responsibility, documented in `docs/json.md`. Files on a scope's
+edge are re-read by every backup that reaches them until a covering
+backup restores their fingerprint; avoiding that would need per-area
+coverage in `region_state`, a schema change not worth its cost yet.

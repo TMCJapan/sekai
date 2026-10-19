@@ -82,7 +82,9 @@ pub trait MetaStore {
     /// `entries` contains fresh rows and tombstones. `carry_from` identifies
     /// unchanged regions: backends advance their snapshot state and count
     /// their effective chunks, but write no per-chunk rows for them (delta
-    /// storage). Fingerprints are refreshed atomically.
+    /// storage). Fingerprints are refreshed atomically, and `removed` names
+    /// regions whose state rows drop: files gone from disk or ingested
+    /// only partly.
     ///
     /// Referenced blobs must already be flushed to CAS.
     fn apply_snapshot_incremental(
