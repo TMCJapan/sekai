@@ -48,8 +48,9 @@ pub async fn init_sqlite(root: impl AsRef<Path>) -> Result<SqliteStore, StorageE
         return connect_sqlite(root).await;
     }
     std::fs::create_dir_all(root).map_err(|source| io_error(root, source))?;
-    // A racer that finished creating in between is harmless: connecting
-    // to an initialized store is idempotent.
+    // Creators hold this lock, so a racer that got here first has finished
+    // by the time it is ours, and connecting to an initialized store is
+    // idempotent.
     let _creating = crate::lock::lock_store(root, crate::lock::StoreLockMode::Writer)?;
     connect_sqlite(root).await
 }
@@ -708,6 +709,14 @@ mod tests {
         // Creation releases its lock, so the store is usable afterwards.
         init_sqlite(&dir).await.unwrap();
         crate::lock::lock_store(&dir, crate::lock::StoreLockMode::Exclusive).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn init_creates_alongside_a_shared_holder() {
+        let dir = tempdir("init-shared");
+        let _held = crate::lock::lock_store(&dir, crate::lock::StoreLockMode::Shared).unwrap();
+        init_sqlite(&dir).await.unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

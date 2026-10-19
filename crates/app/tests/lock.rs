@@ -271,6 +271,14 @@ async fn every_operation_takes_its_world_mode() {
                 blocked,
                 "{op:?} while the world is held {held:?}: {outcome:?}"
             );
+            // Content errors pass the check above, so a world operation
+            // that is let through must also succeed.
+            if op.world_mode().is_some() && !blocked {
+                assert!(
+                    outcome.is_ok(),
+                    "{op:?} while the world is held {held:?}: {outcome:?}"
+                );
+            }
         }
         drop(lock);
     }
