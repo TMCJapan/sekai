@@ -19,6 +19,15 @@ pub enum WorldError {
     /// Region image failed to parse or build.
     #[error("region image error: {0}")]
     Anvil(#[from] sekai_anvil::AnvilError),
+    /// Another operation holds a conflicting lock on the world.
+    #[error(
+        "world is in use by another sekai operation (lock {path}): retry once it finishes",
+        path = path.display()
+    )]
+    WorldLocked {
+        /// Lock file that could not be taken.
+        path: PathBuf,
+    },
     /// No directory mapping exists for this namespace.
     #[error("cannot derive region path for dim {dim_code}, kind {kind_code}, r.{region_x}.{region_z}", dim_code = dim.raw(), kind_code = kind.raw())]
     UnknownRegionPath {

@@ -2,7 +2,8 @@
 
 use sekai_core::{Dimension, RegionKey, RegionKind};
 use sekai_world::{
-    HostRegion, HostWorldTree, WorldError, WorldTree, atomic_swap, fingerprint_file, open_image,
+    HostRegion, HostWorldTree, WorldError, WorldLock, WorldLockMode, WorldTree, atomic_swap,
+    fingerprint_file, open_image,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -272,6 +273,74 @@ fn discovers_a_legacy_single_folder_world() {
     assert_derives_back(&world, &found);
     assert_stable_ids(&world_path, &found);
     cleanup(&world_path);
+}
+
+#[test]
+fn locking_a_missing_world_reports_the_missing_world() {
+    let root = tempdir("lock-missing");
+    let world = HostWorldTree::new(root.join("typo")).unwrap();
+    for mode in [WorldLockMode::Shared, WorldLockMode::Exclusive] {
+        let err = world.lock(mode).unwrap_err();
+        assert!(
+            err.to_string().contains("world directory not found"),
+            "{err}"
+        );
+    }
+    assert!(
+        !root.join("typo").exists(),
+        "locking must not create the world"
+    );
+    cleanup(&root);
+}
+
+#[test]
+fn the_world_lock_lives_in_the_root_and_stays_out_of_discovery() {
+    let world_path = tempdir("lock");
+    write(world_path.join("region/r.0.0.mca"), &one_chunk_image());
+    let world = HostWorldTree::new(&world_path).unwrap();
+    let before = discover(&world);
+
+    let reader = world.lock(WorldLockMode::Shared).unwrap();
+    assert!(reader.is_some());
+    assert!(world_path.join(WorldLock::FILE_NAME).is_file());
+    assert!(matches!(
+        world.lock(WorldLockMode::Exclusive),
+        Err(WorldError::WorldLocked { .. })
+    ));
+    drop(reader);
+
+    // A lock file left in the root changes neither layout nor discovery.
+    let reopened = HostWorldTree::new(&world_path).unwrap();
+    assert_eq!(paths_of(&discover(&reopened)), paths_of(&before));
+    assert!(reopened.lock(WorldLockMode::Exclusive).unwrap().is_some());
+    cleanup(&world_path);
+}
+
+#[test]
+fn world_locks_stay_out_of_bukkit_layout_detection() {
+    // A server root is scanned for its level-name folder and datapack
+    // siblings; lock files at either root must not join that scan.
+    let root_path = tempdir("lock-bukkit");
+    write(root_path.join("server.properties"), b"level-name=world\n");
+    write(
+        root_path.join("world/dimensions/minecraft/overworld/region/r.0.0.mca"),
+        &one_chunk_image(),
+    );
+    let before = discover(&HostWorldTree::new(&root_path).unwrap());
+
+    for root in [root_path.clone(), root_path.join("world")] {
+        drop(
+            HostWorldTree::new(&root)
+                .unwrap()
+                .lock(WorldLockMode::Shared)
+                .unwrap(),
+        );
+        assert!(root.join(WorldLock::FILE_NAME).is_file());
+    }
+
+    let reopened = HostWorldTree::new(&root_path).unwrap();
+    assert_eq!(paths_of(&discover(&reopened)), paths_of(&before));
+    cleanup(&root_path);
 }
 
 #[test]

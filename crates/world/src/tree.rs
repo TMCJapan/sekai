@@ -5,6 +5,7 @@ mod hostworld;
 use sekai_core::{Dimension, RegionKey, RegionKind};
 
 use crate::region::RegionFile;
+use crate::{WorldLock, WorldLockMode};
 
 pub use hostworld::{HostRegion, HostWorldTree};
 
@@ -95,4 +96,16 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
         region: &Self::Region,
         key: RegionKey,
     ) -> Result<Self::Region, Self::Error>;
+
+    /// Lock the tree against other sekai operations in `mode`, held until
+    /// the returned guard drops.
+    ///
+    /// `Ok(None)` means the operation runs unguarded. That is the default,
+    /// so an implementation that keeps it shares no exclusion with other
+    /// processes; [`WorldLock::acquire`] provides the file-lock form, whose
+    /// contention surfaces as [`crate::WorldError::WorldLocked`] so callers
+    /// can tell "busy, retry" from a real failure.
+    fn lock(&self, _mode: WorldLockMode) -> Result<Option<WorldLock>, Self::Error> {
+        Ok(None)
+    }
 }

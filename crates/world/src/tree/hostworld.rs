@@ -26,8 +26,8 @@ use std::path::{Path, PathBuf};
 use sekai_core::{Dimension, RegionFingerprint, RegionKey, RegionKind};
 
 use super::WorldTree;
-use crate::WorldError;
 use crate::region::RegionFile;
+use crate::{WorldError, WorldLock, WorldLockMode};
 
 /// Directory of `kind` under a dimension directory.
 const fn kind_dir(kind: RegionKind) -> &'static str {
@@ -313,5 +313,23 @@ impl WorldTree for HostWorldTree {
         Ok(HostRegion(
             region.0.with_file_name(format!("r.{rx}.{rz}.mca")),
         ))
+    }
+
+    fn lock(&self, mode: WorldLockMode) -> Result<Option<WorldLock>, Self::Error> {
+        // The lock lives in the root as passed, so two roots naming one
+        // world (a Bukkit server root and its world folder) do not exclude
+        // each other (ADR-0014). A mistyped world path should read as one,
+        // not as a lock failure.
+        self.check_root()?;
+        let path = self.root.join(WorldLock::FILE_NAME);
+        match WorldLock::acquire(&path, mode) {
+            Ok(lock) => Ok(lock),
+            // Contention is its own failure, not an I/O one: a caller has to
+            // tell "busy, retry" from a lock file it cannot open at all.
+            Err(source) if source.kind() == std::io::ErrorKind::WouldBlock => {
+                Err(WorldError::WorldLocked { path })
+            }
+            Err(source) => Err(WorldError::io(path, source)),
+        }
     }
 }
