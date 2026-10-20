@@ -10,9 +10,9 @@ use sekai_core::{RegionFingerprint, RegionKey};
 /// [`WorldTree`](crate::WorldTree) that produced the handle, so a tree can
 /// be backed by memory instead of a filesystem.
 ///
-/// The handle is also [`Display`]: the text names the file for diagnostics
-/// (error messages, timing rows). A tree that has no location of its own
-/// spells it as it sees fit.
+/// The handle is also [`std::fmt::Display`]: the text names the file for
+/// diagnostics (error messages, timing rows). A tree that has no location of
+/// its own spells it as it sees fit.
 pub trait RegionFile: Clone + std::fmt::Debug + std::fmt::Display + Send + Sync + 'static {
     /// Failure type for every operation on this file.
     type Error: std::error::Error;
