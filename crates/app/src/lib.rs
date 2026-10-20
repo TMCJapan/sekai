@@ -46,5 +46,5 @@ pub use sekai_core::{
 };
 pub use sekai_world::{
     HostRegion, HostWorldLock, HostWorldLockError, HostWorldTree, RegionFile, UnguardedReason,
-    WorldLock, WorldLockMode, WorldLockState, WorldTree,
+    WorldError, WorldLock, WorldLockMode, WorldLockState, WorldTree,
 };

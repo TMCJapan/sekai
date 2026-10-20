@@ -7,6 +7,7 @@
 use std::time::{Duration, Instant};
 
 use sekai_core::{PrunePlan, PruneReport, SnapshotId};
+use sekai_storage::StoreLockMode;
 
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
@@ -42,6 +43,7 @@ impl SekaiInstance {
         keep_last: Option<u64>,
         before: Option<SnapshotId>,
     ) -> Result<(PrunePlan, PruneTimings), AppError> {
+        let _lock = self.lock_store(StoreLockMode::Shared)?;
         let total_started = Instant::now();
         let (plan, plan_dt) = plan_within(self.store(), keep_last, before).await?;
         let timings = PruneTimings {
@@ -54,11 +56,20 @@ impl SekaiInstance {
 
     /// Execute a pruning plan, deleting snapshots oldest-first.
     /// `progress` fires per deleted snapshot.
+    ///
+    /// A plan from an earlier [`Self::prune_plan`] call stays applicable
+    /// after backups, which only add newer snapshots. If another prune
+    /// retired one of its snapshots first, applying fails with an
+    /// unknown-snapshot error rather than folding into the wrong one.
+    /// [`Self::prune`] plans and applies under one lock.
     pub async fn prune_apply(
         &mut self,
         plan: &PrunePlan,
         progress: impl FnMut(PruneProgress) + Send,
     ) -> Result<(PruneReport, PruneTimings), AppError> {
+        // Exclusive: deleted rows may be the ones a concurrent reader has
+        // just resolved.
+        let _lock = self.lock_store(StoreLockMode::Exclusive)?;
         let total_started = Instant::now();
         let (report, apply_dt) = apply_within(self.store_mut(), plan, progress).await?;
         let timings = PruneTimings {
@@ -77,6 +88,7 @@ impl SekaiInstance {
         before: Option<SnapshotId>,
         progress: impl FnMut(PruneProgress) + Send,
     ) -> Result<(PruneReport, PruneTimings), AppError> {
+        let _lock = self.lock_store(StoreLockMode::Exclusive)?;
         let total_started = Instant::now();
         let (plan, plan_dt) = plan_within(self.store(), keep_last, before).await?;
         let (report, apply_dt) = apply_within(self.store_mut(), &plan, progress).await?;

@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use sekai_core::{BlobHash, ChunkCoord, RegionKey, Scope, SnapshotId};
-use sekai_storage::FileCas;
+use sekai_storage::{FileCas, StoreLock, StoreLockMode};
 use sekai_world::{RegionFile, WorldTree};
 
 use crate::error::AppError;
@@ -61,7 +61,9 @@ impl SekaiInstance {
     /// report and per-phase timings.
     ///
     /// `out` is created when missing and must otherwise be empty; anything
-    /// else fails loudly so export can never clobber existing data. Its
+    /// else fails loudly so export can never clobber existing data. Nothing
+    /// locks `out`, so it must be dedicated to this export: a writer that
+    /// starts there after the emptiness check is not excluded. Its
     /// layout comes from how it was constructed (for example
     /// `HostWorldTree::new_legacy` or `HostWorldTree::new_bukkit`). Only
     /// `scope` is exported. `progress` fires as files complete; it must be
@@ -78,6 +80,9 @@ impl SekaiInstance {
     where
         AppError: From<T::Error>,
     {
+        // `out` stays unlocked: it is new and empty by contract, so nothing
+        // else has a reason to touch it.
+        let lock = self.lock_store(StoreLockMode::Shared)?;
         let total_started = Instant::now();
 
         if !out.is_empty()? {
@@ -106,6 +111,7 @@ impl SekaiInstance {
             options,
             cas: store.cas().clone(),
             out: out.clone(),
+            _lock: lock,
         };
 
         let files_started = Instant::now();
@@ -129,6 +135,9 @@ struct ExportJob<T: WorldTree> {
     options: ExportOptions,
     cas: FileCas,
     out: T,
+    /// Owned by the file pass so a cancelled export keeps `prune` out
+    /// until it stops reading blobs.
+    _lock: StoreLock,
 }
 
 /// Rebuild every snapshot region file under `out`. Blocking: file reads,
@@ -146,6 +155,7 @@ where
         options,
         cas,
         out,
+        _lock,
     } = job;
 
     let mut report = ExportReport {
