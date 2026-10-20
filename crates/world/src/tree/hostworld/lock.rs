@@ -28,19 +28,13 @@ use crate::{UnguardedReason, WorldLock, WorldLockMode, WorldLockState};
 ///
 /// The guard holds the lock file open; dropping it releases the lock.
 /// The lock is never upgraded in place, so the guard can be moved to
-/// another thread and still excludes the same set of holders.
+/// another thread and still excludes the same set of holders. The
+/// [`WorldLock`] supertraits are what make that move sound.
 #[derive(Debug)]
 pub struct HostWorldLock {
     file: File,
     mode: WorldLockMode,
 }
-
-/// The trait promises the guard crosses threads into the blocking tasks
-/// that touch files; pin that here rather than in a comment.
-const _: fn() = || {
-    const fn assert_send_sync<T: Send + Sync>() {}
-    assert_send_sync::<HostWorldLock>();
-};
 
 impl WorldLock for HostWorldLock {
     fn mode(&self) -> WorldLockMode {
@@ -61,8 +55,9 @@ pub enum HostWorldLockError {
 enum LockFile {
     /// The file is open and ready to be locked.
     Open(File),
-    /// The file is absent and cannot be created; the create error says
-    /// why.
+    /// The file is absent and cannot be created. The create error says
+    /// why, but only the exclusive mode reports it: a shared lock
+    /// degrades to unguarded and names the reason instead.
     Absent(io::Error),
 }
 
@@ -188,9 +183,9 @@ fn open_read_only_lock_path(path: impl AsRef<Path>) -> io::Result<File> {
 /// positive detection is an error - a path this user cannot even stat is
 /// left to the open below, which reports the real failure.
 ///
-/// This is the only refusal where `O_NOFOLLOW` is unavailable; where it
-/// exists, the open itself enforces the refusal and no pre-check is
-/// needed.
+/// This is the only refusal where `O_NOFOLLOW` is unavailable. There it
+/// is best-effort: it runs before the open, so a link swapped in
+/// afterwards is followed.
 #[cfg(not(unix))]
 fn reject_symlink(path: impl AsRef<Path>) -> io::Result<()> {
     match std::fs::symlink_metadata(path) {
