@@ -12,8 +12,14 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WorldLockMode {
     /// Reads (backup, status, diff): run alongside each other.
+    ///
+    /// A shared lock may answer unguarded, because a read-only world has
+    /// no lock file to take. The answer says so.
     Shared,
     /// Writes (rollback): nothing else may touch the world.
+    ///
+    /// An exclusive lock never runs unguarded: a world that cannot be
+    /// locked is an error, not a write without exclusion.
     Exclusive,
 }
 

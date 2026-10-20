@@ -117,5 +117,10 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
     /// roots naming the same world hold two different locks and do not
     /// exclude each other, so a caller that names one world through
     /// several roots has to pick one canonical root.
+    ///
+    /// [`WorldLockState::Unguarded`] means no exclusion at all: the
+    /// operation runs while another operation may hold the same world.
+    /// A writer must not treat that as protected - see
+    /// [`WorldLockMode::Exclusive`], which never answers unguarded.
     fn lock(&self, mode: WorldLockMode) -> Result<WorldLockState<Self::Lock>, Self::Error>;
 }

@@ -241,11 +241,11 @@ fn is_read_only(err: &io::Error) -> bool {
 /// Wrap `source` with the step that failed.
 ///
 /// The path is left to the caller: `WorldError::Io` carries it, so
-/// repeating it here would render it twice. The original error is
-/// rendered into the message rather than kept in the source chain: a
-/// chain would report the same OS error a second time under the
-/// wrapper, and the kind - the part callers branch on - survives on the
-/// wrapping error.
+/// repeating it here would render it twice. The original OS error is
+/// rendered into the message rather than kept as the source of the
+/// annotated error: a chain would report the same OS error a second
+/// time under the wrapper, and the kind - the part callers branch on -
+/// survives on the wrapping error.
 fn annotate(step: &'static str, source: &io::Error) -> io::Error {
     io::Error::new(source.kind(), format!("failed to {step}: {source}"))
 }
@@ -467,10 +467,14 @@ mod tests {
         // A link whose target is gone is still a link: the pre-check
         // reports it, and the open refuses it as well.
         let root = TempRoot::new("symlink-dangling");
+        let target = root.path().join("missing");
         let path = root.path().join(HostWorldLock::FILE_NAME);
-        std::os::unix::fs::symlink(root.path().join("missing"), &path).unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
         let err = io_error(HostWorldLock::acquire(&path, WorldLockMode::Shared).unwrap_err());
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{err}");
+        // The link's target must not be created: that is the inode the
+        // lock would land on without the refusal.
+        assert!(!target.exists(), "the link's target must stay absent");
     }
 
     #[cfg(unix)]
