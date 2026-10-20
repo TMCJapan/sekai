@@ -1,15 +1,18 @@
 //! Chunk AST diff operations over CAS and metadata stores.
 
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use sekai_core::{
-    BlobHash, BlobStore as _, ChunkCoord, DEFAULT_IGNORED, MetaStore, NbtDiffEntry, SnapshotId,
-    diff_nbt,
+    BlobHash, BlobStore as _, ChunkCoord, DEFAULT_IGNORED, MetaStore, NbtDiffEntry, RegionKey,
+    SnapshotId, diff_nbt,
 };
 use sekai_world::WorldTree;
 
 use crate::error::AppError;
 use crate::instance::{SekaiInstance, WorldHandle, WorldHandleMut};
+use crate::regions::discover_regions;
 
 /// Per-phase timings for chunk AST diffs. Informational only; never
 /// changes diff semantics.
@@ -57,30 +60,21 @@ impl SekaiInstance {
 /// Fetch raw (still compressed) chunk payload directly from a world directory.
 /// Returns `None` when the region file or chunk entry is absent; corrupt
 /// files still fail loudly.
-fn read_world_chunk_compressed<T: WorldTree>(
-    world: &T,
+fn read_world_chunk_compressed(
+    regions: &BTreeMap<RegionKey, PathBuf>,
     coord: &ChunkCoord,
-) -> Result<Option<Vec<u8>>, AppError>
-where
-    AppError: From<T::Error>,
-{
-    let rx = coord.region_x();
-    let rz = coord.region_z();
-
-    let Some(region_ref) = world
-        .get_regions(coord.dim)?
-        .into_iter()
-        .find(|r| r.kind == coord.kind && r.region_x == rx && r.region_z == rz)
-    else {
+) -> Result<Option<Vec<u8>>, AppError> {
+    let key = RegionKey::of(*coord);
+    let Some(path) = regions.get(&key) else {
         return Ok(None);
     };
 
-    let bytes = sekai_world::open_image(&region_ref.path)?;
+    let bytes = sekai_world::open_image(path)?;
     let failed = |source| AppError::RegionFailed {
-        path: region_ref.path.clone(),
+        path: path.clone(),
         source,
     };
-    let image = sekai_anvil::RegionImage::from_bytes(bytes, rx, rz).map_err(failed)?;
+    let image = sekai_anvil::RegionImage::from_bytes(bytes, key.rx, key.rz).map_err(failed)?;
 
     let payload = image.chunk_payload(coord.x, coord.z).map_err(failed)?;
     Ok(payload.map(<[u8]>::to_vec))
@@ -190,23 +184,19 @@ where
     AppError: From<T::Error>,
 {
     let mut coords = Vec::new();
-    for dim in world.get_dims()? {
-        for region in world.get_regions(dim)? {
-            let bytes = sekai_world::open_image(&region.path)?;
-            let failed = |source| AppError::RegionFailed {
-                path: region.path.clone(),
-                source,
-            };
-            let image =
-                sekai_anvil::RegionImage::from_bytes(bytes, region.region_x, region.region_z)
-                    .map_err(failed)?;
-            image
-                .visit_chunks(|chunk| {
-                    coords.push(ChunkCoord::new(region.dim, region.kind, chunk.x, chunk.z));
-                    true
-                })
-                .map_err(failed)?;
-        }
+    for (key, path) in discover_regions(world)? {
+        let bytes = sekai_world::open_image(&path)?;
+        let failed = |source| AppError::RegionFailed {
+            path: path.clone(),
+            source,
+        };
+        let image = sekai_anvil::RegionImage::from_bytes(bytes, key.rx, key.rz).map_err(failed)?;
+        image
+            .visit_chunks(|chunk| {
+                coords.push(ChunkCoord::new(key.dim, key.kind, chunk.x, chunk.z));
+                true
+            })
+            .map_err(failed)?;
     }
     coords.sort();
     coords.dedup();
@@ -293,7 +283,9 @@ where
                 store: &self.instance.store,
                 id: snapshot_id,
             },
-            self.world,
+            WorldDiff {
+                regions: discover_regions(self.world)?,
+            },
             progress,
             &mut timings,
         )
@@ -347,15 +339,19 @@ impl DiffSource for SnapshotDiff<'_> {
     }
 }
 
-impl<T: WorldTree> DiffSource for &T
-where
-    AppError: From<T::Error>,
-{
+/// One diff run's world side: region paths resolved once, not per chunk.
+/// The set is a snapshot taken when the run starts, so a region created
+/// mid-run is treated as absent until the next diff.
+struct WorldDiff {
+    regions: BTreeMap<RegionKey, PathBuf>,
+}
+
+impl DiffSource for WorldDiff {
     fn payload(
         &self,
         coord: &ChunkCoord,
     ) -> impl Future<Output = Result<Option<Vec<u8>>, AppError>> {
-        std::future::ready(read_world_chunk_compressed(*self, coord))
+        std::future::ready(read_world_chunk_compressed(&self.regions, coord))
     }
 }
 

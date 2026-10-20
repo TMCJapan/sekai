@@ -15,6 +15,9 @@ pub enum RegionKind {
 }
 
 impl RegionKind {
+    /// Every region family, for whole-world walks.
+    pub const ALL: [Self; 3] = [Self::Region, Self::Entities, Self::Poi];
+
     /// Resolve a raw code (`0`/`1`/`2`); other codes are rejected.
     pub const fn new(id: i32) -> Result<Self, UnknownRegionKind> {
         match id {
@@ -97,7 +100,7 @@ mod tests {
         assert_eq!(RegionKind::Entities.to_string(), "entities");
         assert_eq!(RegionKind::Poi.to_string(), "poi");
         assert_eq!(RegionKind::new(9), Err(UnknownRegionKind));
-        for kind in [RegionKind::Region, RegionKind::Entities, RegionKind::Poi] {
+        for kind in RegionKind::ALL {
             assert_eq!(kind.to_string().parse(), Ok(kind));
         }
     }
@@ -107,7 +110,7 @@ mod tests {
         assert_eq!(RegionKind::Region.raw(), 0);
         assert_eq!(RegionKind::Entities.raw(), 1);
         assert_eq!(RegionKind::Poi.raw(), 2);
-        for kind in [RegionKind::Region, RegionKind::Entities, RegionKind::Poi] {
+        for kind in RegionKind::ALL {
             assert_eq!(RegionKind::new(i32::from(kind.raw())), Ok(kind));
         }
         for code in [-1, 3, i32::MAX] {

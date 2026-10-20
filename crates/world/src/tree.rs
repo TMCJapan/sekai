@@ -4,9 +4,7 @@ mod hostworld;
 
 use std::path::PathBuf;
 
-use sekai_core::{Dimension, RegionKind};
-
-use crate::RegionRef;
+use sekai_core::{Dimension, RegionKey, RegionKind};
 
 pub use hostworld::HostWorldTree;
 
@@ -39,17 +37,31 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
     /// rollback) visit dimensions in raw-code order instead.
     fn get_dims(&self) -> Result<Vec<Dimension>, Self::Error>;
 
-    /// Every region file inside `dim`, ordered by kind and coordinates.
+    /// Every region file of `kind` inside `dim` as its identity and the
+    /// actual on-disk path, ordered by coordinates.
+    ///
+    /// The path is the file discovery observed, not a layout-derived
+    /// spelling: it may be non-canonical (`r.00.00.mca`). One entry per
+    /// coordinate is reported; two files spelling the same coordinate are
+    /// ambiguous and must fail rather than silently drop one of them.
+    /// Reporting one identity twice breaks that contract, and callers
+    /// reject it as a broken tree.
     ///
     /// A `dim` that is not part of this tree (not returned by
-    /// [`WorldTree::get_dims`]) yields an empty vector, not an error.
-    fn get_regions(&self, dim: Dimension) -> Result<Vec<RegionRef>, Self::Error>;
-
-    fn derive_path(
+    /// [`WorldTree::get_dims`]) yields an empty vector, not an error. The
+    /// same holds for a kind directory that is absent or was removed.
+    fn get_regions(
         &self,
         dim: Dimension,
         kind: RegionKind,
-        region_x: i32,
-        region_z: i32,
-    ) -> Result<PathBuf, Self::Error>;
+    ) -> Result<Vec<(RegionKey, PathBuf)>, Self::Error>;
+
+    /// Layout-derived path of one region file, whether or not it exists on
+    /// disk yet (export targets, restore targets for missing files).
+    ///
+    /// Output trees may point at roots that do not exist before export, so
+    /// this never touches the filesystem: the dimension only has to be part
+    /// of the layout. Callers writing to the result create parent
+    /// directories.
+    fn derive_path(&self, key: RegionKey) -> Result<PathBuf, Self::Error>;
 }

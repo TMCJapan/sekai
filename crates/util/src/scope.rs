@@ -145,7 +145,7 @@ pub enum Scope {
 impl Scope {
     /// All three region families, for selections that do not narrow kinds.
     pub fn all_kinds() -> Vec<RegionKind> {
-        alloc::vec![RegionKind::Region, RegionKind::Entities, RegionKind::Poi,]
+        Vec::from(RegionKind::ALL)
     }
 
     /// Whole dimension in all region families.

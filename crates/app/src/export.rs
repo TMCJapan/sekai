@@ -156,7 +156,7 @@ where
     let mut files_done = 0usize;
     let mut blob_buf = Vec::new();
     for (key, rows) in &groups {
-        let path = out.derive_path(key.dim, key.kind, key.rx, key.rz)?;
+        let path = out.derive_path(*key)?;
         let mut writer = sekai_anvil::RegionBuilder::new(key.rx, key.rz, timestamp)?;
         for (coord, hash) in rows {
             if !fetch_or_skip(&cas, hash, options.on_missing_blob, &mut blob_buf)? {

@@ -8,7 +8,7 @@ mod observation;
 mod swap;
 mod tree;
 
-pub use discover::{RegionRef, sibling_path};
+pub use discover::sibling_path;
 pub use error::WorldError;
 pub use fingerprint::{file_mtime_ms, fingerprint_file};
 pub use swap::{atomic_swap, open_image};

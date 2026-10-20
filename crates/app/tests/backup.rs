@@ -1,6 +1,6 @@
 //! End-to-end backup flows over real world folders and SQLite stores.
 
-use sekai_app::{BackupOptions, Scope, SnapshotId};
+use sekai_app::{BackupOptions, RegionKind, Scope, SnapshotId};
 use sekai_app::{HostWorldTree, WorldTree};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -127,6 +127,34 @@ fn options() -> BackupOptions {
         concurrency: 2,
         ..BackupOptions::default()
     }
+}
+
+/// A parseable but non-canonical file name (`r.00.00.mca`) must be read
+/// from the path discovery found, not from the canonical `r.0.0.mca`.
+#[tokio::test]
+async fn backs_up_a_non_canonical_region_name() {
+    let root = tempdir("non-canonical-name");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    write_region(
+        world_path.join("region/r.00.00.mca"),
+        &[(0, 0, vec![3, 1, 2, 3])],
+    );
+
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let (report, timings) = instance
+        .world_mut(&mut world)
+        .backup(options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+    assert_eq!(report.chunks, 1);
+    assert_eq!(timings.regions.len(), 1);
+    assert_eq!(
+        timings.regions[0].path,
+        world_path.join("region/r.00.00.mca")
+    );
+    cleanup(&root);
 }
 
 #[tokio::test]
@@ -259,7 +287,7 @@ async fn deleted_region_file_tombstones_once() {
 
 #[tokio::test]
 async fn scoped_backup_records_no_spurious_tombstones() {
-    use sekai_app::{ChunkCoord, Dimension, RegionKind, Scope};
+    use sekai_app::{ChunkCoord, Dimension, Scope};
     let root = tempdir("scoped");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -1186,6 +1214,50 @@ async fn diff_world_chunk_with_snapshot() {
     cleanup(&root);
 }
 
+/// Diff must read the discovered `r.00.00.mca`, not the canonical
+/// `r.0.0.mca` that does not exist on disk.
+#[tokio::test]
+async fn diffs_a_non_canonical_region_name() {
+    let root = tempdir("diff-non-canonical");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    let region = world_path.join("region/r.00.00.mca");
+
+    write_region(&region, &[(0, 0, vec![3, 10, 0, 0, 0])]);
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    instance
+        .world_mut(&mut world)
+        .backup(options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+
+    write_region(&region, &[(0, 0, vec![3, 4, 5, 6])]);
+
+    let coord = sekai_app::ChunkCoord::new(
+        sekai_app::Dimension::OVERWORLD,
+        sekai_app::RegionKind::Region,
+        0,
+        0,
+    );
+    // The snapshot side holds valid NBT, so the decode failure can only
+    // come from the world side: it proves the discovered file was read.
+    let err = instance
+        .world(&world)
+        .diff_world_chunk(None, &coord, None)
+        .await
+        .expect_err("raw payload is not valid NBT");
+    assert!(
+        matches!(
+            err,
+            sekai_app::AppError::Nbt(sekai_nbt::NbtError::UnexpectedRoot(4))
+        ),
+        "diff must read the discovered file, got: {err}"
+    );
+
+    cleanup(&root);
+}
+
 #[tokio::test]
 async fn backs_up_region_with_trailing_partial_sector() {
     // Real files can carry a torn tail (e.g. 1034 sectors + 188 bytes)
@@ -1267,7 +1339,7 @@ const fn kind_dir(kind: sekai_app::RegionKind) -> &'static str {
 
 #[tokio::test]
 async fn sparse_entities_chunk_diffs_empty_without_error() {
-    use sekai_app::{ChunkCoord, Dimension, RegionKind};
+    use sekai_app::{ChunkCoord, Dimension};
     let root = tempdir("sparse-entities");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -1306,7 +1378,7 @@ async fn sparse_entities_chunk_diffs_empty_without_error() {
 
 #[tokio::test]
 async fn created_and_deleted_chunks_diff_as_added_removed() {
-    use sekai_app::{ChunkCoord, Dimension, RegionKind};
+    use sekai_app::{ChunkCoord, Dimension};
     let root = tempdir("created-deleted");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -1369,8 +1441,8 @@ async fn created_and_deleted_chunks_diff_as_added_removed() {
 
 #[tokio::test]
 async fn all_kinds_round_trip() {
-    use sekai_app::{ChunkCoord, Dimension, RegionKind};
-    for kind in [RegionKind::Region, RegionKind::Entities, RegionKind::Poi] {
+    use sekai_app::{ChunkCoord, Dimension};
+    for kind in RegionKind::ALL {
         let root = tempdir(&format!("kind-{}", kind_dir(kind)));
         let world_path = root.join("world");
         let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -1422,7 +1494,7 @@ async fn all_kinds_round_trip() {
 
 #[tokio::test]
 async fn rect_and_kind_scopes_limit_ingest() {
-    use sekai_app::{Area, Dimension, Rect, RegionKind, Scope};
+    use sekai_app::{Area, Dimension, Rect, Scope};
     let root = tempdir("rect-kind");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -1507,7 +1579,6 @@ fn copy_dir(src: impl AsRef<Path>, dst: impl AsRef<Path>) {
 
 #[tokio::test]
 async fn real_world_corpus_round_trip() {
-    use sekai_app::RegionKind;
     const REAL_WORLD_CHUNKS_COUNT: usize = 1024 + 151 + 14;
 
     let root = tempdir("corpus");
@@ -1527,7 +1598,7 @@ async fn real_world_corpus_round_trip() {
 
     // Real NBT in every kind decodes: self-diffs are empty, not errors.
     let snapshots = instance.list_snapshots().await.unwrap();
-    for kind in [RegionKind::Region, RegionKind::Entities, RegionKind::Poi] {
+    for kind in RegionKind::ALL {
         let coords = sekai_app::world_chunk_coords(&world)
             .unwrap()
             .into_iter()
@@ -1738,23 +1809,26 @@ fn materialize(world_root: impl AsRef<Path>, model: &ChunkMaps, files: &[(&str, 
 }
 
 fn read_world(world: &HostWorldTree, world_path: impl AsRef<Path>) -> ChunkMaps {
-    let mut regions = Vec::new();
+    let mut files = Vec::new();
     for dim in world.get_dims().unwrap() {
-        regions.extend(world.get_regions(dim).unwrap());
+        for kind in RegionKind::ALL {
+            for (_, path) in world.get_regions(dim, kind).unwrap() {
+                files.push(path);
+            }
+        }
     }
-    regions
+    files
         .into_iter()
-        .map(|region| {
+        .map(|path| {
             // `/` regardless of platform, so the keys match the model's.
-            let rel = region
-                .path
+            let rel = path
                 .strip_prefix(world_path.as_ref())
-                .unwrap_or(&region.path)
+                .unwrap_or(&path)
                 .components()
                 .map(|c| c.as_os_str().to_string_lossy())
                 .collect::<Vec<_>>()
                 .join("/");
-            (rel, chunk_map(&region.path))
+            (rel, chunk_map(&path))
         })
         .collect()
 }

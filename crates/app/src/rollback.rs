@@ -12,7 +12,6 @@
 //! partial world would be worse than writing none. Keep-policies in
 //! [`RollbackOptions`] relax each of those strict behaviors explicitly.
 
-use std::collections::btree_map::Entry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -23,6 +22,7 @@ use sekai_world::WorldTree;
 
 use crate::error::AppError;
 use crate::instance::WorldHandleMut;
+use crate::regions::discover_regions;
 
 /// Per-phase timings for rollback execution.
 #[derive(Debug, Clone, Default)]
@@ -137,34 +137,8 @@ where
         // the blocking pool.
         let discover_started = Instant::now();
         let world_handle = world.clone();
-        let mut discovered = tokio::task::spawn_blocking(move || {
-            let mut discovered: BTreeMap<RegionKey, PathBuf> = BTreeMap::new();
-            for dim in world_handle.get_dims()? {
-                for r in world_handle.get_regions(dim)? {
-                    // A tree reporting one region twice would leave one
-                    // spelling of the file un-rebuilt (or undeleted); report
-                    // both paths instead of silently dropping one.
-                    match discovered.entry(RegionKey::new(r.dim, r.kind, r.region_x, r.region_z)) {
-                        Entry::Vacant(entry) => {
-                            entry.insert(r.path);
-                        }
-                        Entry::Occupied(entry) => {
-                            return Err(AppError::Io(std::io::Error::new(
-                                std::io::ErrorKind::InvalidData,
-                                format!(
-                                    "world tree enumerated region {:?} twice ({} and {})",
-                                    entry.key(),
-                                    entry.get().display(),
-                                    r.path.display(),
-                                ),
-                            )));
-                        }
-                    }
-                }
-            }
-            Ok::<_, AppError>(discovered)
-        })
-        .await??;
+        let mut discovered =
+            tokio::task::spawn_blocking(move || discover_regions(&world_handle)).await??;
         let discover_dt = discover_started.elapsed();
         discovered.retain(|key, _| scope.matches_region(*key));
 
@@ -398,7 +372,7 @@ where
             region_z: key.rz,
         }
         .into()),
-        MissingFilePolicy::DerivedOnly => Ok(world.derive_path(key.dim, key.kind, key.rx, key.rz)?),
+        MissingFilePolicy::DerivedOnly => Ok(world.derive_path(*key)?),
         MissingFilePolicy::SiblingFirst => sibling_or_derived(discovered, world, key),
     }
 }
@@ -420,5 +394,5 @@ where
     if let Some(path) = sekai_world::sibling_path(discovered, key) {
         return Ok(path);
     }
-    Ok(world.derive_path(key.dim, key.kind, key.rx, key.rz)?)
+    Ok(world.derive_path(*key)?)
 }

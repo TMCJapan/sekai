@@ -1,7 +1,7 @@
 //! World filesystem behavior: discovery, fingerprints, swaps.
 
 use sekai_core::{Dimension, RegionKey, RegionKind};
-use sekai_world::{HostWorldTree, RegionRef, WorldTree, atomic_swap, fingerprint_file, open_image};
+use sekai_world::{HostWorldTree, WorldTree, atomic_swap, fingerprint_file, open_image};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -26,7 +26,13 @@ fn cleanup(dir: impl AsRef<Path>) {
 
 /// Minimal one-chunk region image bytes.
 fn one_chunk_image() -> Vec<u8> {
-    let mut builder = sekai_anvil::RegionBuilder::new(0, 0, 0).unwrap();
+    one_chunk_image_at(0)
+}
+
+/// The same image with a different timestamp: two files that differ by
+/// content while both stay valid region images.
+fn one_chunk_image_at(timestamp: u32) -> Vec<u8> {
+    let mut builder = sekai_anvil::RegionBuilder::new(0, 0, timestamp).unwrap();
     builder.stage_chunk(0, 0, &[2, 1, 2, 3]).unwrap();
     builder.image().unwrap()
 }
@@ -36,41 +42,55 @@ fn write(path: impl AsRef<Path>, bytes: &[u8]) {
     std::fs::write(path, bytes).unwrap();
 }
 
-/// Every region of the world: dimensions in ascending raw-code order
-/// (`get_dims`), and within each dimension in `region`, `entities`,
-/// `poi` order (`get_regions`).
-fn discover(world: &HostWorldTree) -> Vec<RegionRef> {
+/// Every region of the world as its discovered key and on-disk path:
+/// dimensions in ascending raw-code order (`get_dims`), and within each
+/// dimension in `region`, `entities`, `poi` order (`get_regions`).
+fn discover(world: &HostWorldTree) -> Vec<(RegionKey, PathBuf)> {
     let mut regions = Vec::new();
     for dim in world.get_dims().unwrap() {
-        regions.extend(world.get_regions(dim).unwrap());
+        for kind in RegionKind::ALL {
+            regions.extend(world.get_regions(dim, kind).unwrap());
+        }
     }
     regions
 }
 
 /// Discovered files sorted by path, for order-independent assertions.
-fn paths_of(found: &[RegionRef]) -> Vec<PathBuf> {
-    let mut paths: Vec<_> = found.iter().map(|r| r.path.clone()).collect();
+fn paths_of(found: &[(RegionKey, PathBuf)]) -> Vec<PathBuf> {
+    let mut paths: Vec<_> = found.iter().map(|(_, path)| path.clone()).collect();
     paths.sort();
     paths
 }
 
-/// Every discovered file derives back to its own path: the tree resolved
-/// each observed dimension directory at construction.
-fn assert_derives_back(tree: &HostWorldTree, found: &[RegionRef]) {
-    for r in found {
-        assert_eq!(
-            tree.derive_path(r.dim, r.kind, r.region_x, r.region_z)
-                .unwrap(),
-            r.path
-        );
+/// Key of the discovered file at `path`.
+fn key_at(found: &[(RegionKey, PathBuf)], path: impl AsRef<Path>) -> RegionKey {
+    found
+        .iter()
+        .find(|(_, p)| p.as_path() == path.as_ref())
+        .unwrap()
+        .0
+}
+
+/// Canonical fixtures: every discovered key derives back to its own path,
+/// because the tree resolved each observed dimension directory at
+/// construction. Non-canonical spellings are covered separately.
+fn assert_derives_back(tree: &HostWorldTree, found: &[(RegionKey, PathBuf)]) {
+    for (key, path) in found {
+        assert_eq!(&tree.derive_path(*key).unwrap(), path);
     }
 }
 
 /// Same path, same id: reopening the root reproduces every discovered id.
-fn assert_stable_ids(root: impl AsRef<Path>, found: &[RegionRef]) {
+fn assert_stable_ids(root: impl AsRef<Path>, found: &[(RegionKey, PathBuf)]) {
     let reopened = discover(&HostWorldTree::new(root).unwrap());
-    let mut once: Vec<_> = found.iter().map(|r| (r.path.clone(), r.dim)).collect();
-    let mut again: Vec<_> = reopened.iter().map(|r| (r.path.clone(), r.dim)).collect();
+    let mut once: Vec<_> = found
+        .iter()
+        .map(|(key, path)| (path.clone(), *key))
+        .collect();
+    let mut again: Vec<_> = reopened
+        .iter()
+        .map(|(key, path)| (path.clone(), *key))
+        .collect();
     once.sort();
     again.sort();
     assert_eq!(once, again);
@@ -81,7 +101,7 @@ fn assert_stable_ids(root: impl AsRef<Path>, found: &[RegionRef]) {
 fn discovered_dims(root: impl AsRef<Path>) -> Vec<Dimension> {
     let mut dims: Vec<_> = discover(&HostWorldTree::new(root).unwrap())
         .iter()
-        .map(|r| r.dim)
+        .map(|(key, _)| key.dim)
         .collect();
     dims.sort_unstable();
     dims.dedup();
@@ -92,10 +112,10 @@ fn discovered_dims(root: impl AsRef<Path>) -> Vec<Dimension> {
 /// fixtures below hold exactly one file per dimension.
 fn dim_paths(root: impl AsRef<Path>) -> BTreeMap<Dimension, PathBuf> {
     let mut paths = BTreeMap::new();
-    for r in discover(&HostWorldTree::new(root).unwrap()) {
+    for (key, path) in discover(&HostWorldTree::new(root).unwrap()) {
         assert!(
-            paths.insert(r.dim, r.path).is_none(),
-            "fixtures hold one region file per dimension"
+            paths.insert(key.dim, path).is_none(),
+            "fixtures hold one region file per dimension (duplicate: {key:?})"
         );
     }
     paths
@@ -128,9 +148,7 @@ fn observes_a_single_layout_per_root() {
     assert_eq!(paths_of(&found), vec![custom.clone(), overworld.clone()]);
 
     // Two folders, two distinct path-derived ids.
-    let over = found.iter().find(|r| r.path == overworld).unwrap();
-    let sky = found.iter().find(|r| r.path == custom).unwrap();
-    assert_ne!(over.dim, sky.dim);
+    assert_ne!(key_at(&found, &overworld).dim, key_at(&found, &custom).dim);
 
     assert_derives_back(&world, &found);
     assert_stable_ids(&world_path, &found);
@@ -157,12 +175,16 @@ fn get_dims_lists_every_layout_dimension() {
     let mut expected = [Dimension::OVERWORLD, Dimension::NETHER, Dimension::END];
     expected.sort_unstable_by_key(|dim| dim.raw());
     assert_eq!(dims, expected, "dimensions are ordered by raw code");
-    let over = world.get_regions(Dimension::OVERWORLD).unwrap();
+    let over = world
+        .get_regions(Dimension::OVERWORLD, RegionKind::Region)
+        .unwrap();
     assert_eq!(over.len(), 1);
-    assert_eq!(over[0].path, world_path.join("region/r.0.0.mca"));
+    assert_eq!(over[0].1, world_path.join("region/r.0.0.mca"));
     assert_eq!(
-        world.get_regions(Dimension::NETHER).unwrap(),
-        [] as [sekai_world::RegionRef; 0]
+        world
+            .get_regions(Dimension::NETHER, RegionKind::Region)
+            .unwrap(),
+        [] as [(RegionKey, PathBuf); 0]
     );
     cleanup(&world_path);
 }
@@ -234,14 +256,8 @@ fn discovers_a_legacy_single_folder_world() {
             world_path.join("region/r.0.0.mca"),
         ]
     );
-    let nether = found
-        .iter()
-        .find(|r| r.path == world_path.join("DIM-1/region/r.0.0.mca"))
-        .unwrap();
-    let over = found
-        .iter()
-        .find(|r| r.path == world_path.join("region/r.0.0.mca"))
-        .unwrap();
+    let nether = key_at(&found, world_path.join("DIM-1/region/r.0.0.mca"));
+    let over = key_at(&found, world_path.join("region/r.0.0.mca"));
     assert_ne!(nether.dim, over.dim);
     assert_eq!(over.dim, Dimension::OVERWORLD);
     assert_eq!(nether.dim, Dimension::NETHER);
@@ -318,14 +334,14 @@ fn discovers_a_custom_level_name_world() {
             root_path.join("srv/dimensions/minecraft/the_nether/region/r.0.0.mca"),
         ]
     );
-    let custom = found
-        .iter()
-        .find(|r| r.path == root_path.join("srv/dimensions/aeon/deep/region/r.0.1.mca"))
-        .unwrap();
-    let over = found
-        .iter()
-        .find(|r| r.path == root_path.join("srv/dimensions/minecraft/overworld/region/r.0.0.mca"))
-        .unwrap();
+    let custom = key_at(
+        &found,
+        root_path.join("srv/dimensions/aeon/deep/region/r.0.1.mca"),
+    );
+    let over = key_at(
+        &found,
+        root_path.join("srv/dimensions/minecraft/overworld/region/r.0.0.mca"),
+    );
     assert_ne!(custom.dim, over.dim);
     assert_derives_back(&root, &found);
     cleanup(&root_path);
@@ -397,11 +413,8 @@ fn discovers_a_legacy_bukkit_world() {
             root_path.join("world_the_end/DIM1/entities/r.1.0.mca"),
         ]
     );
-    let custom = found.iter().find(|r| r.path == spawn).unwrap();
-    let over = found
-        .iter()
-        .find(|r| r.path == root_path.join("world/region/r.0.0.mca"))
-        .unwrap();
+    let custom = key_at(&found, &spawn);
+    let over = key_at(&found, root_path.join("world/region/r.0.0.mca"));
     assert_ne!(custom.dim, over.dim);
     assert_derives_back(&root, &found);
     assert_stable_ids(&root_path, &found);
@@ -882,26 +895,50 @@ fn nested_world_folders_are_not_observed() {
 }
 
 #[test]
-fn duplicate_coordinate_names_resolve_deterministically() {
-    // `r.0.0.mca` and `r.00.00.mca` both parse as region (0,0). The chosen
-    // file must follow a fixed rule (lowest name first), never directory
-    // iteration order.
+fn duplicate_coordinate_names_are_rejected() {
+    // `r.0.0.mca` and `r.00.00.mca` both parse as region (0,0). Which one
+    // the game reads is not decidable from the name alone, so discovery
+    // fails loudly instead of picking one and dropping the other.
     let root_path = tempdir("dup-coords");
     let root = HostWorldTree::new(&root_path).unwrap();
-    let mut second = one_chunk_image();
-    second[8192 + 4] = 7;
     write(root_path.join("region/r.0.0.mca"), &one_chunk_image());
-    write(root_path.join("region/r.00.00.mca"), &second);
+    write(root_path.join("region/r.00.00.mca"), &one_chunk_image_at(1));
 
-    let found = discover(&root);
-    assert_eq!(found.len(), 1);
-    assert_eq!(found[0].path, root_path.join("region/r.0.0.mca"));
     for _ in 0..8 {
-        let again = discover(&root);
-        assert_eq!(again.len(), 1);
-        assert_eq!(again[0].path, root_path.join("region/r.0.0.mca"));
+        let error = root
+            .get_regions(Dimension::OVERWORLD, RegionKind::Region)
+            .unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("r.0.0.mca") && message.contains("r.00.00.mca"),
+            "the error must name both files: {message}"
+        );
     }
     cleanup(&root_path);
+}
+
+#[test]
+fn non_canonical_region_name_keeps_its_discovered_path() {
+    // `r.00.00.mca` parses as region (0,0). Discovery must report the file
+    // that exists, while `derive_path` keeps naming the canonical spelling
+    // used for output targets.
+    let world_path = tempdir("non-canonical");
+    let path = world_path.join("region/r.00.00.mca");
+    write(&path, &one_chunk_image());
+
+    let world = HostWorldTree::new(&world_path).unwrap();
+    let regions = world
+        .get_regions(Dimension::OVERWORLD, RegionKind::Region)
+        .unwrap();
+    assert_eq!(regions.len(), 1);
+    let (key, discovered) = &regions[0];
+    assert_eq!((key.rx, key.rz), (0, 0));
+    assert_eq!(discovered, &path);
+    assert_eq!(
+        world.derive_path(*key).unwrap(),
+        world_path.join("region/r.0.0.mca")
+    );
+    cleanup(&world_path);
 }
 
 #[cfg(unix)]
@@ -924,6 +961,47 @@ fn unresolvable_entries_are_skipped_not_fatal() {
 }
 
 #[test]
+fn regions_are_ordered_by_kind_and_coordinates() {
+    // Region enumeration reports keys in ascending coordinates within a
+    // kind, not file-name order (`r.10.0.mca` sorts before `r.2.0.mca`
+    // lexicographically), and the kind walk follows `RegionKind::ALL`.
+    let world_path = tempdir("region-order");
+    let image = one_chunk_image();
+    for name in ["r.10.0.mca", "r.2.0.mca", "r.-1.0.mca"] {
+        write(world_path.join("region").join(name), &image);
+    }
+    write(world_path.join("entities/r.5.0.mca"), &image);
+    write(world_path.join("poi/r.6.0.mca"), &image);
+
+    let world = HostWorldTree::new(&world_path).unwrap();
+    let expected = [
+        (RegionKind::Region, vec![(-1, 0), (2, 0), (10, 0)]),
+        (RegionKind::Entities, vec![(5, 0)]),
+        (RegionKind::Poi, vec![(6, 0)]),
+    ];
+    for (kind, coords) in expected {
+        let keys = world.get_regions(Dimension::OVERWORLD, kind).unwrap();
+        let actual: Vec<_> = keys.iter().map(|(key, _)| (key.rx, key.rz)).collect();
+        assert_eq!(actual, coords, "kind {kind:?}");
+    }
+    let kinds: Vec<_> = discover(&world)
+        .into_iter()
+        .map(|(key, _)| key.kind)
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            RegionKind::Region,
+            RegionKind::Region,
+            RegionKind::Region,
+            RegionKind::Entities,
+            RegionKind::Poi,
+        ]
+    );
+    cleanup(&world_path);
+}
+
+#[test]
 fn missing_world_is_an_error() {
     let world_path = tempdir("gone");
     let world = HostWorldTree::new(&world_path).unwrap();
@@ -937,8 +1015,10 @@ fn missing_world_is_an_error() {
     // Region enumeration is a plain directory read, and a missing root
     // holds no regions.
     assert_eq!(
-        world.get_regions(Dimension::OVERWORLD).unwrap(),
-        [] as [RegionRef; 0]
+        world
+            .get_regions(Dimension::OVERWORLD, RegionKind::Region)
+            .unwrap(),
+        [] as [(RegionKey, PathBuf); 0]
     );
 }
 
@@ -955,8 +1035,9 @@ fn output_trees_serve_no_regions_before_creation() {
         HostWorldTree::new_bukkit(&missing, "srv"),
     ] {
         assert_eq!(
-            tree.get_regions(Dimension::OVERWORLD).unwrap(),
-            [] as [RegionRef; 0]
+            tree.get_regions(Dimension::OVERWORLD, RegionKind::Region)
+                .unwrap(),
+            [] as [(RegionKey, PathBuf); 0]
         );
     }
     cleanup(&root);
@@ -967,7 +1048,7 @@ fn derives_all_layouts() {
     let legacy = HostWorldTree::new_legacy("/w");
     assert_eq!(
         legacy
-            .derive_path(Dimension::NETHER, RegionKind::Region, -1, 2)
+            .derive_path(RegionKey::new(Dimension::NETHER, RegionKind::Region, -1, 2))
             .unwrap(),
         Path::new("/w/DIM-1/region/r.-1.2.mca")
     );
@@ -975,7 +1056,7 @@ fn derives_all_layouts() {
     let modern = HostWorldTree::new_dimensions("/w");
     assert_eq!(
         modern
-            .derive_path(Dimension::END, RegionKind::Poi, 0, 0)
+            .derive_path(RegionKey::new(Dimension::END, RegionKind::Poi, 0, 0))
             .unwrap(),
         Path::new("/w/dimensions/minecraft/the_end/poi/r.0.0.mca")
     );
@@ -983,13 +1064,23 @@ fn derives_all_layouts() {
     let bukkit = HostWorldTree::new_bukkit("/w", "srv");
     assert_eq!(
         bukkit
-            .derive_path(Dimension::OVERWORLD, RegionKind::Region, 0, 0)
+            .derive_path(RegionKey::new(
+                Dimension::OVERWORLD,
+                RegionKind::Region,
+                0,
+                0
+            ))
             .unwrap(),
         Path::new("/w/srv/region/r.0.0.mca")
     );
 
     let err = modern
-        .derive_path(Dimension::new(4242), RegionKind::Region, 0, 0)
+        .derive_path(RegionKey::new(
+            Dimension::new(4242),
+            RegionKind::Region,
+            0,
+            0,
+        ))
         .unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     assert_eq!(
@@ -1033,7 +1124,7 @@ fn output_trees_share_discovered_ids() {
         (&bukkit_path, HostWorldTree::new_bukkit(&bukkit_path, "srv")),
     ] {
         let found = discover(&HostWorldTree::new(root).unwrap());
-        assert_ne!(found, [] as [sekai_world::RegionRef; 0]);
+        assert_ne!(found, [] as [(RegionKey, PathBuf); 0]);
         assert_derives_back(&out, &found);
     }
 

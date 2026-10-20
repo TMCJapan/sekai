@@ -5,8 +5,7 @@
 
 use std::path::PathBuf;
 
-use sekai_app::{AppError, Dimension, RegionKind, WorldTree, world_chunk_coords};
-use sekai_world::RegionRef;
+use sekai_app::{AppError, Dimension, RegionKey, RegionKind, WorldTree, world_chunk_coords};
 
 /// Failure type of [`FakeWorld`], deliberately unrelated to `WorldError`.
 #[derive(Debug, thiserror::Error)]
@@ -52,17 +51,15 @@ impl WorldTree for FakeWorld {
         Self::check(self.fail_dims).map(|()| vec![Dimension::OVERWORLD])
     }
 
-    fn get_regions(&self, _dim: Dimension) -> Result<Vec<RegionRef>, Self::Error> {
-        Self::check(self.fail_regions).map(|()| Vec::new())
-    }
-
-    fn derive_path(
+    fn get_regions(
         &self,
         _dim: Dimension,
         _kind: RegionKind,
-        _region_x: i32,
-        _region_z: i32,
-    ) -> Result<PathBuf, Self::Error> {
+    ) -> Result<Vec<(RegionKey, PathBuf)>, Self::Error> {
+        Self::check(self.fail_regions).map(|()| Vec::new())
+    }
+
+    fn derive_path(&self, _key: RegionKey) -> Result<PathBuf, Self::Error> {
         Ok(PathBuf::from("/fake/region/r.0.0.mca"))
     }
 }
