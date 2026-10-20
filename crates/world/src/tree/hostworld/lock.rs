@@ -177,6 +177,9 @@ fn symlink_error() -> io::Error {
 /// `O_NOFOLLOW` refuses it with `ELOOP`, while the pre-check reports
 /// `InvalidInput`. A caller matching on the kind must not depend on
 /// which check won the race.
+// Without `O_NOFOLLOW` there is nothing to normalize, so this is
+// trivially `const` off Unix.
+#[cfg_attr(not(unix), allow(clippy::missing_const_for_fn))]
 fn normalize_symlink(source: io::Error) -> io::Error {
     #[cfg(unix)]
     {
