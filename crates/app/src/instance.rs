@@ -25,7 +25,7 @@ use std::sync::Arc;
 
 use sekai_core::{Snapshot, SnapshotId};
 use sekai_storage::{StoreLock, StoreLockMode};
-use sekai_world::{WorldLock, WorldLockMode, WorldTree};
+use sekai_world::{WorldLock, WorldLockMode, WorldLockState, WorldTree};
 
 use crate::error::AppError;
 
@@ -149,7 +149,7 @@ impl SekaiInstance {
 #[derive(Debug)]
 pub(crate) struct OperationLocks<L> {
     store: StoreLock,
-    _world: Option<L>,
+    _world: WorldLockState<L>,
 }
 
 impl<L: WorldLock> OperationLocks<L> {
