@@ -322,10 +322,11 @@ impl WorldTree for HostWorldTree {
     fn lock(&self, mode: WorldLockMode) -> Result<WorldLockState<Self::Lock>, Self::Error> {
         // The lock lives in the root as passed, so two roots naming one
         // world (a Bukkit server root and its world folder) do not exclude
-        // each other (ADR-0014). Callers that name one world through
-        // several roots have to pick one canonical root; the others stay
-        // unlocked. A mistyped world path should read as one, not as a
-        // lock failure.
+        // each other (ADR-0014): each locks its own file, and the guard
+        // of one excludes nothing in the other. Callers that name one
+        // world through several roots have to pick one canonical root.
+        // A mistyped world path should read as one, not as a lock
+        // failure.
         self.check_root()?;
         let path = self.root.join(HostWorldLock::FILE_NAME);
         match HostWorldLock::acquire(&path, mode) {

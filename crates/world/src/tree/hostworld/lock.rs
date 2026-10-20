@@ -43,12 +43,15 @@ impl WorldLock for HostWorldLock {
 }
 
 /// Why a world could not be locked.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum HostWorldLockError {
     /// Another operation holds a conflicting lock.
+    #[error("the world is locked by another operation")]
     Contended,
-    /// The lock file could not be prepared or locked.
-    Io(io::Error),
+    /// The lock file could not be prepared or locked. The message names
+    /// the step that failed.
+    #[error("{0}")]
+    Io(#[source] io::Error),
 }
 
 /// The lock file, as far as it could be prepared.
@@ -94,9 +97,10 @@ impl HostWorldLock {
                     WorldLockMode::Shared => {
                         Ok(WorldLockState::Unguarded(UnguardedReason::ReadOnlyWorld))
                     }
-                    WorldLockMode::Exclusive => {
-                        Err(HostWorldLockError::Io(annotate("create", &source)))
-                    }
+                    WorldLockMode::Exclusive => Err(HostWorldLockError::Io(annotate(
+                        "create the world lock",
+                        &source,
+                    ))),
                 };
             }
         };
@@ -107,9 +111,10 @@ impl HostWorldLock {
         match locked {
             Ok(()) => Ok(WorldLockState::Guarded(Self { file, mode })),
             Err(TryLockError::WouldBlock) => Err(HostWorldLockError::Contended),
-            Err(TryLockError::Error(source)) => {
-                Err(HostWorldLockError::Io(annotate("take", &source)))
-            }
+            Err(TryLockError::Error(source)) => Err(HostWorldLockError::Io(annotate(
+                "take the world lock",
+                &source,
+            ))),
         }
     }
 }
@@ -125,12 +130,12 @@ fn open_lock_file(path: impl AsRef<Path>) -> Result<LockFile, io::Error> {
     // Off Unix there is no `O_NOFOLLOW`, so the pre-check is the only
     // refusal of a symlink; there the open cannot enforce it.
     #[cfg(not(unix))]
-    reject_symlink(path).map_err(|source| annotate("open", &source))?;
+    reject_symlink(path).map_err(|source| annotate("open the world lock", &source))?;
     match open_lock_path(path) {
         Ok(file) => Ok(LockFile::Open(file)),
         // A symlink is refused on purpose, not a failed create.
         Err(source) if source.kind() == io::ErrorKind::InvalidInput => {
-            Err(annotate("open", &source))
+            Err(annotate("open the world lock", &source))
         }
         Err(source) if is_read_only(&source) => match open_read_only_lock_path(path) {
             Ok(file) => Ok(LockFile::Open(file)),
@@ -139,9 +144,9 @@ fn open_lock_file(path: impl AsRef<Path>) -> Result<LockFile, io::Error> {
             Err(missing) if missing.kind() == io::ErrorKind::NotFound => {
                 Ok(LockFile::Absent(source))
             }
-            Err(missing) => Err(annotate("open", &missing)),
+            Err(missing) => Err(annotate("reopen the world lock read-only", &missing)),
         },
-        Err(source) => Err(annotate("create", &source)),
+        Err(source) => Err(annotate("create the world lock", &source)),
     }
 }
 
@@ -241,11 +246,8 @@ fn is_read_only(err: &io::Error) -> bool {
 /// chain would report the same OS error a second time under the
 /// wrapper, and the kind - the part callers branch on - survives on the
 /// wrapping error.
-fn annotate(action: &'static str, source: &io::Error) -> io::Error {
-    io::Error::new(
-        source.kind(),
-        format!("failed to {action} the world lock: {source}"),
-    )
+fn annotate(step: &'static str, source: &io::Error) -> io::Error {
+    io::Error::new(source.kind(), format!("failed to {step}: {source}"))
 }
 
 impl Drop for HostWorldLock {
@@ -346,8 +348,15 @@ mod tests {
         let err = HostWorldLock::acquire(&path, WorldLockMode::Exclusive).unwrap_err();
         assert!(matches!(err, HostWorldLockError::Contended));
         drop(second);
+        // The released reader can be taken again right away: the same
+        // process must not keep a stale lock after the guard drops.
+        let third = HostWorldLock::acquire(&path, WorldLockMode::Shared)
+            .unwrap()
+            .guard()
+            .expect("the released reader can be taken again");
         let err = HostWorldLock::acquire(&path, WorldLockMode::Exclusive).unwrap_err();
         assert!(matches!(err, HostWorldLockError::Contended));
+        drop(third);
 
         drop(first);
         let writer = HostWorldLock::acquire(&path, WorldLockMode::Exclusive)

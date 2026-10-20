@@ -112,7 +112,10 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
     /// can tell "busy, retry" from a real one; [`HostWorldTree`] reports
     /// [`crate::WorldError::WorldLocked`].
     ///
-    /// A tree is locked through one canonical root: two roots naming the
-    /// same world hold two different locks and do not exclude each other.
+    /// A tree is locked through the root it was constructed from: the
+    /// guard excludes other operations that lock that same root. Two
+    /// roots naming the same world hold two different locks and do not
+    /// exclude each other, so a caller that names one world through
+    /// several roots has to pick one canonical root.
     fn lock(&self, mode: WorldLockMode) -> Result<WorldLockState<Self::Lock>, Self::Error>;
 }

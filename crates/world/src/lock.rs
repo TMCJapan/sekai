@@ -63,6 +63,11 @@ impl<L> WorldLockState<L> {
 }
 
 /// Why an operation runs without excluding against others.
+///
+/// This is the documented opt-out, not a failure: the operation still
+/// runs, but without exclusion. It is an [`std::error::Error`] so a
+/// caller can carry it through `?` when it wants an unguarded run to be
+/// loud.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnguardedReason {
     /// The tree holds nothing to protect, so there is nothing to exclude.
