@@ -113,7 +113,7 @@ impl HostWorldLock {
             Ok(()) => Ok(WorldLockState::Guarded(Self { file, mode })),
             Err(TryLockError::WouldBlock) => Err(HostWorldLockError::Contended),
             Err(TryLockError::Error(source)) => {
-                Err(HostWorldLockError::Io(annotate("lock", &source)))
+                Err(HostWorldLockError::Io(annotate("take", &source)))
             }
         }
     }
@@ -133,6 +133,10 @@ fn open_lock_file(path: impl AsRef<Path>) -> Result<LockFile, io::Error> {
     reject_symlink(path).map_err(|source| annotate("open", &source))?;
     match open_lock_path(path) {
         Ok(file) => Ok(LockFile::Open(file)),
+        // A symlink is refused on purpose, not a failed create.
+        Err(source) if source.kind() == io::ErrorKind::InvalidInput => {
+            Err(annotate("open", &source))
+        }
         Err(source) if is_read_only(&source) => match open_read_only_lock_path(path) {
             Ok(file) => Ok(LockFile::Open(file)),
             // The file is absent and the directory says so: the world is
