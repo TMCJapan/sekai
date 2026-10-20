@@ -297,8 +297,17 @@ impl WorldTree for HostWorldTree {
     fn sibling_region(
         &self,
         region: &Self::Region,
-        RegionKey { rx, rz, .. }: RegionKey,
+        key: RegionKey,
     ) -> Result<Self::Region, Self::Error> {
+        // The directory is inherited from the region, so a key from another
+        // dimension or family would land in the wrong folder. The caller
+        // must not do that; the check catches it in tests and debug builds.
+        debug_assert!(
+            self.derive_region(key)
+                .is_ok_and(|derived| derived.0.parent() == region.0.parent()),
+            "sibling key must share the observed region's dimension and family"
+        );
+        let RegionKey { rx, rz, .. } = key;
         // The sibling sits in the directory the region was observed in, so
         // a world whose folders moved keeps restoring into the live one.
         Ok(HostRegion(

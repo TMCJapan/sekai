@@ -38,8 +38,8 @@ pub trait RegionFile: Clone + std::fmt::Debug + std::fmt::Display + Send + Sync 
 
     /// Delete the file.
     ///
-    /// A file that is already gone fails like any other failure. The
-    /// error type is the tree's own, so a caller that must tell "already
-    /// gone" from a real I/O error downcasts it.
+    /// A file that is already gone fails like any other failure. Telling
+    /// that case apart from a real I/O error takes the tree's concrete
+    /// error type: the trait promises no distinguishable failure.
     fn remove(&self) -> Result<(), Self::Error>;
 }

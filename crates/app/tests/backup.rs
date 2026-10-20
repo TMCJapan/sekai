@@ -176,11 +176,17 @@ async fn timing_rows_are_ordered_by_region_identity() {
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
-    write_region(
-        world_path.join("region/r.10.0.mca"),
-        &[(320, 0, vec![3, 1])],
-    );
-    write_region(world_path.join("region/r.2.0.mca"), &[(64, 0, vec![3, 2])]);
+    for (name, chunk) in [
+        ("r.10.0.mca", (320, 0)),
+        ("r.2.0.mca", (64, 0)),
+        ("r.0.10.mca", (0, 320)),
+        ("r.0.2.mca", (0, 64)),
+    ] {
+        write_region(
+            world_path.join("region").join(name),
+            &[(chunk.0, chunk.1, vec![3, 1])],
+        );
+    }
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let (_, timings) = instance
@@ -193,15 +199,12 @@ async fn timing_rows_are_ordered_by_region_identity() {
         .iter()
         .map(|region| region.location.as_str())
         .collect();
-    assert_eq!(locations.len(), 2);
-    assert!(
-        locations[0].ends_with("r.2.0.mca"),
-        "unexpected order: {locations:?}"
-    );
-    assert!(
-        locations[1].ends_with("r.10.0.mca"),
-        "unexpected order: {locations:?}"
-    );
+    assert_eq!(locations.len(), 4);
+    // Identity order: x before z, and the coordinates numerically.
+    let expected = ["r.0.2.mca", "r.0.10.mca", "r.2.0.mca", "r.10.0.mca"];
+    for (location, name) in locations.iter().zip(expected) {
+        assert!(location.ends_with(name), "unexpected order: {locations:?}");
+    }
     cleanup(&root);
 }
 

@@ -83,7 +83,8 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
     ///
     /// The caller must pass a `key` that shares `region`'s `dim` and
     /// `kind`: the directory is inherited from `region`, and only the file
-    /// name comes from `key`.
+    /// name comes from `key`. That directory is the one the region was
+    /// observed in, so it exists.
     ///
     /// Folders may have moved since the backup, so a restore prefers this
     /// over the layout-derived handle: the live directory is what the

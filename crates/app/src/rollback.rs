@@ -378,8 +378,10 @@ where
 ///
 /// Prefers a same-dimension sibling's directory (folders may have moved
 /// since the backup, e.g. across a 26.1 migration); only derives from the
-/// resolved layout when no sibling exists. Non-derivable namespaces fail
-/// loudly instead of writing somewhere wrong.
+/// resolved layout when no sibling exists. Any sibling of that dimension
+/// and family serves - they share the directory - and the first one the
+/// map reports is taken. Non-derivable namespaces fail loudly instead of
+/// writing somewhere wrong.
 fn sibling_or_derived<T: WorldTree>(
     discovered: &BTreeMap<RegionKey, T::Region>,
     world: &T,

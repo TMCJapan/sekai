@@ -125,7 +125,9 @@ pub struct BackupTimings {
     pub skipped_regions: usize,
     /// History rows carried over.
     pub carried_chunks: usize,
-    /// Per-region details for ingested files, sorted by region identity.
+    /// Per-region details for ingested files, ordered by region identity:
+    /// dimension (by its code), then family, then coordinates - the order
+    /// the world walk uses.
     pub regions: Vec<RegionTiming>,
 }
 
@@ -653,6 +655,9 @@ struct ChunkIngestCtx<'a> {
 /// Chunks outside `scope` are skipped before hashing: their history stays
 /// untouched and fallback keeps resolving them. Under `dry_run` blobs are
 /// probed, never stored.
+///
+/// The fingerprint names the file: discovery observed it under that
+/// identity, and the timing row reports the same one.
 fn ingest_file<R: RegionFile>(
     region: &R,
     observed: RegionFingerprint,

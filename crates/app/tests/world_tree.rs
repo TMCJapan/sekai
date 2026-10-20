@@ -23,12 +23,14 @@ impl From<FakeError> for AppError {
     }
 }
 
-/// A tree that enumerates one dimension and serves no regions, with a
-/// switch failing either discovery call.
+/// A tree that enumerates one dimension, serves no listed regions but
+/// derives region handles, with a switch failing either discovery call.
 #[derive(Clone)]
 struct FakeWorld {
     fail_dims: bool,
     fail_regions: bool,
+    /// Report one region file, so the handle's own failures are exercised.
+    serve_region: bool,
 }
 
 impl FakeWorld {
@@ -105,10 +107,20 @@ impl WorldTree for FakeWorld {
 
     fn get_regions(
         &self,
-        _dim: Dimension,
-        _kind: RegionKind,
+        dim: Dimension,
+        kind: RegionKind,
     ) -> Result<Vec<(RegionKey, Self::Region)>, Self::Error> {
-        Self::check(self.fail_regions).map(|()| Vec::new())
+        Self::check(self.fail_regions)?;
+        if !self.serve_region {
+            return Ok(Vec::new());
+        }
+        let key = RegionKey::new(dim, kind, 0, 0);
+        Ok(vec![(
+            key,
+            FakeRegion {
+                name: fake_name(key),
+            },
+        )])
     }
 
     fn derive_region(&self, key: RegionKey) -> Result<Self::Region, Self::Error> {
@@ -140,6 +152,7 @@ fn custom_tree_serves_the_app_layer() {
     let world = FakeWorld {
         fail_dims: false,
         fail_regions: false,
+        serve_region: false,
     };
     assert_eq!(
         world_chunk_coords(&world).unwrap(),
@@ -152,6 +165,7 @@ fn custom_tree_error_crosses_the_app_boundary() {
     let error = world_chunk_coords(&FakeWorld {
         fail_dims: true,
         fail_regions: false,
+        serve_region: false,
     })
     .unwrap_err();
     assert!(error.to_string().contains("fake world failed: unplugged"));
@@ -161,7 +175,24 @@ fn custom_tree_error_crosses_the_app_boundary() {
     let error = world_chunk_coords(&FakeWorld {
         fail_dims: false,
         fail_regions: true,
+        serve_region: false,
     })
     .unwrap_err();
     assert!(error.to_string().contains("fake world failed: unplugged"));
+}
+
+/// A region handle carries its own failure, and that one crosses the app
+/// boundary too - not only the tree's discovery calls.
+#[test]
+fn region_handle_error_crosses_the_app_boundary() {
+    let error = world_chunk_coords(&FakeWorld {
+        fail_dims: false,
+        fail_regions: false,
+        serve_region: true,
+    })
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("fake world failed: no bytes"),
+        "unexpected error: {error}"
+    );
 }
