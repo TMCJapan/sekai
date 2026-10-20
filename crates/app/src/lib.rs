@@ -10,6 +10,10 @@
 //! hang off the handles it hands out: [`WorldHandle`] for read-only work
 //! (`status`, `diff_world_*`) and [`WorldHandleMut`] for `backup` and
 //! `rollback`.
+//!
+//! A world is any [`WorldTree`]: the operations reach its region files
+//! through [`RegionFile`] handles, so a tree that is not backed by a
+//! filesystem runs the same flows as one that is.
 
 mod backup;
 mod diff;
@@ -37,7 +41,7 @@ pub use rollback::{
 };
 pub use sekai_core::{
     Area, BackupReport, BlobHash, ChunkCoord, DEFAULT_IGNORED, Dimension, GcPlan, GcReport,
-    NbtChange, NbtDiffEntry, NbtValue, PrunePlan, PruneReport, Rect, RegionKey, RegionKind,
-    RollbackReport, Scope, Snapshot, SnapshotId, SnapshotStats, SnapshotTag, TagName,
+    NbtChange, NbtDiffEntry, NbtValue, PrunePlan, PruneReport, Rect, RegionFingerprint, RegionKey,
+    RegionKind, RollbackReport, Scope, Snapshot, SnapshotId, SnapshotStats, SnapshotTag, TagName,
 };
-pub use sekai_world::{HostWorldTree, WorldTree};
+pub use sekai_world::{HostRegion, HostWorldTree, RegionFile, WorldTree};

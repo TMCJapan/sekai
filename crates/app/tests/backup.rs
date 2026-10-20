@@ -150,10 +150,61 @@ async fn backs_up_a_non_canonical_region_name() {
         .unwrap();
     assert_eq!(report.chunks, 1);
     assert_eq!(timings.regions.len(), 1);
+    // Component-wise joins so the expected location carries the platform
+    // separator, exactly like the discovered path's own display.
     assert_eq!(
-        timings.regions[0].path,
-        world_path.join("region/r.00.00.mca")
+        timings.regions[0].location,
+        world_path
+            .join("region")
+            .join("r.00.00.mca")
+            .to_string_lossy()
+            .into_owned()
     );
+    cleanup(&root);
+}
+
+/// The timing rows keep the world's own order.
+///
+/// The ingest runs in parallel, so the files complete in whatever order
+/// the workers finish them; the report sorts by region identity, which
+/// is the order every other operation reports. Sorting by the file name
+/// would not: `r.10.0.mca` sorts before `r.2.0.mca` as a name, while
+/// region 2 comes before region 10 as an identity.
+#[tokio::test]
+async fn timing_rows_are_ordered_by_region_identity() {
+    let root = tempdir("timing-order");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    for (name, chunk) in [
+        ("r.10.0.mca", (320, 0)),
+        ("r.2.0.mca", (64, 0)),
+        ("r.0.10.mca", (0, 320)),
+        ("r.0.2.mca", (0, 64)),
+    ] {
+        write_region(
+            world_path.join("region").join(name),
+            &[(chunk.0, chunk.1, vec![3, 1])],
+        );
+    }
+
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let (_, timings) = instance
+        .world_mut(&mut world)
+        .backup(options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+    let locations: Vec<&str> = timings
+        .regions
+        .iter()
+        .map(|region| region.location.as_str())
+        .collect();
+    assert_eq!(locations.len(), 4);
+    // Identity order: x before z, and the coordinates numerically.
+    let expected = ["r.0.2.mca", "r.0.10.mca", "r.2.0.mca", "r.10.0.mca"];
+    for (location, name) in locations.iter().zip(expected) {
+        assert!(location.ends_with(name), "unexpected order: {locations:?}");
+    }
     cleanup(&root);
 }
 
@@ -1812,8 +1863,8 @@ fn read_world(world: &HostWorldTree, world_path: impl AsRef<Path>) -> ChunkMaps 
     let mut files = Vec::new();
     for dim in world.get_dims().unwrap() {
         for kind in RegionKind::ALL {
-            for (_, path) in world.get_regions(dim, kind).unwrap() {
-                files.push(path);
+            for (_, region) in world.get_regions(dim, kind).unwrap() {
+                files.push(region.as_path().to_path_buf());
             }
         }
     }

@@ -23,10 +23,11 @@ mod vanilla;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use sekai_core::{Dimension, RegionKey, RegionKind};
+use sekai_core::{Dimension, RegionFingerprint, RegionKey, RegionKind};
 
 use super::WorldTree;
 use crate::WorldError;
+use crate::region::RegionFile;
 
 /// Directory of `kind` under a dimension directory.
 const fn kind_dir(kind: RegionKind) -> &'static str {
@@ -34,6 +35,51 @@ const fn kind_dir(kind: RegionKind) -> &'static str {
         RegionKind::Region => "region",
         RegionKind::Entities => "entities",
         RegionKind::Poi => "poi",
+    }
+}
+
+/// One region file of a host world: the path it lives at.
+///
+/// The operations never see a path - they work on the handle. A
+/// host-specific caller (the CLI, a test) can still ask for the path
+/// with [`HostRegion::as_path`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostRegion(PathBuf);
+
+impl HostRegion {
+    /// The file's path on disk.
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for HostRegion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.display().fmt(f)
+    }
+}
+
+impl RegionFile for HostRegion {
+    type Error = WorldError;
+
+    fn read(&self) -> Result<Vec<u8>, WorldError> {
+        crate::swap::open_image(&self.0)
+    }
+
+    fn fingerprint(&self, key: RegionKey) -> Result<RegionFingerprint, WorldError> {
+        crate::fingerprint::fingerprint_file(&self.0, key)
+    }
+
+    fn exists(&self) -> bool {
+        self.0.exists()
+    }
+
+    fn write(&self, image: &[u8]) -> Result<(), WorldError> {
+        crate::swap::atomic_swap(&self.0, image)
+    }
+
+    fn remove(&self) -> Result<(), WorldError> {
+        std::fs::remove_file(&self.0).map_err(|source| WorldError::io(&self.0, source))
     }
 }
 
@@ -136,13 +182,13 @@ impl HostWorldTree {
     /// silently answer "nothing" for a world that vanished. Region
     /// enumeration stays a plain directory read instead, so output trees
     /// can serve a root that does not exist yet.
-    fn check_root(&self) -> Result<(), std::io::Error> {
+    fn check_root(&self) -> Result<(), WorldError> {
         if self.root.is_dir() {
             return Ok(());
         }
-        Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("world directory not found: {}", self.root.display()),
+        Err(WorldError::io(
+            &self.root,
+            std::io::Error::new(std::io::ErrorKind::NotFound, "world directory not found"),
         ))
     }
 }
@@ -154,7 +200,8 @@ fn collect_dimensions(dir: impl AsRef<Path>) -> Result<BTreeMap<Dimension, PathB
 }
 
 impl WorldTree for HostWorldTree {
-    type Error = std::io::Error;
+    type Error = WorldError;
+    type Region = HostRegion;
 
     fn is_empty(&self) -> Result<bool, Self::Error> {
         for path in self.dirs.values() {
@@ -166,7 +213,7 @@ impl WorldTree for HostWorldTree {
                 }
                 // A directory that does not exist yet holds nothing.
                 Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
-                Err(source) => return Err(source),
+                Err(source) => return Err(WorldError::io(path, source)),
             }
         }
         Ok(true)
@@ -181,7 +228,7 @@ impl WorldTree for HostWorldTree {
         &self,
         dim: Dimension,
         kind: RegionKind,
-    ) -> Result<Vec<(RegionKey, PathBuf)>, Self::Error> {
+    ) -> Result<Vec<(RegionKey, Self::Region)>, Self::Error> {
         let Some(dir) = self.dirs.get(&dim) else {
             return Ok(Vec::new());
         };
@@ -189,7 +236,9 @@ impl WorldTree for HostWorldTree {
         let name = kind_dir(kind);
         let mut regions: BTreeMap<(i32, i32), PathBuf> = BTreeMap::new();
         // Sorted by name so the reported pair is the same on every run.
-        let mut entries = vanilla::read_dir_opt(dir.join(name))?;
+        let kind_dir_path = dir.join(name);
+        let mut entries = vanilla::read_dir_opt(&kind_dir_path)
+            .map_err(|source| WorldError::io(&kind_dir_path, source))?;
         entries.sort_unstable_by_key(std::fs::DirEntry::file_name);
         for entry in entries {
             if !vanilla::is_file(&entry) {
@@ -208,14 +257,14 @@ impl WorldTree for HostWorldTree {
             // ambiguous: the game reads whichever file it finds, so the tool
             // must not pick one and drop the other.
             if let Some(previous) = regions.get(&(rx, rz)) {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!(
-                        "two region files spell the same region ({rx},{rz}): {} and {}",
-                        previous.display(),
-                        path.display()
-                    ),
-                ));
+                return Err(WorldError::AmbiguousRegion {
+                    dim,
+                    kind,
+                    region_x: rx,
+                    region_z: rz,
+                    first: previous.clone(),
+                    second: path,
+                });
             }
             // The BTreeMap keeps the result ordered by coordinates
             // regardless of `RegionKey` field order.
@@ -223,29 +272,46 @@ impl WorldTree for HostWorldTree {
         }
         Ok(regions
             .into_iter()
-            .map(|((rx, rz), path)| (RegionKey { dim, kind, rx, rz }, path))
+            .map(|((rx, rz), path)| (RegionKey { dim, kind, rx, rz }, HostRegion(path)))
             .collect())
     }
 
-    fn derive_path(
+    fn derive_region(
         &self,
         RegionKey { dim, kind, rx, rz }: RegionKey,
-    ) -> Result<PathBuf, Self::Error> {
+    ) -> Result<Self::Region, Self::Error> {
         // Mirrors `WorldError::UnknownRegionPath`; the CLI troubleshooting
         // entry refers to this wording.
-        let cannot_derive = || {
-            std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!(
-                    "cannot derive region path for dim {}, kind {}, r.{rx}.{rz}",
-                    dim.raw(),
-                    kind.raw()
-                ),
-            )
+        let cannot_derive = || WorldError::UnknownRegionPath {
+            dim,
+            kind,
+            region_x: rx,
+            region_z: rz,
         };
         let root = self.dirs.get(&dim).ok_or_else(cannot_derive)?;
         let name = kind_dir(kind);
 
-        Ok(root.join(name).join(format!("r.{rx}.{rz}.mca")))
+        Ok(HostRegion(root.join(name).join(format!("r.{rx}.{rz}.mca"))))
+    }
+
+    fn sibling_region(
+        &self,
+        region: &Self::Region,
+        key: RegionKey,
+    ) -> Result<Self::Region, Self::Error> {
+        // The directory is inherited from the region, so a key from another
+        // dimension or family would land in the wrong folder. The caller
+        // must not do that; the check catches it in tests and debug builds.
+        debug_assert!(
+            self.derive_region(key)
+                .is_ok_and(|derived| derived.0.parent() == region.0.parent()),
+            "sibling key must share the observed region's dimension and family"
+        );
+        let RegionKey { rx, rz, .. } = key;
+        // The sibling sits in the directory the region was observed in, so
+        // a world whose folders moved keeps restoring into the live one.
+        Ok(HostRegion(
+            region.0.with_file_name(format!("r.{rx}.{rz}.mca")),
+        ))
     }
 }

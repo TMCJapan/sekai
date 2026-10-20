@@ -1,7 +1,9 @@
 //! World filesystem behavior: discovery, fingerprints, swaps.
 
 use sekai_core::{Dimension, RegionKey, RegionKind};
-use sekai_world::{HostWorldTree, WorldTree, atomic_swap, fingerprint_file, open_image};
+use sekai_world::{
+    HostRegion, HostWorldTree, WorldError, WorldTree, atomic_swap, fingerprint_file, open_image,
+};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -49,7 +51,13 @@ fn discover(world: &HostWorldTree) -> Vec<(RegionKey, PathBuf)> {
     let mut regions = Vec::new();
     for dim in world.get_dims().unwrap() {
         for kind in RegionKind::ALL {
-            regions.extend(world.get_regions(dim, kind).unwrap());
+            regions.extend(
+                world
+                    .get_regions(dim, kind)
+                    .unwrap()
+                    .into_iter()
+                    .map(|(key, region)| (key, region.as_path().to_path_buf())),
+            );
         }
     }
     regions
@@ -76,7 +84,7 @@ fn key_at(found: &[(RegionKey, PathBuf)], path: impl AsRef<Path>) -> RegionKey {
 /// construction. Non-canonical spellings are covered separately.
 fn assert_derives_back(tree: &HostWorldTree, found: &[(RegionKey, PathBuf)]) {
     for (key, path) in found {
-        assert_eq!(&tree.derive_path(*key).unwrap(), path);
+        assert_eq!(tree.derive_region(*key).unwrap().as_path(), path);
     }
 }
 
@@ -179,12 +187,12 @@ fn get_dims_lists_every_layout_dimension() {
         .get_regions(Dimension::OVERWORLD, RegionKind::Region)
         .unwrap();
     assert_eq!(over.len(), 1);
-    assert_eq!(over[0].1, world_path.join("region/r.0.0.mca"));
+    assert_eq!(over[0].1.as_path(), world_path.join("region/r.0.0.mca"));
     assert_eq!(
         world
             .get_regions(Dimension::NETHER, RegionKind::Region)
             .unwrap(),
-        [] as [(RegionKey, PathBuf); 0]
+        [] as [(RegionKey, HostRegion); 0]
     );
     cleanup(&world_path);
 }
@@ -920,8 +928,8 @@ fn duplicate_coordinate_names_are_rejected() {
 #[test]
 fn non_canonical_region_name_keeps_its_discovered_path() {
     // `r.00.00.mca` parses as region (0,0). Discovery must report the file
-    // that exists, while `derive_path` keeps naming the canonical spelling
-    // used for output targets.
+    // that exists, while `derive_region` keeps naming the canonical
+    // spelling used for output targets.
     let world_path = tempdir("non-canonical");
     let path = world_path.join("region/r.00.00.mca");
     write(&path, &one_chunk_image());
@@ -933,10 +941,45 @@ fn non_canonical_region_name_keeps_its_discovered_path() {
     assert_eq!(regions.len(), 1);
     let (key, discovered) = &regions[0];
     assert_eq!((key.rx, key.rz), (0, 0));
-    assert_eq!(discovered, &path);
+    assert_eq!(discovered.as_path(), path);
     assert_eq!(
-        world.derive_path(*key).unwrap(),
+        world.derive_region(*key).unwrap().as_path(),
         world_path.join("region/r.0.0.mca")
+    );
+    cleanup(&world_path);
+}
+
+/// A sibling keeps the directory the region was observed in and only
+/// renames the file.
+///
+/// A restore prefers it over the derived handle, because folders may
+/// have moved since the backup: the live directory is where the sibling
+/// was found, while the derived handle names the layout's canonical
+/// directory.
+#[test]
+fn a_sibling_keeps_the_observed_directory() {
+    let world_path = tempdir("sibling");
+    write(world_path.join("region/r.00.00.mca"), &one_chunk_image());
+
+    let world = HostWorldTree::new(&world_path).unwrap();
+    let regions = world
+        .get_regions(Dimension::OVERWORLD, RegionKind::Region)
+        .unwrap();
+    assert_eq!(regions.len(), 1);
+    let (key, discovered) = &regions[0];
+    let sibling = world
+        .sibling_region(discovered, RegionKey::new(key.dim, key.kind, 5, 7))
+        .unwrap();
+    // The observed directory, the canonical file name.
+    assert_eq!(
+        sibling.as_path(),
+        world_path.join("region").join("r.5.7.mca")
+    );
+    // The derived handle of the same region still names the layout's
+    // canonical spelling.
+    assert_eq!(
+        world.derive_region(*key).unwrap().as_path(),
+        world_path.join("region").join("r.0.0.mca")
     );
     cleanup(&world_path);
 }
@@ -1010,7 +1053,7 @@ fn missing_world_is_an_error() {
     // as empty.
     assert!(matches!(
         world.get_dims(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound
+        Err(WorldError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound
     ));
     // Region enumeration is a plain directory read, and a missing root
     // holds no regions.
@@ -1018,7 +1061,7 @@ fn missing_world_is_an_error() {
         world
             .get_regions(Dimension::OVERWORLD, RegionKind::Region)
             .unwrap(),
-        [] as [(RegionKey, PathBuf); 0]
+        [] as [(RegionKey, HostRegion); 0]
     );
 }
 
@@ -1037,7 +1080,7 @@ fn output_trees_serve_no_regions_before_creation() {
         assert_eq!(
             tree.get_regions(Dimension::OVERWORLD, RegionKind::Region)
                 .unwrap(),
-            [] as [(RegionKey, PathBuf); 0]
+            [] as [(RegionKey, HostRegion); 0]
         );
     }
     cleanup(&root);
@@ -1048,41 +1091,44 @@ fn derives_all_layouts() {
     let legacy = HostWorldTree::new_legacy("/w");
     assert_eq!(
         legacy
-            .derive_path(RegionKey::new(Dimension::NETHER, RegionKind::Region, -1, 2))
-            .unwrap(),
+            .derive_region(RegionKey::new(Dimension::NETHER, RegionKind::Region, -1, 2))
+            .unwrap()
+            .as_path(),
         Path::new("/w/DIM-1/region/r.-1.2.mca")
     );
 
     let modern = HostWorldTree::new_dimensions("/w");
     assert_eq!(
         modern
-            .derive_path(RegionKey::new(Dimension::END, RegionKind::Poi, 0, 0))
-            .unwrap(),
+            .derive_region(RegionKey::new(Dimension::END, RegionKind::Poi, 0, 0))
+            .unwrap()
+            .as_path(),
         Path::new("/w/dimensions/minecraft/the_end/poi/r.0.0.mca")
     );
 
     let bukkit = HostWorldTree::new_bukkit("/w", "srv");
     assert_eq!(
         bukkit
-            .derive_path(RegionKey::new(
+            .derive_region(RegionKey::new(
                 Dimension::OVERWORLD,
                 RegionKind::Region,
                 0,
                 0
             ))
-            .unwrap(),
+            .unwrap()
+            .as_path(),
         Path::new("/w/srv/region/r.0.0.mca")
     );
 
     let err = modern
-        .derive_path(RegionKey::new(
+        .derive_region(RegionKey::new(
             Dimension::new(4242),
             RegionKind::Region,
             0,
             0,
         ))
         .unwrap_err();
-    assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    assert!(matches!(err, WorldError::UnknownRegionPath { .. }));
     assert_eq!(
         err.to_string(),
         format!(

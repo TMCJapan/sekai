@@ -1,11 +1,14 @@
 //! Pluggable [`WorldTree`] implementations with their own failure types.
 //!
 //! Guards the abstraction boundary: a tree outside this workspace names its
-//! own error, and the `sekai-app` entry points convert it via `From`.
+//! own error, hands out its own region handles, and the `sekai-app` entry
+//! points convert the failure via `From`. Nothing in the boundary is
+//! filesystem-bound: this tree only names its region files, and every file
+//! operation on them fails on purpose - the fake serves no bytes.
 
-use std::path::PathBuf;
-
-use sekai_app::{AppError, Dimension, RegionKey, RegionKind, WorldTree, world_chunk_coords};
+use sekai_app::{
+    AppError, Dimension, RegionFile, RegionKey, RegionKind, WorldTree, world_chunk_coords,
+};
 
 /// Failure type of [`FakeWorld`], deliberately unrelated to `WorldError`.
 #[derive(Debug, thiserror::Error)]
@@ -20,12 +23,14 @@ impl From<FakeError> for AppError {
     }
 }
 
-/// A tree that enumerates one dimension and serves no regions, with a
-/// switch failing either discovery call.
+/// A tree that enumerates one dimension, serves no listed regions but
+/// derives region handles, with a switch failing either discovery call.
 #[derive(Clone)]
 struct FakeWorld {
     fail_dims: bool,
     fail_regions: bool,
+    /// Report one region file, so the handle's own failures are exercised.
+    serve_region: bool,
 }
 
 impl FakeWorld {
@@ -40,8 +45,57 @@ impl FakeWorld {
     }
 }
 
+/// One region file of the fake tree: the name it was asked for, nothing
+/// else.
+#[derive(Clone, Debug)]
+struct FakeRegion {
+    name: String,
+}
+
+impl std::fmt::Display for FakeRegion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.name)
+    }
+}
+
+impl RegionFile for FakeRegion {
+    type Error = FakeError;
+
+    fn read(&self) -> Result<Vec<u8>, Self::Error> {
+        // Not supported: the fake serves no bytes.
+        Err(FakeError { reason: "no bytes" })
+    }
+
+    fn fingerprint(&self, _key: RegionKey) -> Result<sekai_app::RegionFingerprint, Self::Error> {
+        // Not supported: the fake serves no bytes to fingerprint.
+        Err(FakeError {
+            reason: "no fingerprint",
+        })
+    }
+
+    fn exists(&self) -> bool {
+        // Not supported: the fake holds no files.
+        false
+    }
+
+    fn write(&self, _image: &[u8]) -> Result<(), Self::Error> {
+        // Not supported: the fake holds no files.
+        Err(FakeError {
+            reason: "no writes",
+        })
+    }
+
+    fn remove(&self) -> Result<(), Self::Error> {
+        // Not supported: the fake holds no files.
+        Err(FakeError {
+            reason: "no removals",
+        })
+    }
+}
+
 impl WorldTree for FakeWorld {
     type Error = FakeError;
+    type Region = FakeRegion;
 
     fn is_empty(&self) -> Result<bool, Self::Error> {
         Ok(true)
@@ -53,15 +107,42 @@ impl WorldTree for FakeWorld {
 
     fn get_regions(
         &self,
-        _dim: Dimension,
-        _kind: RegionKind,
-    ) -> Result<Vec<(RegionKey, PathBuf)>, Self::Error> {
-        Self::check(self.fail_regions).map(|()| Vec::new())
+        dim: Dimension,
+        kind: RegionKind,
+    ) -> Result<Vec<(RegionKey, Self::Region)>, Self::Error> {
+        Self::check(self.fail_regions)?;
+        if !self.serve_region {
+            return Ok(Vec::new());
+        }
+        let key = RegionKey::new(dim, kind, 0, 0);
+        Ok(vec![(
+            key,
+            FakeRegion {
+                name: fake_name(key),
+            },
+        )])
     }
 
-    fn derive_path(&self, _key: RegionKey) -> Result<PathBuf, Self::Error> {
-        Ok(PathBuf::from("/fake/region/r.0.0.mca"))
+    fn derive_region(&self, key: RegionKey) -> Result<Self::Region, Self::Error> {
+        Ok(FakeRegion {
+            name: fake_name(key),
+        })
     }
+
+    fn sibling_region(
+        &self,
+        _region: &Self::Region,
+        key: RegionKey,
+    ) -> Result<Self::Region, Self::Error> {
+        Ok(FakeRegion {
+            name: fake_name(key),
+        })
+    }
+}
+
+/// The name the fake gives the region file of `key`.
+fn fake_name(key: RegionKey) -> String {
+    format!("/fake/region/r.{}.{}.mca", key.rx, key.rz)
 }
 
 #[test]
@@ -71,6 +152,7 @@ fn custom_tree_serves_the_app_layer() {
     let world = FakeWorld {
         fail_dims: false,
         fail_regions: false,
+        serve_region: false,
     };
     assert_eq!(
         world_chunk_coords(&world).unwrap(),
@@ -83,6 +165,7 @@ fn custom_tree_error_crosses_the_app_boundary() {
     let error = world_chunk_coords(&FakeWorld {
         fail_dims: true,
         fail_regions: false,
+        serve_region: false,
     })
     .unwrap_err();
     assert!(error.to_string().contains("fake world failed: unplugged"));
@@ -92,7 +175,24 @@ fn custom_tree_error_crosses_the_app_boundary() {
     let error = world_chunk_coords(&FakeWorld {
         fail_dims: false,
         fail_regions: true,
+        serve_region: false,
     })
     .unwrap_err();
     assert!(error.to_string().contains("fake world failed: unplugged"));
+}
+
+/// A region handle carries its own failure, and that one crosses the app
+/// boundary too - not only the tree's discovery calls.
+#[test]
+fn region_handle_error_crosses_the_app_boundary() {
+    let error = world_chunk_coords(&FakeWorld {
+        fail_dims: false,
+        fail_regions: false,
+        serve_region: true,
+    })
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("fake world failed: no bytes"),
+        "unexpected error: {error}"
+    );
 }

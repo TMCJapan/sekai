@@ -13,12 +13,11 @@
 //! [`RollbackOptions`] relax each of those strict behaviors explicitly.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use sekai_core::{BlobHash, ChunkCoord, RegionKey, RollbackReport, Scope, SnapshotId};
 use sekai_storage::FileCas;
-use sekai_world::WorldTree;
+use sekai_world::{RegionFile, WorldTree};
 
 use crate::error::AppError;
 use crate::instance::WorldHandleMut;
@@ -63,10 +62,10 @@ pub enum MissingBlobPolicy {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MissingFilePolicy {
     /// Prefer a same-dimension sibling's directory, falling back to the
-    /// layout-derived path.
+    /// layout-derived location.
     #[default]
     SiblingFirst,
-    /// Always use the layout-derived path, ignoring siblings.
+    /// Always use the layout-derived location, ignoring siblings.
     DerivedOnly,
     /// Fail loudly instead of guessing a location.
     Error,
@@ -168,13 +167,13 @@ where
 }
 
 /// Everything one rollback file pass needs, owned for the blocking task.
-struct RollbackJob<T> {
+struct RollbackJob<T: WorldTree> {
     groups: BTreeMap<RegionKey, Vec<(ChunkCoord, BlobHash)>>,
     tombstones: BTreeMap<RegionKey, Vec<ChunkCoord>>,
     options: RollbackOptions,
     cas: FileCas,
     world: T,
-    discovered: BTreeMap<RegionKey, PathBuf>,
+    discovered: BTreeMap<RegionKey, T::Region>,
 }
 
 /// Rebuild every region file: present rows from CAS blobs, tombstones and
@@ -220,8 +219,8 @@ where
     for key in keys {
         let rows = groups.get(&key);
         let tombs = tombstones.get(&key);
-        let path = match discovered.get(&key) {
-            Some(path) => path.clone(),
+        let region = match discovered.get(&key) {
+            Some(region) => region.clone(),
             None => match rows {
                 None => {
                     // No rows and no file: nothing to do.
@@ -240,11 +239,8 @@ where
             } else {
                 options.keep_post_snapshot_files
             };
-            if !keep && path.exists() {
-                std::fs::remove_file(&path).map_err(|source| sekai_world::WorldError::Io {
-                    path: path.clone(),
-                    source,
-                })?;
+            if !keep && region.exists() {
+                region.remove()?;
                 report.files_deleted += 1;
             }
             progressed(&report);
@@ -262,7 +258,7 @@ where
         }
         if options.keep_post_snapshot_chunks || options.keep_tombstoned_chunks {
             merge_live_chunks(
-                &path,
+                &region,
                 &key,
                 &restored,
                 tombs.map(Vec::as_slice),
@@ -270,7 +266,7 @@ where
                 &mut writer,
             )?;
         }
-        sekai_world::atomic_swap(&path, &writer.image()?)?;
+        region.write(&writer.image()?)?;
         report.files_written += 1;
         progressed(&report);
     }
@@ -302,24 +298,24 @@ pub(super) fn fetch_or_skip(
 /// `writer`: tombstoned coordinates under `keep_tombstoned_chunks`,
 /// snapshot-unknown ones under `keep_post_snapshot_chunks`. Missing live
 /// files contribute nothing; corrupt ones fail loudly.
-fn merge_live_chunks(
-    path: impl AsRef<Path>,
+fn merge_live_chunks<R: RegionFile>(
+    region: &R,
     key: &RegionKey,
     restored: &BTreeSet<(i32, i32)>,
     tombs: Option<&[ChunkCoord]>,
     options: RollbackOptions,
     writer: &mut sekai_anvil::RegionBuilder,
-) -> Result<(), AppError> {
-    if !path.as_ref().exists() {
+) -> Result<(), AppError>
+where
+    AppError: From<R::Error>,
+{
+    if !region.exists() {
         return Ok(());
     }
-    let bytes = std::fs::read(path.as_ref()).map_err(|source| sekai_world::WorldError::Io {
-        path: path.as_ref().to_path_buf(),
-        source,
-    })?;
+    let bytes = region.read()?;
     let image = sekai_anvil::RegionImage::from_bytes(bytes, key.rx, key.rz).map_err(|source| {
         AppError::RegionFailed {
-            path: path.as_ref().to_path_buf(),
+            location: region.to_string(),
             source,
         }
     })?;
@@ -344,7 +340,7 @@ fn merge_live_chunks(
             true
         })
         .map_err(|source| AppError::RegionFailed {
-            path: path.as_ref().to_path_buf(),
+            location: region.to_string(),
             source,
         })?;
     if let Some(source) = failed {
@@ -353,14 +349,14 @@ fn merge_live_chunks(
     Ok(())
 }
 
-/// Target path for a snapshot-known region whose file is missing on disk,
-/// per [`MissingFilePolicy`].
+/// Target region file for a snapshot-known region whose file is missing on
+/// disk, per [`MissingFilePolicy`].
 fn resolve_target<T: WorldTree>(
-    discovered: &BTreeMap<RegionKey, PathBuf>,
+    discovered: &BTreeMap<RegionKey, T::Region>,
     world: &T,
     key: &RegionKey,
     policy: MissingFilePolicy,
-) -> Result<PathBuf, AppError>
+) -> Result<T::Region, AppError>
 where
     AppError: From<T::Error>,
 {
@@ -372,27 +368,36 @@ where
             region_z: key.rz,
         }
         .into()),
-        MissingFilePolicy::DerivedOnly => Ok(world.derive_path(*key)?),
+        MissingFilePolicy::DerivedOnly => Ok(world.derive_region(*key)?),
         MissingFilePolicy::SiblingFirst => sibling_or_derived(discovered, world, key),
     }
 }
 
-/// Target path for a snapshot-known region whose file is missing on disk.
+/// Target region file for a snapshot-known region whose file is missing on
+/// disk.
 ///
 /// Prefers a same-dimension sibling's directory (folders may have moved
 /// since the backup, e.g. across a 26.1 migration); only derives from the
-/// resolved layout when no sibling exists. Non-derivable namespaces fail
-/// loudly instead of writing somewhere wrong.
+/// resolved layout when no sibling exists. Any sibling of that dimension
+/// and family serves - they share the directory - and the first one the
+/// map reports is taken. Non-derivable namespaces fail loudly instead of
+/// writing somewhere wrong.
 fn sibling_or_derived<T: WorldTree>(
-    discovered: &BTreeMap<RegionKey, PathBuf>,
+    discovered: &BTreeMap<RegionKey, T::Region>,
     world: &T,
     key: &RegionKey,
-) -> Result<PathBuf, AppError>
+) -> Result<T::Region, AppError>
 where
     AppError: From<T::Error>,
 {
-    if let Some(path) = sekai_world::sibling_path(discovered, key) {
-        return Ok(path);
+    if let Some(sibling) = discovered
+        .iter()
+        .find(|(found, _)| found.dim == key.dim && found.kind == key.kind)
+        .map(|(_, region)| region)
+    {
+        // A tree that cannot name the sibling fails loudly: falling back
+        // to the derived handle would write the region somewhere else.
+        return Ok(world.sibling_region(sibling, *key)?);
     }
-    Ok(world.derive_path(*key)?)
+    Ok(world.derive_region(*key)?)
 }

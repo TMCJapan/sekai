@@ -1,4 +1,4 @@
-//! Filesystem failures with the affected path attached.
+//! World access failures with the affected file attached.
 
 use std::path::PathBuf;
 
@@ -30,6 +30,25 @@ pub enum WorldError {
         region_x: i32,
         /// Region Z.
         region_z: i32,
+    },
+    /// Two region files spell the same region identity.
+    ///
+    /// Raised by discovery, which refuses to pick one of the two files: a
+    /// restore or a write never raises it.
+    #[error("two region files spell the same region ({region_x},{region_z}) of dim {dim_code}, kind {kind_code}: {first} and {second}", dim_code = dim.raw(), kind_code = kind.raw(), first = first.display(), second = second.display())]
+    AmbiguousRegion {
+        /// Dimension namespace.
+        dim: Dimension,
+        /// Region family.
+        kind: RegionKind,
+        /// Region X both files spell.
+        region_x: i32,
+        /// Region Z both files spell.
+        region_z: i32,
+        /// First file.
+        first: PathBuf,
+        /// Second file.
+        second: PathBuf,
     },
 }
 

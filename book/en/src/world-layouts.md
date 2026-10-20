@@ -101,7 +101,7 @@ dimension dir ─▶ region/ entities/ poi/
 - Two spellings of the same coordinates (`r.0.0.mca` and `r.00.00.mca`)
   are ambiguous: the name alone does not say which one the game reads, so
   discovery fails instead of picking one and dropping the other.
-  `derive_path` still names the canonical `r.<x>.<z>.mca` for output
+  `derive_region` still names the canonical `r.<x>.<z>.mca` for output
   targets and for restoring a region whose file is missing.
 - Symlinks are followed, like the game does; a missing kind directory is
   read as empty, but a missing world root or an unreadable directory fails

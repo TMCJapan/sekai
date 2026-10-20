@@ -1,22 +1,18 @@
 //! Composition failures with their source attached.
 
-use std::path::{Path, PathBuf};
+use std::fmt::Display;
 
 use sekai_core::RegionKey;
 
 /// Failure for a world tree that reports one region identity twice.
 pub(crate) fn duplicate_region(
     key: &RegionKey,
-    first: impl AsRef<Path>,
-    second: impl AsRef<Path>,
+    first: &impl Display,
+    second: &impl Display,
 ) -> AppError {
     AppError::Io(std::io::Error::new(
         std::io::ErrorKind::InvalidData,
-        format!(
-            "world tree enumerated region {key:?} twice ({} and {})",
-            first.as_ref().display(),
-            second.as_ref().display()
-        ),
+        format!("world tree enumerated region {key:?} twice ({first} and {second})"),
     ))
 }
 
@@ -32,11 +28,11 @@ pub enum AppError {
     /// Region image failed to parse or build.
     #[error(transparent)]
     Anvil(#[from] sekai_anvil::AnvilError),
-    /// Region file failed to parse, with the file attached for diagnosis.
-    #[error("failed to process region file {}: {source}", path.display())]
+    /// Region file failed to parse, with its location attached for diagnosis.
+    #[error("failed to process region file {location}: {source}")]
     RegionFailed {
-        /// File involved.
-        path: PathBuf,
+        /// Where the region file lives.
+        location: String,
         /// Underlying parse failure.
         #[source]
         source: sekai_anvil::AnvilError,

@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use sekai_core::{BlobHash, ChunkCoord, RegionKey, Scope, SnapshotId};
 use sekai_storage::FileCas;
-use sekai_world::WorldTree;
+use sekai_world::{RegionFile, WorldTree};
 
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
@@ -156,7 +156,7 @@ where
     let mut files_done = 0usize;
     let mut blob_buf = Vec::new();
     for (key, rows) in &groups {
-        let path = out.derive_path(*key)?;
+        let region = out.derive_region(*key)?;
         let mut writer = sekai_anvil::RegionBuilder::new(key.rx, key.rz, timestamp)?;
         for (coord, hash) in rows {
             if !fetch_or_skip(&cas, hash, options.on_missing_blob, &mut blob_buf)? {
@@ -165,7 +165,7 @@ where
             writer.stage_chunk(coord.x, coord.z, &blob_buf)?;
             report.chunks_restored += 1;
         }
-        sekai_world::atomic_swap(&path, &writer.image()?)?;
+        region.write(&writer.image()?)?;
         report.files_written += 1;
         files_done += 1;
         progress(ExportProgress {
