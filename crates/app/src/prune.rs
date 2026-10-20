@@ -7,7 +7,7 @@
 use std::time::{Duration, Instant};
 
 use sekai_core::{PrunePlan, PruneReport, SnapshotId};
-use sekai_storage::StoreLockMode;
+use sekai_storage::{SekaiStore, StoreLockMode};
 
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
@@ -32,7 +32,7 @@ pub struct PruneProgress {
     pub snapshots_total: usize,
 }
 
-impl SekaiInstance {
+impl<S: SekaiStore> SekaiInstance<S> {
     /// Inspect snapshots and return a deletion plan.
     ///
     /// Retention keeps `keep_last` newest intersected with `before`-and-newer.
@@ -102,8 +102,8 @@ impl SekaiInstance {
 }
 
 /// Select the retained set and list the deletions an open store would make.
-async fn plan_within(
-    store: &sekai_storage::SqliteStore,
+async fn plan_within<S: SekaiStore>(
+    store: &S,
     keep_last: Option<u64>,
     before: Option<SnapshotId>,
 ) -> Result<(PrunePlan, Duration), AppError> {
@@ -119,8 +119,8 @@ async fn plan_within(
 }
 
 /// Apply `plan` against an open store, reporting the phase duration.
-async fn apply_within(
-    store: &mut sekai_storage::SqliteStore,
+async fn apply_within<S: SekaiStore>(
+    store: &mut S,
     plan: &PrunePlan,
     mut progress: impl FnMut(PruneProgress) + Send,
 ) -> Result<(PruneReport, Duration), AppError> {

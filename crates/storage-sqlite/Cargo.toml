@@ -1,0 +1,21 @@
+[package]
+name = "sekai-storage-sqlite"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "SQLite metadata backend for Sekai"
+keywords = ["minecraft", "backup", "storage", "sqlite"]
+
+[lints]
+workspace = true
+
+[dependencies]
+sekai-core.workspace = true
+sekai-storage = { workspace = true, features = ["backend-sqlite"] }
+sqlx.workspace = true
+tokio = { workspace = true, features = ["time"] }
+
+[dev-dependencies]
+tokio.workspace = true

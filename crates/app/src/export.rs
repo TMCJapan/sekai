@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use sekai_core::{BlobHash, ChunkCoord, RegionKey, Scope, SnapshotId};
-use sekai_storage::{FileCas, StoreLock, StoreLockMode};
+use sekai_storage::{SekaiStore, StoreLockMode};
 use sekai_world::{RegionFile, WorldTree};
 
 use crate::error::AppError;
@@ -50,13 +50,13 @@ pub struct ExportTimings {
 pub struct ExportProgress {
     /// Files fully rebuilt so far.
     pub files_done: usize,
-    /// Region files to rebuild in total.
+    /// Files to rebuild in total.
     pub files_total: usize,
     /// Chunks restored so far.
     pub chunks_done: usize,
 }
 
-impl SekaiInstance {
+impl<S: SekaiStore> SekaiInstance<S> {
     /// Rebuild `snapshot` from the store into `out`, returning execution
     /// report and per-phase timings.
     ///
@@ -69,16 +69,16 @@ impl SekaiInstance {
     /// `scope` is exported. `progress` fires as files complete; it must be
     /// `'static` because the file pass runs on a blocking pool (pass a
     /// `move` closure owning its state).
-    pub async fn export<T: WorldTree>(
+    pub async fn export<W: WorldTree>(
         &self,
-        out: &T,
+        out: &W,
         snapshot: SnapshotId,
         options: ExportOptions,
         scope: Scope,
         progress: impl Fn(ExportProgress) + Send + 'static,
     ) -> Result<(ExportReport, ExportTimings), AppError>
     where
-        AppError: From<T::Error>,
+        AppError: From<W::Error>,
     {
         // `out` stays unlocked: it is new and empty by contract, so nothing
         // else has a reason to touch it.
@@ -106,7 +106,7 @@ impl SekaiInstance {
         let mut groups = plan.groups;
         groups.retain(|key, _| scope.matches_region(*key));
 
-        let job = ExportJob {
+        let job = ExportJob::<S, W> {
             groups,
             options,
             cas: store.cas().clone(),
@@ -130,25 +130,25 @@ impl SekaiInstance {
 }
 
 /// Everything one export file pass needs, owned for the blocking task.
-struct ExportJob<T: WorldTree> {
+struct ExportJob<S: SekaiStore, W: WorldTree> {
     groups: BTreeMap<RegionKey, Vec<(ChunkCoord, BlobHash)>>,
     options: ExportOptions,
-    cas: FileCas,
-    out: T,
+    cas: S::Blobs,
+    out: W,
     /// Owned by the file pass so a cancelled export keeps `prune` out
     /// until it stops reading blobs.
-    _lock: StoreLock,
+    _lock: S::LockGuard,
 }
 
 /// Rebuild every snapshot region file under `out`. Blocking: file reads,
 /// writes, and swaps belong on a blocking pool, never on an async worker.
-fn export_files<T: WorldTree>(
-    job: ExportJob<T>,
+fn export_files<S: SekaiStore, W: WorldTree>(
+    job: ExportJob<S, W>,
     timestamp: u32,
     progress: impl Fn(ExportProgress),
 ) -> Result<ExportReport, AppError>
 where
-    AppError: From<T::Error>,
+    AppError: From<W::Error>,
 {
     let ExportJob {
         groups,

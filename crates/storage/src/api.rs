@@ -99,10 +99,29 @@ pub enum StorageError {
         "unsupported schema version: {found}, this binary supports {supported} (recreate the store; pre-release stores are not migrated)"
     )]
     UnsupportedSchema { found: i64, supported: i64 },
-    /// SQLite operation failed.
-    #[cfg(feature = "backend-sqlite")]
-    #[error("sqlite failed: {0}")]
-    Sqlite(#[from] sqlx::Error),
+    /// A backend-specific operation failed.
+    #[error("{backend} failed: {source}")]
+    Backend {
+        /// Backend name used in diagnostics.
+        backend: &'static str,
+        /// Underlying backend failure.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+}
+
+impl StorageError {
+    /// Wrap a backend-specific failure without coupling this crate to that
+    /// backend's error type.
+    pub fn backend(
+        backend: &'static str,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::Backend {
+            backend,
+            source: Box::new(source),
+        }
+    }
 }
 
 /// Selectable metadata backend. Variants exist only for compiled-in

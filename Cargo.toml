@@ -5,6 +5,7 @@ members = [
   "crates/nbt",
   "crates/core",
   "crates/storage",
+  "crates/storage-sqlite",
   "crates/world",
   "crates/app",
   "crates/cli",
@@ -24,6 +25,7 @@ sekai-app = { version = "0.1.0", path = "crates/app" }
 sekai-core = { version = "0.1.0", path = "crates/core" }
 sekai-nbt = { version = "0.1.0", path = "crates/nbt" }
 sekai-storage = { version = "0.1.0", path = "crates/storage" }
+sekai-storage-sqlite = { version = "0.1.0", path = "crates/storage-sqlite" }
 sekai-util = { version = "0.1.0", path = "crates/util" }
 sekai-world = { version = "0.1.0", path = "crates/world" }
 

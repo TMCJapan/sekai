@@ -14,7 +14,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -23,7 +22,7 @@ use sekai_core::{
     Assembled, BackupReport, ChunkCoord, Observation, Previous, RegionFingerprint, RegionKey,
     Scope, SnapshotEntry, SnapshotId,
 };
-use sekai_storage::{FileCas, StoreLockMode};
+use sekai_storage::{BlockingBlobStore, SekaiStore, StoreLockMode};
 use sekai_world::{RegionFile, WorldLock, WorldLockMode, WorldTree};
 
 use crate::error::AppError;
@@ -95,7 +94,7 @@ pub struct StatusTimings {
 pub struct BackupProgress {
     /// Files fully ingested so far.
     pub files_done: usize,
-    /// Changed files to ingest in total.
+    /// Files to ingest in total.
     pub files_total: usize,
     /// Chunks ingested so far.
     pub chunks_done: usize,
@@ -116,7 +115,7 @@ pub struct BackupTimings {
     pub region_open: Duration,
     /// Visiting, hashing, and storing changed chunks.
     pub ingest: Duration,
-    /// Subset of `ingest` spent hashing (plus diffing when enabled).
+    /// Subset of `ingest` spent hashing.
     pub hash: Duration,
     /// Subset of `ingest` spent in `CAS put`, plus the durability barrier.
     pub cas_put: Duration,
@@ -168,9 +167,9 @@ struct FileOutcome {
     timing: RegionTiming,
 }
 
-impl<T: WorldTree> WorldHandleMut<'_, T>
+impl<W: WorldTree, S: SekaiStore> WorldHandleMut<'_, W, S>
 where
-    AppError: From<T::Error>,
+    AppError: From<W::Error>,
 {
     /// Scan the bound world and record it as a new snapshot in the store,
     /// additionally returning per-phase timings.
@@ -255,17 +254,17 @@ struct Prepared {
 ///
 /// Under `dry_run` blobs are probed instead of stored, so the staged rows
 /// are the same numbers a real backup would commit.
-async fn prepare<T: WorldTree>(
-    store: &sekai_storage::SqliteStore,
-    world: &T,
+async fn prepare<W: WorldTree, S: SekaiStore>(
+    store: &S,
+    world: &W,
     options: &BackupOptions,
     scope: &Scope,
     progress: impl Fn(BackupProgress) + Send,
     dry_run: bool,
-    locks: &Arc<OperationLocks<T::Lock>>,
+    locks: &Arc<OperationLocks<S, W::Lock>>,
 ) -> Result<Prepared, AppError>
 where
-    AppError: From<T::Error>,
+    AppError: From<W::Error>,
 {
     // Whole-world observation walks and opens files: clone the handle and
     // run it on the blocking pool, owning a share of the locks like every
@@ -286,13 +285,13 @@ where
         sekai_core::usecase::backup::plan_backup(store.meta(), &observations, scope).await?;
     let universe_load = universe_started.elapsed();
 
-    let mut files: HashMap<RegionKey, Changed<T::Region>> =
+    let mut files: HashMap<RegionKey, Changed<W::Region>> =
         HashMap::with_capacity(observed.files.len());
     for (region, observation) in observed.files {
         files.insert(observation.key, (region, observation.fingerprint));
     }
     // Changed files in key order; carries need no file access.
-    let changed: Vec<Changed<T::Region>> = plan
+    let changed: Vec<Changed<W::Region>> = plan
         .ingest
         .iter()
         .filter_map(|key| files.remove(key))
@@ -300,7 +299,7 @@ where
 
     let (ingested, walk) = ingest_changed(
         changed,
-        store.cas().root(),
+        store.cas().clone(),
         options,
         scope.clone(),
         progress,
@@ -320,9 +319,9 @@ where
     })
 }
 
-impl<T: WorldTree> WorldHandle<'_, T>
+impl<W: WorldTree, S: SekaiStore> WorldHandle<'_, W, S>
 where
-    AppError: From<T::Error>,
+    AppError: From<W::Error>,
 {
     /// Preview what a backup would record, without recording anything: no
     /// CAS puts, no metadata commit, no region writes. Only lock files may
@@ -356,9 +355,9 @@ where
     }
 }
 
-impl<T: WorldTree> WorldHandleMut<'_, T>
+impl<W: WorldTree, S: SekaiStore> WorldHandleMut<'_, W, S>
 where
-    AppError: From<T::Error>,
+    AppError: From<W::Error>,
 {
     /// Preview what a backup would record; see [`WorldHandle::status`].
     pub async fn status(
@@ -372,16 +371,16 @@ where
 }
 
 /// Preview implementation shared by read-only and read-write handles.
-async fn status_impl<T: WorldTree>(
-    store: &sekai_storage::SqliteStore,
-    world: &T,
+async fn status_impl<W: WorldTree, S: SekaiStore>(
+    store: &S,
+    world: &W,
     options: StatusOptions,
     scope: Scope,
     progress: impl Fn(BackupProgress) + Send,
-    locks: &Arc<OperationLocks<T::Lock>>,
+    locks: &Arc<OperationLocks<S, W::Lock>>,
 ) -> Result<(StatusReport, StatusTimings), AppError>
 where
-    AppError: From<T::Error>,
+    AppError: From<W::Error>,
 {
     let total = Instant::now();
 
@@ -480,7 +479,7 @@ struct RegionWalk {
     hash: Duration,
     /// Subset of `ingest` spent in `CAS put`.
     cas: Duration,
-    /// Per-region details for ingested files, sorted by region identity.
+    /// Per-region details, sorted by region identity.
     timings: Vec<(RegionKey, RegionTiming)>,
 }
 
@@ -522,21 +521,21 @@ struct IngestTimings {
 ///
 /// One file never justifies task overhead, so it stays in a single blocking
 /// task with identical counts. Larger sets split into size-balanced groups;
-/// each worker owns a private `FileCas` handle over the same root (disjoint
-/// blob files, unique temp names) and syncs its own shards before
-/// returning, so joining orders every durability barrier ahead of the
-/// metadata commit. The commit itself stays a single transaction; row merge
-/// order across workers is completion-order (DB-irrelevant, one txn).
+/// each worker owns a private blob handle over the same store (disjoint blob
+/// files, unique temp names) and syncs its own shards before returning, so
+/// joining orders every durability barrier ahead of the metadata commit. The
+/// commit itself stays a single transaction; row merge order across workers
+/// is completion-order (DB-irrelevant, one txn).
 /// Each worker keeps `locks` alive until it returns, so a cancelled backup
 /// cannot hand the store to `gc` while blobs are still being written.
-async fn ingest_changed<R: RegionFile, L: WorldLock>(
+async fn ingest_changed<R: RegionFile, S: SekaiStore, L: WorldLock>(
     changed: Vec<Changed<R>>,
-    cas_root: impl AsRef<Path>,
+    cas: S::Blobs,
     options: &BackupOptions,
     scope: Scope,
     progress: impl Fn(BackupProgress) + Send,
     dry_run: bool,
-    locks: &Arc<OperationLocks<L>>,
+    locks: &Arc<OperationLocks<S, L>>,
 ) -> Result<(Ingested, IngestTimings), AppError>
 where
     AppError: From<R::Error>,
@@ -561,7 +560,7 @@ where
 
     let mut set = tokio::task::JoinSet::new();
     for group in groups {
-        let cas_root = cas_root.as_ref().to_path_buf();
+        let cas = cas.clone();
         let with_diff = options.with_diff;
         let ignore_tags = options.ignore_tags.clone();
         let scope = scope.clone();
@@ -570,7 +569,7 @@ where
             let _locks = locks;
             ingest_group(
                 group,
-                &cas_root,
+                cas,
                 with_diff,
                 ignore_tags.as_deref(),
                 &scope,
@@ -621,13 +620,13 @@ fn partition_groups<R>(mut changed: Vec<Changed<R>>, workers: usize) -> Vec<Vec<
     groups
 }
 
-/// Ingest one worker's group with a private CAS handle, then sync its shards.
+/// Ingest one worker's group with a private blob handle, then sync its shards.
 ///
 /// Returns the per-file outcomes plus the shard-sync time so the caller can
 /// account it under `cas` (the durability bucket).
-fn ingest_group<R: RegionFile>(
+fn ingest_group<R: RegionFile, C: BlockingBlobStore>(
     group: Vec<Changed<R>>,
-    cas_root: impl AsRef<Path>,
+    mut cas: C,
     with_diff: bool,
     ignore_tags: Option<&[String]>,
     scope: &Scope,
@@ -636,7 +635,6 @@ fn ingest_group<R: RegionFile>(
 where
     AppError: From<R::Error>,
 {
-    let mut cas = FileCas::open(cas_root)?;
     let mut outcomes = Vec::with_capacity(group.len());
     for (region, observed) in group {
         let outcome = ingest_file(
@@ -673,10 +671,10 @@ fn merge_outcome(walk: &mut RegionWalk, outcome: FileOutcome) {
     walk.timings.push((outcome.fingerprint.key, outcome.timing));
 }
 
-struct ChunkIngestCtx<'a> {
+struct ChunkIngestCtx<'a, C> {
     key: RegionKey,
     scope: &'a Scope,
-    cas: &'a mut FileCas,
+    cas: &'a mut C,
     scratch: &'a mut Vec<u8>,
     with_diff: bool,
     dry_run: bool,
@@ -693,10 +691,10 @@ struct ChunkIngestCtx<'a> {
 ///
 /// The fingerprint names the file: discovery observed it under that
 /// identity, and the timing row reports the same one.
-fn ingest_file<R: RegionFile>(
+fn ingest_file<R: RegionFile, C: BlockingBlobStore>(
     region: &R,
     observed: RegionFingerprint,
-    cas: &mut FileCas,
+    cas: &mut C,
     with_diff: bool,
     ignore_tags: Option<&[String]>,
     scope: &Scope,
@@ -792,9 +790,9 @@ where
 /// Returns the time spent hashing (plus diffing when enabled) and the time
 /// spent in `CAS put` separately so digest and exists-check/write costs
 /// stay visible in [`BackupTimings`].
-fn ingest_timed(
+fn ingest_timed<C: BlockingBlobStore>(
     chunk: sekai_anvil::Chunk<'_>,
-    ctx: &mut ChunkIngestCtx<'_>,
+    ctx: &mut ChunkIngestCtx<'_, C>,
 ) -> Result<(Duration, Duration), AppError> {
     let coord = ChunkCoord::new(ctx.key.dim, ctx.key.kind, chunk.x, chunk.z);
     if !ctx.scope.contains(coord) {
@@ -812,7 +810,7 @@ fn ingest_timed(
     let hash_elapsed = hash_started.elapsed();
     let cas_started = Instant::now();
     if ctx.dry_run {
-        if !ctx.cas.contains_blob(&hash) {
+        if !ctx.cas.contains_blob(&hash)? {
             *ctx.new_blobs += 1;
         }
     } else if ctx.cas.put_blob(&hash, chunk.payload)? {

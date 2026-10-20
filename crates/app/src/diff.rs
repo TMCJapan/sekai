@@ -7,7 +7,7 @@ use sekai_core::{
     BlobHash, BlobStore as _, ChunkCoord, DEFAULT_IGNORED, MetaStore, NbtDiffEntry, RegionKey,
     SnapshotId, diff_nbt,
 };
-use sekai_storage::StoreLockMode;
+use sekai_storage::{BlockingBlobStore, SekaiStore, StoreLockMode};
 use sekai_world::{RegionFile, WorldLockMode, WorldTree};
 
 use crate::error::AppError;
@@ -28,7 +28,7 @@ pub struct DiffTimings {
     pub diff_compute: Duration,
 }
 
-impl SekaiInstance {
+impl<S: SekaiStore> SekaiInstance<S> {
     /// Compute AST diff between two stored chunk blob hashes.
     pub async fn diff_blobs(
         &self,
@@ -100,7 +100,7 @@ pub struct DiffProgress {
     pub chunks_total: usize,
 }
 
-impl SekaiInstance {
+impl<S: SekaiStore> SekaiInstance<S> {
     /// Compute AST diff for a chunk coordinate between two snapshots.
     pub async fn diff_chunk(
         &self,
@@ -128,7 +128,7 @@ pub struct ChunkDiff {
     pub entries: Vec<NbtDiffEntry>,
 }
 
-impl SekaiInstance {
+impl<S: SekaiStore> SekaiInstance<S> {
     /// Compute AST diffs for explicit chunk coordinates.
     ///
     /// Compares two snapshots in the store, additionally returning
@@ -220,8 +220,8 @@ where
 /// Fetch raw (still compressed) chunk payload for a snapshot from an open store.
 /// Returns `None` when the chunk is unknown there or tombstoned; a present
 /// blob missing from CAS still fails as corruption.
-async fn snapshot_chunk_compressed(
-    store: &sekai_storage::SqliteStore,
+async fn snapshot_chunk_compressed<S: SekaiStore>(
+    store: &S,
     snapshot_id: SnapshotId,
     coord: &ChunkCoord,
 ) -> Result<Option<Vec<u8>>, AppError> {
@@ -246,9 +246,9 @@ fn decompress_or_empty(compressed: Option<Vec<u8>>) -> Result<Vec<u8>, AppError>
     compressed.map_or_else(|| Ok(EMPTY_COMPOUND.to_vec()), |c| decompress_chunk(&c))
 }
 
-impl<T: WorldTree> WorldHandle<'_, T>
+impl<W: WorldTree, S: SekaiStore> WorldHandle<'_, W, S>
 where
-    AppError: From<T::Error>,
+    AppError: From<W::Error>,
 {
     /// Compute AST diff for a chunk coordinate between the bound world state
     /// and a snapshot.
@@ -319,9 +319,9 @@ where
     }
 }
 
-impl<T: WorldTree> WorldHandleMut<'_, T>
+impl<W: WorldTree, S: SekaiStore> WorldHandleMut<'_, W, S>
 where
-    AppError: From<T::Error>,
+    AppError: From<W::Error>,
 {
     /// Compute AST diff for one chunk; see [`WorldHandle::diff_world_chunk`].
     pub async fn diff_world_chunk(
@@ -352,12 +352,12 @@ trait DiffSource {
     async fn payload(&self, coord: &ChunkCoord) -> Result<Option<Vec<u8>>, AppError>;
 }
 
-struct SnapshotDiff<'a> {
-    store: &'a sekai_storage::SqliteStore,
+struct SnapshotDiff<'a, S> {
+    store: &'a S,
     id: SnapshotId,
 }
 
-impl DiffSource for SnapshotDiff<'_> {
+impl<S: SekaiStore> DiffSource for SnapshotDiff<'_, S> {
     async fn payload(&self, coord: &ChunkCoord) -> Result<Option<Vec<u8>>, AppError> {
         snapshot_chunk_compressed(self.store, self.id, coord).await
     }

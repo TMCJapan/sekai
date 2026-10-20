@@ -1,6 +1,7 @@
-//! Content-addressed blob storage and MVCC metadata.
+//! Backend-neutral storage boundaries plus the file CAS and store locks.
 //!
-//! Backend modules are feature-gated; SQLite is the implemented backend.
+//! Concrete database backends live in sibling crates (for example
+//! `sekai-storage-sqlite`) and implement the traits exported here.
 
 /// Async `BlobStore`/`MetaStore` traits, `BackendKind`, URL selection.
 pub mod api;
@@ -16,13 +17,11 @@ pub mod mysql;
 pub mod postgres;
 /// Exclusive-run marker (`backup.inflight`) guarding `gc` against backups.
 pub mod runs;
-/// SQLite backend (sqlx).
-#[cfg(feature = "backend-sqlite")]
-pub mod sqlite;
+/// High-level store traits implemented by concrete backends.
+pub mod store;
 
 pub use api::{BackendKind, BlobStore, MetaStore, StorageError, Store, parse_backend_url};
 pub use cas::FileCas;
 pub use lock::{StoreLock, StoreLockMode};
 pub use runs::RunGuard;
-#[cfg(feature = "backend-sqlite")]
-pub use sqlite::{SqliteMeta, SqliteStore, init_sqlite, open_sqlite};
+pub use store::{BlockingBlobStore, SekaiStore, SekaiStoreOpener, UnavailableStore};

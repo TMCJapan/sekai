@@ -1037,6 +1037,7 @@ dependencies = [
  "sekai-core",
  "sekai-nbt",
  "sekai-storage",
+ "sekai-storage-sqlite",
  "sekai-world",
  "thiserror",
  "tokio",
@@ -1081,8 +1082,16 @@ name = "sekai-storage"
 version = "0.1.0"
 dependencies = [
  "sekai-core",
- "sqlx",
  "thiserror",
+]
+
+[[package]]
+name = "sekai-storage-sqlite"
+version = "0.1.0"
+dependencies = [
+ "sekai-core",
+ "sekai-storage",
+ "sqlx",
  "tokio",
 ]
 

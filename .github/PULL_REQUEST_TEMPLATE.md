@@ -27,7 +27,7 @@ typos
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo clippy -p sekai-util -p sekai-anvil -p sekai-nbt -p sekai-core --target thumbv7m-none-eabi -- -D warnings
-cargo clippy -p sekai-util -p sekai-anvil -p sekai-nbt -p sekai-core --target wasm32-unknown-unknown -- -D warnings
+cargo clippy -p sekai-util -p sekai-anvil -p sekai-nbt -p sekai-core -p sekai-storage --target wasm32-unknown-unknown --no-default-features -- -D warnings
 cargo hack --each-feature clippy --workspace --all-targets -- -D warnings
 cargo hack --each-feature nextest run --workspace --all-targets
 cargo deny check

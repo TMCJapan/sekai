@@ -169,6 +169,10 @@ impl FileCas {
         let result = (|| {
             file.write_all(payload).map_err(io(tmp.clone()))?;
             file.sync_all().map_err(io(tmp.clone()))?;
+            // On wasm `File` is a zero-sized handle without `Drop`; closing
+            // eagerly is still the portable way to release native handles
+            // before the rename.
+            #[allow(clippy::drop_non_drop)]
             drop(file);
             match std::fs::rename(&tmp, &dest) {
                 Ok(()) => Ok(true),
@@ -339,6 +343,30 @@ impl sekai_core::BlobStore for FileCas {
         F: FnMut(&BlobHash) -> bool + Send,
     {
         core::future::ready(Self::scan_blobs(self, visit))
+    }
+}
+
+impl crate::store::BlockingBlobStore for FileCas {
+    type LockGuard = StoreLock;
+
+    fn contains_blob(&self, hash: &BlobHash) -> Result<bool, StorageError> {
+        Ok(Self::contains_blob(self, hash))
+    }
+
+    fn put_blob(&mut self, hash: &BlobHash, payload: &[u8]) -> Result<bool, StorageError> {
+        Self::put_blob(self, hash, payload)
+    }
+
+    fn fetch_blob(&self, hash: &BlobHash, out: &mut Vec<u8>) -> Result<(), StorageError> {
+        Self::fetch_blob(self, hash, out)
+    }
+
+    fn sync_dirs(&mut self) -> Result<(), StorageError> {
+        Self::sync_dirs(self)
+    }
+
+    fn lock(&self, mode: StoreLockMode) -> Result<Self::LockGuard, StorageError> {
+        Self::lock(self, mode)
     }
 }
 

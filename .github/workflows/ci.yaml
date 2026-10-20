@@ -91,7 +91,7 @@ jobs:
             packages: -p sekai-util -p sekai-core -p sekai-anvil -p sekai-nbt
           - name: wasm (wasm32-unknown-unknown)
             target: wasm32-unknown-unknown
-            packages: -p sekai-util -p sekai-core -p sekai-anvil -p sekai-nbt
+            packages: -p sekai-util -p sekai-core -p sekai-anvil -p sekai-nbt -p sekai-storage
 
     steps:
       - name: Checkout repository
