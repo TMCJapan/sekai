@@ -120,14 +120,19 @@ fn open_lock_file(path: impl AsRef<Path>) -> Result<LockFile, io::Error> {
     }
 }
 
-/// Open (and create) the lock file.
+/// Open (and create) the lock file, refusing to follow a symlink.
 fn open_lock_path(path: impl AsRef<Path>) -> io::Result<File> {
-    OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path)
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        // `O_NOFOLLOW` is what enforces the refusal. The check in
+        // `reject_symlink` only catches a link that is already there, so
+        // a link swapped in afterwards must fail the open itself.
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    options.open(path)
 }
 
 /// Refuse a symlink at the lock path.
@@ -331,6 +336,20 @@ mod tests {
         // different inodes, so the link is refused instead.
         let err = io_error(HostWorldLock::acquire(&path, WorldLockMode::Shared).unwrap_err());
         assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_open_itself_refuses_a_symlink() {
+        // The pre-check only catches a link that is already there; the
+        // open is what refuses a link swapped in afterwards.
+        let root = TempRoot::new("symlink-open");
+        let target = root.path().join("target");
+        fs::write(&target, "").unwrap();
+        let path = root.path().join(HostWorldLock::FILE_NAME);
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        let err = open_lock_path(&path).unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(libc::ELOOP), "{err}");
     }
 
     #[cfg(unix)]
