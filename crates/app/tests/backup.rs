@@ -150,9 +150,14 @@ async fn backs_up_a_non_canonical_region_name() {
         .unwrap();
     assert_eq!(report.chunks, 1);
     assert_eq!(timings.regions.len(), 1);
+    // Component-wise joins so the expected location carries the platform
+    // separator, exactly like the discovered path's own display.
     assert_eq!(
         timings.regions[0].location,
-        world_path.join("region/r.00.00.mca").to_string_lossy()
+        world_path
+            .join("region")
+            .join("r.00.00.mca")
+            .to_string_lossy()
     );
     cleanup(&root);
 }
