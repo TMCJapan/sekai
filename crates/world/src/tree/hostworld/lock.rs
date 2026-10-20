@@ -107,7 +107,7 @@ fn open_lock_file(path: impl AsRef<Path>) -> Result<LockFile, io::Error> {
     reject_symlink(path)?;
     match open_lock_path(path) {
         Ok(file) => Ok(LockFile::Open(file)),
-        Err(source) if is_read_only(&source) => match File::open(path) {
+        Err(source) if is_read_only(&source) => match open_read_only_lock_path(path) {
             Ok(file) => Ok(LockFile::Open(file)),
             // The file is absent and the directory says so: the world is
             // read-only.
@@ -132,7 +132,23 @@ fn open_lock_path(path: impl AsRef<Path>) -> io::Result<File> {
         use std::os::unix::fs::OpenOptionsExt as _;
         options.custom_flags(libc::O_NOFOLLOW);
     }
-    options.open(path)
+    options.open(path).map_err(normalize_symlink)
+}
+
+/// Open an existing lock file read-only, refusing to follow a symlink.
+///
+/// The read-only fallback needs the same refusal as the create: a link
+/// swapped in between the two opens would otherwise move the lock onto
+/// its target.
+fn open_read_only_lock_path(path: impl AsRef<Path>) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    options.open(path).map_err(normalize_symlink)
 }
 
 /// Refuse a symlink at the lock path.
@@ -143,12 +159,32 @@ fn open_lock_path(path: impl AsRef<Path>) -> io::Result<File> {
 /// left to the open below, which reports the real failure.
 fn reject_symlink(path: impl AsRef<Path>) -> io::Result<()> {
     match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "the world lock path is a symlink",
-        )),
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(symlink_error()),
         _ => Ok(()),
     }
+}
+
+/// The error a symlink at the lock path produces.
+fn symlink_error() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::InvalidInput,
+        "the world lock path is a symlink",
+    )
+}
+
+/// Report a refused symlink the same way everywhere.
+///
+/// `O_NOFOLLOW` refuses it with `ELOOP`, while the pre-check reports
+/// `InvalidInput`. A caller matching on the kind must not depend on
+/// which check won the race.
+fn normalize_symlink(source: io::Error) -> io::Error {
+    #[cfg(unix)]
+    {
+        if source.raw_os_error() == Some(libc::ELOOP) {
+            return symlink_error();
+        }
+    }
+    source
 }
 
 /// Whether the create failed because the world cannot be written.
@@ -231,9 +267,6 @@ mod tests {
                     std::process::id(),
                     COUNTER.fetch_add(1, Ordering::Relaxed)
                 ));
-                if dir.exists() {
-                    continue;
-                }
                 match fs::create_dir(&dir) {
                     Ok(()) => return Self(dir),
                     // Another run owns the name: step over it.
@@ -349,7 +382,21 @@ mod tests {
         let path = root.path().join(HostWorldLock::FILE_NAME);
         std::os::unix::fs::symlink(&target, &path).unwrap();
         let err = open_lock_path(&path).unwrap_err();
-        assert_eq!(err.raw_os_error(), Some(libc::ELOOP), "{err}");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{err}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_read_only_fallback_refuses_a_symlink() {
+        // The fallback must not follow a link either: a link swapped in
+        // between the two opens would move the lock onto its target.
+        let root = TempRoot::new("symlink-read-only");
+        let target = root.path().join("target");
+        fs::write(&target, "").unwrap();
+        let path = root.path().join(HostWorldLock::FILE_NAME);
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        let err = open_read_only_lock_path(&path).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{err}");
     }
 
     #[cfg(unix)]
