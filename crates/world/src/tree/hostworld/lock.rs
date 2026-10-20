@@ -10,6 +10,12 @@
 //! The lock belongs to the open file description, not to the path, so two
 //! handles on the same file conflict exactly like two processes do. That
 //! is what the same-process tests rely on.
+//!
+//! A symlink at the lock path is refused, since locking its target would
+//! exclude two holders on different inodes. On Unix the open itself
+//! carries `O_NOFOLLOW`, so the refusal does not depend on a check that
+//! a later swap can outrun; elsewhere the pre-check is all there is, and
+//! a link swapped in between it and the open is not caught.
 
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io;
@@ -19,11 +25,22 @@ use crate::{UnguardedReason, WorldLock, WorldLockMode, WorldLockState};
 
 /// [`WorldLock`] of a [`HostWorldTree`](crate::HostWorldTree): an OS file
 /// lock on [`Self::FILE_NAME`] in the world root.
+///
+/// The guard holds the lock file open; dropping it releases the lock.
+/// The lock is never upgraded in place, so the guard can be moved to
+/// another thread and still excludes the same set of holders.
 #[derive(Debug)]
 pub struct HostWorldLock {
     file: File,
     mode: WorldLockMode,
 }
+
+/// The trait promises the guard crosses threads into the blocking tasks
+/// that touch files; pin that here rather than in a comment.
+const _: fn() = || {
+    const fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<HostWorldLock>();
+};
 
 impl WorldLock for HostWorldLock {
     fn mode(&self) -> WorldLockMode {
@@ -55,6 +72,10 @@ impl HostWorldLock {
     /// Lock the file at `path` in `mode`, failing immediately when another
     /// holder conflicts.
     ///
+    /// A shared lock on a read-only world answers
+    /// [`WorldLockState::Unguarded`] instead of a guard: the lock file
+    /// cannot be created there, and the world stays readable.
+    ///
     /// A lock needs no write access, so an existing file this user may not
     /// write - created by another user, or on a read-only mount - is locked
     /// through a read-only handle in either mode. A shared lock degrades to
@@ -77,7 +98,7 @@ impl HostWorldLock {
                         Ok(WorldLockState::Unguarded(UnguardedReason::ReadOnlyWorld))
                     }
                     WorldLockMode::Exclusive => {
-                        Err(HostWorldLockError::Io(annotate("create", source)))
+                        Err(HostWorldLockError::Io(annotate("create", &source)))
                     }
                 };
             }
@@ -90,7 +111,7 @@ impl HostWorldLock {
             Ok(()) => Ok(WorldLockState::Guarded(Self { file, mode })),
             Err(TryLockError::WouldBlock) => Err(HostWorldLockError::Contended),
             Err(TryLockError::Error(source)) => {
-                Err(HostWorldLockError::Io(annotate("lock", source)))
+                Err(HostWorldLockError::Io(annotate("lock", &source)))
             }
         }
     }
@@ -104,7 +125,7 @@ impl HostWorldLock {
 /// read, so absence stays unknown there.
 fn open_lock_file(path: impl AsRef<Path>) -> Result<LockFile, io::Error> {
     let path = path.as_ref();
-    reject_symlink(path)?;
+    reject_symlink(path).map_err(|source| annotate("open", &source))?;
     match open_lock_path(path) {
         Ok(file) => Ok(LockFile::Open(file)),
         Err(source) if is_read_only(&source) => match open_read_only_lock_path(path) {
@@ -114,9 +135,9 @@ fn open_lock_file(path: impl AsRef<Path>) -> Result<LockFile, io::Error> {
             Err(missing) if missing.kind() == io::ErrorKind::NotFound => {
                 Ok(LockFile::Absent(source))
             }
-            Err(missing) => Err(annotate("open", missing)),
+            Err(missing) => Err(annotate("open", &missing)),
         },
-        Err(source) => Err(annotate("create", source)),
+        Err(source) => Err(annotate("create", &source)),
     }
 }
 
@@ -203,36 +224,19 @@ fn is_read_only(err: &io::Error) -> bool {
     )
 }
 
-/// A failed step on the world lock file.
-#[derive(Debug)]
-struct LockFailure {
-    action: &'static str,
-    source: io::Error,
-}
-
-impl std::fmt::Display for LockFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "failed to {} the world lock: {}",
-            self.action, self.source
-        )
-    }
-}
-
-impl std::error::Error for LockFailure {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(&self.source)
-    }
-}
-
-/// Wrap `source` with the step that failed, keeping the original error in
-/// the source chain.
+/// Wrap `source` with the step that failed.
 ///
 /// The path is left to the caller: `WorldError::Io` carries it, so
-/// repeating it here would render it twice.
-fn annotate(action: &'static str, source: io::Error) -> io::Error {
-    io::Error::new(source.kind(), LockFailure { action, source })
+/// repeating it here would render it twice. The original error is
+/// rendered into the message rather than kept in the source chain: a
+/// chain would report the same OS error a second time under the
+/// wrapper, and the kind - the part callers branch on - survives on the
+/// wrapping error.
+fn annotate(action: &'static str, source: &io::Error) -> io::Error {
+    io::Error::new(
+        source.kind(),
+        format!("failed to {action} the world lock: {source}"),
+    )
 }
 
 impl Drop for HostWorldLock {
@@ -241,7 +245,8 @@ impl Drop for HostWorldLock {
         // so lazily after the close; unlock eagerly so the next operation
         // in this process does not trip over a lock that is already gone.
         // `Drop` cannot report a failure, and the close that follows
-        // releases the lock either way.
+        // releases the lock either way. A failed unlock can still leave
+        // the next acquire reporting contention until the handle closes.
         let _ = self.file.unlock();
     }
 }
@@ -430,10 +435,26 @@ mod tests {
         }
         let err = HostWorldLock::acquire(dir.join(HostWorldLock::FILE_NAME), WorldLockMode::Shared)
             .unwrap_err();
-        assert!(
-            matches!(err, HostWorldLockError::Io(_)),
-            "an unsearchable world is an error, never an unguarded run: {err:?}"
+        let HostWorldLockError::Io(source) = &err else {
+            panic!("an unsearchable world is an I/O error, never an unguarded run: {err:?}");
+        };
+        assert_eq!(
+            source.kind(),
+            io::ErrorKind::PermissionDenied,
+            "the directory refuses both the create and the read"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_dangling_symlinked_lock_file_is_refused() {
+        // A link whose target is gone is still a link: the pre-check
+        // reports it, and the open refuses it as well.
+        let root = TempRoot::new("symlink-dangling");
+        let path = root.path().join(HostWorldLock::FILE_NAME);
+        std::os::unix::fs::symlink(root.path().join("missing"), &path).unwrap();
+        let err = io_error(HostWorldLock::acquire(&path, WorldLockMode::Shared).unwrap_err());
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{err}");
     }
 
     #[cfg(unix)]
@@ -491,7 +512,7 @@ mod tests {
         // Privileged users (and some filesystems) ignore permission bits;
         // nothing to observe then. The probe has its own directory, so
         // `fresh` stays a world without a lock file.
-        if fs::write(probe.join("file"), "").is_err() && fs::File::open(&unreadable_lock).is_err() {
+        if fs::write(probe.join("file"), "").is_err() {
             let err = HostWorldLock::acquire(&existing_lock, WorldLockMode::Shared).unwrap_err();
             assert!(
                 matches!(err, HostWorldLockError::Contended),
@@ -518,6 +539,13 @@ mod tests {
                 UnguardedReason::ReadOnlyWorld,
                 "no lock file degrades to unguarded"
             );
+        } else {
+            eprintln!("skipped: permission bits are not enforced for this user");
+        }
+
+        // The lock file this user cannot open at all needs its own mode
+        // to be enforced, so it is checked on its own.
+        if fs::File::open(&unreadable_lock).is_err() {
             let err = HostWorldLock::acquire(&unreadable_lock, WorldLockMode::Shared).unwrap_err();
             assert_eq!(
                 io_error(err).kind(),
@@ -525,7 +553,7 @@ mod tests {
                 "a lock file this user cannot open never degrades"
             );
         } else {
-            eprintln!("skipped: permission bits are not enforced for this user");
+            eprintln!("skipped: the unreadable lock file is still readable");
         }
     }
 }

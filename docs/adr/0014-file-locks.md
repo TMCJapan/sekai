@@ -76,7 +76,8 @@ abort a blocking task that already started.
   an error too. A symlink at the lock path is refused, since locking its
   target would exclude two holders on different inodes; on Unix the open
   itself carries `O_NOFOLLOW`, so a link swapped in after the check still
-  fails.
+  fails. Off Unix the pre-check is the only refusal, and it does not
+  catch a link swapped in afterwards.
 - The world lock reports its state: a guard, or the reason the operation
   runs unguarded. Callers therefore see that a read-only world was
   entered without exclusion.

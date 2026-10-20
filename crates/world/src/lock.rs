@@ -70,3 +70,15 @@ pub enum UnguardedReason {
     /// The world is read-only, so no lock file can be created in it.
     ReadOnlyWorld,
 }
+
+impl std::fmt::Display for UnguardedReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let reason = match self {
+            Self::NothingToProtect => "the tree holds nothing to protect",
+            Self::ReadOnlyWorld => "the world is read-only, so no lock file can be created in it",
+        };
+        f.write_str(reason)
+    }
+}
+
+impl std::error::Error for UnguardedReason {}

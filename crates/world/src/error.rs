@@ -21,7 +21,7 @@ pub enum WorldError {
     Anvil(#[from] sekai_anvil::AnvilError),
     /// Another operation holds a conflicting lock on the world.
     #[error(
-        "world is in use by another sekai operation (lock {path}): another running sekai process holds it, and the lock is released when that process exits",
+        "world is in use by another sekai operation (lock {path}): wait for it to finish, or stop the operation holding it, then retry",
         path = path.display()
     )]
     WorldLocked {

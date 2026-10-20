@@ -111,5 +111,8 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
     /// without warning. Contention surfaces as its own failure so callers
     /// can tell "busy, retry" from a real one; [`HostWorldTree`] reports
     /// [`crate::WorldError::WorldLocked`].
+    ///
+    /// A tree is locked through one canonical root: two roots naming the
+    /// same world hold two different locks and do not exclude each other.
     fn lock(&self, mode: WorldLockMode) -> Result<WorldLockState<Self::Lock>, Self::Error>;
 }

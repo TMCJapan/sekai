@@ -302,6 +302,9 @@ fn the_world_lock_lives_in_the_root_and_stays_out_of_discovery() {
     write(world_path.join("region/r.0.0.mca"), &one_chunk_image());
     let world = HostWorldTree::new(&world_path).unwrap();
     let before = discover(&world);
+    // The fixture holds one region file, so the comparisons below cannot
+    // pass vacuously.
+    assert_eq!(paths_of(&before), vec![world_path.join("region/r.0.0.mca")]);
 
     let reader = world
         .lock(WorldLockMode::Shared)
