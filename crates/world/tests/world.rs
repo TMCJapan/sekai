@@ -2,7 +2,7 @@
 
 use sekai_core::{Dimension, RegionKey, RegionKind};
 use sekai_world::{
-    HostRegion, HostWorldTree, WorldError, WorldLock, WorldLockMode, WorldTree, atomic_swap,
+    HostRegion, HostWorldLock, HostWorldTree, WorldError, WorldLockMode, WorldTree, atomic_swap,
     fingerprint_file, open_image,
 };
 use std::collections::BTreeMap;
@@ -302,7 +302,7 @@ fn the_world_lock_lives_in_the_root_and_stays_out_of_discovery() {
 
     let reader = world.lock(WorldLockMode::Shared).unwrap();
     assert!(reader.is_some());
-    assert!(world_path.join(WorldLock::FILE_NAME).is_file());
+    assert!(world_path.join(HostWorldLock::FILE_NAME).is_file());
     assert!(matches!(
         world.lock(WorldLockMode::Exclusive),
         Err(WorldError::WorldLocked { .. })
@@ -335,7 +335,7 @@ fn world_locks_stay_out_of_bukkit_layout_detection() {
                 .lock(WorldLockMode::Shared)
                 .unwrap(),
         );
-        assert!(root.join(WorldLock::FILE_NAME).is_file());
+        assert!(root.join(HostWorldLock::FILE_NAME).is_file());
     }
 
     let reopened = HostWorldTree::new(&root_path).unwrap();

@@ -19,4 +19,4 @@ pub use fingerprint::{file_mtime_ms, fingerprint_file};
 pub use lock::{WorldLock, WorldLockMode};
 pub use region::RegionFile;
 pub use swap::{atomic_swap, open_image};
-pub use tree::{HostRegion, HostWorldTree, WorldTree};
+pub use tree::{HostRegion, HostWorldLock, HostWorldTree, WorldTree};
