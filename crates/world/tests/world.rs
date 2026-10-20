@@ -377,15 +377,19 @@ fn an_exclusive_world_lock_excludes_another_writer() {
         .unwrap()
         .guard()
         .expect("a writable world creates its lock file");
+    // A second tree over the same folder stands in for another process:
+    // it opens its own file description, so the conflict is the one a
+    // second process would see.
+    let other = HostWorldTree::new(&world_path).unwrap();
     for mode in [WorldLockMode::Shared, WorldLockMode::Exclusive] {
         assert!(
-            matches!(world.lock(mode), Err(WorldError::WorldLocked { .. })),
+            matches!(other.lock(mode), Err(WorldError::WorldLocked { .. })),
             "{mode:?} must not join a held writer"
         );
     }
     drop(writer);
     assert!(
-        world
+        other
             .lock(WorldLockMode::Exclusive)
             .unwrap()
             .guard()
