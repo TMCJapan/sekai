@@ -1,6 +1,7 @@
 //! In-memory port fakes used by tests.
 
 use alloc::collections::BTreeMap;
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::pin;
@@ -8,7 +9,7 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use crate::port::{BlobStore, MetaStore};
 use sekai_util::{
-    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, FoldOutcome,
+    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, Dimension, FoldOutcome,
     RegionFingerprint, RegionKey, RegionStateEntry, Snapshot, SnapshotId, SnapshotTag, TagName,
 };
 
@@ -57,7 +58,7 @@ pub fn block_on<F: Future>(fut: F) -> F::Output {
 }
 
 /// In-memory [`MetaStore`].
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct MemMeta {
     /// Snapshots in ID order.
     pub snapshots: Vec<Snapshot>,
@@ -67,6 +68,27 @@ pub struct MemMeta {
     pub states: Vec<RegionStateEntry>,
     /// Tags by name.
     pub tags: BTreeMap<TagName, SnapshotTag>,
+    /// Dimension name -> code registry.
+    pub dimensions: BTreeMap<String, Dimension>,
+}
+
+impl Default for MemMeta {
+    fn default() -> Self {
+        // Mirror the backend seed so vanilla codes are pinned from the
+        // first use, never handed out as auto-increment values.
+        let dimensions = BTreeMap::from([
+            (String::from("minecraft:overworld"), Dimension::OVERWORLD),
+            (String::from("minecraft:the_nether"), Dimension::NETHER),
+            (String::from("minecraft:the_end"), Dimension::END),
+        ]);
+        Self {
+            snapshots: Vec::new(),
+            rows: Vec::new(),
+            states: Vec::new(),
+            tags: BTreeMap::new(),
+            dimensions,
+        }
+    }
 }
 
 impl MetaStore for MemMeta {
@@ -121,6 +143,35 @@ impl MetaStore for MemMeta {
 
     fn latest_snapshot(&self) -> impl Future<Output = Result<Option<Snapshot>, MemError>> + Send {
         core::future::ready(Ok(self.snapshots.last().copied()))
+    }
+
+    fn resolve_dimension(
+        &mut self,
+        name: &str,
+    ) -> impl Future<Output = Result<Dimension, MemError>> + Send {
+        if let Some(dim) = self.dimensions.get(name) {
+            return core::future::ready(Ok(*dim));
+        }
+        // Monotone like `AUTOINCREMENT`, and never inside the vanilla
+        // reserved range even if the seed rows were somehow absent.
+        let next = self
+            .dimensions
+            .values()
+            .map(|dim| dim.raw())
+            .max()
+            .unwrap_or(2)
+            .max(2)
+            + 1;
+        let dim = Dimension::new(next);
+        self.dimensions.insert(String::from(name), dim);
+        core::future::ready(Ok(dim))
+    }
+
+    fn lookup_dimension(
+        &self,
+        name: &str,
+    ) -> impl Future<Output = Result<Option<Dimension>, MemError>> + Send {
+        core::future::ready(Ok(self.dimensions.get(name).copied()))
     }
 
     fn visit_snapshot_chunks<F>(
@@ -366,5 +417,44 @@ impl BlobStore for MemCas {
             }
         }
         core::future::ready(Ok(()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mem_registry_pins_vanilla_and_interns_names() {
+        let mut meta = MemMeta::default();
+        assert_eq!(
+            block_on(meta.lookup_dimension("minecraft:overworld")).unwrap(),
+            Some(Dimension::OVERWORLD)
+        );
+        assert_eq!(
+            block_on(meta.lookup_dimension("minecraft:the_nether")).unwrap(),
+            Some(Dimension::NETHER)
+        );
+        assert_eq!(
+            block_on(meta.lookup_dimension("minecraft:the_end")).unwrap(),
+            Some(Dimension::END)
+        );
+        assert_eq!(block_on(meta.lookup_dimension("aether:sky")).unwrap(), None);
+
+        let sky = block_on(meta.resolve_dimension("aether:sky")).unwrap();
+        let folder = block_on(meta.resolve_dimension("./sky")).unwrap();
+        assert_ne!(sky, folder);
+        assert!(sky.raw() >= 3 && folder.raw() >= 3);
+
+        // Idempotent, and vanilla names never consume a fresh code.
+        assert_eq!(block_on(meta.resolve_dimension("aether:sky")).unwrap(), sky);
+        assert_eq!(
+            block_on(meta.lookup_dimension("./sky")).unwrap(),
+            Some(folder)
+        );
+        assert_eq!(
+            block_on(meta.resolve_dimension("minecraft:overworld")).unwrap(),
+            Dimension::OVERWORLD
+        );
     }
 }

@@ -65,6 +65,14 @@ async fn sqlite_tags() {
 }
 
 #[tokio::test]
+async fn sqlite_dimension_registry() {
+    let dir = tempdir("dim");
+    let mut store = init(&dir).await;
+    common::dimension_registry(store.meta_mut()).await;
+    cleanup(&dir);
+}
+
+#[tokio::test]
 async fn sqlite_fresh_stats() {
     let dir = tempdir("fresh");
     let mut store = init(&dir).await;
