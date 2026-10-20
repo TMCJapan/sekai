@@ -281,10 +281,13 @@ fn locking_a_missing_world_reports_the_missing_world() {
     let world = HostWorldTree::new(root.join("typo")).unwrap();
     for mode in [WorldLockMode::Shared, WorldLockMode::Exclusive] {
         let err = world.lock(mode).unwrap_err();
-        assert!(
-            err.to_string().contains("world directory not found"),
-            "{err}"
-        );
+        match err {
+            WorldError::Io { path, source } => {
+                assert_eq!(path, root.join("typo"));
+                assert_eq!(source.kind(), std::io::ErrorKind::NotFound, "{mode:?}");
+            }
+            other => panic!("expected Io/NotFound for {mode:?}, got {other:?}"),
+        }
     }
     assert!(
         !root.join("typo").exists(),
@@ -300,11 +303,17 @@ fn the_world_lock_lives_in_the_root_and_stays_out_of_discovery() {
     let world = HostWorldTree::new(&world_path).unwrap();
     let before = discover(&world);
 
-    let reader = world.lock(WorldLockMode::Shared).unwrap();
-    assert!(reader.is_some());
+    let reader = world
+        .lock(WorldLockMode::Shared)
+        .unwrap()
+        .guard()
+        .expect("a writable world creates its lock file");
     assert!(world_path.join(HostWorldLock::FILE_NAME).is_file());
+    // The lock file must not change the layout while it is held either.
+    let reopened = HostWorldTree::new(&world_path).unwrap();
+    assert_eq!(paths_of(&discover(&reopened)), paths_of(&before));
     assert!(matches!(
-        world.lock(WorldLockMode::Exclusive),
+        reopened.lock(WorldLockMode::Exclusive),
         Err(WorldError::WorldLocked { .. })
     ));
     drop(reader);
@@ -312,7 +321,13 @@ fn the_world_lock_lives_in_the_root_and_stays_out_of_discovery() {
     // A lock file left in the root changes neither layout nor discovery.
     let reopened = HostWorldTree::new(&world_path).unwrap();
     assert_eq!(paths_of(&discover(&reopened)), paths_of(&before));
-    assert!(reopened.lock(WorldLockMode::Exclusive).unwrap().is_some());
+    assert!(
+        reopened
+            .lock(WorldLockMode::Exclusive)
+            .unwrap()
+            .guard()
+            .is_some()
+    );
     cleanup(&world_path);
 }
 
@@ -328,19 +343,52 @@ fn world_locks_stay_out_of_bukkit_layout_detection() {
     );
     let before = discover(&HostWorldTree::new(&root_path).unwrap());
 
+    let mut held = Vec::new();
     for root in [root_path.clone(), root_path.join("world")] {
-        drop(
-            HostWorldTree::new(&root)
-                .unwrap()
-                .lock(WorldLockMode::Shared)
-                .unwrap(),
-        );
+        let guard = HostWorldTree::new(&root)
+            .unwrap()
+            .lock(WorldLockMode::Shared)
+            .unwrap()
+            .guard()
+            .expect("a writable world creates its lock file");
         assert!(root.join(HostWorldLock::FILE_NAME).is_file());
+        held.push(guard);
     }
 
+    // The held lock files must not join the layout scan either.
     let reopened = HostWorldTree::new(&root_path).unwrap();
     assert_eq!(paths_of(&discover(&reopened)), paths_of(&before));
+    drop(held);
     cleanup(&root_path);
+}
+
+#[test]
+fn an_exclusive_world_lock_excludes_another_writer() {
+    // Rollbacks write the world, so two of them must not overlap.
+    let world_path = tempdir("lock-exclusive");
+    write(world_path.join("region/r.0.0.mca"), &one_chunk_image());
+    let world = HostWorldTree::new(&world_path).unwrap();
+
+    let writer = world
+        .lock(WorldLockMode::Exclusive)
+        .unwrap()
+        .guard()
+        .expect("a writable world creates its lock file");
+    for mode in [WorldLockMode::Shared, WorldLockMode::Exclusive] {
+        assert!(
+            matches!(world.lock(mode), Err(WorldError::WorldLocked { .. })),
+            "{mode:?} must not join a held writer"
+        );
+    }
+    drop(writer);
+    assert!(
+        world
+            .lock(WorldLockMode::Exclusive)
+            .unwrap()
+            .guard()
+            .is_some()
+    );
+    cleanup(&world_path);
 }
 
 #[test]

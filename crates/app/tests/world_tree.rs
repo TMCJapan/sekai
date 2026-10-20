@@ -7,8 +7,8 @@
 //! operation on them fails on purpose - the fake serves no bytes.
 
 use sekai_app::{
-    AppError, Dimension, RegionFile, RegionKey, RegionKind, WorldLock, WorldLockMode, WorldTree,
-    world_chunk_coords,
+    AppError, Dimension, RegionFile, RegionKey, RegionKind, UnguardedReason, WorldLock,
+    WorldLockMode, WorldLockState, WorldTree, world_chunk_coords,
 };
 
 /// Failure type of [`FakeWorld`], deliberately unrelated to `WorldError`.
@@ -98,7 +98,11 @@ impl RegionFile for FakeRegion {
 #[derive(Debug)]
 struct FakeLock;
 
-impl WorldLock for FakeLock {}
+impl WorldLock for FakeLock {
+    fn mode(&self) -> WorldLockMode {
+        WorldLockMode::Shared
+    }
+}
 
 impl WorldTree for FakeWorld {
     type Error = FakeError;
@@ -147,9 +151,10 @@ impl WorldTree for FakeWorld {
         })
     }
 
-    fn lock(&self, _mode: WorldLockMode) -> Result<Option<Self::Lock>, Self::Error> {
-        // Nothing to exclude: the fake holds no files.
-        Ok(None)
+    fn lock(&self, _mode: WorldLockMode) -> Result<WorldLockState<Self::Lock>, Self::Error> {
+        // Nothing to exclude: the fake holds no files. The reason is
+        // stated, so a caller can see that it runs unguarded.
+        Ok(WorldLockState::Unguarded(UnguardedReason::NothingToProtect))
     }
 }
 

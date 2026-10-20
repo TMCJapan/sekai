@@ -45,5 +45,6 @@ pub use sekai_core::{
     RegionKind, RollbackReport, Scope, Snapshot, SnapshotId, SnapshotStats, SnapshotTag, TagName,
 };
 pub use sekai_world::{
-    HostRegion, HostWorldLock, HostWorldTree, RegionFile, WorldLock, WorldLockMode, WorldTree,
+    HostRegion, HostWorldLock, HostWorldTree, RegionFile, UnguardedReason, WorldLock,
+    WorldLockMode, WorldLockState, WorldTree,
 };

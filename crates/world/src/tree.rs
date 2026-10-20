@@ -5,9 +5,9 @@ mod hostworld;
 use sekai_core::{Dimension, RegionKey, RegionKind};
 
 use crate::region::RegionFile;
-use crate::{WorldLock, WorldLockMode};
+use crate::{WorldLock, WorldLockMode, WorldLockState};
 
-pub use hostworld::{HostRegion, HostWorldLock, HostWorldTree};
+pub use hostworld::{HostRegion, HostWorldLock, HostWorldLockError, HostWorldTree};
 
 /// World access shared by backup, export, rollback, and diff.
 ///
@@ -103,10 +103,13 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
     /// Lock the tree against other sekai operations in `mode`, held until
     /// the returned guard drops.
     ///
-    /// `Ok(None)` means the operation runs unguarded. Every tree has to
-    /// decide that explicitly: a silent unguarded default would let a
-    /// rollback overlap a backup without warning. Contention should surface
-    /// as its own failure so callers can tell "busy, retry" from a real
-    /// one; [`HostWorldTree`] reports [`crate::WorldError::WorldLocked`].
-    fn lock(&self, mode: WorldLockMode) -> Result<Option<Self::Lock>, Self::Error>;
+    /// The answer states whether the world is actually excluded:
+    /// [`WorldLockState::Guarded`] carries the guard, while
+    /// [`WorldLockState::Unguarded`] names the reason the operation runs
+    /// without exclusion. Every tree has to decide that explicitly: a
+    /// silent unguarded default would let a rollback overlap a backup
+    /// without warning. Contention surfaces as its own failure so callers
+    /// can tell "busy, retry" from a real one; [`HostWorldTree`] reports
+    /// [`crate::WorldError::WorldLocked`].
+    fn lock(&self, mode: WorldLockMode) -> Result<WorldLockState<Self::Lock>, Self::Error>;
 }

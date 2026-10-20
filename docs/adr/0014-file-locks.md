@@ -45,8 +45,9 @@ A world folder holds `.sekai.lock` in the root the caller passed:
 backup, status, and diff take it shared, rollback exclusive. Export
 output stays unlocked, since it is new and empty by contract. A shared
 world lock degrades to unguarded so read-only worlds stay readable (see
-Consequences for the exact condition). `WorldTree::lock` defaults to
-unguarded, so third-party trees keep compiling.
+Consequences for the exact condition). `WorldTree::lock` is a required
+method, so every tree states whether it excludes; a tree outside this
+workspace implements it alongside its region handles.
 
 Locks are taken per operation, at each public `sekai-app` method's
 entry. `open` and `init` never lock, so an idle instance blocks nobody;
@@ -67,8 +68,15 @@ abort a blocking task that already started.
   releases the lock while the database may still finish that commit. The
   CLI is unaffected: Ctrl-C ends the whole process.
 - A shared world lock degrades to unguarded only when its file is absent
-  and cannot be created (permission denied, read-only filesystem). An
-  existing lock file the user cannot open is an error.
+  and cannot be created. Whether the file is absent is decided by a
+  read-only open of the path, not by the create error: a directory this
+  user cannot search refuses the create just like a read-only mount
+  does, but it also refuses the read, so absence stays unknown there and
+  the lock fails instead. An existing lock file the user cannot open is
+  an error too.
+- The world lock reports its state: a guard, or the reason the operation
+  runs unguarded. Callers therefore see that a read-only world was
+  entered without exclusion.
 - The store lock never degrades: every lock file opens for writing, so a
   store on a read-only mount fails every operation, reads included.
 - WASI has no std file locks (`try_lock` returns `Unsupported`), so every

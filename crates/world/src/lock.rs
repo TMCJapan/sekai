@@ -21,4 +21,41 @@ pub enum WorldLockMode {
 ///
 /// Dropping the guard releases the lock. Operations share it into the
 /// blocking tasks that touch files, so it must cross threads.
-pub trait WorldLock: std::fmt::Debug + Send + Sync + 'static {}
+pub trait WorldLock: std::fmt::Debug + Send + Sync + 'static {
+    /// The mode this guard holds the world in.
+    fn mode(&self) -> WorldLockMode;
+}
+
+/// What a tree answered when an operation asked to lock it.
+#[derive(Debug)]
+pub enum WorldLockState<L> {
+    /// The world is excluded against other operations until the guard
+    /// drops.
+    Guarded(L),
+    /// The operation runs without exclusion, for the given reason.
+    Unguarded(UnguardedReason),
+}
+
+impl<L> WorldLockState<L> {
+    /// The guard, when the world is excluded.
+    pub fn guard(self) -> Option<L> {
+        match self {
+            Self::Guarded(guard) => Some(guard),
+            Self::Unguarded(_) => None,
+        }
+    }
+
+    /// Whether the world is excluded against other operations.
+    pub const fn is_guarded(&self) -> bool {
+        matches!(self, Self::Guarded(_))
+    }
+}
+
+/// Why an operation runs without excluding against others.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnguardedReason {
+    /// The tree holds nothing to protect, so there is nothing to exclude.
+    NothingToProtect,
+    /// The world is read-only, so no lock file can be created in it.
+    ReadOnlyWorld,
+}
