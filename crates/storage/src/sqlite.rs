@@ -37,9 +37,9 @@ pub type SqliteStore = Store<SqliteMeta, FileCas>;
 ///
 /// The layout is `<root>/meta.sqlite` plus `<root>/blobs/`; initializing an
 /// existing store again is idempotent. This is the only path that
-/// materializes a store, reserved for backup runs. Concurrent first
-/// initializations all succeed: schema creation serializes inside SQLite
-/// (see [`SqliteMeta::open`]).
+/// materializes a store, reserved for backup runs. It takes no store lock:
+/// schema creation serializes inside SQLite (see [`SqliteMeta::open`]), so
+/// concurrent first initializations all succeed.
 pub async fn init_sqlite(root: impl AsRef<Path>) -> Result<SqliteStore, StorageError> {
     std::fs::create_dir_all(root.as_ref()).map_err(|source| io_error(root.as_ref(), source))?;
     connect_sqlite(root).await
