@@ -326,7 +326,7 @@ fn the_world_lock_lives_in_the_root_and_stays_out_of_discovery() {
             .lock(WorldLockMode::Exclusive)
             .unwrap()
             .guard()
-            .is_some()
+            .is_ok()
     );
     cleanup(&world_path);
 }
@@ -386,7 +386,7 @@ fn an_exclusive_world_lock_excludes_another_writer() {
             .lock(WorldLockMode::Exclusive)
             .unwrap()
             .guard()
-            .is_some()
+            .is_ok()
     );
     cleanup(&world_path);
 }

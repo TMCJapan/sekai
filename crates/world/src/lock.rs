@@ -38,10 +38,21 @@ pub enum WorldLockState<L> {
 
 impl<L> WorldLockState<L> {
     /// The guard, when the world is excluded.
-    pub fn guard(self) -> Option<L> {
+    ///
+    /// The error names why there is no guard, so opting out of exclusion
+    /// never happens silently.
+    pub fn guard(self) -> Result<L, UnguardedReason> {
         match self {
-            Self::Guarded(guard) => Some(guard),
-            Self::Unguarded(_) => None,
+            Self::Guarded(guard) => Ok(guard),
+            Self::Unguarded(reason) => Err(reason),
+        }
+    }
+
+    /// Why the operation runs unguarded, when it does.
+    pub const fn unguarded_reason(&self) -> Option<UnguardedReason> {
+        match self {
+            Self::Guarded(_) => None,
+            Self::Unguarded(reason) => Some(*reason),
         }
     }
 
