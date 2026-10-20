@@ -163,6 +163,48 @@ async fn backs_up_a_non_canonical_region_name() {
     cleanup(&root);
 }
 
+/// The timing rows keep the world's own order.
+///
+/// The ingest runs in parallel, so the files complete in whatever order
+/// the workers finish them; the report sorts by region identity, which
+/// is the order every other operation reports. Sorting by the file name
+/// would not: `r.10.0.mca` sorts before `r.2.0.mca` as a name, while
+/// region 2 comes before region 10 as an identity.
+#[tokio::test]
+async fn timing_rows_are_ordered_by_region_identity() {
+    let root = tempdir("timing-order");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    write_region(
+        world_path.join("region/r.10.0.mca"),
+        &[(320, 0, vec![3, 1])],
+    );
+    write_region(world_path.join("region/r.2.0.mca"), &[(64, 0, vec![3, 2])]);
+
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let (_, timings) = instance
+        .world_mut(&mut world)
+        .backup(options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+    let locations: Vec<&str> = timings
+        .regions
+        .iter()
+        .map(|region| region.location.as_str())
+        .collect();
+    assert_eq!(locations.len(), 2);
+    assert!(
+        locations[0].ends_with("r.2.0.mca"),
+        "unexpected order: {locations:?}"
+    );
+    assert!(
+        locations[1].ends_with("r.10.0.mca"),
+        "unexpected order: {locations:?}"
+    );
+    cleanup(&root);
+}
+
 #[tokio::test]
 async fn backup_list_rollback_round_trip() {
     let root = tempdir("roundtrip");

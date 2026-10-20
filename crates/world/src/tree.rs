@@ -81,9 +81,9 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
     /// Handle of the region file that sits next to `region` in the same
     /// directory, named after `key`.
     ///
-    /// `key` is expected to share `region`'s `dim` and `kind`: the
-    /// directory is inherited from `region`, and only the file name comes
-    /// from `key`.
+    /// The caller must pass a `key` that shares `region`'s `dim` and
+    /// `kind`: the directory is inherited from `region`, and only the file
+    /// name comes from `key`.
     ///
     /// Folders may have moved since the backup, so a restore prefers this
     /// over the layout-derived handle: the live directory is what the

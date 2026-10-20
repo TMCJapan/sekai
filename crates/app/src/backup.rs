@@ -125,7 +125,7 @@ pub struct BackupTimings {
     pub skipped_regions: usize,
     /// History rows carried over.
     pub carried_chunks: usize,
-    /// Per-region details for ingested files, sorted by location.
+    /// Per-region details for ingested files, sorted by region identity.
     pub regions: Vec<RegionTiming>,
 }
 
@@ -448,8 +448,8 @@ struct RegionWalk {
     hash: Duration,
     /// Subset of `ingest` spent in `CAS put`.
     cas: Duration,
-    /// Per-region details for ingested files, sorted by location.
-    timings: Vec<RegionTiming>,
+    /// Per-region details for ingested files, sorted by region identity.
+    timings: Vec<(RegionKey, RegionTiming)>,
 }
 
 impl RegionWalk {
@@ -466,7 +466,7 @@ impl RegionWalk {
             ingest: self.ingest,
             hash: self.hash,
             cas: self.cas,
-            regions: self.timings,
+            regions: self.timings.into_iter().map(|(_, timing)| timing).collect(),
         };
         (ingested, timings)
     }
@@ -482,7 +482,7 @@ struct IngestTimings {
     hash: Duration,
     /// Subset of `ingest` spent in `CAS put`.
     cas: Duration,
-    /// Per-region details, sorted by location.
+    /// Per-region details, sorted by region identity.
     regions: Vec<RegionTiming>,
 }
 
@@ -556,7 +556,9 @@ where
         }
     }
     // Completion order is nondeterministic; keep timing output stable.
-    walk.timings.sort_by(|a, b| a.location.cmp(&b.location));
+    // The identity is the stable key, not the file's location text: a
+    // tree spells its locations as it sees fit.
+    walk.timings.sort_by_key(|(key, _)| *key);
     Ok(walk.into_parts())
 }
 
@@ -631,7 +633,7 @@ fn merge_outcome(walk: &mut RegionWalk, outcome: FileOutcome) {
     walk.hash += outcome.timing.hash;
     walk.cas += outcome.timing.cas;
     walk.fingerprints.push(outcome.fingerprint);
-    walk.timings.push(outcome.timing);
+    walk.timings.push((outcome.fingerprint.key, outcome.timing));
 }
 
 struct ChunkIngestCtx<'a> {
@@ -664,16 +666,13 @@ where
     AppError: From<R::Error>,
 {
     let key = observed.key;
-    // One spelling of the file for the error messages and the timing row:
-    // the handle formats it, and all three must agree.
-    let location = region.to_string();
     let opened = Instant::now();
     let bytes = region.read()?;
     let open_elapsed = opened.elapsed();
     let file_bytes = bytes.len() as u64;
     let image = sekai_anvil::RegionImage::from_bytes(bytes, key.rx, key.rz).map_err(|source| {
         AppError::RegionFailed {
-            location: location.clone(),
+            location: region.to_string(),
             source,
         }
     })?;
@@ -724,7 +723,7 @@ where
             true
         })
         .map_err(|source| AppError::RegionFailed {
-            location: location.clone(),
+            location: region.to_string(),
             source,
         })?;
     let ingest_elapsed = ingested.elapsed();
@@ -737,7 +736,7 @@ where
         present,
         new_blobs,
         timing: RegionTiming {
-            location,
+            location: region.to_string(),
             bytes: file_bytes,
             chunks,
             open: open_elapsed,
