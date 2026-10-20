@@ -1,4 +1,4 @@
-//! Filesystem failures with the affected path attached.
+//! World access failures with the affected file attached.
 
 use std::path::PathBuf;
 
@@ -30,6 +30,18 @@ pub enum WorldError {
         region_x: i32,
         /// Region Z.
         region_z: i32,
+    },
+    /// Two files spell the same region identity.
+    #[error("two region files spell the same region ({region_x},{region_z}): {first} and {second}", first = first.display(), second = second.display())]
+    AmbiguousRegion {
+        /// Region X both files spell.
+        region_x: i32,
+        /// Region Z both files spell.
+        region_z: i32,
+        /// First file.
+        first: PathBuf,
+        /// Second file.
+        second: PathBuf,
     },
 }
 

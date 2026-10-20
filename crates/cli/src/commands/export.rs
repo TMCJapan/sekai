@@ -186,29 +186,32 @@ mod tests {
         let legacy = output_tree(&flags(ExportFlavor::Legacy, "ignored"), "/out");
         assert_eq!(
             legacy
-                .derive_path(RegionKey::new(Dimension::NETHER, RegionKind::Region, 0, 0))
-                .unwrap(),
+                .derive_region(RegionKey::new(Dimension::NETHER, RegionKind::Region, 0, 0))
+                .unwrap()
+                .as_path(),
             Path::new("/out/DIM-1/region/r.0.0.mca")
         );
 
         let modern = output_tree(&flags(ExportFlavor::New, "ignored"), "/out");
         assert_eq!(
             modern
-                .derive_path(RegionKey::new(Dimension::END, RegionKind::Poi, 0, 0))
-                .unwrap(),
+                .derive_region(RegionKey::new(Dimension::END, RegionKind::Poi, 0, 0))
+                .unwrap()
+                .as_path(),
             Path::new("/out/dimensions/minecraft/the_end/poi/r.0.0.mca")
         );
 
         let bukkit = output_tree(&flags(ExportFlavor::Bukkit, "myworld"), "/out");
         assert_eq!(
             bukkit
-                .derive_path(RegionKey::new(
+                .derive_region(RegionKey::new(
                     Dimension::OVERWORLD,
                     RegionKind::Region,
                     1,
                     2
                 ))
-                .unwrap(),
+                .unwrap()
+                .as_path(),
             Path::new("/out/myworld/region/r.1.2.mca")
         );
     }

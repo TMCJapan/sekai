@@ -14,7 +14,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sekai_core::usecase::backup::Ingested;
@@ -23,7 +23,7 @@ use sekai_core::{
     Scope, SnapshotEntry, SnapshotId,
 };
 use sekai_storage::FileCas;
-use sekai_world::WorldTree;
+use sekai_world::{RegionFile, WorldTree};
 
 use crate::error::AppError;
 use crate::instance::{WorldHandle, WorldHandleMut};
@@ -125,15 +125,15 @@ pub struct BackupTimings {
     pub skipped_regions: usize,
     /// History rows carried over.
     pub carried_chunks: usize,
-    /// Per-region details for ingested files, sorted by path.
+    /// Per-region details for ingested files, sorted by location.
     pub regions: Vec<RegionTiming>,
 }
 
 /// Per-region timing slice.
 #[derive(Debug, Clone)]
 pub struct RegionTiming {
-    /// Region file path.
-    pub path: PathBuf,
+    /// Where the region file lives.
+    pub location: String,
     /// File size in bytes.
     pub bytes: u64,
     /// Chunks ingested from the file.
@@ -148,8 +148,8 @@ pub struct RegionTiming {
     pub cas: Duration,
 }
 
-/// Changed file path plus its fresh fingerprint, awaiting ingest.
-type Changed = (PathBuf, RegionFingerprint);
+/// Changed file handle plus its fresh fingerprint, awaiting ingest.
+type Changed<R> = (R, RegionFingerprint);
 
 /// One ingested file's staged rows, ready to merge into the walk.
 struct FileOutcome {
@@ -271,12 +271,13 @@ where
         sekai_core::usecase::backup::plan_backup(store.meta(), &observations, scope).await?;
     let universe_load = universe_started.elapsed();
 
-    let mut files: HashMap<RegionKey, Changed> = HashMap::with_capacity(observed.files.len());
-    for (path, observation) in observed.files {
-        files.insert(observation.key, (path, observation.fingerprint));
+    let mut files: HashMap<RegionKey, Changed<T::Region>> =
+        HashMap::with_capacity(observed.files.len());
+    for (region, observation) in observed.files {
+        files.insert(observation.key, (region, observation.fingerprint));
     }
     // Changed files in key order; carries need no file access.
-    let changed: Vec<Changed> = plan
+    let changed: Vec<Changed<T::Region>> = plan
         .ingest
         .iter()
         .filter_map(|key| files.remove(key))
@@ -395,16 +396,16 @@ where
 }
 
 // Whole-world observation: discovery plus fresh fingerprints.
-struct Observed {
+struct Observed<T> {
     /// Every discovered file with its fresh fingerprint.
-    files: Vec<(PathBuf, Observation)>,
+    files: Vec<(T, Observation)>,
     discover: Duration,
     fingerprint: Duration,
 }
 
 /// Discover every region file and fingerprint it. Blocking: file walks and
 /// opens belong on a blocking pool, never on an async worker.
-fn observe<T: WorldTree>(world: &T) -> Result<Observed, AppError>
+fn observe<T: WorldTree>(world: &T) -> Result<Observed<T::Region>, AppError>
 where
     AppError: From<T::Error>,
 {
@@ -414,12 +415,12 @@ where
 
     let fingerprint_started = Instant::now();
     let mut files = Vec::with_capacity(regions.len());
-    for (key, path) in regions {
+    for (key, region) in regions {
         let observation = Observation {
             key,
-            fingerprint: sekai_world::fingerprint_file(&path, key)?,
+            fingerprint: region.fingerprint(key)?,
         };
-        files.push((path, observation));
+        files.push((region, observation));
     }
     Ok(Observed {
         files,
@@ -447,7 +448,7 @@ struct RegionWalk {
     hash: Duration,
     /// Subset of `ingest` spent in `CAS put`.
     cas: Duration,
-    /// Per-region details for ingested files, sorted by path.
+    /// Per-region details for ingested files, sorted by location.
     timings: Vec<RegionTiming>,
 }
 
@@ -481,7 +482,7 @@ struct IngestTimings {
     hash: Duration,
     /// Subset of `ingest` spent in `CAS put`.
     cas: Duration,
-    /// Per-region details, sorted by path.
+    /// Per-region details, sorted by location.
     regions: Vec<RegionTiming>,
 }
 
@@ -494,14 +495,17 @@ struct IngestTimings {
 /// returning, so joining orders every durability barrier ahead of the
 /// metadata commit. The commit itself stays a single transaction; row merge
 /// order across workers is completion-order (DB-irrelevant, one txn).
-async fn ingest_changed(
-    changed: Vec<Changed>,
+async fn ingest_changed<R: RegionFile>(
+    changed: Vec<Changed<R>>,
     cas_root: impl AsRef<Path>,
     options: &BackupOptions,
     scope: Scope,
     progress: impl Fn(BackupProgress) + Send,
     dry_run: bool,
-) -> Result<(Ingested, IngestTimings), AppError> {
+) -> Result<(Ingested, IngestTimings), AppError>
+where
+    AppError: From<R::Error>,
+{
     let mut walk = RegionWalk {
         timings: Vec::with_capacity(changed.len()),
         ..Default::default()
@@ -552,7 +556,7 @@ async fn ingest_changed(
         }
     }
     // Completion order is nondeterministic; keep timing output stable.
-    walk.timings.sort_by(|a, b| a.path.cmp(&b.path));
+    walk.timings.sort_by(|a, b| a.location.cmp(&b.location));
     Ok(walk.into_parts())
 }
 
@@ -560,9 +564,9 @@ async fn ingest_changed(
 ///
 /// Largest files first onto the currently lightest group, so every group
 /// is non-empty.
-fn partition_groups(mut changed: Vec<Changed>, workers: usize) -> Vec<Vec<Changed>> {
+fn partition_groups<R>(mut changed: Vec<Changed<R>>, workers: usize) -> Vec<Vec<Changed<R>>> {
     changed.sort_by_key(|item| std::cmp::Reverse(item.1.size));
-    let mut groups: Vec<Vec<Changed>> = Vec::with_capacity(workers);
+    let mut groups: Vec<Vec<Changed<R>>> = Vec::with_capacity(workers);
     groups.resize_with(workers, Vec::new);
     let mut loads = vec![0u64; workers];
     for item in changed {
@@ -582,19 +586,22 @@ fn partition_groups(mut changed: Vec<Changed>, workers: usize) -> Vec<Vec<Change
 ///
 /// Returns the per-file outcomes plus the shard-sync time so the caller can
 /// account it under `cas` (the durability bucket).
-fn ingest_group(
-    group: Vec<Changed>,
+fn ingest_group<R: RegionFile>(
+    group: Vec<Changed<R>>,
     cas_root: impl AsRef<Path>,
     with_diff: bool,
     ignore_tags: Option<&[String]>,
     scope: &Scope,
     dry_run: bool,
-) -> Result<(Vec<FileOutcome>, Duration), AppError> {
+) -> Result<(Vec<FileOutcome>, Duration), AppError>
+where
+    AppError: From<R::Error>,
+{
     let mut cas = FileCas::open(cas_root)?;
     let mut outcomes = Vec::with_capacity(group.len());
-    for (path, observed) in group {
+    for (region, observed) in group {
         let outcome = ingest_file(
-            &path,
+            &region,
             observed,
             &mut cas,
             with_diff,
@@ -644,24 +651,26 @@ struct ChunkIngestCtx<'a> {
 /// Chunks outside `scope` are skipped before hashing: their history stays
 /// untouched and fallback keeps resolving them. Under `dry_run` blobs are
 /// probed, never stored.
-fn ingest_file(
-    path: impl AsRef<Path>,
+fn ingest_file<R: RegionFile>(
+    region: &R,
     observed: RegionFingerprint,
     cas: &mut FileCas,
     with_diff: bool,
     ignore_tags: Option<&[String]>,
     scope: &Scope,
     dry_run: bool,
-) -> Result<FileOutcome, AppError> {
-    let path = path.as_ref();
+) -> Result<FileOutcome, AppError>
+where
+    AppError: From<R::Error>,
+{
     let key = observed.key;
     let opened = Instant::now();
-    let bytes = sekai_world::open_image(path)?;
+    let bytes = region.read()?;
     let open_elapsed = opened.elapsed();
     let file_bytes = bytes.len() as u64;
     let image = sekai_anvil::RegionImage::from_bytes(bytes, key.rx, key.rz).map_err(|source| {
         AppError::RegionFailed {
-            path: path.to_path_buf(),
+            location: region.to_string(),
             source,
         }
     })?;
@@ -712,7 +721,7 @@ fn ingest_file(
             true
         })
         .map_err(|source| AppError::RegionFailed {
-            path: path.to_path_buf(),
+            location: region.to_string(),
             source,
         })?;
     let ingest_elapsed = ingested.elapsed();
@@ -725,7 +734,7 @@ fn ingest_file(
         present,
         new_blobs,
         timing: RegionTiming {
-            path: path.to_path_buf(),
+            location: region.to_string(),
             bytes: file_bytes,
             chunks,
             open: open_elapsed,

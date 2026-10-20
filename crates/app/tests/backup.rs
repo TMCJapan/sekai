@@ -151,8 +151,8 @@ async fn backs_up_a_non_canonical_region_name() {
     assert_eq!(report.chunks, 1);
     assert_eq!(timings.regions.len(), 1);
     assert_eq!(
-        timings.regions[0].path,
-        world_path.join("region/r.00.00.mca")
+        timings.regions[0].location,
+        world_path.join("region/r.00.00.mca").to_string_lossy()
     );
     cleanup(&root);
 }
@@ -1812,8 +1812,8 @@ fn read_world(world: &HostWorldTree, world_path: impl AsRef<Path>) -> ChunkMaps 
     let mut files = Vec::new();
     for dim in world.get_dims().unwrap() {
         for kind in RegionKind::ALL {
-            for (_, path) in world.get_regions(dim, kind).unwrap() {
-                files.push(path);
+            for (_, region) in world.get_regions(dim, kind).unwrap() {
+                files.push(region.as_path().to_path_buf());
             }
         }
     }

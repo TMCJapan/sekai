@@ -11,7 +11,8 @@ This project is organized as a Cargo workspace under `crates/`:
     ├── core            # Use-case policy API over shared types (no_std + alloc, depends on util/anvil/nbt)
     ├── storage         # Single crate (std + tokio): async traits (api), file CAS (cas),
     │                   # feature-gated DB backends (sqlite ships; mysql/postgres reserved stubs)
-    ├── world           # Filesystem owner: discovery, fingerprints, scans, atomic swaps (std)
+    ├── world           # World access boundary (std): WorldTree trait, RegionFile
+    │                   # handle, and the host tree (filesystem)
     ├── app             # Composition/orchestration library for third parties (std + tokio)
     └── cli             # Thin clap binary over sekai-app (package sekai-cli, binary sekai, no logic)
 ```
@@ -66,6 +67,11 @@ any exception in the PR body.
   observation boundary - not at `RegionReader`/`Normalizer`-style traits.
 - **`core` never touches the filesystem**: `world` produces `Observation` /
   `RegionFingerprint`; `app` feeds them into `core::plan_*`.
+- **The world boundary is path-free**: the operations receive `RegionFile`
+  handles (read, fingerprint, write, remove) and never a `Path`; only the
+  world crate knows where a region file lives. A tree outside this
+  workspace implements `WorldTree` plus one handle
+  ([ADR-0015](docs/adr/0015-world-region-handles.md)).
 - **Atomic file I/O**: never overwrite `.mca` files in place. `anvil` builds
   the `Vec<u8>` image; `world::atomic_swap` writes it to a temporary file
   in the same directory as the target and swaps via atomic `rename`.

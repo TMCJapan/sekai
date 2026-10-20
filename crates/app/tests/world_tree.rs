@@ -1,11 +1,12 @@
 //! Pluggable [`WorldTree`] implementations with their own failure types.
 //!
 //! Guards the abstraction boundary: a tree outside this workspace names its
-//! own error, and the `sekai-app` entry points convert it via `From`.
-
-use std::path::PathBuf;
+//! own error, hands out its own region handles, and the `sekai-app` entry
+//! points convert the failure via `From`. Nothing in the boundary is
+//! filesystem-bound: the tree here holds its region files in memory.
 
 use sekai_app::{AppError, Dimension, RegionKey, RegionKind, WorldTree, world_chunk_coords};
+use sekai_world::RegionFile;
 
 /// Failure type of [`FakeWorld`], deliberately unrelated to `WorldError`.
 #[derive(Debug, thiserror::Error)]
@@ -40,8 +41,51 @@ impl FakeWorld {
     }
 }
 
+/// One region file of the fake tree: a name, nothing else.
+#[derive(Clone, Debug)]
+struct FakeRegion {
+    name: String,
+}
+
+impl std::fmt::Display for FakeRegion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.name)
+    }
+}
+
+impl RegionFile for FakeRegion {
+    type Error = FakeError;
+
+    fn read(&self) -> Result<Vec<u8>, Self::Error> {
+        Err(FakeError { reason: "no bytes" })
+    }
+
+    fn fingerprint(&self, _key: RegionKey) -> Result<sekai_app::RegionFingerprint, Self::Error> {
+        Err(FakeError {
+            reason: "no fingerprint",
+        })
+    }
+
+    fn exists(&self) -> bool {
+        false
+    }
+
+    fn write(&self, _image: &[u8]) -> Result<(), Self::Error> {
+        Err(FakeError {
+            reason: "no writes",
+        })
+    }
+
+    fn remove(&self) -> Result<(), Self::Error> {
+        Err(FakeError {
+            reason: "no removals",
+        })
+    }
+}
+
 impl WorldTree for FakeWorld {
     type Error = FakeError;
+    type Region = FakeRegion;
 
     fn is_empty(&self) -> Result<bool, Self::Error> {
         Ok(true)
@@ -55,12 +99,24 @@ impl WorldTree for FakeWorld {
         &self,
         _dim: Dimension,
         _kind: RegionKind,
-    ) -> Result<Vec<(RegionKey, PathBuf)>, Self::Error> {
+    ) -> Result<Vec<(RegionKey, Self::Region)>, Self::Error> {
         Self::check(self.fail_regions).map(|()| Vec::new())
     }
 
-    fn derive_path(&self, _key: RegionKey) -> Result<PathBuf, Self::Error> {
-        Ok(PathBuf::from("/fake/region/r.0.0.mca"))
+    fn derive_region(&self, _key: RegionKey) -> Result<Self::Region, Self::Error> {
+        Ok(FakeRegion {
+            name: "/fake/region/r.0.0.mca".to_owned(),
+        })
+    }
+
+    fn sibling_region(
+        &self,
+        _region: &Self::Region,
+        _key: RegionKey,
+    ) -> Result<Self::Region, Self::Error> {
+        Ok(FakeRegion {
+            name: "/fake/region/r.1.0.mca".to_owned(),
+        })
     }
 }
 

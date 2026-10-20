@@ -46,13 +46,14 @@ sekai-util (no_std, zero-dependency: coordinates, hashes, history value
 | `sekai-nbt` | `no_std` + `alloc` | no | Pure `raw NBT bytes -> diff view`. Hand-rolled NBT parser (no `Serialize` by design; output uses SNBT), tag filtering, canonical digest returning util `DiffHash`. Never sees compression. |
 | `sekai-core` | `no_std` + `alloc` | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_rollback`, `gc plan`/`apply`) plus composition helpers (`hash_blob`, storage ports). Composes `anvil`/`nbt` over util types and re-exports them, so downstream paths stay stable. |
 | `sekai-storage` | `std` + tokio | yes (RPITIT) | Single crate: async `BlobStore`/`MetaStore` traits (owned by `core::port`, re-exported from the `api` module), file CAS (`cas` module, `blobs/ab/cdef...` retained by design), and feature-gated DB backends (`sqlite` module ships; `mysql`/`postgres` modules reserved as stubs). Depends on `core`. Backend modules mirror the future split so extraction stays mechanical. |
-| `sekai-world` | `std` | yes (I/O) / sync pure helpers where trivial | Filesystem owner: world discovery, fingerprint observation, atomic swaps. |
+| `sekai-world` | `std` | yes (I/O) / sync pure helpers where trivial | World access boundary: the `WorldTree` trait, the `RegionFile` handle, and the filesystem tree (`HostWorldTree`). |
 | `sekai-app` | `std` + tokio | yes | Composition/orchestration library for third parties: parallel ingest, clocks, timing, progress callbacks. |
 | `sekai` bin (`sekai-cli` package) | `std` + tokio | yes | Thin clap wrapper over `sekai-app`. No logic. Binary name stays `sekai`; package name stays `sekai-cli` so existing CI/artifact names keep working. |
 
 ### Why `core` must not depend on `world`
 
-- `core` is `no_std`; `world` is inherently `std` (`Path`, `fs`, `mtime`).
+- `core` is `no_std`; `world` is inherently `std` for its host
+  implementation (`Path`, `fs`, `mtime`).
   A `core -> world` edge would poison `core` with `std` and kill
   `thumbv7m`/`wasm` portability and third-party embedding.
 - `world` already depends on `core` types, so the reverse edge would be a
@@ -61,6 +62,16 @@ sekai-util (no_std, zero-dependency: coordinates, hashes, history value
   input structs (`Observation`, `RegionFingerprint`); `app` feeds them into
   `core::plan_*`. This is dependency inversion: `core` owns the shapes,
   outer crates produce them.
+
+### The world access boundary
+
+`world` owns the boundary between the operations and the files they
+touch. A `WorldTree` names the region files it holds, derives the ones
+that are missing, and hands out `RegionFile` handles: a handle reads,
+fingerprints, writes, and removes one region file, and nothing else. The
+operations never see a path, so the flows do not depend on the tree
+behind them. See
+[ADR-0015](docs/adr/0015-world-region-handles.md).
 
 ### Shared value types (`sekai-util`)
 
@@ -86,7 +97,7 @@ rules:
 
 ```text
 backup:
-  world: Path -> Vec<u8> image
+  world: region handle -> Vec<u8> image
     -> anvil: image -> sector payloads -> decompress -> raw NBT bytes
     -> core::hash_blob(sector payload) -> BlobHash -> storage CAS put
     -> nbt (opt-in only): diff_hash(raw NBT bytes) -> diff cache column
@@ -94,7 +105,7 @@ backup:
 rollback:
   core::plan_rollback -> groups of (coord, BlobHash)
     -> storage CAS fetch -> anvil builder -> Vec<u8> image
-    -> world::atomic_swap(target, image)
+    -> world: region handle <- atomic swap(target, image)
 ```
 
 `blob_hash` runs over the opaque sector payload (compression framing
@@ -133,12 +144,12 @@ layout changes (legacy, 26.1, Bukkit) and distinct dimensions never
 silently share coordinates. Trio detection runs on container roots only,
 so a nested folder can never steal the vanilla namespace. Opening a tree
 classifies the root and resolves one directory per observed dimension
-once; operations then use those resolved paths and never re-inspect the
-layout. Region paths are derivable only for the ids a tree resolved;
+once; operations then use those resolved handles and never re-inspect the
+layout. Region handles are derivable only for the ids a tree resolved;
 anything else fails loudly (`UnknownRegionPath`) instead of writing
 somewhere wrong, and rollback restores those files through their
-discovered folders, preferring same-dimension siblings over derived paths
-when folders moved since the backup.
+discovered folders, preferring same-dimension siblings over derived
+handles when folders moved since the backup.
 
 # Data & Hashing Model
 
@@ -318,7 +329,8 @@ object-store CAS swaps don't touch metadata code.
 - **Atomic writes & cross-device safety**: `.mca` updates go to a temp file
   **in the same directory as the target** + `fsync` + `rename`. In-place
   mutation is prohibited. `world::atomic_swap` is the single owner of this
-  path; `anvil` only builds the `Vec<u8>` image.
+  path, reached through the region handle; `anvil` only builds the `Vec<u8>`
+  image.
 - **Sector alignment**: writes always land on 4 KiB boundaries with header
   offset-table integrity. Reads tolerate trailing partial sectors (e.g. torn
   tails from interrupted saves, which vanilla also opens): every referenced

@@ -2,18 +2,23 @@
 
 mod hostworld;
 
-use std::path::PathBuf;
-
 use sekai_core::{Dimension, RegionKey, RegionKind};
 
-pub use hostworld::HostWorldTree;
+use crate::region::RegionFile;
+
+pub use hostworld::{HostRegion, HostWorldTree};
 
 /// World access shared by backup, export, rollback, and diff.
 ///
-/// Bundles region discovery and path derivation so `sekai-app` operations
+/// Bundles region discovery and handle derivation so `sekai-app` operations
 /// can accept any world implementation. Handles are cheap to clone: blocking
 /// operations run on a blocking pool, and a borrow cannot cross
 /// `spawn_blocking`, so callers clone the handle into the task.
+///
+/// A tree owns the layout: it names the region files it holds and derives
+/// the ones that are missing. What happens to a file is the tree's business
+/// too, behind the [`RegionFile`] handle - a host tree reads and writes the
+/// filesystem, another tree may read and write something else.
 ///
 /// The associated [`WorldTree::Error`] keeps the trait implementable outside
 /// this crate: consumers choose their own failure type and convert it at
@@ -22,6 +27,9 @@ pub use hostworld::HostWorldTree;
 pub trait WorldTree: Sync + Send + Clone + 'static {
     /// Failure type for every operation on this tree.
     type Error: std::error::Error;
+
+    /// Handle to one region file of this tree.
+    type Region: RegionFile<Error = Self::Error>;
 
     fn is_empty(&self) -> Result<bool, Self::Error>;
 
@@ -37,15 +45,15 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
     /// rollback) visit dimensions in raw-code order instead.
     fn get_dims(&self) -> Result<Vec<Dimension>, Self::Error>;
 
-    /// Every region file of `kind` inside `dim` as its identity and the
-    /// actual on-disk path, ordered by coordinates.
+    /// Every region file of `kind` inside `dim` as its identity and a
+    /// handle to it, ordered by coordinates.
     ///
-    /// The path is the file discovery observed, not a layout-derived
-    /// spelling: it may be non-canonical (`r.00.00.mca`). One entry per
-    /// coordinate is reported; two files spelling the same coordinate are
-    /// ambiguous and must fail rather than silently drop one of them.
-    /// Reporting one identity twice breaks that contract, and callers
-    /// reject it as a broken tree.
+    /// The handle is the file discovery observed, not a layout-derived
+    /// spelling: it may point at a non-canonical name (`r.00.00.mca`). One
+    /// entry per coordinate is reported; two files spelling the same
+    /// coordinate are ambiguous and must fail rather than silently drop one
+    /// of them. Reporting one identity twice breaks that contract, and
+    /// callers reject it as a broken tree.
     ///
     /// A `dim` that is not part of this tree (not returned by
     /// [`WorldTree::get_dims`]) yields an empty vector, not an error. The
@@ -54,14 +62,27 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
         &self,
         dim: Dimension,
         kind: RegionKind,
-    ) -> Result<Vec<(RegionKey, PathBuf)>, Self::Error>;
+    ) -> Result<Vec<(RegionKey, Self::Region)>, Self::Error>;
 
-    /// Layout-derived path of one region file, whether or not it exists on
-    /// disk yet (export targets, restore targets for missing files).
+    /// Layout-derived handle of one region file, whether or not it exists
+    /// yet (export targets, restore targets for missing files).
     ///
     /// Output trees may point at roots that do not exist before export, so
     /// this never touches the filesystem: the dimension only has to be part
     /// of the layout. Callers writing to the result create parent
     /// directories.
-    fn derive_path(&self, key: RegionKey) -> Result<PathBuf, Self::Error>;
+    fn derive_region(&self, key: RegionKey) -> Result<Self::Region, Self::Error>;
+
+    /// Handle of the region file that sits next to `region` in the same
+    /// directory, named after `key`.
+    ///
+    /// Folders may have moved since the backup, so a restore prefers this
+    /// over the layout-derived handle: the live directory is what the
+    /// sibling was observed in, while the derived handle names the
+    /// layout's canonical directory.
+    fn sibling_region(
+        &self,
+        region: &Self::Region,
+        key: RegionKey,
+    ) -> Result<Self::Region, Self::Error>;
 }

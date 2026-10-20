@@ -1,15 +1,20 @@
-//! Filesystem owner: world discovery, fingerprint observation, and atomic
-//! file swaps.
+//! World access: discovery, fingerprint observation, and atomic file
+//! swaps.
+//!
+//! The [`WorldTree`] trait is the boundary the composition layer talks
+//! to: a tree names the region files it holds and hands out
+//! [`RegionFile`] handles that read, fingerprint, write, and remove them.
+//! [`HostWorldTree`] is the filesystem-backed tree.
 
-mod discover;
 mod error;
 mod fingerprint;
 mod observation;
+mod region;
 mod swap;
 mod tree;
 
-pub use discover::sibling_path;
 pub use error::WorldError;
 pub use fingerprint::{file_mtime_ms, fingerprint_file};
+pub use region::RegionFile;
 pub use swap::{atomic_swap, open_image};
-pub use tree::{HostWorldTree, WorldTree};
+pub use tree::{HostRegion, HostWorldTree, WorldTree};

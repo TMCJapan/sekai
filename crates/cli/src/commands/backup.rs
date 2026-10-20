@@ -152,7 +152,7 @@ fn backup_payload(report: &BackupReport, timings: &BackupTimings, timing: bool) 
                 .regions
                 .iter()
                 .map(|region| RegionTimingJson {
-                    path: region.path.to_string_lossy().into_owned(),
+                    path: region.location.clone(),
                     bytes: region.bytes,
                     chunks: region.chunks,
                     open_ms: region.open.as_millis(),
@@ -191,7 +191,7 @@ fn print_timing_table(timings: &BackupTimings, style: Styler) {
             "{}",
             style.dim(&format!(
                 "  {} chunks={} bytes={} open={}ms ingest={}ms (hash={}ms cas={}ms)",
-                region.path.display(),
+                region.location,
                 region.chunks,
                 region.bytes,
                 region.open.as_millis(),
@@ -207,7 +207,6 @@ fn print_timing_table(timings: &BackupTimings, style: Styler) {
 mod tests {
     use super::*;
     use core::time::Duration;
-    use std::path::PathBuf;
 
     #[test]
     fn renders_backup_payload() {
@@ -232,7 +231,7 @@ mod tests {
             skipped_regions: 1,
             carried_chunks: 8,
             regions: vec![sekai_app::RegionTiming {
-                path: PathBuf::from("region/r.0.0.mca"),
+                location: "region/r.0.0.mca".to_owned(),
                 bytes: 100,
                 chunks: 32,
                 open: Duration::from_millis(4),
