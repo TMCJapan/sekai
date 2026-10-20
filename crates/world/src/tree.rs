@@ -67,14 +67,23 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
     /// Layout-derived handle of one region file, whether or not it exists
     /// yet (export targets, restore targets for missing files).
     ///
+    /// The name is canonical (`r.<x>.<z>.mca`). A world that holds a
+    /// non-canonical spelling of the same region must be restored through
+    /// that file's own handle: deriving the name here would create a
+    /// second file for one region.
+    ///
     /// Output trees may point at roots that do not exist before export, so
     /// this never touches the filesystem: the dimension only has to be part
-    /// of the layout. Callers writing to the result create parent
-    /// directories.
+    /// of the layout. Writing to the handle creates the directories the
+    /// file needs.
     fn derive_region(&self, key: RegionKey) -> Result<Self::Region, Self::Error>;
 
     /// Handle of the region file that sits next to `region` in the same
     /// directory, named after `key`.
+    ///
+    /// `key` is expected to share `region`'s `dim` and `kind`: the
+    /// directory is inherited from `region`, and only the file name comes
+    /// from `key`.
     ///
     /// Folders may have moved since the backup, so a restore prefers this
     /// over the layout-derived handle: the live directory is what the

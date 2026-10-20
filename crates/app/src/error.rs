@@ -5,7 +5,11 @@ use std::fmt::Display;
 use sekai_core::RegionKey;
 
 /// Failure for a world tree that reports one region identity twice.
-pub(crate) fn duplicate_region<T: Display>(key: &RegionKey, first: &T, second: &T) -> AppError {
+pub(crate) fn duplicate_region(
+    key: &RegionKey,
+    first: &impl Display,
+    second: &impl Display,
+) -> AppError {
     AppError::Io(std::io::Error::new(
         std::io::ErrorKind::InvalidData,
         format!("world tree enumerated region {key:?} twice ({first} and {second})"),

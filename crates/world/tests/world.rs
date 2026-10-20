@@ -965,6 +965,7 @@ fn a_sibling_keeps_the_observed_directory() {
     let regions = world
         .get_regions(Dimension::OVERWORLD, RegionKind::Region)
         .unwrap();
+    assert_eq!(regions.len(), 1);
     let (key, discovered) = &regions[0];
     let sibling = world
         .sibling_region(discovered, RegionKey::new(key.dim, key.kind, 5, 7))

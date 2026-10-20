@@ -9,6 +9,10 @@ use sekai_core::{RegionFingerprint, RegionKey};
 /// which file counts as its sibling stay with the
 /// [`WorldTree`](crate::WorldTree) that produced the handle, so a tree can
 /// be backed by memory instead of a filesystem.
+///
+/// The handle is also [`Display`]: the text names the file for diagnostics
+/// (error messages, timing rows). A tree that has no location of its own
+/// spells it as it sees fit.
 pub trait RegionFile: Clone + std::fmt::Debug + std::fmt::Display + Send + Sync + 'static {
     /// Failure type for every operation on this file.
     type Error: std::error::Error;
@@ -34,7 +38,8 @@ pub trait RegionFile: Clone + std::fmt::Debug + std::fmt::Display + Send + Sync 
 
     /// Delete the file.
     ///
-    /// A file that is already gone fails with the tree's not-found
-    /// failure: the caller decides whether that is acceptable.
+    /// A file that is already gone fails like any other failure. The
+    /// error type is the tree's own, so a caller that must tell "already
+    /// gone" from a real I/O error downcasts it.
     fn remove(&self) -> Result<(), Self::Error>;
 }

@@ -392,9 +392,10 @@ where
         .iter()
         .find(|(found, _)| found.dim == key.dim && found.kind == key.kind)
         .map(|(_, region)| region)
-        && let Ok(region) = world.sibling_region(sibling, *key)
     {
-        return Ok(region);
+        // A tree that cannot name the sibling fails loudly: falling back
+        // to the derived handle would write the region somewhere else.
+        return Ok(world.sibling_region(sibling, *key)?);
     }
     Ok(world.derive_region(*key)?)
 }

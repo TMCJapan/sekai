@@ -664,13 +664,16 @@ where
     AppError: From<R::Error>,
 {
     let key = observed.key;
+    // One spelling of the file for the error messages and the timing row:
+    // the handle formats it, and all three must agree.
+    let location = region.to_string();
     let opened = Instant::now();
     let bytes = region.read()?;
     let open_elapsed = opened.elapsed();
     let file_bytes = bytes.len() as u64;
     let image = sekai_anvil::RegionImage::from_bytes(bytes, key.rx, key.rz).map_err(|source| {
         AppError::RegionFailed {
-            location: region.to_string(),
+            location: location.clone(),
             source,
         }
     })?;
@@ -721,7 +724,7 @@ where
             true
         })
         .map_err(|source| AppError::RegionFailed {
-            location: region.to_string(),
+            location: location.clone(),
             source,
         })?;
     let ingest_elapsed = ingested.elapsed();
@@ -734,7 +737,7 @@ where
         present,
         new_blobs,
         timing: RegionTiming {
-            location: region.to_string(),
+            location,
             bytes: file_bytes,
             chunks,
             open: open_elapsed,

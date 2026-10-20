@@ -158,6 +158,7 @@ async fn backs_up_a_non_canonical_region_name() {
             .join("region")
             .join("r.00.00.mca")
             .to_string_lossy()
+            .into_owned()
     );
     cleanup(&root);
 }
