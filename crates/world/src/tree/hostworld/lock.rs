@@ -106,6 +106,19 @@ impl HostWorldLock {
 /// read, so absence stays unknown there.
 fn open_lock_file(path: impl AsRef<Path>) -> Result<LockFile, io::Error> {
     let path = path.as_ref();
+    // A symlink at the lock path would move the lock onto another file:
+    // two holders could then sit on different inodes, and neither would
+    // exclude the other. The check is not atomic with the open below, but
+    // it keeps a stray link in the world folder from silently locking the
+    // wrong file.
+    if let Ok(metadata) = std::fs::symlink_metadata(path)
+        && metadata.file_type().is_symlink()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("world lock {} is a symlink", path.display()),
+        ));
+    }
     let opened = OpenOptions::new()
         .read(true)
         .write(true)
@@ -281,6 +294,22 @@ mod tests {
             let err = io_error(HostWorldLock::acquire(&path, mode).unwrap_err());
             assert_eq!(err.kind(), io::ErrorKind::NotFound, "{mode:?}: {err}");
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_lock_file_is_refused() {
+        let Some(root) = temp_root("symlink") else {
+            return;
+        };
+        let target = root.path().join("target");
+        fs::write(&target, "").unwrap();
+        let path = root.path().join(HostWorldLock::FILE_NAME);
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        // Locking the link's target would exclude two holders on
+        // different inodes, so the link is refused instead.
+        let err = io_error(HostWorldLock::acquire(&path, WorldLockMode::Shared).unwrap_err());
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput, "{err}");
     }
 
     #[cfg(unix)]
