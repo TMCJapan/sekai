@@ -67,6 +67,8 @@ enum LockFile {
 }
 
 impl HostWorldLock {
+    /// Name of the lock file in the world root; it is created there on
+    /// first use and never deleted.
     pub const FILE_NAME: &str = ".sekai.lock";
 
     /// Lock the file at `path` in `mode`, failing immediately when another
@@ -125,6 +127,9 @@ impl HostWorldLock {
 /// read, so absence stays unknown there.
 fn open_lock_file(path: impl AsRef<Path>) -> Result<LockFile, io::Error> {
     let path = path.as_ref();
+    // Off Unix there is no `O_NOFOLLOW`, so the pre-check is the only
+    // refusal of a symlink; there the open cannot enforce it.
+    #[cfg(not(unix))]
     reject_symlink(path).map_err(|source| annotate("open", &source))?;
     match open_lock_path(path) {
         Ok(file) => Ok(LockFile::Open(file)),
@@ -178,6 +183,11 @@ fn open_read_only_lock_path(path: impl AsRef<Path>) -> io::Result<File> {
 /// sit on different inodes and neither would exclude the other. Only a
 /// positive detection is an error - a path this user cannot even stat is
 /// left to the open below, which reports the real failure.
+///
+/// This is the only refusal where `O_NOFOLLOW` is unavailable; where it
+/// exists, the open itself enforces the refusal and no pre-check is
+/// needed.
+#[cfg(not(unix))]
 fn reject_symlink(path: impl AsRef<Path>) -> io::Result<()> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => Err(symlink_error()),
@@ -417,19 +427,17 @@ mod tests {
         // has to fail rather than degrade to an unguarded run.
         let root = TempRoot::new("unsearchable");
         let dir = root.path().join("unsearchable");
+        let probe = root.path().join("probe");
         fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(&probe).unwrap();
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o000)).unwrap();
-        let _restore = LockedDirs(vec![dir.clone()]);
+        fs::set_permissions(&probe, fs::Permissions::from_mode(0o555)).unwrap();
+        let _restore = LockedDirs(vec![dir.clone(), probe.clone()]);
 
         // Privileged users (and some filesystems) ignore permission bits;
-        // nothing to observe then.
-        if OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(dir.join("probe"))
-            .is_ok()
-        {
+        // nothing to observe then. The probe has its own directory, so
+        // the unsearchable one stays unsearchable.
+        if fs::write(probe.join("file"), "").is_ok() {
             eprintln!("skipped: permission bits are not enforced for this user");
             return;
         }
