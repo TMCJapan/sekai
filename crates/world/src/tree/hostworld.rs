@@ -40,9 +40,9 @@ const fn kind_dir(kind: RegionKind) -> &'static str {
 
 /// One region file of a host world: the path it lives at.
 ///
-/// The path stays inside the world crate: the operations receive this
-/// handle and never a path, so a tree can be backed by something other
-/// than a filesystem.
+/// The operations never see a path - they work on the handle. A
+/// host-specific caller (the CLI, a test) can still ask for the path
+/// with [`HostRegion::as_path`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HostRegion(PathBuf);
 
@@ -188,10 +188,7 @@ impl HostWorldTree {
         }
         Err(WorldError::io(
             &self.root,
-            std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("world directory not found: {}", self.root.display()),
-            ),
+            std::io::Error::new(std::io::ErrorKind::NotFound, "world directory not found"),
         ))
     }
 }
@@ -261,6 +258,8 @@ impl WorldTree for HostWorldTree {
             // must not pick one and drop the other.
             if let Some(previous) = regions.get(&(rx, rz)) {
                 return Err(WorldError::AmbiguousRegion {
+                    dim,
+                    kind,
                     region_x: rx,
                     region_z: rz,
                     first: previous.clone(),

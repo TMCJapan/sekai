@@ -32,8 +32,12 @@ pub enum WorldError {
         region_z: i32,
     },
     /// Two files spell the same region identity.
-    #[error("two region files spell the same region ({region_x},{region_z}): {first} and {second}", first = first.display(), second = second.display())]
+    #[error("two region files spell the same region ({region_x},{region_z}) of dim {dim_code}, kind {kind_code}: {first} and {second}", dim_code = dim.raw(), kind_code = kind.raw(), first = first.display(), second = second.display())]
     AmbiguousRegion {
+        /// Dimension namespace.
+        dim: Dimension,
+        /// Region family.
+        kind: RegionKind,
         /// Region X both files spell.
         region_x: i32,
         /// Region Z both files spell.

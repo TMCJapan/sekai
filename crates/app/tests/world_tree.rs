@@ -3,10 +3,12 @@
 //! Guards the abstraction boundary: a tree outside this workspace names its
 //! own error, hands out its own region handles, and the `sekai-app` entry
 //! points convert the failure via `From`. Nothing in the boundary is
-//! filesystem-bound: the tree here holds its region files in memory.
+//! filesystem-bound: this tree only names its region files, and every file
+//! operation on them fails on purpose - the fake serves no bytes.
 
-use sekai_app::{AppError, Dimension, RegionKey, RegionKind, WorldTree, world_chunk_coords};
-use sekai_world::RegionFile;
+use sekai_app::{
+    AppError, Dimension, RegionFile, RegionKey, RegionKind, WorldTree, world_chunk_coords,
+};
 
 /// Failure type of [`FakeWorld`], deliberately unrelated to `WorldError`.
 #[derive(Debug, thiserror::Error)]
@@ -41,7 +43,8 @@ impl FakeWorld {
     }
 }
 
-/// One region file of the fake tree: a name, nothing else.
+/// One region file of the fake tree: the name it was asked for, nothing
+/// else.
 #[derive(Clone, Debug)]
 struct FakeRegion {
     name: String,
@@ -57,26 +60,31 @@ impl RegionFile for FakeRegion {
     type Error = FakeError;
 
     fn read(&self) -> Result<Vec<u8>, Self::Error> {
+        // Not supported: the fake serves no bytes.
         Err(FakeError { reason: "no bytes" })
     }
 
     fn fingerprint(&self, _key: RegionKey) -> Result<sekai_app::RegionFingerprint, Self::Error> {
+        // Not supported: the fake serves no bytes to fingerprint.
         Err(FakeError {
             reason: "no fingerprint",
         })
     }
 
     fn exists(&self) -> bool {
+        // Not supported: the fake holds no files.
         false
     }
 
     fn write(&self, _image: &[u8]) -> Result<(), Self::Error> {
+        // Not supported: the fake holds no files.
         Err(FakeError {
             reason: "no writes",
         })
     }
 
     fn remove(&self) -> Result<(), Self::Error> {
+        // Not supported: the fake holds no files.
         Err(FakeError {
             reason: "no removals",
         })
@@ -103,21 +111,26 @@ impl WorldTree for FakeWorld {
         Self::check(self.fail_regions).map(|()| Vec::new())
     }
 
-    fn derive_region(&self, _key: RegionKey) -> Result<Self::Region, Self::Error> {
+    fn derive_region(&self, key: RegionKey) -> Result<Self::Region, Self::Error> {
         Ok(FakeRegion {
-            name: "/fake/region/r.0.0.mca".to_owned(),
+            name: fake_name(key),
         })
     }
 
     fn sibling_region(
         &self,
         _region: &Self::Region,
-        _key: RegionKey,
+        key: RegionKey,
     ) -> Result<Self::Region, Self::Error> {
         Ok(FakeRegion {
-            name: "/fake/region/r.1.0.mca".to_owned(),
+            name: fake_name(key),
         })
     }
+}
+
+/// The name the fake gives the region file of `key`.
+fn fake_name(key: RegionKey) -> String {
+    format!("/fake/region/r.{}.{}.mca", key.rx, key.rz)
 }
 
 #[test]

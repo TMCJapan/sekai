@@ -949,6 +949,40 @@ fn non_canonical_region_name_keeps_its_discovered_path() {
     cleanup(&world_path);
 }
 
+/// A sibling keeps the directory the region was observed in and only
+/// renames the file.
+///
+/// A restore prefers it over the derived handle, because folders may
+/// have moved since the backup: the live directory is where the sibling
+/// was found, while the derived handle names the layout's canonical
+/// directory.
+#[test]
+fn a_sibling_keeps_the_observed_directory() {
+    let world_path = tempdir("sibling");
+    write(world_path.join("region/r.00.00.mca"), &one_chunk_image());
+
+    let world = HostWorldTree::new(&world_path).unwrap();
+    let regions = world
+        .get_regions(Dimension::OVERWORLD, RegionKind::Region)
+        .unwrap();
+    let (key, discovered) = &regions[0];
+    let sibling = world
+        .sibling_region(discovered, RegionKey::new(key.dim, key.kind, 5, 7))
+        .unwrap();
+    // The observed directory, the canonical file name.
+    assert_eq!(
+        sibling.as_path(),
+        world_path.join("region").join("r.5.7.mca")
+    );
+    // The derived handle of the same region still names the layout's
+    // canonical spelling.
+    assert_eq!(
+        world.derive_region(*key).unwrap().as_path(),
+        world_path.join("region").join("r.0.0.mca")
+    );
+    cleanup(&world_path);
+}
+
 #[cfg(unix)]
 #[test]
 fn unresolvable_entries_are_skipped_not_fatal() {

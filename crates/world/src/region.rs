@@ -23,11 +23,18 @@ pub trait RegionFile: Clone + std::fmt::Debug + std::fmt::Display + Send + Sync 
     fn fingerprint(&self, key: RegionKey) -> Result<RegionFingerprint, Self::Error>;
 
     /// Whether the file exists.
+    ///
+    /// A file that cannot be inspected (an unreadable directory, a broken
+    /// symlink) counts as absent: the question is "is there something to
+    /// read", not "can this be read".
     fn exists(&self) -> bool;
 
     /// Replace the file's content with `image`.
     fn write(&self, image: &[u8]) -> Result<(), Self::Error>;
 
     /// Delete the file.
+    ///
+    /// A file that is already gone fails with the tree's not-found
+    /// failure: the caller decides whether that is acceptable.
     fn remove(&self) -> Result<(), Self::Error>;
 }
