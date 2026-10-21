@@ -1,7 +1,7 @@
 //! Diff subcommand execution, DTOs, and coordination.
 
 use anyhow::Context as _;
-use sekai_app::{ChunkCoord, ChunkDiff, HostWorldTree, Scope, SnapshotId};
+use sekai_app::{ChunkCoord, ChunkDiff, HostWorldTree, Scope, SekaiStore, SnapshotId};
 
 use super::diff_render::{
     TimedDiffs, diff_entry_payload, diff_group_payload, print_diff_timing_table,
@@ -155,12 +155,12 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
 }
 
 async fn resolve_snapshot_pair(
-    instance: &sekai_app::SekaiInstance,
+    instance: &sekai_app::SekaiInstance<impl SekaiStore>,
     old_snapshot: Option<&SnapshotRef>,
     new_snapshot: Option<&SnapshotRef>,
 ) -> anyhow::Result<(SnapshotId, SnapshotId)> {
     async fn resolve(
-        instance: &sekai_app::SekaiInstance,
+        instance: &sekai_app::SekaiInstance<impl SekaiStore>,
         raw: &SnapshotRef,
     ) -> anyhow::Result<SnapshotId> {
         instance

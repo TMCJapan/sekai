@@ -22,14 +22,6 @@ pub enum StorageError {
     /// URL names a backend this build cannot serve.
     #[error("unsupported storage backend: {url}")]
     UnsupportedBackend { url: String },
-    /// The build has no storage backend compiled in, so no store can be
-    /// opened or read. The requested location is named when the caller
-    /// had one; nothing in this build could have served it.
-    #[error(
-        "no storage backend is compiled into this build{}",
-        requested_store(.url.as_ref())
-    )]
-    NoBackendCompiled { url: Option<String> },
     /// URL carries no store location.
     #[error("store location is empty: pass a directory path")]
     EmptyStorePath,
@@ -118,12 +110,6 @@ pub enum StorageError {
     },
 }
 
-/// Render the requested store location of
-/// [`StorageError::NoBackendCompiled`].
-fn requested_store(url: Option<&String>) -> String {
-    url.map_or_else(String::new, |url| format!(" (requested: {url})"))
-}
-
 impl StorageError {
     /// Wrap a backend-specific failure without coupling this crate to that
     /// backend's error type.
@@ -144,13 +130,10 @@ impl StorageError {
 pub enum BackendKind {
     /// `sqlite://<dir>` (or a bare `<dir>`): metadata lives in
     /// `<dir>/meta.sqlite`, blobs in `<dir>/blobs/`.
-    #[cfg(feature = "backend-sqlite")]
     Sqlite,
     /// Reserved stub.
-    #[cfg(feature = "backend-mysql")]
     Mysql,
     /// Reserved stub.
-    #[cfg(feature = "backend-postgres")]
     Postgres,
 }
 
@@ -164,23 +147,11 @@ pub fn parse_backend_url(url: &str) -> Result<(BackendKind, &str), StorageError>
         url: url.to_owned(),
     };
     let selected = match url.split_once("://") {
-        #[cfg(feature = "backend-sqlite")]
         Some(("sqlite", rest)) => Some((BackendKind::Sqlite, rest)),
-        #[cfg(feature = "backend-mysql")]
         Some(("mysql", rest)) => Some((BackendKind::Mysql, rest)),
-        #[cfg(feature = "backend-postgres")]
         Some(("postgres", rest)) => Some((BackendKind::Postgres, rest)),
         Some(_) => None,
-        None => {
-            #[cfg(feature = "backend-sqlite")]
-            {
-                Some((BackendKind::Sqlite, url))
-            }
-            #[cfg(not(feature = "backend-sqlite"))]
-            {
-                None
-            }
-        }
+        None => Some((BackendKind::Sqlite, url)),
     };
     match selected {
         Some((_, "")) => Err(StorageError::EmptyStorePath),
@@ -251,7 +222,6 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "backend-sqlite")]
     #[test]
     fn parses_sqlite_urls_and_bare_dirs() {
         assert_eq!(
@@ -268,7 +238,6 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "backend-sqlite")]
     #[test]
     fn empty_store_locations_are_rejected() {
         assert!(matches!(
@@ -279,20 +248,5 @@ mod tests {
             parse_backend_url("sqlite://"),
             Err(StorageError::EmptyStorePath)
         ));
-    }
-
-    #[test]
-    fn a_missing_backend_names_the_cause_not_a_url() {
-        assert_eq!(
-            StorageError::NoBackendCompiled { url: None }.to_string(),
-            "no storage backend is compiled into this build"
-        );
-        assert_eq!(
-            StorageError::NoBackendCompiled {
-                url: Some("sqlite:///var/sekai".to_owned()),
-            }
-            .to_string(),
-            "no storage backend is compiled into this build (requested: sqlite:///var/sekai)"
-        );
     }
 }

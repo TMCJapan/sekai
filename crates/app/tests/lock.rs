@@ -13,6 +13,7 @@ use sekai_app::{
 };
 use sekai_core::MetaStore as _;
 use sekai_storage::{StorageError, StoreLockMode};
+use sekai_storage_sqlite::SqliteStore;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -45,7 +46,7 @@ struct Fixture {
     root: PathBuf,
     world_path: PathBuf,
     world: HostWorldTree,
-    instance: SekaiInstance,
+    instance: SekaiInstance<SqliteStore>,
     /// A blob snapshot 1 references, for blob-level operations.
     blob: BlobHash,
 }

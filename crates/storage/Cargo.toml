@@ -12,10 +12,6 @@ keywords = ["minecraft", "backup", "storage"]
 workspace = true
 
 [features]
-default = ["backend-sqlite"]
-backend-sqlite = []
-backend-mysql = []
-backend-postgres = []
 
 [dependencies]
 sekai-core.workspace = true

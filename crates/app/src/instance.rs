@@ -3,25 +3,17 @@
 //! [`SekaiInstance`] is the single entry point for store-scoped operations:
 //! the store is opened once per process instead of once per free function,
 //! and metadata/CAS adapters are reached through one place. The store type
-//! is pluggable: any [`SekaiStore`] backend can be used, with SQLite as the
-//! default when that feature is compiled in. Operations that touch a world
-//! hang off borrowed handles: [`WorldHandle`] for read-only work,
-//! [`WorldHandleMut`] for runs that write (backup, rollback), so write
-//! exclusivity shows in the type.
+//! is pluggable: any [`SekaiStore`] backend can be used, and the SQLite
+//! backend additionally gets the convenience `open`/`init` entry points.
+//! Operations that touch a world hang off borrowed handles: [`WorldHandle`]
+//! for read-only work, [`WorldHandleMut`] for runs that write (backup,
+//! rollback), so write exclusivity shows in the type.
 //!
 //! Exclusion against other processes is per operation: every public
 //! operation locks the store (and its world, if any) at entry and releases
 //! on return, so an idle instance never blocks anyone. See
 //! [`sekai_storage::lock`] for the store matrix and [`WorldTree::lock`] for
 //! worlds.
-
-// A build with no compiled backend has nothing left to await in `open`/`init`,
-// but their future-returning signatures are part of the API across every
-// feature combination.
-#![cfg_attr(
-    not(feature = "backend-sqlite"),
-    allow(clippy::unused_async, clippy::unused_async_trait_impl)
-)]
 
 use std::sync::Arc;
 
@@ -31,16 +23,8 @@ use sekai_world::{WorldLock, WorldLockMode, WorldLockState, WorldTree};
 
 use crate::error::AppError;
 
-/// Store used when callers omit the type parameter.
-#[cfg(feature = "backend-sqlite")]
-pub type DefaultStore = sekai_storage_sqlite::SqliteStore;
-
-/// Store used when callers omit the type parameter.
-#[cfg(not(feature = "backend-sqlite"))]
-pub type DefaultStore = sekai_storage::UnavailableStore;
-
 /// An opened store; all store-scoped operations go through this.
-pub struct SekaiInstance<T: SekaiStore = DefaultStore> {
+pub struct SekaiInstance<T: SekaiStore> {
     pub(crate) store: T,
 }
 
@@ -113,7 +97,8 @@ impl<T: SekaiStore> SekaiInstance<T> {
     }
 }
 
-impl SekaiInstance<DefaultStore> {
+#[cfg(feature = "backend-sqlite")]
+impl SekaiInstance<sekai_storage_sqlite::SqliteStore> {
     /// Open the existing store named by `store_url`.
     ///
     /// `sqlite://<dir>` (or a bare `<dir>`) opens a SQLite store; anything
@@ -122,7 +107,7 @@ impl SekaiInstance<DefaultStore> {
     /// [`Self::init`] materializes a store.
     pub async fn open(store_url: &str) -> Result<Self, AppError> {
         Ok(Self {
-            store: DefaultStore::open(store_url).await?,
+            store: sekai_storage_sqlite::SqliteStore::open(store_url).await?,
         })
     }
 
@@ -133,7 +118,7 @@ impl SekaiInstance<DefaultStore> {
     /// of leaving an empty store behind.
     pub async fn init(store_url: &str) -> Result<Self, AppError> {
         Ok(Self {
-            store: DefaultStore::init(store_url).await?,
+            store: sekai_storage_sqlite::SqliteStore::init(store_url).await?,
         })
     }
 }
@@ -189,7 +174,7 @@ impl<S: SekaiStore, L: WorldLock> OperationLocks<S, L> {
 }
 
 /// Read-only handle to one world directory bound to an instance.
-pub struct WorldHandle<'a, W, S: SekaiStore = DefaultStore> {
+pub struct WorldHandle<'a, W, S: SekaiStore> {
     pub(crate) instance: &'a SekaiInstance<S>,
     pub(crate) world: &'a W,
 }
@@ -200,7 +185,7 @@ pub struct WorldHandle<'a, W, S: SekaiStore = DefaultStore> {
 /// handle borrows the instance mutably: while a write session is alive, no
 /// second handle for the same instance can exist, so store-scoped
 /// operations and other world writes cannot start.
-pub struct WorldHandleMut<'a, W, S: SekaiStore = DefaultStore> {
+pub struct WorldHandleMut<'a, W, S: SekaiStore> {
     pub(crate) instance: &'a mut SekaiInstance<S>,
     pub(crate) world: &'a mut W,
 }
