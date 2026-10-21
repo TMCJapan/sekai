@@ -135,18 +135,22 @@ where
 ///
 /// Constructors fail loudly with [`StorageError::UnsupportedBackend`]; the
 /// type only exists so generic consumers can still be instantiated.
-#[derive(Debug, Clone, Copy, Default)]
+///
+/// It is neither `Default` nor `Copy`: an unavailable store has to be
+/// named explicitly, and a value must never be conjured into existence
+/// behind the "fails loudly" contract.
+#[derive(Debug, Clone)]
 pub struct UnavailableStore {
     meta: UnavailableMeta,
     blobs: UnavailableBlobs,
 }
 
 /// Metadata adapter of [`UnavailableStore`].
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone)]
 pub struct UnavailableMeta;
 
 /// Blob adapter of [`UnavailableStore`].
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone)]
 pub struct UnavailableBlobs;
 
 fn unavailable<T>() -> Result<T, StorageError> {
