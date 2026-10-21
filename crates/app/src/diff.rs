@@ -7,10 +7,11 @@ use sekai_core::{
     BlobHash, BlobStore as _, ChunkCoord, DEFAULT_IGNORED, MetaStore, NbtDiffEntry, RegionKey,
     SnapshotId, diff_nbt,
 };
-use sekai_world::{RegionFile, WorldTree};
+use sekai_storage::StoreLockMode;
+use sekai_world::{RegionFile, WorldLockMode, WorldTree};
 
 use crate::error::AppError;
-use crate::instance::{SekaiInstance, WorldHandle, WorldHandleMut};
+use crate::instance::{OperationLocks, SekaiInstance, WorldHandle, WorldHandleMut};
 use crate::regions::discover_regions;
 
 /// Per-phase timings for chunk AST diffs. Informational only; never
@@ -35,6 +36,7 @@ impl SekaiInstance {
         new_hash: &BlobHash,
         ignore: Option<&[&str]>,
     ) -> Result<Vec<NbtDiffEntry>, AppError> {
+        let _lock = self.lock_store(StoreLockMode::Shared)?;
         let ignore_set = ignore.unwrap_or(DEFAULT_IGNORED);
 
         let mut old_compressed = Vec::new();
@@ -141,6 +143,7 @@ impl SekaiInstance {
         ignore: Option<&[&str]>,
         progress: impl FnMut(DiffProgress) + Send,
     ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
+        let _lock = self.lock_store(StoreLockMode::Shared)?;
         let total_started = Instant::now();
         let ignore_set = ignore.unwrap_or(DEFAULT_IGNORED);
         let mut timings = DiffTimings::default();
@@ -164,10 +167,14 @@ impl SekaiInstance {
     }
 
     /// Effective chunk coordinates of one snapshot (fallback-resolved set).
+    ///
+    /// Takes its own shared store lock, so coordinates handed to a later
+    /// [`Self::diff_chunks`] go stale if a prune runs in between (ADR-0014).
     pub async fn snapshot_chunk_coords(
         &self,
         snapshot: SnapshotId,
     ) -> Result<Vec<ChunkCoord>, AppError> {
+        let _lock = self.lock_store(StoreLockMode::Shared)?;
         let mut coords = Vec::new();
         self.store
             .meta()
@@ -181,10 +188,15 @@ impl SekaiInstance {
 }
 
 /// Chunk coordinates present on disk in `world`.
+///
+/// Takes its own shared world lock, so coordinates handed to a later
+/// [`WorldHandle::diff_world_chunks`] go stale if a rollback runs in
+/// between (ADR-0014).
 pub fn world_chunk_coords<T: WorldTree>(world: &T) -> Result<Vec<ChunkCoord>, AppError>
 where
     AppError: From<T::Error>,
 {
+    let _lock = world.lock(WorldLockMode::Shared)?;
     let mut coords = Vec::new();
     for (key, region) in discover_regions(world)? {
         let bytes = region.read()?;
@@ -270,10 +282,20 @@ where
         ignore: Option<&[&str]>,
         progress: impl FnMut(DiffProgress) + Send,
     ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
+        let locks = OperationLocks::acquire(
+            self.instance,
+            StoreLockMode::Shared,
+            self.world,
+            WorldLockMode::Shared,
+        )?;
         let total_started = Instant::now();
         let snapshot_id = match snapshot {
             Some(id) => id,
-            None => self.instance.latest_snapshot_id().await?,
+            None => {
+                self.instance
+                    .latest_snapshot_id_locked(locks.store())
+                    .await?
+            }
         };
 
         let ignore_set = ignore.unwrap_or(DEFAULT_IGNORED);

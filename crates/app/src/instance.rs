@@ -6,6 +6,12 @@
 //! touch a world hang off borrowed handles: [`WorldHandle`] for read-only
 //! work, [`WorldHandleMut`] for runs that write (backup, rollback), so write
 //! exclusivity shows in the type.
+//!
+//! Exclusion against other processes is per operation: every public
+//! operation locks the store (and its world, if any) at entry and releases
+//! on return, so an idle instance never blocks anyone. See
+//! [`sekai_storage::lock`] for the store matrix and [`WorldTree::lock`] for
+//! worlds.
 
 // A build with no compiled backend has nothing left to await in `open`/`init`,
 // but their future-returning signatures are part of the API across every
@@ -15,8 +21,11 @@
     allow(clippy::unused_async, clippy::unused_async_trait_impl)
 )]
 
+use std::sync::Arc;
+
 use sekai_core::{Snapshot, SnapshotId};
-use sekai_world::WorldTree;
+use sekai_storage::{StoreLock, StoreLockMode};
+use sekai_world::{WorldLock, WorldLockMode, WorldLockState, WorldTree};
 
 use crate::error::AppError;
 
@@ -71,12 +80,15 @@ impl SekaiInstance {
         .into())
     }
 
-    /// Store handle (metadata plus CAS) for escape-hatch access.
+    /// Store handle (metadata plus CAS) for escape-hatch access. Access
+    /// through it takes no lock; callers coordinate with other processes
+    /// themselves.
     pub const fn store(&self) -> &sekai_storage::SqliteStore {
         &self.store
     }
 
-    /// Mutable store handle for escape-hatch access.
+    /// Mutable store handle for escape-hatch access; takes no lock, like
+    /// [`Self::store`].
     pub const fn store_mut(&mut self) -> &mut sekai_storage::SqliteStore {
         &mut self.store
     }
@@ -100,8 +112,13 @@ impl SekaiInstance {
         }
     }
 
+    pub(crate) fn lock_store(&self, mode: StoreLockMode) -> Result<StoreLock, AppError> {
+        Ok(self.store.cas().lock(mode)?)
+    }
+
     /// List all snapshots in ID order (for `list` and pre-flight checks).
     pub async fn list_snapshots(&self) -> Result<Vec<Snapshot>, AppError> {
+        let _lock = self.lock_store(StoreLockMode::Shared)?;
         sekai_core::usecase::snapshot::list_snapshots(self.store.meta())
             .await
             .map_err(AppError::Snapshot)
@@ -109,10 +126,53 @@ impl SekaiInstance {
 
     /// Latest snapshot ID; fails when the store has no snapshots.
     pub async fn latest_snapshot_id(&self) -> Result<SnapshotId, AppError> {
+        let lock = self.lock_store(StoreLockMode::Shared)?;
+        self.latest_snapshot_id_locked(&lock).await
+    }
+
+    /// [`Self::latest_snapshot_id`] for an operation that already holds
+    /// `_held`; asking for it makes the caller prove the lock exists.
+    pub(crate) async fn latest_snapshot_id_locked(
+        &self,
+        _held: &StoreLock,
+    ) -> Result<SnapshotId, AppError> {
         sekai_core::usecase::snapshot::latest_snapshot_id(self.store.meta())
             .await
             .map_err(AppError::Snapshot)?
             .ok_or(AppError::NoSnapshots)
+    }
+}
+
+/// Shared (`Arc`) into the blocking tasks that touch files: a cancelled
+/// future cannot abort a blocking task that already started, so the locks
+/// must outlive the future until the file pass finishes.
+#[derive(Debug)]
+pub(crate) struct OperationLocks<L> {
+    store: StoreLock,
+    _world: WorldLockState<L>,
+}
+
+impl<L: WorldLock> OperationLocks<L> {
+    pub(crate) fn acquire<T: WorldTree<Lock = L>>(
+        instance: &SekaiInstance,
+        store: StoreLockMode,
+        world: &T,
+        world_mode: WorldLockMode,
+    ) -> Result<Arc<Self>, AppError>
+    where
+        AppError: From<T::Error>,
+    {
+        let store = instance.lock_store(store)?;
+        let world = world.lock(world_mode)?;
+        Ok(Arc::new(Self {
+            store,
+            _world: world,
+        }))
+    }
+
+    /// The store lock this operation holds.
+    pub(crate) const fn store(&self) -> &StoreLock {
+        &self.store
     }
 }
 

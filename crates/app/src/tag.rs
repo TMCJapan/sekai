@@ -8,6 +8,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use sekai_core::{MetaStore as _, SnapshotId, SnapshotTag, TagName};
+use sekai_storage::StoreLockMode;
 
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
@@ -23,6 +24,11 @@ impl SekaiInstance {
         snapshot: SnapshotId,
         force: bool,
     ) -> Result<SnapshotTag, AppError> {
+        // The lock only keeps `prune` out. Lookup, untag, and insert are
+        // separate statements, so concurrent edits of one tag can
+        // interleave; that needs a transaction, not a stronger lock, and
+        // is tracked separately.
+        let _lock = self.lock_store(StoreLockMode::Shared)?;
         if self.store.meta().lookup_snapshot(snapshot).await?.is_none() {
             return Err(AppError::SnapshotRef(
                 sekai_core::usecase::snapshot::ResolveError::UnknownSnapshot { id: snapshot.0 },
@@ -48,11 +54,13 @@ impl SekaiInstance {
 
     /// Remove `name`, returning whether a tag was removed.
     pub async fn delete_tag(&mut self, name: &TagName) -> Result<bool, AppError> {
+        let _lock = self.lock_store(StoreLockMode::Shared)?;
         Ok(self.store.meta_mut().untag(name).await?)
     }
 
     /// List tags in name order.
     pub async fn list_tags(&self) -> Result<Vec<SnapshotTag>, AppError> {
+        let _lock = self.lock_store(StoreLockMode::Shared)?;
         sekai_core::usecase::snapshot::list_tags(self.store.meta())
             .await
             .map_err(AppError::Snapshot)
@@ -60,6 +68,7 @@ impl SekaiInstance {
 
     /// Resolve a snapshot reference (`<id>` or `@tag`).
     pub async fn resolve_snapshot_ref(&self, raw: &str) -> Result<SnapshotId, AppError> {
+        let _lock = self.lock_store(StoreLockMode::Shared)?;
         sekai_core::usecase::snapshot::resolve_snapshot_ref(self.store.meta(), raw)
             .await
             .map_err(AppError::SnapshotRef)
@@ -70,6 +79,7 @@ impl SekaiInstance {
         &self,
         snapshot: SnapshotId,
     ) -> Result<sekai_core::SnapshotStats, AppError> {
+        let _lock = self.lock_store(StoreLockMode::Shared)?;
         sekai_core::usecase::snapshot::snapshot_stats(self.store.meta(), snapshot)
             .await
             .map_err(AppError::Snapshot)

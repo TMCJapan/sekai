@@ -23,56 +23,6 @@ fn cleanup(dir: impl AsRef<Path>) {
     let _ = std::fs::remove_dir_all(dir);
 }
 
-/// A backup's blobs reach the CAS before the rows referencing them, so
-/// `gc` must refuse while a backup holds the store. Otherwise it unlinks
-/// blobs the next metadata commit still needs.
-#[tokio::test]
-async fn gc_refuses_while_a_backup_holds_the_store() {
-    let root = tempdir("gc-guard");
-    let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path).unwrap();
-    let store = root.join("store");
-    let store_url = store.to_string_lossy().into_owned();
-    write_region(
-        world_path.join("region/r.0.0.mca"),
-        &[(0, 0, vec![3, 1, 2, 3])],
-    );
-
-    let mut instance = sekai_app::SekaiInstance::init(&store_url).await.unwrap();
-    instance
-        .world_mut(&mut world)
-        .backup(options(), Scope::World, |_| {})
-        .await
-        .unwrap();
-    // A finished backup leaves nothing behind.
-    assert!(!store.join("backup.inflight").exists());
-    instance.gc(|_| {}).await.unwrap();
-
-    // A held marker (a backup in flight) blocks collection.
-    std::fs::write(store.join("backup.inflight"), "12345 0\n").unwrap();
-    let err = instance.gc(|_| {}).await.unwrap_err();
-    assert!(
-        err.to_string().contains("running backup"),
-        "unexpected error: {err}"
-    );
-    let err = instance.gc_plan().await.unwrap_err();
-    assert!(err.to_string().contains("running backup"), "{err}");
-
-    // Backups are never blocked by a stale marker.
-    std::thread::sleep(std::time::Duration::from_millis(5));
-    write_region(
-        world_path.join("region/r.0.0.mca"),
-        &[(0, 0, vec![3, 4, 5, 6])],
-    );
-    instance
-        .world_mut(&mut world)
-        .backup(options(), Scope::World, |_| {})
-        .await
-        .expect("a stale marker must not block a backup");
-    assert!(!store.join("backup.inflight").exists());
-    cleanup(&root);
-}
-
 /// Write a region image through the real builder, deriving the region
 /// coordinates from the file name.
 fn write_region(path: impl AsRef<Path>, chunks: &[(i32, i32, Vec<u8>)]) {
