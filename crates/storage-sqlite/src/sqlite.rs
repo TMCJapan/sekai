@@ -430,10 +430,15 @@ const INSERT_CHUNK_SQL: &str =
 /// queries that build their SQL piece by piece.
 macro_rules! ancestor_cte {
     (head) => {
-        "WITH RECURSIVE anc(id) AS (SELECT "
+        "WITH RECURSIVE ancestors(id) AS (
+    SELECT "
     };
     (tail) => {
-        " UNION SELECT sp.parent_id FROM snapshot_parents sp JOIN anc ON sp.child_id = anc.id)"
+        "
+    UNION
+    SELECT sp.parent_id FROM snapshot_parents sp
+    JOIN ancestors ON sp.child_id = ancestors.id
+)"
     };
     ($seed:literal) => {
         concat!(ancestor_cte!(head), $seed, ancestor_cte!(tail))
@@ -447,7 +452,7 @@ const LOOKUP_CHUNK_SQL: &str = concat!(
     "
 SELECT snapshot_id, dim, kind, cx, cz, blob, diff FROM chunk_history
 WHERE dim = ? AND kind = ? AND cx = ? AND cz = ?
-  AND snapshot_id IN (SELECT id FROM anc)
+  AND snapshot_id IN (SELECT id FROM ancestors)
 ORDER BY snapshot_id DESC LIMIT 1"
 );
 
@@ -460,7 +465,7 @@ SELECT dim, kind, cx, cz, blob, diff, snapshot_id FROM (
      ROW_NUMBER() OVER (
        PARTITION BY dim, kind, cx, cz ORDER BY snapshot_id DESC
      ) AS rn
-   FROM chunk_history WHERE snapshot_id IN (SELECT id FROM anc)
+   FROM chunk_history WHERE snapshot_id IN (SELECT id FROM ancestors)
 ) WHERE rn = 1 ORDER BY dim, kind, cx, cz"
 );
 
@@ -472,7 +477,7 @@ const RETIRE_SUPERSEDED_SQL: &str = concat!(
 DELETE FROM chunk_history WHERE snapshot_id = ?1
  AND (dim, kind, cx, cz) IN (
      SELECT dim, kind, cx, cz FROM chunk_history
-     WHERE snapshot_id > ?1 AND snapshot_id IN (SELECT id FROM anc)
+     WHERE snapshot_id > ?1 AND snapshot_id IN (SELECT id FROM ancestors)
  )"
 );
 
@@ -869,7 +874,7 @@ impl sekai_core::MetaStore for SqliteMeta {
                        SELECT ROW_NUMBER() OVER (
                          PARTITION BY dim, kind, cx, cz ORDER BY snapshot_id DESC
                        ) AS rn, blob
-                       FROM chunk_history WHERE snapshot_id IN (SELECT id FROM anc) AND (",
+                       FROM chunk_history WHERE snapshot_id IN (SELECT id FROM ancestors) AND (",
                 );
                 for (i, key) in keys.iter().enumerate() {
                     if i > 0 {
