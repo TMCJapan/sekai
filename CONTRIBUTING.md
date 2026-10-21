@@ -145,7 +145,8 @@ any exception in the PR body.
   `backend-mysql` / `backend-postgres` features.
   Backend selection is feature-gated at compile time plus URL-selected at
   runtime (`sqlite://...`, `mysql://...`, `postgres://...`); requesting an
-  uncompiled backend is a loud `UnsupportedBackend` error.
+  uncompiled backend is a loud `UnsupportedBackend` error, and a build with
+  no backend compiled in at all fails with `NoBackendCompiled`.
 
 ## Coding Standards
 

@@ -56,7 +56,9 @@ pub trait SekaiStore: Send + Sync + Sized + 'static {
 ///
 /// The implementation owns its URL grammar: it recognizes the schemes that
 /// name it and rejects the others with
-/// [`StorageError::UnsupportedBackend`].
+/// [`StorageError::UnsupportedBackend`]. A build with no backend compiled
+/// in at all rejects every URL with
+/// [`StorageError::NoBackendCompiled`].
 pub trait SekaiStoreOpener: SekaiStore {
     /// Open the existing store named by `url`.
     fn open(url: &str) -> impl Future<Output = Result<Self, StorageError>> + Send;
@@ -133,7 +135,7 @@ where
 
 /// Store used when no backend was compiled in.
 ///
-/// Constructors fail loudly with [`StorageError::UnsupportedBackend`]; the
+/// Constructors fail loudly with [`StorageError::NoBackendCompiled`]; the
 /// type only exists so generic consumers can still be instantiated.
 ///
 /// It is neither `Default` nor `Copy`: an unavailable store has to be
@@ -153,10 +155,8 @@ pub struct UnavailableMeta;
 #[derive(Debug, Clone)]
 pub struct UnavailableBlobs;
 
-fn unavailable<T>() -> Result<T, StorageError> {
-    Err(StorageError::UnsupportedBackend {
-        url: "no storage backend compiled".to_owned(),
-    })
+const fn unavailable<T>() -> Result<T, StorageError> {
+    Err(StorageError::NoBackendCompiled { url: None })
 }
 
 impl MetaStore for UnavailableMeta {
@@ -386,12 +386,38 @@ impl SekaiStore for UnavailableStore {
 
 impl SekaiStoreOpener for UnavailableStore {
     fn open(url: &str) -> impl Future<Output = Result<Self, StorageError>> + Send {
-        let url = url.to_owned();
-        core::future::ready(Err(StorageError::UnsupportedBackend { url }))
+        let url = Some(url.to_owned());
+        core::future::ready(Err(StorageError::NoBackendCompiled { url }))
     }
 
     fn init(url: &str) -> impl Future<Output = Result<Self, StorageError>> + Send {
-        let url = url.to_owned();
-        core::future::ready(Err(StorageError::UnsupportedBackend { url }))
+        let url = Some(url.to_owned());
+        core::future::ready(Err(StorageError::NoBackendCompiled { url }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::task::Poll;
+
+    fn block_on<F: Future>(fut: F) -> F::Output {
+        let mut fut = core::pin::pin!(fut);
+        let waker = core::task::Waker::noop();
+        let mut cx = core::task::Context::from_waker(waker);
+        loop {
+            if let Poll::Ready(out) = fut.as_mut().poll(&mut cx) {
+                return out;
+            }
+        }
+    }
+
+    #[test]
+    fn the_unavailable_store_names_the_request_it_cannot_serve() {
+        let error = block_on(UnavailableStore::open("sqlite:///var/sekai")).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "no storage backend is compiled into this build (requested: sqlite:///var/sekai)"
+        );
     }
 }

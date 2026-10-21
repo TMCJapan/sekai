@@ -311,7 +311,9 @@ Feature-gated plus runtime-selected: `app` exposes cargo features per
 backend (`default = ["backend-sqlite"]`), re-exported through `sekai-cli`.
 At runtime the connection URL picks the compiled-in backend, and requesting
 an uncompiled backend is a loud `UnsupportedBackend` error — never silent
-reinterpretation. `sekai-storage` keeps `BackendKind` and URL parsing; each
+reinterpretation. A build with no backend compiled in at all reports
+`NoBackendCompiled` instead, naming the request it cannot serve.
+`sekai-storage` keeps `BackendKind` and URL parsing; each
 backend crate implements `SekaiStoreOpener` for its store type, so the
 backend owns the grammar of the URLs that name it.
 
