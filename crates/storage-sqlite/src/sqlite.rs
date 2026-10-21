@@ -3,7 +3,7 @@
 //! Snapshot commits use one transaction; CAS durability is established before
 //! metadata commit by the caller. The pool has one connection.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -522,12 +522,25 @@ async fn insert_snapshot(
         if *parent == snapshot {
             return Err(StorageError::SelfParent { id: parent.0 });
         }
-        let found: Option<i64> = sqlx::query_scalar("SELECT 1 FROM snapshots WHERE id = ?")
-            .bind(snap_param(*parent)?)
-            .fetch_optional(&mut **tx)
+    }
+    // One query for the whole list, so a merge does not cost a round
+    // trip per parent.
+    let existing: Vec<i64> = if parents.is_empty() {
+        Vec::new()
+    } else {
+        let mut qb = sqlx::QueryBuilder::new("SELECT id FROM snapshots WHERE id IN (");
+        let mut separated = qb.separated(", ");
+        for parent in parents {
+            separated.push_bind(snap_param(*parent)?);
+        }
+        separated.push_unseparated(")");
+        qb.build_query_scalar()
+            .fetch_all(&mut **tx)
             .await
-            .map_err(db_err)?;
-        if found.is_none() {
+            .map_err(db_err)?
+    };
+    for parent in parents {
+        if !existing.contains(&snap_param(*parent)?) {
             return Err(StorageError::UnknownSnapshot { id: parent.0 });
         }
         sqlx::query("INSERT OR IGNORE INTO snapshot_parents (child_id, parent_id) VALUES (?, ?)")
@@ -679,8 +692,9 @@ impl sekai_core::MetaStore for SqliteMeta {
         }
         // The map holds every edge, so a snapshot without an entry is a
         // root; an edge naming a snapshot that is gone is corruption.
+        let known: BTreeSet<SnapshotId> = ids.iter().copied().collect();
         debug_assert!(
-            parents.keys().all(|id| ids.contains(id)),
+            parents.keys().all(|id| known.contains(id)),
             "parent map names a snapshot that does not exist"
         );
         for (row, id) in rows.iter().zip(ids) {
@@ -890,10 +904,10 @@ impl sekai_core::MetaStore for SqliteMeta {
     ) -> Result<ApplyOutcome, StorageError> {
         let mut tx = self.pool.begin().await.map_err(db_err)?;
         let snapshot = insert_snapshot(&mut tx, created_at_ms, parents).await?;
-        let id = snap_param(snapshot)?;
+        let id_param = snap_param(snapshot)?;
         for entry in entries {
             sqlx::query(INSERT_CHUNK_SQL)
-                .bind(id)
+                .bind(id_param)
                 .bind(i64::from(entry.coord.dim.raw()))
                 .bind(i64::from(entry.coord.kind.raw()))
                 .bind(i64::from(entry.coord.x))
@@ -954,7 +968,7 @@ impl sekai_core::MetaStore for SqliteMeta {
                     "UPDATE region_state SET snapshot_id = ?
                      WHERE dim = ? AND kind = ? AND rx = ? AND rz = ?",
                 )
-                .bind(id)
+                .bind(id_param)
                 .bind(i64::from(key.dim.raw()))
                 .bind(i64::from(key.kind.raw()))
                 .bind(i64::from(key.rx))
@@ -984,7 +998,7 @@ impl sekai_core::MetaStore for SqliteMeta {
             .bind(mtime_ms)
             .bind(size)
             .bind(&fp.content_hash[..])
-            .bind(id)
+            .bind(id_param)
             .execute(&mut *tx)
             .await.map_err(db_err)?;
         }
@@ -1064,6 +1078,29 @@ mod tests {
         ));
         // The rejected attempts left nothing behind.
         assert!(meta.latest_snapshot().await.unwrap().is_none());
+        let edges: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM snapshot_parents")
+            .fetch_one(&meta.pool)
+            .await
+            .unwrap();
+        assert_eq!(edges, 0);
+
+        // A rejection on a store that already holds a history leaves that
+        // history alone.
+        let root = meta.create_snapshot(2_000, &[]).await.unwrap();
+        assert!(matches!(
+            meta.create_snapshot(3_000, &[SnapshotId(2)]).await,
+            Err(StorageError::SelfParent { id: 2 })
+        ));
+        assert!(matches!(
+            meta.create_snapshot(3_000, &[SnapshotId(9)]).await,
+            Err(StorageError::UnknownSnapshot { id: 9 })
+        ));
+        assert_eq!(meta.latest_snapshot().await.unwrap().unwrap().id, root);
+        let edges: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM snapshot_parents")
+            .fetch_one(&meta.pool)
+            .await
+            .unwrap();
+        assert_eq!(edges, 0);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

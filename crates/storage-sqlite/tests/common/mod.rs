@@ -369,15 +369,9 @@ where
     // The graph, not the identifier order, decides what a snapshot
     // inherits: the chunk of `first` is invisible from `child`.
     assert_eq!(meta.snapshot_parents(second).await.unwrap(), vec![first]);
-    assert_eq!(
-        meta.snapshot_parents(first).await.unwrap(),
-        Vec::<SnapshotId>::new()
-    );
+    assert_eq!(meta.snapshot_parents(first).await.unwrap(), vec![]);
     assert_eq!(meta.snapshot_parents(child).await.unwrap(), vec![other]);
-    assert_eq!(
-        meta.snapshot_parents(other).await.unwrap(),
-        Vec::<SnapshotId>::new()
-    );
+    assert_eq!(meta.snapshot_parents(other).await.unwrap(), vec![]);
     assert!(
         meta.lookup_chunk(child, &coord(0, 0))
             .await
@@ -411,14 +405,33 @@ where
     assert_eq!(walked[0].parents, vec![first]);
     assert!(walked[1].is_root());
 
+    // A merge snapshot continues two histories at once. The parents are
+    // recorded in the canonical (ascending identifier) order, and the
+    // walk reports the direct parents first, in that order.
+    let merge = meta.create_snapshot(6_500, &[other, second]).await.unwrap();
+    assert_eq!(
+        meta.snapshot_parents(merge).await.unwrap(),
+        vec![second, other]
+    );
+    assert_eq!(
+        snapshot_ancestors(meta, merge).await.unwrap(),
+        vec![second, other, first]
+    );
+    assert_eq!(
+        snapshot_history(meta, merge)
+            .await
+            .unwrap()
+            .iter()
+            .map(|s| s.id)
+            .collect::<Vec<_>>(),
+        vec![merge, second, other, first]
+    );
+
     // Retiring a snapshot hands its children the history of its own
     // parents, so the graph stays connected.
     meta.retire_snapshot(first, second).await.unwrap();
     assert!(meta.lookup_snapshot(first).await.unwrap().is_none());
-    assert_eq!(
-        meta.snapshot_parents(second).await.unwrap(),
-        Vec::<SnapshotId>::new()
-    );
+    assert_eq!(meta.snapshot_parents(second).await.unwrap(), vec![]);
     // The folded row still resolves at the surviving snapshot.
     assert!(
         meta.lookup_chunk(second, &coord(0, 0))

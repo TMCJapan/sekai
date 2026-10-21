@@ -239,9 +239,10 @@ pub fn assemble(plan: Plan, previous: &Previous, ingested: Ingested, scope: &Sco
 /// metadata transaction is committed.
 ///
 /// The new snapshot continues the history it was planned against: its
-/// parent is the snapshot the delta was computed from. Without ref
-/// objects the head of a history is its latest snapshot, so the parent is
-/// the same snapshot the plan read.
+/// parent is `previous.snapshot` - the snapshot the plan read and the
+/// base its delta was computed from. Plan and commit must not be
+/// interleaved with another backup; the app holds the store's writer
+/// lock for the whole run.
 pub async fn commit<M: MetaStore>(
     meta: &mut M,
     previous: &Previous,

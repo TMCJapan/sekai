@@ -241,7 +241,7 @@ mod tests {
             Some(BlobHash([4; 32])),
             None,
         )];
-        let mut parent = Vec::new();
+        let mut parent: Vec<SnapshotId> = Vec::new();
         for (id, entries) in [
             (1u64, s1.as_slice()),
             (2, s2.as_slice()),

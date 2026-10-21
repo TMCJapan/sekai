@@ -49,10 +49,9 @@ pub async fn snapshot_parents<M: MetaStore>(
     meta: &M,
     snapshot: SnapshotId,
 ) -> Result<Vec<SnapshotId>, SnapshotError<M::Error>> {
-    ensure_exists(meta, snapshot).await?;
-    meta.snapshot_parents(snapshot)
-        .await
-        .map_err(SnapshotError::Meta)
+    // The record carries the parents, so the snapshot is read once.
+    let record = lookup_record(meta, snapshot).await?;
+    Ok(record.parents)
 }
 
 /// Every ancestor of `snapshot`, nearest first.
@@ -69,15 +68,12 @@ pub async fn snapshot_ancestors<M: MetaStore>(
     meta: &M,
     snapshot: SnapshotId,
 ) -> Result<Vec<SnapshotId>, SnapshotError<M::Error>> {
-    ensure_exists(meta, snapshot).await?;
+    // The record carries the parents, so the requested snapshot is read
+    // once and the walk starts from its parents.
+    let record = lookup_record(meta, snapshot).await?;
     let mut seen: BTreeSet<SnapshotId> = BTreeSet::new();
     let mut order: Vec<SnapshotId> = Vec::new();
-    let mut level: BTreeSet<SnapshotId> = meta
-        .snapshot_parents(snapshot)
-        .await
-        .map_err(SnapshotError::Meta)?
-        .into_iter()
-        .collect();
+    let mut level: BTreeSet<SnapshotId> = record.parents.into_iter().collect();
     while !level.is_empty() {
         let mut next: BTreeSet<SnapshotId> = BTreeSet::new();
         for id in level {
@@ -141,14 +137,6 @@ async fn lookup_record<M: MetaStore>(
         .await
         .map_err(SnapshotError::Meta)?
         .ok_or(SnapshotError::UnknownSnapshot { id: snapshot.0 })
-}
-
-/// Fail when the snapshot does not exist.
-async fn ensure_exists<M: MetaStore>(
-    meta: &M,
-    snapshot: SnapshotId,
-) -> Result<(), SnapshotError<M::Error>> {
-    lookup_record(meta, snapshot).await.map(|_| ())
 }
 
 /// List all tags in name order.

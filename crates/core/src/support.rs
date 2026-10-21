@@ -136,24 +136,27 @@ impl MetaStore for MemMeta {
     ) -> impl Future<Output = Result<SnapshotId, MemError>> + Send {
         let id = SnapshotId(self.next_id + 1);
         // Mirrors the backend: a parent must exist, a snapshot may not
-        // name itself, and a parent listed twice is recorded once.
+        // name itself, and a parent listed twice is recorded once, in the
+        // canonical (ascending identifier) order.
+        let known: BTreeSet<SnapshotId> = self.snapshots.iter().map(|s| s.id).collect();
         for parent in parents {
             if *parent == id {
                 return core::future::ready(Err(MemError::SelfParent { id: parent.0 }));
             }
-            if !self.snapshots.iter().any(|s| s.id == *parent) {
+            if !known.contains(parent) {
                 return core::future::ready(Err(MemError::UnknownParent { id: parent.0 }));
             }
         }
-        let mut unique: Vec<SnapshotId> = Vec::new();
+        let mut unique: BTreeSet<SnapshotId> = BTreeSet::new();
         for parent in parents {
-            if !unique.contains(parent) {
-                unique.push(*parent);
-            }
+            unique.insert(*parent);
         }
         self.next_id = id.0;
-        self.snapshots
-            .push(Snapshot::new(id, created_at_ms, unique));
+        self.snapshots.push(Snapshot::new(
+            id,
+            created_at_ms,
+            unique.into_iter().collect(),
+        ));
         core::future::ready(Ok(id))
     }
 
@@ -422,15 +425,17 @@ impl MetaStore for MemMeta {
             .map(|s| s.parents.clone())
             .unwrap_or_default();
         for snapshot in &mut self.snapshots {
-            let Some(position) = snapshot.parents.iter().position(|p| *p == from) else {
+            if !snapshot.parents.contains(&from) {
                 continue;
-            };
-            snapshot.parents.remove(position);
+            }
+            // The backend drops every edge naming the retired snapshot.
+            snapshot.parents.retain(|parent| *parent != from);
             for parent in &from_parents {
                 if !snapshot.parents.contains(parent) {
                     snapshot.parents.push(*parent);
                 }
             }
+            snapshot.parents.sort();
         }
         self.snapshots.retain(|snapshot| snapshot.id != from);
         self.tags.retain(|_, tag| tag.snapshot != from);

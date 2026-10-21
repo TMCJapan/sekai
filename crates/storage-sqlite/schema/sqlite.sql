@@ -15,6 +15,8 @@ CREATE TABLE snapshot_parents(
     PRIMARY KEY(child_id, parent_id)
 );
 
+-- Serves the retirement sweep that drops the edges naming a retired
+-- snapshot; child lookups use the primary key.
 CREATE INDEX idx_parents_parent
     ON snapshot_parents(parent_id);
 
