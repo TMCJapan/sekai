@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "Content-addressed and metadata storage backends for Sekai"
+description = "Backend-neutral metadata and blob storage boundaries for Sekai"
 keywords = ["minecraft", "backup", "storage"]
 
 [lints]
@@ -13,15 +13,10 @@ workspace = true
 
 [features]
 default = ["backend-sqlite"]
-backend-sqlite = ["dep:sqlx", "dep:tokio"]
+backend-sqlite = []
 backend-mysql = []
 backend-postgres = []
 
 [dependencies]
 sekai-core.workspace = true
-sqlx = { workspace = true, optional = true }
 thiserror.workspace = true
-tokio = { workspace = true, optional = true, features = ["time"] }
-
-[dev-dependencies]
-tokio.workspace = true

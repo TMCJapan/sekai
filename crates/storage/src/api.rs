@@ -19,9 +19,17 @@ pub enum StorageError {
     /// are represented in metadata.
     #[error("blob missing from CAS: {hex}")]
     BlobMissing { hex: String },
-    /// URL names a backend that is unknown or not compiled in.
+    /// URL names a backend this build cannot serve.
     #[error("unsupported storage backend: {url}")]
     UnsupportedBackend { url: String },
+    /// The build has no storage backend compiled in, so no store can be
+    /// opened or read. The requested location is named when the caller
+    /// had one; nothing in this build could have served it.
+    #[error(
+        "no storage backend is compiled into this build{}",
+        requested_store(.url.as_ref())
+    )]
+    NoBackendCompiled { url: Option<String> },
     /// URL carries no store location.
     #[error("store location is empty: pass a directory path")]
     EmptyStorePath,
@@ -99,10 +107,35 @@ pub enum StorageError {
         "unsupported schema version: {found}, this binary supports {supported} (recreate the store; pre-release stores are not migrated)"
     )]
     UnsupportedSchema { found: i64, supported: i64 },
-    /// SQLite operation failed.
-    #[cfg(feature = "backend-sqlite")]
-    #[error("sqlite failed: {0}")]
-    Sqlite(#[from] sqlx::Error),
+    /// A backend-specific operation failed.
+    #[error("{backend} failed: {source}")]
+    Backend {
+        /// Backend name used in diagnostics.
+        backend: &'static str,
+        /// Underlying backend failure.
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+}
+
+/// Render the requested store location of
+/// [`StorageError::NoBackendCompiled`].
+fn requested_store(url: Option<&String>) -> String {
+    url.map_or_else(String::new, |url| format!(" (requested: {url})"))
+}
+
+impl StorageError {
+    /// Wrap a backend-specific failure without coupling this crate to that
+    /// backend's error type.
+    pub fn backend(
+        backend: &'static str,
+        source: impl std::error::Error + Send + Sync + 'static,
+    ) -> Self {
+        Self::Backend {
+            backend,
+            source: Box::new(source),
+        }
+    }
 }
 
 /// Selectable metadata backend. Variants exist only for compiled-in
@@ -196,7 +229,10 @@ impl<M, C> Store<M, C> {
 }
 
 /// Wrap an I/O failure together with the path that caused it.
-pub(crate) fn io_error(path: impl AsRef<Path>, source: std::io::Error) -> StorageError {
+///
+/// Backend crates build [`StorageError::Io`] through this so the path
+/// handling stays in one place.
+pub fn io_error(path: impl AsRef<Path>, source: std::io::Error) -> StorageError {
     StorageError::Io {
         path: path.as_ref().to_path_buf(),
         source,
@@ -243,5 +279,20 @@ mod tests {
             parse_backend_url("sqlite://"),
             Err(StorageError::EmptyStorePath)
         ));
+    }
+
+    #[test]
+    fn a_missing_backend_names_the_cause_not_a_url() {
+        assert_eq!(
+            StorageError::NoBackendCompiled { url: None }.to_string(),
+            "no storage backend is compiled into this build"
+        );
+        assert_eq!(
+            StorageError::NoBackendCompiled {
+                url: Some("sqlite:///var/sekai".to_owned()),
+            }
+            .to_string(),
+            "no storage backend is compiled into this build (requested: sqlite:///var/sekai)"
+        );
     }
 }

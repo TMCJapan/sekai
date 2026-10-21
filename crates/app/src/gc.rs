@@ -3,7 +3,7 @@
 use std::time::{Duration, Instant};
 
 use sekai_core::{GcPlan, GcReport};
-use sekai_storage::StoreLockMode;
+use sekai_storage::{SekaiStore, StoreLockMode};
 
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
@@ -28,7 +28,7 @@ pub struct GcProgress {
     pub blobs_total: usize,
 }
 
-impl SekaiInstance {
+impl<S: SekaiStore> SekaiInstance<S> {
     /// Inspect the store and return a plan of unreferenced orphan blobs,
     /// additionally returning per-phase timings (`apply` is zero: dry-run
     /// never unlinks).
@@ -93,7 +93,7 @@ impl SekaiInstance {
 }
 
 /// Build the orphan plan against an open store.
-async fn plan_within(store: &sekai_storage::SqliteStore) -> Result<(GcPlan, Duration), AppError> {
+async fn plan_within<S: SekaiStore>(store: &S) -> Result<(GcPlan, Duration), AppError> {
     let started = Instant::now();
     let plan = sekai_core::usecase::gc::gc_plan(store.cas(), store.meta())
         .await
@@ -102,8 +102,8 @@ async fn plan_within(store: &sekai_storage::SqliteStore) -> Result<(GcPlan, Dura
 }
 
 /// Unlink `plan`'s orphans against an open store.
-async fn apply_within(
-    store: &mut sekai_storage::SqliteStore,
+async fn apply_within<S: SekaiStore>(
+    store: &mut S,
     plan: &GcPlan,
     mut progress: impl FnMut(GcProgress) + Send,
 ) -> Result<(GcReport, Duration), AppError> {

@@ -16,13 +16,20 @@ use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
 };
 
-use crate::api::{StorageError, Store, io_error};
-use crate::cas::FileCas;
+use sekai_storage::{
+    BackendKind, FileCas, SekaiStoreOpener, StorageError, Store, StoreLockMode, io_error,
+    parse_backend_url,
+};
 
 /// Managed schema version (`PRAGMA user_version`).
 pub const SCHEMA_VERSION: i64 = 7;
 
 const SCHEMA: &str = include_str!("../schema/sqlite.sql");
+
+/// Map a backend failure into the shared storage error.
+fn db_err(source: sqlx::Error) -> StorageError {
+    StorageError::backend("sqlite", source)
+}
 
 /// SQLite-backed MVCC metadata.
 #[derive(Debug, Clone)]
@@ -31,7 +38,74 @@ pub struct SqliteMeta {
 }
 
 /// Opened SQLite store: metadata plus file CAS under one root.
-pub type SqliteStore = Store<SqliteMeta, FileCas>;
+#[derive(Debug, Clone)]
+pub struct SqliteStore {
+    inner: Store<SqliteMeta, FileCas>,
+}
+
+impl SqliteStore {
+    /// Compose a store from an already opened metadata adapter and file CAS.
+    pub const fn new(meta: SqliteMeta, cas: FileCas) -> Self {
+        Self {
+            inner: Store::new(meta, cas),
+        }
+    }
+
+    /// Metadata adapter.
+    pub const fn meta(&self) -> &SqliteMeta {
+        self.inner.meta()
+    }
+
+    /// Mutable metadata adapter.
+    pub const fn meta_mut(&mut self) -> &mut SqliteMeta {
+        self.inner.meta_mut()
+    }
+
+    /// Blob adapter.
+    pub const fn cas(&self) -> &FileCas {
+        self.inner.cas()
+    }
+
+    /// Mutable blob adapter.
+    pub const fn cas_mut(&mut self) -> &mut FileCas {
+        self.inner.cas_mut()
+    }
+
+    /// Borrow both adapters for operations such as GC.
+    pub const fn cas_and_meta(&mut self) -> (&mut FileCas, &SqliteMeta) {
+        self.inner.cas_and_meta()
+    }
+}
+
+impl sekai_storage::SekaiStore for SqliteStore {
+    type Meta = SqliteMeta;
+    type Blobs = FileCas;
+    type LockGuard = sekai_storage::StoreLock;
+
+    fn meta(&self) -> &Self::Meta {
+        Self::meta(self)
+    }
+
+    fn meta_mut(&mut self) -> &mut Self::Meta {
+        Self::meta_mut(self)
+    }
+
+    fn cas(&self) -> &Self::Blobs {
+        Self::cas(self)
+    }
+
+    fn cas_mut(&mut self) -> &mut Self::Blobs {
+        Self::cas_mut(self)
+    }
+
+    fn cas_and_meta(&mut self) -> (&mut Self::Blobs, &Self::Meta) {
+        Self::cas_and_meta(self)
+    }
+
+    fn lock(&self, mode: StoreLockMode) -> Result<Self::LockGuard, StorageError> {
+        self.inner.lock(mode)
+    }
+}
 
 /// Initialize the store rooted at `root`, creating it when missing.
 ///
@@ -64,7 +138,29 @@ pub async fn open_sqlite(root: impl AsRef<Path>) -> Result<SqliteStore, StorageE
 async fn connect_sqlite(root: impl AsRef<Path>) -> Result<SqliteStore, StorageError> {
     let cas = FileCas::open(root.as_ref())?;
     let meta = SqliteMeta::open(&root.as_ref().join("meta.sqlite")).await?;
-    Ok(Store::new(meta, cas))
+    Ok(SqliteStore::new(meta, cas))
+}
+
+impl SekaiStoreOpener for SqliteStore {
+    async fn open(url: &str) -> Result<Self, StorageError> {
+        let (kind, rest) = parse_backend_url(url)?;
+        if kind != BackendKind::Sqlite {
+            return Err(StorageError::UnsupportedBackend {
+                url: url.to_owned(),
+            });
+        }
+        open_sqlite(rest).await
+    }
+
+    async fn init(url: &str) -> Result<Self, StorageError> {
+        let (kind, rest) = parse_backend_url(url)?;
+        if kind != BackendKind::Sqlite {
+            return Err(StorageError::UnsupportedBackend {
+                url: url.to_owned(),
+            });
+        }
+        init_sqlite(rest).await
+    }
 }
 
 /// How long a connect keeps retrying `SQLITE_BUSY`, matching sqlx's
@@ -122,8 +218,8 @@ impl SqliteMeta {
             .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Full)
             .foreign_keys(true);
-        let pool = connect_pool(options).await?;
-        let mut version = read_user_version(&pool).await?;
+        let pool = connect_pool(options).await.map_err(db_err)?;
+        let mut version = read_user_version(&pool).await.map_err(db_err)?;
         if version == 0 {
             // Re-read under the write lock: a concurrent opener that won the
             // race has stamped the version by the time this one gets it, so
@@ -131,18 +227,22 @@ impl SqliteMeta {
             // together: a crash between them would leave a half-created
             // schema that no later open can repair (the gate would demand a
             // version the store never got).
-            let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
-            version = read_user_version(&mut *tx).await?;
+            let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(db_err)?;
+            version = read_user_version(&mut *tx).await.map_err(db_err)?;
             if version == 0 {
-                sqlx::query(SCHEMA).execute(&mut *tx).await?;
+                sqlx::query(SCHEMA)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db_err)?;
                 sqlx::query(sqlx::AssertSqlSafe(format!(
                     "PRAGMA user_version = {SCHEMA_VERSION}"
                 )))
                 .execute(&mut *tx)
-                .await?;
+                .await
+                .map_err(db_err)?;
                 version = SCHEMA_VERSION;
             }
-            tx.commit().await?;
+            tx.commit().await.map_err(db_err)?;
         }
         if version != SCHEMA_VERSION {
             return Err(StorageError::UnsupportedSchema {
@@ -185,7 +285,7 @@ fn snapshot_id_from_i64(id: i64) -> Result<SnapshotId, StorageError> {
 
 /// Read an `i32` column with a loud error on out-of-range values.
 fn i32_col(row: &sqlx::sqlite::SqliteRow, column: &'static str) -> Result<i32, StorageError> {
-    let value: i64 = row.try_get(column)?;
+    let value: i64 = row.try_get(column).map_err(db_err)?;
     i64_to_i32(value, column)
 }
 
@@ -210,13 +310,13 @@ fn hash_col(
     row: &sqlx::sqlite::SqliteRow,
     column: &'static str,
 ) -> Result<Option<BlobHash>, StorageError> {
-    let bytes: Option<Vec<u8>> = row.try_get(column)?;
+    let bytes: Option<Vec<u8>> = row.try_get(column).map_err(db_err)?;
     bytes.map(|bytes| hash32(bytes).map(BlobHash)).transpose()
 }
 
 /// Read a millisecond timestamp column.
 fn millis_col(row: &sqlx::sqlite::SqliteRow, column: &'static str) -> Result<u64, StorageError> {
-    let value: i64 = row.try_get(column)?;
+    let value: i64 = row.try_get(column).map_err(db_err)?;
     i64_to_u64(value, column)
 }
 
@@ -229,11 +329,11 @@ fn decode_history(row: &sqlx::sqlite::SqliteRow) -> Result<ChunkHistoryEntry, St
         i32_col(row, "cz")?,
     );
     let blob = hash_col(row, "blob")?;
-    let diff_bytes: Option<Vec<u8>> = row.try_get("diff")?;
+    let diff_bytes: Option<Vec<u8>> = row.try_get("diff").map_err(db_err)?;
     let diff = diff_bytes
         .map(|bytes| hash32(bytes).map(DiffHash))
         .transpose()?;
-    let snapshot_raw: i64 = row.try_get("snapshot_id")?;
+    let snapshot_raw: i64 = row.try_get("snapshot_id").map_err(db_err)?;
     let snapshot = snapshot_id_from_i64(snapshot_raw)?;
     Ok(ChunkHistoryEntry::new(coord, snapshot, blob, diff))
 }
@@ -246,13 +346,13 @@ fn decode_state(row: &sqlx::sqlite::SqliteRow) -> Result<RegionStateEntry, Stora
         i32_col(row, "rx")?,
         i32_col(row, "rz")?,
     );
-    let mtime_ms: Option<i64> = row.try_get("mtime_ms")?;
+    let mtime_ms: Option<i64> = row.try_get("mtime_ms").map_err(db_err)?;
     let mtime_ms = mtime_ms.map(|v| i64_to_u64(v, "mtime_ms")).transpose()?;
-    let size_raw: i64 = row.try_get("size")?;
+    let size_raw: i64 = row.try_get("size").map_err(db_err)?;
     let size = i64_to_u64(size_raw, "size")?;
-    let content: Vec<u8> = row.try_get("content_hash")?;
+    let content: Vec<u8> = row.try_get("content_hash").map_err(db_err)?;
     let content_hash = hash32(content)?;
-    let snapshot_raw: i64 = row.try_get("snapshot_id")?;
+    let snapshot_raw: i64 = row.try_get("snapshot_id").map_err(db_err)?;
     let snapshot_id = snapshot_id_from_i64(snapshot_raw)?;
     Ok(RegionStateEntry {
         fingerprint: RegionFingerprint {
@@ -268,11 +368,11 @@ fn decode_state(row: &sqlx::sqlite::SqliteRow) -> Result<RegionStateEntry, Stora
 /// Decode one `snapshot_tags` row. Stored names always re-validate:
 /// anything else is corruption, never silent reinterpretation.
 fn decode_tag(row: &sqlx::sqlite::SqliteRow) -> Result<SnapshotTag, StorageError> {
-    let name_raw: String = row.try_get("name")?;
+    let name_raw: String = row.try_get("name").map_err(db_err)?;
     let name = TagName::parse(&name_raw).map_err(|_| StorageError::InvalidTagName {
         name: name_raw.clone(),
     })?;
-    let snapshot_raw: i64 = row.try_get("snapshot_id")?;
+    let snapshot_raw: i64 = row.try_get("snapshot_id").map_err(db_err)?;
     let snapshot = snapshot_id_from_i64(snapshot_raw)?;
     Ok(SnapshotTag::new(
         name,
@@ -299,7 +399,7 @@ const INSERT_CHUNK_SQL: &str =
 
 /// Decode one `snapshots` row.
 fn decode_snapshot(row: &sqlx::sqlite::SqliteRow) -> Result<Snapshot, StorageError> {
-    let id: i64 = row.try_get("id")?;
+    let id: i64 = row.try_get("id").map_err(db_err)?;
     Ok(Snapshot::new(
         snapshot_id_from_i64(id)?,
         millis_col(row, "created_at_ms")?,
@@ -313,7 +413,8 @@ impl sekai_core::MetaStore for SqliteMeta {
         let id = sqlx::query("INSERT INTO snapshots (created_at_ms) VALUES (?)")
             .bind(millis_param(created_at_ms)?)
             .execute(&self.pool)
-            .await?
+            .await
+            .map_err(db_err)?
             .last_insert_rowid();
         snapshot_id_from_i64(id)
     }
@@ -334,7 +435,8 @@ impl sekai_core::MetaStore for SqliteMeta {
             .bind(blob.map(|h| &h.0[..]))
             .bind(diff.map(|h| &h.0[..]))
             .execute(&self.pool)
-            .await?;
+            .await
+            .map_err(db_err)?;
         Ok(())
     }
 
@@ -357,7 +459,8 @@ impl sekai_core::MetaStore for SqliteMeta {
         .bind(i64::from(coord.z))
         .bind(snap_param(snapshot)?)
         .fetch_optional(&self.pool)
-        .await?;
+        .await
+        .map_err(db_err)?;
         row.map(|row| decode_history(&row)).transpose()
     }
 
@@ -365,14 +468,16 @@ impl sekai_core::MetaStore for SqliteMeta {
         let row = sqlx::query("SELECT id, created_at_ms FROM snapshots WHERE id = ?")
             .bind(snap_param(id)?)
             .fetch_optional(&self.pool)
-            .await?;
+            .await
+            .map_err(db_err)?;
         row.map(|row| decode_snapshot(&row)).transpose()
     }
 
     async fn latest_snapshot(&self) -> Result<Option<Snapshot>, StorageError> {
         let row = sqlx::query("SELECT id, created_at_ms FROM snapshots ORDER BY id DESC LIMIT 1")
             .fetch_optional(&self.pool)
-            .await?;
+            .await
+            .map_err(db_err)?;
         row.map(|row| decode_snapshot(&row)).transpose()
     }
 
@@ -401,7 +506,8 @@ impl sekai_core::MetaStore for SqliteMeta {
         )
         .bind(snap_param(snapshot)?)
         .fetch_all(&self.pool)
-        .await?;
+        .await
+        .map_err(db_err)?;
         for row in &rows {
             if !visit(&decode_history(row)?) {
                 break;
@@ -416,7 +522,8 @@ impl sekai_core::MetaStore for SqliteMeta {
     {
         let rows = sqlx::query("SELECT id, created_at_ms FROM snapshots ORDER BY id")
             .fetch_all(&self.pool)
-            .await?;
+            .await
+            .map_err(db_err)?;
         for row in &rows {
             let snapshot = decode_snapshot(row)?;
             if !visit(&snapshot) {
@@ -431,7 +538,8 @@ impl sekai_core::MetaStore for SqliteMeta {
             "SELECT dim, kind, rx, rz, mtime_ms, size, content_hash, snapshot_id FROM region_state",
         )
         .fetch_all(&self.pool)
-        .await?;
+        .await
+        .map_err(db_err)?;
         rows.iter().map(decode_state).collect()
     }
 
@@ -448,7 +556,8 @@ impl sekai_core::MetaStore for SqliteMeta {
         .bind(snap_param(snapshot)?)
         .bind(millis_param(created_at_ms)?)
         .execute(&self.pool)
-        .await?;
+        .await
+        .map_err(db_err)?;
         Ok(())
     }
 
@@ -456,7 +565,8 @@ impl sekai_core::MetaStore for SqliteMeta {
         let done = sqlx::query("DELETE FROM snapshot_tags WHERE name = ?")
             .bind(name.as_str())
             .execute(&self.pool)
-            .await?;
+            .await
+            .map_err(db_err)?;
         Ok(done.rows_affected() > 0)
     }
 
@@ -466,7 +576,8 @@ impl sekai_core::MetaStore for SqliteMeta {
         )
         .bind(name.as_str())
         .fetch_optional(&self.pool)
-        .await?;
+        .await
+        .map_err(db_err)?;
         row.map(|row| decode_tag(&row)).transpose()
     }
 
@@ -477,7 +588,8 @@ impl sekai_core::MetaStore for SqliteMeta {
         let rows =
             sqlx::query("SELECT name, snapshot_id, created_at_ms FROM snapshot_tags ORDER BY name")
                 .fetch_all(&self.pool)
-                .await?;
+                .await
+                .map_err(db_err)?;
         for row in &rows {
             if !visit(&decode_tag(row)?) {
                 break;
@@ -500,7 +612,8 @@ impl sekai_core::MetaStore for SqliteMeta {
         )
         .bind(snap_param(snapshot)?)
         .fetch_all(&self.pool)
-        .await?;
+        .await
+        .map_err(db_err)?;
         for row in &rows {
             if !visit(&decode_history(row)?) {
                 break;
@@ -528,14 +641,15 @@ impl sekai_core::MetaStore for SqliteMeta {
             let found: Option<i64> = sqlx::query_scalar("SELECT 1 FROM snapshots WHERE id = ?")
                 .bind(snap_param(id)?)
                 .fetch_optional(&self.pool)
-                .await?;
+                .await
+                .map_err(db_err)?;
             if found.is_none() {
                 return Err(StorageError::UnknownSnapshot { id: id.0 });
             }
         }
         let from = snap_param(from)?;
         let into = snap_param(into)?;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin().await.map_err(db_err)?;
         // Rows already superseded at or before the successor vanish;
         // survivors move onto it. Tags follow the snapshot row by cascade.
         // Positional convention below: `?1` is always the retired
@@ -550,25 +664,29 @@ impl sekai_core::MetaStore for SqliteMeta {
         .bind(from)
         .bind(into)
         .execute(&mut *tx)
-        .await?
+        .await
+        .map_err(db_err)?
         .rows_affected();
         let folded =
             sqlx::query("UPDATE chunk_history SET snapshot_id = ?2 WHERE snapshot_id = ?1")
                 .bind(from)
                 .bind(into)
                 .execute(&mut *tx)
-                .await?
+                .await
+                .map_err(db_err)?
                 .rows_affected();
         sqlx::query("UPDATE region_state SET snapshot_id = ?2 WHERE snapshot_id = ?1")
             .bind(from)
             .bind(into)
             .execute(&mut *tx)
-            .await?;
+            .await
+            .map_err(db_err)?;
         sqlx::query("DELETE FROM snapshots WHERE id = ?")
             .bind(from)
             .execute(&mut *tx)
-            .await?;
-        tx.commit().await?;
+            .await
+            .map_err(db_err)?;
+        tx.commit().await.map_err(db_err)?;
         Ok(FoldOutcome {
             folded: usize::try_from(folded).unwrap_or(usize::MAX),
             dropped: usize::try_from(dropped).unwrap_or(usize::MAX),
@@ -583,11 +701,12 @@ impl sekai_core::MetaStore for SqliteMeta {
         fingerprints: &[RegionFingerprint],
         removed: &[RegionKey],
     ) -> Result<ApplyOutcome, StorageError> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin().await.map_err(db_err)?;
         let id: i64 = sqlx::query("INSERT INTO snapshots (created_at_ms) VALUES (?)")
             .bind(millis_param(created_at_ms)?)
             .execute(&mut *tx)
-            .await?
+            .await
+            .map_err(db_err)?
             .last_insert_rowid();
         let snapshot = snapshot_id_from_i64(id)?;
         for entry in entries {
@@ -600,7 +719,8 @@ impl sekai_core::MetaStore for SqliteMeta {
                 .bind(entry.blob.as_ref().map(|h| &h.0[..]))
                 .bind(entry.diff.as_ref().map(|h| &h.0[..]))
                 .execute(&mut *tx)
-                .await?;
+                .await
+                .map_err(db_err)?;
         }
         let mut carried_chunks = 0usize;
         if let Some((prev, keys)) = carry_from {
@@ -639,7 +759,11 @@ impl sekai_core::MetaStore for SqliteMeta {
                     qb.push(")");
                 }
                 qb.push(")) WHERE rn = 1 AND blob IS NOT NULL");
-                let carried: i64 = qb.build_query_scalar().fetch_one(&mut *tx).await?;
+                let carried: i64 = qb
+                    .build_query_scalar()
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(db_err)?;
                 carried_chunks = usize::try_from(carried).unwrap_or(usize::MAX);
             }
             for key in keys {
@@ -653,7 +777,8 @@ impl sekai_core::MetaStore for SqliteMeta {
                 .bind(i64::from(key.rx))
                 .bind(i64::from(key.rz))
                 .execute(&mut *tx)
-                .await?;
+                .await
+                .map_err(db_err)?;
             }
         }
         for fp in fingerprints {
@@ -678,7 +803,7 @@ impl sekai_core::MetaStore for SqliteMeta {
             .bind(&fp.content_hash[..])
             .bind(id)
             .execute(&mut *tx)
-            .await?;
+            .await.map_err(db_err)?;
         }
         for key in removed {
             sqlx::query(
@@ -689,9 +814,10 @@ impl sekai_core::MetaStore for SqliteMeta {
             .bind(i64::from(key.rx))
             .bind(i64::from(key.rz))
             .execute(&mut *tx)
-            .await?;
+            .await
+            .map_err(db_err)?;
         }
-        tx.commit().await?;
+        tx.commit().await.map_err(db_err)?;
         Ok(ApplyOutcome {
             id: snapshot,
             carried_chunks,
@@ -699,7 +825,7 @@ impl sekai_core::MetaStore for SqliteMeta {
     }
 }
 
-#[cfg(all(test, feature = "backend-sqlite"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use sekai_core::{

@@ -1,13 +1,9 @@
 //! SQLite backend conformance: shared flows plus filesystem-specific checks.
-//!
-//! Requires the `backend-sqlite` feature.
-
-#![cfg(feature = "backend-sqlite")]
 
 mod common;
 
 use sekai_core::{BlobHash, BlobStore as _};
-use sekai_storage::{init_sqlite, open_sqlite};
+use sekai_storage_sqlite::{init_sqlite, open_sqlite};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -24,7 +20,7 @@ fn tempdir(name: &str) -> PathBuf {
     dir
 }
 
-async fn init(dir: impl AsRef<Path>) -> sekai_storage::SqliteStore {
+async fn init(dir: impl AsRef<Path>) -> sekai_storage_sqlite::SqliteStore {
     init_sqlite(dir).await.unwrap()
 }
 

@@ -376,12 +376,9 @@ where
 
 /// Torn-backup simulation: an unreferenced blob is a GC orphan, a
 /// referenced one survives planning and applying.
-pub async fn torn_orphan_gc<M, C>(store: &mut sekai_storage::Store<M, C>)
+pub async fn torn_orphan_gc<S>(store: &mut S)
 where
-    M: MetaStore,
-    M::Error: core::fmt::Debug,
-    C: BlobStore,
-    C::Error: core::fmt::Debug,
+    S: sekai_storage::SekaiStore,
 {
     let live = sekai_core::hash_blob(b"live");
     let orphan = sekai_core::hash_blob(b"orphan");

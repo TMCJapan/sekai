@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use sekai_core::{BlobHash, ChunkCoord, RegionKey, RollbackReport, Scope, SnapshotId};
-use sekai_storage::{FileCas, StoreLockMode};
+use sekai_storage::{BlockingBlobStore, SekaiStore, StoreLockMode};
 use sekai_world::{RegionFile, WorldLockMode, WorldTree};
 
 use crate::error::AppError;
@@ -42,7 +42,7 @@ pub struct RollbackTimings {
 pub struct RollbackProgress {
     /// Files fully rebuilt so far.
     pub files_done: usize,
-    /// Region files to rebuild in total.
+    /// Files to rebuild in total.
     pub files_total: usize,
     /// Chunks restored so far.
     pub chunks_done: usize,
@@ -92,9 +92,9 @@ pub struct RollbackOptions {
     pub on_missing_file: MissingFilePolicy,
 }
 
-impl<T: WorldTree> WorldHandleMut<'_, T>
+impl<W: WorldTree, S: SekaiStore> WorldHandleMut<'_, W, S>
 where
-    AppError: From<T::Error>,
+    AppError: From<W::Error>,
 {
     /// Rebuild the bound world from `snapshot`, returning execution report
     /// and per-phase timings.
@@ -180,24 +180,24 @@ where
 }
 
 /// Everything one rollback file pass needs, owned for the blocking task.
-struct RollbackJob<T: WorldTree> {
+struct RollbackJob<S: SekaiStore, T: WorldTree> {
     groups: BTreeMap<RegionKey, Vec<(ChunkCoord, BlobHash)>>,
     tombstones: BTreeMap<RegionKey, Vec<ChunkCoord>>,
     options: RollbackOptions,
-    cas: FileCas,
+    cas: S::Blobs,
     world: T,
     discovered: BTreeMap<RegionKey, T::Region>,
     /// Owned by the file pass: it keeps writing after a cancelled future
     /// is dropped, and must keep the world locked until it stops.
-    _locks: Arc<OperationLocks<T::Lock>>,
+    _locks: Arc<OperationLocks<S, T::Lock>>,
 }
 
 /// Rebuild every region file: present rows from CAS blobs, tombstones and
 /// post-snapshot files deleted unless kept by [`RollbackOptions`].
 /// Blocking: file reads, writes, and swaps belong on a blocking pool,
 /// never on an async worker.
-fn rollback_files<T: WorldTree>(
-    job: RollbackJob<T>,
+fn rollback_files<S: SekaiStore, T: WorldTree>(
+    job: RollbackJob<S, T>,
     timestamp: u32,
     progress: impl Fn(RollbackProgress),
 ) -> Result<RollbackReport, AppError>
@@ -294,8 +294,8 @@ where
 ///
 /// `false` means the chunk must be skipped; under
 /// [`MissingBlobPolicy::Abort`] a missing blob is corruption and propagates.
-pub(super) fn fetch_or_skip(
-    cas: &FileCas,
+pub(super) fn fetch_or_skip<C: BlockingBlobStore>(
+    cas: &C,
     hash: &BlobHash,
     policy: MissingBlobPolicy,
     out: &mut Vec<u8>,

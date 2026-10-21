@@ -34,7 +34,7 @@ pub use diff::{ChunkDiff, DiffProgress, DiffTimings, world_chunk_coords};
 pub use error::AppError;
 pub use export::{ExportOptions, ExportProgress, ExportReport, ExportTimings};
 pub use gc::{GcProgress, GcTimings};
-pub use instance::{SekaiInstance, WorldHandle, WorldHandleMut};
+pub use instance::{DefaultStore, SekaiInstance, WorldHandle, WorldHandleMut};
 pub use prune::{PruneProgress, PruneTimings};
 pub use rollback::{
     MissingBlobPolicy, MissingFilePolicy, RollbackOptions, RollbackProgress, RollbackTimings,
@@ -44,6 +44,7 @@ pub use sekai_core::{
     NbtChange, NbtDiffEntry, NbtValue, PrunePlan, PruneReport, Rect, RegionFingerprint, RegionKey,
     RegionKind, RollbackReport, Scope, Snapshot, SnapshotId, SnapshotStats, SnapshotTag, TagName,
 };
+pub use sekai_storage::{BlockingBlobStore, SekaiStore, SekaiStoreOpener};
 pub use sekai_world::{
     HostRegion, HostWorldLock, HostWorldLockError, HostWorldTree, RegionFile, UnguardedReason,
     WorldError, WorldLock, WorldLockMode, WorldLockState, WorldTree,

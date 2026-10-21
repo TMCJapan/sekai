@@ -8,12 +8,12 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use sekai_core::{MetaStore as _, SnapshotId, SnapshotTag, TagName};
-use sekai_storage::StoreLockMode;
+use sekai_storage::{SekaiStore, StoreLockMode};
 
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
 
-impl SekaiInstance {
+impl<S: SekaiStore> SekaiInstance<S> {
     /// Point `name` at `snapshot`, returning the created record.
     ///
     /// An existing name fails with [`AppError::TagExists`] unless `force`

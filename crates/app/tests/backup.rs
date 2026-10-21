@@ -857,7 +857,7 @@ async fn with_diff_records_diff_hashes() {
     assert_eq!(report.chunks, 1);
 
     let snapshots = instance.list_snapshots().await.unwrap();
-    let meta = sekai_storage::open_sqlite(&store_dir).await.unwrap();
+    let meta = sekai_storage_sqlite::open_sqlite(&store_dir).await.unwrap();
     let row = meta
         .meta()
         .lookup_chunk(

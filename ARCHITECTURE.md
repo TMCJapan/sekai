@@ -31,9 +31,10 @@ sekai (bin, thin: clap parse + print + exit code)
       -> sekai-nbt (no_std + alloc: pure parse/diff)
     -> sekai-world (std: filesystem owner - discover/fingerprint/swap)
       -> sekai-anvil + sekai-core (types only)
-    -> sekai-storage (std + tokio: async MetaStore/BlobStore traits,
-                      file CAS, and feature-gated DB backends)
+    -> sekai-storage (std + tokio: store traits, file CAS, and locks)
       -> sekai-core
+    -> sekai-storage-sqlite (std + tokio: sqlx SQLite implementation)
+      -> sekai-storage
 sekai-util (no_std, zero-dependency: coordinates, hashes, history value
   types) <- anvil, nbt, core (world/storage/app reach them through
   `core` re-exports)
@@ -45,7 +46,8 @@ sekai-util (no_std, zero-dependency: coordinates, hashes, history value
 | `sekai-anvil` | `no_std` + `alloc` | no | Pure Anvil sector codec including decompression. `&[u8]` sector payload in, raw NBT bytes out; also builds `Vec<u8>` images. Compression framing is MCA spec knowledge, so it lives here. No `Path`, no `fs`. Names custom dimensions with util `Dimension`. |
 | `sekai-nbt` | `no_std` + `alloc` | no | Pure `raw NBT bytes -> diff view`. Hand-rolled NBT parser (no `Serialize` by design; output uses SNBT), tag filtering, canonical digest returning util `DiffHash`. Never sees compression. |
 | `sekai-core` | `no_std` + `alloc` | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_rollback`, `gc plan`/`apply`) plus composition helpers (`hash_blob`, storage ports). Composes `anvil`/`nbt` over util types and re-exports them, so downstream paths stay stable. |
-| `sekai-storage` | `std` + tokio | yes (RPITIT) | Single crate: async `BlobStore`/`MetaStore` traits (owned by `core::port`, re-exported from the `api` module), file CAS (`cas` module, `blobs/ab/cdef...` retained by design), and feature-gated DB backends (`sqlite` module ships; `mysql`/`postgres` modules reserved as stubs). Depends on `core`. Backend modules mirror the future split so extraction stays mechanical. |
+| `sekai-storage` | `std` + tokio | yes (RPITIT) | Backend-neutral boundaries: async `BlobStore`/`MetaStore` traits (owned by `core::port`, re-exported from the `api` module), high-level `SekaiStore`/`SekaiStoreOpener`/`BlockingBlobStore` traits, file CAS (`cas` module, `blobs/ab/cdef...` retained by design), store locks, and URL-based backend selection. Depends on `core`. |
+| `sekai-storage-sqlite` | `std` + tokio | yes | Concrete SQLite implementation over sqlx: `SqliteMeta` plus the SQLite-backed `SqliteStore`, schema/version gate, and opener. Implements the traits from `sekai-storage` (and `core::port`). Other backends become sibling crates without touching `core`/`app`. |
 | `sekai-world` | `std` | yes (I/O) / sync pure helpers where trivial | World access boundary: the `WorldTree` trait, the `RegionFile` handle, and the filesystem tree (`HostWorldTree`). |
 | `sekai-app` | `std` + tokio | yes | Composition/orchestration library for third parties: parallel ingest, clocks, timing, progress callbacks. |
 | `sekai` bin (`sekai-cli` package) | `std` + tokio | yes | Thin clap wrapper over `sekai-app`. No logic. Binary name stays `sekai`; package name stays `sekai-cli` so existing CI/artifact names keep working. |
@@ -284,37 +286,52 @@ The scope is a filter, not a partition:
 
 # Storage Backends
 
-## Trait/Impl Split (single crate, feature-gated modules)
+## Trait/Impl Split (backend crates)
 
-- `sekai-storage` is a single crate. The async `BlobStore`/`MetaStore`
-  traits (RPITIT, `Send` bounds for tokio) are owned by `core::port` and
-  re-exported from storage's `api` module, which additionally owns
-  `BackendKind` and URL-based selection (`sqlite://...`, `mysql://...`,
-  `postgres://...`).
-- DB backends are modules behind cargo features: `sqlite` (sqlx, ships in
-  this project), `mysql` / `postgres` (reserved stubs implementing the same
-  traits). No generic `Any`-driver abstraction.
-- Module boundaries (`api` / `cas` / `sqlite` / `mysql` / `postgres`) mirror
-  the future crate split 1:1, so extracting a backend into its own crate
-  later is mechanical. Crate splitting is deferred until a second backend is
-  actually implemented (YAGNI).
-- This project currently ships SQLite only; mysql/postgres arrive as modules
-  without touching `core`/`app`.
+- `sekai-storage` owns the backend-neutral boundaries. The async
+  `BlobStore`/`MetaStore` traits (RPITIT, `Send` bounds for tokio) still
+  come from `core::port` and are re-exported from storage's `api` module.
+  Storage adds the high-level `SekaiStore` (metadata + blobs + the store
+  lock), `SekaiStoreOpener` (URL selection), and `BlockingBlobStore` (the
+  synchronous blob operations used by backup ingest workers).
+- `sekai-storage-sqlite` is the concrete sqlx backend. It owns `SqliteMeta`,
+  `SqliteStore`, the schema, and the version gate, and implements the
+  storage/core traits. Removing sqlx from `sekai-storage` keeps the
+  abstraction crate free of a native database dependency.
+- New backends (mysql, postgres, embedded, in-memory, wasm) become sibling
+  crates implementing the same traits. `app` is generic over
+  `SekaiInstance<T: SekaiStore>`, so adding a backend does not touch use-case
+  policy. No generic `Any`-driver abstraction.
+- Reserved `mysql` / `postgres` stub modules stay in `sekai-storage` until
+  those backends are implemented as their own crates.
 
 ## Backend Selection
 
-Feature-gated plus runtime-selected: `sekai-storage` exposes cargo features
-per backend (`default = ["backend-sqlite"]` for a lean binary, re-exported
-through `app`/`sekai-cli` features); at runtime
-the connection URL picks the compiled-in backend, and requesting an
-uncompiled backend is a loud `UnsupportedBackend` error — never silent
-reinterpretation.
+Feature-gated plus runtime-selected: `app` exposes cargo features per
+backend (`default = ["backend-sqlite"]`), re-exported through `sekai-cli`.
+At runtime the connection URL picks the compiled-in backend, and requesting
+an uncompiled backend is a loud `UnsupportedBackend` error — never silent
+reinterpretation. A build with no backend compiled in at all reports
+`NoBackendCompiled` instead, naming the request it cannot serve.
+`sekai-storage` keeps `BackendKind` and URL parsing; each
+backend crate implements `SekaiStoreOpener` for its store type, so the
+backend owns the grammar of the URLs that name it.
+
+## Store Exclusion
+
+`SekaiStore::lock` hands out the store-wide exclusion lock that ADR-0014
+assigns per operation. The lock lives in the store root, so it excludes
+operations against the same store on the same host; a remote backend needs
+its own mechanism (ADR-0014). The guard is `Send + Sync` because an
+operation shares it into the blocking tasks that touch files, so a
+cancelled future cannot release the store while those tasks still run.
 
 ## Schema
 
-Shared across backends (`snapshots`, `chunk_history`, `region_state`;
-`SCHEMA_VERSION` gate; pre-release policy = recreate, don't migrate).
-The `cas` module stays independent of the DB backend modules so future
+Owned by the backend crate (`crates/storage-sqlite/schema/sqlite.sql` for
+SQLite; `snapshots`, `chunk_history`, `region_state`; `SCHEMA_VERSION`
+gate; pre-release policy = recreate, don't migrate).
+The `cas` module stays independent of DB backend crates so future
 object-store CAS swaps don't touch metadata code.
 
 ## Async Policy

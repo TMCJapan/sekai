@@ -9,8 +9,8 @@ This project is organized as a Cargo workspace under `crates/`:
     ├── anvil           # Pure Anvil sector codec + decompression (no_std + alloc, ex-mca)
     ├── nbt             # Pure NBT parse/diff views over raw NBT bytes (no_std + alloc, hand-rolled parser)
     ├── core            # Use-case policy API over shared types (no_std + alloc, depends on util/anvil/nbt)
-    ├── storage         # Single crate (std + tokio): async traits (api), file CAS (cas),
-    │                   # feature-gated DB backends (sqlite ships; mysql/postgres reserved stubs)
+    ├── storage         # Backend-neutral store traits, file CAS, locks (std + tokio)
+    ├── storage-sqlite  # SQLite metadata backend over sqlx (std + tokio)
     ├── world           # World access boundary (std): WorldTree trait, RegionFile
     │                   # handle, and the host tree (filesystem)
     ├── app             # Composition/orchestration library for third parties (std + tokio)
@@ -22,10 +22,11 @@ This project is organized as a Cargo workspace under `crates/`:
 Keep dependencies strictly unidirectional (inward):
 
 ```text
-sekai (bin) -> app -> {core, world, storage}
+sekai (bin) -> app -> {core, world, storage, storage-sqlite}
 app -> core -> {anvil, nbt}
 world -> {anvil, core}
-storage -> core (whose `port` module owns the async traits; backend modules implement them)
+storage -> core (whose `port` module owns the async traits; backend crates implement them)
+storage-sqlite -> storage
 {anvil, nbt, core} -> util (world/storage/app reach shared types through `core` re-exports)
 ```
 
@@ -43,12 +44,13 @@ Rules:
   NBT bytes into `nbt` (opt-in diff path), keeping the pure DAG acyclic and
   the backup hot path decode-free. Compression framing is MCA spec and lives
   in `anvil`; `nbt` never sees a compression-type byte.
-- `async`/tokio lives in `storage`, `world`, `app`, and the binary only.
-  `anvil`/`nbt` are sync-only; `core` policy is sync except for `async fn`
-  in traits (RPITIT, see below).
-- Inside `storage`, keep module boundaries strict (`api` / `cas` /
-  `sqlite` / `mysql` / `postgres`) so a future crate split stays
-  mechanical. Backend modules must not reach into each other.
+- `async`/tokio lives in `storage`, `storage-sqlite`, `world`, `app`, and the
+  binary only. `anvil`/`nbt` are sync-only; `core` policy is sync except for
+  `async fn` in traits (RPITIT, see below).
+- `storage` owns backend-neutral boundaries (`api` / `store` / `cas`);
+  concrete database backends live in sibling crates such as
+  `storage-sqlite` and only communicate through the exported traits.
+  Backend crates must not reach into each other.
 
 ## Safety Invariants
 
@@ -118,13 +120,16 @@ any exception in the PR body.
   `Send`-bounded for tokio. Static dispatch (`generics`) is preferred over
   `dyn Trait`; if `dyn` is ever needed, box at the outer (`app`) layer, not
   in `core`.
-- **Runtime**: tokio in `storage`, `world` (I/O parts), `app`, and the
-  binary only.
+- **Runtime**: tokio in `storage`, `storage-sqlite`, `world` (I/O parts),
+  `app`, and the binary only.
 - **Portability targets**: CI lints the pure crates on every push and pull request.
 - `no_std`: `util`, `anvil`, `nbt`, `core` must keep linting clean for `thumbv7m-none-eabi`.
-- `wasm`: `util`, `anvil`, `nbt`, `core` must keep linting clean for `wasm32-unknown-unknown`.
-  `world`, `storage`, `app`, and the binary own file I/O, sockets, and
-  SQLite and are intentionally **not** wasm targets.
+- `wasm`: `util`, `anvil`, `nbt`, `core`, and the backend-neutral
+  `storage` crate must keep linting clean for `wasm32-unknown-unknown`.
+  `world`, `storage-sqlite`, `app`, and the binary own host file I/O, locks,
+  and SQLite and are intentionally **not** wasm targets yet. The
+  backend-neutral store traits exist so a wasm backend can be added as a
+  sibling crate without touching `core`/`app`.
 - Neither target has a runner, so they are lint-only; the full workspace is
   linted **and** tested natively on Linux, macOS and Windows for both `x86_64`
   and `aarch64`.
@@ -133,13 +138,15 @@ any exception in the PR body.
   `sekai-<target triple>`; because the upload step zips its input and drops
   file modes, the artifact wraps a `sekai-<target triple>.tar.gz` that keeps
   the binary executable.
-- **Storage backends**: this project currently ships SQLite only, as the `sqlite`
-  module of the single `sekai-storage` crate (via sqlx, feature
-  `backend-sqlite`, default-on). `mysql` / `postgres` modules are reserved
-  stubs behind `backend-mysql` / `backend-postgres` features.
+- **Storage backends**: this project currently ships SQLite only, in the
+  `sekai-storage-sqlite` crate (via sqlx, app feature `backend-sqlite`,
+  default-on). `sekai-storage` stays backend-neutral and owns the traits,
+  file CAS, and locks. `mysql` / `postgres` remain reserved stubs behind
+  `backend-mysql` / `backend-postgres` features.
   Backend selection is feature-gated at compile time plus URL-selected at
   runtime (`sqlite://...`, `mysql://...`, `postgres://...`); requesting an
-  uncompiled backend is a loud `UnsupportedBackend` error.
+  uncompiled backend is a loud `UnsupportedBackend` error, and a build with
+  no backend compiled in at all fails with `NoBackendCompiled`.
 
 ## Coding Standards
 
@@ -173,8 +180,8 @@ cargo clippy --workspace --all-targets -- -D warnings
 # Ensure the pure crates remain no_std
 cargo clippy -p sekai-util -p sekai-anvil -p sekai-nbt -p sekai-core --target thumbv7m-none-eabi -- -D warnings
 
-# Ensure the pure crates keep linting clean for wasm
-cargo clippy -p sekai-util -p sekai-anvil -p sekai-nbt -p sekai-core --target wasm32-unknown-unknown -- -D warnings
+# Ensure the pure crates and backend-neutral storage stay lint-clean for wasm
+cargo clippy -p sekai-util -p sekai-anvil -p sekai-nbt -p sekai-core -p sekai-storage --target wasm32-unknown-unknown --no-default-features -- -D warnings
 
 # Run all unit and integration tests (default backend)
 cargo nextest run --workspace
@@ -187,10 +194,10 @@ cargo hack --each-feature clippy --workspace --all-targets -- -D warnings
 cargo hack --each-feature nextest run --workspace --all-targets
 
 # Backend matrix (when touching storage backends)
-cargo nextest run -p sekai-storage
-cargo nextest run -p sekai-storage --no-default-features --features backend-sqlite
+cargo nextest run -p sekai-storage -p sekai-storage-sqlite
+cargo nextest run -p sekai-app --no-default-features --features backend-sqlite
 # mysql/postgres: reserved; run once implemented, e.g.
-# cargo nextest run -p sekai-storage --no-default-features --features backend-mysql
+# cargo nextest run -p sekai-app --no-default-features --features backend-mysql
 
 # Run dependency, advisory, and license checks
 cargo deny check
@@ -207,10 +214,10 @@ cargo build -p sekai-cli --release
 
 - **Unit Tests**: Place in `src/` alongside the code. Ensure coverage for edge cases (corrupted headers, unexpected NBT structures, zero-length chunks).
 - **Integration Tests**: Place in `tests/` directories within crates. Test atomic operations (e.g., MCA writes, rollbacks) using synthetic binary fixtures. The `test-world/` corpus (small real-data region files, see its README for provenance) is the exception: copy it into a temp dir first, never mutate it in place. Crash-order tests (torn backup leaves orphans, never dangling references) are mandatory for `app`/`world`/`storage` changes.
-- **Backend tests**: the `sqlite` module must cover the version gate
+- **Backend tests**: `sekai-storage-sqlite` must cover the version gate
   (`UnsupportedSchema`), the incremental-carry path, and derived-state
-  wipe recovery. Future backend modules must run the same suite via the
-  shared `api` conformance tests.
+  wipe recovery. Future backend crates must run the same suite via the
+  shared conformance flows.
 - **Benchmarks**: micro benches live beside their crates (`cargo bench -p
   sekai-anvil -p sekai-nbt -p sekai-core`); integration flows in
   `crates/app/benches` (seeded worlds from `benches/common.rs`, `cargo
@@ -260,8 +267,8 @@ Write [Conventional Commits](https://www.conventionalcommits.org/):
 
 ### Storage Schema Changes
 
-The metadata schema is shared across backends and versioned
-(`SCHEMA_VERSION` in `crates/storage/src/sqlite.rs`).
+The metadata schema is backend-owned and versioned
+(`SCHEMA_VERSION` in `crates/storage-sqlite/src/sqlite.rs`).
 
 - Bump the version for any schema change and add a test pinning the version
   gate (old stores fail loudly with `UnsupportedSchema`). Fresh stores
