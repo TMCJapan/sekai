@@ -110,7 +110,7 @@ pub async fn plan_backup<M: MetaStore>(
 ) -> Result<(Previous, Plan), M::Error> {
     let mut universe: BTreeSet<ChunkCoord> = BTreeSet::new();
     let snapshot = meta.latest_snapshot().await?;
-    if let Some(latest) = snapshot {
+    if let Some(latest) = snapshot.as_ref() {
         meta.visit_snapshot_chunks(latest.id, |entry| {
             // Present coordinates only. A tombstoned coordinate is already
             // absent from the effective state, so keeping it would re-record
@@ -237,6 +237,11 @@ pub fn assemble(plan: Plan, previous: &Previous, ingested: Ingested, scope: &Sco
 ///
 /// CAS must be synced first so every referenced blob is durable before the
 /// metadata transaction is committed.
+///
+/// The new snapshot continues the history it was planned against: its
+/// parent is the snapshot the delta was computed from. Without ref
+/// objects the head of a history is its latest snapshot, so the parent is
+/// the same snapshot the plan read.
 pub async fn commit<M: MetaStore>(
     meta: &mut M,
     previous: &Previous,
@@ -245,7 +250,13 @@ pub async fn commit<M: MetaStore>(
 ) -> Result<BackupReport, M::Error> {
     let carry_from = previous
         .snapshot
+        .as_ref()
         .map(|snapshot| (snapshot.id, staged.carries.as_slice()));
+    let parents: Vec<SnapshotId> = previous
+        .snapshot
+        .as_ref()
+        .map(|snapshot| alloc::vec![snapshot.id])
+        .unwrap_or_default();
     // Both drop state rows; they stay apart in `Assembled` so previews
     // report only vanished files as deleted.
     let dropped_states: Vec<RegionKey> = staged
@@ -257,6 +268,7 @@ pub async fn commit<M: MetaStore>(
     let outcome: ApplyOutcome = meta
         .apply_snapshot_incremental(
             created_at_ms,
+            &parents,
             &staged.entries,
             carry_from,
             &staged.fingerprints,
@@ -331,6 +343,7 @@ mod tests {
         let fp1 = fingerprint(key(1, 0));
         crate::support::block_on(meta.apply_snapshot_incremental(
             1_000,
+            &[],
             &[
                 stage_present(coord(0, 0), BlobHash([1; 32])),
                 stage_present(coord(32, 0), BlobHash([2; 32])),
@@ -396,6 +409,7 @@ mod tests {
         let mut meta = MemMeta::default();
         let s1 = crate::support::block_on(meta.apply_snapshot_incremental(
             1_000,
+            &[],
             &[
                 stage_present(coord(0, 0), BlobHash([1; 32])),
                 stage_present(coord(1, 0), BlobHash([2; 32])),
@@ -432,6 +446,7 @@ mod tests {
         let fp1 = fingerprint(key(1, 0));
         crate::support::block_on(meta.apply_snapshot_incremental(
             1_000,
+            &[],
             &[
                 stage_present(coord(0, 0), BlobHash([1; 32])),
                 stage_present(coord(32, 0), BlobHash([2; 32])),
@@ -497,6 +512,7 @@ mod tests {
         };
         crate::support::block_on(meta.apply_snapshot_incremental(
             1_000,
+            &[],
             &[
                 stage_present(coord(0, 0), BlobHash([1; 32])),
                 stage_present(nether_coord(0, 0), BlobHash([2; 32])),
@@ -544,6 +560,7 @@ mod tests {
         };
         crate::support::block_on(meta.apply_snapshot_incremental(
             1_000,
+            &[],
             &[
                 stage_present(coord(0, 0), BlobHash([1; 32])),
                 stage_present(coord(1, 0), BlobHash([2; 32])),
@@ -614,6 +631,7 @@ mod tests {
         let fp0 = fingerprint(key(0, 0));
         crate::support::block_on(meta.apply_snapshot_incremental(
             1_000,
+            &[],
             &[
                 stage_present(coord(0, 0), BlobHash([1; 32])),
                 stage_present(coord(1, 0), BlobHash([2; 32])),
@@ -666,6 +684,7 @@ mod tests {
         let fp0 = fingerprint(key(0, 0));
         crate::support::block_on(meta.apply_snapshot_incremental(
             1_000,
+            &[],
             &[stage_present(coord(0, 0), BlobHash([1; 32]))],
             None,
             &[fp0],
@@ -709,7 +728,7 @@ mod tests {
     #[test]
     fn mem_meta_satisfies_lookup_contract() {
         let mut meta = MemMeta::default();
-        let id = crate::support::block_on(meta.create_snapshot(5)).unwrap();
+        let id = crate::support::block_on(meta.create_snapshot(5, &[])).unwrap();
         crate::support::block_on(meta.record_chunk(
             id,
             &coord(0, 0),

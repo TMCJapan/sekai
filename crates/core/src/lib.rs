@@ -22,7 +22,7 @@ pub use sekai_nbt::{DEFAULT_IGNORED, NbtChange, NbtDiffEntry, Value as NbtValue}
 pub use usecase::{
     Assembled, BackupReport, DiffError, GcError, GcReport, Observation, Plan, Previous, PruneError,
     PrunePlan, PruneReport, ResolveError, RollbackError, RollbackPlan, RollbackReport,
-    SnapshotStats, diff_blobs, diff_blobs_v1,
+    SnapshotStats, ancestors, diff_blobs, diff_blobs_v1, history, parents,
 };
 
 /// Compute a volatile diff hash for decompressed chunk NBT.

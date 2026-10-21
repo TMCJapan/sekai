@@ -1,6 +1,6 @@
 //! In-memory port fakes used by tests.
 
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::pin;
@@ -16,22 +16,48 @@ use sekai_util::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemError;
 
-/// Effective rows at `snapshot`: exactly one row per coordinate known then
-/// (nearest row at or before it, tombstones included), ordered by
-/// coordinate. Mirrors the backend GROUP BY query.
-fn effective_at(rows: &[ChunkHistoryEntry], snapshot: SnapshotId) -> Vec<ChunkHistoryEntry> {
+/// Ancestors of `snapshot`: every snapshot reachable through parent
+/// links, the snapshot itself excluded.
+fn ancestor_ids(snapshots: &[Snapshot], snapshot: SnapshotId) -> BTreeSet<SnapshotId> {
+    let mut seen = BTreeSet::new();
+    let mut stack: Vec<SnapshotId> = snapshots
+        .iter()
+        .find(|s| s.id == snapshot)
+        .map(|s| s.parents.clone())
+        .unwrap_or_default();
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        if let Some(node) = snapshots.iter().find(|s| s.id == id) {
+            stack.extend(node.parents.iter().copied());
+        }
+    }
+    seen
+}
+
+/// Effective rows at `snapshot`: exactly one row per coordinate known
+/// then, tombstones included. Mirrors the backend: the row introduced at
+/// the snapshot or at one of its ancestors, the nearest one winning.
+fn effective_at(
+    rows: &[ChunkHistoryEntry],
+    snapshots: &[Snapshot],
+    snapshot: SnapshotId,
+) -> Vec<ChunkHistoryEntry> {
+    let ancestors = ancestor_ids(snapshots, snapshot);
     let mut latest: BTreeMap<ChunkCoord, ChunkHistoryEntry> = BTreeMap::new();
     for row in rows {
-        if row.snapshot <= snapshot {
-            latest
-                .entry(row.coord)
-                .and_modify(|kept| {
-                    if row.snapshot > kept.snapshot {
-                        *kept = *row;
-                    }
-                })
-                .or_insert(*row);
+        if row.snapshot != snapshot && !ancestors.contains(&row.snapshot) {
+            continue;
         }
+        latest
+            .entry(row.coord)
+            .and_modify(|kept| {
+                if row.snapshot > kept.snapshot {
+                    *kept = *row;
+                }
+            })
+            .or_insert(*row);
     }
     latest.into_values().collect()
 }
@@ -75,10 +101,25 @@ impl MetaStore for MemMeta {
     fn create_snapshot(
         &mut self,
         created_at_ms: u64,
+        parents: &[SnapshotId],
     ) -> impl Future<Output = Result<SnapshotId, MemError>> + Send {
         let id = SnapshotId(self.snapshots.len() as u64 + 1);
-        self.snapshots.push(Snapshot::new(id, created_at_ms));
+        self.snapshots
+            .push(Snapshot::new(id, created_at_ms, parents.to_vec()));
         core::future::ready(Ok(id))
+    }
+
+    fn snapshot_parents(
+        &self,
+        snapshot: SnapshotId,
+    ) -> impl Future<Output = Result<Vec<SnapshotId>, MemError>> + Send {
+        let parents = self
+            .snapshots
+            .iter()
+            .find(|s| s.id == snapshot)
+            .map(|s| s.parents.clone())
+            .unwrap_or_default();
+        core::future::ready(Ok(parents))
     }
 
     fn record_chunk(
@@ -102,12 +143,17 @@ impl MetaStore for MemMeta {
         snapshot: SnapshotId,
         coord: &ChunkCoord,
     ) -> impl Future<Output = Result<Option<ChunkHistoryEntry>, MemError>> + Send {
-        // Nearest row at or before `snapshot` (delta storage: unchanged
-        // chunks have no row at newer snapshots).
+        // The row introduced at the snapshot or at one of its ancestors,
+        // the nearest one winning (delta storage: unchanged chunks have
+        // no row at newer snapshots).
+        let ancestors = ancestor_ids(&self.snapshots, snapshot);
         core::future::ready(Ok(self
             .rows
             .iter()
-            .filter(|row| row.snapshot <= snapshot && row.coord == *coord)
+            .filter(|row| {
+                (row.snapshot == snapshot || ancestors.contains(&row.snapshot))
+                    && row.coord == *coord
+            })
             .max_by_key(|row| row.snapshot)
             .copied()))
     }
@@ -116,11 +162,11 @@ impl MetaStore for MemMeta {
         &self,
         id: SnapshotId,
     ) -> impl Future<Output = Result<Option<Snapshot>, MemError>> + Send {
-        core::future::ready(Ok(self.snapshots.iter().find(|s| s.id == id).copied()))
+        core::future::ready(Ok(self.snapshots.iter().find(|s| s.id == id).cloned()))
     }
 
     fn latest_snapshot(&self) -> impl Future<Output = Result<Option<Snapshot>, MemError>> + Send {
-        core::future::ready(Ok(self.snapshots.last().copied()))
+        core::future::ready(Ok(self.snapshots.last().cloned()))
     }
 
     fn visit_snapshot_chunks<F>(
@@ -131,7 +177,7 @@ impl MetaStore for MemMeta {
     where
         F: FnMut(&ChunkHistoryEntry) -> bool + Send,
     {
-        for row in effective_at(&self.rows, snapshot) {
+        for row in effective_at(&self.rows, &self.snapshots, snapshot) {
             if !visit(&row) {
                 break;
             }
@@ -176,12 +222,13 @@ impl MetaStore for MemMeta {
     async fn apply_snapshot_incremental(
         &mut self,
         created_at_ms: u64,
+        parents: &[SnapshotId],
         entries: &[sekai_util::SnapshotEntry],
         carry_from: Option<(SnapshotId, &[RegionKey])>,
         fingerprints: &[RegionFingerprint],
         removed: &[RegionKey],
     ) -> Result<ApplyOutcome, MemError> {
-        let id = self.create_snapshot(created_at_ms).await?;
+        let id = self.create_snapshot(created_at_ms, parents).await?;
         for entry in entries {
             self.rows.push(ChunkHistoryEntry::new(
                 entry.coord,
@@ -195,7 +242,7 @@ impl MetaStore for MemMeta {
         // report; only derived state advances.
         let mut carried_chunks = 0usize;
         if let Some((prev, keys)) = carry_from {
-            for row in effective_at(&self.rows, prev) {
+            for row in effective_at(&self.rows, &self.snapshots, prev) {
                 if row.blob.is_some() && keys.contains(&RegionKey::of(row.coord)) {
                     carried_chunks += 1;
                 }
@@ -275,6 +322,10 @@ impl MetaStore for MemMeta {
         if into <= from || !self.snapshots.iter().any(|s| s.id == into) {
             return core::future::ready(Err(MemError));
         }
+        // Rows superseded by the history `into` continues are dropped;
+        // the survivors move onto it.
+        let mut superseding = ancestor_ids(&self.snapshots, into);
+        superseding.insert(into);
         let mut folded = 0usize;
         let mut dropped = 0usize;
         let mut kept: Vec<ChunkHistoryEntry> = Vec::new();
@@ -284,7 +335,9 @@ impl MetaStore for MemMeta {
                 continue;
             }
             let superseded = self.rows.iter().any(|other| {
-                other.coord == row.coord && other.snapshot > from && other.snapshot <= into
+                other.coord == row.coord
+                    && other.snapshot > from
+                    && superseding.contains(&other.snapshot)
             });
             if superseded {
                 dropped += 1;
@@ -299,6 +352,25 @@ impl MetaStore for MemMeta {
         for state in &mut self.states {
             if state.snapshot_id == from {
                 state.snapshot_id = into;
+            }
+        }
+        // The retired snapshot leaves the graph: its children continue the
+        // history of its own parents.
+        let from_parents = self
+            .snapshots
+            .iter()
+            .find(|s| s.id == from)
+            .map(|s| s.parents.clone())
+            .unwrap_or_default();
+        for snapshot in &mut self.snapshots {
+            let Some(position) = snapshot.parents.iter().position(|p| *p == from) else {
+                continue;
+            };
+            snapshot.parents.remove(position);
+            for parent in &from_parents {
+                if !snapshot.parents.contains(parent) {
+                    snapshot.parents.push(*parent);
+                }
             }
         }
         self.snapshots.retain(|snapshot| snapshot.id != from);

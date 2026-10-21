@@ -40,7 +40,7 @@ where
     M::Error: core::fmt::Debug,
 {
     assert!(meta.latest_snapshot().await.unwrap().is_none());
-    let id = meta.create_snapshot(1_000).await.unwrap();
+    let id = meta.create_snapshot(1_000, &[]).await.unwrap();
     assert_eq!(meta.latest_snapshot().await.unwrap().unwrap().id, id);
     assert!(
         meta.lookup_snapshot(SnapshotId(999))
@@ -66,8 +66,8 @@ where
     M: MetaStore,
     M::Error: core::fmt::Debug,
 {
-    let first = meta.create_snapshot(1_000).await.unwrap();
-    let second = meta.create_snapshot(2_000).await.unwrap();
+    let first = meta.create_snapshot(1_000, &[]).await.unwrap();
+    let second = meta.create_snapshot(2_000, &[first]).await.unwrap();
     let zeta = TagName::parse("zeta").unwrap();
     let alpha = TagName::parse("alpha").unwrap();
     meta.tag_snapshot(&zeta, first, 1_500).await.unwrap();
@@ -109,14 +109,14 @@ where
     M::Error: core::fmt::Debug,
 {
     use sekai_core::usecase::snapshot::{SnapshotStats, snapshot_stats};
-    let first = meta.create_snapshot(1_000).await.unwrap();
+    let first = meta.create_snapshot(1_000, &[]).await.unwrap();
     meta.record_chunk(first, &coord(0, 0), Some(&BlobHash([1; 32])), None)
         .await
         .unwrap();
     meta.record_chunk(first, &coord(1, 0), Some(&BlobHash([1; 32])), None)
         .await
         .unwrap();
-    let second = meta.create_snapshot(2_000).await.unwrap();
+    let second = meta.create_snapshot(2_000, &[first]).await.unwrap();
     meta.record_chunk(second, &coord(0, 0), Some(&BlobHash([2; 32])), None)
         .await
         .unwrap();
@@ -162,18 +162,18 @@ where
     use sekai_core::TagName;
     use sekai_core::usecase::prune::{PruneReport, prune_apply, prune_plan, select_retained};
     // S1: A@0,0 B@1,0 / S2: C@0,0 (B carried) / S3: D@2,0.
-    let first = meta.create_snapshot(1_000).await.unwrap();
+    let first = meta.create_snapshot(1_000, &[]).await.unwrap();
     meta.record_chunk(first, &coord(0, 0), Some(&BlobHash([1; 32])), None)
         .await
         .unwrap();
     meta.record_chunk(first, &coord(1, 0), Some(&BlobHash([2; 32])), None)
         .await
         .unwrap();
-    let second = meta.create_snapshot(2_000).await.unwrap();
+    let second = meta.create_snapshot(2_000, &[first]).await.unwrap();
     meta.record_chunk(second, &coord(0, 0), Some(&BlobHash([3; 32])), None)
         .await
         .unwrap();
-    let third = meta.create_snapshot(3_000).await.unwrap();
+    let third = meta.create_snapshot(3_000, &[second]).await.unwrap();
     meta.record_chunk(third, &coord(2, 0), Some(&BlobHash([4; 32])), None)
         .await
         .unwrap();
@@ -263,6 +263,7 @@ where
     let fp1 = fingerprint(key(1, 0));
     meta.apply_snapshot_incremental(
         1_000,
+        &[],
         &[
             stage_present(coord(0, 0), BlobHash([1; 32])),
             stage_present(coord(32, 0), BlobHash([2; 32])),
@@ -321,6 +322,7 @@ where
     let fp = fingerprint(key(0, 0));
     meta.apply_snapshot_incremental(
         1_000,
+        &[],
         &[stage_present(coord(0, 0), BlobHash([1; 32]))],
         None,
         &[fp],
@@ -342,6 +344,83 @@ where
     assert!(tomb.is_tombstone());
     let plan = plan_rollback(&*meta, report.snapshot).await.unwrap();
     assert!(plan.groups.is_empty());
+}
+
+/// The history graph: parents, the walk back to the root, and the
+/// effective state that follows the graph rather than the identifier
+/// order.
+pub async fn history_graph<M>(meta: &mut M)
+where
+    M: MetaStore,
+    M::Error: core::fmt::Debug,
+{
+    use sekai_core::usecase::snapshot::{ancestors, history};
+
+    // Two independent histories: the second root shares no ancestor with
+    // the first.
+    let first = meta.create_snapshot(1_000, &[]).await.unwrap();
+    meta.record_chunk(first, &coord(0, 0), Some(&BlobHash([1; 32])), None)
+        .await
+        .unwrap();
+    let second = meta.create_snapshot(2_000, &[first]).await.unwrap();
+    let other = meta.create_snapshot(3_000, &[]).await.unwrap();
+    let child = meta.create_snapshot(4_000, &[other]).await.unwrap();
+
+    // The graph, not the identifier order, decides what a snapshot
+    // inherits: the chunk of `first` is invisible from `child`.
+    assert_eq!(meta.snapshot_parents(second).await.unwrap(), [first]);
+    assert_eq!(
+        meta.snapshot_parents(first).await.unwrap(),
+        [] as [SnapshotId; 0]
+    );
+    assert!(
+        meta.lookup_chunk(child, &coord(0, 0))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        meta.lookup_chunk(second, &coord(0, 0))
+            .await
+            .unwrap()
+            .is_some()
+    );
+    // A parent must exist: the graph never points at a missing snapshot.
+    assert!(
+        meta.create_snapshot(5_000, &[SnapshotId(999)])
+            .await
+            .is_err()
+    );
+
+    // Walking back covers the whole history, nearest first.
+    assert_eq!(ancestors(meta, second).await.unwrap(), [first]);
+    assert_eq!(
+        ancestors(meta, child).await.unwrap(),
+        [other] as [SnapshotId; 1]
+    );
+    let walked = history(meta, second).await.unwrap();
+    assert_eq!(
+        walked.iter().map(|s| s.id).collect::<Vec<_>>(),
+        [second, first]
+    );
+    assert_eq!(walked[0].parents, [first]);
+    assert!(walked[1].is_root());
+
+    // Retiring a snapshot hands its children the history of its own
+    // parents, so the graph stays connected.
+    meta.retire_snapshot(first, second).await.unwrap();
+    assert!(meta.lookup_snapshot(first).await.unwrap().is_none());
+    assert_eq!(
+        meta.snapshot_parents(second).await.unwrap(),
+        [] as [SnapshotId; 0]
+    );
+    // The folded row still resolves at the surviving snapshot.
+    assert!(
+        meta.lookup_chunk(second, &coord(0, 0))
+            .await
+            .unwrap()
+            .is_some()
+    );
 }
 
 /// CAS put/fetch/dedup/remove/visit contract.
@@ -390,6 +469,7 @@ where
         .meta_mut()
         .apply_snapshot_incremental(
             1_000,
+            &[],
             &[SnapshotEntry::new(coord(0, 0), Some(live), None)],
             None,
             &[],

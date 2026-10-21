@@ -3,6 +3,18 @@ CREATE TABLE snapshots(
     created_at_ms INTEGER NOT NULL
 );
 
+-- History graph: which snapshots a snapshot continues. The root of a
+-- history has no row, an ordinary snapshot one, a merge several. The
+-- graph - not the identifier order - decides what a snapshot inherits.
+CREATE TABLE snapshot_parents(
+    child_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+    parent_id INTEGER NOT NULL REFERENCES snapshots(id),
+    PRIMARY KEY(child_id, parent_id)
+);
+
+CREATE INDEX idx_parents_parent
+    ON snapshot_parents(parent_id);
+
 CREATE TABLE chunk_history(
     snapshot_id INTEGER NOT NULL REFERENCES snapshots(id),
     dim INTEGER NOT NULL,

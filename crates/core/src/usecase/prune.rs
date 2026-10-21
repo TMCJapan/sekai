@@ -96,7 +96,7 @@ pub async fn prune_plan<M: MetaStore>(
 ) -> Result<PrunePlan, PruneError<M::Error>> {
     let mut snapshots: Vec<Snapshot> = Vec::new();
     meta.visit_snapshots(|snapshot| {
-        snapshots.push(*snapshot);
+        snapshots.push(snapshot.clone());
         true
     })
     .await
@@ -191,7 +191,14 @@ mod tests {
 
     fn snapshots(n: u64) -> Vec<Snapshot> {
         (1..=n)
-            .map(|id| Snapshot::new(SnapshotId(id), id * 1_000))
+            .map(|id| {
+                let parents = if id > 1 {
+                    alloc::vec![SnapshotId(id - 1)]
+                } else {
+                    alloc::vec![]
+                };
+                Snapshot::new(SnapshotId(id), id * 1_000, parents)
+            })
             .collect()
     }
 
@@ -232,12 +239,15 @@ mod tests {
             Some(BlobHash([4; 32])),
             None,
         )];
+        let mut parent = Vec::new();
         for (id, entries) in [
             (1u64, s1.as_slice()),
             (2, s2.as_slice()),
             (3, s3.as_slice()),
         ] {
-            block_on(meta.apply_snapshot_incremental(id * 1_000, entries, None, &[], &[])).unwrap();
+            block_on(meta.apply_snapshot_incremental(id * 1_000, &parent, entries, None, &[], &[]))
+                .unwrap();
+            parent = alloc::vec![SnapshotId(id)];
         }
         let before = effective_present(&meta, &[SnapshotId(1), SnapshotId(2), SnapshotId(3)]);
 
@@ -267,7 +277,7 @@ mod tests {
     #[test]
     fn prune_refuses_empty_retention() {
         let mut meta = MemMeta::default();
-        block_on(meta.create_snapshot(100)).unwrap();
+        block_on(meta.create_snapshot(100, &[])).unwrap();
         let err = block_on(prune_plan(&meta, &BTreeSet::new())).unwrap_err();
         assert_eq!(err, PruneError::NothingRetained);
         // An empty store plans empty instead of erroring.

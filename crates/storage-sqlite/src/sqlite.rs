@@ -1,8 +1,9 @@
-//! SQLite MVCC metadata: snapshots and per-chunk history.
+//! SQLite snapshot metadata: the history graph and per-chunk history.
 //!
 //! Snapshot commits use one transaction; CAS durability is established before
 //! metadata commit by the caller. The pool has one connection.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
@@ -22,7 +23,7 @@ use sekai_storage::{
 };
 
 /// Managed schema version (`PRAGMA user_version`).
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 
 const SCHEMA: &str = include_str!("../schema/sqlite.sql");
 
@@ -31,7 +32,7 @@ fn db_err(source: sqlx::Error) -> StorageError {
     StorageError::backend("sqlite", source)
 }
 
-/// SQLite-backed MVCC metadata.
+/// SQLite-backed snapshot metadata: the history graph and per-chunk rows.
 #[derive(Debug, Clone)]
 pub struct SqliteMeta {
     pool: SqlitePool,
@@ -259,12 +260,33 @@ impl SqliteMeta {
     pub async fn apply_snapshot(
         &mut self,
         created_at_ms: u64,
+        parents: &[SnapshotId],
         entries: &[SnapshotEntry],
     ) -> Result<SnapshotId, StorageError> {
         Ok(self
-            .apply_snapshot_incremental(created_at_ms, entries, None, &[], &[])
+            .apply_snapshot_incremental(created_at_ms, parents, entries, None, &[], &[])
             .await?
             .id)
+    }
+
+    /// Parent edges of every snapshot, grouped by child.
+    ///
+    /// The graph is small (one edge per snapshot in a linear history), so
+    /// reading it whole beats a query per snapshot.
+    async fn parent_map(&self) -> Result<BTreeMap<SnapshotId, Vec<SnapshotId>>, StorageError> {
+        let rows = sqlx::query(
+            "SELECT child_id, parent_id FROM snapshot_parents ORDER BY child_id, parent_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        let mut map: BTreeMap<SnapshotId, Vec<SnapshotId>> = BTreeMap::new();
+        for row in &rows {
+            let child = snapshot_id_from_i64(row.try_get("child_id").map_err(db_err)?)?;
+            let parent = snapshot_id_from_i64(row.try_get("parent_id").map_err(db_err)?)?;
+            map.entry(child).or_default().push(parent);
+        }
+        Ok(map)
     }
 }
 
@@ -397,26 +419,127 @@ const INSERT_CHUNK_SQL: &str =
     "INSERT INTO chunk_history (snapshot_id, dim, kind, cx, cz, blob, diff)
              VALUES (?, ?, ?, ?, ?, ?, ?)";
 
+/// Ancestors of a snapshot: the snapshot itself plus every snapshot
+/// reachable through parent links.
+///
+/// The recursive term walks the history graph upwards, so the set
+/// answers "what does this snapshot inherit?" without relying on the
+/// identifier order. `UNION` (not `UNION ALL`) keeps the walk finite even
+/// if the graph ever holds a cycle. The seed parameter is the snapshot
+/// the walk starts at; `head`/`tail` split it around the seed for the
+/// queries that build their SQL piece by piece.
+macro_rules! ancestor_cte {
+    (head) => {
+        "WITH RECURSIVE anc(id) AS (SELECT "
+    };
+    (tail) => {
+        " UNION SELECT sp.parent_id FROM snapshot_parents sp JOIN anc ON sp.child_id = anc.id)"
+    };
+    ($seed:literal) => {
+        concat!(ancestor_cte!(head), $seed, ancestor_cte!(tail))
+    };
+}
+
+/// Effective row of one coordinate at a snapshot: the nearest row
+/// introduced at the snapshot or at one of its ancestors.
+const LOOKUP_CHUNK_SQL: &str = concat!(
+    ancestor_cte!("?"),
+    "
+SELECT snapshot_id, dim, kind, cx, cz, blob, diff FROM chunk_history
+WHERE dim = ? AND kind = ? AND cx = ? AND cz = ?
+  AND snapshot_id IN (SELECT id FROM anc)
+ORDER BY snapshot_id DESC LIMIT 1"
+);
+
+/// Effective rows of every coordinate at a snapshot.
+const VISIT_CHUNKS_SQL: &str = concat!(
+    ancestor_cte!("?"),
+    "
+SELECT dim, kind, cx, cz, blob, diff, snapshot_id FROM (
+   SELECT dim, kind, cx, cz, blob, diff, snapshot_id,
+     ROW_NUMBER() OVER (
+       PARTITION BY dim, kind, cx, cz ORDER BY snapshot_id DESC
+     ) AS rn
+   FROM chunk_history WHERE snapshot_id IN (SELECT id FROM anc)
+) WHERE rn = 1 ORDER BY dim, kind, cx, cz"
+);
+
+/// Rows of a retired snapshot that the history of its successor already
+/// supersedes. `?1` is the retired snapshot, `?2` the successor.
+const RETIRE_SUPERSEDED_SQL: &str = concat!(
+    ancestor_cte!("?2"),
+    "
+DELETE FROM chunk_history WHERE snapshot_id = ?1
+ AND (dim, kind, cx, cz) IN (
+     SELECT dim, kind, cx, cz FROM chunk_history
+     WHERE snapshot_id > ?1 AND snapshot_id IN (SELECT id FROM anc)
+ )"
+);
+
 /// Decode one `snapshots` row.
-fn decode_snapshot(row: &sqlx::sqlite::SqliteRow) -> Result<Snapshot, StorageError> {
+fn decode_snapshot(
+    row: &sqlx::sqlite::SqliteRow,
+    parents: &[SnapshotId],
+) -> Result<Snapshot, StorageError> {
     let id: i64 = row.try_get("id").map_err(db_err)?;
     Ok(Snapshot::new(
         snapshot_id_from_i64(id)?,
         millis_col(row, "created_at_ms")?,
+        parents.to_vec(),
     ))
+}
+
+/// Insert a snapshot row and the edges naming its parents.
+async fn insert_snapshot(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    created_at_ms: u64,
+    parents: &[SnapshotId],
+) -> Result<SnapshotId, StorageError> {
+    let id: i64 = sqlx::query("INSERT INTO snapshots (created_at_ms) VALUES (?)")
+        .bind(millis_param(created_at_ms)?)
+        .execute(&mut **tx)
+        .await
+        .map_err(db_err)?
+        .last_insert_rowid();
+    for parent in parents {
+        sqlx::query("INSERT INTO snapshot_parents (child_id, parent_id) VALUES (?, ?)")
+            .bind(id)
+            .bind(snap_param(*parent)?)
+            .execute(&mut **tx)
+            .await
+            .map_err(db_err)?;
+    }
+    snapshot_id_from_i64(id)
 }
 
 impl sekai_core::MetaStore for SqliteMeta {
     type Error = StorageError;
 
-    async fn create_snapshot(&mut self, created_at_ms: u64) -> Result<SnapshotId, StorageError> {
-        let id = sqlx::query("INSERT INTO snapshots (created_at_ms) VALUES (?)")
-            .bind(millis_param(created_at_ms)?)
-            .execute(&self.pool)
-            .await
-            .map_err(db_err)?
-            .last_insert_rowid();
-        snapshot_id_from_i64(id)
+    async fn create_snapshot(
+        &mut self,
+        created_at_ms: u64,
+        parents: &[SnapshotId],
+    ) -> Result<SnapshotId, StorageError> {
+        let mut tx = self.pool.begin().await.map_err(db_err)?;
+        let id = insert_snapshot(&mut tx, created_at_ms, parents).await?;
+        tx.commit().await.map_err(db_err)?;
+        Ok(id)
+    }
+
+    async fn snapshot_parents(
+        &self,
+        snapshot: SnapshotId,
+    ) -> Result<Vec<SnapshotId>, StorageError> {
+        let rows = sqlx::query(
+            "SELECT parent_id FROM snapshot_parents WHERE child_id = ? ORDER BY parent_id",
+        )
+        .bind(snap_param(snapshot)?)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        rows.iter()
+            .map(|row| snapshot_id_from_i64(row.try_get("parent_id").map_err(db_err)?))
+            .collect()
     }
 
     async fn record_chunk(
@@ -445,22 +568,18 @@ impl sekai_core::MetaStore for SqliteMeta {
         snapshot: SnapshotId,
         coord: &ChunkCoord,
     ) -> Result<Option<ChunkHistoryEntry>, StorageError> {
-        // Nearest row at or before `snapshot`: unchanged chunks have no row
-        // at newer snapshots (delta storage). The coord index serves the
-        // point lookup.
-        let row = sqlx::query(
-            "SELECT snapshot_id, dim, kind, cx, cz, blob, diff FROM chunk_history
-             WHERE dim = ? AND kind = ? AND cx = ? AND cz = ? AND snapshot_id <= ?
-             ORDER BY snapshot_id DESC LIMIT 1",
-        )
-        .bind(i64::from(coord.dim.raw()))
-        .bind(i64::from(coord.kind.raw()))
-        .bind(i64::from(coord.x))
-        .bind(i64::from(coord.z))
-        .bind(snap_param(snapshot)?)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(db_err)?;
+        // The nearest row introduced at the snapshot or at one of its
+        // ancestors: unchanged chunks have no row at newer snapshots
+        // (delta storage). The coord index serves the point lookup.
+        let row = sqlx::query(LOOKUP_CHUNK_SQL)
+            .bind(snap_param(snapshot)?)
+            .bind(i64::from(coord.dim.raw()))
+            .bind(i64::from(coord.kind.raw()))
+            .bind(i64::from(coord.x))
+            .bind(i64::from(coord.z))
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db_err)?;
         row.map(|row| decode_history(&row)).transpose()
     }
 
@@ -470,7 +589,11 @@ impl sekai_core::MetaStore for SqliteMeta {
             .fetch_optional(&self.pool)
             .await
             .map_err(db_err)?;
-        row.map(|row| decode_snapshot(&row)).transpose()
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let parents = self.snapshot_parents(id).await?;
+        Ok(Some(decode_snapshot(&row, &parents)?))
     }
 
     async fn latest_snapshot(&self) -> Result<Option<Snapshot>, StorageError> {
@@ -478,7 +601,12 @@ impl sekai_core::MetaStore for SqliteMeta {
             .fetch_optional(&self.pool)
             .await
             .map_err(db_err)?;
-        row.map(|row| decode_snapshot(&row)).transpose()
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let id = snapshot_id_from_i64(row.try_get("id").map_err(db_err)?)?;
+        let parents = self.snapshot_parents(id).await?;
+        Ok(Some(decode_snapshot(&row, &parents)?))
     }
 
     async fn visit_snapshot_chunks<F>(
@@ -489,25 +617,17 @@ impl sekai_core::MetaStore for SqliteMeta {
     where
         F: FnMut(&ChunkHistoryEntry) -> bool + Send,
     {
-        // Effective rows at `snapshot`: the newest row at or before it per
-        // coordinate, tombstones included. Window functions keep the query
-        // portable across backends. A single fetch beats paged window
-        // queries (which recompute the aggregation per page), and every
-        // caller materializes the full effective set anyway (rollback
-        // groups, GC sets, plan universes).
-        let rows = sqlx::query(
-            "SELECT dim, kind, cx, cz, blob, diff, snapshot_id FROM (
-               SELECT dim, kind, cx, cz, blob, diff, snapshot_id,
-                 ROW_NUMBER() OVER (
-                   PARTITION BY dim, kind, cx, cz ORDER BY snapshot_id DESC
-                 ) AS rn
-               FROM chunk_history WHERE snapshot_id <= ?
-             ) WHERE rn = 1 ORDER BY dim, kind, cx, cz",
-        )
-        .bind(snap_param(snapshot)?)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db_err)?;
+        // Effective rows at `snapshot`: the newest row introduced at it or
+        // at one of its ancestors, tombstones included. Window functions
+        // keep the query portable across backends. A single fetch beats
+        // paged window queries (which recompute the aggregation per page),
+        // and every caller materializes the full effective set anyway
+        // (rollback groups, GC sets, plan universes).
+        let rows = sqlx::query(VISIT_CHUNKS_SQL)
+            .bind(snap_param(snapshot)?)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_err)?;
         for row in &rows {
             if !visit(&decode_history(row)?) {
                 break;
@@ -524,8 +644,10 @@ impl sekai_core::MetaStore for SqliteMeta {
             .fetch_all(&self.pool)
             .await
             .map_err(db_err)?;
+        let parents = self.parent_map().await?;
         for row in &rows {
-            let snapshot = decode_snapshot(row)?;
+            let id = snapshot_id_from_i64(row.try_get("id").map_err(db_err)?)?;
+            let snapshot = decode_snapshot(row, parents.get(&id).map_or(&[], Vec::as_slice))?;
             if !visit(&snapshot) {
                 break;
             }
@@ -650,23 +772,17 @@ impl sekai_core::MetaStore for SqliteMeta {
         let from = snap_param(from)?;
         let into = snap_param(into)?;
         let mut tx = self.pool.begin().await.map_err(db_err)?;
-        // Rows already superseded at or before the successor vanish;
-        // survivors move onto it. Tags follow the snapshot row by cascade.
-        // Positional convention below: `?1` is always the retired
+        // Rows already superseded along the history the successor continues
+        // vanish; survivors move onto it. Tags follow the snapshot row by
+        // cascade. Positional convention below: `?1` is always the retired
         // snapshot, `?2` the successor.
-        let dropped = sqlx::query(
-            "DELETE FROM chunk_history WHERE snapshot_id = ?1
-             AND (dim, kind, cx, cz) IN (
-                 SELECT dim, kind, cx, cz FROM chunk_history
-                 WHERE snapshot_id > ?1 AND snapshot_id <= ?2
-             )",
-        )
-        .bind(from)
-        .bind(into)
-        .execute(&mut *tx)
-        .await
-        .map_err(db_err)?
-        .rows_affected();
+        let dropped = sqlx::query(RETIRE_SUPERSEDED_SQL)
+            .bind(from)
+            .bind(into)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?
+            .rows_affected();
         let folded =
             sqlx::query("UPDATE chunk_history SET snapshot_id = ?2 WHERE snapshot_id = ?1")
                 .bind(from)
@@ -678,6 +794,24 @@ impl sekai_core::MetaStore for SqliteMeta {
         sqlx::query("UPDATE region_state SET snapshot_id = ?2 WHERE snapshot_id = ?1")
             .bind(from)
             .bind(into)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?;
+        // The retired snapshot leaves the graph: its children continue the
+        // history of its own parents, so the graph stays connected and no
+        // edge points at a deleted snapshot.
+        sqlx::query(
+            "INSERT OR IGNORE INTO snapshot_parents (child_id, parent_id)
+             SELECT child.child_id, parent.parent_id
+             FROM snapshot_parents AS child, snapshot_parents AS parent
+             WHERE parent.child_id = ?1 AND child.parent_id = ?1",
+        )
+        .bind(from)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+        sqlx::query("DELETE FROM snapshot_parents WHERE child_id = ?1 OR parent_id = ?1")
+            .bind(from)
             .execute(&mut *tx)
             .await
             .map_err(db_err)?;
@@ -696,19 +830,15 @@ impl sekai_core::MetaStore for SqliteMeta {
     async fn apply_snapshot_incremental(
         &mut self,
         created_at_ms: u64,
+        parents: &[SnapshotId],
         entries: &[SnapshotEntry],
         carry_from: Option<(SnapshotId, &[RegionKey])>,
         fingerprints: &[RegionFingerprint],
         removed: &[RegionKey],
     ) -> Result<ApplyOutcome, StorageError> {
         let mut tx = self.pool.begin().await.map_err(db_err)?;
-        let id: i64 = sqlx::query("INSERT INTO snapshots (created_at_ms) VALUES (?)")
-            .bind(millis_param(created_at_ms)?)
-            .execute(&mut *tx)
-            .await
-            .map_err(db_err)?
-            .last_insert_rowid();
-        let snapshot = snapshot_id_from_i64(id)?;
+        let snapshot = insert_snapshot(&mut tx, created_at_ms, parents).await?;
+        let id = snap_param(snapshot)?;
         for entry in entries {
             sqlx::query(INSERT_CHUNK_SQL)
                 .bind(id)
@@ -726,20 +856,21 @@ impl sekai_core::MetaStore for SqliteMeta {
         if let Some((prev, keys)) = carry_from {
             // Delta storage: carried regions contribute no rows. Their
             // effective present chunks are counted for the report with the
-            // same newest-at-or-before semantics as reads; only derived
-            // state advances below.
+            // same ancestor semantics as reads; only derived state advances
+            // below.
             if !keys.is_empty() {
                 // Region predicates are structural (fixed shape per region);
                 // all values stay bound parameters.
-                let mut qb = sqlx::QueryBuilder::new(
-                    "SELECT COUNT(*) FROM (
+                let mut qb = sqlx::QueryBuilder::new(ancestor_cte!(head));
+                qb.push_bind(snap_param(prev)?);
+                qb.push(ancestor_cte!(tail));
+                qb.push(
+                    " SELECT COUNT(*) FROM (
                        SELECT ROW_NUMBER() OVER (
                          PARTITION BY dim, kind, cx, cz ORDER BY snapshot_id DESC
                        ) AS rn, blob
-                       FROM chunk_history WHERE snapshot_id <= ",
+                       FROM chunk_history WHERE snapshot_id IN (SELECT id FROM anc) AND (",
                 );
-                qb.push_bind(snap_param(prev)?);
-                qb.push(" AND (");
                 for (i, key) in keys.iter().enumerate() {
                     if i > 0 {
                         qb.push(" OR ");
@@ -927,6 +1058,7 @@ mod tests {
         let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
         meta.apply_snapshot_incremental(
             1_000,
+            &[],
             &[stage_present(coord, BlobHash([1; 32]))],
             None,
             &[fp],
@@ -982,6 +1114,7 @@ mod tests {
         let c1 = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 32, 0);
         meta.apply_snapshot_incremental(
             1_000,
+            &[],
             &[
                 stage_present(c0, BlobHash([1; 32])),
                 stage_present(c1, BlobHash([2; 32])),
@@ -1050,7 +1183,7 @@ mod tests {
         let mut meta = memory_meta().await;
         let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
         let snapshot = meta
-            .apply_snapshot(1_000, &[stage_present(coord, BlobHash([1; 32]))])
+            .apply_snapshot(1_000, &[], &[stage_present(coord, BlobHash([1; 32]))])
             .await
             .unwrap();
         sqlx::query("UPDATE chunk_history SET kind = 9")
@@ -1073,7 +1206,7 @@ mod tests {
             size: 8192,
             content_hash: [7; 32],
         };
-        meta.apply_snapshot_incremental(1_000, &[], None, &[fingerprint], &[])
+        meta.apply_snapshot_incremental(1_000, &[], &[], None, &[fingerprint], &[])
             .await
             .unwrap();
         sqlx::query("UPDATE region_state SET kind = 9")

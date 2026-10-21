@@ -133,6 +133,7 @@ mod tests {
         block_on(cas.put(&orphan, b"orphan")).unwrap();
         block_on(meta.apply_snapshot_incremental(
             1_000,
+            &[],
             &[SnapshotEntry::new(coord(0, 0), Some(live), None)],
             None,
             &[],

@@ -11,8 +11,8 @@ software.
 
 - **In Scope**: Anvil sector parsing, chunk payload extraction, NBT
   decompression/normalization for diffing, content-addressed blob storage
-  (CAS), MVCC metadata management over pluggable DB backends, atomic
-  rollback, and GC.
+  (CAS), history-graph metadata management over pluggable DB backends,
+  atomic rollback, and GC.
 - **Out of Scope**: External process lifecycle, server I/O synchronization
   (`save-off`, `save-all`, `save-on`), and cron/scheduling. These belong
   exclusively to caller software or administrators - never to library crates.
@@ -211,23 +211,41 @@ re-indexing.
 
 # History, State, and GC Model
 
-## MVCC & Interval Coverage
+## The Snapshot Graph
 
-Unchanged: per-coordinate (`dim`, `kind`, `chunk_x`, `chunk_z`) timelines;
-entries cover snapshot intervals `[S_i, S_{i+1})`; MVCC timeline, not a
-commit DAG.
+Snapshots form a history graph, not a timeline: every snapshot names the
+snapshots it continues in `parents` (empty for the root of a history, one
+entry for an ordinary snapshot, several for a merge). The graph - not the
+identifier order - decides what a snapshot inherits, so a snapshot never
+sees rows introduced by a history it does not descend from.
+
+Parent links are written with the snapshot row, in the same transaction,
+and read back through the `MetaStore` port (`snapshot_parents`) or walked
+to the root by the core use cases (`usecase::snapshot::ancestors` /
+`history`).
+
+Ref objects (a movable `HEAD`, named branches) do not exist yet. Until
+they do, a new snapshot continues the snapshot it was planned against: the
+latest snapshot of the store, which is also the base its delta was
+computed from. Merges are representable in the model but nothing creates
+them yet, so a history is a chain in practice.
+
+Retiring a snapshot (`prune`) keeps the graph connected: the children of
+the retired snapshot continue the history of its own parents, so the
+surviving snapshots resolve to the same effective state as before.
 
 ## Delta History Storage
 
 Snapshots store only fresh rows (ingested chunks plus tombstones).
 Unchanged chunks have no row at newer snapshots; reads resolve effective
-state through fallback - `lookup_chunk` returns the nearest row at or
-before the snapshot, `visit_snapshot_chunks` synthesizes one effective row
-per known coordinate. Carried regions advance only derived state
-(`region_state`), and their effective chunk count is aggregated for the
-report. Every backup therefore grows metadata with changes, not with
-universe size - an unchanged backup writes one snapshot row plus state
-bumps instead of a full row copy.
+state through the graph - `lookup_chunk` returns the row introduced at
+the snapshot or at one of its ancestors (the nearest one wins),
+`visit_snapshot_chunks` synthesizes one effective row per known
+coordinate. Carried regions advance only derived state (`region_state`),
+and their effective chunk count is aggregated for the report. Every backup
+therefore grows metadata with changes, not with universe size - an
+unchanged backup writes one snapshot row plus state bumps instead of a
+full row copy.
 
 ## Tombstones
 
@@ -264,8 +282,8 @@ The scope is a filter, not a partition:
 
 ## Single Source of Truth vs Derived State
 
-- **Source of truth**: metadata history (`snapshots`, `chunk_history`) in the
-  selected DB backend + CAS blobs.
+- **Source of truth**: metadata history (`snapshots`, `snapshot_parents`,
+  `chunk_history`) in the selected DB backend + CAS blobs.
 - **Derived state**: `region_state` fingerprints. Wiping them costs at most
   one full ingest, never wrong data.
 
@@ -335,8 +353,8 @@ cancelled future cannot release the store while those tasks still run.
 ## Schema
 
 Owned by the backend crate (`crates/storage-sqlite/schema/sqlite.sql` for
-SQLite; `snapshots`, `chunk_history`, `region_state`; `SCHEMA_VERSION`
-gate; pre-release policy = recreate, don't migrate).
+SQLite; `snapshots`, `snapshot_parents`, `chunk_history`, `region_state`;
+`SCHEMA_VERSION` gate; pre-release policy = recreate, don't migrate).
 The `cas` module stays independent of DB backend crates so future
 object-store CAS swaps don't touch metadata code.
 
