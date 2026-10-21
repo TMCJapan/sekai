@@ -2,7 +2,8 @@
 
 use sekai_core::{Dimension, RegionKey, RegionKind};
 use sekai_world::{
-    HostRegion, HostWorldTree, WorldError, WorldTree, atomic_swap, fingerprint_file, open_image,
+    HostRegion, HostWorldLock, HostWorldTree, WorldError, WorldLockMode, WorldTree, atomic_swap,
+    fingerprint_file, open_image,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -271,6 +272,129 @@ fn discovers_a_legacy_single_folder_world() {
     assert_eq!(nether.dim, Dimension::NETHER);
     assert_derives_back(&world, &found);
     assert_stable_ids(&world_path, &found);
+    cleanup(&world_path);
+}
+
+#[test]
+fn locking_a_missing_world_reports_the_missing_world() {
+    let root = tempdir("lock-missing");
+    let world = HostWorldTree::new(root.join("typo")).unwrap();
+    for mode in [WorldLockMode::Shared, WorldLockMode::Exclusive] {
+        let err = world.lock(mode).unwrap_err();
+        match err {
+            WorldError::Io { path, source } => {
+                assert_eq!(path, root.join("typo"));
+                assert_eq!(source.kind(), std::io::ErrorKind::NotFound, "{mode:?}");
+            }
+            other => panic!("expected Io/NotFound for {mode:?}, got {other:?}"),
+        }
+    }
+    assert!(
+        !root.join("typo").exists(),
+        "locking must not create the world"
+    );
+    cleanup(&root);
+}
+
+#[test]
+fn the_world_lock_lives_in_the_root_and_stays_out_of_discovery() {
+    let world_path = tempdir("lock");
+    write(world_path.join("region/r.0.0.mca"), &one_chunk_image());
+    let world = HostWorldTree::new(&world_path).unwrap();
+    let before = discover(&world);
+    // The fixture holds one region file, so the comparisons below cannot
+    // pass vacuously.
+    assert_eq!(paths_of(&before), vec![world_path.join("region/r.0.0.mca")]);
+
+    let reader = world
+        .lock(WorldLockMode::Shared)
+        .unwrap()
+        .guard()
+        .expect("a writable world creates its lock file");
+    assert!(world_path.join(HostWorldLock::FILE_NAME).is_file());
+    // The lock file must not change the layout while it is held either.
+    let reopened = HostWorldTree::new(&world_path).unwrap();
+    assert_eq!(paths_of(&discover(&reopened)), paths_of(&before));
+    assert!(matches!(
+        reopened.lock(WorldLockMode::Exclusive),
+        Err(WorldError::WorldLocked { .. })
+    ));
+    drop(reader);
+
+    // A lock file left in the root changes neither layout nor discovery.
+    let reopened = HostWorldTree::new(&world_path).unwrap();
+    assert_eq!(paths_of(&discover(&reopened)), paths_of(&before));
+    assert!(
+        reopened
+            .lock(WorldLockMode::Exclusive)
+            .unwrap()
+            .guard()
+            .is_ok()
+    );
+    cleanup(&world_path);
+}
+
+#[test]
+fn world_locks_stay_out_of_bukkit_layout_detection() {
+    // A server root is scanned for its level-name folder and datapack
+    // siblings; lock files at either root must not join that scan.
+    let root_path = tempdir("lock-bukkit");
+    write(root_path.join("server.properties"), b"level-name=world\n");
+    write(
+        root_path.join("world/dimensions/minecraft/overworld/region/r.0.0.mca"),
+        &one_chunk_image(),
+    );
+    let before = discover(&HostWorldTree::new(&root_path).unwrap());
+
+    let mut held = Vec::new();
+    for root in [root_path.clone(), root_path.join("world")] {
+        let guard = HostWorldTree::new(&root)
+            .unwrap()
+            .lock(WorldLockMode::Shared)
+            .unwrap()
+            .guard()
+            .expect("a writable world creates its lock file");
+        assert!(root.join(HostWorldLock::FILE_NAME).is_file());
+        held.push(guard);
+    }
+
+    // The held lock files must not join the layout scan either.
+    let reopened = HostWorldTree::new(&root_path).unwrap();
+    assert_eq!(paths_of(&discover(&reopened)), paths_of(&before));
+    drop(held);
+    cleanup(&root_path);
+}
+
+#[test]
+fn an_exclusive_world_lock_excludes_another_writer() {
+    // Rollbacks write the world, so two of them must not overlap.
+    let world_path = tempdir("lock-exclusive");
+    write(world_path.join("region/r.0.0.mca"), &one_chunk_image());
+    let world = HostWorldTree::new(&world_path).unwrap();
+
+    let writer = world
+        .lock(WorldLockMode::Exclusive)
+        .unwrap()
+        .guard()
+        .expect("a writable world creates its lock file");
+    // A second tree over the same folder stands in for another process:
+    // it opens its own file description, so the conflict is the one a
+    // second process would see.
+    let other = HostWorldTree::new(&world_path).unwrap();
+    for mode in [WorldLockMode::Shared, WorldLockMode::Exclusive] {
+        assert!(
+            matches!(other.lock(mode), Err(WorldError::WorldLocked { .. })),
+            "{mode:?} must not join a held writer"
+        );
+    }
+    drop(writer);
+    assert!(
+        other
+            .lock(WorldLockMode::Exclusive)
+            .unwrap()
+            .guard()
+            .is_ok()
+    );
     cleanup(&world_path);
 }
 

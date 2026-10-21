@@ -7,7 +7,8 @@
 //! operation on them fails on purpose - the fake serves no bytes.
 
 use sekai_app::{
-    AppError, Dimension, RegionFile, RegionKey, RegionKind, WorldTree, world_chunk_coords,
+    AppError, Dimension, RegionFile, RegionKey, RegionKind, UnguardedReason, WorldLock,
+    WorldLockMode, WorldLockState, WorldTree, world_chunk_coords,
 };
 
 /// Failure type of [`FakeWorld`], deliberately unrelated to `WorldError`.
@@ -93,9 +94,23 @@ impl RegionFile for FakeRegion {
     }
 }
 
+/// Guard type of [`FakeWorld`].
+///
+/// The fake excludes nothing, so it never hands this out; the type only
+/// exists because the trait names one.
+#[derive(Debug)]
+struct FakeLock;
+
+impl WorldLock for FakeLock {
+    fn mode(&self) -> WorldLockMode {
+        WorldLockMode::Shared
+    }
+}
+
 impl WorldTree for FakeWorld {
     type Error = FakeError;
     type Region = FakeRegion;
+    type Lock = FakeLock;
 
     fn is_empty(&self) -> Result<bool, Self::Error> {
         Ok(true)
@@ -137,6 +152,12 @@ impl WorldTree for FakeWorld {
         Ok(FakeRegion {
             name: fake_name(key),
         })
+    }
+
+    fn lock(&self, _mode: WorldLockMode) -> Result<WorldLockState<Self::Lock>, Self::Error> {
+        // Nothing to exclude: the fake holds no files. The reason is
+        // stated, so a caller can see that it runs unguarded.
+        Ok(WorldLockState::Unguarded(UnguardedReason::NothingToProtect))
     }
 }
 
@@ -195,4 +216,28 @@ fn region_handle_error_crosses_the_app_boundary() {
         error.to_string().contains("fake world failed: no bytes"),
         "unexpected error: {error}"
     );
+}
+
+/// The tree states that it excludes nothing, and says why.
+#[test]
+fn custom_tree_reports_its_unguarded_answer() {
+    let world = FakeWorld {
+        fail_dims: false,
+        fail_regions: false,
+        serve_region: false,
+    };
+    for mode in [WorldLockMode::Shared, WorldLockMode::Exclusive] {
+        let state = world.lock(mode).unwrap();
+        assert!(!state.is_guarded(), "{mode:?}");
+        assert_eq!(
+            state.unguarded_reason(),
+            Some(UnguardedReason::NothingToProtect),
+            "{mode:?}"
+        );
+        assert_eq!(
+            state.guard().unwrap_err(),
+            UnguardedReason::NothingToProtect,
+            "{mode:?}"
+        );
+    }
 }

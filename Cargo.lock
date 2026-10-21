@@ -1094,6 +1094,7 @@ version = "0.1.0"
 name = "sekai-world"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "sekai-anvil",
  "sekai-core",
  "thiserror",

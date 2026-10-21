@@ -18,6 +18,7 @@
 
 mod bukkit;
 mod detect;
+mod lock;
 mod vanilla;
 
 use std::collections::BTreeMap;
@@ -26,8 +27,10 @@ use std::path::{Path, PathBuf};
 use sekai_core::{Dimension, RegionFingerprint, RegionKey, RegionKind};
 
 use super::WorldTree;
-use crate::WorldError;
 use crate::region::RegionFile;
+use crate::{WorldError, WorldLockMode, WorldLockState};
+
+pub use lock::{HostWorldLock, HostWorldLockError};
 
 /// Directory of `kind` under a dimension directory.
 const fn kind_dir(kind: RegionKind) -> &'static str {
@@ -202,6 +205,7 @@ fn collect_dimensions(dir: impl AsRef<Path>) -> Result<BTreeMap<Dimension, PathB
 impl WorldTree for HostWorldTree {
     type Error = WorldError;
     type Region = HostRegion;
+    type Lock = HostWorldLock;
 
     fn is_empty(&self) -> Result<bool, Self::Error> {
         for path in self.dirs.values() {
@@ -313,5 +317,24 @@ impl WorldTree for HostWorldTree {
         Ok(HostRegion(
             region.0.with_file_name(format!("r.{rx}.{rz}.mca")),
         ))
+    }
+
+    fn lock(&self, mode: WorldLockMode) -> Result<WorldLockState<Self::Lock>, Self::Error> {
+        // The lock lives in the root as passed, so two roots naming one
+        // world (a Bukkit server root and its world folder) do not exclude
+        // each other (ADR-0014): each locks its own file, and the guard
+        // of one excludes nothing in the other. Callers that name one
+        // world through several roots have to pick one canonical root.
+        // A mistyped world path should read as one, not as a lock
+        // failure.
+        self.check_root()?;
+        let path = self.root.join(HostWorldLock::FILE_NAME);
+        match HostWorldLock::acquire(&path, mode) {
+            Ok(state) => Ok(state),
+            // Contention is its own failure, not an I/O one: a caller has to
+            // tell "busy, retry" from a lock file it cannot open at all.
+            Err(HostWorldLockError::Contended) => Err(WorldError::WorldLocked { path }),
+            Err(HostWorldLockError::Io(source)) => Err(WorldError::io(path, source)),
+        }
     }
 }

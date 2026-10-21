@@ -42,6 +42,7 @@ clap = { version = "4.6.7", default-features = false, features = [
 crc32fast = { version = "1.5.2", default-features = false }
 criterion = { version = "0.8", default-features = false }
 indicatif = { version = "0.18" }
+libc = { version = "0.2.189", default-features = false }
 lz4_flex = { version = "0.14.0", default-features = false }
 miniz_oxide = { version = "0.9.1", default-features = false, features = ["with-alloc"] }
 serde = { version = "1.0.229", default-features = false, features = ["alloc", "derive"] }
