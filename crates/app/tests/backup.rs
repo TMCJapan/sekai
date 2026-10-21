@@ -1645,6 +1645,90 @@ async fn real_world_corpus_round_trip() {
     cleanup(&root);
 }
 
+/// Regression for #90: a scope covering part of a region file must not
+/// record that file's fingerprint, or later unscoped backups carry it
+/// unread and never ingest the out-of-scope chunks.
+#[tokio::test]
+async fn partial_scope_leaves_the_rest_of_the_file_to_later_backups() {
+    use sekai_app::{Area, Dimension, Rect, RegionKey, RegionKind, StatusOptions};
+    const REAL_WORLD_CHUNKS_COUNT: usize = 1024 + 151 + 14;
+
+    let root = tempdir("partial-scope");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    copy_dir(corpus_path(), &world_path);
+    let store = root.join("store").to_string_lossy().into_owned();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+
+    let partial = Scope::Select {
+        kinds: Scope::all_kinds(),
+        areas: vec![(Dimension::OVERWORLD, Area::Rect(Rect::new(32, 32, 35, 35)))],
+    };
+    let region = RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, 1, 1);
+    assert!(partial.matches_region(region) && !partial.covers_region(region));
+    let in_scope = sekai_app::world_chunk_coords(&world)
+        .unwrap()
+        .into_iter()
+        .filter(|coord| partial.contains(*coord))
+        .count();
+    let (scoped, _) = instance
+        .world_mut(&mut world)
+        .backup(options(), partial, |_| {})
+        .await
+        .unwrap();
+    assert_eq!(scoped.chunks, in_scope);
+    assert!(in_scope < REAL_WORLD_CHUNKS_COUNT);
+
+    let status_options = StatusOptions { concurrency: 1 };
+    let (status, _) = instance
+        .world_mut(&mut world)
+        .status(status_options, Scope::World, |_| {})
+        .await
+        .unwrap();
+    assert!(!status.clean, "out-of-scope chunks are still unrecorded");
+
+    let (full, _) = instance
+        .world_mut(&mut world)
+        .backup(options(), Scope::World, |_| {})
+        .await
+        .unwrap();
+    assert_eq!(full.chunks, REAL_WORLD_CHUNKS_COUNT);
+    assert_eq!(full.skipped_regions, 0);
+
+    let (status, _) = instance
+        .world_mut(&mut world)
+        .status(status_options, Scope::World, |_| {})
+        .await
+        .unwrap();
+    assert!(status.clean);
+
+    // Rolling back to the full snapshot keeps every chunk of the live files.
+    let before: Vec<(PathBuf, ChunkMap)> = ["region", "entities", "poi"]
+        .iter()
+        .flat_map(|kind| std::fs::read_dir(world_path.join(kind)).unwrap())
+        .map(|entry| {
+            let path = entry.unwrap().path();
+            let chunks = chunk_map(&path);
+            (path, chunks)
+        })
+        .collect();
+    let (rolled, _) = instance
+        .world_mut(&mut world)
+        .rollback(
+            full.snapshot,
+            sekai_app::RollbackOptions::default(),
+            Scope::World,
+            |_| {},
+        )
+        .await
+        .unwrap();
+    assert_eq!(rolled.chunks_restored, REAL_WORLD_CHUNKS_COUNT);
+    for (path, chunks) in &before {
+        assert_eq!(&chunk_map(path), chunks, "{path:?} restored");
+    }
+    cleanup(&root);
+}
+
 /// Model-based round trip over pseudo-random mutation sequences: back up
 /// after every mutation, then roll back to each snapshot in turn and require
 /// the world to match the recorded state byte-for-byte (per chunk payload).
