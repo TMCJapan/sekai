@@ -138,15 +138,16 @@ any exception in the PR body.
   `sekai-<target triple>`; because the upload step zips its input and drops
   file modes, the artifact wraps a `sekai-<target triple>.tar.gz` that keeps
   the binary executable.
-- **Storage backends**: this project currently ships SQLite only, in the
+- **Storage backends**: this project ships SQLite only, in the
   `sekai-storage-sqlite` crate (via sqlx, app feature `backend-sqlite`,
   default-on). `sekai-storage` stays backend-neutral and owns the traits,
-  file CAS, and locks. `mysql` / `postgres` remain reserved stubs behind
-  `backend-mysql` / `backend-postgres` features.
-  Backend selection is feature-gated at compile time plus URL-selected at
-  runtime (`sqlite://...`, `mysql://...`, `postgres://...`); requesting an
-  uncompiled backend is a loud `UnsupportedBackend` error, and a build with
-  no backend compiled in at all fails with `NoBackendCompiled`.
+  file CAS, and locks; it holds no backend modules, so a mysql or postgres
+  backend arrives as a sibling crate rather than as a stub.
+  Backend selection is URL-selected at runtime (`sqlite://...`,
+  `mysql://...`, `postgres://...`); requesting a backend this build does not
+  carry is a loud `UnsupportedBackend` error, and a build without
+  `backend-sqlite` has no store-opening entry point at all
+  (`sekai-storage`'s `UnavailableStore` fails with `NoBackendCompiled`).
 
 ## Coding Standards
 
@@ -196,8 +197,6 @@ cargo hack --each-feature nextest run --workspace --all-targets
 # Backend matrix (when touching storage backends)
 cargo nextest run -p sekai-storage -p sekai-storage-sqlite
 cargo nextest run -p sekai-app --no-default-features --features backend-sqlite
-# mysql/postgres: reserved; run once implemented, e.g.
-# cargo nextest run -p sekai-app --no-default-features --features backend-mysql
 
 # Run dependency, advisory, and license checks
 cargo deny check

@@ -144,13 +144,10 @@ impl StorageError {
 pub enum BackendKind {
     /// `sqlite://<dir>` (or a bare `<dir>`): metadata lives in
     /// `<dir>/meta.sqlite`, blobs in `<dir>/blobs/`.
-    #[cfg(feature = "backend-sqlite")]
     Sqlite,
     /// Reserved stub.
-    #[cfg(feature = "backend-mysql")]
     Mysql,
     /// Reserved stub.
-    #[cfg(feature = "backend-postgres")]
     Postgres,
 }
 
@@ -164,23 +161,11 @@ pub fn parse_backend_url(url: &str) -> Result<(BackendKind, &str), StorageError>
         url: url.to_owned(),
     };
     let selected = match url.split_once("://") {
-        #[cfg(feature = "backend-sqlite")]
         Some(("sqlite", rest)) => Some((BackendKind::Sqlite, rest)),
-        #[cfg(feature = "backend-mysql")]
         Some(("mysql", rest)) => Some((BackendKind::Mysql, rest)),
-        #[cfg(feature = "backend-postgres")]
         Some(("postgres", rest)) => Some((BackendKind::Postgres, rest)),
         Some(_) => None,
-        None => {
-            #[cfg(feature = "backend-sqlite")]
-            {
-                Some((BackendKind::Sqlite, url))
-            }
-            #[cfg(not(feature = "backend-sqlite"))]
-            {
-                None
-            }
-        }
+        None => Some((BackendKind::Sqlite, url)),
     };
     match selected {
         Some((_, "")) => Err(StorageError::EmptyStorePath),
@@ -251,7 +236,6 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "backend-sqlite")]
     #[test]
     fn parses_sqlite_urls_and_bare_dirs() {
         assert_eq!(
@@ -268,7 +252,6 @@ mod tests {
         ));
     }
 
-    #[cfg(feature = "backend-sqlite")]
     #[test]
     fn empty_store_locations_are_rejected() {
         assert!(matches!(

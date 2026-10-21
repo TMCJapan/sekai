@@ -9,12 +9,6 @@ pub mod api;
 pub mod cas;
 /// Store-wide process exclusion (`writer.lock`, `store.lock`).
 pub mod lock;
-/// Reserved MySQL backend stub.
-#[cfg(feature = "backend-mysql")]
-pub mod mysql;
-/// Reserved Postgres backend stub.
-#[cfg(feature = "backend-postgres")]
-pub mod postgres;
 /// Exclusive-run marker (`backup.inflight`) guarding `gc` against backups.
 pub mod runs;
 /// High-level store traits implemented by concrete backends.

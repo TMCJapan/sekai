@@ -302,20 +302,26 @@ The scope is a filter, not a partition:
   crates implementing the same traits. `app` is generic over
   `SekaiInstance<T: SekaiStore>`, so adding a backend does not touch use-case
   policy. No generic `Any`-driver abstraction.
-- Reserved `mysql` / `postgres` stub modules stay in `sekai-storage` until
-  those backends are implemented as their own crates.
+- SQLite is the only backend shipped. `sekai-storage` holds no backend
+  modules at all: it owns the traits, the file CAS, and the locks, and stays
+  free of a native database dependency. A mysql or postgres backend arrives
+  as a sibling crate, never as a stub inside `sekai-storage`.
 
 ## Backend Selection
 
-Feature-gated plus runtime-selected: `app` exposes cargo features per
-backend (`default = ["backend-sqlite"]`), re-exported through `sekai-cli`.
-At runtime the connection URL picks the compiled-in backend, and requesting
-an uncompiled backend is a loud `UnsupportedBackend` error — never silent
-reinterpretation. A build with no backend compiled in at all reports
-`NoBackendCompiled` instead, naming the request it cannot serve.
+Runtime-selected, with compile-time gating on the backend crate: `app`
+exposes a `backend-sqlite` feature (default-on) that pulls in
+`sekai-storage-sqlite`; `sekai-cli` inherits it through `sekai-app` and
+needs no features of its own. At runtime the connection URL picks the
+backend, and requesting a backend this build does not carry is a loud
+`UnsupportedBackend` error — never silent reinterpretation.
 `sekai-storage` keeps `BackendKind` and URL parsing; each
 backend crate implements `SekaiStoreOpener` for its store type, so the
 backend owns the grammar of the URLs that name it.
+
+A build without `backend-sqlite` has no store-opening entry point at all.
+`sekai-storage` still ships `UnavailableStore` for generic consumers, and
+it fails with `NoBackendCompiled` naming the request it cannot serve.
 
 ## Store Exclusion
 

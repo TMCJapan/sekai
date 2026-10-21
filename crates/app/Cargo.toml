@@ -13,9 +13,7 @@ workspace = true
 
 [features]
 default = ["backend-sqlite"]
-backend-sqlite = ["dep:sekai-storage-sqlite", "sekai-storage/backend-sqlite"]
-backend-mysql = ["sekai-storage/backend-mysql"]
-backend-postgres = ["sekai-storage/backend-postgres"]
+backend-sqlite = ["dep:sekai-storage-sqlite"]
 
 [dependencies]
 sekai-anvil.workspace = true

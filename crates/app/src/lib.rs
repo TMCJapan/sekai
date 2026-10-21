@@ -34,7 +34,7 @@ pub use diff::{ChunkDiff, DiffProgress, DiffTimings, world_chunk_coords};
 pub use error::AppError;
 pub use export::{ExportOptions, ExportProgress, ExportReport, ExportTimings};
 pub use gc::{GcProgress, GcTimings};
-pub use instance::{DefaultStore, SekaiInstance, WorldHandle, WorldHandleMut};
+pub use instance::{SekaiInstance, WorldHandle, WorldHandleMut};
 pub use prune::{PruneProgress, PruneTimings};
 pub use rollback::{
     MissingBlobPolicy, MissingFilePolicy, RollbackOptions, RollbackProgress, RollbackTimings,

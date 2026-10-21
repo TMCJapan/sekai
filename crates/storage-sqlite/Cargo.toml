@@ -13,8 +13,8 @@ workspace = true
 
 [dependencies]
 sekai-core.workspace = true
-sekai-storage = { workspace = true, features = ["backend-sqlite"] }
-sqlx.workspace = true
+sekai-storage.workspace = true
+sqlx = { workspace = true, features = ["sqlite"] }
 tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]

@@ -49,7 +49,7 @@ lz4_flex = { version = "0.14.0", default-features = false }
 miniz_oxide = { version = "0.9.1", default-features = false, features = ["with-alloc"] }
 serde = { version = "1.0.229", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1.0.151", default-features = false, features = ["alloc"] }
-sqlx = { version = "0.9.0", default-features = false, features = ["sqlite", "runtime-tokio"] }
+sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio"] }
 thiserror = { version = "2.0.20", default-features = false }
 tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread"] }
 twox-hash = { version = "2", default-features = false, features = ["xxhash32"] }
