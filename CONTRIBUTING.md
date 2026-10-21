@@ -146,8 +146,7 @@ any exception in the PR body.
   Backend selection is URL-selected at runtime (`sqlite://...`,
   `mysql://...`, `postgres://...`); requesting a backend this build does not
   carry is a loud `UnsupportedBackend` error, and a build without
-  `backend-sqlite` has no store-opening entry point at all
-  (`sekai-storage`'s `UnavailableStore` fails with `NoBackendCompiled`).
+  `backend-sqlite` has no store-opening entry point at all.
 
 ## Coding Standards
 

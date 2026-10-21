@@ -20,4 +20,4 @@ pub use api::{
 pub use cas::FileCas;
 pub use lock::{StoreLock, StoreLockMode};
 pub use runs::RunGuard;
-pub use store::{BlockingBlobStore, SekaiStore, SekaiStoreOpener, UnavailableStore};
+pub use store::{BlockingBlobStore, SekaiStore, SekaiStoreOpener};

@@ -319,9 +319,9 @@ backend, and requesting a backend this build does not carry is a loud
 backend crate implements `SekaiStoreOpener` for its store type, so the
 backend owns the grammar of the URLs that name it.
 
-A build without `backend-sqlite` has no store-opening entry point at all.
-`sekai-storage` still ships `UnavailableStore` for generic consumers, and
-it fails with `NoBackendCompiled` naming the request it cannot serve.
+A build without `backend-sqlite` has no store-opening entry point at all:
+`sekai-storage` ships no stand-in store, so a build that carries no backend
+cannot open one and says so at compile time.
 
 ## Store Exclusion
 
