@@ -103,7 +103,12 @@ impl FileCas {
     /// callers use the [`BlobStore`](sekai_core::BlobStore) trait method
     /// instead. False negatives from concurrent deletes only undercount
     /// a preview, never corrupt it.
-    pub fn contains_blob(&self, hash: &BlobHash) -> bool {
+    ///
+    /// Named apart from [`BlockingBlobStore::contains_blob`](crate::store::BlockingBlobStore::contains_blob),
+    /// the fallible trait method: the two differ only by the trait in
+    /// scope, so a shared name would resolve differently depending on
+    /// the imports of the calling code.
+    pub fn has_blob(&self, hash: &BlobHash) -> bool {
         self.path_of(hash).is_file()
     }
 
@@ -306,7 +311,7 @@ impl sekai_core::BlobStore for FileCas {
     type Error = StorageError;
 
     fn contains(&self, hash: &BlobHash) -> impl Future<Output = Result<bool, Self::Error>> + Send {
-        // `is_file`, matching `contains_blob` and `put_blob`: a directory
+        // `is_file`, matching `has_blob` and `put_blob`: a directory
         // squatting on a blob path is not a stored blob.
         core::future::ready(Ok(self.path_of(hash).is_file()))
     }
@@ -350,7 +355,7 @@ impl crate::store::BlockingBlobStore for FileCas {
     type LockGuard = StoreLock;
 
     fn contains_blob(&self, hash: &BlobHash) -> Result<bool, StorageError> {
-        Ok(Self::contains_blob(self, hash))
+        Ok(Self::has_blob(self, hash))
     }
 
     fn put_blob(&mut self, hash: &BlobHash, payload: &[u8]) -> Result<bool, StorageError> {
@@ -479,7 +484,7 @@ mod tests {
         std::fs::create_dir_all(&path).unwrap();
 
         let cas = FileCas::open(&root).unwrap();
-        assert!(!cas.contains_blob(&hash));
+        assert!(!cas.has_blob(&hash));
         assert!(!block_on(sekai_core::BlobStore::contains(&cas, &hash)).unwrap());
         let _ = std::fs::remove_dir_all(&root);
     }
