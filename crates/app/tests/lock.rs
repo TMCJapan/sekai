@@ -2,6 +2,10 @@
 //! for its own duration. A second handle in the same process conflicts
 //! exactly like another process would, so held locks stand in for
 //! concurrent runs here.
+//!
+//! Requires the `backend-sqlite` feature.
+
+#![cfg(feature = "backend-sqlite")]
 
 use sekai_app::{
     BackupOptions, BlobHash, ExportOptions, HostWorldTree, RollbackOptions, Scope, SekaiInstance,

@@ -1,4 +1,8 @@
 //! End-to-end snapshot tag flows over SQLite stores.
+//!
+//! Requires the `backend-sqlite` feature.
+
+#![cfg(feature = "backend-sqlite")]
 
 use sekai_app::HostWorldTree;
 use std::path::{Path, PathBuf};
