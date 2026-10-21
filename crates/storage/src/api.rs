@@ -229,7 +229,10 @@ impl<M, C> Store<M, C> {
 }
 
 /// Wrap an I/O failure together with the path that caused it.
-pub(crate) fn io_error(path: impl AsRef<Path>, source: std::io::Error) -> StorageError {
+///
+/// Backend crates build [`StorageError::Io`] through this so the path
+/// handling stays in one place.
+pub fn io_error(path: impl AsRef<Path>, source: std::io::Error) -> StorageError {
     StorageError::Io {
         path: path.as_ref().to_path_buf(),
         source,

@@ -20,7 +20,9 @@ pub mod runs;
 /// High-level store traits implemented by concrete backends.
 pub mod store;
 
-pub use api::{BackendKind, BlobStore, MetaStore, StorageError, Store, parse_backend_url};
+pub use api::{
+    BackendKind, BlobStore, MetaStore, StorageError, Store, io_error, parse_backend_url,
+};
 pub use cas::FileCas;
 pub use lock::{StoreLock, StoreLockMode};
 pub use runs::RunGuard;

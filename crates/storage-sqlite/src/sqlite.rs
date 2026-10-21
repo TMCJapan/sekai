@@ -17,7 +17,8 @@ use sqlx::sqlite::{
 };
 
 use sekai_storage::{
-    BackendKind, FileCas, SekaiStoreOpener, StorageError, Store, StoreLockMode, parse_backend_url,
+    BackendKind, FileCas, SekaiStoreOpener, StorageError, Store, StoreLockMode, io_error,
+    parse_backend_url,
 };
 
 /// Managed schema version (`PRAGMA user_version`).
@@ -28,13 +29,6 @@ const SCHEMA: &str = include_str!("../schema/sqlite.sql");
 /// Map a backend failure into the shared storage error.
 fn db_err(source: sqlx::Error) -> StorageError {
     StorageError::backend("sqlite", source)
-}
-
-fn io_error(path: impl AsRef<Path>, source: std::io::Error) -> StorageError {
-    StorageError::Io {
-        path: path.as_ref().to_path_buf(),
-        source,
-    }
 }
 
 /// SQLite-backed MVCC metadata.
