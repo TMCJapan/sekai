@@ -1,4 +1,8 @@
 //! End-to-end backup flows over real world folders and SQLite stores.
+//!
+//! Requires the `backend-sqlite` feature.
+
+#![cfg(feature = "backend-sqlite")]
 
 use sekai_app::{BackupOptions, RegionKind, Scope, SnapshotId};
 use sekai_app::{HostWorldTree, WorldTree};

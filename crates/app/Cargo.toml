@@ -29,18 +29,22 @@ tokio.workspace = true
 [[bench]]
 name = "backup"
 harness = false
+required-features = ["backend-sqlite"]
 
 [[bench]]
 name = "rollback"
 harness = false
+required-features = ["backend-sqlite"]
 
 [[bench]]
 name = "diff"
 harness = false
+required-features = ["backend-sqlite"]
 
 [[bench]]
 name = "gc_scan"
 harness = false
+required-features = ["backend-sqlite"]
 
 [dev-dependencies]
 criterion.workspace = true

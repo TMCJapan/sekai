@@ -1,5 +1,9 @@
 //! Store lifecycle: only `init` materializes a store, while `open` must fail
 //! loudly on a root that was never initialized (issue #80).
+//!
+//! Requires the `backend-sqlite` feature.
+
+#![cfg(feature = "backend-sqlite")]
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};

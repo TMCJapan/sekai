@@ -1,4 +1,8 @@
 //! End-to-end snapshot exports into fresh directories.
+//!
+//! Requires the `backend-sqlite` feature.
+
+#![cfg(feature = "backend-sqlite")]
 
 use sekai_app::HostWorldTree;
 use std::collections::BTreeMap;
