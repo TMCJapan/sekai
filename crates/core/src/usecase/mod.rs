@@ -18,5 +18,6 @@ pub use gc::{GcError, GcReport};
 pub use prune::{PruneError, PrunePlan, PruneReport, prune_apply, prune_plan, select_retained};
 pub use rollback::{RollbackError, RollbackPlan, RollbackReport};
 pub use snapshot::{
-    ResolveError, SnapshotError, SnapshotStats, ancestors, history, parents, resolve_snapshot_ref,
+    ResolveError, SnapshotError, SnapshotStats, resolve_snapshot_ref, snapshot_ancestors,
+    snapshot_history, snapshot_parents,
 };

@@ -354,7 +354,7 @@ where
     M: MetaStore,
     M::Error: core::fmt::Debug,
 {
-    use sekai_core::usecase::snapshot::{ancestors, history};
+    use sekai_core::usecase::snapshot::{snapshot_ancestors, snapshot_history};
 
     // Two independent histories: the second root shares no ancestor with
     // the first.
@@ -368,10 +368,10 @@ where
 
     // The graph, not the identifier order, decides what a snapshot
     // inherits: the chunk of `first` is invisible from `child`.
-    assert_eq!(meta.snapshot_parents(second).await.unwrap(), [first]);
+    assert_eq!(meta.snapshot_parents(second).await.unwrap(), vec![first]);
     assert_eq!(
         meta.snapshot_parents(first).await.unwrap(),
-        [] as [SnapshotId; 0]
+        Vec::<SnapshotId>::new()
     );
     assert!(
         meta.lookup_chunk(child, &coord(0, 0))
@@ -391,19 +391,19 @@ where
             .await
             .is_err()
     );
+    // A parent listed twice is recorded once, not a broken edge.
+    let twice = meta.create_snapshot(6_000, &[first, first]).await.unwrap();
+    assert_eq!(meta.snapshot_parents(twice).await.unwrap(), vec![first]);
 
     // Walking back covers the whole history, nearest first.
-    assert_eq!(ancestors(meta, second).await.unwrap(), [first]);
-    assert_eq!(
-        ancestors(meta, child).await.unwrap(),
-        [other] as [SnapshotId; 1]
-    );
-    let walked = history(meta, second).await.unwrap();
+    assert_eq!(snapshot_ancestors(meta, second).await.unwrap(), vec![first]);
+    assert_eq!(snapshot_ancestors(meta, child).await.unwrap(), vec![other]);
+    let walked = snapshot_history(meta, second).await.unwrap();
     assert_eq!(
         walked.iter().map(|s| s.id).collect::<Vec<_>>(),
-        [second, first]
+        vec![second, first]
     );
-    assert_eq!(walked[0].parents, [first]);
+    assert_eq!(walked[0].parents, vec![first]);
     assert!(walked[1].is_root());
 
     // Retiring a snapshot hands its children the history of its own
@@ -412,7 +412,7 @@ where
     assert!(meta.lookup_snapshot(first).await.unwrap().is_none());
     assert_eq!(
         meta.snapshot_parents(second).await.unwrap(),
-        [] as [SnapshotId; 0]
+        Vec::<SnapshotId>::new()
     );
     // The folded row still resolves at the surviving snapshot.
     assert!(
@@ -420,6 +420,19 @@ where
             .await
             .unwrap()
             .is_some()
+    );
+
+    // Retiring the middle of a three-deep history hands the grandchild
+    // the retired snapshot's own parent, not a dangling edge.
+    let root = meta.create_snapshot(7_000, &[]).await.unwrap();
+    let middle = meta.create_snapshot(8_000, &[root]).await.unwrap();
+    let grandchild = meta.create_snapshot(9_000, &[middle]).await.unwrap();
+    meta.retire_snapshot(middle, grandchild).await.unwrap();
+    assert!(meta.lookup_snapshot(middle).await.unwrap().is_none());
+    assert_eq!(meta.snapshot_parents(grandchild).await.unwrap(), vec![root]);
+    assert_eq!(
+        snapshot_ancestors(meta, grandchild).await.unwrap(),
+        vec![root]
     );
 }
 

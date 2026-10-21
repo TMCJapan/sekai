@@ -94,6 +94,12 @@ pub enum StorageError {
         /// Requested snapshot ID.
         id: u64,
     },
+    /// A snapshot may not continue itself.
+    #[error("snapshot {id} cannot be its own parent")]
+    SelfParent {
+        /// Snapshot that named itself.
+        id: u64,
+    },
     /// Database schema version is not supported.
     #[error(
         "unsupported schema version: {found}, this binary supports {supported} (recreate the store; pre-release stores are not migrated)"

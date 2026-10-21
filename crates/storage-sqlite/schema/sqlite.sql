@@ -6,6 +6,9 @@ CREATE TABLE snapshots(
 -- History graph: which snapshots a snapshot continues. The root of a
 -- history has no row, an ordinary snapshot one, a merge several. The
 -- graph - not the identifier order - decides what a snapshot inherits.
+-- `parent_id` has no cascade on purpose: deleting a snapshot that
+-- children still point at fails loudly, so a retirement rewires the
+-- children before it drops the row.
 CREATE TABLE snapshot_parents(
     child_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
     parent_id INTEGER NOT NULL REFERENCES snapshots(id),

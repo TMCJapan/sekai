@@ -104,8 +104,21 @@ impl MetaStore for MemMeta {
         parents: &[SnapshotId],
     ) -> impl Future<Output = Result<SnapshotId, MemError>> + Send {
         let id = SnapshotId(self.snapshots.len() as u64 + 1);
+        // Mirrors the backend: a parent must exist, a snapshot may not
+        // name itself, and a parent listed twice is recorded once.
+        for parent in parents {
+            if *parent == id || !self.snapshots.iter().any(|s| s.id == *parent) {
+                return core::future::ready(Err(MemError));
+            }
+        }
+        let mut unique: Vec<SnapshotId> = Vec::new();
+        for parent in parents {
+            if !unique.contains(parent) {
+                unique.push(*parent);
+            }
+        }
         self.snapshots
-            .push(Snapshot::new(id, created_at_ms, parents.to_vec()));
+            .push(Snapshot::new(id, created_at_ms, unique));
         core::future::ready(Ok(id))
     }
 

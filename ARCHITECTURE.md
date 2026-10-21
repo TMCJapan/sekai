@@ -221,8 +221,9 @@ sees rows introduced by a history it does not descend from.
 
 Parent links are written with the snapshot row, in the same transaction,
 and read back through the `MetaStore` port (`snapshot_parents`) or walked
-to the root by the core use cases (`usecase::snapshot::ancestors` /
-`history`).
+to the root by the core use cases (`usecase::snapshot::snapshot_ancestors`
+/ `snapshot_history`). Every parent must exist, a snapshot may not name
+itself, and a parent listed twice is recorded once.
 
 Ref objects (a movable `HEAD`, named branches) do not exist yet. Until
 they do, a new snapshot continues the snapshot it was planned against: the

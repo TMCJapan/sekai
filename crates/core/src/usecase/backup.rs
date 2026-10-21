@@ -337,6 +337,58 @@ mod tests {
     }
 
     #[test]
+    fn the_committed_snapshot_continues_the_previous_one() {
+        let mut meta = MemMeta::default();
+        let observed = [Observation {
+            key: key(0, 0),
+            fingerprint: fingerprint(key(0, 0)),
+        }];
+
+        // The first backup starts a history: no previous snapshot, no
+        // parent.
+        let (previous, plan) =
+            crate::support::block_on(plan_backup(&meta, &observed, &Scope::World)).unwrap();
+        let staged = assemble(
+            plan,
+            &previous,
+            Ingested {
+                entries: alloc::vec![stage_present(coord(0, 0), BlobHash([1; 32]))],
+                present: BTreeSet::from([coord(0, 0)]),
+                new_blobs: 1,
+                fingerprints: alloc::vec![fingerprint(key(0, 0))],
+            },
+            &Scope::World,
+        );
+        let first = crate::support::block_on(commit(&mut meta, &previous, &staged, 1_000)).unwrap();
+        assert_eq!(
+            crate::support::block_on(meta.snapshot_parents(first.snapshot)).unwrap(),
+            alloc::vec![]
+        );
+
+        // The second backup continues the history of the snapshot it was
+        // planned against.
+        let (previous, plan) =
+            crate::support::block_on(plan_backup(&meta, &observed, &Scope::World)).unwrap();
+        let staged = assemble(
+            plan,
+            &previous,
+            Ingested {
+                entries: alloc::vec![stage_present(coord(0, 0), BlobHash([2; 32]))],
+                present: BTreeSet::from([coord(0, 0)]),
+                new_blobs: 1,
+                fingerprints: alloc::vec![fingerprint(key(0, 0))],
+            },
+            &Scope::World,
+        );
+        let second =
+            crate::support::block_on(commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        assert_eq!(
+            crate::support::block_on(meta.snapshot_parents(second.snapshot)).unwrap(),
+            alloc::vec![first.snapshot]
+        );
+    }
+
+    #[test]
     fn changed_region_reingests_while_rest_carries() {
         let mut meta = MemMeta::default();
         let fp0 = fingerprint(key(0, 0));

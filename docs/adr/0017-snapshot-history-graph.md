@@ -38,8 +38,10 @@ surviving snapshots keep their effective state.
 
 The `MetaStore` port carries the graph: `create_snapshot` and
 `apply_snapshot_incremental` take the parents, `snapshot_parents` reads
-one node's edges, and `core::usecase::snapshot::ancestors` /
-`history` walk back to the root.
+one node's edges, and `core::usecase::snapshot::snapshot_ancestors` /
+`snapshot_history` walk back to the root. Every parent must exist, a
+snapshot may not name itself, and a parent listed twice is recorded
+once; an unknown snapshot ID is an error, never an empty history.
 
 ## Consequences
 

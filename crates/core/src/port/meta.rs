@@ -20,6 +20,9 @@ pub trait MetaStore {
 
     /// Append a snapshot continuing `parents`; an empty list starts a
     /// history. IDs are monotone increasing.
+    ///
+    /// Every parent must exist, a snapshot may not name itself, and a
+    /// parent listed twice is recorded once.
     fn create_snapshot(
         &mut self,
         created_at_ms: u64,
@@ -27,6 +30,10 @@ pub trait MetaStore {
     ) -> impl Future<Output = Result<SnapshotId, Self::Error>> + Send;
 
     /// Direct parents of `snapshot`; empty for the root of a history.
+    ///
+    /// An unknown snapshot yields an empty list: the port reports what
+    /// is stored, not what exists. The use cases above it check for
+    /// existence first.
     fn snapshot_parents(
         &self,
         snapshot: SnapshotId,
@@ -42,8 +49,9 @@ pub trait MetaStore {
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// Effective row for (`snapshot`, `coord`): the row introduced at
-    /// `snapshot` or at one of its ancestors, the nearest one winning,
-    /// or `None` when no ancestor ever recorded the coordinate.
+    /// `snapshot` or at one of its ancestors. Of the ancestor rows, the
+    /// one with the highest snapshot ID wins, or `None` when no
+    /// ancestor ever recorded the coordinate.
     fn lookup_chunk(
         &self,
         snapshot: SnapshotId,
@@ -62,8 +70,13 @@ pub trait MetaStore {
 
     /// Visit effective rows of one snapshot: exactly one row per
     /// coordinate known at `snapshot` (the row introduced at it or at one
-    /// of its ancestors, the nearest one winning), including tombstones.
-    /// Return `false` to stop early.
+    /// of its ancestors, the highest snapshot ID winning), including
+    /// tombstones. Return `false` to stop early.
+    ///
+    /// The effective set is materialized before the visitor runs, so the
+    /// early return saves iteration, not the read. Resolving it costs
+    /// the ancestry of the snapshot: a caller that walks many snapshots
+    /// pays for the history depth per snapshot.
     fn visit_snapshot_chunks<F>(
         &self,
         snapshot: SnapshotId,
@@ -95,12 +108,14 @@ pub trait MetaStore {
     /// Commit a snapshot and optionally carry unchanged regions.
     ///
     /// The new snapshot continues `parents`; an empty list starts a
-    /// history. `entries` contains fresh rows and tombstones. `carry_from`
-    /// identifies unchanged regions: backends advance their snapshot state
-    /// and count their effective chunks, but write no per-chunk rows for
-    /// them (delta storage). Fingerprints are refreshed atomically, and
-    /// `removed` names regions whose state rows drop: files gone from disk
-    /// or ingested only partly.
+    /// history. As in [`Self::create_snapshot`], every parent must
+    /// exist, a snapshot may not name itself, and a parent listed twice
+    /// is recorded once. `entries` contains fresh rows and tombstones.
+    /// `carry_from` identifies unchanged regions: backends advance their
+    /// snapshot state and count their effective chunks, but write no
+    /// per-chunk rows for them (delta storage). Fingerprints are
+    /// refreshed atomically, and `removed` names regions whose state
+    /// rows drop: files gone from disk or ingested only partly.
     ///
     /// Referenced blobs must already be flushed to CAS.
     fn apply_snapshot_incremental(
@@ -143,6 +158,9 @@ pub trait MetaStore {
     /// atomically. The children of `from` continue the history of its
     /// own parents, so the graph stays connected. Effective states of
     /// retained snapshots never change.
+    ///
+    /// `into` must be a descendant of `from`: folding into an unrelated
+    /// history would graft rows the successor never had.
     fn retire_snapshot(
         &mut self,
         from: SnapshotId,

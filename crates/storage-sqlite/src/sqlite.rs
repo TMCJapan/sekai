@@ -495,6 +495,10 @@ fn decode_snapshot(
 }
 
 /// Insert a snapshot row and the edges naming its parents.
+///
+/// Every parent must exist and none of them may be the snapshot
+/// itself; a parent listed twice is recorded once. The checks run in
+/// the transaction, so a rejected snapshot leaves nothing behind.
 async fn insert_snapshot(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     created_at_ms: u64,
@@ -506,15 +510,27 @@ async fn insert_snapshot(
         .await
         .map_err(db_err)?
         .last_insert_rowid();
+    let snapshot = snapshot_id_from_i64(id)?;
     for parent in parents {
-        sqlx::query("INSERT INTO snapshot_parents (child_id, parent_id) VALUES (?, ?)")
+        if *parent == snapshot {
+            return Err(StorageError::SelfParent { id: parent.0 });
+        }
+        let found: Option<i64> = sqlx::query_scalar("SELECT 1 FROM snapshots WHERE id = ?")
+            .bind(snap_param(*parent)?)
+            .fetch_optional(&mut **tx)
+            .await
+            .map_err(db_err)?;
+        if found.is_none() {
+            return Err(StorageError::UnknownSnapshot { id: parent.0 });
+        }
+        sqlx::query("INSERT OR IGNORE INTO snapshot_parents (child_id, parent_id) VALUES (?, ?)")
             .bind(id)
             .bind(snap_param(*parent)?)
             .execute(&mut **tx)
             .await
             .map_err(db_err)?;
     }
-    snapshot_id_from_i64(id)
+    Ok(snapshot)
 }
 
 impl sekai_core::MetaStore for SqliteMeta {
@@ -650,8 +666,17 @@ impl sekai_core::MetaStore for SqliteMeta {
             .await
             .map_err(db_err)?;
         let parents = self.parent_map().await?;
+        let mut ids: Vec<SnapshotId> = Vec::with_capacity(rows.len());
         for row in &rows {
-            let id = snapshot_id_from_i64(row.try_get("id").map_err(db_err)?)?;
+            ids.push(snapshot_id_from_i64(row.try_get("id").map_err(db_err)?)?);
+        }
+        // The map holds every edge, so a snapshot without an entry is a
+        // root; an edge naming a snapshot that is gone is corruption.
+        debug_assert!(
+            parents.keys().all(|id| ids.contains(id)),
+            "parent map names a snapshot that does not exist"
+        );
+        for (row, id) in rows.iter().zip(ids) {
             let snapshot = decode_snapshot(row, parents.get(&id).map_or(&[], Vec::as_slice))?;
             if !visit(&snapshot) {
                 break;
@@ -1001,6 +1026,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[tokio::test]
+    async fn a_snapshot_cannot_name_itself_or_a_missing_snapshot_as_parent() {
+        let mut meta = memory_meta().await;
+        // The first snapshot takes id 1, so naming it is a self-reference.
+        assert!(matches!(
+            meta.create_snapshot(1_000, &[SnapshotId(1)]).await,
+            Err(StorageError::SelfParent { id: 1 })
+        ));
+        assert!(matches!(
+            meta.create_snapshot(1_000, &[SnapshotId(9)]).await,
+            Err(StorageError::UnknownSnapshot { id: 9 })
+        ));
+        // The rejected attempts left nothing behind.
+        assert!(meta.latest_snapshot().await.unwrap().is_none());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
