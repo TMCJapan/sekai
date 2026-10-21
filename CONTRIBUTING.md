@@ -180,7 +180,11 @@ cargo clippy -p sekai-util -p sekai-anvil -p sekai-nbt -p sekai-core --target wa
 cargo nextest run --workspace
 
 # Feature-combination lint: default, none, each backend, all
-cargo hack clippy -p sekai-storage -p sekai-app -p sekai-cli --each-feature --no-dev-deps -- -D warnings
+cargo hack --each-feature clippy --workspace --all-targets -- -D warnings
+
+# Feature-combination tests: the store-backed suites need `backend-sqlite`,
+# so they are compiled out of the other combinations
+cargo hack --each-feature nextest run --workspace --all-targets
 
 # Backend matrix (when touching storage backends)
 cargo nextest run -p sekai-storage
