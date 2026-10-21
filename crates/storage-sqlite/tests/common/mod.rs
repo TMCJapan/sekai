@@ -373,6 +373,11 @@ where
         meta.snapshot_parents(first).await.unwrap(),
         Vec::<SnapshotId>::new()
     );
+    assert_eq!(meta.snapshot_parents(child).await.unwrap(), vec![other]);
+    assert_eq!(
+        meta.snapshot_parents(other).await.unwrap(),
+        Vec::<SnapshotId>::new()
+    );
     assert!(
         meta.lookup_chunk(child, &coord(0, 0))
             .await
@@ -434,6 +439,11 @@ where
         snapshot_ancestors(meta, grandchild).await.unwrap(),
         vec![root]
     );
+
+    // Folding into a history that does not descend from the retired
+    // snapshot would graft rows the successor never had.
+    let unrelated = meta.create_snapshot(10_000, &[]).await.unwrap();
+    assert!(meta.retire_snapshot(root, unrelated).await.is_err());
 }
 
 /// CAS put/fetch/dedup/remove/visit contract.

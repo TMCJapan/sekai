@@ -481,6 +481,13 @@ DELETE FROM chunk_history WHERE snapshot_id = ?1
  )"
 );
 
+/// Whether one snapshot descends from another: the ancestor set of the
+/// successor (`?1`) contains the retired snapshot (`?2`).
+const DESCENDS_SQL: &str = concat!(
+    ancestor_cte!("?1"),
+    "SELECT COUNT(*) FROM ancestors WHERE id = ?2"
+);
+
 /// Decode one `snapshots` row.
 fn decode_snapshot(
     row: &sqlx::sqlite::SqliteRow,
@@ -798,6 +805,21 @@ impl sekai_core::MetaStore for SqliteMeta {
             if found.is_none() {
                 return Err(StorageError::UnknownSnapshot { id: id.0 });
             }
+        }
+        // The successor must descend from the retired snapshot: folding
+        // into an unrelated history would graft rows the successor never
+        // had.
+        let descends: i64 = sqlx::query_scalar(DESCENDS_SQL)
+            .bind(snap_param(into)?)
+            .bind(snap_param(from)?)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(db_err)?;
+        if descends == 0 {
+            return Err(StorageError::UnrelatedRetirement {
+                from: from.0,
+                into: into.0,
+            });
         }
         let from = snap_param(from)?;
         let into = snap_param(into)?;

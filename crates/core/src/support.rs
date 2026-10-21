@@ -14,23 +14,50 @@ use sekai_util::{
 
 /// Fake backend failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MemError;
+pub enum MemError {
+    /// The blob is absent from the fake store.
+    MissingBlob,
+    /// The tag name is taken.
+    DuplicateTag,
+    /// A named parent does not exist.
+    UnknownParent {
+        /// Parent that was asked for.
+        id: u64,
+    },
+    /// A snapshot named itself as a parent.
+    SelfParent {
+        /// Snapshot that named itself.
+        id: u64,
+    },
+    /// A retirement that does not follow the history.
+    InvalidRetirement {
+        /// Snapshot being retired.
+        from: u64,
+        /// Intended successor.
+        into: u64,
+    },
+}
+
+/// Parent links by snapshot, for the walks over the history graph.
+fn parent_index(snapshots: &[Snapshot]) -> BTreeMap<SnapshotId, Vec<SnapshotId>> {
+    snapshots
+        .iter()
+        .map(|snapshot| (snapshot.id, snapshot.parents.clone()))
+        .collect()
+}
 
 /// Ancestors of `snapshot`: every snapshot reachable through parent
 /// links, the snapshot itself excluded.
 fn ancestor_ids(snapshots: &[Snapshot], snapshot: SnapshotId) -> BTreeSet<SnapshotId> {
+    let index = parent_index(snapshots);
     let mut seen = BTreeSet::new();
-    let mut stack: Vec<SnapshotId> = snapshots
-        .iter()
-        .find(|s| s.id == snapshot)
-        .map(|s| s.parents.clone())
-        .unwrap_or_default();
+    let mut stack: Vec<SnapshotId> = index.get(&snapshot).cloned().unwrap_or_default();
     while let Some(id) = stack.pop() {
         if !seen.insert(id) {
             continue;
         }
-        if let Some(node) = snapshots.iter().find(|s| s.id == id) {
-            stack.extend(node.parents.iter().copied());
+        if let Some(parents) = index.get(&id) {
+            stack.extend(parents.iter().copied());
         }
     }
     seen
@@ -93,6 +120,10 @@ pub struct MemMeta {
     pub states: Vec<RegionStateEntry>,
     /// Tags by name.
     pub tags: BTreeMap<TagName, SnapshotTag>,
+    /// The next identifier to hand out. Counted separately from the
+    /// stored snapshots so a retirement never makes an identifier
+    /// reusable.
+    next_id: u64,
 }
 
 impl MetaStore for MemMeta {
@@ -103,12 +134,15 @@ impl MetaStore for MemMeta {
         created_at_ms: u64,
         parents: &[SnapshotId],
     ) -> impl Future<Output = Result<SnapshotId, MemError>> + Send {
-        let id = SnapshotId(self.snapshots.len() as u64 + 1);
+        let id = SnapshotId(self.next_id + 1);
         // Mirrors the backend: a parent must exist, a snapshot may not
         // name itself, and a parent listed twice is recorded once.
         for parent in parents {
-            if *parent == id || !self.snapshots.iter().any(|s| s.id == *parent) {
-                return core::future::ready(Err(MemError));
+            if *parent == id {
+                return core::future::ready(Err(MemError::SelfParent { id: parent.0 }));
+            }
+            if !self.snapshots.iter().any(|s| s.id == *parent) {
+                return core::future::ready(Err(MemError::UnknownParent { id: parent.0 }));
             }
         }
         let mut unique: Vec<SnapshotId> = Vec::new();
@@ -117,6 +151,7 @@ impl MetaStore for MemMeta {
                 unique.push(*parent);
             }
         }
+        self.next_id = id.0;
         self.snapshots
             .push(Snapshot::new(id, created_at_ms, unique));
         core::future::ready(Ok(id))
@@ -292,7 +327,7 @@ impl MetaStore for MemMeta {
     ) -> impl Future<Output = Result<(), MemError>> + Send {
         // Mirrors the backend PRIMARY KEY: duplicates are rejected.
         if self.tags.contains_key(name) {
-            return core::future::ready(Err(MemError));
+            return core::future::ready(Err(MemError::DuplicateTag));
         }
         self.tags.insert(
             name.clone(),
@@ -331,9 +366,20 @@ impl MetaStore for MemMeta {
         into: SnapshotId,
     ) -> impl Future<Output = Result<FoldOutcome, MemError>> + Send {
         // Mirrors the backend: a retirement folds into a strictly newer,
-        // existing snapshot.
+        // existing snapshot that descends from the retired one. Folding
+        // into an unrelated history would graft rows the successor never
+        // had.
         if into <= from || !self.snapshots.iter().any(|s| s.id == into) {
-            return core::future::ready(Err(MemError));
+            return core::future::ready(Err(MemError::InvalidRetirement {
+                from: from.0,
+                into: into.0,
+            }));
+        }
+        if !ancestor_ids(&self.snapshots, into).contains(&from) {
+            return core::future::ready(Err(MemError::InvalidRetirement {
+                from: from.0,
+                into: into.0,
+            }));
         }
         // Rows superseded by the history `into` continues are dropped;
         // the survivors move onto it.
@@ -428,7 +474,7 @@ impl BlobStore for MemCas {
     ) -> impl Future<Output = Result<(), Self::Error>> + Send {
         out.clear();
         let Some(bytes) = self.blobs.get(hash) else {
-            return core::future::ready(Err(MemError));
+            return core::future::ready(Err(MemError::MissingBlob));
         };
         out.extend_from_slice(bytes);
         core::future::ready(Ok(()))

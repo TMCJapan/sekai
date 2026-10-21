@@ -88,6 +88,14 @@ pub enum StorageError {
         /// Intended successor.
         into: u64,
     },
+    /// A retirement must fold a snapshot into one of its descendants.
+    #[error("cannot retire snapshot {from} into {into}: the successor must descend from it")]
+    UnrelatedRetirement {
+        /// Snapshot being retired.
+        from: u64,
+        /// Intended successor.
+        into: u64,
+    },
     /// The named snapshot does not exist.
     #[error("unknown snapshot: {id}")]
     UnknownSnapshot {

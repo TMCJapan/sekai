@@ -23,9 +23,11 @@ ordinary snapshot, several for a merge. SQLite stores the edges in
 
 The graph - not the identifier order - decides inheritance. The
 effective state of a snapshot resolves over its ancestor set (the
-snapshot plus every snapshot reachable through parent links), the
-nearest row winning. Backends answer the ancestor set with a recursive
-query over the parent edges.
+snapshot plus every snapshot reachable through parent links). Of the
+ancestor rows, the one with the highest snapshot ID wins; a merge
+snapshot would need a distance-based tie-break, which nothing creates
+yet. Backends answer the ancestor set with a recursive query over the
+parent edges.
 
 A new snapshot continues the snapshot it was planned against, which -
 until ref objects exist - is the latest snapshot of the store and also
@@ -34,7 +36,9 @@ nothing creates them yet, so a history is a chain in practice.
 
 Retiring a snapshot (`prune`) keeps the graph connected: the children of
 the retired snapshot continue the history of its own parents, so the
-surviving snapshots keep their effective state.
+surviving snapshots keep their effective state. The successor must
+descend from the retired snapshot; folding into an unrelated history
+would graft rows the successor never had.
 
 The `MetaStore` port carries the graph: `create_snapshot` and
 `apply_snapshot_incremental` take the parents, `snapshot_parents` reads

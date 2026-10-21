@@ -60,8 +60,11 @@ pub async fn snapshot_parents<M: MetaStore>(
 /// The walk follows parent links, so it covers the whole history the
 /// snapshot descends from. The ancestors come by distance: the direct
 /// parents first, then their parents, and so on; within one distance
-/// they come in ascending ID order. Each snapshot is reported once, and
-/// a malformed graph (a cycle) terminates instead of looping.
+/// they come in ascending ID order. Each snapshot is reported once.
+///
+/// A snapshot continues snapshots that are older than it, so the graph
+/// is acyclic by construction; the visited set is the guard that keeps
+/// the walk finite even if that ever changes.
 pub async fn snapshot_ancestors<M: MetaStore>(
     meta: &M,
     snapshot: SnapshotId,
@@ -100,26 +103,44 @@ pub async fn snapshot_ancestors<M: MetaStore>(
 /// The history of `snapshot`: the snapshot itself followed by its
 /// ancestors, nearest first.
 ///
-/// Every ancestor must have a record: a missing one is a broken
-/// history, not a shorter history.
+/// One walk reads the whole history: a record carries the parents the
+/// walk follows. Every ancestor must have a record - a missing one is a
+/// broken history, not a shorter history.
 pub async fn snapshot_history<M: MetaStore>(
     meta: &M,
     snapshot: SnapshotId,
 ) -> Result<Vec<Snapshot>, SnapshotError<M::Error>> {
-    let mut ids = alloc::vec![snapshot];
-    ids.extend(snapshot_ancestors(meta, snapshot).await?);
-    let mut out = Vec::with_capacity(ids.len());
-    for id in ids {
-        let record = meta
-            .lookup_snapshot(id)
-            .await
-            .map_err(SnapshotError::Meta)?;
-        match record {
-            Some(record) => out.push(record),
-            None => return Err(SnapshotError::UnknownSnapshot { id: id.0 }),
+    let mut out = Vec::new();
+    let mut seen: BTreeSet<SnapshotId> = BTreeSet::new();
+    let mut level: BTreeSet<SnapshotId> = BTreeSet::from([snapshot]);
+    while !level.is_empty() {
+        let mut next: BTreeSet<SnapshotId> = BTreeSet::new();
+        for id in level {
+            if !seen.insert(id) {
+                continue;
+            }
+            let record = lookup_record(meta, id).await?;
+            for parent in &record.parents {
+                if !seen.contains(parent) {
+                    next.insert(*parent);
+                }
+            }
+            out.push(record);
         }
+        level = next;
     }
     Ok(out)
+}
+
+/// Read one snapshot record; a missing record is a broken history.
+async fn lookup_record<M: MetaStore>(
+    meta: &M,
+    snapshot: SnapshotId,
+) -> Result<Snapshot, SnapshotError<M::Error>> {
+    meta.lookup_snapshot(snapshot)
+        .await
+        .map_err(SnapshotError::Meta)?
+        .ok_or(SnapshotError::UnknownSnapshot { id: snapshot.0 })
 }
 
 /// Fail when the snapshot does not exist.
@@ -127,14 +148,7 @@ async fn ensure_exists<M: MetaStore>(
     meta: &M,
     snapshot: SnapshotId,
 ) -> Result<(), SnapshotError<M::Error>> {
-    match meta
-        .lookup_snapshot(snapshot)
-        .await
-        .map_err(SnapshotError::Meta)?
-    {
-        Some(_) => Ok(()),
-        None => Err(SnapshotError::UnknownSnapshot { id: snapshot.0 }),
-    }
+    lookup_record(meta, snapshot).await.map(|_| ())
 }
 
 /// List all tags in name order.
@@ -476,13 +490,53 @@ mod tests {
 
     #[test]
     fn a_snapshot_cannot_name_a_missing_or_itself_as_parent() {
+        use crate::support::MemError;
         let mut meta = MemMeta::default();
         // The first snapshot takes id 1, so naming it is a self-reference.
-        assert!(block_on(meta.create_snapshot(100, &[SnapshotId(1)])).is_err());
-        assert!(block_on(meta.create_snapshot(100, &[SnapshotId(9)])).is_err());
+        assert_eq!(
+            block_on(meta.create_snapshot(100, &[SnapshotId(1)])).unwrap_err(),
+            MemError::SelfParent { id: 1 }
+        );
+        assert_eq!(
+            block_on(meta.create_snapshot(100, &[SnapshotId(9)])).unwrap_err(),
+            MemError::UnknownParent { id: 9 }
+        );
         // A parent listed twice is recorded once.
         let root = block_on(meta.create_snapshot(100, &[])).unwrap();
         let child = block_on(meta.create_snapshot(200, &[root, root])).unwrap();
         assert_eq!(block_on(meta.snapshot_parents(child)).unwrap(), [root]);
+    }
+
+    #[test]
+    fn a_retirement_must_fold_into_a_descendant() {
+        use crate::support::MemError;
+        let mut meta = MemMeta::default();
+        let first = block_on(meta.create_snapshot(100, &[])).unwrap();
+        let second = block_on(meta.create_snapshot(200, &[first])).unwrap();
+        let other = block_on(meta.create_snapshot(300, &[])).unwrap();
+
+        // `other` is newer than `first` but descends from nothing:
+        // folding into it would graft rows it never had.
+        assert_eq!(
+            block_on(meta.retire_snapshot(first, other)).unwrap_err(),
+            MemError::InvalidRetirement {
+                from: first.0,
+                into: other.0
+            }
+        );
+        // The successor in the same history is fine.
+        assert!(block_on(meta.retire_snapshot(first, second)).is_ok());
+    }
+
+    #[test]
+    fn identifiers_are_never_reused_after_a_retirement() {
+        let mut meta = MemMeta::default();
+        let first = block_on(meta.create_snapshot(100, &[])).unwrap();
+        let second = block_on(meta.create_snapshot(200, &[first])).unwrap();
+        block_on(meta.retire_snapshot(first, second)).unwrap();
+        // The retired identifier is gone, but it is not handed out again:
+        // history rows still reference it.
+        let third = block_on(meta.create_snapshot(300, &[])).unwrap();
+        assert!(third > second);
     }
 }

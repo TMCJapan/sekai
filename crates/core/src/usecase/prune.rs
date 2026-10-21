@@ -189,6 +189,8 @@ mod tests {
         ChunkCoord::new(OVER, REGION, x, z)
     }
 
+    /// A linear history of `n` snapshots, each continuing the one
+    /// before it - the shape the store keeps.
     fn snapshots(n: u64) -> Vec<Snapshot> {
         (1..=n)
             .map(|id| {

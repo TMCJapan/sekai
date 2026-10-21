@@ -369,6 +369,10 @@ mod tests {
         // planned against.
         let (previous, plan) =
             crate::support::block_on(plan_backup(&meta, &observed, &Scope::World)).unwrap();
+        assert_eq!(
+            previous.snapshot.as_ref().map(|s| s.id),
+            Some(first.snapshot)
+        );
         let staged = assemble(
             plan,
             &previous,
