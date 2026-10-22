@@ -170,3 +170,73 @@ async fn the_active_ref_is_protected() {
     assert_eq!(instance.list_refs().await.unwrap().len(), 1);
     cleanup(&root);
 }
+
+#[tokio::test]
+async fn forcing_a_move_keeps_the_active_flag() {
+    let root = tempdir("force");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    write_region(world_path.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
+
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let first = commit(&mut instance, &mut world).await;
+    let second = commit(&mut instance, &mut world).await;
+    let main = RefName::parse("main").unwrap();
+
+    // Moving the active ref back moves the flag with it: it stays the
+    // ref the next commit hangs from.
+    let record = instance
+        .create_ref(&main, Some(first.commit), true)
+        .await
+        .unwrap();
+    assert!(record.active);
+    assert_eq!(record.commit, Some(first.commit));
+    assert_eq!(
+        instance.current_commit_id().await.unwrap(),
+        Some(first.commit)
+    );
+
+    // A forced move to unborn keeps the flag too.
+    let record = instance.create_ref(&main, None, true).await.unwrap();
+    assert!(record.active);
+    assert!(record.commit.is_none());
+    assert_eq!(instance.list_refs().await.unwrap().len(), 1);
+    assert_ne!(first.commit, second.commit);
+    cleanup(&root);
+}
+
+#[tokio::test]
+async fn ref_writes_report_a_missing_target() {
+    let root = tempdir("missing");
+    let store = root.join("store").to_string_lossy().into_owned();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let feature = RefName::parse("feature").unwrap();
+
+    // A target no commit carries is refused before the ref exists.
+    let err = instance
+        .create_ref(&feature, Some(sekai_app::CommitId(99)), false)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            sekai_app::AppError::CommitRef(sekai_core::ResolveError::UnknownCommit { id: 99 })
+        ),
+        "{err}"
+    );
+    assert_eq!(instance.list_refs().await.unwrap().len(), 1);
+
+    // Activating a name no ref carries is refused, and the active ref
+    // stays where it was.
+    let err = instance.activate_ref(&feature).await.unwrap_err();
+    assert!(
+        matches!(err, sekai_app::AppError::UnknownRef { .. }),
+        "{err}"
+    );
+    assert_eq!(
+        instance.active_ref().await.unwrap().unwrap().name.as_str(),
+        "main"
+    );
+    cleanup(&root);
+}
