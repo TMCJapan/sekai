@@ -110,17 +110,11 @@ impl<T: SekaiStore> SekaiInstance<T> {
     }
 
     /// Latest commit ID; fails when the store has no commits.
+    ///
+    /// This is the newest commit of the store, not the one the next
+    /// commit would continue - see [`SekaiInstance::current_commit_id`].
     pub async fn latest_commit_id(&self) -> Result<CommitId, AppError> {
-        let lock = self.lock_store(StoreLockMode::Shared)?;
-        self.latest_commit_id_locked(&lock).await
-    }
-
-    /// [`Self::latest_commit_id`] for an operation that already holds
-    /// `_held`; asking for it makes the caller prove the lock exists.
-    pub(crate) async fn latest_commit_id_locked(
-        &self,
-        _held: &T::LockGuard,
-    ) -> Result<CommitId, AppError> {
+        let _lock = self.lock_store(StoreLockMode::Shared)?;
         sekai_core::usecase::graph::latest_commit_id(self.store.meta())
             .await
             .map_err(AppError::Commit)?
@@ -176,7 +170,8 @@ impl<T: SekaiStore + SekaiStoreOpener> SekaiInstance<T> {
 /// must outlive the future until the file pass finishes.
 #[derive(Debug)]
 pub(crate) struct OperationLocks<S: SekaiStore, L> {
-    store: S::LockGuard,
+    /// Held for its drop: the lock must outlive the operation.
+    _store: S::LockGuard,
     _world: WorldLockState<L>,
 }
 
@@ -193,14 +188,9 @@ impl<S: SekaiStore, L: WorldLock> OperationLocks<S, L> {
         let store = instance.lock_store(store)?;
         let world = world.lock(world_mode)?;
         Ok(Arc::new(Self {
-            store,
+            _store: store,
             _world: world,
         }))
-    }
-
-    /// The store lock this operation holds.
-    pub(crate) const fn store(&self) -> &S::LockGuard {
-        &self.store
     }
 }
 

@@ -12,6 +12,7 @@ pub mod diff;
 pub mod gc;
 pub mod graph;
 pub mod prune;
+pub mod refs;
 
 pub use checkout::{CheckoutError, CheckoutPlan, CheckoutReport};
 pub use commit::{Assembled, CommitReport, Observation, Plan, Previous};
@@ -22,3 +23,4 @@ pub use graph::{
     commit_stats, latest_commit_id, list_commits, list_tags, resolve_commit_ref,
 };
 pub use prune::{PruneError, PrunePlan, PruneReport, prune_apply, prune_plan, select_retained};
+pub use refs::{active_ref, list_refs};

@@ -60,6 +60,35 @@ impl fmt::Display for TagNameError {
 
 impl core::error::Error for TagNameError {}
 
+/// Ref name validation failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefNameError {
+    /// Name was empty.
+    Empty,
+    /// Name exceeded 64 bytes.
+    TooLong,
+    /// Name held a byte outside `[A-Za-z0-9._-/]`.
+    BadChar(char),
+    /// Name consisted of digits alone (confusable with a commit ID).
+    Numeric,
+    /// Name is reserved for the store's active ref.
+    Reserved,
+}
+
+impl fmt::Display for RefNameError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "ref name is empty"),
+            Self::TooLong => write!(f, "ref name exceeds 64 bytes"),
+            Self::BadChar(c) => write!(f, "ref name holds invalid character: {c:?}"),
+            Self::Numeric => write!(f, "ref name must not be all digits"),
+            Self::Reserved => write!(f, "ref name is reserved"),
+        }
+    }
+}
+
+impl core::error::Error for RefNameError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

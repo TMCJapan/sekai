@@ -56,3 +56,19 @@ CREATE TABLE commit_tags(
     commit_id INTEGER NOT NULL REFERENCES commits(id) ON DELETE CASCADE,
     created_at_ms INTEGER NOT NULL
 );
+
+-- Named, movable pointers to commits: the store's branch model. A ref
+-- whose `commit_id` is NULL is unborn - it names a history without a
+-- commit yet. Exactly one ref is active: the one new commits hang from
+-- (the store's HEAD). `commit_id` has no cascade on purpose - a ref
+-- naming a retired commit follows the fold instead of vanishing.
+CREATE TABLE refs(
+    name TEXT NOT NULL PRIMARY KEY,
+    commit_id INTEGER NULL REFERENCES commits(id),
+    active INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0, 1)),
+    created_at_ms INTEGER NOT NULL
+);
+
+-- At most one active ref: the partial index covers the active rows only.
+CREATE UNIQUE INDEX idx_refs_active
+    ON refs(active) WHERE active = 1;

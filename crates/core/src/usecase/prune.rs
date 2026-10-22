@@ -6,13 +6,10 @@
 //! already superseded there. Pruning never unlinks blobs; run GC
 //! afterwards to reclaim the dereferenced ones.
 
-#[cfg(test)]
-use alloc::collections::BTreeMap;
-use alloc::collections::BTreeSet;
+use crate::port::meta::MetaStore;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 use core::fmt;
-
-use crate::port::meta::MetaStore;
 #[cfg(test)]
 use sekai_util::{BlobHash, ChunkCoord};
 use sekai_util::{Commit, CommitId};
@@ -45,11 +42,17 @@ pub enum PruneError<M> {
     /// The selection would delete every commit; at least the latest
     /// must survive for checkout targets to exist.
     NothingRetained,
-    /// A planned deletion has no newer retained commit to fold into;
-    /// plans built by [`prune_plan`] over a non-empty retention always
-    /// have one (the latest commit is retained).
+    /// A planned deletion has no retained commit continuing it, so its
+    /// rows cannot be folded into the retained history.
     NoSuccessor {
         /// Commit without a fold target.
+        id: u64,
+    },
+    /// A planned deletion continues into retained commits on different
+    /// branches. Folding it into one of them would strip the others of
+    /// the rows they inherit through it.
+    SplitBranches {
+        /// Commit that cannot be retired.
         id: u64,
     },
 }
@@ -60,8 +63,12 @@ impl<M: fmt::Debug> fmt::Display for PruneError<M> {
             Self::Meta(_) => write!(f, "commit metadata failed"),
             Self::NothingRetained => write!(f, "prune selection retains no commits"),
             Self::NoSuccessor { id } => {
-                write!(f, "no retained successor for commit {id}")
+                write!(f, "no retained commit continues commit {id}")
             }
+            Self::SplitBranches { id } => write!(
+                f,
+                "commit {id} continues on several branches: retiring it would change their state"
+            ),
         }
     }
 }
@@ -89,7 +96,10 @@ pub fn select_retained(
 }
 
 /// List commits to delete under `retained` (everything else, ascending).
-/// Refuses selections that would leave no commit behind.
+///
+/// Refuses selections that would leave no commit behind, and selections
+/// that would delete a commit no retained commit continues: such a
+/// commit has nowhere to fold its rows into.
 pub async fn prune_plan<M: MetaStore>(
     meta: &M,
     retained: &BTreeSet<CommitId>,
@@ -110,22 +120,40 @@ pub async fn prune_plan<M: MetaStore>(
         .filter(|id| !retained.contains(id))
         .collect();
     delete.sort();
-    let retained: Vec<CommitId> = commits
+    let retained_ids: Vec<CommitId> = commits
         .iter()
         .map(|c| c.id)
         .filter(|id| retained.contains(id))
         .collect();
-    Ok(PrunePlan { delete, retained })
+    for id in &delete {
+        fold_target(&commits, retained, *id).map_err(|err| fold_failure(err, *id))?;
+    }
+    Ok(PrunePlan {
+        delete,
+        retained: retained_ids,
+    })
 }
 
-/// Delete planned commits oldest-first, folding each into the next
-/// retained one. `progress` fires per deleted commit as `(done, total)`.
+/// Delete planned commits oldest-first, folding each into the oldest
+/// retained commit that continues it. `progress` fires per deleted
+/// commit as `(done, total)`.
+///
+/// The fold target is a *descendant*, not merely a newer commit: folding
+/// into an unrelated history would graft rows the successor never had.
+/// A commit no retained commit continues cannot be retired at all.
 pub async fn prune_apply<M: MetaStore>(
     meta: &mut M,
     plan: &PrunePlan,
     mut progress: impl FnMut(usize, usize) + Send,
 ) -> Result<PruneReport, PruneError<M::Error>> {
     let retained: BTreeSet<CommitId> = plan.retained.iter().copied().collect();
+    let mut commits: Vec<Commit> = Vec::new();
+    meta.visit_commits(|commit| {
+        commits.push(commit.clone());
+        true
+    })
+    .await
+    .map_err(PruneError::Meta)?;
     let mut report = PruneReport {
         pruned: 0,
         rows_folded: 0,
@@ -134,11 +162,9 @@ pub async fn prune_apply<M: MetaStore>(
     let total = plan.delete.len();
     let mut done = 0usize;
     for id in &plan.delete {
-        let Some(next) = retained.iter().find(|kept| **kept > *id).copied() else {
-            return Err(PruneError::NoSuccessor { id: id.0 });
-        };
+        let target = fold_target(&commits, &retained, *id).map_err(|err| fold_failure(err, *id))?;
         let outcome = meta
-            .retire_commit(*id, next)
+            .retire_commit(*id, target)
             .await
             .map_err(PruneError::Meta)?;
         report.rows_folded += outcome.folded;
@@ -148,6 +174,99 @@ pub async fn prune_apply<M: MetaStore>(
         progress(done, total);
     }
     Ok(report)
+}
+
+/// The commit a retirement folds into: the oldest retained commit that
+/// continues `commit` and continues every other retained commit that
+/// descends from it.
+///
+/// Folding moves the retired commit's rows onto the target and rewires
+/// its children onto its own parents. A retained commit that continues
+/// the retired one through another branch would lose the rows it
+/// inherits through it, so the target must be an ancestor of every
+/// other retained descendant - otherwise the retirement would change
+/// their effective state, and prune refuses.
+fn fold_target(
+    commits: &[Commit],
+    retained: &BTreeSet<CommitId>,
+    commit: CommitId,
+) -> Result<CommitId, FoldError> {
+    let ancestry = retained_ancestry(commits, retained);
+    let continues = |other: CommitId| {
+        ancestry
+            .get(&other)
+            .is_some_and(|ancestors| ancestors.contains(&commit))
+    };
+    // The retained commits that descend from the retired one, oldest
+    // first: the target is the oldest of them that continues all the
+    // others.
+    let descendants: Vec<CommitId> = retained
+        .iter()
+        .copied()
+        .filter(|id| continues(*id))
+        .collect();
+    let Some(target) = descendants.iter().copied().find(|target| {
+        descendants
+            .iter()
+            .all(|other| other == target || ancestry.get(other).is_some_and(|a| a.contains(target)))
+    }) else {
+        return Err(if descendants.is_empty() {
+            FoldError::NoSuccessor
+        } else {
+            FoldError::SplitBranches
+        });
+    };
+    Ok(target)
+}
+
+/// Why a commit cannot be retired into the retained history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FoldError {
+    /// No retained commit continues it.
+    NoSuccessor,
+    /// Its retained descendants live on different branches.
+    SplitBranches,
+}
+
+/// The prune failure a fold error stands for.
+const fn fold_failure<M>(err: FoldError, id: CommitId) -> PruneError<M> {
+    match err {
+        FoldError::NoSuccessor => PruneError::NoSuccessor { id: id.0 },
+        FoldError::SplitBranches => PruneError::SplitBranches { id: id.0 },
+    }
+}
+
+/// The ancestors of every retained commit, from the parent links.
+///
+/// The walk visits the ancestors of the retained commits only: the
+/// retired commits are reached through them.
+fn retained_ancestry(
+    commits: &[Commit],
+    retained: &BTreeSet<CommitId>,
+) -> BTreeMap<CommitId, BTreeSet<CommitId>> {
+    let parents: BTreeMap<CommitId, Vec<CommitId>> = commits
+        .iter()
+        .map(|commit| (commit.id, commit.parents.clone()))
+        .collect();
+    let mut out: BTreeMap<CommitId, BTreeSet<CommitId>> = BTreeMap::new();
+    for keep in retained {
+        let mut seen: BTreeSet<CommitId> = BTreeSet::new();
+        let mut level: Vec<CommitId> = parents.get(keep).cloned().unwrap_or_default();
+        while !level.is_empty() {
+            let mut next: Vec<CommitId> = Vec::new();
+            for id in level {
+                if !seen.insert(id) {
+                    continue;
+                }
+                if let Some(parents) = parents.get(&id) {
+                    next.extend(parents.iter().copied());
+                }
+            }
+            level = next;
+        }
+        out.insert(*keep, seen);
+    }
+    out
 }
 
 /// Effective present chunks per commit, for fallback-integrity checks.
@@ -180,7 +299,7 @@ where
 mod tests {
     use super::*;
     use crate::support::{MemMeta, block_on};
-    use sekai_util::{ChunkCoord, CommitEntry, Dimension, RegionKind};
+    use sekai_util::{ChunkCoord, CommitEntry, Dimension, RefName, RegionKind};
 
     const OVER: Dimension = Dimension::OVERWORLD;
     const REGION: RegionKind = RegionKind::Region;
@@ -226,6 +345,7 @@ mod tests {
     fn prune_folds_oldest_first_and_keeps_effective_states() {
         use sekai_util::BlobHash;
         let mut meta = MemMeta::default();
+        meta.with_active_ref(&RefName::parse("main").unwrap());
         // S1: A@0,0 B@1,0 / S2: C@0,0 (B carried) / S3: D@2,0.
         let s1 = [
             CommitEntry::new(coord(0, 0), Some(BlobHash([1; 32])), None),

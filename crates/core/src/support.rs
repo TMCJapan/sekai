@@ -1,6 +1,8 @@
 //! In-memory port fakes used by tests.
 
+use alloc::borrow::ToOwned;
 use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::pin;
@@ -8,8 +10,8 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use crate::port::{BlobStore, MetaStore};
 use sekai_util::{
-    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitId, CommitTag, DiffHash,
-    FoldOutcome, RegionFingerprint, RegionKey, RegionStateEntry, TagName,
+    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitId, CommitRef, CommitTag,
+    DiffHash, FoldOutcome, RefName, RegionFingerprint, RegionKey, RegionStateEntry, TagName,
 };
 
 /// Fake backend failure.
@@ -35,6 +37,18 @@ pub enum MemError {
         from: u64,
         /// Intended successor.
         into: u64,
+    },
+    /// The ref does not exist.
+    UnknownRef {
+        /// Ref that was asked for.
+        name: String,
+    },
+    /// The store has no active ref to hang a new commit from.
+    NoActiveRef,
+    /// The active ref cannot be removed.
+    ActiveRefProtected {
+        /// Ref that was asked for.
+        name: String,
     },
 }
 
@@ -120,15 +134,25 @@ pub struct MemMeta {
     pub states: Vec<RegionStateEntry>,
     /// Tags by name.
     pub tags: BTreeMap<TagName, CommitTag>,
+    /// Refs by name.
+    pub refs: BTreeMap<RefName, CommitRef>,
     /// The next identifier to hand out. Counted separately from the
     /// stored commits so a retirement never makes an identifier
     /// reusable.
     next_id: u64,
 }
 
+impl MemMeta {
+    /// Add an active ref, the way a fresh store looks: one ref, unborn,
+    /// waiting for the first commit.
+    pub fn with_active_ref(&mut self, name: &RefName) {
+        self.refs
+            .insert(name.clone(), CommitRef::new(name.clone(), None, true, 0));
+    }
+}
+
 impl MetaStore for MemMeta {
     type Error = MemError;
-
     fn create_commit(
         &mut self,
         created_at_ms: u64,
@@ -262,8 +286,23 @@ impl MetaStore for MemMeta {
 
     fn load_region_states(
         &self,
+        within: Option<CommitId>,
     ) -> impl Future<Output = Result<Vec<RegionStateEntry>, MemError>> + Send {
-        core::future::ready(Ok(self.states.clone()))
+        // Only fingerprints confirmed inside the given history may be
+        // carried: one confirmed elsewhere describes another state of the
+        // file. An unborn history (`None`) knows no file at all.
+        let ancestors = within.map_or_else(BTreeSet::new, |commit| {
+            let mut set = ancestor_ids(&self.commits, commit);
+            set.insert(commit);
+            set
+        });
+        let states = self
+            .states
+            .iter()
+            .filter(|state| ancestors.contains(&state.commit_id))
+            .copied()
+            .collect();
+        core::future::ready(Ok(states))
     }
 
     async fn apply_commit_incremental(
@@ -315,6 +354,14 @@ impl MetaStore for MemMeta {
         }
         self.states
             .retain(|state| !removed.contains(&state.fingerprint.key));
+        // The active ref moves onto the new commit, in the same step: a
+        // ref that lags behind its history would fork the next commit.
+        let active = self
+            .refs
+            .values_mut()
+            .find(|record| record.active)
+            .ok_or(MemError::NoActiveRef)?;
+        active.commit = Some(id);
         Ok(ApplyOutcome { id, carried_chunks })
     }
 
@@ -435,7 +482,87 @@ impl MetaStore for MemMeta {
         }
         self.commits.retain(|commit| commit.id != from);
         self.tags.retain(|_, tag| tag.commit != from);
+        // A ref naming the retired commit follows the fold: the
+        // successor holds the same effective state, so the ref keeps
+        // naming it.
+        for record in self.refs.values_mut() {
+            if record.commit == Some(from) {
+                record.commit = Some(into);
+            }
+        }
         core::future::ready(Ok(FoldOutcome { folded, dropped }))
+    }
+
+    fn set_ref(
+        &mut self,
+        name: &RefName,
+        commit: Option<CommitId>,
+        created_at_ms: u64,
+    ) -> impl Future<Output = Result<(), MemError>> + Send {
+        // Moving a ref keeps its creation time; only a new ref records one.
+        let (active, created_at_ms) = self
+            .refs
+            .get(name)
+            .map_or((false, created_at_ms), |existing| {
+                (existing.active, existing.created_at_ms)
+            });
+        self.refs.insert(
+            name.clone(),
+            CommitRef::new(name.clone(), commit, active, created_at_ms),
+        );
+        core::future::ready(Ok(()))
+    }
+
+    fn lookup_ref(
+        &self,
+        name: &RefName,
+    ) -> impl Future<Output = Result<Option<CommitRef>, MemError>> + Send {
+        core::future::ready(Ok(self.refs.get(name).cloned()))
+    }
+
+    fn visit_refs<F>(&self, mut visit: F) -> impl Future<Output = Result<(), MemError>> + Send
+    where
+        F: FnMut(&CommitRef) -> bool + Send,
+    {
+        // BTreeMap iteration is name order, matching the backend query.
+        for record in self.refs.values() {
+            if !visit(record) {
+                break;
+            }
+        }
+        core::future::ready(Ok(()))
+    }
+
+    fn delete_ref(
+        &mut self,
+        name: &RefName,
+    ) -> impl Future<Output = Result<bool, MemError>> + Send {
+        if self.refs.get(name).is_some_and(|record| record.active) {
+            return core::future::ready(Err(MemError::ActiveRefProtected {
+                name: name.as_str().to_owned(),
+            }));
+        }
+        core::future::ready(Ok(self.refs.remove(name).is_some()))
+    }
+
+    fn active_ref(&self) -> impl Future<Output = Result<Option<CommitRef>, MemError>> + Send {
+        let active = self.refs.values().find(|record| record.active).cloned();
+        core::future::ready(Ok(active))
+    }
+
+    fn activate_ref(
+        &mut self,
+        name: &RefName,
+    ) -> impl Future<Output = Result<(), MemError>> + Send {
+        if !self.refs.contains_key(name) {
+            return core::future::ready(Err(MemError::UnknownRef {
+                name: name.as_str().to_owned(),
+            }));
+        }
+        for record in self.refs.values_mut() {
+            record.active = record.name == *name;
+        }
+        core::future::ready(Ok(()))
     }
 }
 

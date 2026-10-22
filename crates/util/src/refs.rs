@@ -1,0 +1,159 @@
+//! Named, movable pointers to commits.
+//!
+//! Refs are the store's branch model: a name bound to a commit that moves
+//! forward when a new commit lands on it. A ref without a commit is
+//! *unborn* - it names a history that has not started yet. Exactly one ref
+//! is *active*: the one new commits hang from.
+
+use alloc::string::String;
+use core::{fmt, str::FromStr};
+
+use crate::commit::CommitId;
+use crate::error::RefNameError;
+
+/// Name of the ref a fresh store starts with: the active one, unborn,
+/// waiting for the first commit.
+pub const DEFAULT_REF_NAME: &str = "main";
+
+/// Validated ref name.
+///
+/// Ref names are path-like (`main`, `feature/nightly`): `[A-Za-z0-9._-/]`,
+/// 1-64 bytes, never all digits (so a name cannot be mistaken for a commit
+/// ID) and never `HEAD` (the active ref is the store's HEAD equivalent).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RefName(String);
+
+impl RefName {
+    /// Longest accepted name, in bytes (names are ASCII-only).
+    pub const MAX_LEN: usize = 64;
+
+    /// Name the store keeps for itself.
+    pub const RESERVED: &'static str = "HEAD";
+
+    /// Validate `raw` into a ref name.
+    pub fn parse(raw: &str) -> Result<Self, RefNameError> {
+        if raw.is_empty() {
+            return Err(RefNameError::Empty);
+        }
+        if raw.len() > Self::MAX_LEN {
+            return Err(RefNameError::TooLong);
+        }
+        let mut all_digits = true;
+        for byte in raw.bytes() {
+            let valid = byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'/');
+            if !valid {
+                return Err(RefNameError::BadChar(byte as char));
+            }
+            all_digits &= byte.is_ascii_digit();
+        }
+        if all_digits {
+            return Err(RefNameError::Numeric);
+        }
+        // Path-like names: no empty component, no leading or trailing
+        // separator, no `..` traversal.
+        if raw.starts_with('/') || raw.ends_with('/') || raw.contains("//") {
+            return Err(RefNameError::BadChar('/'));
+        }
+        if raw.contains("..") {
+            return Err(RefNameError::BadChar('.'));
+        }
+        if raw.eq_ignore_ascii_case(Self::RESERVED) {
+            return Err(RefNameError::Reserved);
+        }
+        Ok(Self(String::from(raw)))
+    }
+
+    /// Borrow the validated name.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for RefName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl FromStr for RefName {
+    type Err = RefNameError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        Self::parse(raw)
+    }
+}
+
+/// A named pointer to a commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommitRef {
+    /// Ref name.
+    pub name: RefName,
+    /// Commit the ref points at, or `None` while the ref is unborn.
+    pub commit: Option<CommitId>,
+    /// Whether this ref is the active one (new commits hang from it).
+    pub active: bool,
+    /// Creation time as Unix millis (informational only).
+    pub created_at_ms: u64,
+}
+
+impl CommitRef {
+    /// Construct a ref record.
+    pub const fn new(
+        name: RefName,
+        commit: Option<CommitId>,
+        active: bool,
+        created_at_ms: u64,
+    ) -> Self {
+        Self {
+            name,
+            commit,
+            active,
+            created_at_ms,
+        }
+    }
+
+    /// Whether the ref names no commit yet.
+    pub const fn is_unborn(&self) -> bool {
+        self.commit.is_none()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::ToString;
+
+    #[test]
+    fn accepts_path_like_names() {
+        for raw in ["main", "feature/nightly", "a", "x-y.z_w"] {
+            assert_eq!(RefName::parse(raw).unwrap().as_str(), raw);
+        }
+        assert_eq!(RefName::from_str("main").unwrap().to_string(), "main");
+    }
+
+    #[test]
+    fn rejects_bad_names() {
+        assert_eq!(RefName::parse(""), Err(RefNameError::Empty));
+        assert_eq!(RefName::parse("123"), Err(RefNameError::Numeric));
+        assert_eq!(RefName::parse("a b"), Err(RefNameError::BadChar(' ')));
+        assert_eq!(RefName::parse("@x"), Err(RefNameError::BadChar('@')));
+        assert_eq!(RefName::parse("/main"), Err(RefNameError::BadChar('/')));
+        assert_eq!(RefName::parse("main/"), Err(RefNameError::BadChar('/')));
+        assert_eq!(RefName::parse("a//b"), Err(RefNameError::BadChar('/')));
+        assert_eq!(RefName::parse("a..b"), Err(RefNameError::BadChar('.')));
+        assert_eq!(RefName::parse("HEAD"), Err(RefNameError::Reserved));
+        assert_eq!(RefName::parse("head"), Err(RefNameError::Reserved));
+        let long = "a".repeat(RefName::MAX_LEN + 1);
+        assert_eq!(RefName::parse(&long), Err(RefNameError::TooLong));
+        assert!(RefName::parse(&"a".repeat(RefName::MAX_LEN)).is_ok());
+    }
+
+    #[test]
+    fn unborn_refs_have_no_commit() {
+        let name = RefName::parse("main").unwrap();
+        let record = CommitRef::new(name.clone(), None, true, 1_700_000_000_000);
+        assert!(record.is_unborn());
+        assert!(record.active);
+        assert_eq!(record.name, name);
+    }
+}

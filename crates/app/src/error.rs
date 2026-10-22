@@ -61,6 +61,24 @@ pub enum AppError {
         /// Conflicting tag name.
         name: String,
     },
+    /// Ref name is already taken.
+    #[error("ref already exists: {name} (use --force to move it)")]
+    RefExists {
+        /// Conflicting ref name.
+        name: String,
+    },
+    /// The named ref does not exist.
+    #[error("unknown ref: {name}")]
+    UnknownRef {
+        /// Ref that was asked for.
+        name: String,
+    },
+    /// The active ref cannot be removed.
+    #[error("cannot remove the active ref: {name} (activate another ref first)")]
+    ActiveRef {
+        /// Ref that was asked for.
+        name: String,
+    },
     /// No commits exist in the store.
     #[error("no commits found in store")]
     NoCommits,
