@@ -6,7 +6,7 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 description = "Backend-neutral metadata and blob storage boundaries for Sekai"
-keywords = ["minecraft", "backup", "storage"]
+keywords = ["minecraft", "version-control", "storage"]
 
 [lints]
 workspace = true

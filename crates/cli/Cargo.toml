@@ -6,7 +6,7 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 description = "Sekai: deduplicated version control for Minecraft worlds"
-keywords = ["minecraft", "backup"]
+keywords = ["minecraft", "version-control"]
 
 [lints]
 workspace = true

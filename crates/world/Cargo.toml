@@ -6,7 +6,7 @@ license.workspace = true
 homepage.workspace = true
 repository.workspace = true
 description = "Minecraft world filesystem access for Sekai"
-keywords = ["minecraft", "backup"]
+keywords = ["minecraft", "version-control"]
 
 [lints]
 workspace = true
