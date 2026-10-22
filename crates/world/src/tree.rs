@@ -69,7 +69,7 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
     ) -> Result<Vec<(RegionKey, Self::Region)>, Self::Error>;
 
     /// Layout-derived handle of one region file, whether or not it exists
-    /// yet (clone targets, restore targets for missing files).
+    /// yet (clone targets, checkout targets for missing files).
     ///
     /// The name is canonical (`r.<x>.<z>.mca`). A world that holds a
     /// non-canonical spelling of the same region must be restored through

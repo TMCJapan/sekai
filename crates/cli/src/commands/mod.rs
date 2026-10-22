@@ -15,7 +15,8 @@ mod tag;
 use crate::cli::{Cli, Command, TimingArgs};
 use crate::style::Styler;
 
-/// Output controls shared by report commands (commit, checkout, gc).
+/// Output controls shared by report commands (commit, status, checkout,
+/// clone, prune, gc).
 #[derive(Debug, Clone, Copy)]
 pub struct ReportOut {
     pub timing: bool,

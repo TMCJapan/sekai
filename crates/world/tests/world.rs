@@ -531,7 +531,7 @@ fn discovers_a_legacy_bukkit_world() {
         root_path.join("world_kingdoms_spawn/dimensions/kingdoms/spawn/region/r.0.1.mca"),
         &image,
     );
-    write(root_path.join("world_commit/region/r.9.9.mca"), &image);
+    write(root_path.join("world_plugin/region/r.9.9.mca"), &image);
 
     let root = HostWorldTree::new(&root_path).unwrap();
     let found = discover(&root);
