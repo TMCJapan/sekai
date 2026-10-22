@@ -56,8 +56,10 @@ pub struct StatusOptions {
 pub struct StatusReport {
     /// Nothing in scope differs from the latest commit.
     pub clean: bool,
-    /// Latest commit the preview is measured against, if any: the
-    /// target of the active ref.
+    /// The active ref's target the preview is measured against, if any.
+    ///
+    /// `None` when that ref is unborn, even if the store already holds
+    /// commits from an earlier history.
     pub latest: Option<CommitId>,
     /// In-scope regions that changed (new files included).
     pub changed_regions: usize,

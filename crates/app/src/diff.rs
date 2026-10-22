@@ -250,7 +250,8 @@ where
     /// Compute AST diff for a chunk coordinate between the bound world state
     /// and a commit.
     ///
-    /// If `commit` is `None`, the latest commit in the store is used.
+    /// If `commit` is `None`, the active ref's target is used; an unborn
+    /// active ref fails with [`AppError::NoCommits`].
     pub async fn diff_world_chunk(
         &self,
         commit: Option<CommitId>,
@@ -280,6 +281,8 @@ where
         ignore: Option<&[&str]>,
         progress: impl FnMut(DiffProgress) + Send,
     ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
+        // Held across resolution and the blocking reads below: the store
+        // lock must outlive the operation.
         let _locks = OperationLocks::acquire(
             self.instance,
             StoreLockMode::Shared,

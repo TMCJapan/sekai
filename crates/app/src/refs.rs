@@ -9,7 +9,7 @@
 //! the writer lock.
 
 use sekai_core::{CommitId, CommitRef, MetaStore as _, RefName};
-use sekai_storage::{SekaiStore, StoreLockMode};
+use sekai_storage::{SekaiStore, StorageError, StoreLockMode};
 
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
@@ -54,7 +54,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
             .meta_mut()
             .set_ref(name, commit, created_at_ms)
             .await?;
-        // The port's contract decides the record: a new ref starts
+        // The port's contract fixes what is stored: a new ref starts
         // inactive, and a moved one keeps its flag and creation time.
         let (active, created_at_ms) = existing.map_or((false, created_at_ms), |record| {
             (record.active, record.created_at_ms)
@@ -82,7 +82,14 @@ impl<S: SekaiStore> SekaiInstance<S> {
                 name: name.as_str().to_owned(),
             });
         }
-        Ok(self.store.meta_mut().delete_ref(name).await?)
+        self.store
+            .meta_mut()
+            .delete_ref(name)
+            .await
+            .map_err(|err| match err {
+                StorageError::ActiveRefProtected { name } => AppError::ActiveRef { name },
+                other => AppError::Storage(other),
+            })
     }
 
     /// List refs in name order.
