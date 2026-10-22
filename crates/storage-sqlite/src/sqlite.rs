@@ -1379,6 +1379,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retiring_the_active_ref_target_moves_the_active_flag() {
+        let mut meta = memory_meta().await;
+        let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
+        let root = meta
+            .apply_commit_incremental(1_000, &[], &[], None, &[], &[])
+            .await
+            .unwrap()
+            .id;
+        let second = meta
+            .apply_commit_incremental(2_000, &[root], &[], None, &[], &[])
+            .await
+            .unwrap()
+            .id;
+        // Point the active ref back at the root: retiring it must move the
+        // active row, not only inactive refs.
+        meta.set_ref(&main, Some(root), 1_500).await.unwrap();
+
+        meta.retire_commit(root, second).await.unwrap();
+        let active = meta.active_ref().await.unwrap().unwrap();
+        assert_eq!(active.name, main);
+        assert_eq!(active.commit, Some(second));
+        assert!(active.active);
+    }
+
+    #[tokio::test]
     async fn a_corrupt_ref_row_fails_loudly() {
         let meta = memory_meta().await;
         // Names are re-validated on decode: a row the schema no longer
@@ -1393,6 +1418,34 @@ mod tests {
 
         let err = meta.visit_refs(|_| true).await.unwrap_err();
         assert!(matches!(err, StorageError::InvalidRefName { name } if name == "bad name"));
+
+        // The table's CHECK normally rejects this; disable it on one
+        // connection to prove the decoder itself refuses a value that a
+        // corrupt or older table could hold.
+        let mut conn = meta.pool.acquire().await.unwrap();
+        sqlx::query("PRAGMA ignore_check_constraints = ON")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE refs SET active = 2 WHERE name = ?")
+            .bind(DEFAULT_REF_NAME)
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        sqlx::query("PRAGMA ignore_check_constraints = OFF")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        drop(conn);
+
+        let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
+        assert!(matches!(
+            meta.lookup_ref(&main).await,
+            Err(StorageError::InvalidHistoryValue {
+                column: "active",
+                value: 2
+            })
+        ));
     }
 
     #[tokio::test]
