@@ -257,8 +257,10 @@ impl<M: fmt::Debug> fmt::Display for ResolveError<M> {
 /// The `@` prefix is tag-only: a ref called `main` is written `main`,
 /// and `@main` is an unknown tag, not that ref. A bare name is tried as
 /// a decimal ID first, so `01` (and every other spelling `u64` accepts)
-/// resolves to commit 1; anything else names a ref. An unborn ref has no
-/// commit to point at yet.
+/// resolves to commit 1; anything else names a ref. Every valid ref name
+/// holds a non-digit character, so the decimal branch can never shadow
+/// one: a numeric spelling is either a commit ID or `UnknownCommit`,
+/// never a ref. An unborn ref has no commit to point at yet.
 pub async fn resolve_commit_ref<M: MetaStore>(
     meta: &M,
     raw: &str,
@@ -285,11 +287,9 @@ pub async fn resolve_commit_ref<M: MetaStore>(
     let name = RefName::parse(raw).map_err(|_| ResolveError::InvalidRef {
         raw: alloc::string::String::from(raw),
     })?;
-    let record = meta
-        .lookup_ref(&name)
-        .await
-        .map_err(ResolveError::Meta)?
-        .ok_or(ResolveError::UnknownRef { name: name.clone() })?;
+    let Some(record) = meta.lookup_ref(&name).await.map_err(ResolveError::Meta)? else {
+        return Err(ResolveError::UnknownRef { name });
+    };
     record.commit.ok_or(ResolveError::UnbornRef { name })
 }
 
@@ -320,6 +320,20 @@ mod tests {
         block_on(meta.set_ref(&branch, Some(second), 300)).unwrap();
 
         assert_eq!(block_on(resolve_commit_ref(&meta, "1")), Ok(first));
+        // `u64` accepts leading zeroes and a leading `+`; both spellings
+        // resolve as IDs, and no valid ref name can take that shape.
+        assert_eq!(block_on(resolve_commit_ref(&meta, "01")), Ok(first));
+        assert_eq!(block_on(resolve_commit_ref(&meta, "+1")), Ok(first));
+        assert_eq!(
+            block_on(resolve_commit_ref(&meta, " 1")),
+            Err(ResolveError::InvalidRef { raw: " 1".into() })
+        );
+        assert_eq!(
+            block_on(resolve_commit_ref(&meta, "")),
+            Err(ResolveError::InvalidRef {
+                raw: alloc::string::String::new()
+            })
+        );
         assert_eq!(block_on(resolve_commit_ref(&meta, "@stable")), Ok(second));
         assert_eq!(block_on(resolve_commit_ref(&meta, "main")), Ok(second));
         assert_eq!(
