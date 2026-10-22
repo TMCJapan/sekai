@@ -461,12 +461,10 @@ fn now_ms() -> Result<i64, StorageError> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|source| StorageError::backend("sqlite", source))?
         .as_millis();
-    // `as_millis` is `u128`, while `InvalidTimestamp` carries a `u64`: a
-    // value above `u64::MAX` has no representable payload, so it is
-    // reported as the ceiling. Anything that fits a `u64` is reported as
-    // itself, including values above `i64::MAX`, which the conversion
-    // below rejects.
-    let millis = u64::try_from(millis).unwrap_or(u64::MAX);
+    // `as_millis` is `u128`: a value above `u64::MAX` has no
+    // representation in the stored range, so it gets its own error rather
+    // than a sentinel timestamp.
+    let millis = u64::try_from(millis).map_err(|_| StorageError::ClockOutOfRange)?;
     i64::try_from(millis).map_err(|_| StorageError::InvalidTimestamp(millis))
 }
 

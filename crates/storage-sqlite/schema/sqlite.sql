@@ -61,8 +61,9 @@ CREATE TABLE commit_tags(
 -- whose `commit_id` is NULL is unborn - it names a history without a
 -- commit yet. At most one ref is active, enforced by the partial index
 -- below; the application keeps exactly one, because new commits hang
--- from it (the store's HEAD). `commit_id` has no cascade on purpose - a
--- ref naming a retired commit follows the fold instead of vanishing.
+-- from it (the store's HEAD). `commit_id` has no cascade: the default
+-- `NO ACTION` blocks deleting a commit a ref still names, so
+-- `retire_commit` re-points refs onto the successor before the row goes.
 CREATE TABLE refs(
     name TEXT NOT NULL PRIMARY KEY,
     commit_id INTEGER NULL REFERENCES commits(id),

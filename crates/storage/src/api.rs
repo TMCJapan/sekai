@@ -85,6 +85,9 @@ pub enum StorageError {
         name: String,
     },
     /// The store has no active ref, so a new commit has nowhere to land.
+    ///
+    /// Field-less on purpose: the condition is store-wide, not tied to a
+    /// name the caller passed.
     #[error("store has no active ref: a new commit has nowhere to hang from")]
     NoActiveRef,
     /// Stored region-family code does not name a known kind.
@@ -96,6 +99,9 @@ pub enum StorageError {
     /// Millisecond timestamp does not fit `i64`.
     #[error("timestamp out of range: {0}")]
     InvalidTimestamp(u64),
+    /// The system clock is past the representable range.
+    #[error("system clock is out of range")]
+    ClockOutOfRange,
     /// Region file size does not fit `i64`.
     #[error("region size out of range: {0}")]
     InvalidSize(u64),
