@@ -427,7 +427,10 @@ async fn a_cancelled_clone_keeps_the_store_locked_until_its_files_finish() {
     let files_done = Arc::new(AtomicUsize::new(0));
     let files_total = Arc::new(AtomicUsize::new(0));
 
-    let out = HostWorldTree::new_legacy(fx.root.join("cloned"));
+    let out = HostWorldTree::new_legacy(fx.root.join(format!(
+        "cloned-{}",
+        TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    )));
     let clone = fx
         .instance
         .clone_to(&out, CommitId(1), CloneOptions::default(), Scope::World, {
