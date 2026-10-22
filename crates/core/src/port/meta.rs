@@ -38,7 +38,8 @@ pub trait MetaStore {
         commit: CommitId,
     ) -> impl Future<Output = Result<Vec<CommitId>, Self::Error>> + Send;
 
-    /// Record one chunk's state at `commit`. `blob = None` is a tombstone.
+    /// Record one chunk's state at the commit `commit`. `blob = None` is a
+    /// tombstone.
     fn record_chunk(
         &mut self,
         commit: CommitId,
@@ -63,7 +64,8 @@ pub trait MetaStore {
         id: CommitId,
     ) -> impl Future<Output = Result<Option<Commit>, Self::Error>> + Send;
 
-    /// Highest-ID commit, or `None` when no commit has run yet.
+    /// Highest-ID commit in the store, or `None` when no commit has been
+    /// recorded yet.
     fn latest_commit(&self) -> impl Future<Output = Result<Option<Commit>, Self::Error>> + Send;
 
     /// Visit effective rows of one commit: exactly one row per
@@ -83,8 +85,8 @@ pub trait MetaStore {
     where
         F: FnMut(&ChunkHistoryEntry) -> bool + Send;
 
-    /// Visit raw rows introduced at `commit` (fresh ingests plus
-    /// tombstones, no fallback). Return `false` to stop early.
+    /// Visit the rows whose `commit_id` is exactly `commit` (fresh ingests
+    /// plus tombstones, no ancestor fallback). Return `false` to stop early.
     fn visit_fresh_rows<F>(
         &self,
         commit: CommitId,
@@ -116,6 +118,10 @@ pub trait MetaStore {
     /// rows drop: files gone from disk or ingested only partly.
     ///
     /// Referenced blobs must already be flushed to CAS.
+    ///
+    /// The outcome names the commit just recorded and how many chunks it
+    /// carries over from `carry_from` (the effective chunks of the carried
+    /// regions, not the fresh rows in `entries`).
     fn apply_commit_incremental(
         &mut self,
         created_at_ms: u64,
