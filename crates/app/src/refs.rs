@@ -49,16 +49,16 @@ impl<S: SekaiStore> SekaiInstance<S> {
                 name: name.as_str().to_owned(),
             });
         }
-        let created_at_ms = now_ms()?;
+        // The port's contract fixes what is stored: a new ref starts
+        // inactive, and a move keeps the existing flag and creation time.
+        let (active, created_at_ms) = match existing {
+            Some(record) => (record.active, record.created_at_ms),
+            None => (false, now_ms()?),
+        };
         self.store
             .meta_mut()
             .set_ref(name, commit, created_at_ms)
             .await?;
-        // The port's contract fixes what is stored: a new ref starts
-        // inactive, and a moved one keeps its flag and creation time.
-        let (active, created_at_ms) = existing.map_or((false, created_at_ms), |record| {
-            (record.active, record.created_at_ms)
-        });
         Ok(CommitRef::new(name.clone(), commit, active, created_at_ms))
     }
 
@@ -133,13 +133,15 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// `None` when the active ref is unborn. The next commit then records
     /// with no parents, starting a fresh root even if the store already
     /// holds commits.
+    ///
+    /// This is not [`SekaiInstance::latest_commit_id`], which reports the
+    /// newest stored commit: activating an older ref changes the target
+    /// here without changing the newest commit.
     pub async fn current_commit_id(&self) -> Result<Option<CommitId>, AppError> {
         let _lock = self.lock_store(StoreLockMode::Shared)?;
-        Ok(self
-            .store
-            .meta()
-            .active_ref()
-            .await?
+        Ok(sekai_core::usecase::refs::active_ref(self.store.meta())
+            .await
+            .map_err(AppError::Commit)?
             .and_then(|active| active.commit))
     }
 }
