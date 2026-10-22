@@ -2,8 +2,12 @@
 //!
 //! Refs are the store's branch model: a name bound to a commit that moves
 //! forward when a new commit lands on it. A ref without a commit is
-//! *unborn* - it names a history that has not started yet. Exactly one ref
-//! is *active*: the one new commits hang from.
+//! *unborn* - it names a history that has not started yet. At most one ref
+//! is *active*: the one new commits hang from. A store normally has
+//! exactly one, but the invariant is "at most", enforced by the backend.
+//!
+//! An unborn ref can be active (the fresh-store state) or inactive (a name
+//! waiting for its first commit).
 
 use alloc::string::String;
 use core::{fmt, str::FromStr};
@@ -38,13 +42,15 @@ impl RefName {
     /// Validate `raw` into a ref name.
     ///
     /// A name is ASCII-only: any other character fails with
-    /// [`RefNameError::BadChar`].
+    /// [`RefNameError::BadChar`]. The byte-length check runs first, so an
+    /// over-long name reports [`RefNameError::TooLong`] even when it also
+    /// holds a non-ASCII character.
     pub fn parse(raw: &str) -> Result<Self, RefNameError> {
         if raw.is_empty() {
             return Err(RefNameError::Empty);
         }
         if raw.len() > Self::MAX_LEN {
-            return Err(RefNameError::TooLong);
+            return Err(RefNameError::TooLong(Self::MAX_LEN));
         }
         let mut all_digits = true;
         for c in raw.chars() {
@@ -62,7 +68,7 @@ impl RefName {
         if raw.starts_with('/') || raw.ends_with('/') || raw.contains("//") {
             return Err(RefNameError::BadPath);
         }
-        if raw.contains("..") {
+        if raw.split('/').any(|segment| segment == "..") {
             return Err(RefNameError::BadPath);
         }
         if raw.eq_ignore_ascii_case(Self::RESERVED) {
@@ -92,6 +98,12 @@ impl FromStr for RefName {
 }
 
 /// A named pointer to a commit.
+///
+/// The record carries the active flag but cannot enforce the store-wide
+/// invariant on its own: a store holds at most one ref with `active` set,
+/// and the backend maintains that when the flag moves (`set_ref` and
+/// `activate_ref`). An active ref may be unborn; that is the fresh-store
+/// state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitRef {
     /// Ref name.
@@ -133,7 +145,15 @@ mod tests {
 
     #[test]
     fn accepts_path_like_names() {
-        for raw in ["main", "feature/nightly", "a", "x-y.z_w"] {
+        for raw in [
+            "main",
+            "feature/nightly",
+            "a",
+            "x-y.z_w",
+            "v..1",
+            "a..b",
+            "release..2024",
+        ] {
             assert_eq!(RefName::parse(raw).unwrap().as_str(), raw);
         }
         assert_eq!(RefName::from_str("main").unwrap().to_string(), "main");
@@ -151,11 +171,16 @@ mod tests {
         assert_eq!(RefName::parse("/main"), Err(RefNameError::BadPath));
         assert_eq!(RefName::parse("main/"), Err(RefNameError::BadPath));
         assert_eq!(RefName::parse("a//b"), Err(RefNameError::BadPath));
-        assert_eq!(RefName::parse("a..b"), Err(RefNameError::BadPath));
+        assert_eq!(RefName::parse(".."), Err(RefNameError::BadPath));
+        assert_eq!(RefName::parse("a/../b"), Err(RefNameError::BadPath));
+        assert_eq!(RefName::parse("a/.."), Err(RefNameError::BadPath));
         assert_eq!(RefName::parse("HEAD"), Err(RefNameError::Reserved));
         assert_eq!(RefName::parse("head"), Err(RefNameError::Reserved));
         let long = "a".repeat(RefName::MAX_LEN + 1);
-        assert_eq!(RefName::parse(&long), Err(RefNameError::TooLong));
+        assert_eq!(
+            RefName::parse(&long),
+            Err(RefNameError::TooLong(RefName::MAX_LEN))
+        );
         assert!(RefName::parse(&"a".repeat(RefName::MAX_LEN)).is_ok());
     }
 

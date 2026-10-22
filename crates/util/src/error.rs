@@ -65,8 +65,8 @@ impl core::error::Error for TagNameError {}
 pub enum RefNameError {
     /// Name was empty.
     Empty,
-    /// Name exceeded `RefName::MAX_LEN` bytes.
-    TooLong,
+    /// Name exceeded the limit, in bytes.
+    TooLong(usize),
     /// Name held a character outside `[A-Za-z0-9._-/]`.
     BadChar(char),
     /// Name has an empty path component or a `..` segment.
@@ -81,11 +81,7 @@ impl fmt::Display for RefNameError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => write!(f, "ref name is empty"),
-            Self::TooLong => write!(
-                f,
-                "ref name exceeds {} bytes",
-                crate::refs::RefName::MAX_LEN
-            ),
+            Self::TooLong(limit) => write!(f, "ref name exceeds {limit} bytes"),
             Self::BadChar(c) => write!(f, "ref name holds invalid character: {c:?}"),
             Self::BadPath => write!(
                 f,
