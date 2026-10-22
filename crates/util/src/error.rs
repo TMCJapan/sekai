@@ -67,7 +67,8 @@ pub enum RefNameError {
     Empty,
     /// Name exceeded the limit, in bytes.
     TooLong(usize),
-    /// Name held a character outside `[A-Za-z0-9._-/]`.
+    /// Name held a character outside ASCII alphanumerics, `.`, `_`, `-`,
+    /// or `/`.
     BadChar(char),
     /// Name has an empty path component or a `..` segment.
     BadPath,

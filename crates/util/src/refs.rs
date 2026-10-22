@@ -21,14 +21,17 @@ pub const DEFAULT_REF_NAME: &str = "main";
 
 /// Validated ref name.
 ///
-/// Ref names are path-like (`main`, `feature/nightly`): `[A-Za-z0-9._-/]`,
-/// 1-64 bytes, with no empty path component (no leading, trailing, or
-/// doubled `/`) and no `..` traversal segment. A name is never all digits
-/// (so it cannot be mistaken for a commit ID) and never `HEAD` (the active
-/// ref is the store's HEAD equivalent).
+/// Ref names are path-like (`main`, `feature/nightly`): 1-64 bytes of
+/// ASCII alphanumerics plus `.`, `_`, `-`, and `/`, with no empty path
+/// component (no leading, trailing, or doubled `/`) and no `..` traversal
+/// segment. A name is never all digits (so it cannot be mistaken for a
+/// commit ID) and never `HEAD` (the active ref is the store's HEAD
+/// equivalent).
 ///
-/// Ordering is byte-wise lexicographic - the same order SQLite's
-/// `ORDER BY name` yields - so both backends list refs alike.
+/// Ordering and uniqueness are byte-wise and case-sensitive - the order
+/// and identity SQLite's `BINARY` collation yields - so `main` and `Main`
+/// are distinct refs, while only the `HEAD` reservation ignores ASCII
+/// case.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RefName(String);
 
@@ -103,7 +106,9 @@ impl FromStr for RefName {
 /// invariant on its own: a store holds at most one ref with `active` set,
 /// and the backend maintains that when the flag moves (`set_ref` and
 /// `activate_ref`). An active ref may be unborn; that is the fresh-store
-/// state.
+/// state. The flag is advisory on a value: a hand-built record is not the
+/// store's authority on which ref is active, so callers must not treat it
+/// as one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitRef {
     /// Ref name.
@@ -179,6 +184,13 @@ mod tests {
         let long = "a".repeat(RefName::MAX_LEN + 1);
         assert_eq!(
             RefName::parse(&long),
+            Err(RefNameError::TooLong(RefName::MAX_LEN))
+        );
+        // The byte-length check runs first: an over-long name reports
+        // `TooLong` even when it also holds a non-ASCII character.
+        let long_non_ascii = "é".repeat(RefName::MAX_LEN);
+        assert_eq!(
+            RefName::parse(&long_non_ascii),
             Err(RefNameError::TooLong(RefName::MAX_LEN))
         );
         assert!(RefName::parse(&"a".repeat(RefName::MAX_LEN)).is_ok());
