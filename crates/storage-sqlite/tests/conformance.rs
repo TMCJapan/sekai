@@ -30,7 +30,7 @@ fn cleanup(dir: impl AsRef<Path>) {
 
 #[tokio::test]
 async fn sqlite_commit_lifecycle() {
-    let dir = tempdir("snap");
+    let dir = tempdir("lifecycle");
     let mut store = init(&dir).await;
     common::commit_lifecycle(store.meta_mut()).await;
     cleanup(&dir);

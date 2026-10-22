@@ -205,7 +205,7 @@ async fn commit_list_checkout_round_trip() {
     assert_eq!(report2.carried_chunks, 1);
     assert_eq!(report2.skipped_regions, 1);
 
-    // Roll back to the first commit: the changed chunk reverts.
+    // Check out the first commit: the changed chunk reverts.
     let (checked_out, _checkout_timings) = instance
         .world_mut(&mut world)
         .checkout(
@@ -1264,7 +1264,7 @@ async fn diffs_a_non_canonical_region_name() {
 }
 
 #[tokio::test]
-async fn backs_up_region_with_trailing_partial_sector() {
+async fn commits_region_with_trailing_partial_sector() {
     // Real files can carry a torn tail (e.g. 1034 sectors + 188 bytes)
     // that vanilla opens fine; commit must accept it as long as every
     // referenced run is intact.
@@ -1702,7 +1702,7 @@ async fn partial_scope_leaves_the_rest_of_the_file_to_later_commits() {
         .unwrap();
     assert!(status.clean);
 
-    // Rolling back to the full commit keeps every chunk of the live files.
+    // Checking out the full commit keeps every chunk of the live files.
     let before: Vec<(PathBuf, ChunkMap)> = ["region", "entities", "poi"]
         .iter()
         .flat_map(|kind| std::fs::read_dir(world_path.join(kind)).unwrap())
@@ -1729,8 +1729,8 @@ async fn partial_scope_leaves_the_rest_of_the_file_to_later_commits() {
     cleanup(&root);
 }
 
-/// Model-based round trip over pseudo-random mutation sequences: back up
-/// after every mutation, then roll back to each commit in turn and require
+/// Model-based round trip over pseudo-random mutation sequences: commit
+/// after every mutation, then check out each commit in turn and require
 /// the world to match the recorded state byte-for-byte (per chunk payload).
 ///
 /// This is the safety net for the delta-storage invariants that hand-written

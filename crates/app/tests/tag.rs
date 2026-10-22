@@ -89,7 +89,7 @@ async fn tag_create_list_resolve_delete() {
     assert!(instance.resolve_commit_ref("99").await.is_err());
     assert!(instance.resolve_commit_ref("nope").await.is_err());
 
-    // Checkout accepts the tag ref end to end.
+    // Clone accepts the tag ref end to end.
     let out = HostWorldTree::new_legacy(root.join("cloned"));
     let id = instance.resolve_commit_ref("@stable").await.unwrap();
     let (report, _) = instance
