@@ -218,10 +218,6 @@ impl Op {
     async fn run(self, fx: &mut Fixture) -> Result<(), sekai_app::AppError> {
         let id = CommitId(1);
         let tag = TagName::parse("held").unwrap();
-        let clone_dir = fx.root.join(format!(
-            "clone-{}",
-            TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
         let instance = &mut fx.instance;
         match self {
             Self::ListCommits => instance.list_commits().await.map(drop),
@@ -241,6 +237,10 @@ impl Op {
                 .await
                 .map(drop),
             Self::Clone => {
+                let clone_dir = fx.root.join(format!(
+                    "clone-{}",
+                    TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+                ));
                 let out = HostWorldTree::new_legacy(clone_dir);
                 let outcome = instance
                     .clone_to(&out, id, CloneOptions::default(), Scope::World, |_| {})
