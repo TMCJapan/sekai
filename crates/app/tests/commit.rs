@@ -86,7 +86,7 @@ fn options() -> CommitOptions {
 /// A parseable but non-canonical file name (`r.00.00.mca`) must be read
 /// from the path discovery found, not from the canonical `r.0.0.mca`.
 #[tokio::test]
-async fn backs_up_a_non_canonical_region_name() {
+async fn commits_a_non_canonical_region_name() {
     let root = tempdir("non-canonical-name");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();

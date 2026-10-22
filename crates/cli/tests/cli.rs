@@ -293,6 +293,20 @@ fn validates_commit_refs_at_parse_time() {
         Cli::try_parse_from(["sekai", "diff", "--world", "w", "1", "2"]).is_err(),
         "diff --world with two commits is refused"
     );
+
+    // The refusal names what a reference may be, so the wording is part
+    // of the contract the parse error carries.
+    let err = Cli::try_parse_from(["sekai", "checkout", "w", "18446744073709551616"])
+        .expect_err("an out-of-range id is refused");
+    let message = err.to_string();
+    assert!(
+        message.contains("invalid commit reference"),
+        "the refusal names the reference: {message}"
+    );
+    assert!(
+        message.contains("expected <id> or @<tag>"),
+        "the refusal names the accepted shapes: {message}"
+    );
 }
 
 #[test]
@@ -795,13 +809,13 @@ fn parses_color_flag() {
     let cli = Cli::try_parse_from(["sekai", "commit", "world"]).expect("commit parses");
     assert_eq!(cli.color, ColorChoice::Auto);
 
-    let cli = Cli::try_parse_from(["sekai", "--color=never", "list"]).expect("parses");
+    let cli = Cli::try_parse_from(["sekai", "--color=never", "log"]).expect("parses");
     assert_eq!(cli.color, ColorChoice::Never);
 
-    let cli = Cli::try_parse_from(["sekai", "--color", "always", "list"]).expect("parses");
+    let cli = Cli::try_parse_from(["sekai", "--color", "always", "log"]).expect("parses");
     assert_eq!(cli.color, ColorChoice::Always);
 
-    assert!(Cli::try_parse_from(["sekai", "--color=maybe", "list"]).is_err());
+    assert!(Cli::try_parse_from(["sekai", "--color=maybe", "log"]).is_err());
 }
 
 #[test]

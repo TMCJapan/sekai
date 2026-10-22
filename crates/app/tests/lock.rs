@@ -15,7 +15,8 @@ use sekai_core::MetaStore as _;
 use sekai_storage::{StorageError, StoreLockMode};
 use sekai_storage_sqlite::SqliteStore;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use StoreLockMode::{Exclusive, Shared, Writer};
@@ -423,6 +424,11 @@ async fn a_cancelled_clone_keeps_the_store_locked_until_its_files_finish() {
     let fx = Fixture::new("cancel-clone").await;
     let (started, files_running) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel::<()>();
+    let files_written = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&files_written);
+    let expected_files = std::fs::read_dir(fx.world_path.join("region"))
+        .unwrap()
+        .count();
 
     let out = HostWorldTree::new_legacy(fx.root.join("cloned"));
     let clone = fx.instance.clone_to(
@@ -431,6 +437,7 @@ async fn a_cancelled_clone_keeps_the_store_locked_until_its_files_finish() {
         CloneOptions::default(),
         Scope::World,
         move |_| {
+            counter.fetch_add(1, Ordering::Relaxed);
             let _ = started.send(());
             // Parks the file pass until the test lets go (the sender drops).
             let _ = released.recv();
@@ -446,12 +453,18 @@ async fn a_cancelled_clone_keeps_the_store_locked_until_its_files_finish() {
     // holding the store lock.
     let probe = fx.instance.store().cas().lock(Exclusive);
     assert!(
-        probe.is_err(),
-        "the store must stay locked while the clone file pass runs"
+        matches!(&probe, Err(StorageError::StoreLocked { .. })),
+        "the store must stay locked while the clone file pass runs: {probe:?}"
     );
 
     drop(release);
+    // The pass writes every region file; the last progress call means the
+    // file work is done, and the lock goes with it.
     let deadline = Instant::now() + Duration::from_secs(10);
+    while files_written.load(Ordering::Relaxed) < expected_files {
+        assert!(Instant::now() < deadline, "the file pass never finished");
+        std::thread::sleep(Duration::from_millis(20));
+    }
     loop {
         match fx.instance.store().cas().lock(Exclusive) {
             Ok(lock) => {

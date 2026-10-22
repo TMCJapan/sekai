@@ -59,8 +59,8 @@ mod tests {
     #[test]
     fn renders_json_envelopes() {
         assert_eq!(
-            envelope_ok("list", &serde_json::json!([1, 2])).unwrap(),
-            r#"{"command":"list","status":"ok","result":[1,2]}"#
+            envelope_ok("log", &serde_json::json!([1, 2])).unwrap(),
+            r#"{"command":"log","status":"ok","result":[1,2]}"#
         );
         let err = anyhow::anyhow!("root cause").context("commit of /w failed");
         assert_eq!(

@@ -338,7 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn the_committed_commit_continues_the_previous_one() {
+    fn the_recorded_commit_continues_the_previous_one() {
         let mut meta = MemMeta::default();
         let observed = [Observation {
             key: key(0, 0),
