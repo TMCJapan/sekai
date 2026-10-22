@@ -90,6 +90,13 @@ pub enum StorageError {
     /// name the caller passed.
     #[error("store has no active ref: a new commit has nowhere to hang from")]
     NoActiveRef,
+    /// A new commit does not continue the active ref's target, which
+    /// would fork the ref onto another history.
+    #[error("new commit does not continue the active ref's target {base}")]
+    NotContinuing {
+        /// Target the new commit had to include as a parent.
+        base: u64,
+    },
     /// Stored region-family code does not name a known kind.
     #[error("stored region kind is unknown: {kind}")]
     UnknownRegionKind {
@@ -99,6 +106,9 @@ pub enum StorageError {
     /// Millisecond timestamp does not fit `i64`.
     #[error("timestamp out of range: {0}")]
     InvalidTimestamp(u64),
+    /// The system clock is before the Unix epoch.
+    #[error("system clock is before the Unix epoch")]
+    ClockBeforeEpoch,
     /// The system clock is past the representable range.
     #[error("system clock is out of range")]
     ClockOutOfRange,
