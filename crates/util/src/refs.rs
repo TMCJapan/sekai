@@ -18,8 +18,10 @@ pub const DEFAULT_REF_NAME: &str = "main";
 /// Validated ref name.
 ///
 /// Ref names are path-like (`main`, `feature/nightly`): `[A-Za-z0-9._-/]`,
-/// 1-64 bytes, never all digits (so a name cannot be mistaken for a commit
-/// ID) and never `HEAD` (the active ref is the store's HEAD equivalent).
+/// 1-64 bytes, with no empty path component (no leading, trailing, or
+/// doubled `/`) and no `..` traversal segment. A name is never all digits
+/// (so it cannot be mistaken for a commit ID) and never `HEAD` (the active
+/// ref is the store's HEAD equivalent).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RefName(String);
 
@@ -39,12 +41,12 @@ impl RefName {
             return Err(RefNameError::TooLong);
         }
         let mut all_digits = true;
-        for byte in raw.bytes() {
-            let valid = byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'/');
+        for c in raw.chars() {
+            let valid = c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/');
             if !valid {
-                return Err(RefNameError::BadChar(byte as char));
+                return Err(RefNameError::BadChar(c));
             }
-            all_digits &= byte.is_ascii_digit();
+            all_digits &= c.is_ascii_digit();
         }
         if all_digits {
             return Err(RefNameError::Numeric);
@@ -137,6 +139,9 @@ mod tests {
         assert_eq!(RefName::parse("123"), Err(RefNameError::Numeric));
         assert_eq!(RefName::parse("a b"), Err(RefNameError::BadChar(' ')));
         assert_eq!(RefName::parse("@x"), Err(RefNameError::BadChar('@')));
+        // A multi-byte character is reported as itself, not as one of its
+        // bytes.
+        assert_eq!(RefName::parse("bré"), Err(RefNameError::BadChar('é')));
         assert_eq!(RefName::parse("/main"), Err(RefNameError::BadChar('/')));
         assert_eq!(RefName::parse("main/"), Err(RefNameError::BadChar('/')));
         assert_eq!(RefName::parse("a//b"), Err(RefNameError::BadChar('/')));

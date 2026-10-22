@@ -65,9 +65,9 @@ impl core::error::Error for TagNameError {}
 pub enum RefNameError {
     /// Name was empty.
     Empty,
-    /// Name exceeded 64 bytes.
+    /// Name exceeded `RefName::MAX_LEN` bytes.
     TooLong,
-    /// Name held a byte outside `[A-Za-z0-9._-/]`.
+    /// Name held a character outside `[A-Za-z0-9._-/]`.
     BadChar(char),
     /// Name consisted of digits alone (confusable with a commit ID).
     Numeric,
@@ -79,7 +79,11 @@ impl fmt::Display for RefNameError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Empty => write!(f, "ref name is empty"),
-            Self::TooLong => write!(f, "ref name exceeds 64 bytes"),
+            Self::TooLong => write!(
+                f,
+                "ref name exceeds {} bytes",
+                crate::refs::RefName::MAX_LEN
+            ),
             Self::BadChar(c) => write!(f, "ref name holds invalid character: {c:?}"),
             Self::Numeric => write!(f, "ref name must not be all digits"),
             Self::Reserved => write!(f, "ref name is reserved"),
