@@ -2,7 +2,7 @@
 
 use crate::style::ColorChoice;
 use clap::{Parser, Subcommand};
-use sekai_app::{Area, ChunkCoord, Dimension, Rect, RegionKind, Scope, TagName};
+use sekai_app::{Area, ChunkCoord, Dimension, Rect, RefName, RegionKind, Scope, TagName};
 use std::path::{Path, PathBuf};
 
 /// Chunk-level deduplicated version control for Minecraft region files.
@@ -149,6 +149,11 @@ pub enum Command {
         #[command(subcommand)]
         action: TagCommand,
     },
+    /// Manage refs: named, movable pointers to commits.
+    Ref {
+        #[command(subcommand)]
+        action: RefCommand,
+    },
     /// Compare chunk NBT AST between two commits or between world state and a commit.
     Diff(DiffArgs),
     /// Delete old commits, folding their rows into retained ones.
@@ -198,6 +203,7 @@ impl Command {
             Self::Log { .. } => "log",
             Self::Clone { .. } => "clone",
             Self::Tag { .. } => "tag",
+            Self::Ref { .. } => "ref",
             Self::Prune { .. } => "prune",
             Self::Diff(_) => "diff",
             Self::Gc { .. } => "gc",
@@ -216,6 +222,7 @@ impl Command {
             | Self::Gc { output, .. } => output.json,
             Self::Log { json, .. } => *json,
             Self::Tag { action } => action.output_json(),
+            Self::Ref { action } => action.output_json(),
             Self::Diff(args) => args.output.json,
         }
     }
@@ -264,17 +271,73 @@ impl TagCommand {
     }
 }
 
-/// Commit reference on the command line: `<id>` or `@tag`.
+/// Ref operations. Modeling them as subcommands keeps every invalid
+/// argument shape (create without a name, delete without a name,
+/// `--force` on a list) statically unrepresentable.
+#[derive(Debug, Subcommand)]
+pub enum RefCommand {
+    /// Point a ref at a commit.
+    Create {
+        /// Ref name (`[A-Za-z0-9._-/]`, 1-64 bytes, not all digits).
+        name: RefName,
+        /// Commit reference (`<id>`, `@tag`, or a ref name) to point at.
+        /// Defaults to the active ref's target.
+        commit: Option<CommitRef>,
+        /// Move an existing ref instead of failing.
+        #[arg(long)]
+        force: bool,
+        /// Emit output as JSON instead of human text. See docs/json.md.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete a ref.
+    Delete {
+        /// Ref name to delete.
+        name: RefName,
+        /// Emit output as JSON instead of human text. See docs/json.md.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List all refs in name order.
+    List {
+        /// Emit output as JSON instead of human text. See docs/json.md.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Make a ref the active one: new commits hang from it.
+    Activate {
+        /// Ref name to activate.
+        name: RefName,
+        /// Emit output as JSON instead of human text. See docs/json.md.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+impl RefCommand {
+    /// Whether the operation runs in JSON mode (`--json`).
+    pub const fn output_json(&self) -> bool {
+        match self {
+            Self::Create { json, .. }
+            | Self::Delete { json, .. }
+            | Self::List { json }
+            | Self::Activate { json, .. } => *json,
+        }
+    }
+}
+
+/// Commit reference on the command line: `<id>`, `@tag`, or a ref name.
 ///
 /// The shape is validated at parse time so a malformed reference never
 /// reaches the store; resolving it to an existing commit stays a
 /// runtime step. The grammar mirrors `core`'s `resolve_commit_ref`:
-/// `@` followed by a valid [`TagName`], or a plain `u64` ID.
+/// `@` followed by a valid [`TagName`], a plain `u64` ID, or a valid
+/// [`RefName`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitRef(String);
 
 impl CommitRef {
-    /// Raw reference text (`<id>` or `@tag`).
+    /// Raw reference text (`<id>`, `@tag`, or a ref name).
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -293,9 +356,10 @@ impl std::str::FromStr for CommitRef {
         if let Some(name) = s.strip_prefix('@') {
             TagName::parse(name)
                 .map_err(|err| format!("invalid tag reference {s:?}: {err}, expected @<tag>"))?;
-        } else {
-            s.parse::<u64>()
-                .map_err(|_| format!("invalid commit reference {s:?}, expected <id> or @<tag>"))?;
+        } else if s.parse::<u64>().is_err() {
+            RefName::parse(s).map_err(|err| {
+                format!("invalid commit reference {s:?}: {err}, expected <id>, @<tag>, or <ref>")
+            })?;
         }
         Ok(Self(s.to_owned()))
     }

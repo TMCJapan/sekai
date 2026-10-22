@@ -9,6 +9,7 @@ mod gc;
 mod log;
 mod progress;
 mod prune;
+mod refs;
 mod status;
 mod tag;
 
@@ -105,6 +106,7 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
         }
         Command::Log { json, stat } => log::run(&cli.store, *json, *stat, style).await,
         Command::Tag { action } => tag::run(&cli.store, action, style).await,
+        Command::Ref { action } => refs::run(&cli.store, action, style).await,
         Command::Clone {
             commit,
             out,

@@ -11,6 +11,7 @@
 - [Checkout](commands/checkout.md)
 - [Clone](commands/clone.md)
 - [Tags](commands/tags.md)
+- [Refs](commands/refs.md)
 - [Maintenance](commands/maintenance.md)
 - [Inspection](commands/inspection.md)
 - [Automation](automation.md)

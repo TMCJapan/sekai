@@ -259,17 +259,19 @@ fn parses_diff_command() {
 #[test]
 fn validates_commit_refs_at_parse_time() {
     // Malformed references are refused before any code runs, so they can
-    // never touch the store (`<id>` is u64, `@tag` follows TagName rules).
+    // never touch the store (`<id>` is u64, `@tag` follows TagName rules,
+    // a bare name follows RefName rules).
     for args in [
-        vec!["sekai", "checkout", "w", "abc"],
         vec!["sekai", "checkout", "w", ""],
         vec!["sekai", "checkout", "w", "@"],
         vec!["sekai", "checkout", "w", "@123"],
         vec!["sekai", "checkout", "w", "@bad name"],
-        vec!["sekai", "clone", "latest", "out"],
-        vec!["sekai", "prune", "--before", "stable"],
-        vec!["sekai", "diff", "1", "two"],
-        vec!["sekai", "tag", "create", "stable", "newest"],
+        vec!["sekai", "checkout", "w", "bad name"],
+        vec!["sekai", "checkout", "w", "HEAD"],
+        vec!["sekai", "clone", "bad name", "out"],
+        vec!["sekai", "prune", "--before", "bad name"],
+        vec!["sekai", "diff", "1", "bad name"],
+        vec!["sekai", "tag", "create", "stable", "bad name"],
     ] {
         assert!(Cli::try_parse_from(&args).is_err(), "{args:?} is refused");
     }
@@ -277,6 +279,8 @@ fn validates_commit_refs_at_parse_time() {
     for args in [
         vec!["sekai", "checkout", "w", "3"],
         vec!["sekai", "checkout", "w", "@stable"],
+        vec!["sekai", "checkout", "w", "main"],
+        vec!["sekai", "checkout", "w", "feature/nightly"],
         vec!["sekai", "clone", "@v1.2_x-1", "out"],
         vec!["sekai", "prune", "--before", "@stable"],
         vec!["sekai", "diff", "@stable", "2"],
@@ -304,7 +308,7 @@ fn validates_commit_refs_at_parse_time() {
         "the refusal names the reference: {message}"
     );
     assert!(
-        message.contains("expected <id> or @<tag>"),
+        message.contains("expected <id>, @<tag>, or <ref>"),
         "the refusal names the accepted shapes: {message}"
     );
 }
@@ -656,7 +660,6 @@ fn parses_timing_and_json_flags() {
         vec!["sekai", "tag", "create", "stable"],
         vec!["sekai", "tag", "delete"],
         vec!["sekai", "tag", "create", "bad name", "3"],
-        vec!["sekai", "tag", "create", "stable", "abc"],
         vec!["sekai", "tag", "delete", "stable", "--force"],
         vec!["sekai", "tag", "list", "stable"],
     ] {

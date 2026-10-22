@@ -11,6 +11,7 @@
 - [チェックアウト](commands/checkout.md)
 - [クローン](commands/clone.md)
 - [タグ](commands/tags.md)
+- [Ref](commands/refs.md)
 - [メンテナンス](commands/maintenance.md)
 - [検証・検査](commands/inspection.md)
 - [自動化](automation.md)

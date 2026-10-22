@@ -42,6 +42,10 @@ sekai --store ./sekai-store diff 1 2 --in overworld:0,0
 # コミット 2 に後から参照できるタグ名を付与
 sekai --store ./sekai-store tag create stable 2
 
+# ブランチ: 現在位置の名前付けを行い、そのブランチへコミットする
+sekai --store ./sekai-store ref create feature
+sekai --store ./sekai-store ref activate feature
+
 # 参照されていない Blob をプレビュー後、ガベージコレクション (GC) で回収
 sekai --store ./sekai-store gc --dry-run
 sekai --store ./sekai-store gc
@@ -54,7 +58,7 @@ sekai --store ./sekai-store gc
 sekai --store ./sekai-store clone 1 ./restored
 ```
 
-すべてのコマンドは `--json` オプションに対応しており、単一の機械可読な JSON レポートを出力できます。また、`log` と `tag` を除くすべてのコマンドは `--timing` オプションでフェーズごとの処理時間内訳を表示できます（両方を組み合わせることで、所要時間付きの JSON が得られます）。さらに、`commit`、`status`、`checkout`、`diff`、`clone`、`gc`、`prune` では `--progress` を指定すると標準エラー出力に進捗バーを表示できます（`--json` との併用は不可）。
+すべてのコマンドは `--json` オプションに対応しており、単一の機械可読な JSON レポートを出力できます。また、`log`、`tag`、`ref` を除くすべてのコマンドは `--timing` オプションでフェーズごとの処理時間内訳を表示できます（両方を組み合わせることで、所要時間付きの JSON が得られます）。さらに、`commit`、`status`、`checkout`、`diff`、`clone`、`gc`、`prune` では `--progress` を指定すると標準エラー出力に進捗バーを表示できます（`--json` との併用は不可）。
 
 `commit`、`status`、`checkout`、`diff`、`clone` はスコープ（対象範囲）の絞り込みに対応しています。複数指定可能な `--in DIM[:x,z|x0,z0..x1,z1]`、`--region DIM:RX,RZ`、および複数指定可能な `--kind`（省略時はすべて）が利用可能です。スコープを指定しない場合は、ワールド全体が対象となります。出力フォーマットの仕様については `docs/json.md` を参照してください。
 
