@@ -24,9 +24,9 @@ with `*`.
   switching forks the history the way `git switch` does.
 - `ref delete <name>` removes a ref. The active ref is never removed -
   a store without one would have nowhere to hang new commits from.
-- Ref names use `[A-Za-z0-9._-/]`, run 1-64 bytes, and are never all
-  digits, so a name cannot be confused with a commit ID. `HEAD` is
-  reserved for the store's active ref.
+- Ref names allow ASCII alphanumerics plus `.`, `_`, `-`, and `/`, run
+  1-64 bytes, and are never all digits, so a name cannot be confused
+  with a commit ID. `HEAD` is reserved for the store's active ref.
 
 Refs are metadata only and constrain nothing: pruning a commit hands
 its ref to the commit that folded it.

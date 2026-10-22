@@ -278,7 +278,8 @@ impl TagCommand {
 pub enum RefCommand {
     /// Point a ref at a commit.
     Create {
-        /// Ref name (`[A-Za-z0-9._-/]`, 1-64 bytes, not all digits).
+        /// Ref name (ASCII alphanumerics plus ".", "_", "-", "/"; 1-64
+        /// bytes; not all digits).
         name: RefName,
         /// Commit reference (`<id>`, `@tag`, or a ref name) to point at.
         /// Defaults to the active ref's target.
