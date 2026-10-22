@@ -164,8 +164,8 @@ impl MetaStore for MemMeta {
         let parents = self
             .commits
             .iter()
-            .find(|s| s.id == commit)
-            .map(|s| s.parents.clone())
+            .find(|c| c.id == commit)
+            .map(|c| c.parents.clone())
             .unwrap_or_default();
         core::future::ready(Ok(parents))
     }
@@ -209,7 +209,7 @@ impl MetaStore for MemMeta {
         &self,
         id: CommitId,
     ) -> impl Future<Output = Result<Option<Commit>, MemError>> + Send {
-        core::future::ready(Ok(self.commits.iter().find(|s| s.id == id).cloned()))
+        core::future::ready(Ok(self.commits.iter().find(|c| c.id == id).cloned()))
     }
 
     fn latest_commit(&self) -> impl Future<Output = Result<Option<Commit>, MemError>> + Send {

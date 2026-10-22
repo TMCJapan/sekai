@@ -73,7 +73,7 @@ pub fn select_retained(
     keep_last: Option<u64>,
     before: Option<CommitId>,
 ) -> BTreeSet<CommitId> {
-    let mut ids: Vec<CommitId> = commits.iter().map(|s| s.id).collect();
+    let mut ids: Vec<CommitId> = commits.iter().map(|c| c.id).collect();
     ids.sort();
     if let Some(n) = keep_last {
         let n = usize::try_from(n).unwrap_or(usize::MAX);

@@ -201,7 +201,7 @@ pub async fn latest_commit_id<M: MetaStore>(
     meta: &M,
 ) -> Result<Option<CommitId>, CommitError<M::Error>> {
     let commit = meta.latest_commit().await.map_err(CommitError::Meta)?;
-    Ok(commit.map(|s| s.id))
+    Ok(commit.map(|c| c.id))
 }
 
 /// Failures while resolving a commit reference.

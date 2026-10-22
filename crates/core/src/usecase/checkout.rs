@@ -64,7 +64,7 @@ pub async fn plan_checkout<M: MetaStore>(
         .lookup_commit(commit)
         .await
         .map_err(CheckoutError::Meta)?
-        .map(|s| s.created_at_ms)
+        .map(|c| c.created_at_ms)
         .ok_or(CheckoutError::UnknownCommit { id: commit.0 })?;
     let mut groups: BTreeMap<RegionKey, Vec<(ChunkCoord, BlobHash)>> = BTreeMap::new();
     let mut tombstones: BTreeMap<RegionKey, Vec<ChunkCoord>> = BTreeMap::new();
