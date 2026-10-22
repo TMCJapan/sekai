@@ -142,6 +142,12 @@ pub async fn prune_plan<M: MetaStore>(
 /// The fold target is a *descendant*, not merely a newer commit: folding
 /// into an unrelated history would graft rows the successor never had.
 /// A commit no retained commit continues cannot be retired at all.
+///
+/// The plan must come from [`prune_plan`]: deletions and retentions are
+/// disjoint and name existing commits. Fold targets are retained, so
+/// deletion order does not affect them; a hand-built plan fails through
+/// the fold calculation or the backend's retirement checks instead of
+/// corrupting the graph.
 pub async fn prune_apply<M: MetaStore>(
     meta: &mut M,
     plan: &PrunePlan,
@@ -157,10 +163,10 @@ pub async fn prune_apply<M: MetaStore>(
     .map_err(PruneError::Meta)?;
     // Retiring a commit contracts the graph: its children inherit its
     // parents, so reachability between the remaining commits does not
-    // change. Deletion runs oldest-first and descendants always have
-    // higher IDs, so a commit's descendants are still live when it is
-    // retired: one snapshot serves the whole run. `retire_commit`
-    // re-checks the live descent before it writes.
+    // change. Every fold target is a retained commit and retained
+    // commits are never retired, so one ancestry snapshot serves the
+    // whole run. `retire_commit` re-checks the live descent before it
+    // writes.
     let ancestry = retained_ancestry(&commits, &retained);
     let mut report = PruneReport {
         pruned: 0,

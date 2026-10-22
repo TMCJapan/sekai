@@ -26,6 +26,11 @@ pub enum MemError {
         /// Parent that was asked for.
         id: u64,
     },
+    /// A ref would name a commit the store does not hold.
+    UnknownCommit {
+        /// Commit that was asked for.
+        id: u64,
+    },
     /// A commit named itself as a parent.
     SelfParent {
         /// Commit that named itself.
@@ -515,6 +520,12 @@ impl MetaStore for MemMeta {
         commit: Option<CommitId>,
         created_at_ms: u64,
     ) -> impl Future<Output = Result<(), MemError>> + Send {
+        // Mirrors the backend: a ref may not name a commit the store lacks.
+        if let Some(id) = commit
+            && !self.commits.iter().any(|held| held.id == id)
+        {
+            return core::future::ready(Err(MemError::UnknownCommit { id: id.0 }));
+        }
         // Moving a ref keeps its creation time; only a new ref records one.
         let (active, created_at_ms) = self
             .refs
