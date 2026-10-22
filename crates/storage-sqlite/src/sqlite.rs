@@ -461,9 +461,11 @@ fn now_ms() -> Result<i64, StorageError> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|source| StorageError::backend("sqlite", source))?
         .as_millis();
-    // `as_millis` is `u128`: a value no `u64` can carry has no
-    // representable payload, so the ceiling stands for "at least this
-    // large". Everything that fits a `u64` is reported as itself.
+    // `as_millis` is `u128`, while `InvalidTimestamp` carries a `u64`: a
+    // value above `u64::MAX` has no representable payload, so it is
+    // reported as the ceiling. Anything that fits a `u64` is reported as
+    // itself, including values above `i64::MAX`, which the conversion
+    // below rejects.
     let millis = u64::try_from(millis).unwrap_or(u64::MAX);
     i64::try_from(millis).map_err(|_| StorageError::InvalidTimestamp(millis))
 }
@@ -1162,27 +1164,29 @@ impl sekai_core::MetaStore for SqliteMeta {
     }
 
     async fn delete_ref(&mut self, name: &RefName) -> Result<bool, StorageError> {
-        let active: Option<i64> = sqlx::query_scalar("SELECT active FROM refs WHERE name = ?")
-            .bind(name.as_str())
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(db_err)?;
-        let Some(active) = active else {
-            return Ok(false);
-        };
-        // The active ref is never removed: a store without one would have
-        // nowhere to hang new commits from.
-        if active != 0 {
-            return Err(StorageError::ActiveRefProtected {
-                name: name.as_str().to_owned(),
-            });
-        }
-        let done = sqlx::query("DELETE FROM refs WHERE name = ?")
+        // The DELETE itself refuses the active ref, so an activation that
+        // lands between the statements cannot remove the store's head.
+        let deleted = sqlx::query("DELETE FROM refs WHERE name = ? AND active = 0")
             .bind(name.as_str())
             .execute(&self.pool)
             .await
             .map_err(db_err)?;
-        Ok(done.rows_affected() > 0)
+        if deleted.rows_affected() > 0 {
+            return Ok(true);
+        }
+        // Nothing was deleted: the ref is absent or active.
+        let active: Option<i64> =
+            sqlx::query_scalar("SELECT 1 FROM refs WHERE name = ? AND active = 1")
+                .bind(name.as_str())
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(db_err)?;
+        match active {
+            Some(_) => Err(StorageError::ActiveRefProtected {
+                name: name.as_str().to_owned(),
+            }),
+            None => Ok(false),
+        }
     }
 
     async fn active_ref(&self) -> Result<Option<CommitRef>, StorageError> {
@@ -1228,11 +1232,19 @@ impl sekai_core::MetaStore for SqliteMeta {
             .execute(&mut *tx)
             .await
             .map_err(db_err)?;
-        sqlx::query("UPDATE refs SET active = 1 WHERE name = ?")
+        // The row can still vanish between the check above and this
+        // update; committing then would leave the store without a head.
+        let activated = sqlx::query("UPDATE refs SET active = 1 WHERE name = ?")
             .bind(name.as_str())
             .execute(&mut *tx)
             .await
-            .map_err(db_err)?;
+            .map_err(db_err)?
+            .rows_affected();
+        if activated == 0 {
+            return Err(StorageError::UnknownRef {
+                name: name.as_str().to_owned(),
+            });
+        }
         tx.commit().await.map_err(db_err)?;
         Ok(())
     }
@@ -1341,6 +1353,10 @@ mod tests {
     #[tokio::test]
     async fn a_commit_without_an_active_ref_writes_nothing() {
         let mut meta = memory_meta().await;
+        // A first commit gives the store a history.
+        meta.apply_commit_incremental(1_000, &[], &[], None, &[], &[])
+            .await
+            .unwrap();
         // A store whose active flag was lost (the app never clears it).
         sqlx::query("UPDATE refs SET active = 0")
             .execute(&meta.pool)
@@ -1348,7 +1364,7 @@ mod tests {
             .unwrap();
 
         let err = meta
-            .apply_commit_incremental(1_000, &[], &[], None, &[], &[])
+            .apply_commit_incremental(2_000, &[], &[], None, &[], &[])
             .await
             .unwrap_err();
         assert!(matches!(err, StorageError::NoActiveRef));
@@ -1360,7 +1376,8 @@ mod tests {
         })
         .await
         .unwrap();
-        assert!(commits.is_empty(), "the failed commit left a row behind");
+        assert_eq!(commits.len(), 1, "the failed commit left a row behind");
+        assert_eq!(commits[0].id, CommitId(1));
     }
 
     #[tokio::test]
