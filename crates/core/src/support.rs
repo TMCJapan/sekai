@@ -155,9 +155,16 @@ pub struct MemMeta {
 impl MemMeta {
     /// Add an active ref, the way a fresh store looks: one ref, unborn,
     /// waiting for the first commit.
+    ///
+    /// Any previously active ref is deactivated: the fake keeps the same
+    /// single-active-ref invariant as the backend.
     pub fn with_active_ref(&mut self, name: &RefName) {
+        for (ref_name, record) in &mut self.refs {
+            record.active = ref_name == name;
+        }
         self.refs
-            .insert(name.clone(), CommitRef::new(name.clone(), None, true, 0));
+            .entry(name.clone())
+            .or_insert_with(|| CommitRef::new(name.clone(), None, true, 0));
     }
 }
 
