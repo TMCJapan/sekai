@@ -4,7 +4,7 @@
 
 #![cfg(feature = "backend-sqlite")]
 
-use sekai_app::{HostWorldTree, RefName};
+use sekai_app::{DEFAULT_REF_NAME, HostWorldTree, RefName};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -61,7 +61,7 @@ async fn a_fresh_store_starts_with_one_active_ref() {
 
     let refs = instance.list_refs().await.unwrap();
     assert_eq!(refs.len(), 1);
-    assert_eq!(refs[0].name.as_str(), "main");
+    assert_eq!(refs[0].name.as_str(), DEFAULT_REF_NAME);
     assert!(refs[0].active);
     // Unborn: the store has no commit yet.
     assert!(refs[0].commit.is_none());
@@ -81,7 +81,7 @@ async fn a_commit_hangs_from_the_active_ref() {
 
     // The active ref moved onto the new commit.
     let active = instance.active_ref().await.unwrap().unwrap();
-    assert_eq!(active.name.as_str(), "main");
+    assert_eq!(active.name.as_str(), DEFAULT_REF_NAME);
     assert_eq!(active.commit, Some(first.commit));
     assert_eq!(
         instance.current_commit_id().await.unwrap(),
@@ -135,7 +135,7 @@ async fn switching_refs_forks_the_history() {
 
     // Back on `main`, the next commit forks instead of continuing.
     instance
-        .activate_ref(&RefName::parse("main").unwrap())
+        .activate_ref(&RefName::parse(DEFAULT_REF_NAME).unwrap())
         .await
         .unwrap();
     let on_main = commit(&mut instance, &mut world).await;
@@ -158,7 +158,7 @@ async fn the_active_ref_is_protected() {
     let root = tempdir("protect");
     let store = root.join("store").to_string_lossy().into_owned();
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
-    let main = RefName::parse("main").unwrap();
+    let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
 
     // The store's active ref never goes away.
     assert!(instance.delete_ref(&main).await.is_err());
@@ -182,7 +182,7 @@ async fn forcing_a_move_keeps_the_active_flag() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let first = commit(&mut instance, &mut world).await;
     let second = commit(&mut instance, &mut world).await;
-    let main = RefName::parse("main").unwrap();
+    let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
 
     // Moving the active ref back moves the flag with it: it stays the
     // ref the next commit hangs from.
@@ -236,7 +236,7 @@ async fn ref_writes_report_a_missing_target() {
     );
     assert_eq!(
         instance.active_ref().await.unwrap().unwrap().name.as_str(),
-        "main"
+        DEFAULT_REF_NAME
     );
     cleanup(&root);
 }

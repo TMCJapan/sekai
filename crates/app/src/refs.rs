@@ -1,18 +1,19 @@
 //! Ref objects: the store's named, movable pointers to commits.
 //!
 //! A ref names a commit and moves with the history it names. Exactly one
-//! ref is active - the one new commits hang from. Refs are metadata
-//! only: they constrain nothing, and a retired commit hands its ref to
-//! the commit that folded it (pruning). Changing the active ref decides
-//! where the next commit lands, so it runs under the writer lock.
-
-use std::time::{SystemTime, UNIX_EPOCH};
+//! ref is active: the one new commits hang from, and the only ref
+//! `delete_ref` refuses to remove. Refs carry no content of their own -
+//! they pin no commit and change nothing a checkout sees - and a retired
+//! commit hands its ref to the commit that folded it (pruning). Changing
+//! the active ref decides where the next commit lands, so it runs under
+//! the writer lock.
 
 use sekai_core::{CommitId, CommitRef, MetaStore as _, RefName};
 use sekai_storage::{SekaiStore, StoreLockMode};
 
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
+use crate::time::now_ms;
 
 impl<S: SekaiStore> SekaiInstance<S> {
     /// Point `name` at `commit`, creating the ref when it does not exist.
@@ -21,6 +22,9 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// a commit, while `Some(id)` must name a stored commit. An existing
     /// name fails with [`AppError::RefExists`] unless `force` moves it; a
     /// move keeps the ref's active flag and creation time.
+    ///
+    /// `force` is a policy of this layer: the port's `set_ref` always
+    /// moves the ref.
     ///
     /// Every read runs under the writer lock, which excludes the runs
     /// that write rows (`commit`) and the one that deletes them (`prune`),
@@ -119,8 +123,9 @@ impl<S: SekaiStore> SekaiInstance<S> {
 
     /// The commit the next one would continue: the active ref's target.
     ///
-    /// `None` while the active ref is unborn - the next commit starts a
-    /// history.
+    /// `None` when the active ref is unborn. The next commit then records
+    /// with no parents, starting a fresh root even if the store already
+    /// holds commits.
     pub async fn current_commit_id(&self) -> Result<Option<CommitId>, AppError> {
         let _lock = self.lock_store(StoreLockMode::Shared)?;
         Ok(self
@@ -130,11 +135,4 @@ impl<S: SekaiStore> SekaiInstance<S> {
             .await?
             .and_then(|active| active.commit))
     }
-}
-
-fn now_ms() -> Result<u64, AppError> {
-    Ok(
-        u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis())
-            .unwrap_or(u64::MAX),
-    )
 }

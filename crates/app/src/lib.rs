@@ -26,6 +26,7 @@ mod prune;
 mod refs;
 mod regions;
 mod tag;
+mod time;
 
 pub use checkout::{
     CheckoutOptions, CheckoutProgress, CheckoutTimings, MissingBlobPolicy, MissingFilePolicy,

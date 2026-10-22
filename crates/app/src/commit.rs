@@ -16,7 +16,7 @@
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use sekai_core::usecase::commit::Ingested;
 use sekai_core::{
@@ -29,6 +29,7 @@ use sekai_world::{RegionFile, WorldLock, WorldLockMode, WorldTree};
 use crate::error::AppError;
 use crate::instance::{OperationLocks, WorldHandle, WorldHandleMut};
 use crate::regions::discover_regions;
+use crate::time::now_ms;
 
 /// Commit behavior knobs.
 #[derive(Debug, Clone, Default)]
@@ -827,11 +828,4 @@ fn ingest_timed<C: BlockingBlobStore>(
         .push(CommitEntry::new(coord, Some(hash), diff.flatten()));
     ctx.present.insert(coord);
     Ok((hash_elapsed, cas_elapsed))
-}
-
-fn now_ms() -> Result<u64, AppError> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(AppError::Clock)
-        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }
