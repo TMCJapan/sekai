@@ -8,7 +8,7 @@ use core::fmt;
 
 use crate::port::blob::BlobStore;
 use crate::port::meta::MetaStore;
-use sekai_util::{BlobHash, GcPlan, SnapshotId};
+use sekai_util::{BlobHash, CommitId, GcPlan};
 
 /// Outcome of one [`gc_apply`] run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,26 +34,26 @@ impl<B: fmt::Debug, M: fmt::Debug> fmt::Display for GcError<B, M> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Blob(_) => write!(f, "blob store failed"),
-            Self::Meta(_) => write!(f, "snapshot metadata failed"),
+            Self::Meta(_) => write!(f, "commit metadata failed"),
         }
     }
 }
 
-/// Find CAS blobs that are not referenced by any snapshot history row.
+/// Find CAS blobs that are not referenced by any commit history row.
 pub async fn gc_plan<B: BlobStore, M: MetaStore>(
     blobs: &B,
     meta: &M,
 ) -> Result<GcPlan, GcError<B::Error, M::Error>> {
     let mut referenced: BTreeSet<BlobHash> = BTreeSet::new();
-    let mut snapshots: Vec<SnapshotId> = Vec::new();
-    meta.visit_snapshots(|snapshot| {
-        snapshots.push(snapshot.id);
+    let mut commits: Vec<CommitId> = Vec::new();
+    meta.visit_commits(|commit| {
+        commits.push(commit.id);
         true
     })
     .await
     .map_err(GcError::Meta)?;
-    for id in snapshots {
-        meta.visit_snapshot_chunks(id, |entry| {
+    for id in commits {
+        meta.visit_commit_chunks(id, |entry| {
             if let Some(blob) = entry.blob {
                 referenced.insert(blob);
             }
@@ -114,7 +114,7 @@ pub async fn gc_apply<B: BlobStore, M: MetaStore>(
 mod tests {
     use super::*;
     use crate::support::{MemCas, MemMeta, block_on};
-    use sekai_util::{ChunkCoord, Dimension, RegionKind, SnapshotEntry};
+    use sekai_util::{ChunkCoord, CommitEntry, Dimension, RegionKind};
 
     const OVER: Dimension = Dimension::OVERWORLD;
     const REGION: RegionKind = RegionKind::Region;
@@ -131,10 +131,10 @@ mod tests {
         let orphan = BlobHash([2; 32]);
         block_on(cas.put(&live, b"live")).unwrap();
         block_on(cas.put(&orphan, b"orphan")).unwrap();
-        block_on(meta.apply_snapshot_incremental(
+        block_on(meta.apply_commit_incremental(
             1_000,
             &[],
-            &[SnapshotEntry::new(coord(0, 0), Some(live), None)],
+            &[CommitEntry::new(coord(0, 0), Some(live), None)],
             None,
             &[],
             &[],

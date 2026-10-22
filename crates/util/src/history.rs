@@ -1,14 +1,14 @@
-//! Per-chunk facts on the snapshot history graph.
+//! Per-chunk facts on the commit history graph.
 
-use super::{BlobHash, ChunkCoord, DiffHash, SnapshotId};
+use super::{BlobHash, ChunkCoord, CommitId, DiffHash};
 
-/// History row for one snapshot and chunk.
+/// History row for one commit and chunk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChunkHistoryEntry {
     /// Which chunk this row describes.
     pub coord: ChunkCoord,
-    /// Snapshot this row belongs to.
-    pub snapshot: SnapshotId,
+    /// Commit this row belongs to.
+    pub commit: CommitId,
     /// Exact CAS key, or `None` for a tombstone.
     pub blob: Option<BlobHash>,
     /// Cached volatile hash, or `None` when not computed.
@@ -19,19 +19,19 @@ impl ChunkHistoryEntry {
     /// Construct a history row.
     pub const fn new(
         coord: ChunkCoord,
-        snapshot: SnapshotId,
+        commit: CommitId,
         blob: Option<BlobHash>,
         diff: Option<DiffHash>,
     ) -> Self {
         Self {
             coord,
-            snapshot,
+            commit,
             blob,
             diff,
         }
     }
 
-    /// Whether this row is a tombstone (chunk absent at this snapshot).
+    /// Whether this row is a tombstone (chunk absent at this commit).
     pub const fn is_tombstone(self) -> bool {
         self.blob.is_none()
     }
@@ -45,9 +45,9 @@ mod tests {
     #[test]
     fn tombstone_detection() {
         let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
-        let present = ChunkHistoryEntry::new(coord, SnapshotId(1), Some(BlobHash([1; 32])), None);
+        let present = ChunkHistoryEntry::new(coord, CommitId(1), Some(BlobHash([1; 32])), None);
         assert!(!present.is_tombstone());
-        let tomb = ChunkHistoryEntry::new(coord, SnapshotId(2), None, None);
+        let tomb = ChunkHistoryEntry::new(coord, CommitId(2), None, None);
         assert!(tomb.is_tombstone());
     }
 }

@@ -367,7 +367,7 @@ fn world_locks_stay_out_of_bukkit_layout_detection() {
 
 #[test]
 fn an_exclusive_world_lock_excludes_another_writer() {
-    // Rollbacks write the world, so two of them must not overlap.
+    // Checkouts write the world, so two of them must not overlap.
     let world_path = tempdir("lock-exclusive");
     write(world_path.join("region/r.0.0.mca"), &one_chunk_image());
     let world = HostWorldTree::new(&world_path).unwrap();
@@ -531,7 +531,7 @@ fn discovers_a_legacy_bukkit_world() {
         root_path.join("world_kingdoms_spawn/dimensions/kingdoms/spawn/region/r.0.1.mca"),
         &image,
     );
-    write(root_path.join("world_backup/region/r.9.9.mca"), &image);
+    write(root_path.join("world_plugin/region/r.9.9.mca"), &image);
 
     let root = HostWorldTree::new(&root_path).unwrap();
     let found = discover(&root);
@@ -858,7 +858,7 @@ fn an_escaping_level_name_stays_out_of_the_layout() {
 fn an_unlistable_kind_directory_is_an_error() {
     // A kind directory that cannot be listed must not silently downgrade
     // the layout: the world would open as a different tree - or an empty
-    // one - and later backups would miss its data.
+    // one - and later commits would miss its data.
     let world_path = tempdir("kinds-unlistable");
     write(world_path.join("region"), b"not a directory");
 
@@ -1077,7 +1077,7 @@ fn non_canonical_region_name_keeps_its_discovered_path() {
 /// renames the file.
 ///
 /// A restore prefers it over the derived handle, because folders may
-/// have moved since the backup: the live directory is where the sibling
+/// have moved since the commit: the live directory is where the sibling
 /// was found, while the derived handle names the layout's canonical
 /// directory.
 #[test]
@@ -1112,7 +1112,7 @@ fn a_sibling_keeps_the_observed_directory() {
 #[test]
 fn unresolvable_entries_are_skipped_not_fatal() {
     // A dangling symlink inside a kind directory must not abort the whole
-    // discovery: one unreadable entry cannot make the world un-backupable.
+    // discovery: one unreadable entry must not block committing the world.
     let world_path = tempdir("dangling");
     write(world_path.join("region/r.0.0.mca"), &one_chunk_image());
     std::os::unix::fs::symlink(
@@ -1189,7 +1189,7 @@ fn missing_world_is_an_error() {
     );
 }
 
-/// Export builds `new_legacy`/`new_dimensions`/`new_bukkit` trees for
+/// Clone builds `new_legacy`/`new_dimensions`/`new_bukkit` trees for
 /// roots that do not exist yet, so region enumeration must answer empty
 /// instead of failing while the root is still missing.
 #[test]
@@ -1262,7 +1262,7 @@ fn derives_all_layouts() {
     );
 }
 
-/// Export derives each stored region's path through a constructor tree
+/// Clone derives each stored region's path through a constructor tree
 /// (`new_legacy`, `new_dimensions`, `new_bukkit`), so the constructors have
 /// to key the vanilla trio exactly as discovery does for the same layout.
 #[test]
@@ -1365,11 +1365,11 @@ fn fingerprint_sees_a_payload_edit_with_preserved_size_and_mtime() {
         "a same-size payload edit under a preserved mtime must be detected"
     );
 
-    // And therefore the pair does not match, which is what plan_backup asks
+    // And therefore the pair does not match, which is what plan_commit asks
     // before skipping a file.
     let stored = sekai_core::RegionStateEntry {
         fingerprint: before,
-        snapshot_id: sekai_core::SnapshotId(1),
+        commit_id: sekai_core::CommitId(1),
     };
     assert!(
         !after.matches_state(&stored),

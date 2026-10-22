@@ -1,14 +1,14 @@
 //! Diff subcommand execution, DTOs, and coordination.
 
 use anyhow::Context as _;
-use sekai_app::{ChunkCoord, ChunkDiff, HostWorldTree, Scope, SekaiStore, SnapshotId};
+use sekai_app::{ChunkCoord, ChunkDiff, CommitId, HostWorldTree, Scope, SekaiStore};
 
 use super::diff_render::{
     TimedDiffs, diff_entry_payload, diff_group_payload, print_diff_timing_table,
     render_diff_grouped, render_diff_human,
 };
 use super::progress::{finish_progress, progress_bar, report_progress};
-use crate::cli::{DiffArgs, DiffTarget, SnapshotRef};
+use crate::cli::{CommitRef, DiffArgs, DiffTarget};
 use crate::envelope::envelope_ok;
 use crate::style::Styler;
 
@@ -23,25 +23,25 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
     // resolve through enumeration; explicit chunks join the union.
     let broad = selection.has_broad_areas() || coords.is_empty();
     let (diffs, timings) = match args.target() {
-        DiffTarget::World { world, snapshot } => {
+        DiffTarget::World { world, commit } => {
             let world = HostWorldTree::new(world)
                 .with_context(|| format!("failed to inspect world {}", world.display()))?;
             if broad {
                 coords.append(&mut sekai_app::world_chunk_coords(&world)?);
             }
             let coords = scoped_coords(coords, &scope);
-            let snapshot_id = match snapshot {
+            let commit_id = match commit {
                 Some(raw) => Some(
                     instance
-                        .resolve_snapshot_ref(raw.as_str())
+                        .resolve_commit_ref(raw.as_str())
                         .await
-                        .with_context(|| format!("snapshot {raw} failed to resolve"))?,
+                        .with_context(|| format!("commit {raw} failed to resolve"))?,
                 ),
                 None => None,
             };
             instance
                 .world(&world)
-                .diff_world_chunks(snapshot_id, &coords, None, |update| {
+                .diff_world_chunks(commit_id, &coords, None, |update| {
                     report_progress(
                         bar.as_ref(),
                         update.chunks_done,
@@ -50,13 +50,13 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
                     );
                 })
                 .await
-                .with_context(|| "failed to compute chunk diffs between world state and snapshot")?
+                .with_context(|| "failed to compute chunk diffs between world state and commit")?
         }
-        DiffTarget::Snapshots { old, new } => {
-            let (old_id, new_id) = resolve_snapshot_pair(&instance, old, new).await?;
+        DiffTarget::Commits { old, new } => {
+            let (old_id, new_id) = resolve_commit_pair(&instance, old, new).await?;
             if broad {
-                let mut union = instance.snapshot_chunk_coords(old_id).await?;
-                union.extend(instance.snapshot_chunk_coords(new_id).await?);
+                let mut union = instance.commit_chunk_coords(old_id).await?;
+                union.extend(instance.commit_chunk_coords(new_id).await?);
                 coords.append(&mut union);
             }
             let coords = scoped_coords(coords, &scope);
@@ -72,7 +72,7 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
                 .await
                 .with_context(|| {
                     format!(
-                        "failed to compute chunk diffs between snapshot {} and {}",
+                        "failed to compute chunk diffs between commit {} and {}",
                         old_id.raw(),
                         new_id.raw()
                     )
@@ -154,37 +154,37 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
     Ok(())
 }
 
-async fn resolve_snapshot_pair(
+async fn resolve_commit_pair(
     instance: &sekai_app::SekaiInstance<impl SekaiStore>,
-    old_snapshot: Option<&SnapshotRef>,
-    new_snapshot: Option<&SnapshotRef>,
-) -> anyhow::Result<(SnapshotId, SnapshotId)> {
+    old_commit: Option<&CommitRef>,
+    new_commit: Option<&CommitRef>,
+) -> anyhow::Result<(CommitId, CommitId)> {
     async fn resolve(
         instance: &sekai_app::SekaiInstance<impl SekaiStore>,
-        raw: &SnapshotRef,
-    ) -> anyhow::Result<SnapshotId> {
+        raw: &CommitRef,
+    ) -> anyhow::Result<CommitId> {
         instance
-            .resolve_snapshot_ref(raw.as_str())
+            .resolve_commit_ref(raw.as_str())
             .await
-            .with_context(|| format!("snapshot {raw} failed to resolve"))
+            .with_context(|| format!("commit {raw} failed to resolve"))
     }
-    match (old_snapshot, new_snapshot) {
+    match (old_commit, new_commit) {
         (Some(old), Some(new)) => {
             Ok((resolve(instance, old).await?, resolve(instance, new).await?))
         }
         (Some(old), None) => {
-            let latest = instance.latest_snapshot_id().await?;
+            let latest = instance.latest_commit_id().await?;
             Ok((resolve(instance, old).await?, latest))
         }
         (None, new) => {
-            let snapshots = instance.list_snapshots().await?;
-            if snapshots.len() < 2 {
-                anyhow::bail!("at least 2 snapshots are required when snapshot IDs are omitted");
+            let commits = instance.list_commits().await?;
+            if commits.len() < 2 {
+                anyhow::bail!("at least 2 commits are required when commit IDs are omitted");
             }
-            let old = snapshots[snapshots.len() - 2].id;
+            let old = commits[commits.len() - 2].id;
             let new_id = match new {
                 Some(raw) => resolve(instance, raw).await?,
-                None => snapshots[snapshots.len() - 1].id,
+                None => commits[commits.len() - 1].id,
             };
             Ok((old, new_id))
         }

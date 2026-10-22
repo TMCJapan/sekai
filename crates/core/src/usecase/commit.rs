@@ -1,4 +1,4 @@
-//! Incremental world backup over abstract ports.
+//! Recording a world state as a commit, over abstract ports.
 //!
 //! Change detection (`diff`) is deliberately not computed here; parsing
 //! every chunk would multiply scan cost for data no consumer reads yet.
@@ -9,11 +9,11 @@
 //! module is the orchestration split that keeps adapters out of `core`:
 //!
 //! ```text
-//! plan_backup   read previous state, decide carry vs ingest (policy)
+//! plan_commit    read previous state, decide carry vs ingest (policy)
 //!   -> adapter ingests changed regions (hash + CAS put per chunk)
-//! assemble      merge ingested rows, carried presence, tombstones (pure)
+//! assemble       merge ingested rows, carried presence, tombstones (pure)
 //!   -> adapter flushes CAS (durability barrier before metadata)
-//! commit        record the snapshot atomically (single metadata batch)
+//! record_commit  record the commit atomically (single metadata batch)
 //! ```
 
 use alloc::collections::{BTreeMap, BTreeSet};
@@ -21,16 +21,16 @@ use alloc::vec::Vec;
 
 use crate::port::meta::MetaStore;
 use sekai_util::{
-    ApplyOutcome, BlobHash, ChunkCoord, RegionFingerprint, RegionKey, RegionStateEntry, Scope,
-    Snapshot, SnapshotEntry, SnapshotId,
+    ApplyOutcome, BlobHash, ChunkCoord, Commit, CommitEntry, CommitId, RegionFingerprint,
+    RegionKey, RegionStateEntry, Scope,
 };
 
-/// Outcome of one backup run.
+/// Outcome of one commit run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BackupReport {
-    /// Newly recorded snapshot ID.
-    pub snapshot: SnapshotId,
-    /// Chunks present on disk in this backup.
+pub struct CommitReport {
+    /// Newly recorded commit ID.
+    pub commit: CommitId,
+    /// Chunks present on disk in this commit.
     pub chunks: usize,
     /// Blobs newly written to CAS (the rest deduplicated).
     pub new_blobs: usize,
@@ -42,12 +42,12 @@ pub struct BackupReport {
     pub carried_chunks: usize,
 }
 
-/// Previous snapshot plus the state the walk needs.
+/// Previous commit plus the state the walk needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Previous {
-    /// Latest snapshot, when the store is non-empty.
-    pub snapshot: Option<Snapshot>,
-    /// Effective present coordinates of the latest snapshot, tombstones
+    /// Latest commit, when the store is non-empty.
+    pub commit: Option<Commit>,
+    /// Effective present coordinates of the latest commit, tombstones
     /// excluded (empty on first run).
     pub universe: BTreeSet<ChunkCoord>,
     /// Stored fingerprints keyed by region identity.
@@ -63,14 +63,14 @@ pub struct Observation {
     pub fingerprint: RegionFingerprint,
 }
 
-/// Staged backup decision: what to ingest, carry, or drop.
+/// Staged commit decision: what to ingest, carry, or drop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
-    /// Fingerprint-matched regions, carried from the previous snapshot.
+    /// Fingerprint-matched regions, carried from the previous commit.
     pub carries: Vec<RegionKey>,
     /// Changed regions the adapter must ingest.
     pub ingest: Vec<RegionKey>,
-    /// Stored regions gone from disk (state rows leave with this snapshot).
+    /// Stored regions gone from disk (state rows leave with this commit).
     pub removed: Vec<RegionKey>,
     /// Discovered region identities (for dropping stale state).
     pub discovered: BTreeSet<RegionKey>,
@@ -80,7 +80,7 @@ pub struct Plan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Assembled {
     /// Fresh history rows (ingested chunks plus tombstones).
-    pub entries: Vec<SnapshotEntry>,
+    pub entries: Vec<CommitEntry>,
     /// Coordinates present on disk (ingested plus carried).
     pub chunks: usize,
     /// Blobs newly written to CAS.
@@ -91,7 +91,7 @@ pub struct Assembled {
     pub fingerprints: Vec<RegionFingerprint>,
     /// Ingested files the scope covers only partly; their state rows drop.
     pub invalidated: Vec<RegionKey>,
-    /// Fingerprint-matched regions, carried from the previous snapshot.
+    /// Fingerprint-matched regions, carried from the previous commit.
     pub carries: Vec<RegionKey>,
     /// Stored regions gone from disk.
     pub removed: Vec<RegionKey>,
@@ -102,19 +102,19 @@ pub struct Assembled {
 /// Regions outside `scope` are ignored entirely: they are neither carried
 /// nor ingested, and their stored state rows are never marked removed.
 /// Callers must quiesce the source while fingerprinting; a concurrent rewrite
-/// after the match is not detected until a later backup.
-pub async fn plan_backup<M: MetaStore>(
+/// after the match is not detected until a later commit.
+pub async fn plan_commit<M: MetaStore>(
     meta: &M,
     observed: &[Observation],
     scope: &Scope,
 ) -> Result<(Previous, Plan), M::Error> {
     let mut universe: BTreeSet<ChunkCoord> = BTreeSet::new();
-    let snapshot = meta.latest_snapshot().await?;
-    if let Some(latest) = snapshot.as_ref() {
-        meta.visit_snapshot_chunks(latest.id, |entry| {
+    let commit = meta.latest_commit().await?;
+    if let Some(latest) = commit.as_ref() {
+        meta.visit_commit_chunks(latest.id, |entry| {
             // Present coordinates only. A tombstoned coordinate is already
             // absent from the effective state, so keeping it would re-record
-            // the same tombstone row on every later backup and count a
+            // the same tombstone row on every later commit and count a
             // vanished chunk as present.
             if entry.blob.is_some() {
                 universe.insert(entry.coord);
@@ -128,7 +128,7 @@ pub async fn plan_backup<M: MetaStore>(
         states.insert(state.fingerprint.key, state);
     }
     let previous = Previous {
-        snapshot,
+        commit,
         universe,
         states,
     };
@@ -163,15 +163,15 @@ pub async fn plan_backup<M: MetaStore>(
 }
 
 /// Stage an ingested chunk without computing its volatile diff hash.
-pub const fn stage_present(coord: ChunkCoord, hash: BlobHash) -> SnapshotEntry {
-    SnapshotEntry::new(coord, Some(hash), None)
+pub const fn stage_present(coord: ChunkCoord, hash: BlobHash) -> CommitEntry {
+    CommitEntry::new(coord, Some(hash), None)
 }
 
 /// What the adapter's ingest pass produced for the changed files.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Ingested {
     /// Fresh history rows for every chunk read.
-    pub entries: Vec<SnapshotEntry>,
+    pub entries: Vec<CommitEntry>,
     /// Coordinates those rows cover.
     pub present: BTreeSet<ChunkCoord>,
     /// Blobs newly written to CAS.
@@ -184,12 +184,12 @@ pub struct Ingested {
 ///
 /// Previously present coordinates inside `scope` but not present in the new
 /// scan become tombstones; out-of-scope coordinates keep resolving through
-/// fallback, so scoped backups never record spurious tombstones. Coordinates
-/// already tombstoned at the previous snapshot are absent from
+/// fallback, so scoped commits never record spurious tombstones. Coordinates
+/// already tombstoned at the previous commit are absent from
 /// `Previous::universe` and therefore neither carried nor re-tombstoned.
 ///
 /// A stored fingerprint promises that the whole file matches the latest
-/// history, which is what lets a later backup carry it unread. A partial
+/// history, which is what lets a later commit carry it unread. A partial
 /// ingest records only the in-scope chunks, so its fingerprint is dropped
 /// and any older state row is invalidated rather than left to match a
 /// file whose history it no longer describes.
@@ -217,7 +217,7 @@ pub fn assemble(plan: Plan, previous: &Previous, ingested: Ingested, scope: &Sco
     let mut tombstones = 0usize;
     for coord in &previous.universe {
         if scope.contains(*coord) && !present.contains(coord) {
-            entries.push(SnapshotEntry::new(*coord, None, None));
+            entries.push(CommitEntry::new(*coord, None, None));
             tombstones += 1;
         }
     }
@@ -233,30 +233,30 @@ pub fn assemble(plan: Plan, previous: &Previous, ingested: Ingested, scope: &Sco
     }
 }
 
-/// Commit assembled rows as one snapshot.
+/// Record assembled rows as one commit.
 ///
 /// CAS must be synced first so every referenced blob is durable before the
 /// metadata transaction is committed.
 ///
-/// The new snapshot continues the history it was planned against: its
-/// parent is `previous.snapshot` - the snapshot the plan read and the
+/// The new commit continues the history it was planned against: its
+/// parent is `previous.commit` - the commit the plan read and the
 /// base its delta was computed from. Plan and commit must not be
-/// interleaved with another backup; the app holds the store's writer
+/// interleaved with another commit; the app holds the store's writer
 /// lock for the whole run.
-pub async fn commit<M: MetaStore>(
+pub async fn record_commit<M: MetaStore>(
     meta: &mut M,
     previous: &Previous,
     staged: &Assembled,
     created_at_ms: u64,
-) -> Result<BackupReport, M::Error> {
+) -> Result<CommitReport, M::Error> {
     let carry_from = previous
-        .snapshot
+        .commit
         .as_ref()
-        .map(|snapshot| (snapshot.id, staged.carries.as_slice()));
-    let parents: Vec<SnapshotId> = previous
-        .snapshot
+        .map(|commit| (commit.id, staged.carries.as_slice()));
+    let parents: Vec<CommitId> = previous
+        .commit
         .as_ref()
-        .map(|snapshot| alloc::vec![snapshot.id])
+        .map(|commit| alloc::vec![commit.id])
         .unwrap_or_default();
     // Both drop state rows; they stay apart in `Assembled` so previews
     // report only vanished files as deleted.
@@ -267,7 +267,7 @@ pub async fn commit<M: MetaStore>(
         .copied()
         .collect();
     let outcome: ApplyOutcome = meta
-        .apply_snapshot_incremental(
+        .apply_commit_incremental(
             created_at_ms,
             &parents,
             &staged.entries,
@@ -276,8 +276,8 @@ pub async fn commit<M: MetaStore>(
             &dropped_states,
         )
         .await?;
-    Ok(BackupReport {
-        snapshot: outcome.id,
+    Ok(CommitReport {
+        commit: outcome.id,
         chunks: staged.chunks,
         new_blobs: staged.new_blobs,
         tombstones: staged.tombstones,
@@ -322,15 +322,15 @@ mod tests {
     }
 
     #[test]
-    fn first_backup_ingests_everything() {
+    fn first_commit_ingests_everything() {
         let meta = MemMeta::default();
         let observed = [Observation {
             key: key(0, 0),
             fingerprint: fingerprint(key(0, 0)),
         }];
         let (previous, plan) =
-            crate::support::block_on(plan_backup(&meta, &observed, &Scope::World)).unwrap();
-        assert!(previous.snapshot.is_none());
+            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
+        assert!(previous.commit.is_none());
         assert!(previous.universe.is_empty());
         assert_eq!(plan.carries, [] as [sekai_util::RegionKey; 0]);
         assert_eq!(plan.ingest, alloc::vec![key(0, 0)]);
@@ -338,17 +338,17 @@ mod tests {
     }
 
     #[test]
-    fn the_committed_snapshot_continues_the_previous_one() {
+    fn the_recorded_commit_continues_the_previous_one() {
         let mut meta = MemMeta::default();
         let observed = [Observation {
             key: key(0, 0),
             fingerprint: fingerprint(key(0, 0)),
         }];
 
-        // The first backup starts a history: no previous snapshot, no
+        // The first commit starts a history: no previous commit, no
         // parent.
         let (previous, plan) =
-            crate::support::block_on(plan_backup(&meta, &observed, &Scope::World)).unwrap();
+            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
         let staged = assemble(
             plan,
             &previous,
@@ -360,20 +360,18 @@ mod tests {
             },
             &Scope::World,
         );
-        let first = crate::support::block_on(commit(&mut meta, &previous, &staged, 1_000)).unwrap();
+        let first =
+            crate::support::block_on(record_commit(&mut meta, &previous, &staged, 1_000)).unwrap();
         assert_eq!(
-            crate::support::block_on(meta.snapshot_parents(first.snapshot)).unwrap(),
+            crate::support::block_on(meta.commit_parents(first.commit)).unwrap(),
             alloc::vec![]
         );
 
-        // The second backup continues the history of the snapshot it was
+        // The second commit continues the history of the commit it was
         // planned against.
         let (previous, plan) =
-            crate::support::block_on(plan_backup(&meta, &observed, &Scope::World)).unwrap();
-        assert_eq!(
-            previous.snapshot.as_ref().map(|s| s.id),
-            Some(first.snapshot)
-        );
+            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
+        assert_eq!(previous.commit.as_ref().map(|c| c.id), Some(first.commit));
         let staged = assemble(
             plan,
             &previous,
@@ -386,10 +384,10 @@ mod tests {
             &Scope::World,
         );
         let second =
-            crate::support::block_on(commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+            crate::support::block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
         assert_eq!(
-            crate::support::block_on(meta.snapshot_parents(second.snapshot)).unwrap(),
-            alloc::vec![first.snapshot]
+            crate::support::block_on(meta.commit_parents(second.commit)).unwrap(),
+            alloc::vec![first.commit]
         );
     }
 
@@ -398,7 +396,7 @@ mod tests {
         let mut meta = MemMeta::default();
         let fp0 = fingerprint(key(0, 0));
         let fp1 = fingerprint(key(1, 0));
-        crate::support::block_on(meta.apply_snapshot_incremental(
+        crate::support::block_on(meta.apply_commit_incremental(
             1_000,
             &[],
             &[
@@ -424,7 +422,7 @@ mod tests {
             },
         ];
         let (previous, plan) =
-            crate::support::block_on(plan_backup(&meta, &observed, &Scope::World)).unwrap();
+            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
         assert_eq!(plan.carries, alloc::vec![key(1, 0)]);
         assert_eq!(plan.ingest, alloc::vec![key(0, 0)]);
         assert_eq!(plan.removed, [] as [sekai_util::RegionKey; 0]);
@@ -444,18 +442,18 @@ mod tests {
         assert_eq!(staged.tombstones, 0);
 
         let report =
-            crate::support::block_on(commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+            crate::support::block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
         assert_eq!(report.chunks, 2);
         assert_eq!(report.new_blobs, 1);
         assert_eq!(report.skipped_regions, 1);
         assert_eq!(report.carried_chunks, 1);
         assert_eq!(report.tombstones, 0);
 
-        let got = crate::support::block_on(meta.lookup_chunk(report.snapshot, &coord(0, 0)))
+        let got = crate::support::block_on(meta.lookup_chunk(report.commit, &coord(0, 0)))
             .unwrap()
             .unwrap();
         assert_eq!(got.blob, Some(BlobHash([9; 32])));
-        let kept = crate::support::block_on(meta.lookup_chunk(report.snapshot, &coord(32, 0)))
+        let kept = crate::support::block_on(meta.lookup_chunk(report.commit, &coord(32, 0)))
             .unwrap()
             .unwrap();
         assert_eq!(kept.blob, Some(BlobHash([2; 32])));
@@ -464,7 +462,7 @@ mod tests {
     #[test]
     fn missing_coordinates_become_tombstones_and_states_drop() {
         let mut meta = MemMeta::default();
-        let s1 = crate::support::block_on(meta.apply_snapshot_incremental(
+        let s1 = crate::support::block_on(meta.apply_commit_incremental(
             1_000,
             &[],
             &[
@@ -477,20 +475,20 @@ mod tests {
         ))
         .unwrap()
         .id;
-        assert_eq!(s1, SnapshotId(1));
+        assert_eq!(s1, CommitId(1));
 
         let (previous, plan) =
-            crate::support::block_on(plan_backup(&meta, &[], &Scope::World)).unwrap();
+            crate::support::block_on(plan_commit(&meta, &[], &Scope::World)).unwrap();
         assert_eq!(plan.removed, alloc::vec![key(0, 0)]);
         let staged = assemble(plan, &previous, Ingested::default(), &Scope::World);
         assert_eq!(staged.chunks, 0);
         assert_eq!(staged.tombstones, 2);
 
         let report =
-            crate::support::block_on(commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+            crate::support::block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
         assert_eq!(report.tombstones, 2);
         assert_eq!(meta.states, [] as [sekai_util::RegionStateEntry; 0]);
-        let tomb = crate::support::block_on(meta.lookup_chunk(report.snapshot, &coord(0, 0)))
+        let tomb = crate::support::block_on(meta.lookup_chunk(report.commit, &coord(0, 0)))
             .unwrap()
             .unwrap();
         assert!(tomb.is_tombstone());
@@ -501,7 +499,7 @@ mod tests {
         let mut meta = MemMeta::default();
         let fp0 = fingerprint(key(0, 0));
         let fp1 = fingerprint(key(1, 0));
-        crate::support::block_on(meta.apply_snapshot_incremental(
+        crate::support::block_on(meta.apply_commit_incremental(
             1_000,
             &[],
             &[
@@ -516,7 +514,7 @@ mod tests {
 
         // Region (0,0) is gone from disk: its chunk tombstones once while
         // region (1,0) carries over.
-        let (previous, plan) = crate::support::block_on(plan_backup(
+        let (previous, plan) = crate::support::block_on(plan_commit(
             &meta,
             &[Observation {
                 key: key(1, 0),
@@ -529,15 +527,15 @@ mod tests {
         assert_eq!(staged.tombstones, 1);
         assert_eq!(staged.chunks, 1);
         let report =
-            crate::support::block_on(commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+            crate::support::block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
         assert_eq!(report.tombstones, 1);
         assert_eq!(report.chunks, 1);
         assert_eq!(report.carried_chunks, 1);
 
-        // Repeat backup with the same world: the tombstone already resolves
+        // Repeat commit with the same world: the tombstone already resolves
         // through fallback, so it records no fresh row and the vanished
         // chunk is not carried back as present.
-        let (previous, plan) = crate::support::block_on(plan_backup(
+        let (previous, plan) = crate::support::block_on(plan_commit(
             &meta,
             &[Observation {
                 key: key(1, 0),
@@ -548,15 +546,15 @@ mod tests {
         .unwrap();
         assert_eq!(previous.universe, BTreeSet::from([coord(32, 0)]));
         let staged = assemble(plan, &previous, Ingested::default(), &Scope::World);
-        assert_eq!(staged.entries, [] as [sekai_util::SnapshotEntry; 0]);
+        assert_eq!(staged.entries, [] as [sekai_util::CommitEntry; 0]);
         assert_eq!(staged.tombstones, 0);
         assert_eq!(staged.chunks, 1);
 
         let report =
-            crate::support::block_on(commit(&mut meta, &previous, &staged, 3_000)).unwrap();
+            crate::support::block_on(record_commit(&mut meta, &previous, &staged, 3_000)).unwrap();
         assert_eq!(report.tombstones, 0);
         assert_eq!(report.chunks, 1);
-        assert!(meta.rows.iter().all(|row| row.snapshot != report.snapshot));
+        assert!(meta.rows.iter().all(|row| row.commit != report.commit));
     }
 
     #[test]
@@ -567,7 +565,7 @@ mod tests {
             key: nether_key(0, 0),
             ..fingerprint(key(0, 0))
         };
-        crate::support::block_on(meta.apply_snapshot_incremental(
+        crate::support::block_on(meta.apply_commit_incremental(
             1_000,
             &[],
             &[
@@ -587,7 +585,7 @@ mod tests {
             fingerprint: fp_nether,
         }];
         let scope = Scope::dimension(NETHER);
-        let (_, plan) = crate::support::block_on(plan_backup(&meta, &observed, &scope)).unwrap();
+        let (_, plan) = crate::support::block_on(plan_commit(&meta, &observed, &scope)).unwrap();
         assert_eq!(plan.carries, alloc::vec![nether_key(0, 0)]);
         assert_eq!(plan.ingest, [] as [sekai_util::RegionKey; 0]);
         assert_eq!(plan.removed, [] as [sekai_util::RegionKey; 0]);
@@ -604,7 +602,7 @@ mod tests {
             },
         ];
         let (_, plan) =
-            crate::support::block_on(plan_backup(&meta, &observed, &Scope::World)).unwrap();
+            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
         assert_eq!(plan.carries, alloc::vec![key(0, 0), nether_key(0, 0)]);
     }
 
@@ -615,7 +613,7 @@ mod tests {
             key: nether_key(0, 0),
             ..fingerprint(key(0, 0))
         };
-        crate::support::block_on(meta.apply_snapshot_incremental(
+        crate::support::block_on(meta.apply_commit_incremental(
             1_000,
             &[],
             &[
@@ -629,7 +627,7 @@ mod tests {
         ))
         .unwrap();
 
-        // Scoped backup of the overworld re-ingests its (changed) region:
+        // Scoped commit of the overworld re-ingests its (changed) region:
         // (1,0) is genuinely gone, the nether chunk is out of scope and
         // must not become a tombstone.
         let mut changed = fingerprint(key(0, 0));
@@ -640,7 +638,7 @@ mod tests {
         }];
         let scope = Scope::dimension(OVER);
         let (previous, plan) =
-            crate::support::block_on(plan_backup(&meta, &observed, &scope)).unwrap();
+            crate::support::block_on(plan_commit(&meta, &observed, &scope)).unwrap();
         assert_eq!(plan.ingest, alloc::vec![key(0, 0)]);
         assert_eq!(plan.removed, [] as [sekai_util::RegionKey; 0]);
         let staged = assemble(
@@ -665,13 +663,12 @@ mod tests {
         assert_eq!(tombstoned, alloc::vec![coord(1, 0)]);
 
         let report =
-            crate::support::block_on(commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+            crate::support::block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
         assert_eq!(report.tombstones, 1);
         // The nether chunk still resolves through fallback, untouched.
-        let kept =
-            crate::support::block_on(meta.lookup_chunk(report.snapshot, &nether_coord(0, 0)))
-                .unwrap()
-                .unwrap();
+        let kept = crate::support::block_on(meta.lookup_chunk(report.commit, &nether_coord(0, 0)))
+            .unwrap()
+            .unwrap();
         assert_eq!(kept.blob, Some(BlobHash([3; 32])));
     }
 
@@ -683,10 +680,10 @@ mod tests {
     }
 
     #[test]
-    fn partial_ingest_invalidates_state_so_full_backup_reingests() {
+    fn partial_ingest_invalidates_state_so_full_commit_reingests() {
         let mut meta = MemMeta::default();
         let fp0 = fingerprint(key(0, 0));
-        crate::support::block_on(meta.apply_snapshot_incremental(
+        crate::support::block_on(meta.apply_commit_incremental(
             1_000,
             &[],
             &[
@@ -708,7 +705,7 @@ mod tests {
         }];
         let scope = over_rect(Rect::new(0, 0, 0, 0));
         let (previous, plan) =
-            crate::support::block_on(plan_backup(&meta, &observed, &scope)).unwrap();
+            crate::support::block_on(plan_commit(&meta, &observed, &scope)).unwrap();
         assert_eq!(plan.ingest, alloc::vec![key(0, 0)]);
         let staged = assemble(
             plan,
@@ -725,21 +722,21 @@ mod tests {
         assert_eq!(staged.invalidated, alloc::vec![key(0, 0)]);
         assert_eq!(staged.removed, [] as [RegionKey; 0]);
         assert_eq!(staged.tombstones, 0);
-        crate::support::block_on(commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        crate::support::block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
         assert_eq!(meta.states, [] as [RegionStateEntry; 0]);
 
         // The unread (1,0) change must not be carried as unchanged.
         let (_, plan) =
-            crate::support::block_on(plan_backup(&meta, &observed, &Scope::World)).unwrap();
+            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
         assert_eq!(plan.carries, [] as [RegionKey; 0]);
         assert_eq!(plan.ingest, alloc::vec![key(0, 0)]);
     }
 
     #[test]
-    fn covering_scope_refreshes_the_fingerprint_so_later_backups_carry() {
+    fn covering_scope_refreshes_the_fingerprint_so_later_commits_carry() {
         let mut meta = MemMeta::default();
         let fp0 = fingerprint(key(0, 0));
-        crate::support::block_on(meta.apply_snapshot_incremental(
+        crate::support::block_on(meta.apply_commit_incremental(
             1_000,
             &[],
             &[stage_present(coord(0, 0), BlobHash([1; 32]))],
@@ -757,7 +754,7 @@ mod tests {
         }];
         let scope = over_rect(Rect::region(0, 0));
         let (previous, plan) =
-            crate::support::block_on(plan_backup(&meta, &observed, &scope)).unwrap();
+            crate::support::block_on(plan_commit(&meta, &observed, &scope)).unwrap();
         let staged = assemble(
             plan,
             &previous,
@@ -771,13 +768,13 @@ mod tests {
         );
         assert_eq!(staged.fingerprints, alloc::vec![changed]);
         assert_eq!(staged.invalidated, [] as [RegionKey; 0]);
-        crate::support::block_on(commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        crate::support::block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
         let fingerprints: alloc::vec::Vec<RegionFingerprint> =
             meta.states.iter().map(|state| state.fingerprint).collect();
         assert_eq!(fingerprints, alloc::vec![changed]);
 
         let (_, plan) =
-            crate::support::block_on(plan_backup(&meta, &observed, &Scope::World)).unwrap();
+            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
         assert_eq!(plan.carries, alloc::vec![key(0, 0)]);
         assert_eq!(plan.ingest, [] as [RegionKey; 0]);
     }
@@ -785,7 +782,7 @@ mod tests {
     #[test]
     fn mem_meta_satisfies_lookup_contract() {
         let mut meta = MemMeta::default();
-        let id = crate::support::block_on(meta.create_snapshot(5, &[])).unwrap();
+        let id = crate::support::block_on(meta.create_commit(5, &[])).unwrap();
         crate::support::block_on(meta.record_chunk(
             id,
             &coord(0, 0),
@@ -801,7 +798,7 @@ mod tests {
             ChunkHistoryEntry::new(coord(0, 0), id, Some(BlobHash([3; 32])), None)
         );
         assert!(
-            crate::support::block_on(meta.lookup_snapshot(SnapshotId(999)))
+            crate::support::block_on(meta.lookup_commit(CommitId(999)))
                 .unwrap()
                 .is_none()
         );

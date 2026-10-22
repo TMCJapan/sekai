@@ -1,4 +1,4 @@
-//! Integration benchmarks for rollback flows.
+//! Integration benchmarks for checkout flows.
 
 #[path = "common.rs"]
 mod common;
@@ -10,8 +10,8 @@ use sekai_app::{HostWorldTree, Scope};
 fn benches(c: &mut Criterion) {
     let rt = runtime();
 
-    c.bench_function("rollback/small", |b| {
-        let root = tempdir("rollback-small");
+    c.bench_function("checkout/small", |b| {
+        let root = tempdir("checkout-small");
         let world_path = root.join("world");
         let mut world = HostWorldTree::new(&world_path).expect("world resolves");
         generate(&world_path, &SMALL);
@@ -22,23 +22,23 @@ fn benches(c: &mut Criterion) {
         rt.block_on(
             instance
                 .world_mut(&mut world)
-                .backup(options(), Scope::World, |_| {}),
+                .commit(options(), Scope::World, |_| {}),
         )
-        .expect("backup works");
-        let snapshots = rt.block_on(instance.list_snapshots()).expect("list works");
+        .expect("commit works");
+        let commits = rt.block_on(instance.list_commits()).expect("list works");
         b.iter(|| {
-            rt.block_on(instance.world_mut(&mut world).rollback(
-                snapshots[0].id,
-                sekai_app::RollbackOptions::default(),
+            rt.block_on(instance.world_mut(&mut world).checkout(
+                commits[0].id,
+                sekai_app::CheckoutOptions::default(),
                 Scope::World,
                 |_| {},
             ))
-            .expect("rollback works");
+            .expect("checkout works");
         });
         std::fs::remove_dir_all(&root).ok();
     });
 
-    c.bench_function("rollback/corpus", |b| {
+    c.bench_function("checkout/corpus", |b| {
         let world_path = corpus_world();
         let mut world = HostWorldTree::new(&world_path).expect("world resolves");
         let root = world_path.parent().unwrap().to_path_buf();
@@ -49,18 +49,18 @@ fn benches(c: &mut Criterion) {
         rt.block_on(
             instance
                 .world_mut(&mut world)
-                .backup(options(), Scope::World, |_| {}),
+                .commit(options(), Scope::World, |_| {}),
         )
-        .expect("backup works");
-        let snapshots = rt.block_on(instance.list_snapshots()).expect("list works");
+        .expect("commit works");
+        let commits = rt.block_on(instance.list_commits()).expect("list works");
         b.iter(|| {
-            rt.block_on(instance.world_mut(&mut world).rollback(
-                snapshots[0].id,
-                sekai_app::RollbackOptions::default(),
+            rt.block_on(instance.world_mut(&mut world).checkout(
+                commits[0].id,
+                sekai_app::CheckoutOptions::default(),
                 Scope::World,
                 |_| {},
             ))
-            .expect("rollback works");
+            .expect("checkout works");
         });
         std::fs::remove_dir_all(&root).ok();
     });

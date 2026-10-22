@@ -1,7 +1,7 @@
 //! Exclusion between sekai operations over one world.
 //!
-//! A rollback rewrites region files that a concurrent backup, status, or
-//! diff would read, and two rollbacks would interleave their swaps. The
+//! A checkout rewrites region files that a concurrent commit, status, or
+//! diff would read, and two checkouts would interleave their swaps. The
 //! lock only coordinates sekai operations: the Minecraft server never
 //! takes it, and keeping the server quiet stays the caller's job.
 //!
@@ -11,12 +11,12 @@
 /// How an operation uses a world.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WorldLockMode {
-    /// Reads (backup, status, diff): run alongside each other.
+    /// Reads (commit, status, diff): run alongside each other.
     ///
     /// A shared lock may answer unguarded, because a read-only world has
     /// no lock file to take. The answer says so.
     Shared,
-    /// Writes (rollback): nothing else may touch the world.
+    /// Writes (checkout): nothing else may touch the world.
     ///
     /// An exclusive lock never runs unguarded: a world that cannot be
     /// locked is an error, not a write without exclusion.

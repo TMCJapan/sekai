@@ -42,7 +42,7 @@ Rules:
   every util type at its root so downstream paths stay stable.
 - `anvil` never calls `nbt`. `core`/`app` drives `anvil`'s decompressed raw
   NBT bytes into `nbt` (opt-in diff path), keeping the pure DAG acyclic and
-  the backup hot path decode-free. Compression framing is MCA spec and lives
+  the commit hot path decode-free. Compression framing is MCA spec and lives
   in `anvil`; `nbt` never sees a compression-type byte.
 - `async`/tokio lives in `storage`, `storage-sqlite`, `world`, `app`, and the
   binary only. `anvil`/`nbt` are sync-only; `core` policy is sync except for
@@ -77,15 +77,15 @@ any exception in the PR body.
 - **Atomic file I/O**: never overwrite `.mca` files in place. `anvil` builds
   the `Vec<u8>` image; `world::atomic_swap` writes it to a temporary file
   in the same directory as the target and swaps via atomic `rename`.
-- **Captured-payload rollback**: store raw chunk payloads verbatim in CAS;
-  normalization feeds diff views only, never stored blobs. Rollback
-  reproduces the exact bytes captured for the snapshot, including volatile
+- **Captured-payload checkout**: store raw chunk payloads verbatim in CAS;
+  normalization feeds diff views only, never stored blobs. Checkout
+  reproduces the exact bytes captured for the commit, including volatile
   tags (e.g. `LastUpdate`) as of capture time - it rewinds them to the
-  snapshot, it does not preserve their live values.
+  commit, it does not preserve their live values.
 - **No server orchestration in libraries**: `save-off`/`save-all`, process
   control, and scheduling belong to the caller, never to library crates.
 - **Rebuildable derived state**: caches like `region_state` are derived;
-  wiping them must cost at most a full ingest on the next backup, never
+  wiping them must cost at most a full ingest on the next commit, never
   wrong data.
 - **Two-phase destructive operations**: GC and similar destructive
   operations keep a dry-run/plan phase separate from apply/execution.
@@ -162,7 +162,7 @@ any exception in the PR body.
 - **Performance Considerations**:
 - Enforce zero-allocation on critical hot paths (reuse buffers, prefer stack allocations).
 - Prefer static dispatch (generics) over dynamic dispatch (`dyn Trait`) in core performance paths.
-- Keep the backup hot path decode-free: `nbt` runs only on the opt-in
+- Keep the commit hot path decode-free: `nbt` runs only on the opt-in
   (`with_diff`) path, never per-chunk by default.
 
 # Pull Request Checklist
@@ -211,7 +211,7 @@ cargo build -p sekai-cli --release
 ## Testing Standards
 
 - **Unit Tests**: Place in `src/` alongside the code. Ensure coverage for edge cases (corrupted headers, unexpected NBT structures, zero-length chunks).
-- **Integration Tests**: Place in `tests/` directories within crates. Test atomic operations (e.g., MCA writes, rollbacks) using synthetic binary fixtures. The `test-world/` corpus (small real-data region files, see its README for provenance) is the exception: copy it into a temp dir first, never mutate it in place. Crash-order tests (torn backup leaves orphans, never dangling references) are mandatory for `app`/`world`/`storage` changes.
+- **Integration Tests**: Place in `tests/` directories within crates. Test atomic operations (e.g., MCA writes, checkouts) using synthetic binary fixtures. The `test-world/` corpus (small real-data region files, see its README for provenance) is the exception: copy it into a temp dir first, never mutate it in place. Crash-order tests (torn commit leaves orphans, never dangling references) are mandatory for `app`/`world`/`storage` changes.
 - **Backend tests**: `sekai-storage-sqlite` must cover the version gate
   (`UnsupportedSchema`), the incremental-carry path, and derived-state
   wipe recovery. Future backend crates must run the same suite via the
@@ -219,7 +219,7 @@ cargo build -p sekai-cli --release
 - **Benchmarks**: micro benches live beside their crates (`cargo bench -p
   sekai-anvil -p sekai-nbt -p sekai-core`); integration flows in
   `crates/app/benches` (seeded worlds from `benches/common.rs`, `cargo
-  bench -p sekai-app --bench backup`). Record new baselines in
+  bench -p sekai-app --bench commit`). Record new baselines in
   `docs/benchmarks.md` when a `perf` change lands. The `bench.yaml`
   workflow runs on schedule only, never as a merge gate.
 
@@ -228,8 +228,8 @@ cargo build -p sekai-cli --release
 File bugs, features, and performance reports with the issue templates in
 `.github/ISSUE_TEMPLATE/` (English only). Performance reports must include
 the affected command's `--timing` output from a release build
-(`--timing` exists on every command except `list` and `tag`;
-for backup-path slowdowns prefer `--timing --json`, which alone carries
+(`--timing` exists on every command except `log` and `tag`;
+for commit-path slowdowns prefer `--timing --json`, which alone carries
 the per-region breakdown); bug reports include it only for speed aspects,
 never for pure correctness bugs; questions belong in
 Discussions, not issues.
@@ -275,4 +275,4 @@ The metadata schema is backend-owned and versioned
 - The project is pre-release: old stores are recreated, not migrated. Never
   silently reinterpret an unknown version.
 - Derived state (e.g., `region_state`) must degrade gracefully: wiping it may
-  cost one slow backup, never correctness. Cover that path with a test.
+  cost one slow ingest, never correctness. Cover that path with a test.

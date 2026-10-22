@@ -1,4 +1,4 @@
-//! End-to-end snapshot exports into fresh directories.
+//! End-to-end commit clones into fresh directories.
 //!
 //! Requires the `backend-sqlite` feature.
 
@@ -13,7 +13,7 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn tempdir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
-        "sekai-export-{name}-{}-{}",
+        "sekai-clone-{name}-{}-{}",
         std::process::id(),
         TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
@@ -56,15 +56,15 @@ fn chunk_map(path: impl AsRef<Path>) -> BTreeMap<(i32, i32), Vec<u8>> {
     map
 }
 
-fn backup_options() -> sekai_app::BackupOptions {
-    sekai_app::BackupOptions {
+fn commit_options() -> sekai_app::CommitOptions {
+    sekai_app::CommitOptions {
         concurrency: 2,
-        ..sekai_app::BackupOptions::default()
+        ..sekai_app::CommitOptions::default()
     }
 }
 
 #[tokio::test]
-async fn export_rebuilds_snapshot_into_fresh_directory() {
+async fn clone_rebuilds_commit_into_fresh_directory() {
     let root = tempdir("roundtrip");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -77,21 +77,21 @@ async fn export_rebuilds_snapshot_into_fresh_directory() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .backup(backup_options(), sekai_app::Scope::World, |_| {})
+        .commit(commit_options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
-    let snapshots = instance.list_snapshots().await.unwrap();
+    let commits = instance.list_commits().await.unwrap();
 
-    // Diverge live afterwards: export must still reproduce the snapshot.
+    // Diverge live afterwards: clone must still reproduce the commit.
     write_region(&over, &[(0, 0, vec![3, 9])]);
 
-    let out_path = root.join("exported");
+    let out_path = root.join("cloned");
     let out = HostWorldTree::new_legacy(&out_path);
     let (report, timings) = instance
-        .export(
+        .clone_to(
             &out,
-            snapshots[0].id,
-            sekai_app::ExportOptions::default(),
+            commits[0].id,
+            sekai_app::CloneOptions::default(),
             sekai_app::Scope::World,
             |_| {},
         )
@@ -99,7 +99,7 @@ async fn export_rebuilds_snapshot_into_fresh_directory() {
         .unwrap();
     assert_eq!(report.files_written, 2);
     assert_eq!(report.chunks_restored, 3);
-    assert!(timings.total >= timings.plan + timings.export_files);
+    assert!(timings.total >= timings.plan + timings.clone_files);
 
     let mut expected = BTreeMap::new();
     expected.insert((0, 0), vec![3, 1]);
@@ -115,7 +115,7 @@ async fn export_rebuilds_snapshot_into_fresh_directory() {
 }
 
 #[tokio::test]
-async fn export_honors_layout_and_scope() {
+async fn clone_honors_layout_and_scope() {
     use sekai_app::{Dimension, Scope};
     let root = tempdir("layout-scope");
     let world_path = root.join("world");
@@ -130,19 +130,19 @@ async fn export_honors_layout_and_scope() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .backup(backup_options(), Scope::World, |_| {})
+        .commit(commit_options(), Scope::World, |_| {})
         .await
         .unwrap();
-    let snapshots = instance.list_snapshots().await.unwrap();
+    let commits = instance.list_commits().await.unwrap();
 
     // Modern layout, overworld scope only: the nether file stays out.
     let out_path = root.join("modern");
     let out = HostWorldTree::new_dimensions(&out_path);
     let (report, _) = instance
-        .export(
+        .clone_to(
             &out,
-            snapshots[0].id,
-            sekai_app::ExportOptions::default(),
+            commits[0].id,
+            sekai_app::CloneOptions::default(),
             Scope::dimension(Dimension::OVERWORLD),
             |_| {},
         )
@@ -166,10 +166,10 @@ async fn export_honors_layout_and_scope() {
     let bukkit_path = root.join("bukkit");
     let bukkit = HostWorldTree::new_bukkit(&bukkit_path, "myworld");
     let (report, _) = instance
-        .export(
+        .clone_to(
             &bukkit,
-            snapshots[0].id,
-            sekai_app::ExportOptions::default(),
+            commits[0].id,
+            sekai_app::CloneOptions::default(),
             Scope::World,
             |_| {},
         )
@@ -186,7 +186,7 @@ async fn export_honors_layout_and_scope() {
 }
 
 #[tokio::test]
-async fn export_refuses_non_empty_directory() {
+async fn clone_refuses_non_empty_directory() {
     let root = tempdir("nonempty");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -196,10 +196,10 @@ async fn export_refuses_non_empty_directory() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .backup(backup_options(), sekai_app::Scope::World, |_| {})
+        .commit(commit_options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
-    let snapshots = instance.list_snapshots().await.unwrap();
+    let commits = instance.list_commits().await.unwrap();
 
     let out_path = root.join("out");
     let out = HostWorldTree::new_legacy(&out_path);
@@ -207,10 +207,10 @@ async fn export_refuses_non_empty_directory() {
     std::fs::write(out_path.join("existing.txt"), b"data").unwrap();
     assert!(
         instance
-            .export(
+            .clone_to(
                 &out,
-                snapshots[0].id,
-                sekai_app::ExportOptions::default(),
+                commits[0].id,
+                sekai_app::CloneOptions::default(),
                 sekai_app::Scope::World,
                 |_| {},
             )
@@ -220,10 +220,10 @@ async fn export_refuses_non_empty_directory() {
     // An empty directory is accepted.
     std::fs::remove_file(out_path.join("existing.txt")).unwrap();
     let (report, _) = instance
-        .export(
+        .clone_to(
             &out,
-            snapshots[0].id,
-            sekai_app::ExportOptions::default(),
+            commits[0].id,
+            sekai_app::CloneOptions::default(),
             sekai_app::Scope::World,
             |_| {},
         )
@@ -234,7 +234,7 @@ async fn export_refuses_non_empty_directory() {
 }
 
 #[tokio::test]
-async fn export_omits_tombstoned_regions() {
+async fn clone_omits_tombstoned_regions() {
     let root = tempdir("tombstones");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -245,25 +245,25 @@ async fn export_omits_tombstoned_regions() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .backup(backup_options(), sekai_app::Scope::World, |_| {})
+        .commit(commit_options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
-    // Empty the region: the second snapshot tombstones its only chunk.
+    // Empty the region: the second commit tombstones its only chunk.
     write_region(&region, &[]);
     instance
         .world_mut(&mut world)
-        .backup(backup_options(), sekai_app::Scope::World, |_| {})
+        .commit(commit_options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
-    let snapshots = instance.list_snapshots().await.unwrap();
+    let commits = instance.list_commits().await.unwrap();
 
     let out_path = root.join("out");
     let out = HostWorldTree::new_legacy(&out_path);
     let (report, _) = instance
-        .export(
+        .clone_to(
             &out,
-            snapshots[1].id,
-            sekai_app::ExportOptions::default(),
+            commits[1].id,
+            sekai_app::CloneOptions::default(),
             sekai_app::Scope::World,
             |_| {},
         )

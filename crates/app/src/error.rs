@@ -16,7 +16,7 @@ pub(crate) fn duplicate_region(
     ))
 }
 
-/// Failures while backing up, rolling back, or listing snapshots.
+/// Failures while committing, checking out, or listing commits.
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     /// World filesystem operation failed.
@@ -37,33 +37,33 @@ pub enum AppError {
         #[source]
         source: sekai_anvil::AnvilError,
     },
-    /// Rollback plan could not be resolved.
+    /// Checkout plan could not be resolved.
     #[error("{0}")]
-    Rollback(sekai_core::RollbackError<sekai_storage::StorageError>),
+    Checkout(sekai_core::CheckoutError<sekai_storage::StorageError>),
     /// Garbage collection failed.
     #[error("{0}")]
     Gc(sekai_core::GcError<sekai_storage::StorageError, sekai_storage::StorageError>),
-    /// Snapshot pruning failed.
+    /// Commit pruning failed.
     #[error("{0}")]
     Prune(sekai_core::PruneError<sekai_storage::StorageError>),
     /// NBT parsing or diff operation failed.
     #[error(transparent)]
     Nbt(#[from] sekai_nbt::NbtError),
-    /// Snapshot operation failed.
+    /// Commit-graph operation failed.
     #[error("{0}")]
-    Snapshot(sekai_core::usecase::snapshot::SnapshotError<sekai_storage::StorageError>),
-    /// Snapshot reference (`<id>` or `@tag`) could not be resolved.
+    Commit(sekai_core::CommitError<sekai_storage::StorageError>),
+    /// Commit reference (`<id>` or `@tag`) could not be resolved.
     #[error("{0}")]
-    SnapshotRef(sekai_core::usecase::snapshot::ResolveError<sekai_storage::StorageError>),
+    CommitRef(sekai_core::ResolveError<sekai_storage::StorageError>),
     /// Tag name is already taken.
     #[error("tag already exists: {name} (use --force to move it)")]
     TagExists {
         /// Conflicting tag name.
         name: String,
     },
-    /// No snapshots exist in the store.
-    #[error("no snapshots found in store")]
-    NoSnapshots,
+    /// No commits exist in the store.
+    #[error("no commits found in store")]
+    NoCommits,
     /// I/O operation failed.
     #[error(transparent)]
     Io(#[from] std::io::Error),

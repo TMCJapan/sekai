@@ -1,4 +1,4 @@
-//! Snapshot pruning subcommand execution, DTOs, and output rendering.
+//! Commit pruning subcommand execution, DTOs, and output rendering.
 
 use anyhow::Context as _;
 use sekai_app::{PrunePlan, PruneReport, PruneTimings};
@@ -6,14 +6,14 @@ use serde::Serialize;
 
 use super::ReportOut;
 use super::progress::{finish_progress, progress_bar, report_progress};
-use crate::cli::SnapshotRef;
+use crate::cli::CommitRef;
 use crate::envelope::envelope_ok;
 use crate::style::Styler;
 
 pub async fn run(
     store: &str,
     keep_last: Option<u64>,
-    before: Option<&SnapshotRef>,
+    before: Option<&CommitRef>,
     dry_run: bool,
     progress: bool,
     out: ReportOut,
@@ -25,9 +25,9 @@ pub async fn run(
     let before = match before {
         Some(raw) => Some(
             instance
-                .resolve_snapshot_ref(raw.as_str())
+                .resolve_commit_ref(raw.as_str())
                 .await
-                .with_context(|| format!("snapshot {raw} failed to resolve"))?,
+                .with_context(|| format!("commit {raw} failed to resolve"))?,
         ),
         None => None,
     };
@@ -44,7 +44,7 @@ pub async fn run(
             return Ok(());
         }
         println!(
-            "prune plan created: {} snapshots to delete ({})",
+            "prune plan created: {} commits to delete ({})",
             highlight_count(style, plan.delete.len()),
             ids(&plan.delete),
         );
@@ -59,9 +59,9 @@ pub async fn run(
         .prune(keep_last, before, |update| {
             report_progress(
                 bar.as_ref(),
-                update.snapshots_done,
-                update.snapshots_total,
-                "snapshots",
+                update.commits_done,
+                update.commits_total,
+                "commits",
             );
         })
         .await
@@ -86,7 +86,7 @@ pub async fn run(
     Ok(())
 }
 
-fn ids(ids: &[sekai_app::SnapshotId]) -> String {
+fn ids(ids: &[sekai_app::CommitId]) -> String {
     ids.iter()
         .map(|id| id.raw().to_string())
         .collect::<Vec<_>>()
@@ -208,8 +208,8 @@ mod tests {
     #[test]
     fn renders_prune_plan_payload() {
         let plan = PrunePlan {
-            delete: vec![sekai_app::SnapshotId(1)],
-            retained: vec![sekai_app::SnapshotId(2), sekai_app::SnapshotId(3)],
+            delete: vec![sekai_app::CommitId(1)],
+            retained: vec![sekai_app::CommitId(2), sekai_app::CommitId(3)],
         };
         let payload = prune_plan_payload(&plan, &timings(), false);
         assert_eq!(

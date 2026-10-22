@@ -71,7 +71,7 @@ impl FileCas {
         &self.root
     }
 
-    /// Claim the store for a run that writes blobs (backup).
+    /// Claim the store for a run that writes blobs (commit).
     ///
     /// The returned guard removes the marker on drop - including on an
     /// early return or a panic - and [`Self::ensure_idle`] makes `gc`
@@ -138,7 +138,7 @@ impl FileCas {
     /// complete file, so the stored bytes are identical whichever rename
     /// lands (content-addressed). Racers that observe the winner report
     /// deduplicated instead of erroring; on Windows, where renaming over
-    /// an existing file fails, that loser path is what saves the backup.
+    /// an existing file fails, that loser path is what saves the commit.
     /// (`new_blobs` accounting may overcount racing duplicates on
     /// platforms where every rename succeeds; cosmetic only.)
     ///

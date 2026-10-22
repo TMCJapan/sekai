@@ -1,4 +1,4 @@
-//! End-to-end snapshot tag flows over SQLite stores.
+//! End-to-end commit tag flows over SQLite stores.
 //!
 //! Requires the `backend-sqlite` feature.
 
@@ -49,26 +49,26 @@ async fn tag_create_list_resolve_delete() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .backup(
-            sekai_app::BackupOptions::default(),
+        .commit(
+            sekai_app::CommitOptions::default(),
             sekai_app::Scope::World,
             |_| {},
         )
         .await
         .unwrap();
-    let snapshots = instance.list_snapshots().await.unwrap();
+    let commits = instance.list_commits().await.unwrap();
     let name = TagName::parse("stable").unwrap();
 
     let record = instance
-        .create_tag(&name, snapshots[0].id, false)
+        .create_tag(&name, commits[0].id, false)
         .await
         .unwrap();
-    assert_eq!(record.snapshot, snapshots[0].id);
+    assert_eq!(record.commit, commits[0].id);
 
     // Duplicate without force fails loudly.
     assert!(
         instance
-            .create_tag(&name, snapshots[0].id, false)
+            .create_tag(&name, commits[0].id, false)
             .await
             .is_err()
     );
@@ -78,25 +78,25 @@ async fn tag_create_list_resolve_delete() {
 
     // Tag refs resolve, unknown refs fail.
     assert_eq!(
-        instance.resolve_snapshot_ref("@stable").await.unwrap(),
-        snapshots[0].id
+        instance.resolve_commit_ref("@stable").await.unwrap(),
+        commits[0].id
     );
     assert_eq!(
-        instance.resolve_snapshot_ref("1").await.unwrap(),
-        snapshots[0].id
+        instance.resolve_commit_ref("1").await.unwrap(),
+        commits[0].id
     );
-    assert!(instance.resolve_snapshot_ref("@missing").await.is_err());
-    assert!(instance.resolve_snapshot_ref("99").await.is_err());
-    assert!(instance.resolve_snapshot_ref("nope").await.is_err());
+    assert!(instance.resolve_commit_ref("@missing").await.is_err());
+    assert!(instance.resolve_commit_ref("99").await.is_err());
+    assert!(instance.resolve_commit_ref("nope").await.is_err());
 
-    // Rollback accepts the tag ref end to end.
-    let out = HostWorldTree::new_legacy(root.join("exported"));
-    let id = instance.resolve_snapshot_ref("@stable").await.unwrap();
+    // Clone accepts the tag ref end to end.
+    let out = HostWorldTree::new_legacy(root.join("cloned"));
+    let id = instance.resolve_commit_ref("@stable").await.unwrap();
     let (report, _) = instance
-        .export(
+        .clone_to(
             &out,
             id,
-            sekai_app::ExportOptions::default(),
+            sekai_app::CloneOptions::default(),
             sekai_app::Scope::World,
             |_| {},
         )
@@ -108,31 +108,31 @@ async fn tag_create_list_resolve_delete() {
     assert!(!instance.delete_tag(&name).await.unwrap());
     assert_eq!(
         instance.list_tags().await.unwrap(),
-        [] as [sekai_app::SnapshotTag; 0]
+        [] as [sekai_app::CommitTag; 0]
     );
     cleanup(&root);
 }
 
 #[tokio::test]
-async fn tag_missing_snapshot_is_an_error() {
-    use sekai_app::{SnapshotId, TagName};
+async fn tag_missing_commit_is_an_error() {
+    use sekai_app::{CommitId, TagName};
     let root = tempdir("missing");
     let store = root.join("store").to_string_lossy().into_owned();
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let mut world = HostWorldTree::new(root.join("world")).unwrap();
     instance
         .world_mut(&mut world)
-        .backup(
-            sekai_app::BackupOptions::default(),
+        .commit(
+            sekai_app::CommitOptions::default(),
             sekai_app::Scope::World,
             |_| {},
         )
         .await
         .unwrap_err();
-    // No snapshots exist: tagging fails instead of pointing nowhere.
+    // No commits exist: tagging fails instead of pointing nowhere.
     assert!(
         instance
-            .create_tag(&TagName::parse("x").unwrap(), SnapshotId(1), false)
+            .create_tag(&TagName::parse("x").unwrap(), CommitId(1), false)
             .await
             .is_err()
     );

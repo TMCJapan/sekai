@@ -1,7 +1,7 @@
 //! Tag subcommand execution, DTOs, and output rendering.
 
 use anyhow::Context as _;
-use sekai_app::SnapshotTag;
+use sekai_app::CommitTag;
 use serde::Serialize;
 
 use crate::cli::TagCommand;
@@ -14,14 +14,14 @@ pub async fn run(store: &str, action: &TagCommand, style: Styler) -> anyhow::Res
     match action {
         TagCommand::Create {
             name,
-            snapshot,
+            commit,
             force,
             json,
         } => {
             let id = instance
-                .resolve_snapshot_ref(snapshot.as_str())
+                .resolve_commit_ref(commit.as_str())
                 .await
-                .with_context(|| format!("tag target {snapshot} failed to resolve"))?;
+                .with_context(|| format!("tag target commit {commit} failed to resolve"))?;
             let record = instance
                 .create_tag(name, id, *force)
                 .await
@@ -32,7 +32,7 @@ pub async fn run(store: &str, action: &TagCommand, style: Styler) -> anyhow::Res
             }
             println!(
                 "tagged {} as {}",
-                style.bold(&record.snapshot.raw().to_string()),
+                style.bold(&record.commit.raw().to_string()),
                 style.bold(name.as_str())
             );
         }
@@ -74,7 +74,7 @@ pub async fn run(store: &str, action: &TagCommand, style: Styler) -> anyhow::Res
                 println!(
                     "{}\t{}\t{}",
                     style.bold(tag.name.as_str()),
-                    tag.snapshot.raw(),
+                    tag.commit.raw(),
                     format_time(tag.created_at_ms)
                 );
             }
@@ -86,7 +86,7 @@ pub async fn run(store: &str, action: &TagCommand, style: Styler) -> anyhow::Res
 #[derive(Serialize)]
 struct TagJson {
     name: String,
-    snapshot: u64,
+    commit: u64,
     created_at_ms: u64,
 }
 
@@ -95,10 +95,10 @@ struct TagDelete {
     name: String,
 }
 
-fn tag_payload(tag: &SnapshotTag) -> TagJson {
+fn tag_payload(tag: &CommitTag) -> TagJson {
     TagJson {
         name: tag.name.as_str().to_owned(),
-        snapshot: tag.snapshot.raw(),
+        commit: tag.commit.raw(),
         created_at_ms: tag.created_at_ms,
     }
 }
@@ -116,14 +116,14 @@ mod tests {
 
     #[test]
     fn renders_tag_payloads() {
-        let tag = SnapshotTag::new(
+        let tag = CommitTag::new(
             TagName::parse("stable").unwrap(),
-            sekai_app::SnapshotId(3),
+            sekai_app::CommitId(3),
             1_700_000_000_000,
         );
         assert_eq!(
             serde_json::to_string(&tag_payload(&tag)).unwrap(),
-            r#"{"name":"stable","snapshot":3,"created_at_ms":1700000000000}"#
+            r#"{"name":"stable","commit":3,"created_at_ms":1700000000000}"#
         );
         let tags: Vec<TagJson> = Vec::new();
         assert_eq!(serde_json::to_string(&tags).unwrap(), "[]");

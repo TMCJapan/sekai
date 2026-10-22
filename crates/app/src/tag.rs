@@ -1,37 +1,37 @@
-//! Snapshot tags: human-readable aliases (`@before-update`).
+//! Commit tags: human-readable aliases (`@before-update`).
 //!
-//! Tags are metadata only: they point at snapshots, constrain nothing,
-//! and die with their snapshot (pruning cascades). Creation
+//! Tags are metadata only: they point at commits, constrain nothing,
+//! and die with their commit (pruning cascades). Creation
 //! check-then-inserts so duplicates fail loudly instead of surfacing
 //! backend constraint errors.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use sekai_core::{MetaStore as _, SnapshotId, SnapshotTag, TagName};
+use sekai_core::{CommitId, CommitTag, MetaStore as _, TagName};
 use sekai_storage::{SekaiStore, StoreLockMode};
 
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
 
 impl<S: SekaiStore> SekaiInstance<S> {
-    /// Point `name` at `snapshot`, returning the created record.
+    /// Point `name` at `commit`, returning the created record.
     ///
     /// An existing name fails with [`AppError::TagExists`] unless `force`
     /// moves it.
     pub async fn create_tag(
         &mut self,
         name: &TagName,
-        snapshot: SnapshotId,
+        commit: CommitId,
         force: bool,
-    ) -> Result<SnapshotTag, AppError> {
+    ) -> Result<CommitTag, AppError> {
         // The lock only keeps `prune` out. Lookup, untag, and insert are
         // separate statements, so concurrent edits of one tag can
         // interleave; that needs a transaction, not a stronger lock, and
         // is tracked separately.
         let _lock = self.lock_store(StoreLockMode::Shared)?;
-        if self.store.meta().lookup_snapshot(snapshot).await?.is_none() {
-            return Err(AppError::SnapshotRef(
-                sekai_core::usecase::snapshot::ResolveError::UnknownSnapshot { id: snapshot.0 },
+        if self.store.meta().lookup_commit(commit).await?.is_none() {
+            return Err(AppError::CommitRef(
+                sekai_core::ResolveError::UnknownCommit { id: commit.0 },
             ));
         }
         if self.store.meta().lookup_tag(name).await?.is_some() {
@@ -47,9 +47,9 @@ impl<S: SekaiStore> SekaiInstance<S> {
                 .unwrap_or(u64::MAX);
         self.store
             .meta_mut()
-            .tag_snapshot(name, snapshot, created_at_ms)
+            .tag_commit(name, commit, created_at_ms)
             .await?;
-        Ok(SnapshotTag::new(name.clone(), snapshot, created_at_ms))
+        Ok(CommitTag::new(name.clone(), commit, created_at_ms))
     }
 
     /// Remove `name`, returning whether a tag was removed.
@@ -59,29 +59,29 @@ impl<S: SekaiStore> SekaiInstance<S> {
     }
 
     /// List tags in name order.
-    pub async fn list_tags(&self) -> Result<Vec<SnapshotTag>, AppError> {
+    pub async fn list_tags(&self) -> Result<Vec<CommitTag>, AppError> {
         let _lock = self.lock_store(StoreLockMode::Shared)?;
-        sekai_core::usecase::snapshot::list_tags(self.store.meta())
+        sekai_core::usecase::graph::list_tags(self.store.meta())
             .await
-            .map_err(AppError::Snapshot)
+            .map_err(AppError::Commit)
     }
 
-    /// Resolve a snapshot reference (`<id>` or `@tag`).
-    pub async fn resolve_snapshot_ref(&self, raw: &str) -> Result<SnapshotId, AppError> {
+    /// Resolve a commit reference (`<id>` or `@tag`).
+    pub async fn resolve_commit_ref(&self, raw: &str) -> Result<CommitId, AppError> {
         let _lock = self.lock_store(StoreLockMode::Shared)?;
-        sekai_core::usecase::snapshot::resolve_snapshot_ref(self.store.meta(), raw)
+        sekai_core::usecase::graph::resolve_commit_ref(self.store.meta(), raw)
             .await
-            .map_err(AppError::SnapshotRef)
+            .map_err(AppError::CommitRef)
     }
 
-    /// Count fresh and effective rows for one snapshot.
-    pub async fn snapshot_stats(
+    /// Count fresh and effective rows for one commit.
+    pub async fn commit_stats(
         &self,
-        snapshot: SnapshotId,
-    ) -> Result<sekai_core::SnapshotStats, AppError> {
+        commit: CommitId,
+    ) -> Result<sekai_core::CommitStats, AppError> {
         let _lock = self.lock_store(StoreLockMode::Shared)?;
-        sekai_core::usecase::snapshot::snapshot_stats(self.store.meta(), snapshot)
+        sekai_core::usecase::graph::commit_stats(self.store.meta(), commit)
             .await
-            .map_err(AppError::Snapshot)
+            .map_err(AppError::Commit)
     }
 }

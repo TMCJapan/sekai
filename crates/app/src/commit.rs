@@ -1,7 +1,8 @@
-//! Incremental world backup: fingerprint, ingest changes, carry the rest.
+//! Recording a world state as a commit: fingerprint, ingest changes, carry
+//! the rest.
 //!
-//! Rationale: this is the orchestration half of backup. All policy lives in
-//! [`core`](sekai_core::usecase::backup): the previous-state plan (carry vs
+//! Rationale: this is the orchestration half of commit. All policy lives in
+//! [`core`](sekai_core::usecase::commit): the previous-state plan (carry vs
 //! ingest), per-chunk staging, tombstone assembly, and the atomic commit.
 //! What stays here is mechanics `core` cannot own without breaking its
 //! `no_std` boundary: world discovery and fingerprint observation
@@ -9,7 +10,7 @@
 //! wall clock, and timing collection for `--timing` output.
 //!
 //! Crash order mirrors the core contract: every blob is flushed to CAS
-//! *before* the single metadata batch commits, so a torn backup leaves at
+//! *before* the single metadata batch commits, so a torn commit leaves at
 //! most orphan blobs (reclaimed by future GC), never dangling references.
 
 use std::collections::{HashMap, HashSet};
@@ -17,10 +18,10 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use sekai_core::usecase::backup::Ingested;
+use sekai_core::usecase::commit::Ingested;
 use sekai_core::{
-    Assembled, BackupReport, ChunkCoord, Observation, Previous, RegionFingerprint, RegionKey,
-    Scope, SnapshotEntry, SnapshotId,
+    Assembled, ChunkCoord, CommitEntry, CommitId, CommitReport, Observation, Previous,
+    RegionFingerprint, RegionKey, Scope,
 };
 use sekai_storage::{BlockingBlobStore, SekaiStore, StoreLockMode};
 use sekai_world::{RegionFile, WorldLock, WorldLockMode, WorldTree};
@@ -29,9 +30,9 @@ use crate::error::AppError;
 use crate::instance::{OperationLocks, WorldHandle, WorldHandleMut};
 use crate::regions::discover_regions;
 
-/// Backup behavior knobs.
+/// Commit behavior knobs.
 #[derive(Debug, Clone, Default)]
-pub struct BackupOptions {
+pub struct CommitOptions {
     /// Ingest worker count. `0` means one per CPU, `1` stays sequential.
     pub concurrency: usize,
     /// Derive volatile diff views alongside blobs. Decode failures degrade
@@ -49,13 +50,13 @@ pub struct StatusOptions {
     pub concurrency: usize,
 }
 
-/// What a backup would record, without recording anything.
+/// What a commit would record, without recording anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StatusReport {
-    /// Nothing in scope differs from the latest snapshot.
+    /// Nothing in scope differs from the latest commit.
     pub clean: bool,
-    /// Latest snapshot the preview is measured against, if any.
-    pub latest: Option<SnapshotId>,
+    /// Latest commit the preview is measured against, if any.
+    pub latest: Option<CommitId>,
     /// In-scope regions that changed (new files included).
     pub changed_regions: usize,
     /// Changed regions with no stored state.
@@ -91,7 +92,7 @@ pub struct StatusTimings {
 
 /// Per-file progress report for the `progress` callback.
 #[derive(Debug, Clone, Copy)]
-pub struct BackupProgress {
+pub struct CommitProgress {
     /// Files fully ingested so far.
     pub files_done: usize,
     /// Files to ingest in total.
@@ -100,9 +101,9 @@ pub struct BackupProgress {
     pub chunks_done: usize,
 }
 
-/// Per-phase timings. Informational only; never changes backup semantics.
+/// Per-phase timings. Informational only; never changes commit semantics.
 #[derive(Debug, Clone, Default)]
-pub struct BackupTimings {
+pub struct CommitTimings {
     /// Wall-clock total.
     pub total: Duration,
     /// World discovery.
@@ -158,7 +159,7 @@ struct FileOutcome {
     /// Fresh fingerprint for the derived-state upsert.
     fingerprint: RegionFingerprint,
     /// History rows for the file's chunks.
-    entries: Vec<SnapshotEntry>,
+    entries: Vec<CommitEntry>,
     /// Coordinates present in the file.
     present: HashSet<ChunkCoord>,
     /// Blobs newly written to CAS.
@@ -171,19 +172,19 @@ impl<W: WorldTree, S: SekaiStore> WorldHandleMut<'_, W, S>
 where
     AppError: From<W::Error>,
 {
-    /// Scan the bound world and record it as a new snapshot in the store,
+    /// Scan the bound world and record it as a new commit in the store,
     /// additionally returning per-phase timings.
     ///
     /// Only `scope` is ingested: out-of-scope coordinates record no rows and
-    /// no tombstones, resolving through fallback from earlier snapshots.
+    /// no tombstones, resolving through fallback from earlier commits.
     /// `progress` fires as changed files complete. The report is identical
     /// with or without timings.
-    pub async fn backup(
+    pub async fn commit(
         &mut self,
-        options: BackupOptions,
+        options: CommitOptions,
         scope: Scope,
-        progress: impl Fn(BackupProgress) + Send,
-    ) -> Result<(BackupReport, BackupTimings), AppError> {
+        progress: impl Fn(CommitProgress) + Send,
+    ) -> Result<(CommitReport, CommitTimings), AppError> {
         let total = Instant::now();
         // Held for the whole run: blobs reach the CAS before the rows that
         // reference them, so `gc` must not scan in that window.
@@ -215,12 +216,16 @@ where
         store.cas_mut().sync_dirs()?;
         let dir_sync = sync_started.elapsed();
         let db_started = Instant::now();
-        let report =
-            sekai_core::usecase::backup::commit(store.meta_mut(), &previous, &staged, now_ms)
-                .await?;
+        let report = sekai_core::usecase::commit::record_commit(
+            store.meta_mut(),
+            &previous,
+            &staged,
+            now_ms,
+        )
+        .await?;
         let db_apply = db_started.elapsed();
 
-        let timings = BackupTimings {
+        let timings = CommitTimings {
             total: total.elapsed(),
             discover,
             fingerprint,
@@ -238,7 +243,7 @@ where
     }
 }
 
-/// Everything a backup records and a status preview counts, before the
+/// Everything a commit records and a status preview counts, before the
 /// commit decision that separates them.
 struct Prepared {
     previous: Previous,
@@ -249,17 +254,17 @@ struct Prepared {
     universe_load: Duration,
 }
 
-/// Observe the world, plan against the previous snapshot, and ingest the
-/// changed files - the whole pipeline `backup` and `status` share.
+/// Observe the world, plan against the previous commit, and ingest the
+/// changed files - the whole pipeline `commit` and `status` share.
 ///
 /// Under `dry_run` blobs are probed instead of stored, so the staged rows
-/// are the same numbers a real backup would commit.
+/// are the same numbers a real commit would commit.
 async fn prepare<W: WorldTree, S: SekaiStore>(
     store: &S,
     world: &W,
-    options: &BackupOptions,
+    options: &CommitOptions,
     scope: &Scope,
-    progress: impl Fn(BackupProgress) + Send,
+    progress: impl Fn(CommitProgress) + Send,
     dry_run: bool,
     locks: &Arc<OperationLocks<S, W::Lock>>,
 ) -> Result<Prepared, AppError>
@@ -282,7 +287,7 @@ where
     let universe_started = Instant::now();
     let observations: Vec<Observation> = observed.files.iter().map(|(_, obs)| *obs).collect();
     let (previous, plan) =
-        sekai_core::usecase::backup::plan_backup(store.meta(), &observations, scope).await?;
+        sekai_core::usecase::commit::plan_commit(store.meta(), &observations, scope).await?;
     let universe_load = universe_started.elapsed();
 
     let mut files: HashMap<RegionKey, Changed<W::Region>> =
@@ -307,7 +312,7 @@ where
         locks,
     )
     .await?;
-    let staged = sekai_core::usecase::backup::assemble(plan, &previous, ingested, scope);
+    let staged = sekai_core::usecase::commit::assemble(plan, &previous, ingested, scope);
 
     Ok(Prepared {
         previous,
@@ -323,19 +328,19 @@ impl<W: WorldTree, S: SekaiStore> WorldHandle<'_, W, S>
 where
     AppError: From<W::Error>,
 {
-    /// Preview what a backup would record, without recording anything: no
+    /// Preview what a commit would record, without recording anything: no
     /// CAS puts, no metadata commit, no region writes. Only lock files may
     /// be created (ADR-0014).
     ///
     /// Only `scope` is previewed. `progress` fires as changed files
-    /// complete. Staged rows are assembled exactly as backup would, then
-    /// counted instead of committed - so counts match a subsequent backup
+    /// complete. Staged rows are assembled exactly as commit would, then
+    /// counted instead of committed - so counts match a subsequent commit
     /// unless the world changes in between.
     pub async fn status(
         &self,
         options: StatusOptions,
         scope: Scope,
-        progress: impl Fn(BackupProgress) + Send,
+        progress: impl Fn(CommitProgress) + Send,
     ) -> Result<(StatusReport, StatusTimings), AppError> {
         let locks = OperationLocks::acquire(
             self.instance,
@@ -359,12 +364,12 @@ impl<W: WorldTree, S: SekaiStore> WorldHandleMut<'_, W, S>
 where
     AppError: From<W::Error>,
 {
-    /// Preview what a backup would record; see [`WorldHandle::status`].
+    /// Preview what a commit would record; see [`WorldHandle::status`].
     pub async fn status(
         &self,
         options: StatusOptions,
         scope: Scope,
-        progress: impl Fn(BackupProgress) + Send,
+        progress: impl Fn(CommitProgress) + Send,
     ) -> Result<(StatusReport, StatusTimings), AppError> {
         self.view().status(options, scope, progress).await
     }
@@ -376,7 +381,7 @@ async fn status_impl<W: WorldTree, S: SekaiStore>(
     world: &W,
     options: StatusOptions,
     scope: Scope,
-    progress: impl Fn(BackupProgress) + Send,
+    progress: impl Fn(CommitProgress) + Send,
     locks: &Arc<OperationLocks<S, W::Lock>>,
 ) -> Result<(StatusReport, StatusTimings), AppError>
 where
@@ -385,9 +390,9 @@ where
     let total = Instant::now();
 
     // Diff views are preview-irrelevant: always skip the decode work.
-    let preview = BackupOptions {
+    let preview = CommitOptions {
         concurrency: options.concurrency,
-        ..BackupOptions::default()
+        ..CommitOptions::default()
     };
     let Prepared {
         previous,
@@ -406,7 +411,7 @@ where
     let new_chunks = staged.entries.iter().filter(|e| e.blob.is_some()).count();
     let report = StatusReport {
         clean: staged.entries.is_empty() && staged.removed.is_empty() && new_files == 0,
-        latest: previous.snapshot.map(|snapshot| snapshot.id),
+        latest: previous.commit.map(|commit| commit.id),
         changed_regions: walk.regions.len(),
         new_files,
         deleted_files: staged.removed.len(),
@@ -464,7 +469,7 @@ where
 #[derive(Default)]
 struct RegionWalk {
     /// Fresh history rows (ingested chunks; tombstones join at assembly).
-    entries: Vec<SnapshotEntry>,
+    entries: Vec<CommitEntry>,
     /// Coordinates present on disk.
     present: HashSet<ChunkCoord>,
     /// Blobs newly written to CAS.
@@ -526,14 +531,14 @@ struct IngestTimings {
 /// joining orders every durability barrier ahead of the metadata commit. The
 /// commit itself stays a single transaction; row merge order across workers
 /// is completion-order (DB-irrelevant, one txn).
-/// Each worker keeps `locks` alive until it returns, so a cancelled backup
+/// Each worker keeps `locks` alive until it returns, so a cancelled commit
 /// cannot hand the store to `gc` while blobs are still being written.
 async fn ingest_changed<R: RegionFile, S: SekaiStore, L: WorldLock>(
     changed: Vec<Changed<R>>,
     cas: S::Blobs,
-    options: &BackupOptions,
+    options: &CommitOptions,
     scope: Scope,
-    progress: impl Fn(BackupProgress) + Send,
+    progress: impl Fn(CommitProgress) + Send,
     dry_run: bool,
     locks: &Arc<OperationLocks<S, L>>,
 ) -> Result<(Ingested, IngestTimings), AppError>
@@ -583,7 +588,7 @@ where
         for outcome in outcomes {
             files_done += 1;
             chunks_done += outcome.timing.chunks;
-            progress(BackupProgress {
+            progress(CommitProgress {
                 files_done,
                 files_total,
                 chunks_done,
@@ -679,7 +684,7 @@ struct ChunkIngestCtx<'a, C> {
     with_diff: bool,
     dry_run: bool,
     ignore: &'a [&'a str],
-    entries: &'a mut Vec<SnapshotEntry>,
+    entries: &'a mut Vec<CommitEntry>,
     present: &'a mut HashSet<ChunkCoord>,
     new_blobs: &'a mut usize,
 }
@@ -789,7 +794,7 @@ where
 ///
 /// Returns the time spent hashing (plus diffing when enabled) and the time
 /// spent in `CAS put` separately so digest and exists-check/write costs
-/// stay visible in [`BackupTimings`].
+/// stay visible in [`CommitTimings`].
 fn ingest_timed<C: BlockingBlobStore>(
     chunk: sekai_anvil::Chunk<'_>,
     ctx: &mut ChunkIngestCtx<'_, C>,
@@ -818,7 +823,7 @@ fn ingest_timed<C: BlockingBlobStore>(
     }
     let cas_elapsed = cas_started.elapsed();
     ctx.entries
-        .push(SnapshotEntry::new(coord, Some(hash), diff.flatten()));
+        .push(CommitEntry::new(coord, Some(hash), diff.flatten()));
     ctx.present.insert(coord);
     Ok((hash_elapsed, cas_elapsed))
 }

@@ -10,7 +10,7 @@ use crate::error::{AppError, duplicate_region};
 
 /// Every region file the tree reports, keyed by identity.
 ///
-/// Backup, diff, and rollback walk the world the same way, so the walk
+/// Commit, diff, and checkout walk the world the same way, so the walk
 /// lives here once: the duplicate detection cannot drift between them.
 pub(crate) fn discover_regions<T: WorldTree>(
     world: &T,

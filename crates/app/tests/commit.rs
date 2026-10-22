@@ -1,10 +1,10 @@
-//! End-to-end backup flows over real world folders and SQLite stores.
+//! End-to-end commit flows over real world folders and SQLite stores.
 //!
 //! Requires the `backend-sqlite` feature.
 
 #![cfg(feature = "backend-sqlite")]
 
-use sekai_app::{BackupOptions, RegionKind, Scope, SnapshotId};
+use sekai_app::{CommitId, CommitOptions, RegionKind, Scope};
 use sekai_app::{HostWorldTree, WorldTree};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -58,7 +58,7 @@ fn read_coords(path: impl AsRef<Path>) -> Vec<(i32, i32)> {
 }
 
 /// Chunk payloads keyed by coordinate, for comparing rebuilt files
-/// (rollback rewrites layout, so raw bytes differ).
+/// (checkout rewrites layout, so raw bytes differ).
 type ChunkMap = std::collections::BTreeMap<(i32, i32), Vec<u8>>;
 
 fn chunk_map(path: impl AsRef<Path>) -> ChunkMap {
@@ -76,17 +76,17 @@ fn chunk_map(path: impl AsRef<Path>) -> ChunkMap {
     map
 }
 
-fn options() -> BackupOptions {
-    BackupOptions {
+fn options() -> CommitOptions {
+    CommitOptions {
         concurrency: 2,
-        ..BackupOptions::default()
+        ..CommitOptions::default()
     }
 }
 
 /// A parseable but non-canonical file name (`r.00.00.mca`) must be read
 /// from the path discovery found, not from the canonical `r.0.0.mca`.
 #[tokio::test]
-async fn backs_up_a_non_canonical_region_name() {
+async fn commits_a_non_canonical_region_name() {
     let root = tempdir("non-canonical-name");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -99,7 +99,7 @@ async fn backs_up_a_non_canonical_region_name() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let (report, timings) = instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
     assert_eq!(report.chunks, 1);
@@ -145,7 +145,7 @@ async fn timing_rows_are_ordered_by_region_identity() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let (_, timings) = instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
     let locations: Vec<&str> = timings
@@ -163,7 +163,7 @@ async fn timing_rows_are_ordered_by_region_identity() {
 }
 
 #[tokio::test]
-async fn backup_list_rollback_round_trip() {
+async fn commit_list_checkout_round_trip() {
     let root = tempdir("roundtrip");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -179,15 +179,15 @@ async fn backup_list_rollback_round_trip() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let (report, timings) = instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
     assert_eq!(report.chunks, 3);
     assert_eq!(report.new_blobs, 3);
     assert_eq!(timings.regions.len(), 2);
 
-    let snapshots = instance.list_snapshots().await.unwrap();
-    assert_eq!(snapshots.len(), 1);
+    let commits = instance.list_commits().await.unwrap();
+    assert_eq!(commits.len(), 1);
 
     // Change one chunk, add nothing: the untouched file carries over.
     // (Tick separation as below: same-size rewrite, millisecond mtime.)
@@ -198,26 +198,26 @@ async fn backup_list_rollback_round_trip() {
     );
     let (report2, _) = instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
     assert_eq!(report2.new_blobs, 1);
     assert_eq!(report2.carried_chunks, 1);
     assert_eq!(report2.skipped_regions, 1);
 
-    // Roll back to the first snapshot: the changed chunk reverts.
-    let (rolled, _rollback_timings) = instance
+    // Check out the first commit: the changed chunk reverts.
+    let (checked_out, _checkout_timings) = instance
         .world_mut(&mut world)
-        .rollback(
-            snapshots[0].id,
-            sekai_app::RollbackOptions::default(),
+        .checkout(
+            commits[0].id,
+            sekai_app::CheckoutOptions::default(),
             sekai_app::Scope::World,
             |_| {},
         )
         .await
         .unwrap();
-    assert_eq!(rolled.files_written, 2);
-    assert_eq!(rolled.chunks_restored, 3);
+    assert_eq!(checked_out.files_written, 2);
+    assert_eq!(checked_out.chunks_restored, 3);
     let coords = read_coords(&region);
     assert!(coords.contains(&(0, 0)) && coords.contains(&(1, 0)));
     let bytes = std::fs::read(&region).unwrap();
@@ -256,7 +256,7 @@ async fn deleted_region_file_tombstones_once() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let (first, _) = instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
     assert_eq!(first.chunks, 4);
@@ -266,24 +266,24 @@ async fn deleted_region_file_tombstones_once() {
     std::fs::remove_file(&doomed).unwrap();
     let (second, _) = instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
     assert_eq!(second.tombstones, 3);
     assert_eq!(second.chunks, 1);
 
-    // Repeat backup with an unchanged world records no rows at all: the
+    // Repeat commit with an unchanged world records no rows at all: the
     // tombstones already resolve through fallback, so nothing is re-recorded
     // and the present count matches the effective one.
     let (third, _) = instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
     assert_eq!(third.tombstones, 0);
     assert_eq!(third.new_blobs, 0);
     assert_eq!(third.chunks, 1);
-    let stats = instance.snapshot_stats(third.snapshot).await.unwrap();
+    let stats = instance.commit_stats(third.commit).await.unwrap();
     assert_eq!(stats.fresh_chunks, 0);
     assert_eq!(stats.fresh_tombstones, 0);
     assert_eq!(stats.effective_chunks, 1);
@@ -291,7 +291,7 @@ async fn deleted_region_file_tombstones_once() {
 }
 
 #[tokio::test]
-async fn scoped_backup_records_no_spurious_tombstones() {
+async fn scoped_commit_records_no_spurious_tombstones() {
     use sekai_app::{ChunkCoord, Dimension, Scope};
     let root = tempdir("scoped");
     let world_path = root.join("world");
@@ -307,28 +307,28 @@ async fn scoped_backup_records_no_spurious_tombstones() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let (full, _) = instance
         .world_mut(&mut world)
-        .backup(options(), Scope::World, |_| {})
+        .commit(options(), Scope::World, |_| {})
         .await
         .unwrap();
     assert_eq!(full.chunks, 3);
     assert_eq!(full.tombstones, 0);
 
-    // Overworld-only backup with no changes: nothing ingested, and the
+    // Overworld-only commit with no changes: nothing ingested, and the
     // out-of-scope nether chunk must not become a tombstone.
     let (scoped, _) = instance
         .world_mut(&mut world)
-        .backup(options(), Scope::dimension(Dimension::OVERWORLD), |_| {})
+        .commit(options(), Scope::dimension(Dimension::OVERWORLD), |_| {})
         .await
         .unwrap();
     assert_eq!(scoped.tombstones, 0);
     assert_eq!(scoped.chunks, 2);
 
-    // The nether chunk still resolves through fallback to the full backup.
-    let snapshots = instance.list_snapshots().await.unwrap();
-    assert_eq!(snapshots.len(), 2);
+    // The nether chunk still resolves through fallback to the full commit.
+    let commits = instance.list_commits().await.unwrap();
+    assert_eq!(commits.len(), 2);
     let nether_coord = ChunkCoord::new(Dimension::NETHER, RegionKind::Region, 0, 0);
     let diffs = instance
-        .diff_chunk(snapshots[0].id, snapshots[1].id, &nether_coord, None)
+        .diff_chunk(commits[0].id, commits[1].id, &nether_coord, None)
         .await
         .unwrap();
     assert_eq!(diffs, [] as [sekai_app::NbtDiffEntry; 0]);
@@ -337,26 +337,26 @@ async fn scoped_backup_records_no_spurious_tombstones() {
     write_region(&over, &[(0, 0, payload)]);
     let (scoped2, _) = instance
         .world_mut(&mut world)
-        .backup(options(), Scope::dimension(Dimension::OVERWORLD), |_| {})
+        .commit(options(), Scope::dimension(Dimension::OVERWORLD), |_| {})
         .await
         .unwrap();
     assert_eq!(scoped2.tombstones, 1);
 
-    // A following full backup sees no further changes: zero tombstones,
+    // A following full commit sees no further changes: zero tombstones,
     // zero new blobs, nether chunk intact. The carried overworld file must
     // not resurrect its tombstoned chunk in the present count either.
     let (full2, _) = instance
         .world_mut(&mut world)
-        .backup(options(), Scope::World, |_| {})
+        .commit(options(), Scope::World, |_| {})
         .await
         .unwrap();
     assert_eq!(full2.tombstones, 0);
     assert_eq!(full2.new_blobs, 0);
     assert_eq!(full2.chunks, 2);
-    let snapshots = instance.list_snapshots().await.unwrap();
-    assert_eq!(snapshots.len(), 4);
+    let commits = instance.list_commits().await.unwrap();
+    assert_eq!(commits.len(), 4);
     let diffs = instance
-        .diff_chunk(snapshots[0].id, snapshots[3].id, &nether_coord, None)
+        .diff_chunk(commits[0].id, commits[3].id, &nether_coord, None)
         .await
         .unwrap();
     assert_eq!(diffs, [] as [sekai_app::NbtDiffEntry; 0]);
@@ -367,7 +367,7 @@ async fn scoped_backup_records_no_spurious_tombstones() {
 /// treated as the missing-world fallback, and its trio keeps the constants
 /// scoped operations address by name.
 #[tokio::test]
-async fn scoped_backup_addresses_a_detected_trio_world() {
+async fn scoped_commit_addresses_a_detected_trio_world() {
     use sekai_app::{Dimension, Scope};
     let root = tempdir("scoped-detected");
     let world_path = root.join("world");
@@ -387,7 +387,7 @@ async fn scoped_backup_addresses_a_detected_trio_world() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let (report, _) = instance
         .world_mut(&mut world)
-        .backup(options(), Scope::dimension(Dimension::OVERWORLD), |_| {})
+        .commit(options(), Scope::dimension(Dimension::OVERWORLD), |_| {})
         .await
         .unwrap();
     // Only the overworld chunks: the scope must address the discovered
@@ -398,9 +398,9 @@ async fn scoped_backup_addresses_a_detected_trio_world() {
 }
 
 #[tokio::test]
-async fn scoped_rollback_leaves_other_dimensions_untouched() {
+async fn scoped_checkout_leaves_other_dimensions_untouched() {
     use sekai_app::{Dimension, Scope};
-    let root = tempdir("scoped-rollback");
+    let root = tempdir("scoped-checkout");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -412,10 +412,10 @@ async fn scoped_rollback_leaves_other_dimensions_untouched() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .backup(options(), Scope::World, |_| {})
+        .commit(options(), Scope::World, |_| {})
         .await
         .unwrap();
-    let snapshots = instance.list_snapshots().await.unwrap();
+    let commits = instance.list_commits().await.unwrap();
 
     // Diverge both dimensions, then delete the nether file outright.
     write_region(&over, &[(0, 0, vec![3, 9])]);
@@ -423,49 +423,49 @@ async fn scoped_rollback_leaves_other_dimensions_untouched() {
     let nether_diverged = std::fs::read(&nether).unwrap();
     std::fs::remove_file(&nether).unwrap();
 
-    // Overworld-scoped rollback: the overworld reverts, the nether file
+    // Overworld-scoped checkout: the overworld reverts, the nether file
     // is neither recreated nor deleted (it stays absent), and the report
     // counts only in-scope work.
-    let (rolled, _) = instance
+    let (checked_out, _) = instance
         .world_mut(&mut world)
-        .rollback(
-            snapshots[0].id,
-            sekai_app::RollbackOptions::default(),
+        .checkout(
+            commits[0].id,
+            sekai_app::CheckoutOptions::default(),
             Scope::dimension(Dimension::OVERWORLD),
             |_| {},
         )
         .await
         .unwrap();
-    assert_eq!(rolled.files_written, 1);
-    assert_eq!(rolled.files_deleted, 0);
-    assert_eq!(rolled.chunks_restored, 1);
+    assert_eq!(checked_out.files_written, 1);
+    assert_eq!(checked_out.files_deleted, 0);
+    assert_eq!(checked_out.chunks_restored, 1);
     assert_eq!(read_coords(&over), vec![(0, 0)]);
     assert!(!nether.exists());
 
-    // Nether-scoped rollback recreates the deleted file from CAS.
-    let (rolled, _) = instance
+    // Nether-scoped checkout recreates the deleted file from CAS.
+    let (checked_out, _) = instance
         .world_mut(&mut world)
-        .rollback(
-            snapshots[0].id,
-            sekai_app::RollbackOptions::default(),
+        .checkout(
+            commits[0].id,
+            sekai_app::CheckoutOptions::default(),
             Scope::dimension(Dimension::NETHER),
             |_| {},
         )
         .await
         .unwrap();
-    assert_eq!(rolled.files_written, 1);
-    assert_eq!(rolled.chunks_restored, 1);
+    assert_eq!(checked_out.files_written, 1);
+    assert_eq!(checked_out.chunks_restored, 1);
     assert_eq!(read_coords(&nether), vec![(0, 0)]);
 
-    // Overworld-scoped rollback never rewrites an in-place nether file.
+    // Overworld-scoped checkout never rewrites an in-place nether file.
     write_region(&nether, &[(0, 0, vec![3, 8])]);
     let before = std::fs::read(&nether).unwrap();
     assert_eq!(before, nether_diverged);
     instance
         .world_mut(&mut world)
-        .rollback(
-            snapshots[0].id,
-            sekai_app::RollbackOptions::default(),
+        .checkout(
+            commits[0].id,
+            sekai_app::CheckoutOptions::default(),
             Scope::dimension(Dimension::OVERWORLD),
             |_| {},
         )
@@ -476,7 +476,7 @@ async fn scoped_rollback_leaves_other_dimensions_untouched() {
 }
 
 #[tokio::test]
-async fn strict_rollback_removes_post_snapshot_files() {
+async fn strict_checkout_removes_post_commit_files() {
     let root = tempdir("strict");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -487,7 +487,7 @@ async fn strict_rollback_removes_post_snapshot_files() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
 
@@ -497,50 +497,50 @@ async fn strict_rollback_removes_post_snapshot_files() {
     write_region(&kept, &[]);
     instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
-    let snapshots = instance.list_snapshots().await.unwrap();
-    assert_eq!(snapshots.len(), 2);
+    let commits = instance.list_commits().await.unwrap();
+    assert_eq!(commits.len(), 2);
 
-    // Snapshot 2: all-tombstone region deleted (not shelled), new chunk kept.
-    let (rolled, _) = instance
+    // Commit 2: all-tombstone region deleted (not shelled), new chunk kept.
+    let (checked_out, _) = instance
         .world_mut(&mut world)
-        .rollback(
-            snapshots[1].id,
-            sekai_app::RollbackOptions::default(),
+        .checkout(
+            commits[1].id,
+            sekai_app::CheckoutOptions::default(),
             sekai_app::Scope::World,
             |_| {},
         )
         .await
         .unwrap();
-    assert_eq!(rolled.files_written, 1);
-    assert_eq!(rolled.files_deleted, 1);
-    assert_eq!(rolled.chunks_restored, 1);
+    assert_eq!(checked_out.files_written, 1);
+    assert_eq!(checked_out.files_deleted, 1);
+    assert_eq!(checked_out.chunks_restored, 1);
     assert!(!kept.exists());
     assert_eq!(read_coords(&added), vec![(32, 0)]);
 
-    // Snapshot 1: original chunk rebuilt, post-snapshot file removed.
-    let (rolled, _) = instance
+    // Commit 1: original chunk rebuilt, post-commit file removed.
+    let (checked_out, _) = instance
         .world_mut(&mut world)
-        .rollback(
-            snapshots[0].id,
-            sekai_app::RollbackOptions::default(),
+        .checkout(
+            commits[0].id,
+            sekai_app::CheckoutOptions::default(),
             sekai_app::Scope::World,
             |_| {},
         )
         .await
         .unwrap();
-    assert_eq!(rolled.files_written, 1);
-    assert_eq!(rolled.files_deleted, 1);
+    assert_eq!(checked_out.files_written, 1);
+    assert_eq!(checked_out.files_deleted, 1);
     assert_eq!(read_coords(&kept), vec![(0, 0)]);
     assert!(!added.exists());
     cleanup(&root);
 }
 
 #[tokio::test]
-async fn keep_options_preserve_post_snapshot_data() {
-    use sekai_app::RollbackOptions;
+async fn keep_options_preserve_post_commit_data() {
+    use sekai_app::CheckoutOptions;
     let root = tempdir("keep-post");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -551,29 +551,29 @@ async fn keep_options_preserve_post_snapshot_data() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
-    let snapshots = instance.list_snapshots().await.unwrap();
+    let commits = instance.list_commits().await.unwrap();
 
     // Afterwards: a new chunk inside the known region plus a new file.
     let added = world_path.join("region/r.1.0.mca");
     write_region(&known, &[(0, 0, vec![3, 1]), (1, 0, vec![3, 2])]);
     write_region(&added, &[(32, 0, vec![3, 3])]);
 
-    let keep = RollbackOptions {
-        keep_post_snapshot_files: true,
-        keep_post_snapshot_chunks: true,
-        ..RollbackOptions::default()
+    let keep = CheckoutOptions {
+        keep_post_commit_files: true,
+        keep_post_commit_chunks: true,
+        ..CheckoutOptions::default()
     };
-    let (rolled, _) = instance
+    let (checked_out, _) = instance
         .world_mut(&mut world)
-        .rollback(snapshots[0].id, keep, sekai_app::Scope::World, |_| {})
+        .checkout(commits[0].id, keep, sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
-    assert_eq!(rolled.files_written, 1);
-    assert_eq!(rolled.files_deleted, 0);
-    assert_eq!(rolled.chunks_restored, 1);
+    assert_eq!(checked_out.files_written, 1);
+    assert_eq!(checked_out.files_deleted, 0);
+    assert_eq!(checked_out.chunks_restored, 1);
     let map = chunk_map(&known);
     assert_eq!(map.get(&(0, 0)), Some(&vec![3, 1]));
     assert_eq!(map.get(&(1, 0)), Some(&vec![3, 2]));
@@ -583,7 +583,7 @@ async fn keep_options_preserve_post_snapshot_data() {
 
 #[tokio::test]
 async fn keep_tombstoned_chunks_preserves_live_bytes() {
-    use sekai_app::RollbackOptions;
+    use sekai_app::CheckoutOptions;
     let root = tempdir("keep-tomb");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -594,49 +594,49 @@ async fn keep_tombstoned_chunks_preserves_live_bytes() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
-    // Delete one chunk: the second snapshot tombstones it.
+    // Delete one chunk: the second commit tombstones it.
     write_region(&region, &[(0, 0, vec![3, 1])]);
     instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
-    let snapshots = instance.list_snapshots().await.unwrap();
-    assert_eq!(snapshots.len(), 2);
+    let commits = instance.list_commits().await.unwrap();
+    assert_eq!(commits.len(), 2);
 
     // Diverge live: change the kept chunk, recreate the deleted one.
     write_region(&region, &[(0, 0, vec![3, 9]), (1, 0, vec![3, 8])]);
 
-    // Strict rollback drops the tombstoned chunk and reverts the rest.
-    let (rolled, _) = instance
+    // Strict checkout drops the tombstoned chunk and reverts the rest.
+    let (checked_out, _) = instance
         .world_mut(&mut world)
-        .rollback(
-            snapshots[1].id,
-            sekai_app::RollbackOptions::default(),
+        .checkout(
+            commits[1].id,
+            sekai_app::CheckoutOptions::default(),
             sekai_app::Scope::World,
             |_| {},
         )
         .await
         .unwrap();
-    assert_eq!(rolled.chunks_restored, 1);
+    assert_eq!(checked_out.chunks_restored, 1);
     assert_eq!(read_coords(&region), vec![(0, 0)]);
     assert_eq!(chunk_map(&region)[&(0, 0)], vec![3, 1]);
 
-    // Keep rollback preserves the live bytes of the tombstoned chunk.
+    // Keep checkout preserves the live bytes of the tombstoned chunk.
     write_region(&region, &[(0, 0, vec![3, 9]), (1, 0, vec![3, 8])]);
-    let keep = RollbackOptions {
+    let keep = CheckoutOptions {
         keep_tombstoned_chunks: true,
-        ..RollbackOptions::default()
+        ..CheckoutOptions::default()
     };
-    let (rolled, _) = instance
+    let (checked_out, _) = instance
         .world_mut(&mut world)
-        .rollback(snapshots[1].id, keep, sekai_app::Scope::World, |_| {})
+        .checkout(commits[1].id, keep, sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
-    assert_eq!(rolled.chunks_restored, 1);
+    assert_eq!(checked_out.chunks_restored, 1);
     let map = chunk_map(&region);
     assert_eq!(map[&(0, 0)], vec![3, 1]);
     assert_eq!(map[&(1, 0)], vec![3, 8]);
@@ -645,7 +645,7 @@ async fn keep_tombstoned_chunks_preserves_live_bytes() {
 
 #[tokio::test]
 async fn keep_tombstoned_chunks_leaves_fully_tombstoned_files() {
-    use sekai_app::RollbackOptions;
+    use sekai_app::CheckoutOptions;
     let root = tempdir("keep-tomb-file");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -656,52 +656,52 @@ async fn keep_tombstoned_chunks_leaves_fully_tombstoned_files() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
-    // Empty the region: the second snapshot tombstones its only chunk.
+    // Empty the region: the second commit tombstones its only chunk.
     write_region(&region, &[]);
     instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
-    let snapshots = instance.list_snapshots().await.unwrap();
+    let commits = instance.list_commits().await.unwrap();
 
     // Live recreates the chunk afterwards.
     write_region(&region, &[(0, 0, vec![3, 7])]);
-    let keep = RollbackOptions {
+    let keep = CheckoutOptions {
         keep_tombstoned_chunks: true,
-        ..RollbackOptions::default()
+        ..CheckoutOptions::default()
     };
-    let (rolled, _) = instance
+    let (checked_out, _) = instance
         .world_mut(&mut world)
-        .rollback(snapshots[1].id, keep, sekai_app::Scope::World, |_| {})
+        .checkout(commits[1].id, keep, sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
-    assert_eq!(rolled.files_written, 0);
-    assert_eq!(rolled.files_deleted, 0);
+    assert_eq!(checked_out.files_written, 0);
+    assert_eq!(checked_out.files_deleted, 0);
     assert_eq!(read_coords(&region), vec![(0, 0)]);
 
-    // Strict rollback deletes the fully tombstoned file.
-    let (rolled, _) = instance
+    // Strict checkout deletes the fully tombstoned file.
+    let (checked_out, _) = instance
         .world_mut(&mut world)
-        .rollback(
-            snapshots[1].id,
-            sekai_app::RollbackOptions::default(),
+        .checkout(
+            commits[1].id,
+            sekai_app::CheckoutOptions::default(),
             sekai_app::Scope::World,
             |_| {},
         )
         .await
         .unwrap();
-    assert_eq!(rolled.files_deleted, 1);
+    assert_eq!(checked_out.files_deleted, 1);
     assert!(!region.exists());
     cleanup(&root);
 }
 
 #[tokio::test]
 async fn missing_blob_abort_is_default_and_skip_recovers() {
-    use sekai_app::{MissingBlobPolicy, RollbackOptions};
+    use sekai_app::{CheckoutOptions, MissingBlobPolicy};
     let root = tempdir("missing-blob");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -713,10 +713,10 @@ async fn missing_blob_abort_is_default_and_skip_recovers() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
-    let snapshots = instance.list_snapshots().await.unwrap();
+    let commits = instance.list_commits().await.unwrap();
 
     // Corrupt the CAS by unlinking every stored blob.
     let mut blobs = Vec::new();
@@ -740,9 +740,9 @@ async fn missing_blob_abort_is_default_and_skip_recovers() {
     assert!(
         instance
             .world_mut(&mut world)
-            .rollback(
-                snapshots[0].id,
-                sekai_app::RollbackOptions::default(),
+            .checkout(
+                commits[0].id,
+                sekai_app::CheckoutOptions::default(),
                 sekai_app::Scope::World,
                 |_| {},
             )
@@ -752,24 +752,24 @@ async fn missing_blob_abort_is_default_and_skip_recovers() {
     assert_eq!(read_coords(&region), vec![(0, 0)]);
 
     // Skip policy rebuilds the file without the missing chunk.
-    let skip = RollbackOptions {
+    let skip = CheckoutOptions {
         on_missing_blob: MissingBlobPolicy::SkipChunk,
-        ..RollbackOptions::default()
+        ..CheckoutOptions::default()
     };
-    let (rolled, _) = instance
+    let (checked_out, _) = instance
         .world_mut(&mut world)
-        .rollback(snapshots[0].id, skip, sekai_app::Scope::World, |_| {})
+        .checkout(commits[0].id, skip, sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
-    assert_eq!(rolled.files_written, 1);
-    assert_eq!(rolled.chunks_restored, 0);
+    assert_eq!(checked_out.files_written, 1);
+    assert_eq!(checked_out.chunks_restored, 0);
     assert_eq!(read_coords(&region), [] as [(i32, i32); 0]);
     cleanup(&root);
 }
 
 #[tokio::test]
 async fn missing_file_error_policy_refuses_to_guess() {
-    use sekai_app::{MissingFilePolicy, RollbackOptions};
+    use sekai_app::{CheckoutOptions, MissingFilePolicy};
     let root = tempdir("missing-file");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -780,51 +780,51 @@ async fn missing_file_error_policy_refuses_to_guess() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
-    let snapshots = instance.list_snapshots().await.unwrap();
+    let commits = instance.list_commits().await.unwrap();
     std::fs::remove_file(&region).unwrap();
 
     // Default policy recreates the file at the derived path.
-    let (rolled, _) = instance
+    let (checked_out, _) = instance
         .world_mut(&mut world)
-        .rollback(
-            snapshots[0].id,
-            sekai_app::RollbackOptions::default(),
+        .checkout(
+            commits[0].id,
+            sekai_app::CheckoutOptions::default(),
             sekai_app::Scope::World,
             |_| {},
         )
         .await
         .unwrap();
-    assert_eq!(rolled.files_written, 1);
+    assert_eq!(checked_out.files_written, 1);
     assert_eq!(read_coords(&region), vec![(0, 0)]);
 
     // Error policy fails loudly instead.
     std::fs::remove_file(&region).unwrap();
-    let strict = RollbackOptions {
+    let strict = CheckoutOptions {
         on_missing_file: MissingFilePolicy::Error,
-        ..RollbackOptions::default()
+        ..CheckoutOptions::default()
     };
     assert!(
         instance
             .world_mut(&mut world)
-            .rollback(snapshots[0].id, strict, sekai_app::Scope::World, |_| {})
+            .checkout(commits[0].id, strict, sekai_app::Scope::World, |_| {})
             .await
             .is_err()
     );
 
     // Derived-only policy recreates without consulting siblings.
-    let derived = RollbackOptions {
+    let derived = CheckoutOptions {
         on_missing_file: MissingFilePolicy::DerivedOnly,
-        ..RollbackOptions::default()
+        ..CheckoutOptions::default()
     };
-    let (rolled, _) = instance
+    let (checked_out, _) = instance
         .world_mut(&mut world)
-        .rollback(snapshots[0].id, derived, sekai_app::Scope::World, |_| {})
+        .checkout(commits[0].id, derived, sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
-    assert_eq!(rolled.files_written, 1);
+    assert_eq!(checked_out.files_written, 1);
     assert_eq!(read_coords(&region), vec![(0, 0)]);
     cleanup(&root);
 }
@@ -844,24 +844,24 @@ async fn with_diff_records_diff_hashes() {
     payload.extend_from_slice(&nbt);
     write_region(world_path.join("region/r.0.0.mca"), &[(0, 0, payload)]);
 
-    let options = BackupOptions {
+    let options = CommitOptions {
         with_diff: true,
         ..options()
     };
     let mut instance = sekai_app::SekaiInstance::init(&store_url).await.unwrap();
     let (report, _) = instance
         .world_mut(&mut world)
-        .backup(options, sekai_app::Scope::World, |_| {})
+        .commit(options, sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
     assert_eq!(report.chunks, 1);
 
-    let snapshots = instance.list_snapshots().await.unwrap();
+    let commits = instance.list_commits().await.unwrap();
     let meta = sekai_storage_sqlite::open_sqlite(&store_dir).await.unwrap();
     let row = meta
         .meta()
         .lookup_chunk(
-            snapshots[0].id,
+            commits[0].id,
             &sekai_core::ChunkCoord::new(
                 sekai_core::Dimension::OVERWORLD,
                 sekai_core::RegionKind::Region,
@@ -892,7 +892,7 @@ async fn progress_fires_per_changed_file() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, move |p| {
+        .commit(options(), sekai_app::Scope::World, move |p| {
             seen.lock().unwrap().push((p.files_done, p.files_total));
         })
         .await
@@ -914,18 +914,18 @@ async fn errors_surface_loudly() {
     assert!(
         instance
             .world_mut(&mut missing)
-            .backup(options(), sekai_app::Scope::World, |_| {})
+            .commit(options(), sekai_app::Scope::World, |_| {})
             .await
             .is_err()
     );
-    // Unknown snapshot (empty store is created on open, then lookup fails).
+    // Unknown commit (empty store is created on open, then lookup fails).
     let mut world = HostWorldTree::new(root.join("world")).unwrap();
     assert!(
         instance
             .world_mut(&mut world)
-            .rollback(
-                SnapshotId(99),
-                sekai_app::RollbackOptions::default(),
+            .checkout(
+                CommitId(99),
+                sekai_app::CheckoutOptions::default(),
                 sekai_app::Scope::World,
                 |_| {},
             )
@@ -946,7 +946,7 @@ async fn gc_runs_and_returns_timings() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
 
@@ -962,8 +962,8 @@ async fn gc_runs_and_returns_timings() {
 }
 
 #[tokio::test]
-async fn progress_events_cover_rollback_diff_and_gc() {
-    use sekai_app::{DiffProgress, GcProgress, RollbackProgress};
+async fn progress_events_cover_checkout_diff_and_gc() {
+    use sekai_app::{CheckoutProgress, DiffProgress, GcProgress};
     use std::sync::{Arc, Mutex};
     let root = tempdir("progress-events");
     let world_path = root.join("world");
@@ -981,20 +981,20 @@ async fn progress_events_cover_rollback_diff_and_gc() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
-    let snapshots = instance.list_snapshots().await.unwrap();
+    let commits = instance.list_commits().await.unwrap();
 
     let events = Arc::new(Mutex::new(Vec::new()));
     let seen = Arc::clone(&events);
     instance
         .world_mut(&mut world)
-        .rollback(
-            snapshots[0].id,
-            sekai_app::RollbackOptions::default(),
+        .checkout(
+            commits[0].id,
+            sekai_app::CheckoutOptions::default(),
             sekai_app::Scope::World,
-            move |p: RollbackProgress| {
+            move |p: CheckoutProgress| {
                 seen.lock().unwrap().push((p.files_done, p.files_total));
             },
         )
@@ -1017,8 +1017,8 @@ async fn progress_events_cover_rollback_diff_and_gc() {
     let seen_clone = Arc::clone(&seen_diff);
     let (diffs, _) = instance
         .diff_chunks(
-            snapshots[0].id,
-            snapshots[0].id,
+            commits[0].id,
+            commits[0].id,
             &[coord],
             None,
             move |p: DiffProgress| {
@@ -1050,7 +1050,7 @@ async fn progress_events_cover_rollback_diff_and_gc() {
 }
 
 #[tokio::test]
-async fn rollback_progress_completes_for_tombstone_only_region() {
+async fn checkout_progress_completes_for_tombstone_only_region() {
     use std::sync::{Arc, Mutex};
     let root = tempdir("progress-tombstone-only");
     let world_path = root.join("world");
@@ -1068,7 +1068,7 @@ async fn rollback_progress_completes_for_tombstone_only_region() {
 
     instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
 
@@ -1076,22 +1076,22 @@ async fn rollback_progress_completes_for_tombstone_only_region() {
 
     let (second, _) = instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
 
     assert_eq!(second.tombstones, 1);
 
-    let snapshot_id = instance.latest_snapshot_id().await.unwrap();
+    let commit_id = instance.latest_commit_id().await.unwrap();
 
     let events = Arc::new(Mutex::new(Vec::new()));
     let seen = Arc::clone(&events);
 
     let (report, _) = instance
         .world_mut(&mut world)
-        .rollback(
-            snapshot_id,
-            sekai_app::RollbackOptions::default(),
+        .checkout(
+            commit_id,
+            sekai_app::CheckoutOptions::default(),
             sekai_app::Scope::World,
             move |p| {
                 seen.lock().unwrap().push((p.files_done, p.files_total));
@@ -1110,7 +1110,7 @@ async fn rollback_progress_completes_for_tombstone_only_region() {
 }
 
 #[tokio::test]
-async fn diff_chunk_between_snapshots() {
+async fn diff_chunk_between_commits() {
     fn build_nbt(status: &str) -> Vec<u8> {
         let mut nbt = vec![10, 0, 0, 8, 0, 6]; // TAG_Compound(""), TAG_String("Status")
         nbt.extend_from_slice(b"Status");
@@ -1134,7 +1134,7 @@ async fn diff_chunk_between_snapshots() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
 
@@ -1144,12 +1144,12 @@ async fn diff_chunk_between_snapshots() {
     write_region(&region, &[(0, 0, build_nbt("minecraft:empty"))]);
     instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
 
-    let snapshots = instance.list_snapshots().await.unwrap();
-    assert_eq!(snapshots.len(), 2);
+    let commits = instance.list_commits().await.unwrap();
+    assert_eq!(commits.len(), 2);
 
     let coord = sekai_core::ChunkCoord::new(
         sekai_core::Dimension::OVERWORLD,
@@ -1159,7 +1159,7 @@ async fn diff_chunk_between_snapshots() {
     );
 
     let diffs = instance
-        .diff_chunk(snapshots[0].id, snapshots[1].id, &coord, None)
+        .diff_chunk(commits[0].id, commits[1].id, &coord, None)
         .await
         .unwrap();
 
@@ -1170,7 +1170,7 @@ async fn diff_chunk_between_snapshots() {
 }
 
 #[tokio::test]
-async fn diff_world_chunk_with_snapshot() {
+async fn diff_world_chunk_with_commit() {
     fn build_nbt(status: &str) -> Vec<u8> {
         let mut nbt = vec![10, 0, 0, 8, 0, 6]; // TAG_Compound(""), TAG_String("Status")
         nbt.extend_from_slice(b"Status");
@@ -1194,7 +1194,7 @@ async fn diff_world_chunk_with_snapshot() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
 
@@ -1233,7 +1233,7 @@ async fn diffs_a_non_canonical_region_name() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
 
@@ -1245,7 +1245,7 @@ async fn diffs_a_non_canonical_region_name() {
         0,
         0,
     );
-    // The snapshot side holds valid NBT, so the decode failure can only
+    // The commit side holds valid NBT, so the decode failure can only
     // come from the world side: it proves the discovered file was read.
     let err = instance
         .world(&world)
@@ -1264,9 +1264,9 @@ async fn diffs_a_non_canonical_region_name() {
 }
 
 #[tokio::test]
-async fn backs_up_region_with_trailing_partial_sector() {
+async fn commits_region_with_trailing_partial_sector() {
     // Real files can carry a torn tail (e.g. 1034 sectors + 188 bytes)
-    // that vanilla opens fine; backup must accept it as long as every
+    // that vanilla opens fine; commit must accept it as long as every
     // referenced run is intact.
     let root = tempdir("partial-tail");
     let world_path = root.join("world");
@@ -1283,7 +1283,7 @@ async fn backs_up_region_with_trailing_partial_sector() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let (report, _) = instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
     assert_eq!(report.chunks, 1);
@@ -1310,7 +1310,7 @@ async fn corrupt_region_names_its_file() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let err = instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap_err();
     let message = format!("{err}");
@@ -1358,16 +1358,16 @@ async fn sparse_entities_chunk_diffs_empty_without_error() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
-    let snapshots = instance.list_snapshots().await.unwrap();
+    let commits = instance.list_commits().await.unwrap();
 
     // The sparse kinds have no (0,0): previously a loud error, now empty.
     for kind in [RegionKind::Entities, RegionKind::Poi] {
         let coord = ChunkCoord::new(Dimension::OVERWORLD, kind, 0, 0);
         let diffs = instance
-            .diff_chunk(snapshots[0].id, snapshots[0].id, &coord, None)
+            .diff_chunk(commits[0].id, commits[0].id, &coord, None)
             .await
             .unwrap();
         assert_eq!(diffs, [] as [sekai_app::NbtDiffEntry; 0]);
@@ -1399,7 +1399,7 @@ async fn created_and_deleted_chunks_diff_as_added_removed() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
 
@@ -1407,13 +1407,13 @@ async fn created_and_deleted_chunks_diff_as_added_removed() {
     write_region(&entities, &[(0, 0, build_status_nbt("minecraft:full"))]);
     instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
-    let snapshots = instance.list_snapshots().await.unwrap();
+    let commits = instance.list_commits().await.unwrap();
 
     let diffs = instance
-        .diff_chunk(snapshots[0].id, snapshots[1].id, &coord, None)
+        .diff_chunk(commits[0].id, commits[1].id, &coord, None)
         .await
         .unwrap();
     assert_ne!(diffs, [] as [sekai_app::NbtDiffEntry; 0]);
@@ -1427,12 +1427,12 @@ async fn created_and_deleted_chunks_diff_as_added_removed() {
     std::fs::remove_file(&entities).unwrap();
     instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
-    let snapshots = instance.list_snapshots().await.unwrap();
+    let commits = instance.list_commits().await.unwrap();
     let diffs = instance
-        .diff_chunk(snapshots[1].id, snapshots[2].id, &coord, None)
+        .diff_chunk(commits[1].id, commits[2].id, &coord, None)
         .await
         .unwrap();
     assert_ne!(diffs, [] as [sekai_app::NbtDiffEntry; 0]);
@@ -1459,7 +1459,7 @@ async fn all_kinds_round_trip() {
         let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
         instance
             .world_mut(&mut world)
-            .backup(options(), sekai_app::Scope::World, |_| {})
+            .commit(options(), sekai_app::Scope::World, |_| {})
             .await
             .unwrap();
 
@@ -1470,29 +1470,29 @@ async fn all_kinds_round_trip() {
         write_region(&file, &[(0, 0, build_status_nbt("minecraft:empty"))]);
         instance
             .world_mut(&mut world)
-            .backup(options(), sekai_app::Scope::World, |_| {})
+            .commit(options(), sekai_app::Scope::World, |_| {})
             .await
             .unwrap();
-        let snapshots = instance.list_snapshots().await.unwrap();
+        let commits = instance.list_commits().await.unwrap();
 
         let diffs = instance
-            .diff_chunk(snapshots[0].id, snapshots[1].id, &coord, None)
+            .diff_chunk(commits[0].id, commits[1].id, &coord, None)
             .await
             .unwrap();
         assert_eq!(diffs.len(), 1, "kind {}", kind_dir(kind));
         assert_eq!(diffs[0].path, "Status");
 
-        let (rolled, _) = instance
+        let (checked_out, _) = instance
             .world_mut(&mut world)
-            .rollback(
-                snapshots[0].id,
-                sekai_app::RollbackOptions::default(),
+            .checkout(
+                commits[0].id,
+                sekai_app::CheckoutOptions::default(),
                 sekai_app::Scope::World,
                 |_| {},
             )
             .await
             .unwrap();
-        assert_eq!(rolled.chunks_restored, 1);
+        assert_eq!(checked_out.chunks_restored, 1);
         cleanup(&root);
     }
 }
@@ -1520,7 +1520,7 @@ async fn rect_and_kind_scopes_limit_ingest() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .backup(options(), Scope::World, |_| {})
+        .commit(options(), Scope::World, |_| {})
         .await
         .unwrap();
 
@@ -1532,7 +1532,7 @@ async fn rect_and_kind_scopes_limit_ingest() {
     };
     let (report, _) = instance
         .world_mut(&mut world)
-        .backup(options(), rect, |_| {})
+        .commit(options(), rect, |_| {})
         .await
         .unwrap();
     assert_eq!(report.chunks, 2);
@@ -1545,16 +1545,16 @@ async fn rect_and_kind_scopes_limit_ingest() {
     };
     let (report, _) = instance
         .world_mut(&mut world)
-        .backup(options(), entities, |_| {})
+        .commit(options(), entities, |_| {})
         .await
         .unwrap();
     assert_eq!(report.chunks, 1);
     assert_eq!(report.tombstones, 0);
 
-    // A following full backup is quiet: nothing spurious was recorded.
+    // A following full commit is quiet: nothing spurious was recorded.
     let (full, _) = instance
         .world_mut(&mut world)
-        .backup(options(), Scope::World, |_| {})
+        .commit(options(), Scope::World, |_| {})
         .await
         .unwrap();
     assert_eq!(full.tombstones, 0);
@@ -1595,14 +1595,14 @@ async fn real_world_corpus_round_trip() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let (report, _) = instance
         .world_mut(&mut world)
-        .backup(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
     assert_eq!(report.chunks, 1024 + 151 + 14);
     assert_eq!(report.tombstones, 0);
 
     // Real NBT in every kind decodes: self-diffs are empty, not errors.
-    let snapshots = instance.list_snapshots().await.unwrap();
+    let commits = instance.list_commits().await.unwrap();
     for kind in RegionKind::ALL {
         let coords = sekai_app::world_chunk_coords(&world)
             .unwrap()
@@ -1611,13 +1611,13 @@ async fn real_world_corpus_round_trip() {
             .collect::<Vec<_>>();
         assert!(!coords.is_empty(), "kind {kind:?} has chunks");
         let (diffs, _) = instance
-            .diff_chunks(snapshots[0].id, snapshots[0].id, &coords, None, |_| {})
+            .diff_chunks(commits[0].id, commits[0].id, &coords, None, |_| {})
             .await
             .unwrap();
         assert!(diffs.iter().all(|diff| diff.entries.is_empty()));
     }
 
-    // Rollback restores chunk contents (rebuilt files differ in layout,
+    // Checkout restores chunk contents (rebuilt files differ in layout,
     // so compare payloads, not raw bytes).
     let before: Vec<(PathBuf, ChunkMap)> = ["region", "entities", "poi"]
         .iter()
@@ -1628,17 +1628,17 @@ async fn real_world_corpus_round_trip() {
             (path, chunks)
         })
         .collect();
-    let (rolled, _) = instance
+    let (checked_out, _) = instance
         .world_mut(&mut world)
-        .rollback(
-            snapshots[0].id,
-            sekai_app::RollbackOptions::default(),
+        .checkout(
+            commits[0].id,
+            sekai_app::CheckoutOptions::default(),
             sekai_app::Scope::World,
             |_| {},
         )
         .await
         .unwrap();
-    assert_eq!(rolled.chunks_restored, REAL_WORLD_CHUNKS_COUNT);
+    assert_eq!(checked_out.chunks_restored, REAL_WORLD_CHUNKS_COUNT);
     for (path, chunks) in &before {
         assert_eq!(&chunk_map(path), chunks, "{path:?} restored");
     }
@@ -1646,10 +1646,10 @@ async fn real_world_corpus_round_trip() {
 }
 
 /// Regression for #90: a scope covering part of a region file must not
-/// record that file's fingerprint, or later unscoped backups carry it
+/// record that file's fingerprint, or later unscoped commits carry it
 /// unread and never ingest the out-of-scope chunks.
 #[tokio::test]
-async fn partial_scope_leaves_the_rest_of_the_file_to_later_backups() {
+async fn partial_scope_leaves_the_rest_of_the_file_to_later_commits() {
     use sekai_app::{Area, Dimension, Rect, RegionKey, RegionKind, StatusOptions};
     const REAL_WORLD_CHUNKS_COUNT: usize = 1024 + 151 + 14;
 
@@ -1673,7 +1673,7 @@ async fn partial_scope_leaves_the_rest_of_the_file_to_later_backups() {
         .count();
     let (scoped, _) = instance
         .world_mut(&mut world)
-        .backup(options(), partial, |_| {})
+        .commit(options(), partial, |_| {})
         .await
         .unwrap();
     assert_eq!(scoped.chunks, in_scope);
@@ -1689,7 +1689,7 @@ async fn partial_scope_leaves_the_rest_of_the_file_to_later_backups() {
 
     let (full, _) = instance
         .world_mut(&mut world)
-        .backup(options(), Scope::World, |_| {})
+        .commit(options(), Scope::World, |_| {})
         .await
         .unwrap();
     assert_eq!(full.chunks, REAL_WORLD_CHUNKS_COUNT);
@@ -1702,7 +1702,7 @@ async fn partial_scope_leaves_the_rest_of_the_file_to_later_backups() {
         .unwrap();
     assert!(status.clean);
 
-    // Rolling back to the full snapshot keeps every chunk of the live files.
+    // Checking out the full commit keeps every chunk of the live files.
     let before: Vec<(PathBuf, ChunkMap)> = ["region", "entities", "poi"]
         .iter()
         .flat_map(|kind| std::fs::read_dir(world_path.join(kind)).unwrap())
@@ -1712,34 +1712,34 @@ async fn partial_scope_leaves_the_rest_of_the_file_to_later_backups() {
             (path, chunks)
         })
         .collect();
-    let (rolled, _) = instance
+    let (checked_out, _) = instance
         .world_mut(&mut world)
-        .rollback(
-            full.snapshot,
-            sekai_app::RollbackOptions::default(),
+        .checkout(
+            full.commit,
+            sekai_app::CheckoutOptions::default(),
             Scope::World,
             |_| {},
         )
         .await
         .unwrap();
-    assert_eq!(rolled.chunks_restored, REAL_WORLD_CHUNKS_COUNT);
+    assert_eq!(checked_out.chunks_restored, REAL_WORLD_CHUNKS_COUNT);
     for (path, chunks) in &before {
         assert_eq!(&chunk_map(path), chunks, "{path:?} restored");
     }
     cleanup(&root);
 }
 
-/// Model-based round trip over pseudo-random mutation sequences: back up
-/// after every mutation, then roll back to each snapshot in turn and require
+/// Model-based round trip over pseudo-random mutation sequences: commit
+/// after every mutation, then check out each commit in turn and require
 /// the world to match the recorded state byte-for-byte (per chunk payload).
 ///
 /// This is the safety net for the delta-storage invariants that hand-written
-/// scenarios miss: the effective state of a snapshot must equal the world it
+/// scenarios miss: the effective state of a commit must equal the world it
 /// captured, tombstones must resolve through fallback, and a restore must
 /// reproduce files, chunks, and payloads exactly - across deleted files,
 /// emptied regions, and same-size rewrites.
 #[tokio::test(flavor = "multi_thread")]
-async fn randomized_backup_rollback_round_trip() {
+async fn randomized_commit_checkout_round_trip() {
     const FILES: [(&str, i32, i32); 4] = [
         ("region/r.0.0.mca", 0, 0),
         ("region/r.1.0.mca", 1, 0),
@@ -1808,15 +1808,15 @@ async fn randomized_backup_rollback_round_trip() {
             std::thread::sleep(std::time::Duration::from_millis(5));
             let (report, _) = instance
                 .world_mut(&mut world)
-                .backup(options(), Scope::World, |_| {})
+                .commit(options(), Scope::World, |_| {})
                 .await
-                .unwrap_or_else(|e| panic!("seed {seed} step {step}: backup failed: {e}"));
+                .unwrap_or_else(|e| panic!("seed {seed} step {step}: commit failed: {e}"));
             let expected: usize = model.values().map(BTreeMap::len).sum();
             assert_eq!(report.chunks, expected, "seed {seed} step {step}");
 
-            // The snapshot's effective state is the world, tombstones
+            // The commit's effective state is the world, tombstones
             // included; a fresh tombstone is recorded exactly once.
-            let stats = instance.snapshot_stats(report.snapshot).await.unwrap();
+            let stats = instance.commit_stats(report.commit).await.unwrap();
             assert_eq!(
                 stats.effective_chunks, expected,
                 "seed {seed} step {step}: effective state"
@@ -1825,21 +1825,21 @@ async fn randomized_backup_rollback_round_trip() {
             history.push(model.clone());
         }
 
-        // Strict rollback deletes fully tombstoned regions, so a header-only
+        // Strict checkout deletes fully tombstoned regions, so a header-only
         // file on disk is expected to be gone after a restore.
-        let snapshots = instance.list_snapshots().await.unwrap();
-        assert_eq!(snapshots.len(), history.len());
-        for (index, snapshot) in snapshots.iter().enumerate().rev() {
+        let commits = instance.list_commits().await.unwrap();
+        assert_eq!(commits.len(), history.len());
+        for (index, commit) in commits.iter().enumerate().rev() {
             instance
                 .world_mut(&mut world)
-                .rollback(
-                    snapshot.id,
-                    sekai_app::RollbackOptions::default(),
+                .checkout(
+                    commit.id,
+                    sekai_app::CheckoutOptions::default(),
                     Scope::World,
                     |_| {},
                 )
                 .await
-                .unwrap_or_else(|e| panic!("seed {seed}: rollback failed: {e}"));
+                .unwrap_or_else(|e| panic!("seed {seed}: checkout failed: {e}"));
             let want: ChunkMaps = history[index]
                 .iter()
                 .filter(|(_, chunks)| !chunks.is_empty())
@@ -1848,8 +1848,8 @@ async fn randomized_backup_rollback_round_trip() {
             assert_eq!(
                 read_world(&world, &world_path),
                 want,
-                "seed {seed} snapshot {}",
-                snapshot.id.0
+                "seed {seed} commit {}",
+                commit.id.0
             );
         }
         cleanup(&root);

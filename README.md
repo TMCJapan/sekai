@@ -2,11 +2,11 @@
 
 *Read this in [日本語](README_ja.md).*
 
-Save the current state of the world as a snapshot and roll back to any of them quickly.
+Save the current state of the world as a commit and check out any of them quickly.
 
-Chunk-level deduplicated backups for Minecraft Java region files (`.mca`).
-Snapshots share identical chunk payloads via content-addressed storage, and
-rollback rebuilds region files from the snapshot's captured payloads,
+Chunk-level deduplicated version control for Minecraft Java region files (`.mca`).
+Commits share identical chunk payloads via content-addressed storage, and
+checkout rebuilds region files from the commit's captured payloads,
 verbatim and atomically (volatile tags such as `LastUpdate` are rewound
 to their capture-time values).
 
@@ -29,49 +29,53 @@ The installed binary is named `sekai`.
 ```sh
 # Record the current world state (pause the server first:
 # `save-off`, `save-all`, then `save-on` afterwards)
-sekai --store ./sekai-store backup ./world
+sekai --store ./sekai-store commit ./world
 
-# Preview what a backup would record, without writing anything
+# Preview what a commit would record, without writing anything
 sekai --store ./sekai-store status ./world
 
-# List snapshots
-sekai --store ./sekai-store list
+# List commits
+sekai --store ./sekai-store log
 
-# Rebuild the world from snapshot 1 (overwrites region files)
-sekai --store ./sekai-store rollback ./world 1
+# Rebuild the world from commit 1 (overwrites region files)
+sekai --store ./sekai-store checkout ./world 1
 
-# Compare chunk NBT between snapshots 1 and 2
+# Compare chunk NBT between commits 1 and 2
 sekai --store ./sekai-store diff 1 2 --in overworld:0,0
 
-# Name snapshot 2 for later reference
+# Name commit 2 for later reference
 sekai --store ./sekai-store tag create stable 2
 
 # Preview unreferenced blobs, then collect them
 sekai --store ./sekai-store gc --dry-run
 sekai --store ./sekai-store gc
 
-# Delete old snapshots (keep newest 10), then reclaim their blobs
+# Delete old commits (keep newest 10), then reclaim their blobs
 sekai --store ./sekai-store prune --keep-last 10
 sekai --store ./sekai-store gc
 
-# Rebuild snapshot 1 into a fresh directory (live world untouched)
-sekai --store ./sekai-store export 1 ./restored
+# Rebuild commit 1 into a fresh directory (live world untouched)
+sekai --store ./sekai-store clone 1 ./restored
 
 ```
 
 Every command accepts `--json` for a single-document machine-readable
-report, and every command except `list` and `tag` accepts `--timing`
-for a per-phase breakdown (combine both for timed JSON). `backup`,
-`status`, `rollback`, `diff`, `export`, `gc`, and `prune` also take
+report, and every command except `log` and `tag` accepts `--timing`
+for a per-phase breakdown (combine both for timed JSON). `commit`,
+`status`, `checkout`, `diff`, `clone`, `gc`, and `prune` also take
 `--progress` for a stderr progress bar (refused with `--json`).
-Backup, status, rollback, diff,
-and export accept a scope: repeatable `--in DIM[:x,z|x0,z0..x1,z1]`,
+Commit, status, checkout, diff,
+and clone accept a scope: repeatable `--in DIM[:x,z|x0,z0..x1,z1]`,
 `--region DIM:RX,RZ`, and repeatable `--kind` (empty means all);
 nothing selected means the whole world. See `docs/json.md` for the
 output contract.
 
+The git-style names are canonical; the previous ones still work as
+aliases: `backup` (`commit`), `rollback` (`checkout`), `export`
+(`clone`), and `list` (`log`).
+
 > [!Note]
-> If you want to perform a full secondary backup of all your snapshots and storage, 
+> If you want to make a full secondary backup of all your commits and storage, 
 > simply copy or archive the entire directory specified by `--store` to an external location.
 
 `sekai` never touches the server process; save coordination belongs to the

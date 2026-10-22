@@ -5,8 +5,8 @@ edition.workspace = true
 license.workspace = true
 homepage.workspace = true
 repository.workspace = true
-description = "Orchestration library for Sekai, a deduplicated Minecraft world backup tool"
-keywords = ["minecraft", "backup"]
+description = "Orchestration library for Sekai, a deduplicated Minecraft world version control tool"
+keywords = ["minecraft", "version-control"]
 
 [lints]
 workspace = true
@@ -26,12 +26,12 @@ thiserror.workspace = true
 tokio.workspace = true
 
 [[bench]]
-name = "backup"
+name = "commit"
 harness = false
 required-features = ["backend-sqlite"]
 
 [[bench]]
-name = "rollback"
+name = "checkout"
 harness = false
 required-features = ["backend-sqlite"]
 

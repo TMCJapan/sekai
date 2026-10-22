@@ -1,4 +1,4 @@
-//! End-to-end snapshot pruning over real world folders and SQLite stores.
+//! End-to-end commit pruning over real world folders and SQLite stores.
 //!
 //! Requires the `backend-sqlite` feature.
 
@@ -37,10 +37,10 @@ fn write_region(path: impl AsRef<Path>, chunks: &[(i32, i32, Vec<u8>)]) {
     std::fs::write(path, image).unwrap();
 }
 
-fn backup_options() -> sekai_app::BackupOptions {
-    sekai_app::BackupOptions {
+fn commit_options() -> sekai_app::CommitOptions {
+    sekai_app::CommitOptions {
         concurrency: 2,
-        ..sekai_app::BackupOptions::default()
+        ..sekai_app::CommitOptions::default()
     }
 }
 
@@ -75,63 +75,63 @@ async fn prune_folds_and_gc_reclaims() {
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
 
-    // Three snapshots with distinct payloads; the oldest is tagged.
+    // Three commits with distinct payloads; the oldest is tagged.
     write_region(&region, &[(0, 0, vec![3, 1])]);
     instance
         .world_mut(&mut world)
-        .backup(backup_options(), sekai_app::Scope::World, |_| {})
+        .commit(commit_options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
     write_region(&region, &[(0, 0, vec![3, 2])]);
     instance
         .world_mut(&mut world)
-        .backup(backup_options(), sekai_app::Scope::World, |_| {})
+        .commit(commit_options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
     write_region(&region, &[(0, 0, vec![3, 3])]);
     instance
         .world_mut(&mut world)
-        .backup(backup_options(), sekai_app::Scope::World, |_| {})
+        .commit(commit_options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
-    let snapshots = instance.list_snapshots().await.unwrap();
-    assert_eq!(snapshots.len(), 3);
+    let commits = instance.list_commits().await.unwrap();
+    assert_eq!(commits.len(), 3);
     instance
-        .create_tag(&TagName::parse("doomed").unwrap(), snapshots[0].id, false)
+        .create_tag(&TagName::parse("doomed").unwrap(), commits[0].id, false)
         .await
         .unwrap();
     assert_eq!(blob_count(&store_dir), 3);
 
     // Dry-run first: one deletion planned, nothing touched.
     let (plan, plan_timings) = instance.prune_plan(Some(2), None).await.unwrap();
-    assert_eq!(plan.delete, [snapshots[0].id]);
-    assert_eq!(plan.retained, [snapshots[1].id, snapshots[2].id]);
+    assert_eq!(plan.delete, [commits[0].id]);
+    assert_eq!(plan.retained, [commits[1].id, commits[2].id]);
     assert_eq!(plan_timings.apply, std::time::Duration::ZERO);
-    assert_eq!(instance.list_snapshots().await.unwrap().len(), 3);
+    assert_eq!(instance.list_commits().await.unwrap().len(), 3);
 
     let (report, _) = instance.prune(Some(2), None, |_| {}).await.unwrap();
     assert_eq!(report.pruned, 1);
     assert_eq!(report.rows_folded + report.rows_dropped, 1);
-    let remaining = instance.list_snapshots().await.unwrap();
+    let remaining = instance.list_commits().await.unwrap();
     assert_eq!(remaining.len(), 2);
-    // The tag died with its snapshot by cascade.
+    // The tag died with its commit by cascade.
     assert_eq!(
         instance.list_tags().await.unwrap(),
-        [] as [sekai_app::SnapshotTag; 0]
+        [] as [sekai_app::CommitTag; 0]
     );
 
-    // Retained snapshots still restore faithfully through fallback.
-    let (rolled, _) = instance
+    // Retained commits still restore faithfully through fallback.
+    let (checked_out, _) = instance
         .world_mut(&mut world)
-        .rollback(
-            snapshots[1].id,
-            sekai_app::RollbackOptions::default(),
+        .checkout(
+            commits[1].id,
+            sekai_app::CheckoutOptions::default(),
             sekai_app::Scope::World,
             |_| {},
         )
         .await
         .unwrap();
-    assert_eq!(rolled.chunks_restored, 1);
+    assert_eq!(checked_out.chunks_restored, 1);
 
     // Pruning dereferences but never unlinks: GC reclaims exactly one blob.
     assert_eq!(blob_count(&store_dir), 3);
@@ -143,7 +143,7 @@ async fn prune_folds_and_gc_reclaims() {
 
 #[tokio::test]
 async fn prune_before_ref_and_empty_guards() {
-    use sekai_app::SnapshotId;
+    use sekai_app::CommitId;
     let root = tempdir("guards");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -153,35 +153,35 @@ async fn prune_before_ref_and_empty_guards() {
         write_region(world_path.join("region/r.0.0.mca"), &[(0, 0, payload)]);
         instance
             .world_mut(&mut world)
-            .backup(backup_options(), sekai_app::Scope::World, |_| {})
+            .commit(commit_options(), sekai_app::Scope::World, |_| {})
             .await
             .unwrap();
     }
 
     // `--before 2` retains 2 and newer.
     let (report, _) = instance
-        .prune(None, Some(SnapshotId(2)), |_| {})
+        .prune(None, Some(CommitId(2)), |_| {})
         .await
         .unwrap();
     assert_eq!(report.pruned, 1);
-    assert_eq!(instance.list_snapshots().await.unwrap().len(), 2);
+    assert_eq!(instance.list_commits().await.unwrap().len(), 2);
 
-    // Intersected with keep-last: only snapshot 3 survives.
+    // Intersected with keep-last: only commit 3 survives.
     let (plan, _) = instance
-        .prune_plan(Some(1), Some(SnapshotId(2)))
+        .prune_plan(Some(1), Some(CommitId(2)))
         .await
         .unwrap();
-    assert_eq!(plan.delete, [SnapshotId(2)]);
-    assert_eq!(plan.retained, [SnapshotId(3)]);
+    assert_eq!(plan.delete, [CommitId(2)]);
+    assert_eq!(plan.retained, [CommitId(3)]);
 
     // Selections retaining nothing fail loudly instead of wiping the store.
     assert!(instance.prune(Some(0), None, |_| {}).await.is_err());
     assert!(
         instance
-            .prune(None, Some(SnapshotId(99)), |_| {})
+            .prune(None, Some(CommitId(99)), |_| {})
             .await
             .is_err()
     );
-    assert_eq!(instance.list_snapshots().await.unwrap().len(), 2);
+    assert_eq!(instance.list_commits().await.unwrap().len(), 2);
     cleanup(&root);
 }

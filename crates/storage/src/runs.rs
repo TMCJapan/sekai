@@ -1,10 +1,10 @@
 //! Exclusive-run marker: one writing run at a time.
 //!
-//! `gc` decides what is unreferenced by reading metadata, but a backup puts
+//! `gc` decides what is unreferenced by reading metadata, but a commit puts
 //! its blobs into the CAS *before* it commits the rows that reference them.
 //! A `gc` that scans in that window sees those blobs as orphans and unlinks
-//! them; the backup then commits rows pointing at nothing, and every later
-//! restore of that snapshot fails with `blob missing from CAS`.
+//! them; the commit then records rows pointing at nothing, and every later
+//! restore of that commit fails with `blob missing from CAS`.
 //!
 //! Closing that needs mutual exclusion, not a better heuristic: a grace
 //! period only shrinks the window. A marker file is the portable form -
@@ -12,7 +12,7 @@
 //! [`FileCas::ensure_idle`] makes `gc` refuse while it is held.
 //!
 //! The marker is advisory in one direction only. A crashed run leaves it
-//! behind, which blocks `gc` (and says how to clear it) but never a backup:
+//! behind, which blocks `gc` (and says how to clear it) but never a commit:
 //! [`FileCas::begin_run`] refreshes the marker instead of refusing, so a
 //! stale file cannot wedge the command operators actually run on a timer.
 
@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use crate::api::{StorageError, io_error};
 
 /// Marker file name inside the store root.
-const RUN_MARKER: &str = "backup.inflight";
+const RUN_MARKER: &str = "commit.inflight";
 
 /// Held for as long as a run may write blobs. Removing the marker is its
 /// `Drop`, so an early return or a panic still releases it.
@@ -42,7 +42,7 @@ impl Drop for RunGuard {
 pub fn begin_run(root: impl AsRef<Path>) -> Result<RunGuard, StorageError> {
     let path = root.as_ref().join(RUN_MARKER);
     // Truncate an existing marker: a leftover from a crashed run must not
-    // block backups, only `gc`.
+    // block commits, only `gc`.
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create(true)
@@ -109,7 +109,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stale_marker_does_not_wedge_backups() {
+    fn a_stale_marker_does_not_wedge_commits() {
         let root = temp_root("stale");
         fs::write(root.join(RUN_MARKER), "999999 0\n").unwrap();
         assert!(ensure_idle(&root).is_err());

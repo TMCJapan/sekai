@@ -1,4 +1,4 @@
-//! Commands other than `backup` must never create or initialize the store:
+//! Commands other than `commit` must never create or initialize the store:
 //! a missing store fails loudly and leaves nothing behind (issue #80).
 
 use std::path::{Path, PathBuf};
@@ -36,8 +36,8 @@ async fn commands_on_a_missing_store_fail_without_creating_it() {
         vec!["sekai", "--store", store, "prune", "--keep-last", "1"],
         vec!["sekai", "--store", store, "status", world],
         vec!["sekai", "--store", store, "diff"],
-        vec!["sekai", "--store", store, "rollback", world, "1"],
-        vec!["sekai", "--store", store, "export", "1", "out"],
+        vec!["sekai", "--store", store, "checkout", world, "1"],
+        vec!["sekai", "--store", store, "clone", "1", "out"],
     ] {
         let cli = Cli::try_parse_from(&args).expect("valid invocation");
         let err = sekai_cli::commands::run(&cli)

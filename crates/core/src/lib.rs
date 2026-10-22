@@ -1,4 +1,4 @@
-//! Domain and use-case API for backup metadata and content hashes.
+//! Domain and use-case API for commit metadata and content hashes.
 
 #![no_std]
 
@@ -11,19 +11,18 @@ pub mod usecase;
 
 pub use port::{BlobStore, MetaStore};
 pub use sekai_util::{
-    ApplyOutcome, Area, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, Dimension, FoldOutcome,
-    GcPlan, HexError, Rect, RegionFingerprint, RegionKey, RegionKind, RegionStateEntry, Scope,
-    Snapshot, SnapshotEntry, SnapshotId, SnapshotTag, TagName, TagNameError, UnknownRegionKind,
+    ApplyOutcome, Area, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitEntry, CommitId,
+    CommitTag, DiffHash, Dimension, FoldOutcome, GcPlan, HexError, Rect, RegionFingerprint,
+    RegionKey, RegionKind, RegionStateEntry, Scope, TagName, TagNameError, UnknownRegionKind,
 };
 
 // sekai-nbt AST diff types
 pub use sekai_nbt::{DEFAULT_IGNORED, NbtChange, NbtDiffEntry, Value as NbtValue};
 
 pub use usecase::{
-    Assembled, BackupReport, DiffError, GcError, GcReport, Observation, Plan, Previous, PruneError,
-    PrunePlan, PruneReport, ResolveError, RollbackError, RollbackPlan, RollbackReport,
-    SnapshotStats, diff_blobs, diff_blobs_v1, snapshot_ancestors, snapshot_history,
-    snapshot_parents,
+    Assembled, CheckoutError, CheckoutPlan, CheckoutReport, CommitError, CommitReport, CommitStats,
+    DiffError, GcError, GcReport, Observation, Plan, Previous, PruneError, PrunePlan, PruneReport,
+    ResolveError, commit_ancestors, commit_history, commit_parents, diff_blobs, diff_blobs_v1,
 };
 
 /// Compute a volatile diff hash for decompressed chunk NBT.

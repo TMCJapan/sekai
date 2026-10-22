@@ -126,7 +126,7 @@ impl HostWorldTree {
     }
 
     /// Fresh output tree in the legacy single-folder layout (`region/`,
-    /// `DIM-1/`, `DIM1/`), for roots that do not exist yet (export).
+    /// `DIM-1/`, `DIM1/`), for roots that do not exist yet (clone).
     pub fn new_legacy(root: impl AsRef<Path>) -> Self {
         let root = root.as_ref();
         Self {
@@ -142,7 +142,7 @@ impl HostWorldTree {
 
     /// Fresh output tree in the 26.1 layout
     /// (`dimensions/minecraft/<name>/`), for roots that do not exist yet
-    /// (export).
+    /// (clone).
     pub fn new_dimensions(root: impl AsRef<Path>) -> Self {
         let root = root.as_ref();
         let minecraft = root.join("dimensions").join("minecraft");
@@ -159,7 +159,7 @@ impl HostWorldTree {
 
     /// Fresh output tree in the Bukkit split-folder layout around `base`
     /// (`<base>/`, `<base>_nether/DIM-1/`, `<base>_the_end/DIM1/`), for
-    /// roots that do not exist yet (export).
+    /// roots that do not exist yet (clone).
     pub fn new_bukkit(root: impl AsRef<Path>, base: impl Into<String>) -> Self {
         let root = root.as_ref();
         let base = base.into();

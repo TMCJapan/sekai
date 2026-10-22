@@ -8,14 +8,15 @@
 #![cfg(feature = "backend-sqlite")]
 
 use sekai_app::{
-    BackupOptions, BlobHash, ExportOptions, HostWorldTree, RollbackOptions, Scope, SekaiInstance,
-    SnapshotId, StatusOptions, TagName, WorldError, WorldLockMode, WorldTree,
+    BlobHash, CheckoutOptions, CloneOptions, CommitId, CommitOptions, HostWorldTree, Scope,
+    SekaiInstance, StatusOptions, TagName, WorldError, WorldLockMode, WorldTree,
 };
 use sekai_core::MetaStore as _;
 use sekai_storage::{StorageError, StoreLockMode};
 use sekai_storage_sqlite::SqliteStore;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use StoreLockMode::{Exclusive, Shared, Writer};
@@ -47,7 +48,7 @@ struct Fixture {
     world_path: PathBuf,
     world: HostWorldTree,
     instance: SekaiInstance<SqliteStore>,
-    /// A blob snapshot 1 references, for blob-level operations.
+    /// A blob that commit 1 references, for blob-level operations.
     blob: BlobHash,
 }
 
@@ -63,15 +64,15 @@ impl Fixture {
         let mut instance = SekaiInstance::init(&store).await.unwrap();
         instance
             .world_mut(&mut world)
-            .backup(BackupOptions::default(), Scope::World, |_| {})
+            .commit(CommitOptions::default(), Scope::World, |_| {})
             .await
             .unwrap();
-        let coords = instance.snapshot_chunk_coords(SnapshotId(1)).await.unwrap();
-        let coord = coords.first().expect("the fixture snapshot holds chunks");
+        let coords = instance.commit_chunk_coords(CommitId(1)).await.unwrap();
+        let coord = coords.first().expect("the fixture commit holds chunks");
         let blob = instance
             .store()
             .meta()
-            .lookup_chunk(SnapshotId(1), coord)
+            .lookup_chunk(CommitId(1), coord)
             .await
             .unwrap()
             .and_then(|entry| entry.blob)
@@ -112,96 +113,96 @@ const fn is_lock_error(err: &sekai_app::AppError) -> bool {
 /// Every public operation, with the locks ADR-0014 assigns it.
 #[derive(Debug, Clone, Copy)]
 enum Op {
-    ListSnapshots,
-    LatestSnapshot,
+    ListCommits,
+    LatestCommit,
     ListTags,
     CreateTag,
     DeleteTag,
     ResolveRef,
-    SnapshotStats,
-    SnapshotCoords,
+    CommitStats,
+    CommitCoords,
     DiffBlobs,
     DiffChunks,
-    Export,
+    Clone,
     GcPlan,
     GcApply,
     Gc,
     PrunePlan,
     PruneApply,
     Prune,
-    Backup,
+    Commit,
     Status,
     DiffWorld,
-    Rollback,
+    Checkout,
     WorldChunkCoords,
 }
 
 impl Op {
     const ALL: [Self; 22] = [
-        Self::ListSnapshots,
-        Self::LatestSnapshot,
+        Self::ListCommits,
+        Self::LatestCommit,
         Self::ListTags,
         Self::CreateTag,
         Self::DeleteTag,
         Self::ResolveRef,
-        Self::SnapshotStats,
-        Self::SnapshotCoords,
+        Self::CommitStats,
+        Self::CommitCoords,
         Self::DiffBlobs,
         Self::DiffChunks,
-        Self::Export,
+        Self::Clone,
         Self::GcPlan,
         Self::GcApply,
         Self::Gc,
         Self::PrunePlan,
         Self::PruneApply,
         Self::Prune,
-        Self::Backup,
+        Self::Commit,
         Self::Status,
         Self::DiffWorld,
-        Self::Rollback,
+        Self::Checkout,
         Self::WorldChunkCoords,
     ];
 
     const fn store_mode(self) -> Option<StoreLockMode> {
         match self {
-            Self::GcPlan | Self::GcApply | Self::Gc | Self::Backup => Some(Writer),
+            Self::GcPlan | Self::GcApply | Self::Gc | Self::Commit => Some(Writer),
             Self::PruneApply | Self::Prune => Some(Exclusive),
             Self::WorldChunkCoords => None,
-            Self::ListSnapshots
-            | Self::LatestSnapshot
+            Self::ListCommits
+            | Self::LatestCommit
             | Self::ListTags
             | Self::CreateTag
             | Self::DeleteTag
             | Self::ResolveRef
-            | Self::SnapshotStats
-            | Self::SnapshotCoords
+            | Self::CommitStats
+            | Self::CommitCoords
             | Self::DiffBlobs
             | Self::DiffChunks
-            | Self::Export
+            | Self::Clone
             | Self::PrunePlan
             | Self::Status
             | Self::DiffWorld
-            | Self::Rollback => Some(Shared),
+            | Self::Checkout => Some(Shared),
         }
     }
 
     const fn world_mode(self) -> Option<WorldLockMode> {
         match self {
-            Self::Backup | Self::Status | Self::DiffWorld | Self::WorldChunkCoords => {
+            Self::Commit | Self::Status | Self::DiffWorld | Self::WorldChunkCoords => {
                 Some(WorldLockMode::Shared)
             }
-            Self::Rollback => Some(WorldLockMode::Exclusive),
-            Self::ListSnapshots
-            | Self::LatestSnapshot
+            Self::Checkout => Some(WorldLockMode::Exclusive),
+            Self::ListCommits
+            | Self::LatestCommit
             | Self::ListTags
             | Self::CreateTag
             | Self::DeleteTag
             | Self::ResolveRef
-            | Self::SnapshotStats
-            | Self::SnapshotCoords
+            | Self::CommitStats
+            | Self::CommitCoords
             | Self::DiffBlobs
             | Self::DiffChunks
-            | Self::Export
+            | Self::Clone
             | Self::GcPlan
             | Self::GcApply
             | Self::Gc
@@ -213,25 +214,21 @@ impl Op {
 
     /// Payloads are minimal but valid, so an operation the held lock lets
     /// through must succeed. State only grows across the matrix: prunes
-    /// keep every snapshot, backups add newer ones, and rollbacks restore
-    /// snapshot 1, which every row keeps addressing.
+    /// keep every commit, commits add newer ones, and checkouts restore
+    /// commit 1, which every row keeps addressing.
     async fn run(self, fx: &mut Fixture) -> Result<(), sekai_app::AppError> {
-        let id = SnapshotId(1);
+        let id = CommitId(1);
         let tag = TagName::parse("held").unwrap();
-        let export_dir = fx.root.join(format!(
-            "export-{}",
-            TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
         let instance = &mut fx.instance;
         match self {
-            Self::ListSnapshots => instance.list_snapshots().await.map(drop),
-            Self::LatestSnapshot => instance.latest_snapshot_id().await.map(drop),
+            Self::ListCommits => instance.list_commits().await.map(drop),
+            Self::LatestCommit => instance.latest_commit_id().await.map(drop),
             Self::ListTags => instance.list_tags().await.map(drop),
             Self::CreateTag => instance.create_tag(&tag, id, true).await.map(drop),
             Self::DeleteTag => instance.delete_tag(&tag).await.map(drop),
-            Self::ResolveRef => instance.resolve_snapshot_ref("1").await.map(drop),
-            Self::SnapshotStats => instance.snapshot_stats(id).await.map(drop),
-            Self::SnapshotCoords => instance.snapshot_chunk_coords(id).await.map(drop),
+            Self::ResolveRef => instance.resolve_commit_ref("1").await.map(drop),
+            Self::CommitStats => instance.commit_stats(id).await.map(drop),
+            Self::CommitCoords => instance.commit_chunk_coords(id).await.map(drop),
             Self::DiffBlobs => instance
                 .diff_blobs(&fx.blob, &fx.blob, None)
                 .await
@@ -240,10 +237,14 @@ impl Op {
                 .diff_chunks(id, id, &[], None, |_| {})
                 .await
                 .map(drop),
-            Self::Export => {
-                let out = HostWorldTree::new_legacy(export_dir);
+            Self::Clone => {
+                let clone_dir = fx.root.join(format!(
+                    "clone-{}",
+                    TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+                ));
+                let out = HostWorldTree::new_legacy(clone_dir);
                 let outcome = instance
-                    .export(&out, id, ExportOptions::default(), Scope::World, |_| {})
+                    .clone_to(&out, id, CloneOptions::default(), Scope::World, |_| {})
                     .await;
                 outcome.map(drop)
             }
@@ -262,9 +263,9 @@ impl Op {
                 instance.prune_apply(&plan, |_| {}).await.map(drop)
             }
             Self::Prune => instance.prune(Some(u64::MAX), None, |_| {}).await.map(drop),
-            Self::Backup => instance
+            Self::Commit => instance
                 .world_mut(&mut fx.world)
-                .backup(BackupOptions::default(), Scope::World, |_| {})
+                .commit(CommitOptions::default(), Scope::World, |_| {})
                 .await
                 .map(drop),
             Self::Status => instance
@@ -277,9 +278,9 @@ impl Op {
                 .diff_world_chunks(None, &[], None, |_| {})
                 .await
                 .map(drop),
-            Self::Rollback => instance
+            Self::Checkout => instance
                 .world_mut(&mut fx.world)
-                .rollback(id, RollbackOptions::default(), Scope::World, |_| {})
+                .checkout(id, CheckoutOptions::default(), Scope::World, |_| {})
                 .await
                 .map(drop),
             Self::WorldChunkCoords => sekai_app::world_chunk_coords(&fx.world).map(drop),
@@ -368,10 +369,10 @@ async fn collection_and_pruning_do_not_trip_over_their_own_phases() {
     fx.instance.gc_apply(&plan, |_| {}).await.unwrap();
 }
 
-/// A cancelled rollback future cannot stop its blocking file pass, so the
+/// A cancelled checkout future cannot stop its blocking file pass, so the
 /// pass itself must keep the world locked until it finishes.
 #[tokio::test]
-async fn a_cancelled_rollback_keeps_the_world_locked_until_its_files_finish() {
+async fn a_cancelled_checkout_keeps_the_world_locked_until_its_files_finish() {
     let mut fx = Fixture::new("cancel").await;
     let other = fx.other_world();
     let (started, files_running) = std::sync::mpsc::channel();
@@ -381,9 +382,9 @@ async fn a_cancelled_rollback_keeps_the_world_locked_until_its_files_finish() {
         instance, world, ..
     } = &mut fx;
     let mut handle = instance.world_mut(world);
-    let rollback = handle.rollback(
-        SnapshotId(1),
-        RollbackOptions::default(),
+    let checkout = handle.checkout(
+        CommitId(1),
+        CheckoutOptions::default(),
         Scope::World,
         move |_| {
             let _ = started.send(());
@@ -392,7 +393,7 @@ async fn a_cancelled_rollback_keeps_the_world_locked_until_its_files_finish() {
         },
     );
     tokio::select! {
-        outcome = rollback => panic!("the rollback must still be running: {outcome:?}"),
+        outcome = checkout => panic!("the checkout must still be running: {outcome:?}"),
         started = tokio::task::spawn_blocking(move || files_running.recv()) => {
             assert!(matches!(started, Ok(Ok(()))), "the file pass never started: {started:?}");
         }
@@ -415,11 +416,87 @@ async fn a_cancelled_rollback_keeps_the_world_locked_until_its_files_finish() {
     }
 }
 
-/// Pre-lock binaries left `backup.inflight` behind after a crash; it means
-/// nothing now and must not block collection.
+/// A cancelled clone future cannot stop its blocking file pass, so the
+/// pass itself must keep the store locked until it finishes: `prune`
+/// (exclusive) may not delete rows the pass is still reading.
+#[tokio::test]
+async fn a_cancelled_clone_keeps_the_store_locked_until_its_files_finish() {
+    let fx = Fixture::new("cancel-clone").await;
+    let (started, files_running) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let files_done = Arc::new(AtomicUsize::new(0));
+    let files_total = Arc::new(AtomicUsize::new(0));
+
+    let out = HostWorldTree::new_legacy(fx.root.join(format!(
+        "cloned-{}",
+        TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    )));
+    let clone = fx
+        .instance
+        .clone_to(&out, CommitId(1), CloneOptions::default(), Scope::World, {
+            let done = Arc::clone(&files_done);
+            let total = Arc::clone(&files_total);
+            move |update| {
+                done.store(update.files_done, Ordering::Relaxed);
+                total.store(update.files_total, Ordering::Relaxed);
+                let _ = started.send(());
+                // Parks the file pass until the test lets go (the sender drops).
+                let _ = released.recv();
+            }
+        });
+    tokio::select! {
+        outcome = clone => panic!("the clone must still be running: {outcome:?}"),
+        started = tokio::task::spawn_blocking(move || files_running.recv()) => {
+            assert!(matches!(started, Ok(Ok(()))), "the file pass never started: {started:?}");
+        }
+    }
+    // The future is gone; its file pass is parked in `progress`, still
+    // holding the store lock.
+    let probe = fx.instance.store().cas().lock(Exclusive);
+    assert!(
+        matches!(&probe, Err(StorageError::StoreLocked { .. })),
+        "the store must stay locked while the clone file pass runs: {probe:?}"
+    );
+
+    drop(release);
+    // The pass reports the files it writes; the last one means the file
+    // work is done, and the lock goes with it.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let (done, total) = (
+            files_done.load(Ordering::Relaxed),
+            files_total.load(Ordering::Relaxed),
+        );
+        if total > 0 && done >= total {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the file pass never finished");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    loop {
+        match fx.instance.store().cas().lock(Exclusive) {
+            Ok(lock) => {
+                drop(lock);
+                break;
+            }
+            Err(err) => {
+                assert!(
+                    matches!(err, StorageError::StoreLocked { .. }),
+                    "the file pass still holds the store: {err}"
+                );
+                assert!(Instant::now() < deadline, "the file pass never released");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+}
+
+/// A crashed run - or a pre-lock binary - leaves `commit.inflight` behind.
+/// The store locks carry the exclusion now, so the marker means nothing and
+/// must not block collection.
 #[tokio::test]
 async fn a_leftover_run_marker_is_ignored() {
     let mut fx = Fixture::new("marker").await;
-    std::fs::write(fx.root.join("store/backup.inflight"), "12345 0\n").unwrap();
+    std::fs::write(fx.root.join("store/commit.inflight"), "12345 0\n").unwrap();
     fx.instance.gc(|_| {}).await.unwrap();
 }

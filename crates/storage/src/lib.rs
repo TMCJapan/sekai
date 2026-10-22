@@ -9,7 +9,7 @@ pub mod api;
 pub mod cas;
 /// Store-wide process exclusion (`writer.lock`, `store.lock`).
 pub mod lock;
-/// Exclusive-run marker (`backup.inflight`) guarding `gc` against backups.
+/// Exclusive-run marker (`commit.inflight`) guarding `gc` against commits.
 pub mod runs;
 /// High-level store traits implemented by concrete backends.
 pub mod store;

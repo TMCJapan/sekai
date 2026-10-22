@@ -1,23 +1,24 @@
-//! Application use cases: backup, rollback, GC, snapshot reads, and diffs.
+//! Application use cases: commit, checkout, GC, commit-graph reads, and
+//! diffs.
 //!
 //! Use cases coordinate storage ports and enforce application-level policy.
 //! They own ordering and decisions such as carry, tombstone, restore, and GC.
 //! Backends own SQLite, CAS layout, threading, and clocks. Policy here is
 //! portable (`no_std` + `alloc` only) and tested without I/O.
 
-pub mod backup;
+pub mod checkout;
+pub mod commit;
 pub mod diff;
 pub mod gc;
+pub mod graph;
 pub mod prune;
-pub mod rollback;
-pub mod snapshot;
 
-pub use backup::{Assembled, BackupReport, Observation, Plan, Previous};
+pub use checkout::{CheckoutError, CheckoutPlan, CheckoutReport};
+pub use commit::{Assembled, CommitReport, Observation, Plan, Previous};
 pub use diff::{DiffError, diff_blobs, diff_blobs_v1};
 pub use gc::{GcError, GcReport};
-pub use prune::{PruneError, PrunePlan, PruneReport, prune_apply, prune_plan, select_retained};
-pub use rollback::{RollbackError, RollbackPlan, RollbackReport};
-pub use snapshot::{
-    ResolveError, SnapshotError, SnapshotStats, resolve_snapshot_ref, snapshot_ancestors,
-    snapshot_history, snapshot_parents,
+pub use graph::{
+    CommitError, CommitStats, ResolveError, commit_ancestors, commit_history, commit_parents,
+    commit_stats, latest_commit_id, list_commits, list_tags, resolve_commit_ref,
 };
+pub use prune::{PruneError, PrunePlan, PruneReport, prune_apply, prune_plan, select_retained};
