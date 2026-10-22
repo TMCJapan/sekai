@@ -194,8 +194,9 @@ pub trait MetaStore {
     /// unborn is allowed.
     ///
     /// A new ref starts inactive; moving an existing one leaves its flag
-    /// and creation time untouched. `created_at_ms` is recorded only when
-    /// the ref is first created, ignored for an existing name.
+    /// and creation time untouched. `created_at_ms` is stored only when
+    /// the ref is first created; an existing name keeps its original
+    /// timestamp even though the argument must still be representable.
     fn set_ref(
         &mut self,
         name: &RefName,
@@ -209,7 +210,10 @@ pub trait MetaStore {
         name: &RefName,
     ) -> impl Future<Output = Result<Option<CommitRef>, Self::Error>> + Send;
 
-    /// Visit refs in name order. Return `false` to stop early.
+    /// Visit refs in byte-wise name order - the order [`RefName`]'s `Ord`
+    /// yields - so every backend lists them alike. Return `false` to stop
+    /// early; `Ok(())` reports that the visit finished, not that it read
+    /// every ref.
     fn visit_refs<F>(&self, visit: F) -> impl Future<Output = Result<(), Self::Error>> + Send
     where
         F: FnMut(&CommitRef) -> bool + Send;
@@ -233,6 +237,11 @@ pub trait MetaStore {
     fn active_ref(&self) -> impl Future<Output = Result<Option<CommitRef>, Self::Error>> + Send;
 
     /// Make `name` the active ref. The name must exist.
+    ///
+    /// The previous active ref is cleared before `name` is set: a store
+    /// holds at most one active ref. Backends keep that order; SQLite
+    /// enforces it with a partial unique index, so setting without
+    /// clearing fails on the constraint.
     fn activate_ref(
         &mut self,
         name: &RefName,
