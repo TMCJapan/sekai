@@ -48,10 +48,10 @@ CREATE UNIQUE INDEX idx_refs_active ON refs(active) WHERE active = 1;
 - Exactly one ref is **active** (the partial unique index enforces it):
   the ref a new commit hangs from - sekai's `HEAD`.
 - A fresh store starts with one active ref, `main`, unborn.
-- `RefName` allows ASCII `[A-Za-z0-9._-/]` up to 64 bytes, never all
-  digits (a name cannot be mistaken for a commit ID), never `HEAD`
-  (reserved for the store's active ref), and no empty or traversing
-  path component.
+- `RefName` allows ASCII alphanumerics plus `.`, `_`, `-`, and `/`, up
+  to 64 bytes, never all digits (a name cannot be mistaken for a commit
+  ID), never `HEAD` (reserved for the store's active ref), and no empty
+  or traversing path component.
 - The active ref is **never removed**: a store without one would have
   nowhere to hang new commits from.
 
@@ -98,12 +98,13 @@ only the read is repeated.
 
 The `MetaStore` port carries the model: `set_ref`, `lookup_ref`,
 `visit_refs`, `delete_ref`, `active_ref`, and `activate_ref`. The
-commit path follows the same rule: `apply_commit_incremental` moves the
-active ref onto the new commit inside the commit transaction, so a ref
-can never lag behind the history it names. The core use case reads the
-active ref as the base of a plan (`plan_commit`), so the policy of
-*where* a commit lands stays in `core` while the atomicity of the move
-stays in the backend.
+commit path follows the same rule: `apply_commit_incremental` requires
+the new commit to continue the active ref's target - a mismatched parent
+list is rejected - and moves the active ref onto it inside the commit
+transaction, so a ref can never lag behind the history it names. The core
+use case reads the active ref as the base of a plan (`plan_commit`), so
+the policy of *where* a commit lands stays in `core` while the atomicity
+of the move stays in the backend.
 
 The schema version goes from 9 to 10; the pre-release policy applies:
 old stores are recreated, never migrated.

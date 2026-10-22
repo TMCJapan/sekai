@@ -233,11 +233,12 @@ ref without a commit is *unborn*. Exactly one ref is *active* - the one
 new commits hang from (the store's `HEAD`). A fresh store starts with
 one active ref, `main`, unborn.
 
-A new commit continues the target of the active ref, and the active ref
-moves onto the new commit in the same transaction. Switching the active
-ref forks the history: the next commit continues the ref it was planned
-against, not the newest commit in the store. Commit references accept
-`<id>`, `@tag`, or a bare ref name.
+A new commit continues the target of the active ref - the port rejects
+one whose parents omit it - and the active ref moves onto the new commit
+in the same transaction. Switching the active ref forks the history: the
+next commit continues the ref it was planned against, not the newest
+commit in the store. Commit references accept `<id>`, `@tag`, or a bare
+ref name.
 
 Refs point at commit identifiers, not at content hashes: a sekai commit
 is not content-addressed (`prune` folds its rows into a successor), so
