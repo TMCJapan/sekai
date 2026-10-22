@@ -111,7 +111,14 @@ impl<S: SekaiStore> SekaiInstance<S> {
                 .ok_or_else(|| AppError::UnknownRef {
                     name: name.as_str().to_owned(),
                 })?;
-        self.store.meta_mut().activate_ref(name).await?;
+        self.store
+            .meta_mut()
+            .activate_ref(name)
+            .await
+            .map_err(|err| match err {
+                StorageError::UnknownRef { name } => AppError::UnknownRef { name },
+                other => AppError::Storage(other),
+            })?;
         // Activation moves the flag, not the target: the record read
         // before the write is the one the store now holds as active.
         Ok(CommitRef {
