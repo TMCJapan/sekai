@@ -180,7 +180,8 @@ jobs:
           [ ! -e "$SMOKE/store" ]
           mkdir -p "$SMOKE/world"
           "$BIN" --store "$SMOKE/store" commit "$SMOKE/world" --json | grep -q '"status":"ok"'
-          "$BIN" --store "$SMOKE/store" list --json | grep -q '"command":"list","status":"ok"'
+          # `list` is an alias of `log`; the envelope reports the canonical name.
+          "$BIN" --store "$SMOKE/store" list --json | grep -q '"command":"log","status":"ok"'
           "$BIN" --store "$SMOKE/store" gc --dry-run --json | grep -q '"status":"ok"'
 
       - name: Upload CLI
