@@ -444,8 +444,9 @@ async fn a_cancelled_clone_keeps_the_store_locked_until_its_files_finish() {
     }
     // The future is gone; its file pass is parked in `progress`, still
     // holding the store lock.
+    let probe = fx.instance.store().cas().lock(Exclusive);
     assert!(
-        fx.instance.store().cas().lock(Exclusive).is_err(),
+        probe.is_err(),
         "the store must stay locked while the clone file pass runs"
     );
 
@@ -469,8 +470,9 @@ async fn a_cancelled_clone_keeps_the_store_locked_until_its_files_finish() {
     }
 }
 
-/// Pre-lock binaries left `commit.inflight` behind after a crash; it means
-/// nothing now and must not block collection.
+/// A crashed run - or a pre-lock binary - leaves `commit.inflight` behind.
+/// The store locks carry the exclusion now, so the marker means nothing and
+/// must not block collection.
 #[tokio::test]
 async fn a_leftover_run_marker_is_ignored() {
     let mut fx = Fixture::new("marker").await;

@@ -136,8 +136,8 @@ fn commit_payload(report: &CommitReport, timings: &CommitTimings, timing: bool) 
         tombstones: report.tombstones,
         skipped_regions: report.skipped_regions,
         carried_chunks: report.carried_chunks,
-        // `then`, not `then_some`: the timing block copies every region's
-        // location, and a run without `--timing` must not pay for it.
+        // `then`, not `then_some`: `then_some` would build the timing block
+        // (and every region's location) even without `--timing`.
         timing: timing.then(|| CommitTiming {
             total_ms: timings.total.as_millis(),
             phases: CommitPhases {

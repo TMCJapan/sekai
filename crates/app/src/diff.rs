@@ -357,8 +357,8 @@ impl<S: SekaiStore> DiffSource for CommitDiff<'_, S> {
 }
 
 /// One diff run's world side: region handles resolved once, not per chunk.
-/// The set is a point-in-time capture taken when the run starts, so a region created
-/// mid-run is treated as absent until the next diff.
+/// The set is captured when the run starts, so a region created mid-run
+/// is treated as absent until the next diff.
 struct WorldDiff<R> {
     regions: BTreeMap<RegionKey, R>,
 }

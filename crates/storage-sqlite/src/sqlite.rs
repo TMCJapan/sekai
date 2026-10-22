@@ -112,7 +112,8 @@ impl sekai_storage::SekaiStore for SqliteStore {
 ///
 /// The layout is `<root>/meta.sqlite` plus `<root>/blobs/`; initializing an
 /// existing store again is idempotent. This is the only path that
-/// materializes a store, reserved for commit runs. It takes no store lock:
+/// materializes a store, reserved for first-time store creation. It takes no
+/// store lock:
 /// schema creation serializes inside SQLite (see [`SqliteMeta::open`]), so
 /// concurrent first initializations all succeed.
 pub async fn init_sqlite(root: impl AsRef<Path>) -> Result<SqliteStore, StorageError> {
