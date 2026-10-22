@@ -419,9 +419,8 @@ fn decode_tag(row: &sqlx::sqlite::SqliteRow) -> Result<CommitTag, StorageError> 
 /// else is corruption, never silent reinterpretation.
 fn decode_ref(row: &sqlx::sqlite::SqliteRow) -> Result<CommitRef, StorageError> {
     let name_raw: String = row.try_get("name").map_err(db_err)?;
-    let name = RefName::parse(&name_raw).map_err(|_| StorageError::InvalidRefName {
-        name: name_raw.clone(),
-    })?;
+    let name =
+        RefName::parse(&name_raw).map_err(|_| StorageError::InvalidRefName { name: name_raw })?;
     let commit_raw: Option<i64> = row.try_get("commit_id").map_err(db_err)?;
     let commit = commit_raw.map(commit_id_from_i64).transpose()?;
     let active_raw: i64 = row.try_get("active").map_err(db_err)?;
@@ -456,6 +455,11 @@ fn millis_param(ms: u64) -> Result<i64, StorageError> {
 
 /// The current time in Unix millis, for the rows a store creates for
 /// itself.
+///
+/// Kept local rather than shared with the app's clock helper: failures
+/// here are `StorageError`s, and an out-of-range value is rejected
+/// instead of saturating. The app does not read the clock for a move
+/// that keeps an existing timestamp.
 fn now_ms() -> Result<i64, StorageError> {
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -918,7 +922,7 @@ impl sekai_core::MetaStore for SqliteMeta {
             .await
             .map_err(db_err)?;
         // A ref naming the retired commit follows the fold: the
-        // successor holds the same effective state, so the ref keeps
+        // successor continues the retired history, so the ref keeps
         // naming it. The update runs before the commit row goes away -
         // the foreign key would refuse the delete otherwise.
         sqlx::query("UPDATE refs SET commit_id = ?2 WHERE commit_id = ?1")
@@ -1162,23 +1166,27 @@ impl sekai_core::MetaStore for SqliteMeta {
     }
 
     async fn delete_ref(&mut self, name: &RefName) -> Result<bool, StorageError> {
-        // The DELETE itself refuses the active ref, so an activation that
-        // lands between the statements cannot remove the store's head.
+        // One transaction so the DELETE and the follow-up read see the
+        // same snapshot: the DELETE refuses the active ref, and the read
+        // only refines why nothing was removed.
+        let mut tx = self.pool.begin().await.map_err(db_err)?;
         let deleted = sqlx::query("DELETE FROM refs WHERE name = ? AND active = 0")
             .bind(name.as_str())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(db_err)?;
         if deleted.rows_affected() > 0 {
+            tx.commit().await.map_err(db_err)?;
             return Ok(true);
         }
         // Nothing was deleted: the ref is absent or active.
         let active: Option<i64> =
             sqlx::query_scalar("SELECT 1 FROM refs WHERE name = ? AND active = 1")
                 .bind(name.as_str())
-                .fetch_optional(&self.pool)
+                .fetch_optional(&mut *tx)
                 .await
                 .map_err(db_err)?;
+        tx.commit().await.map_err(db_err)?;
         match active {
             Some(_) => Err(StorageError::ActiveRefProtected {
                 name: name.as_str().to_owned(),
@@ -1346,6 +1354,45 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, StorageError::UnknownCommit { id: 99 }));
         assert!(meta.lookup_ref(&feature).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn moving_a_born_active_ref_back_to_unborn_keeps_its_state() {
+        let mut meta = memory_meta().await;
+        let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
+        let first = meta
+            .apply_commit_incremental(1_000, &[], &[], None, &[], &[])
+            .await
+            .unwrap()
+            .id;
+        let before = meta.lookup_ref(&main).await.unwrap().unwrap();
+        assert_eq!(before.commit, Some(first));
+
+        meta.set_ref(&main, None, 2_000).await.unwrap();
+        let after = meta.lookup_ref(&main).await.unwrap().unwrap();
+        assert_eq!(after.commit, None, "the target moved back to unborn");
+        assert!(after.active, "the move kept the active flag");
+        assert_eq!(
+            after.created_at_ms, before.created_at_ms,
+            "the move kept the creation time"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_corrupt_ref_row_fails_loudly() {
+        let meta = memory_meta().await;
+        // Names are re-validated on decode: a row the schema no longer
+        // accepts is corruption, never a new ref name.
+        sqlx::query(
+            "INSERT INTO refs (name, commit_id, active, created_at_ms) \
+             VALUES ('bad name', NULL, 0, 0)",
+        )
+        .execute(&meta.pool)
+        .await
+        .unwrap();
+
+        let err = meta.visit_refs(|_| true).await.unwrap_err();
+        assert!(matches!(err, StorageError::InvalidRefName { name } if name == "bad name"));
     }
 
     #[tokio::test]
