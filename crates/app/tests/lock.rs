@@ -424,25 +424,23 @@ async fn a_cancelled_clone_keeps_the_store_locked_until_its_files_finish() {
     let fx = Fixture::new("cancel-clone").await;
     let (started, files_running) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel::<()>();
-    let files_written = Arc::new(AtomicUsize::new(0));
-    let counter = Arc::clone(&files_written);
-    let expected_files = std::fs::read_dir(fx.world_path.join("region"))
-        .unwrap()
-        .count();
+    let files_done = Arc::new(AtomicUsize::new(0));
+    let files_total = Arc::new(AtomicUsize::new(0));
 
     let out = HostWorldTree::new_legacy(fx.root.join("cloned"));
-    let clone = fx.instance.clone_to(
-        &out,
-        CommitId(1),
-        CloneOptions::default(),
-        Scope::World,
-        move |_| {
-            counter.fetch_add(1, Ordering::Relaxed);
-            let _ = started.send(());
-            // Parks the file pass until the test lets go (the sender drops).
-            let _ = released.recv();
-        },
-    );
+    let clone = fx
+        .instance
+        .clone_to(&out, CommitId(1), CloneOptions::default(), Scope::World, {
+            let done = Arc::clone(&files_done);
+            let total = Arc::clone(&files_total);
+            move |update| {
+                done.store(update.files_done, Ordering::Relaxed);
+                total.store(update.files_total, Ordering::Relaxed);
+                let _ = started.send(());
+                // Parks the file pass until the test lets go (the sender drops).
+                let _ = released.recv();
+            }
+        });
     tokio::select! {
         outcome = clone => panic!("the clone must still be running: {outcome:?}"),
         started = tokio::task::spawn_blocking(move || files_running.recv()) => {
@@ -458,10 +456,17 @@ async fn a_cancelled_clone_keeps_the_store_locked_until_its_files_finish() {
     );
 
     drop(release);
-    // The pass writes every region file; the last progress call means the
-    // file work is done, and the lock goes with it.
+    // The pass reports the files it writes; the last one means the file
+    // work is done, and the lock goes with it.
     let deadline = Instant::now() + Duration::from_secs(10);
-    while files_written.load(Ordering::Relaxed) < expected_files {
+    loop {
+        let (done, total) = (
+            files_done.load(Ordering::Relaxed),
+            files_total.load(Ordering::Relaxed),
+        );
+        if total > 0 && done >= total {
+            break;
+        }
         assert!(Instant::now() < deadline, "the file pass never finished");
         std::thread::sleep(Duration::from_millis(20));
     }

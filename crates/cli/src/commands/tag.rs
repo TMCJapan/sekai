@@ -21,7 +21,7 @@ pub async fn run(store: &str, action: &TagCommand, style: Styler) -> anyhow::Res
             let id = instance
                 .resolve_commit_ref(commit.as_str())
                 .await
-                .with_context(|| format!("tag target {commit} failed to resolve"))?;
+                .with_context(|| format!("commit {commit} failed to resolve"))?;
             let record = instance
                 .create_tag(name, id, *force)
                 .await

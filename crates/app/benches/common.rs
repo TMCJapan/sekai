@@ -149,9 +149,12 @@ pub fn runtime() -> tokio::runtime::Runtime {
         .expect("runtime builds")
 }
 
-/// Copy the checked-in real-data corpus into a temp world. Never points
-/// at the repo files themselves (checkout rewrites region files).
-/// Unused by the commit benches, which generate seeded worlds instead.
+/// Copy the checked-in real-data corpus into a temp world.
+///
+/// Never points at the repo files themselves (checkout rewrites region
+/// files). The checkout and diff benches use it; every bench is its own
+/// binary, so the others see it as unused and the dead-code lint stays
+/// off.
 #[allow(dead_code)]
 pub fn corpus_world() -> std::path::PathBuf {
     fn copy_dir(src: impl AsRef<Path>, dst: impl AsRef<Path>) {
