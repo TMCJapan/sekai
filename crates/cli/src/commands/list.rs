@@ -129,10 +129,12 @@ mod tests {
             sekai_app::Snapshot {
                 id: sekai_app::SnapshotId(1),
                 created_at_ms: 1_700_000_000_000,
+                parents: vec![],
             },
             sekai_app::Snapshot {
                 id: sekai_app::SnapshotId(2),
                 created_at_ms: 1_700_000_001_000,
+                parents: vec![sekai_app::SnapshotId(1)],
             },
         ];
         assert_eq!(

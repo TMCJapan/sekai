@@ -155,7 +155,8 @@ mod tests {
     #[test]
     fn diff_error_messages() {
         use alloc::string::ToString;
-        let blob: DiffError<crate::support::MemError> = DiffError::Blob(crate::support::MemError);
+        let blob: DiffError<crate::support::MemError> =
+            DiffError::Blob(crate::support::MemError::MissingBlob);
         assert_eq!(blob.to_string(), "blob store failed");
     }
 }

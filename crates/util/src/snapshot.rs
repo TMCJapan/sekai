@@ -1,5 +1,7 @@
 //! Snapshot identifiers and metadata.
 
+use alloc::vec::Vec;
+
 use crate::tag::TagName;
 
 /// Monotonically increasing snapshot identifier.
@@ -14,18 +16,34 @@ impl SnapshotId {
 }
 
 /// Recorded backup metadata.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// A snapshot is a node of the history graph: `parents` names the
+/// snapshots it continues. The list is never null - it is empty for the
+/// root of a history, holds one entry for an ordinary snapshot, and
+/// several for a merge.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
     /// Snapshot identifier.
     pub id: SnapshotId,
     /// Creation time as Unix millis (informational only).
     pub created_at_ms: u64,
+    /// Snapshots this one descends from.
+    pub parents: Vec<SnapshotId>,
 }
 
 impl Snapshot {
     /// Construct snapshot metadata.
-    pub const fn new(id: SnapshotId, created_at_ms: u64) -> Self {
-        Self { id, created_at_ms }
+    pub const fn new(id: SnapshotId, created_at_ms: u64, parents: Vec<SnapshotId>) -> Self {
+        Self {
+            id,
+            created_at_ms,
+            parents,
+        }
+    }
+
+    /// Whether the snapshot starts a history (no parents).
+    pub const fn is_root(&self) -> bool {
+        self.parents.is_empty()
     }
 }
 
@@ -59,9 +77,12 @@ mod tests {
     fn snapshot_ids_and_metadata() {
         let id = SnapshotId(7);
         assert_eq!(id.raw(), 7);
-        let snapshot = Snapshot::new(id, 1_700_000_000_000);
+        let snapshot = Snapshot::new(id, 1_700_000_000_000, alloc::vec![SnapshotId(6)]);
         assert_eq!(snapshot.id, id);
         assert_eq!(snapshot.created_at_ms, 1_700_000_000_000);
+        assert_eq!(snapshot.parents, [SnapshotId(6)]);
+        assert!(!snapshot.is_root());
+        assert!(Snapshot::new(id, 0, alloc::vec![]).is_root());
         assert!(SnapshotId(1) < SnapshotId(2));
     }
 }

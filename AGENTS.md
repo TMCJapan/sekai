@@ -5,7 +5,7 @@ This workspace contains a high-frequency, chunk-level deduplicated backup and ro
 # Reference Documentation
 
 Prior to generating, refactoring, or reviewing code, strictly follow the specifications in:
-- **`ARCHITECTURE.md`**: System boundaries, core abstraction policy, 2-layer hashing, MVCC/GC data model, and safety invariants.
+- **`ARCHITECTURE.md`**: System boundaries, core abstraction policy, 2-layer hashing, snapshot-graph/GC data model, and safety invariants.
 - **`CONTRIBUTING.md`**: Workspace crate structure, coding style, error handling, and testing guidelines.
 
 # Code Quality & Refactoring Directives

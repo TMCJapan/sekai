@@ -88,10 +88,24 @@ pub enum StorageError {
         /// Intended successor.
         into: u64,
     },
+    /// A retirement must fold a snapshot into one of its descendants.
+    #[error("cannot retire snapshot {from} into {into}: the successor must descend from it")]
+    UnrelatedRetirement {
+        /// Snapshot being retired.
+        from: u64,
+        /// Intended successor.
+        into: u64,
+    },
     /// The named snapshot does not exist.
     #[error("unknown snapshot: {id}")]
     UnknownSnapshot {
         /// Requested snapshot ID.
+        id: u64,
+    },
+    /// A snapshot may not continue itself.
+    #[error("snapshot {id} cannot be its own parent")]
+    SelfParent {
+        /// Snapshot that named itself.
         id: u64,
     },
     /// Database schema version is not supported.

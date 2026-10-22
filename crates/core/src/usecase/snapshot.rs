@@ -1,21 +1,28 @@
 //! Snapshot read operations.
 
+use alloc::collections::BTreeSet;
+use alloc::vec::Vec;
 use core::fmt;
 
 use crate::port::meta::MetaStore;
-use alloc::vec::Vec;
 use sekai_util::{Snapshot, SnapshotId, SnapshotTag, TagName};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SnapshotError<M> {
     /// Metadata backend failure.
     Meta(M),
+    /// No snapshot with this ID exists.
+    UnknownSnapshot {
+        /// Requested snapshot ID.
+        id: u64,
+    },
 }
 
 impl<M: fmt::Debug> fmt::Display for SnapshotError<M> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Meta(_) => write!(f, "snapshot metadata failed"),
+            Self::UnknownSnapshot { id } => write!(f, "unknown snapshot: {id}"),
         }
     }
 }
@@ -26,12 +33,110 @@ pub async fn list_snapshots<M: MetaStore>(
 ) -> Result<Vec<Snapshot>, SnapshotError<M::Error>> {
     let mut out = Vec::new();
     meta.visit_snapshots(|snapshot| {
-        out.push(*snapshot);
+        out.push(snapshot.clone());
         true
     })
     .await
     .map_err(SnapshotError::Meta)?;
     Ok(out)
+}
+
+/// The snapshots a snapshot continues: its direct parents.
+///
+/// Fails when the snapshot does not exist: an unknown ID must not read
+/// as the root of a history.
+pub async fn snapshot_parents<M: MetaStore>(
+    meta: &M,
+    snapshot: SnapshotId,
+) -> Result<Vec<SnapshotId>, SnapshotError<M::Error>> {
+    // The record carries the parents, so the snapshot is read once.
+    let record = lookup_record(meta, snapshot).await?;
+    Ok(record.parents)
+}
+
+/// Every ancestor of `snapshot`, nearest first.
+///
+/// The walk follows parent links, so it covers the whole history the
+/// snapshot descends from. The ancestors come by distance: the direct
+/// parents first, then their parents, and so on; within one distance
+/// they come in ascending ID order. Each snapshot is reported once.
+///
+/// A snapshot continues snapshots that are older than it, so the graph
+/// is acyclic by construction; the visited set is the guard that keeps
+/// the walk finite even if that ever changes.
+pub async fn snapshot_ancestors<M: MetaStore>(
+    meta: &M,
+    snapshot: SnapshotId,
+) -> Result<Vec<SnapshotId>, SnapshotError<M::Error>> {
+    // The record carries the parents, so the requested snapshot is read
+    // once and the walk starts from its parents.
+    let record = lookup_record(meta, snapshot).await?;
+    let mut seen: BTreeSet<SnapshotId> = BTreeSet::new();
+    let mut order: Vec<SnapshotId> = Vec::new();
+    let mut level: BTreeSet<SnapshotId> = record.parents.into_iter().collect();
+    while !level.is_empty() {
+        let mut next: BTreeSet<SnapshotId> = BTreeSet::new();
+        for id in level {
+            if !seen.insert(id) {
+                continue;
+            }
+            order.push(id);
+            for parent in meta
+                .snapshot_parents(id)
+                .await
+                .map_err(SnapshotError::Meta)?
+            {
+                if !seen.contains(&parent) {
+                    next.insert(parent);
+                }
+            }
+        }
+        level = next;
+    }
+    Ok(order)
+}
+
+/// The history of `snapshot`: the snapshot itself followed by its
+/// ancestors, nearest first.
+///
+/// One walk reads the whole history: a record carries the parents the
+/// walk follows. Every ancestor must have a record - a missing one is a
+/// broken history, not a shorter history.
+pub async fn snapshot_history<M: MetaStore>(
+    meta: &M,
+    snapshot: SnapshotId,
+) -> Result<Vec<Snapshot>, SnapshotError<M::Error>> {
+    let mut out = Vec::new();
+    let mut seen: BTreeSet<SnapshotId> = BTreeSet::new();
+    let mut level: BTreeSet<SnapshotId> = BTreeSet::from([snapshot]);
+    while !level.is_empty() {
+        let mut next: BTreeSet<SnapshotId> = BTreeSet::new();
+        for id in level {
+            if !seen.insert(id) {
+                continue;
+            }
+            let record = lookup_record(meta, id).await?;
+            for parent in &record.parents {
+                if !seen.contains(parent) {
+                    next.insert(*parent);
+                }
+            }
+            out.push(record);
+        }
+        level = next;
+    }
+    Ok(out)
+}
+
+/// Read one snapshot record; a missing record is a broken history.
+async fn lookup_record<M: MetaStore>(
+    meta: &M,
+    snapshot: SnapshotId,
+) -> Result<Snapshot, SnapshotError<M::Error>> {
+    meta.lookup_snapshot(snapshot)
+        .await
+        .map_err(SnapshotError::Meta)?
+        .ok_or(SnapshotError::UnknownSnapshot { id: snapshot.0 })
 }
 
 /// List all tags in name order.
@@ -177,8 +282,8 @@ mod tests {
     #[test]
     fn lists_in_id_order() {
         let mut meta = MemMeta::default();
-        block_on(meta.create_snapshot(300)).unwrap();
-        block_on(meta.create_snapshot(100)).unwrap();
+        block_on(meta.create_snapshot(300, &[])).unwrap();
+        block_on(meta.create_snapshot(100, &[])).unwrap();
         let listed = block_on(list_snapshots(&meta)).unwrap();
         assert_eq!(listed.len(), 2);
         assert!(listed[0].id < listed[1].id);
@@ -188,8 +293,8 @@ mod tests {
     fn resolves_ids_and_tags() {
         use sekai_util::TagName;
         let mut meta = MemMeta::default();
-        let first = block_on(meta.create_snapshot(100)).unwrap();
-        let second = block_on(meta.create_snapshot(200)).unwrap();
+        let first = block_on(meta.create_snapshot(100, &[])).unwrap();
+        let second = block_on(meta.create_snapshot(200, &[first])).unwrap();
         block_on(meta.tag_snapshot(&TagName::parse("stable").unwrap(), second, 250)).unwrap();
 
         assert_eq!(block_on(resolve_snapshot_ref(&meta, "1")), Ok(first));
@@ -223,7 +328,7 @@ mod tests {
         use alloc::borrow::ToOwned;
         use sekai_util::TagName;
         let mut meta = MemMeta::default();
-        let id = block_on(meta.create_snapshot(100)).unwrap();
+        let id = block_on(meta.create_snapshot(100, &[])).unwrap();
         for name in ["zeta", "alpha"] {
             block_on(meta.tag_snapshot(&TagName::parse(name).unwrap(), id, 150)).unwrap();
         }
@@ -244,7 +349,7 @@ mod tests {
         let mut meta = MemMeta::default();
         let over = Dimension::OVERWORLD;
         let region = RegionKind::Region;
-        let first = block_on(meta.create_snapshot(100)).unwrap();
+        let first = block_on(meta.create_snapshot(100, &[])).unwrap();
         block_on(meta.record_chunk(
             first,
             &ChunkCoord::new(over, region, 0, 0),
@@ -259,7 +364,7 @@ mod tests {
             None,
         ))
         .unwrap();
-        let second = block_on(meta.create_snapshot(200)).unwrap();
+        let second = block_on(meta.create_snapshot(200, &[first])).unwrap();
         block_on(meta.record_chunk(
             second,
             &ChunkCoord::new(over, region, 0, 0),
@@ -288,5 +393,138 @@ mod tests {
                 effective_chunks: 1,
             }
         );
+    }
+
+    #[test]
+    fn walks_the_history_back_to_the_root() {
+        let mut meta = MemMeta::default();
+        let root = block_on(meta.create_snapshot(100, &[])).unwrap();
+        let second = block_on(meta.create_snapshot(200, &[root])).unwrap();
+        let third = block_on(meta.create_snapshot(300, &[second])).unwrap();
+
+        assert_eq!(
+            block_on(snapshot_ancestors(&meta, third)).unwrap(),
+            [second, root]
+        );
+        assert_eq!(
+            block_on(snapshot_ancestors(&meta, root)).unwrap(),
+            [] as [SnapshotId; 0]
+        );
+
+        let walked = block_on(snapshot_history(&meta, third)).unwrap();
+        assert_eq!(
+            walked.iter().map(|s| s.id).collect::<Vec<_>>(),
+            [third, second, root]
+        );
+        assert_eq!(walked[0].parents, [second]);
+        assert!(walked[2].is_root());
+    }
+
+    #[test]
+    fn a_snapshot_only_inherits_from_its_own_ancestors() {
+        use sekai_util::{BlobHash, ChunkCoord, Dimension, RegionKind};
+        let mut meta = MemMeta::default();
+        let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
+        let first = block_on(meta.create_snapshot(100, &[])).unwrap();
+        block_on(meta.record_chunk(first, &coord, Some(&BlobHash([1; 32])), None)).unwrap();
+        // A second history: its root shares no ancestor with `first`.
+        let other = block_on(meta.create_snapshot(200, &[])).unwrap();
+        let child = block_on(meta.create_snapshot(300, &[other])).unwrap();
+
+        assert!(
+            block_on(meta.lookup_chunk(child, &coord))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            block_on(meta.lookup_chunk(first, &coord))
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn retiring_a_snapshot_hands_its_children_its_parents() {
+        let mut meta = MemMeta::default();
+        let root = block_on(meta.create_snapshot(100, &[])).unwrap();
+        let second = block_on(meta.create_snapshot(200, &[root])).unwrap();
+        let third = block_on(meta.create_snapshot(300, &[second])).unwrap();
+
+        block_on(meta.retire_snapshot(second, third)).unwrap();
+
+        // The retired snapshot leaves the graph; its child continues the
+        // history of the retired snapshot's own parent.
+        assert!(block_on(meta.lookup_snapshot(second)).unwrap().is_none());
+        assert_eq!(block_on(meta.snapshot_parents(third)).unwrap(), [root]);
+        assert_eq!(block_on(snapshot_ancestors(&meta, third)).unwrap(), [root]);
+    }
+
+    #[test]
+    fn an_unknown_snapshot_is_not_a_root() {
+        let meta = MemMeta::default();
+        assert_eq!(
+            block_on(snapshot_parents(&meta, SnapshotId(7))).unwrap_err(),
+            SnapshotError::UnknownSnapshot { id: 7 }
+        );
+        assert_eq!(
+            block_on(snapshot_ancestors(&meta, SnapshotId(7))).unwrap_err(),
+            SnapshotError::UnknownSnapshot { id: 7 }
+        );
+        assert_eq!(
+            block_on(snapshot_history(&meta, SnapshotId(7))).unwrap_err(),
+            SnapshotError::UnknownSnapshot { id: 7 }
+        );
+    }
+
+    #[test]
+    fn a_snapshot_cannot_name_a_missing_or_itself_as_parent() {
+        use crate::support::MemError;
+        let mut meta = MemMeta::default();
+        // The first snapshot takes id 1, so naming it is a self-reference.
+        assert_eq!(
+            block_on(meta.create_snapshot(100, &[SnapshotId(1)])).unwrap_err(),
+            MemError::SelfParent { id: 1 }
+        );
+        assert_eq!(
+            block_on(meta.create_snapshot(100, &[SnapshotId(9)])).unwrap_err(),
+            MemError::UnknownParent { id: 9 }
+        );
+        // A parent listed twice is recorded once.
+        let root = block_on(meta.create_snapshot(100, &[])).unwrap();
+        let child = block_on(meta.create_snapshot(200, &[root, root])).unwrap();
+        assert_eq!(block_on(meta.snapshot_parents(child)).unwrap(), [root]);
+    }
+
+    #[test]
+    fn a_retirement_must_fold_into_a_descendant() {
+        use crate::support::MemError;
+        let mut meta = MemMeta::default();
+        let first = block_on(meta.create_snapshot(100, &[])).unwrap();
+        let second = block_on(meta.create_snapshot(200, &[first])).unwrap();
+        let other = block_on(meta.create_snapshot(300, &[])).unwrap();
+
+        // `other` is newer than `first` but descends from nothing:
+        // folding into it would graft rows it never had.
+        assert_eq!(
+            block_on(meta.retire_snapshot(first, other)).unwrap_err(),
+            MemError::InvalidRetirement {
+                from: first.0,
+                into: other.0
+            }
+        );
+        // The successor in the same history is fine.
+        assert!(block_on(meta.retire_snapshot(first, second)).is_ok());
+    }
+
+    #[test]
+    fn identifiers_are_never_reused_after_a_retirement() {
+        let mut meta = MemMeta::default();
+        let first = block_on(meta.create_snapshot(100, &[])).unwrap();
+        let second = block_on(meta.create_snapshot(200, &[first])).unwrap();
+        block_on(meta.retire_snapshot(first, second)).unwrap();
+        // The retired identifier is gone, but it is not handed out again:
+        // history rows still reference it.
+        let third = block_on(meta.create_snapshot(300, &[])).unwrap();
+        assert!(third > second);
     }
 }

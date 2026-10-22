@@ -3,6 +3,23 @@ CREATE TABLE snapshots(
     created_at_ms INTEGER NOT NULL
 );
 
+-- History graph: which snapshots a snapshot continues. The root of a
+-- history has no row, an ordinary snapshot one, a merge several. The
+-- graph - not the identifier order - decides what a snapshot inherits.
+-- `parent_id` has no cascade on purpose: deleting a snapshot that
+-- children still point at fails loudly, so a retirement rewires the
+-- children before it drops the row.
+CREATE TABLE snapshot_parents(
+    child_id INTEGER NOT NULL REFERENCES snapshots(id) ON DELETE CASCADE,
+    parent_id INTEGER NOT NULL REFERENCES snapshots(id),
+    PRIMARY KEY(child_id, parent_id)
+);
+
+-- Serves the retirement sweep that drops the edges naming a retired
+-- snapshot; child lookups use the primary key.
+CREATE INDEX idx_parents_parent
+    ON snapshot_parents(parent_id);
+
 CREATE TABLE chunk_history(
     snapshot_id INTEGER NOT NULL REFERENCES snapshots(id),
     dim INTEGER NOT NULL,

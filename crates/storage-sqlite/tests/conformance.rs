@@ -77,6 +77,14 @@ async fn sqlite_prune_flow() {
 }
 
 #[tokio::test]
+async fn sqlite_history_graph() {
+    let dir = tempdir("graph");
+    let mut store = init(&dir).await;
+    common::history_graph(store.meta_mut()).await;
+    cleanup(&dir);
+}
+
+#[tokio::test]
 async fn sqlite_cas_roundtrip() {
     let dir = tempdir("cas");
     let mut store = init(&dir).await;

@@ -108,6 +108,7 @@ mod tests {
         let gone = ChunkCoord::new(OVER, REGION, 2, 0);
         let id = block_on(meta.apply_snapshot_incremental(
             1_000,
+            &[],
             &[
                 SnapshotEntry::new(a, Some(BlobHash([1; 32])), None),
                 SnapshotEntry::new(b, Some(BlobHash([2; 32])), None),

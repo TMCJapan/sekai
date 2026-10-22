@@ -78,6 +78,43 @@ impl<T: SekaiStore> SekaiInstance<T> {
             .map_err(AppError::Snapshot)
     }
 
+    /// The snapshots a snapshot continues: its direct parents.
+    ///
+    /// Fails when the snapshot does not exist.
+    pub async fn snapshot_parents(
+        &self,
+        snapshot: SnapshotId,
+    ) -> Result<Vec<SnapshotId>, AppError> {
+        let _lock = self.lock_store(StoreLockMode::Shared)?;
+        sekai_core::usecase::snapshot::snapshot_parents(self.store.meta(), snapshot)
+            .await
+            .map_err(AppError::Snapshot)
+    }
+
+    /// Every ancestor of a snapshot, nearest first.
+    ///
+    /// Fails when the snapshot does not exist.
+    pub async fn snapshot_ancestors(
+        &self,
+        snapshot: SnapshotId,
+    ) -> Result<Vec<SnapshotId>, AppError> {
+        let _lock = self.lock_store(StoreLockMode::Shared)?;
+        sekai_core::usecase::snapshot::snapshot_ancestors(self.store.meta(), snapshot)
+            .await
+            .map_err(AppError::Snapshot)
+    }
+
+    /// The history of a snapshot: the snapshot itself followed by its
+    /// ancestors, nearest first.
+    ///
+    /// Fails when the snapshot does not exist.
+    pub async fn snapshot_history(&self, snapshot: SnapshotId) -> Result<Vec<Snapshot>, AppError> {
+        let _lock = self.lock_store(StoreLockMode::Shared)?;
+        sekai_core::usecase::snapshot::snapshot_history(self.store.meta(), snapshot)
+            .await
+            .map_err(AppError::Snapshot)
+    }
+
     /// Latest snapshot ID; fails when the store has no snapshots.
     pub async fn latest_snapshot_id(&self) -> Result<SnapshotId, AppError> {
         let lock = self.lock_store(StoreLockMode::Shared)?;

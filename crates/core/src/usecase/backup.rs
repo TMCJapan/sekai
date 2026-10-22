@@ -110,7 +110,7 @@ pub async fn plan_backup<M: MetaStore>(
 ) -> Result<(Previous, Plan), M::Error> {
     let mut universe: BTreeSet<ChunkCoord> = BTreeSet::new();
     let snapshot = meta.latest_snapshot().await?;
-    if let Some(latest) = snapshot {
+    if let Some(latest) = snapshot.as_ref() {
         meta.visit_snapshot_chunks(latest.id, |entry| {
             // Present coordinates only. A tombstoned coordinate is already
             // absent from the effective state, so keeping it would re-record
@@ -237,6 +237,12 @@ pub fn assemble(plan: Plan, previous: &Previous, ingested: Ingested, scope: &Sco
 ///
 /// CAS must be synced first so every referenced blob is durable before the
 /// metadata transaction is committed.
+///
+/// The new snapshot continues the history it was planned against: its
+/// parent is `previous.snapshot` - the snapshot the plan read and the
+/// base its delta was computed from. Plan and commit must not be
+/// interleaved with another backup; the app holds the store's writer
+/// lock for the whole run.
 pub async fn commit<M: MetaStore>(
     meta: &mut M,
     previous: &Previous,
@@ -245,7 +251,13 @@ pub async fn commit<M: MetaStore>(
 ) -> Result<BackupReport, M::Error> {
     let carry_from = previous
         .snapshot
+        .as_ref()
         .map(|snapshot| (snapshot.id, staged.carries.as_slice()));
+    let parents: Vec<SnapshotId> = previous
+        .snapshot
+        .as_ref()
+        .map(|snapshot| alloc::vec![snapshot.id])
+        .unwrap_or_default();
     // Both drop state rows; they stay apart in `Assembled` so previews
     // report only vanished files as deleted.
     let dropped_states: Vec<RegionKey> = staged
@@ -257,6 +269,7 @@ pub async fn commit<M: MetaStore>(
     let outcome: ApplyOutcome = meta
         .apply_snapshot_incremental(
             created_at_ms,
+            &parents,
             &staged.entries,
             carry_from,
             &staged.fingerprints,
@@ -325,12 +338,69 @@ mod tests {
     }
 
     #[test]
+    fn the_committed_snapshot_continues_the_previous_one() {
+        let mut meta = MemMeta::default();
+        let observed = [Observation {
+            key: key(0, 0),
+            fingerprint: fingerprint(key(0, 0)),
+        }];
+
+        // The first backup starts a history: no previous snapshot, no
+        // parent.
+        let (previous, plan) =
+            crate::support::block_on(plan_backup(&meta, &observed, &Scope::World)).unwrap();
+        let staged = assemble(
+            plan,
+            &previous,
+            Ingested {
+                entries: alloc::vec![stage_present(coord(0, 0), BlobHash([1; 32]))],
+                present: BTreeSet::from([coord(0, 0)]),
+                new_blobs: 1,
+                fingerprints: alloc::vec![fingerprint(key(0, 0))],
+            },
+            &Scope::World,
+        );
+        let first = crate::support::block_on(commit(&mut meta, &previous, &staged, 1_000)).unwrap();
+        assert_eq!(
+            crate::support::block_on(meta.snapshot_parents(first.snapshot)).unwrap(),
+            alloc::vec![]
+        );
+
+        // The second backup continues the history of the snapshot it was
+        // planned against.
+        let (previous, plan) =
+            crate::support::block_on(plan_backup(&meta, &observed, &Scope::World)).unwrap();
+        assert_eq!(
+            previous.snapshot.as_ref().map(|s| s.id),
+            Some(first.snapshot)
+        );
+        let staged = assemble(
+            plan,
+            &previous,
+            Ingested {
+                entries: alloc::vec![stage_present(coord(0, 0), BlobHash([2; 32]))],
+                present: BTreeSet::from([coord(0, 0)]),
+                new_blobs: 1,
+                fingerprints: alloc::vec![fingerprint(key(0, 0))],
+            },
+            &Scope::World,
+        );
+        let second =
+            crate::support::block_on(commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        assert_eq!(
+            crate::support::block_on(meta.snapshot_parents(second.snapshot)).unwrap(),
+            alloc::vec![first.snapshot]
+        );
+    }
+
+    #[test]
     fn changed_region_reingests_while_rest_carries() {
         let mut meta = MemMeta::default();
         let fp0 = fingerprint(key(0, 0));
         let fp1 = fingerprint(key(1, 0));
         crate::support::block_on(meta.apply_snapshot_incremental(
             1_000,
+            &[],
             &[
                 stage_present(coord(0, 0), BlobHash([1; 32])),
                 stage_present(coord(32, 0), BlobHash([2; 32])),
@@ -396,6 +466,7 @@ mod tests {
         let mut meta = MemMeta::default();
         let s1 = crate::support::block_on(meta.apply_snapshot_incremental(
             1_000,
+            &[],
             &[
                 stage_present(coord(0, 0), BlobHash([1; 32])),
                 stage_present(coord(1, 0), BlobHash([2; 32])),
@@ -432,6 +503,7 @@ mod tests {
         let fp1 = fingerprint(key(1, 0));
         crate::support::block_on(meta.apply_snapshot_incremental(
             1_000,
+            &[],
             &[
                 stage_present(coord(0, 0), BlobHash([1; 32])),
                 stage_present(coord(32, 0), BlobHash([2; 32])),
@@ -497,6 +569,7 @@ mod tests {
         };
         crate::support::block_on(meta.apply_snapshot_incremental(
             1_000,
+            &[],
             &[
                 stage_present(coord(0, 0), BlobHash([1; 32])),
                 stage_present(nether_coord(0, 0), BlobHash([2; 32])),
@@ -544,6 +617,7 @@ mod tests {
         };
         crate::support::block_on(meta.apply_snapshot_incremental(
             1_000,
+            &[],
             &[
                 stage_present(coord(0, 0), BlobHash([1; 32])),
                 stage_present(coord(1, 0), BlobHash([2; 32])),
@@ -614,6 +688,7 @@ mod tests {
         let fp0 = fingerprint(key(0, 0));
         crate::support::block_on(meta.apply_snapshot_incremental(
             1_000,
+            &[],
             &[
                 stage_present(coord(0, 0), BlobHash([1; 32])),
                 stage_present(coord(1, 0), BlobHash([2; 32])),
@@ -666,6 +741,7 @@ mod tests {
         let fp0 = fingerprint(key(0, 0));
         crate::support::block_on(meta.apply_snapshot_incremental(
             1_000,
+            &[],
             &[stage_present(coord(0, 0), BlobHash([1; 32]))],
             None,
             &[fp0],
@@ -709,7 +785,7 @@ mod tests {
     #[test]
     fn mem_meta_satisfies_lookup_contract() {
         let mut meta = MemMeta::default();
-        let id = crate::support::block_on(meta.create_snapshot(5)).unwrap();
+        let id = crate::support::block_on(meta.create_snapshot(5, &[])).unwrap();
         crate::support::block_on(meta.record_chunk(
             id,
             &coord(0, 0),

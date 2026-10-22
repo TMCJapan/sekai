@@ -1,4 +1,4 @@
-//! Per-chunk facts on the snapshot timeline.
+//! Per-chunk facts on the snapshot history graph.
 
 use super::{BlobHash, ChunkCoord, DiffHash, SnapshotId};
 
