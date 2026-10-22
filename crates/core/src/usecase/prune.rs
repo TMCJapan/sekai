@@ -55,6 +55,11 @@ pub enum PruneError<M> {
         /// Commit that cannot be retired.
         id: u64,
     },
+    /// A commit is both retained and scheduled for deletion.
+    OverlappingPlan {
+        /// Commit present on both sides.
+        id: u64,
+    },
 }
 
 impl<M: fmt::Debug> fmt::Display for PruneError<M> {
@@ -69,6 +74,9 @@ impl<M: fmt::Debug> fmt::Display for PruneError<M> {
                 f,
                 "commit {id} continues on several branches: retiring it would change their state"
             ),
+            Self::OverlappingPlan { id } => {
+                write!(f, "commit {id} is both retained and scheduled for deletion")
+            }
         }
     }
 }
@@ -100,17 +108,17 @@ pub fn select_retained(
 /// Refuses selections that would leave no commit behind, and selections
 /// that would delete a commit no retained commit continues: such a
 /// commit has nowhere to fold its rows into.
+///
+/// `retained` must name existing commits; an unknown ID is ignored, not
+/// retained. A selection that leaves a fork point with retained commits
+/// on more than one branch refuses with [`PruneError::SplitBranches`]:
+/// retaining the common ancestor, or pruning one branch at a time, is the
+/// caller's recourse.
 pub async fn prune_plan<M: MetaStore>(
     meta: &M,
     retained: &BTreeSet<CommitId>,
 ) -> Result<PrunePlan, PruneError<M::Error>> {
-    let mut commits: Vec<Commit> = Vec::new();
-    meta.visit_commits(|commit| {
-        commits.push(commit.clone());
-        true
-    })
-    .await
-    .map_err(PruneError::Meta)?;
+    let commits = load_commits(meta).await?;
     if !commits.is_empty() && retained.is_empty() {
         return Err(PruneError::NothingRetained);
     }
@@ -120,19 +128,32 @@ pub async fn prune_plan<M: MetaStore>(
         .filter(|id| !retained.contains(id))
         .collect();
     delete.sort();
-    let retained_ids: Vec<CommitId> = commits
+    let retained_existing: BTreeSet<CommitId> = commits
         .iter()
         .map(|c| c.id)
         .filter(|id| retained.contains(id))
         .collect();
-    let ancestry = retained_ancestry(&commits, retained);
+    let retained_ids: Vec<CommitId> = retained_existing.iter().copied().collect();
+    let ancestry = retained_ancestry(&commits, &retained_existing);
     for id in &delete {
-        fold_target(&ancestry, retained, *id).map_err(|err| fold_failure(err, *id))?;
+        fold_target(&ancestry, &retained_existing, *id).map_err(|err| fold_failure(err, *id))?;
     }
     Ok(PrunePlan {
         delete,
         retained: retained_ids,
     })
+}
+
+/// Load the whole commit graph in one visit.
+async fn load_commits<M: MetaStore>(meta: &M) -> Result<Vec<Commit>, PruneError<M::Error>> {
+    let mut commits: Vec<Commit> = Vec::new();
+    meta.visit_commits(|commit| {
+        commits.push(commit.clone());
+        true
+    })
+    .await
+    .map_err(PruneError::Meta)?;
+    Ok(commits)
 }
 
 /// Delete planned commits oldest-first, folding each into the oldest
@@ -143,24 +164,22 @@ pub async fn prune_plan<M: MetaStore>(
 /// into an unrelated history would graft rows the successor never had.
 /// A commit no retained commit continues cannot be retired at all.
 ///
-/// The plan must come from [`prune_plan`]: deletions and retentions are
-/// disjoint and name existing commits. Fold targets are retained, so
-/// deletion order does not affect them; a hand-built plan fails through
-/// the fold calculation or the backend's retirement checks instead of
-/// corrupting the graph.
+/// The plan must come from [`prune_plan`]: every ID must exist, and
+/// deletions and retentions must be disjoint (an overlap is refused
+/// before anything is retired). Fold targets are retained, so deletion
+/// order does not affect them; a missing ID fails through the fold
+/// calculation or the backend's retirement checks instead of corrupting
+/// the graph.
 pub async fn prune_apply<M: MetaStore>(
     meta: &mut M,
     plan: &PrunePlan,
     mut progress: impl FnMut(usize, usize) + Send,
 ) -> Result<PruneReport, PruneError<M::Error>> {
     let retained: BTreeSet<CommitId> = plan.retained.iter().copied().collect();
-    let mut commits: Vec<Commit> = Vec::new();
-    meta.visit_commits(|commit| {
-        commits.push(commit.clone());
-        true
-    })
-    .await
-    .map_err(PruneError::Meta)?;
+    if let Some(id) = plan.delete.iter().find(|id| retained.contains(id)) {
+        return Err(PruneError::OverlappingPlan { id: id.0 });
+    }
+    let commits = load_commits(meta).await?;
     // Retiring a commit contracts the graph: its children inherit its
     // parents, so reachability between the remaining commits does not
     // change. Every fold target is a retained commit and retained
@@ -481,6 +500,57 @@ mod tests {
         let retained = BTreeSet::from([CommitId(2), CommitId(3)]);
         let err = block_on(prune_plan(&meta, &retained)).unwrap_err();
         assert!(matches!(err, PruneError::SplitBranches { id: 1 }), "{err}");
+    }
+
+    #[test]
+    fn prune_folds_a_forked_parent_graph_into_one_target() {
+        use sekai_util::BlobHash;
+        let mut meta = MemMeta::default();
+        meta.with_active_ref(&RefName::parse("main").unwrap());
+        let row = |c: ChunkCoord, byte: u8| [CommitEntry::new(c, Some(BlobHash([byte; 32])), None)];
+        // 1 <- 2, and 3 merges both: retiring 1 and 2 fold into 3.
+        block_on(meta.apply_commit_incremental(1_000, &[], &row(coord(0, 0), 1), None, &[], &[]))
+            .unwrap();
+        block_on(meta.apply_commit_incremental(
+            2_000,
+            &[CommitId(1)],
+            &row(coord(1, 0), 2),
+            None,
+            &[],
+            &[],
+        ))
+        .unwrap();
+        block_on(meta.apply_commit_incremental(
+            3_000,
+            &[CommitId(1), CommitId(2)],
+            &row(coord(2, 0), 3),
+            None,
+            &[],
+            &[],
+        ))
+        .unwrap();
+
+        let before = effective_present(&meta, &[CommitId(3)]);
+        let retained = BTreeSet::from([CommitId(3)]);
+        let plan = block_on(prune_plan(&meta, &retained)).unwrap();
+        assert_eq!(plan.delete, [CommitId(1), CommitId(2)]);
+        let report = block_on(prune_apply(&mut meta, &plan, |_, _| {})).unwrap();
+        assert_eq!(report.pruned, 2);
+        assert_eq!(effective_present(&meta, &[CommitId(3)]), before);
+        assert!(block_on(meta.lookup_commit(CommitId(1))).unwrap().is_none());
+        assert!(block_on(meta.lookup_commit(CommitId(2))).unwrap().is_none());
+    }
+
+    #[test]
+    fn prune_refuses_an_overlapping_plan() {
+        let mut meta = MemMeta::default();
+        block_on(meta.create_commit(100, &[])).unwrap();
+        let plan = PrunePlan {
+            delete: alloc::vec![CommitId(1)],
+            retained: alloc::vec![CommitId(1)],
+        };
+        let err = block_on(prune_apply(&mut meta, &plan, |_, _| {})).unwrap_err();
+        assert_eq!(err, PruneError::OverlappingPlan { id: 1 });
     }
 
     #[test]
