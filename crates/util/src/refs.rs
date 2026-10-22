@@ -29,10 +29,13 @@ impl RefName {
     /// Longest accepted name, in bytes (names are ASCII-only).
     pub const MAX_LEN: usize = 64;
 
-    /// Name the store keeps for itself.
-    pub const RESERVED: &'static str = "HEAD";
+    /// Name the store keeps for itself: no ref may carry it.
+    const RESERVED: &str = "HEAD";
 
     /// Validate `raw` into a ref name.
+    ///
+    /// A name is ASCII-only: any other character fails with
+    /// [`RefNameError::BadChar`].
     pub fn parse(raw: &str) -> Result<Self, RefNameError> {
         if raw.is_empty() {
             return Err(RefNameError::Empty);
