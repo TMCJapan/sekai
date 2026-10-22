@@ -406,7 +406,7 @@ mod tests {
 
         let walked = block_on(commit_history(&meta, third)).unwrap();
         assert_eq!(
-            walked.iter().map(|s| s.id).collect::<Vec<_>>(),
+            walked.iter().map(|c| c.id).collect::<Vec<_>>(),
             [third, second, root]
         );
         assert_eq!(walked[0].parents, [second]);

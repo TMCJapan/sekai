@@ -47,7 +47,7 @@ struct Fixture {
     world_path: PathBuf,
     world: HostWorldTree,
     instance: SekaiInstance<SqliteStore>,
-    /// A blob commit 1 references, for blob-level operations.
+    /// A blob that commit 1 references, for blob-level operations.
     blob: BlobHash,
 }
 

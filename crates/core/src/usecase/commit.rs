@@ -371,7 +371,7 @@ mod tests {
         // planned against.
         let (previous, plan) =
             crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
-        assert_eq!(previous.commit.as_ref().map(|s| s.id), Some(first.commit));
+        assert_eq!(previous.commit.as_ref().map(|c| c.id), Some(first.commit));
         let staged = assemble(
             plan,
             &previous,

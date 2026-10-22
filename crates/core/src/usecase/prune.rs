@@ -106,13 +106,13 @@ pub async fn prune_plan<M: MetaStore>(
     }
     let mut delete: Vec<CommitId> = commits
         .iter()
-        .map(|s| s.id)
+        .map(|c| c.id)
         .filter(|id| !retained.contains(id))
         .collect();
     delete.sort();
     let retained: Vec<CommitId> = commits
         .iter()
-        .map(|s| s.id)
+        .map(|c| c.id)
         .filter(|id| retained.contains(id))
         .collect();
     Ok(PrunePlan { delete, retained })

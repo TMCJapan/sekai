@@ -138,7 +138,7 @@ impl MetaStore for MemMeta {
         // Mirrors the backend: a parent must exist, a commit may not
         // name itself, and a parent listed twice is recorded once, in the
         // canonical (ascending identifier) order.
-        let known: BTreeSet<CommitId> = self.commits.iter().map(|s| s.id).collect();
+        let known: BTreeSet<CommitId> = self.commits.iter().map(|c| c.id).collect();
         for parent in parents {
             if *parent == id {
                 return core::future::ready(Err(MemError::SelfParent { id: parent.0 }));
@@ -368,7 +368,7 @@ impl MetaStore for MemMeta {
         // existing commit that descends from the retired one. Folding
         // into an unrelated history would graft rows the successor never
         // had.
-        if into <= from || !self.commits.iter().any(|s| s.id == into) {
+        if into <= from || !self.commits.iter().any(|c| c.id == into) {
             return core::future::ready(Err(MemError::InvalidRetirement {
                 from: from.0,
                 into: into.0,
@@ -417,8 +417,8 @@ impl MetaStore for MemMeta {
         let from_parents = self
             .commits
             .iter()
-            .find(|s| s.id == from)
-            .map(|s| s.parents.clone())
+            .find(|c| c.id == from)
+            .map(|c| c.parents.clone())
             .unwrap_or_default();
         for commit in &mut self.commits {
             if !commit.parents.contains(&from) {

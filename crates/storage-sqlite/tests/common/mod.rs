@@ -394,7 +394,7 @@ where
     assert_eq!(commit_ancestors(meta, child).await.unwrap(), vec![other]);
     let walked = commit_history(meta, second).await.unwrap();
     assert_eq!(
-        walked.iter().map(|s| s.id).collect::<Vec<_>>(),
+        walked.iter().map(|c| c.id).collect::<Vec<_>>(),
         vec![second, first]
     );
     assert_eq!(walked[0].parents, vec![first]);
@@ -417,7 +417,7 @@ where
             .await
             .unwrap()
             .iter()
-            .map(|s| s.id)
+            .map(|c| c.id)
             .collect::<Vec<_>>(),
         vec![merge, second, other, first]
     );
