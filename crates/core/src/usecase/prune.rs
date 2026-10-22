@@ -125,8 +125,9 @@ pub async fn prune_plan<M: MetaStore>(
         .map(|c| c.id)
         .filter(|id| retained.contains(id))
         .collect();
+    let ancestry = retained_ancestry(&commits, retained);
     for id in &delete {
-        fold_target(&commits, retained, *id).map_err(|err| fold_failure(err, *id))?;
+        fold_target(&ancestry, retained, *id).map_err(|err| fold_failure(err, *id))?;
     }
     Ok(PrunePlan {
         delete,
@@ -154,6 +155,10 @@ pub async fn prune_apply<M: MetaStore>(
     })
     .await
     .map_err(PruneError::Meta)?;
+    // Retiring a commit contracts the graph: its children inherit its
+    // parents, so reachability between the remaining commits does not
+    // change. One snapshot serves the whole run.
+    let ancestry = retained_ancestry(&commits, &retained);
     let mut report = PruneReport {
         pruned: 0,
         rows_folded: 0,
@@ -162,7 +167,8 @@ pub async fn prune_apply<M: MetaStore>(
     let total = plan.delete.len();
     let mut done = 0usize;
     for id in &plan.delete {
-        let target = fold_target(&commits, &retained, *id).map_err(|err| fold_failure(err, *id))?;
+        let target =
+            fold_target(&ancestry, &retained, *id).map_err(|err| fold_failure(err, *id))?;
         let outcome = meta
             .retire_commit(*id, target)
             .await
@@ -186,12 +192,14 @@ pub async fn prune_apply<M: MetaStore>(
 /// inherits through it, so the target must be an ancestor of every
 /// other retained descendant - otherwise the retirement would change
 /// their effective state, and prune refuses.
+///
+/// `ancestry` is [`retained_ancestry`] for `retained`, computed once per
+/// run: the walk costs the history depth of every retained commit.
 fn fold_target(
-    commits: &[Commit],
+    ancestry: &BTreeMap<CommitId, BTreeSet<CommitId>>,
     retained: &BTreeSet<CommitId>,
     commit: CommitId,
 ) -> Result<CommitId, FoldError> {
-    let ancestry = retained_ancestry(commits, retained);
     let continues = |other: CommitId| {
         ancestry
             .get(&other)
@@ -382,6 +390,54 @@ mod tests {
         let after = effective_present(&meta, &[CommitId(2), CommitId(3)]);
         assert_eq!(after, before[1..]);
         assert!(block_on(meta.lookup_commit(CommitId(1))).unwrap().is_none());
+    }
+
+    #[test]
+    fn prune_folds_a_chain_into_the_retained_successor() {
+        use sekai_util::BlobHash;
+        let mut meta = MemMeta::default();
+        meta.with_active_ref(&RefName::parse("main").unwrap());
+        // S1: A@0,0 / S2: B@1,0 / S3: C@2,0.
+        let mut parent: Vec<CommitId> = Vec::new();
+        for (id, entries) in [
+            (
+                1u64,
+                [CommitEntry::new(coord(0, 0), Some(BlobHash([1; 32])), None)].as_slice(),
+            ),
+            (
+                2,
+                [CommitEntry::new(coord(1, 0), Some(BlobHash([2; 32])), None)].as_slice(),
+            ),
+            (
+                3,
+                [CommitEntry::new(coord(2, 0), Some(BlobHash([3; 32])), None)].as_slice(),
+            ),
+        ] {
+            block_on(meta.apply_commit_incremental(id * 1_000, &parent, entries, None, &[], &[]))
+                .unwrap();
+            parent = alloc::vec![CommitId(id)];
+        }
+        let before = effective_present(&meta, &[CommitId(3)]);
+
+        // Keep only the last commit: the two below it retire in one run,
+        // the second folding a graph the first already changed.
+        let retained = select_retained(&commits(3), Some(1), None);
+        assert_eq!(retained, BTreeSet::from([CommitId(3)]));
+        let plan = block_on(prune_plan(&meta, &retained)).unwrap();
+        assert_eq!(plan.delete, [CommitId(1), CommitId(2)]);
+        let report = block_on(prune_apply(&mut meta, &plan, |_, _| {})).unwrap();
+        assert_eq!(
+            report,
+            PruneReport {
+                pruned: 2,
+                rows_folded: 2,
+                rows_dropped: 0,
+            }
+        );
+
+        assert!(block_on(meta.lookup_commit(CommitId(1))).unwrap().is_none());
+        assert!(block_on(meta.lookup_commit(CommitId(2))).unwrap().is_none());
+        assert_eq!(effective_present(&meta, &[CommitId(3)]), before);
     }
 
     #[test]
