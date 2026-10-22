@@ -22,22 +22,16 @@ fn benches(c: &mut Criterion) {
         rt.block_on(
             instance
                 .world_mut(&mut world)
-                .backup(options(), Scope::World, |_| {}),
+                .commit(options(), Scope::World, |_| {}),
         )
-        .expect("backup works");
-        let snapshots = rt.block_on(instance.list_snapshots()).expect("list works");
+        .expect("commit works");
+        let commits = rt.block_on(instance.list_commits()).expect("list works");
         let coords = rt
-            .block_on(instance.snapshot_chunk_coords(snapshots[0].id))
+            .block_on(instance.commit_chunk_coords(commits[0].id))
             .expect("coords work");
         b.iter(|| {
-            rt.block_on(instance.diff_chunks(
-                snapshots[0].id,
-                snapshots[0].id,
-                &coords,
-                None,
-                |_| {},
-            ))
-            .expect("diff works");
+            rt.block_on(instance.diff_chunks(commits[0].id, commits[0].id, &coords, None, |_| {}))
+                .expect("diff works");
         });
         std::fs::remove_dir_all(&root).ok();
     });
@@ -53,22 +47,16 @@ fn benches(c: &mut Criterion) {
         rt.block_on(
             instance
                 .world_mut(&mut world)
-                .backup(options(), Scope::World, |_| {}),
+                .commit(options(), Scope::World, |_| {}),
         )
-        .expect("backup works");
-        let snapshots = rt.block_on(instance.list_snapshots()).expect("list works");
+        .expect("commit works");
+        let commits = rt.block_on(instance.list_commits()).expect("list works");
         let coords = rt
-            .block_on(instance.snapshot_chunk_coords(snapshots[0].id))
+            .block_on(instance.commit_chunk_coords(commits[0].id))
             .expect("coords work");
         b.iter(|| {
-            rt.block_on(instance.diff_chunks(
-                snapshots[0].id,
-                snapshots[0].id,
-                &coords,
-                None,
-                |_| {},
-            ))
-            .expect("diff works");
+            rt.block_on(instance.diff_chunks(commits[0].id, commits[0].id, &coords, None, |_| {}))
+                .expect("diff works");
         });
         std::fs::remove_dir_all(&root).ok();
     });

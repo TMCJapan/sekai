@@ -29,18 +29,18 @@ fn cleanup(dir: impl AsRef<Path>) {
 }
 
 #[tokio::test]
-async fn sqlite_snapshot_lifecycle() {
+async fn sqlite_commit_lifecycle() {
     let dir = tempdir("snap");
     let mut store = init(&dir).await;
-    common::snapshot_lifecycle(store.meta_mut()).await;
+    common::commit_lifecycle(store.meta_mut()).await;
     cleanup(&dir);
 }
 
 #[tokio::test]
-async fn sqlite_backup_carry() {
+async fn sqlite_commit_carry() {
     let dir = tempdir("carry");
     let mut store = init(&dir).await;
-    common::backup_carry(store.meta_mut()).await;
+    common::commit_carry(store.meta_mut()).await;
     cleanup(&dir);
 }
 

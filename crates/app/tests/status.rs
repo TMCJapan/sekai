@@ -1,4 +1,4 @@
-//! Read-only backup previews over real world folders and SQLite stores.
+//! Read-only commit previews over real world folders and SQLite stores.
 //!
 //! Requires the `backend-sqlite` feature.
 
@@ -72,14 +72,14 @@ async fn status_reports_clean_world() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .backup(
-            sekai_app::BackupOptions::default(),
+        .commit(
+            sekai_app::CommitOptions::default(),
             sekai_app::Scope::World,
             |_| {},
         )
         .await
         .unwrap();
-    let snapshots = instance.list_snapshots().await.unwrap();
+    let commits = instance.list_commits().await.unwrap();
 
     let (report, timings) = instance
         .world(&world)
@@ -87,7 +87,7 @@ async fn status_reports_clean_world() {
         .await
         .unwrap();
     assert!(report.clean);
-    assert_eq!(report.latest, Some(snapshots[0].id));
+    assert_eq!(report.latest, Some(commits[0].id));
     assert_eq!(report.changed_regions, 0);
     assert_eq!(report.new_chunks, 0);
     assert!(timings.total >= timings.discover + timings.fingerprint);
@@ -106,8 +106,8 @@ async fn status_counts_changes_without_writing() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .backup(
-            sekai_app::BackupOptions::default(),
+        .commit(
+            sekai_app::CommitOptions::default(),
             sekai_app::Scope::World,
             |_| {},
         )
@@ -135,23 +135,23 @@ async fn status_counts_changes_without_writing() {
     assert_eq!(report.tombstones, 0);
     assert_eq!(report.new_blobs, 3);
 
-    // Preview wrote nothing: same snapshots, same blobs.
-    assert_eq!(instance.list_snapshots().await.unwrap().len(), 1);
+    // Preview wrote nothing: same commits, same blobs.
+    assert_eq!(instance.list_commits().await.unwrap().len(), 1);
     assert_eq!(blob_count(&store_dir), blobs_before);
 
-    // A following backup records exactly what status predicted.
-    let (backup, _) = instance
+    // A following commit records exactly what status predicted.
+    let (commit, _) = instance
         .world_mut(&mut world)
-        .backup(
-            sekai_app::BackupOptions::default(),
+        .commit(
+            sekai_app::CommitOptions::default(),
             sekai_app::Scope::World,
             |_| {},
         )
         .await
         .unwrap();
-    assert_eq!(backup.chunks, 3);
-    assert_eq!(backup.new_blobs, 3);
-    assert_eq!(backup.tombstones, 0);
+    assert_eq!(commit.chunks, 3);
+    assert_eq!(commit.new_blobs, 3);
+    assert_eq!(commit.tombstones, 0);
     cleanup(&root);
 }
 
@@ -167,8 +167,8 @@ async fn status_counts_tombstones() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .backup(
-            sekai_app::BackupOptions::default(),
+        .commit(
+            sekai_app::CommitOptions::default(),
             sekai_app::Scope::World,
             |_| {},
         )

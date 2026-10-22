@@ -34,7 +34,7 @@ impl fmt::Display for HexError {
 
 impl core::error::Error for HexError {}
 
-/// Snapshot tag name validation failure.
+/// Commit tag name validation failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TagNameError {
     /// Name was empty.
@@ -43,7 +43,7 @@ pub enum TagNameError {
     TooLong,
     /// Name held a byte outside `[A-Za-z0-9._-]`.
     BadChar(char),
-    /// Name consisted of digits alone (confusable with a snapshot ID).
+    /// Name consisted of digits alone (confusable with a commit ID).
     Numeric,
 }
 

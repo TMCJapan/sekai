@@ -58,8 +58,8 @@ pub async fn run(
 
 fn status_line(report: &StatusReport, style: Styler) -> String {
     let basis = report.latest.map_or_else(
-        || "no snapshot yet".to_owned(),
-        |id| format!("snapshot {}", id.raw()),
+        || "no commit yet".to_owned(),
+        |id| format!("commit {}", id.raw()),
     );
     if report.clean {
         return format!("clean: no changes since {basis}");
@@ -109,7 +109,7 @@ struct StatusPhases {
 fn status_payload(report: &StatusReport, timings: &StatusTimings, timing: bool) -> StatusPayload {
     StatusPayload {
         clean: report.clean,
-        latest: report.latest.map(sekai_app::SnapshotId::raw),
+        latest: report.latest.map(sekai_app::CommitId::raw),
         changed_regions: report.changed_regions,
         new_files: report.new_files,
         deleted_files: report.deleted_files,
@@ -154,7 +154,7 @@ mod tests {
     fn report() -> StatusReport {
         StatusReport {
             clean: false,
-            latest: Some(sekai_app::SnapshotId(2)),
+            latest: Some(sekai_app::CommitId(2)),
             changed_regions: 1,
             new_files: 0,
             deleted_files: 0,
@@ -195,7 +195,7 @@ mod tests {
         let style = Styler::disabled();
         assert_eq!(
             status_line(&report(), style),
-            "would record against snapshot 2: 1 regions changed (0 new, 0 deleted), 3 chunks, 1 tombstones, 2 new blobs"
+            "would record against commit 2: 1 regions changed (0 new, 0 deleted), 3 chunks, 1 tombstones, 2 new blobs"
         );
         assert_eq!(
             status_line(
@@ -206,7 +206,7 @@ mod tests {
                 },
                 style
             ),
-            "clean: no changes since no snapshot yet"
+            "clean: no changes since no commit yet"
         );
     }
 }

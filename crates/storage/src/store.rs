@@ -63,7 +63,7 @@ pub trait SekaiStoreOpener: SekaiStore {
 
 /// Blob operations that must run inside blocking workers.
 ///
-/// These mirror [`BlobStore`] but are synchronous: backup ingest hashes and
+/// These mirror [`BlobStore`] but are synchronous: commit ingest hashes and
 /// stores chunks from a blocking pool, while metadata operations stay async.
 /// A backend that cannot offer blocking writes cannot run the current ingest
 /// pipeline.

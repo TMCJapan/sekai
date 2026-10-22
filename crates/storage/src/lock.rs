@@ -1,17 +1,17 @@
 //! Store-wide exclusion between processes through OS file locks.
 //!
-//! Three hazards need it. A backup puts blobs into the CAS *before* it
+//! Three hazards need it. A commit puts blobs into the CAS *before* it
 //! commits the rows that reference them, so a `gc` scanning in between
-//! unlinks live blobs. Two backups plan against the same base snapshot,
+//! unlinks live blobs. Two commits plan against the same base commit,
 //! so the later commit leaves `region_state` fingerprints out of step
 //! with the effective rows. And `prune` deletes rows a reader may have
-//! resolved moments earlier, so a rollback could restore a partial
-//! snapshot.
+//! resolved moments earlier, so a checkout could restore a partial
+//! commit.
 //!
 //! Two lock files in the store root encode the resulting matrix:
 //! `writer.lock` serializes the runs that change what blobs are needed
-//! (backup, gc, prune), and `store.lock` keeps readers out only while rows
-//! disappear (prune). Readers and backups therefore never block each
+//! (commit, gc, prune), and `store.lock` keeps readers out only while rows
+//! disappear (prune). Readers and commits therefore never block each
 //! other. The files are never deleted: removing a held lock file would let
 //! the next process lock a fresh inode and walk straight past the holder.
 //!
@@ -29,13 +29,13 @@ const STORE_LOCK: &str = "store.lock";
 /// How an operation uses the store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StoreLockMode {
-    /// Reads and tag edits: run alongside each other and alongside backups.
+    /// Reads and tag edits: run alongside each other and alongside commits.
     /// Every blob a shared holder can resolve survives a concurrent `gc`,
     /// which unlinks only blobs no row references, while rows disappear
     /// only under [`Self::Exclusive`]. Tags never change which blobs rows
     /// reference, so editing them needs no writer lock.
     Shared,
-    /// Runs that write or collect blobs (`backup`, `gc`):
+    /// Runs that write or collect blobs (`commit`, `gc`):
     /// one at a time, while readers keep going.
     Writer,
     /// Runs that delete rows (`prune`): nothing else may run.

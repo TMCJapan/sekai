@@ -22,9 +22,9 @@ fn benches(c: &mut Criterion) {
         rt.block_on(
             instance
                 .world_mut(&mut world)
-                .backup(options(), Scope::World, |_| {}),
+                .commit(options(), Scope::World, |_| {}),
         )
-        .expect("backup works");
+        .expect("commit works");
         // Plan is read-only and repeatable; apply (unlink syscalls) is
         // covered by unit tests.
         b.iter(|| {

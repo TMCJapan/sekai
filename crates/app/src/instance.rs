@@ -6,8 +6,8 @@
 //! is pluggable: any [`SekaiStore`] backend can be used, and the SQLite
 //! backend additionally gets the convenience `open`/`init` entry points.
 //! Operations that touch a world hang off borrowed handles: [`WorldHandle`]
-//! for read-only work, [`WorldHandleMut`] for runs that write (backup,
-//! rollback), so write exclusivity shows in the type.
+//! for read-only work, [`WorldHandleMut`] for runs that write (commit,
+//! checkout), so write exclusivity shows in the type.
 //!
 //! Exclusion against other processes is per operation: every public
 //! operation locks the store (and its world, if any) at entry and releases
@@ -17,7 +17,7 @@
 
 use std::sync::Arc;
 
-use sekai_core::{Snapshot, SnapshotId};
+use sekai_core::{Commit, CommitId};
 use sekai_storage::{SekaiStore, SekaiStoreOpener, StoreLockMode};
 use sekai_world::{WorldLock, WorldLockMode, WorldLockState, WorldTree};
 
@@ -70,67 +70,61 @@ impl<T: SekaiStore> SekaiInstance<T> {
         Ok(self.store.lock(mode)?)
     }
 
-    /// List all snapshots in ID order (for `list` and pre-flight checks).
-    pub async fn list_snapshots(&self) -> Result<Vec<Snapshot>, AppError> {
+    /// List all commits in ID order (for `log` and pre-flight checks).
+    pub async fn list_commits(&self) -> Result<Vec<Commit>, AppError> {
         let _lock = self.lock_store(StoreLockMode::Shared)?;
-        sekai_core::usecase::snapshot::list_snapshots(self.store.meta())
+        sekai_core::usecase::graph::list_commits(self.store.meta())
             .await
-            .map_err(AppError::Snapshot)
+            .map_err(AppError::Commit)
     }
 
-    /// The snapshots a snapshot continues: its direct parents.
+    /// The commits a commit continues: its direct parents.
     ///
-    /// Fails when the snapshot does not exist.
-    pub async fn snapshot_parents(
-        &self,
-        snapshot: SnapshotId,
-    ) -> Result<Vec<SnapshotId>, AppError> {
+    /// Fails when the commit does not exist.
+    pub async fn commit_parents(&self, commit: CommitId) -> Result<Vec<CommitId>, AppError> {
         let _lock = self.lock_store(StoreLockMode::Shared)?;
-        sekai_core::usecase::snapshot::snapshot_parents(self.store.meta(), snapshot)
+        sekai_core::usecase::graph::commit_parents(self.store.meta(), commit)
             .await
-            .map_err(AppError::Snapshot)
+            .map_err(AppError::Commit)
     }
 
-    /// Every ancestor of a snapshot, nearest first.
+    /// Every ancestor of a commit, nearest first.
     ///
-    /// Fails when the snapshot does not exist.
-    pub async fn snapshot_ancestors(
-        &self,
-        snapshot: SnapshotId,
-    ) -> Result<Vec<SnapshotId>, AppError> {
+    /// Fails when the commit does not exist.
+    pub async fn commit_ancestors(&self, commit: CommitId) -> Result<Vec<CommitId>, AppError> {
         let _lock = self.lock_store(StoreLockMode::Shared)?;
-        sekai_core::usecase::snapshot::snapshot_ancestors(self.store.meta(), snapshot)
+        sekai_core::usecase::graph::commit_ancestors(self.store.meta(), commit)
             .await
-            .map_err(AppError::Snapshot)
+            .map_err(AppError::Commit)
     }
 
-    /// The history of a snapshot: the snapshot itself followed by its
+    /// The history of a commit: the commit itself followed by its
     /// ancestors, nearest first.
     ///
-    /// Fails when the snapshot does not exist.
-    pub async fn snapshot_history(&self, snapshot: SnapshotId) -> Result<Vec<Snapshot>, AppError> {
+    /// Fails when the commit does not exist.
+    pub async fn commit_history(&self, commit: CommitId) -> Result<Vec<Commit>, AppError> {
         let _lock = self.lock_store(StoreLockMode::Shared)?;
-        sekai_core::usecase::snapshot::snapshot_history(self.store.meta(), snapshot)
+        sekai_core::usecase::graph::commit_history(self.store.meta(), commit)
             .await
-            .map_err(AppError::Snapshot)
+            .map_err(AppError::Commit)
     }
 
-    /// Latest snapshot ID; fails when the store has no snapshots.
-    pub async fn latest_snapshot_id(&self) -> Result<SnapshotId, AppError> {
+    /// Latest commit ID; fails when the store has no commits.
+    pub async fn latest_commit_id(&self) -> Result<CommitId, AppError> {
         let lock = self.lock_store(StoreLockMode::Shared)?;
-        self.latest_snapshot_id_locked(&lock).await
+        self.latest_commit_id_locked(&lock).await
     }
 
-    /// [`Self::latest_snapshot_id`] for an operation that already holds
+    /// [`Self::latest_commit_id`] for an operation that already holds
     /// `_held`; asking for it makes the caller prove the lock exists.
-    pub(crate) async fn latest_snapshot_id_locked(
+    pub(crate) async fn latest_commit_id_locked(
         &self,
         _held: &T::LockGuard,
-    ) -> Result<SnapshotId, AppError> {
-        sekai_core::usecase::snapshot::latest_snapshot_id(self.store.meta())
+    ) -> Result<CommitId, AppError> {
+        sekai_core::usecase::graph::latest_commit_id(self.store.meta())
             .await
-            .map_err(AppError::Snapshot)?
-            .ok_or(AppError::NoSnapshots)
+            .map_err(AppError::Commit)?
+            .ok_or(AppError::NoCommits)
     }
 }
 
@@ -150,7 +144,7 @@ impl SekaiInstance<sekai_storage_sqlite::SqliteStore> {
 
     /// Open the store named by `store_url`, initializing it when missing.
     ///
-    /// This is the creation path reserved for `backup`; every other command
+    /// This is the creation path reserved for `commit`; every other command
     /// must go through [`Self::open`] so a missing store fails loudly instead
     /// of leaving an empty store behind.
     pub async fn init(store_url: &str) -> Result<Self, AppError> {
@@ -218,7 +212,7 @@ pub struct WorldHandle<'a, W, S: SekaiStore> {
 
 /// Read-write handle to one world directory bound to an instance.
 ///
-/// Runs that write (`backup`, `rollback`) go through `&mut self`, and the
+/// Runs that write (`commit`, `checkout`) go through `&mut self`, and the
 /// handle borrows the instance mutably: while a write session is alive, no
 /// second handle for the same instance can exist, so store-scoped
 /// operations and other world writes cannot start.

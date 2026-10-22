@@ -1,4 +1,4 @@
-//! List subcommand execution, DTOs, and output rendering.
+//! Log subcommand execution, DTOs, and output rendering.
 
 use crate::envelope::envelope_ok;
 use crate::style::Styler;
@@ -7,37 +7,37 @@ use std::fmt::Write as _;
 
 pub async fn run(store: &str, json: bool, stat: bool, style: Styler) -> anyhow::Result<()> {
     let instance = sekai_app::SekaiInstance::open(store).await?;
-    let snapshots = instance.list_snapshots().await?;
+    let commits = instance.list_commits().await?;
     let tags = instance.list_tags().await?;
     let mut stats = Vec::new();
     if stat {
-        for snapshot in &snapshots {
-            stats.push(instance.snapshot_stats(snapshot.id).await?);
+        for commit in &commits {
+            stats.push(instance.commit_stats(commit.id).await?);
         }
     }
     if json {
         println!(
             "{}",
             envelope_ok(
-                "list",
-                &list_payload(&snapshots, &tags, stat.then_some(stats.as_slice()))
+                "log",
+                &log_payload(&commits, &tags, stat.then_some(stats.as_slice()))
             )?
         );
         return Ok(());
     }
-    if snapshots.is_empty() {
-        eprintln!("no snapshots found in store");
+    if commits.is_empty() {
+        eprintln!("no commits found in store");
         return Ok(());
     }
-    for (index, snapshot) in snapshots.iter().enumerate() {
+    for (index, commit) in commits.iter().enumerate() {
         let mut line = format!(
             "{}\t{}",
-            style.bold(&snapshot.id.raw().to_string()),
-            format_time(snapshot.created_at_ms)
+            style.bold(&commit.id.raw().to_string()),
+            format_time(commit.created_at_ms)
         );
         let names: Vec<&str> = tags
             .iter()
-            .filter(|tag| tag.snapshot == snapshot.id)
+            .filter(|tag| tag.commit == commit.id)
             .map(|tag| tag.name.as_str())
             .collect();
         if !names.is_empty() {
@@ -56,7 +56,7 @@ pub async fn run(store: &str, json: bool, stat: bool, style: Styler) -> anyhow::
 }
 
 #[derive(Serialize)]
-struct SnapshotJson {
+struct CommitJson {
     id: u64,
     created_at_ms: u64,
     tags: Vec<String>,
@@ -72,20 +72,20 @@ struct StatsJson {
     effective_chunks: usize,
 }
 
-fn list_payload(
-    snapshots: &[sekai_app::Snapshot],
-    tags: &[sekai_app::SnapshotTag],
-    stats: Option<&[sekai_app::SnapshotStats]>,
-) -> Vec<SnapshotJson> {
-    snapshots
+fn log_payload(
+    commits: &[sekai_app::Commit],
+    tags: &[sekai_app::CommitTag],
+    stats: Option<&[sekai_app::CommitStats]>,
+) -> Vec<CommitJson> {
+    commits
         .iter()
         .enumerate()
-        .map(|(index, snapshot)| SnapshotJson {
-            id: snapshot.id.raw(),
-            created_at_ms: snapshot.created_at_ms,
+        .map(|(index, commit)| CommitJson {
+            id: commit.id.raw(),
+            created_at_ms: commit.created_at_ms,
             tags: tags
                 .iter()
-                .filter(|tag| tag.snapshot == snapshot.id)
+                .filter(|tag| tag.commit == commit.id)
                 .map(|tag| tag.name.as_str().to_owned())
                 .collect(),
             stats: stats
@@ -117,47 +117,47 @@ mod tests {
     }
 
     #[test]
-    fn renders_list_json() {
-        let empty: Vec<sekai_app::Snapshot> = Vec::new();
-        let no_tags: Vec<sekai_app::SnapshotTag> = Vec::new();
-        let no_stats: Vec<sekai_app::SnapshotStats> = Vec::new();
+    fn renders_log_json() {
+        let empty: Vec<sekai_app::Commit> = Vec::new();
+        let no_tags: Vec<sekai_app::CommitTag> = Vec::new();
+        let no_stats: Vec<sekai_app::CommitStats> = Vec::new();
         assert_eq!(
-            serde_json::to_string(&list_payload(&empty, &no_tags, None)).unwrap(),
+            serde_json::to_string(&log_payload(&empty, &no_tags, None)).unwrap(),
             "[]"
         );
-        let snapshots = vec![
-            sekai_app::Snapshot {
-                id: sekai_app::SnapshotId(1),
+        let commits = vec![
+            sekai_app::Commit {
+                id: sekai_app::CommitId(1),
                 created_at_ms: 1_700_000_000_000,
                 parents: vec![],
             },
-            sekai_app::Snapshot {
-                id: sekai_app::SnapshotId(2),
+            sekai_app::Commit {
+                id: sekai_app::CommitId(2),
                 created_at_ms: 1_700_000_001_000,
-                parents: vec![sekai_app::SnapshotId(1)],
+                parents: vec![sekai_app::CommitId(1)],
             },
         ];
         assert_eq!(
-            serde_json::to_string(&list_payload(&snapshots, &no_tags, None)).unwrap(),
+            serde_json::to_string(&log_payload(&commits, &no_tags, None)).unwrap(),
             r#"[{"id":1,"created_at_ms":1700000000000,"tags":[]},{"id":2,"created_at_ms":1700000001000,"tags":[]}]"#
         );
-        let tags = vec![sekai_app::SnapshotTag::new(
+        let tags = vec![sekai_app::CommitTag::new(
             sekai_app::TagName::parse("stable").unwrap(),
-            sekai_app::SnapshotId(2),
+            sekai_app::CommitId(2),
             1_700_000_002_000,
         )];
         assert_eq!(
-            serde_json::to_string(&list_payload(&snapshots, &tags, None)).unwrap(),
+            serde_json::to_string(&log_payload(&commits, &tags, None)).unwrap(),
             r#"[{"id":1,"created_at_ms":1700000000000,"tags":[]},{"id":2,"created_at_ms":1700000001000,"tags":["stable"]}]"#
         );
         let stats = vec![
-            sekai_app::SnapshotStats {
+            sekai_app::CommitStats {
                 fresh_chunks: 2,
                 fresh_tombstones: 0,
                 new_blobs: 1,
                 effective_chunks: 2,
             },
-            sekai_app::SnapshotStats {
+            sekai_app::CommitStats {
                 fresh_chunks: 0,
                 fresh_tombstones: 1,
                 new_blobs: 0,
@@ -165,11 +165,11 @@ mod tests {
             },
         ];
         assert_eq!(
-            serde_json::to_string(&list_payload(&snapshots, &tags, Some(&stats))).unwrap(),
+            serde_json::to_string(&log_payload(&commits, &tags, Some(&stats))).unwrap(),
             r#"[{"id":1,"created_at_ms":1700000000000,"tags":[],"fresh_chunks":2,"fresh_tombstones":0,"new_blobs":1,"effective_chunks":2},{"id":2,"created_at_ms":1700000001000,"tags":["stable"],"fresh_chunks":0,"fresh_tombstones":1,"new_blobs":0,"effective_chunks":1}]"#
         );
         assert_eq!(
-            serde_json::to_string(&list_payload(&snapshots, &tags, Some(&no_stats))).unwrap(),
+            serde_json::to_string(&log_payload(&commits, &tags, Some(&no_stats))).unwrap(),
             r#"[{"id":1,"created_at_ms":1700000000000,"tags":[]},{"id":2,"created_at_ms":1700000001000,"tags":["stable"]}]"#
         );
     }

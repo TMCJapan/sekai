@@ -1,4 +1,4 @@
-//! Backup/rollback/diff scope: whole world or per-dimension areas.
+//! Commit/checkout/diff scope: whole world or per-dimension areas.
 //!
 //! Each selected dimension takes whole, rectangle, or chunk-list areas;
 //! region kinds apply uniformly across all areas. The selection owns its
@@ -141,8 +141,8 @@ impl Area {
 }
 
 /// Portion of the world an operation may read or write. Coordinates outside
-/// the scope are invisible: scoped backups record no tombstones for them
-/// and scoped rollbacks never touch their files.
+/// the scope are invisible: scoped commits record no tombstones for them
+/// and scoped checkouts never touch their files.
 ///
 /// An empty [`Scope::Select`] matches nothing; use [`Scope::World`] for
 /// the whole world, or [`Scope::Kinds`] to narrow the whole world to

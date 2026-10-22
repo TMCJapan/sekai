@@ -25,11 +25,11 @@ pub enum StorageError {
     /// URL carries no store location.
     #[error("store location is empty: pass a directory path")]
     EmptyStorePath,
-    /// The root holds no initialized store. Only backup runs create one;
+    /// The root holds no initialized store. Only commit runs create one;
     /// every other operation must fail here instead of materializing an
     /// empty store as a side effect.
     #[error(
-        "no store at {path}: run a backup to create one",
+        "no store at {path}: run a commit to create one",
         path = path.display()
     )]
     StoreMissing {
@@ -38,7 +38,7 @@ pub enum StorageError {
     },
     /// A writing run holds the store; `gc` must not run alongside it.
     #[error(
-        "store is in use by a running backup (marker {path}{holder}): a backup writes blobs before it commits the rows that reference them, so collecting now would unlink blobs the next commit still needs. Wait for it to finish, or remove the marker if no backup is running.",
+        "store is in use by a running commit (marker {path}{holder}): a commit writes blobs before it commits the rows that reference them, so collecting now would unlink blobs the next commit still needs. Wait for it to finish, or remove the marker if no commit is running.",
         path = path.display()
     )]
     StoreBusy {
@@ -77,35 +77,35 @@ pub enum StorageError {
     /// Region file size does not fit `i64`.
     #[error("region size out of range: {0}")]
     InvalidSize(u64),
-    /// Snapshot ID does not fit SQLite's signed integer type.
-    #[error("snapshot ID out of range: {0}")]
-    InvalidSnapshotId(u64),
-    /// A retirement must fold a snapshot into a strictly newer one.
-    #[error("cannot retire snapshot {from} into {into}: the successor must be newer")]
+    /// Commit ID does not fit SQLite's signed integer type.
+    #[error("commit ID out of range: {0}")]
+    InvalidCommitId(u64),
+    /// A retirement must fold a commit into a strictly newer one.
+    #[error("cannot retire commit {from} into {into}: the successor must be newer")]
     InvalidRetirement {
-        /// Snapshot being retired.
+        /// Commit being retired.
         from: u64,
         /// Intended successor.
         into: u64,
     },
-    /// A retirement must fold a snapshot into one of its descendants.
-    #[error("cannot retire snapshot {from} into {into}: the successor must descend from it")]
+    /// A retirement must fold a commit into one of its descendants.
+    #[error("cannot retire commit {from} into {into}: the successor must descend from it")]
     UnrelatedRetirement {
-        /// Snapshot being retired.
+        /// Commit being retired.
         from: u64,
         /// Intended successor.
         into: u64,
     },
-    /// The named snapshot does not exist.
-    #[error("unknown snapshot: {id}")]
-    UnknownSnapshot {
-        /// Requested snapshot ID.
+    /// The named commit does not exist.
+    #[error("unknown commit: {id}")]
+    UnknownCommit {
+        /// Requested commit ID.
         id: u64,
     },
-    /// A snapshot may not continue itself.
-    #[error("snapshot {id} cannot be its own parent")]
+    /// A commit may not continue itself.
+    #[error("commit {id} cannot be its own parent")]
     SelfParent {
-        /// Snapshot that named itself.
+        /// Commit that named itself.
         id: u64,
     },
     /// Database schema version is not supported.

@@ -1,16 +1,16 @@
-//! Validated snapshot tag names.
+//! Validated commit tag names.
 //!
-//! Tags give snapshots human-readable aliases (`@before-update`). Names
+//! Tags give commits human-readable aliases (`@before-update`). Names
 //! are restricted to `[A-Za-z0-9._-]` so they survive shells, paths, and
 //! JSON without quoting, and never consist of digits alone so `@123`
-//! cannot be confused with a snapshot ID.
+//! cannot be confused with a commit ID.
 
 use alloc::string::String;
 use core::{fmt, str::FromStr};
 
 use crate::error::TagNameError;
 
-/// Validated snapshot tag name.
+/// Validated commit tag name.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TagName(String);
 

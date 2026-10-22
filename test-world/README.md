@@ -2,7 +2,7 @@
 
 Small real-data world excerpt for regression tests and benchmarks.
 Tests must copy these files into a temp dir first; never mutate them
-in place (rollback rewrites region files).
+in place (a checkout rewrites region files).
 
 ## Contents
 
@@ -29,6 +29,6 @@ vanilla spawner/lighting strings, not player data.
 ## Regeneration
 
 These files are static snapshots, not generated. Parameterized scale
-worlds (size, density, fragmentation, snapshot depth) are produced by
+worlds (size, density, fragmentation, history depth) are produced by
 the seeded generator under `crates/app/benches/` instead; use that for
 benchmarks needing shapes this corpus does not cover.

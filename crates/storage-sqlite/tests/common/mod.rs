@@ -3,12 +3,12 @@
 //! The flows target `sekai-core` traits; backend-specific setup stays in each runner.
 
 use sekai_core::{
-    BlobHash, BlobStore, ChunkCoord, Dimension, MetaStore, Observation, RegionFingerprint,
-    RegionKey, RegionKind, Scope, SnapshotEntry, SnapshotId, SnapshotTag, TagName,
+    BlobHash, BlobStore, ChunkCoord, CommitEntry, CommitId, CommitTag, Dimension, MetaStore,
+    Observation, RegionFingerprint, RegionKey, RegionKind, Scope, TagName,
     usecase::{
-        backup::{Ingested, assemble, commit, plan_backup, stage_present},
+        checkout::plan_checkout,
+        commit::{Ingested, assemble, plan_commit, record_commit, stage_present},
         gc::{gc_apply, gc_plan},
-        rollback::plan_rollback,
     },
 };
 use std::collections::BTreeSet;
@@ -33,28 +33,23 @@ pub const fn fingerprint(key: RegionKey) -> RegionFingerprint {
     }
 }
 
-/// Snapshot CRUD plus point lookups.
-pub async fn snapshot_lifecycle<M>(meta: &mut M)
+/// Commit CRUD plus point lookups.
+pub async fn commit_lifecycle<M>(meta: &mut M)
 where
     M: MetaStore,
     M::Error: core::fmt::Debug,
 {
-    assert!(meta.latest_snapshot().await.unwrap().is_none());
-    let id = meta.create_snapshot(1_000, &[]).await.unwrap();
-    assert_eq!(meta.latest_snapshot().await.unwrap().unwrap().id, id);
-    assert!(
-        meta.lookup_snapshot(SnapshotId(999))
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert!(meta.latest_commit().await.unwrap().is_none());
+    let id = meta.create_commit(1_000, &[]).await.unwrap();
+    assert_eq!(meta.latest_commit().await.unwrap().unwrap().id, id);
+    assert!(meta.lookup_commit(CommitId(999)).await.unwrap().is_none());
     meta.record_chunk(id, &coord(0, 0), Some(&BlobHash([1; 32])), None)
         .await
         .unwrap();
     let row = meta.lookup_chunk(id, &coord(0, 0)).await.unwrap().unwrap();
     assert_eq!(row.blob, Some(BlobHash([1; 32])));
     assert!(meta.lookup_chunk(id, &coord(1, 0)).await.unwrap().is_none());
-    let listed = sekai_core::usecase::snapshot::list_snapshots(&*meta)
+    let listed = sekai_core::usecase::graph::list_commits(&*meta)
         .await
         .unwrap();
     assert_eq!(listed.len(), 1);
@@ -66,15 +61,15 @@ where
     M: MetaStore,
     M::Error: core::fmt::Debug,
 {
-    let first = meta.create_snapshot(1_000, &[]).await.unwrap();
-    let second = meta.create_snapshot(2_000, &[first]).await.unwrap();
+    let first = meta.create_commit(1_000, &[]).await.unwrap();
+    let second = meta.create_commit(2_000, &[first]).await.unwrap();
     let zeta = TagName::parse("zeta").unwrap();
     let alpha = TagName::parse("alpha").unwrap();
-    meta.tag_snapshot(&zeta, first, 1_500).await.unwrap();
-    meta.tag_snapshot(&alpha, second, 2_500).await.unwrap();
+    meta.tag_commit(&zeta, first, 1_500).await.unwrap();
+    meta.tag_commit(&alpha, second, 2_500).await.unwrap();
 
     let record = meta.lookup_tag(&alpha).await.unwrap().unwrap();
-    assert_eq!(record, SnapshotTag::new(alpha.clone(), second, 2_500));
+    assert_eq!(record, CommitTag::new(alpha.clone(), second, 2_500));
     assert!(
         meta.lookup_tag(&TagName::parse("missing").unwrap())
             .await
@@ -92,7 +87,7 @@ where
     assert_eq!(seen, ["alpha", "zeta"]);
 
     assert_eq!(
-        sekai_core::usecase::snapshot::resolve_snapshot_ref(&*meta, "@zeta")
+        sekai_core::usecase::graph::resolve_commit_ref(&*meta, "@zeta")
             .await
             .unwrap(),
         first
@@ -102,21 +97,21 @@ where
     assert!(!meta.untag(&alpha).await.unwrap());
 }
 
-/// Fresh-row visits and per-snapshot statistics.
+/// Fresh-row visits and per-commit statistics.
 pub async fn fresh_stats<M>(meta: &mut M)
 where
     M: MetaStore,
     M::Error: core::fmt::Debug,
 {
-    use sekai_core::usecase::snapshot::{SnapshotStats, snapshot_stats};
-    let first = meta.create_snapshot(1_000, &[]).await.unwrap();
+    use sekai_core::usecase::graph::{CommitStats, commit_stats};
+    let first = meta.create_commit(1_000, &[]).await.unwrap();
     meta.record_chunk(first, &coord(0, 0), Some(&BlobHash([1; 32])), None)
         .await
         .unwrap();
     meta.record_chunk(first, &coord(1, 0), Some(&BlobHash([1; 32])), None)
         .await
         .unwrap();
-    let second = meta.create_snapshot(2_000, &[first]).await.unwrap();
+    let second = meta.create_commit(2_000, &[first]).await.unwrap();
     meta.record_chunk(second, &coord(0, 0), Some(&BlobHash([2; 32])), None)
         .await
         .unwrap();
@@ -133,8 +128,8 @@ where
     .unwrap();
     assert_eq!(fresh, 2);
     assert_eq!(
-        snapshot_stats(&*meta, first).await.unwrap(),
-        SnapshotStats {
+        commit_stats(&*meta, first).await.unwrap(),
+        CommitStats {
             fresh_chunks: 2,
             fresh_tombstones: 0,
             new_blobs: 1,
@@ -142,8 +137,8 @@ where
         }
     );
     assert_eq!(
-        snapshot_stats(&*meta, second).await.unwrap(),
-        SnapshotStats {
+        commit_stats(&*meta, second).await.unwrap(),
+        CommitStats {
             fresh_chunks: 1,
             fresh_tombstones: 1,
             new_blobs: 1,
@@ -153,7 +148,7 @@ where
 }
 
 /// Pruning folds oldest-first without changing retained effective states,
-/// and drops tags of deleted snapshots by cascade.
+/// and drops tags of deleted commits by cascade.
 pub async fn prune_flow<M>(meta: &mut M)
 where
     M: MetaStore,
@@ -162,29 +157,29 @@ where
     use sekai_core::TagName;
     use sekai_core::usecase::prune::{PruneReport, prune_apply, prune_plan, select_retained};
     // S1: A@0,0 B@1,0 / S2: C@0,0 (B carried) / S3: D@2,0.
-    let first = meta.create_snapshot(1_000, &[]).await.unwrap();
+    let first = meta.create_commit(1_000, &[]).await.unwrap();
     meta.record_chunk(first, &coord(0, 0), Some(&BlobHash([1; 32])), None)
         .await
         .unwrap();
     meta.record_chunk(first, &coord(1, 0), Some(&BlobHash([2; 32])), None)
         .await
         .unwrap();
-    let second = meta.create_snapshot(2_000, &[first]).await.unwrap();
+    let second = meta.create_commit(2_000, &[first]).await.unwrap();
     meta.record_chunk(second, &coord(0, 0), Some(&BlobHash([3; 32])), None)
         .await
         .unwrap();
-    let third = meta.create_snapshot(3_000, &[second]).await.unwrap();
+    let third = meta.create_commit(3_000, &[second]).await.unwrap();
     meta.record_chunk(third, &coord(2, 0), Some(&BlobHash([4; 32])), None)
         .await
         .unwrap();
-    meta.tag_snapshot(&TagName::parse("doomed").unwrap(), first, 1_500)
+    meta.tag_commit(&TagName::parse("doomed").unwrap(), first, 1_500)
         .await
         .unwrap();
 
     let before: Vec<Vec<(ChunkCoord, Option<BlobHash>)>> =
         effective_rows(meta, &[first, second, third]).await;
 
-    let listed = sekai_core::usecase::snapshot::list_snapshots(&*meta)
+    let listed = sekai_core::usecase::graph::list_commits(&*meta)
         .await
         .unwrap();
     let retained = select_retained(&listed, Some(2), None);
@@ -204,7 +199,7 @@ where
     let after: Vec<Vec<(ChunkCoord, Option<BlobHash>)>> =
         effective_rows(meta, &[second, third]).await;
     assert_eq!(after, before[1..]);
-    assert!(meta.lookup_snapshot(first).await.unwrap().is_none());
+    assert!(meta.lookup_commit(first).await.unwrap().is_none());
     assert!(
         meta.lookup_tag(&TagName::parse("doomed").unwrap())
             .await
@@ -212,18 +207,18 @@ where
             .is_none()
     );
 
-    // A retirement into an older or equal snapshot, or into one that does
+    // A retirement into an older or equal commit, or into one that does
     // not exist, is a backend error rather than a silent no-op: the first
-    // would retroactively attach later rows to an earlier snapshot.
+    // would retroactively attach later rows to an earlier commit.
     for (from, into) in [
         (second, first),
         (first, first),
         (second, second),
-        (second, SnapshotId(999)),
-        (SnapshotId(999), third),
+        (second, CommitId(999)),
+        (CommitId(999), third),
     ] {
         assert!(
-            meta.retire_snapshot(from, into).await.is_err(),
+            meta.retire_commit(from, into).await.is_err(),
             "retire {from:?} into {into:?} must fail"
         );
     }
@@ -233,7 +228,7 @@ where
     assert_eq!(after_failures, after);
 }
 
-async fn effective_rows<M>(meta: &M, ids: &[SnapshotId]) -> Vec<Vec<(ChunkCoord, Option<BlobHash>)>>
+async fn effective_rows<M>(meta: &M, ids: &[CommitId]) -> Vec<Vec<(ChunkCoord, Option<BlobHash>)>>
 where
     M: MetaStore,
     M::Error: core::fmt::Debug,
@@ -241,7 +236,7 @@ where
     let mut out = Vec::new();
     for id in ids {
         let mut rows = Vec::new();
-        meta.visit_snapshot_chunks(*id, |entry| {
+        meta.visit_commit_chunks(*id, |entry| {
             rows.push((entry.coord, entry.blob));
             true
         })
@@ -254,14 +249,14 @@ where
 }
 
 /// Fingerprint carry: unchanged regions skip ingest, changed ones re-ingest.
-pub async fn backup_carry<M>(meta: &mut M)
+pub async fn commit_carry<M>(meta: &mut M)
 where
     M: MetaStore,
     M::Error: core::fmt::Debug,
 {
     let fp0 = fingerprint(key(0, 0));
     let fp1 = fingerprint(key(1, 0));
-    meta.apply_snapshot_incremental(
+    meta.apply_commit_incremental(
         1_000,
         &[],
         &[
@@ -287,7 +282,7 @@ where
             fingerprint: fp1,
         },
     ];
-    let (previous, plan) = plan_backup(&*meta, &observed, &Scope::World).await.unwrap();
+    let (previous, plan) = plan_commit(&*meta, &observed, &Scope::World).await.unwrap();
     assert_eq!(plan.carries, vec![key(1, 0)]);
     assert_eq!(plan.ingest, vec![key(0, 0)]);
 
@@ -302,11 +297,13 @@ where
         },
         &Scope::World,
     );
-    let report = commit(meta, &previous, &staged, 2_000).await.unwrap();
+    let report = record_commit(meta, &previous, &staged, 2_000)
+        .await
+        .unwrap();
     assert_eq!(report.carried_chunks, 1);
     assert_eq!(report.skipped_regions, 1);
     let kept = meta
-        .lookup_chunk(report.snapshot, &coord(32, 0))
+        .lookup_chunk(report.commit, &coord(32, 0))
         .await
         .unwrap()
         .unwrap();
@@ -320,7 +317,7 @@ where
     M::Error: core::fmt::Debug,
 {
     let fp = fingerprint(key(0, 0));
-    meta.apply_snapshot_incremental(
+    meta.apply_commit_incremental(
         1_000,
         &[],
         &[stage_present(coord(0, 0), BlobHash([1; 32]))],
@@ -330,19 +327,21 @@ where
     )
     .await
     .unwrap();
-    let (previous, plan) = plan_backup(&*meta, &[], &Scope::World).await.unwrap();
+    let (previous, plan) = plan_commit(&*meta, &[], &Scope::World).await.unwrap();
     assert_eq!(plan.removed, vec![key(0, 0)]);
     let staged = assemble(plan, &previous, Ingested::default(), &Scope::World);
     assert_eq!(staged.tombstones, 1);
-    let report = commit(meta, &previous, &staged, 2_000).await.unwrap();
+    let report = record_commit(meta, &previous, &staged, 2_000)
+        .await
+        .unwrap();
     assert_eq!(report.tombstones, 1);
     let tomb = meta
-        .lookup_chunk(report.snapshot, &coord(0, 0))
+        .lookup_chunk(report.commit, &coord(0, 0))
         .await
         .unwrap()
         .unwrap();
     assert!(tomb.is_tombstone());
-    let plan = plan_rollback(&*meta, report.snapshot).await.unwrap();
+    let plan = plan_checkout(&*meta, report.commit).await.unwrap();
     assert!(plan.groups.is_empty());
 }
 
@@ -354,24 +353,24 @@ where
     M: MetaStore,
     M::Error: core::fmt::Debug,
 {
-    use sekai_core::usecase::snapshot::{snapshot_ancestors, snapshot_history};
+    use sekai_core::usecase::graph::{commit_ancestors, commit_history};
 
     // Two independent histories: the second root shares no ancestor with
     // the first.
-    let first = meta.create_snapshot(1_000, &[]).await.unwrap();
+    let first = meta.create_commit(1_000, &[]).await.unwrap();
     meta.record_chunk(first, &coord(0, 0), Some(&BlobHash([1; 32])), None)
         .await
         .unwrap();
-    let second = meta.create_snapshot(2_000, &[first]).await.unwrap();
-    let other = meta.create_snapshot(3_000, &[]).await.unwrap();
-    let child = meta.create_snapshot(4_000, &[other]).await.unwrap();
+    let second = meta.create_commit(2_000, &[first]).await.unwrap();
+    let other = meta.create_commit(3_000, &[]).await.unwrap();
+    let child = meta.create_commit(4_000, &[other]).await.unwrap();
 
-    // The graph, not the identifier order, decides what a snapshot
+    // The graph, not the identifier order, decides what a commit
     // inherits: the chunk of `first` is invisible from `child`.
-    assert_eq!(meta.snapshot_parents(second).await.unwrap(), vec![first]);
-    assert_eq!(meta.snapshot_parents(first).await.unwrap(), vec![]);
-    assert_eq!(meta.snapshot_parents(child).await.unwrap(), vec![other]);
-    assert_eq!(meta.snapshot_parents(other).await.unwrap(), vec![]);
+    assert_eq!(meta.commit_parents(second).await.unwrap(), vec![first]);
+    assert_eq!(meta.commit_parents(first).await.unwrap(), vec![]);
+    assert_eq!(meta.commit_parents(child).await.unwrap(), vec![other]);
+    assert_eq!(meta.commit_parents(other).await.unwrap(), vec![]);
     assert!(
         meta.lookup_chunk(child, &coord(0, 0))
             .await
@@ -384,20 +383,16 @@ where
             .unwrap()
             .is_some()
     );
-    // A parent must exist: the graph never points at a missing snapshot.
-    assert!(
-        meta.create_snapshot(5_000, &[SnapshotId(999)])
-            .await
-            .is_err()
-    );
+    // A parent must exist: the graph never points at a missing commit.
+    assert!(meta.create_commit(5_000, &[CommitId(999)]).await.is_err());
     // A parent listed twice is recorded once, not a broken edge.
-    let twice = meta.create_snapshot(6_000, &[first, first]).await.unwrap();
-    assert_eq!(meta.snapshot_parents(twice).await.unwrap(), vec![first]);
+    let twice = meta.create_commit(6_000, &[first, first]).await.unwrap();
+    assert_eq!(meta.commit_parents(twice).await.unwrap(), vec![first]);
 
     // Walking back covers the whole history, nearest first.
-    assert_eq!(snapshot_ancestors(meta, second).await.unwrap(), vec![first]);
-    assert_eq!(snapshot_ancestors(meta, child).await.unwrap(), vec![other]);
-    let walked = snapshot_history(meta, second).await.unwrap();
+    assert_eq!(commit_ancestors(meta, second).await.unwrap(), vec![first]);
+    assert_eq!(commit_ancestors(meta, child).await.unwrap(), vec![other]);
+    let walked = commit_history(meta, second).await.unwrap();
     assert_eq!(
         walked.iter().map(|s| s.id).collect::<Vec<_>>(),
         vec![second, first]
@@ -405,20 +400,20 @@ where
     assert_eq!(walked[0].parents, vec![first]);
     assert!(walked[1].is_root());
 
-    // A merge snapshot continues two histories at once. The parents are
+    // A merge commit continues two histories at once. The parents are
     // recorded in the canonical (ascending identifier) order, and the
     // walk reports the direct parents first, in that order.
-    let merge = meta.create_snapshot(6_500, &[other, second]).await.unwrap();
+    let merge = meta.create_commit(6_500, &[other, second]).await.unwrap();
     assert_eq!(
-        meta.snapshot_parents(merge).await.unwrap(),
+        meta.commit_parents(merge).await.unwrap(),
         vec![second, other]
     );
     assert_eq!(
-        snapshot_ancestors(meta, merge).await.unwrap(),
+        commit_ancestors(meta, merge).await.unwrap(),
         vec![second, other, first]
     );
     assert_eq!(
-        snapshot_history(meta, merge)
+        commit_history(meta, merge)
             .await
             .unwrap()
             .iter()
@@ -427,12 +422,12 @@ where
         vec![merge, second, other, first]
     );
 
-    // Retiring a snapshot hands its children the history of its own
+    // Retiring a commit hands its children the history of its own
     // parents, so the graph stays connected.
-    meta.retire_snapshot(first, second).await.unwrap();
-    assert!(meta.lookup_snapshot(first).await.unwrap().is_none());
-    assert_eq!(meta.snapshot_parents(second).await.unwrap(), vec![]);
-    // The folded row still resolves at the surviving snapshot.
+    meta.retire_commit(first, second).await.unwrap();
+    assert!(meta.lookup_commit(first).await.unwrap().is_none());
+    assert_eq!(meta.commit_parents(second).await.unwrap(), vec![]);
+    // The folded row still resolves at the surviving commit.
     assert!(
         meta.lookup_chunk(second, &coord(0, 0))
             .await
@@ -441,22 +436,22 @@ where
     );
 
     // Retiring the middle of a three-deep history hands the grandchild
-    // the retired snapshot's own parent, not a dangling edge.
-    let root = meta.create_snapshot(7_000, &[]).await.unwrap();
-    let middle = meta.create_snapshot(8_000, &[root]).await.unwrap();
-    let grandchild = meta.create_snapshot(9_000, &[middle]).await.unwrap();
-    meta.retire_snapshot(middle, grandchild).await.unwrap();
-    assert!(meta.lookup_snapshot(middle).await.unwrap().is_none());
-    assert_eq!(meta.snapshot_parents(grandchild).await.unwrap(), vec![root]);
+    // the retired commit's own parent, not a dangling edge.
+    let root = meta.create_commit(7_000, &[]).await.unwrap();
+    let middle = meta.create_commit(8_000, &[root]).await.unwrap();
+    let grandchild = meta.create_commit(9_000, &[middle]).await.unwrap();
+    meta.retire_commit(middle, grandchild).await.unwrap();
+    assert!(meta.lookup_commit(middle).await.unwrap().is_none());
+    assert_eq!(meta.commit_parents(grandchild).await.unwrap(), vec![root]);
     assert_eq!(
-        snapshot_ancestors(meta, grandchild).await.unwrap(),
+        commit_ancestors(meta, grandchild).await.unwrap(),
         vec![root]
     );
 
     // Folding into a history that does not descend from the retired
-    // snapshot would graft rows the successor never had.
-    let unrelated = meta.create_snapshot(10_000, &[]).await.unwrap();
-    assert!(meta.retire_snapshot(root, unrelated).await.is_err());
+    // commit would graft rows the successor never had.
+    let unrelated = meta.create_commit(10_000, &[]).await.unwrap();
+    assert!(meta.retire_commit(root, unrelated).await.is_err());
 }
 
 /// CAS put/fetch/dedup/remove/visit contract.
@@ -489,7 +484,7 @@ where
     assert!(cas.fetch_into(&hash, &mut out).await.is_err());
 }
 
-/// Torn-backup simulation: an unreferenced blob is a GC orphan, a
+/// Torn-commit simulation: an unreferenced blob is a GC orphan, a
 /// referenced one survives planning and applying.
 pub async fn torn_orphan_gc<S>(store: &mut S)
 where
@@ -503,10 +498,10 @@ where
     store.cas_mut().sync().await.unwrap();
     store
         .meta_mut()
-        .apply_snapshot_incremental(
+        .apply_commit_incremental(
             1_000,
             &[],
-            &[SnapshotEntry::new(coord(0, 0), Some(live), None)],
+            &[CommitEntry::new(coord(0, 0), Some(live), None)],
             None,
             &[],
             &[],

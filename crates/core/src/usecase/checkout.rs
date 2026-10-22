@@ -1,4 +1,4 @@
-//! Rollback planning for exact snapshot restoration.
+//! Checkout planning for exact commit restoration.
 //!
 //! The plan contains present payloads grouped by region. Adapters rebuild
 //! files from CAS blobs; missing blobs are treated as corruption.
@@ -7,68 +7,68 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::port::meta::MetaStore;
-use sekai_util::{BlobHash, ChunkCoord, RegionKey, SnapshotId};
+use sekai_util::{BlobHash, ChunkCoord, CommitId, RegionKey};
 
-/// Outcome of one rollback run.
+/// Outcome of one checkout run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RollbackReport {
+pub struct CheckoutReport {
     /// Region files rewritten.
     pub files_written: usize,
-    /// Region files deleted (post-snapshot or fully tombstoned).
+    /// Region files deleted (post-commit or fully tombstoned).
     pub files_deleted: usize,
     /// Chunks restored from CAS blobs.
     pub chunks_restored: usize,
 }
 
-/// Resolved restore set for one snapshot.
+/// Resolved restore set for one commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RollbackPlan {
-    /// Snapshot creation time (unix millis, informational only).
+pub struct CheckoutPlan {
+    /// Commit creation time (unix millis, informational only).
     pub created_at_ms: u64,
     /// Present rows grouped by region.
     pub groups: BTreeMap<RegionKey, Vec<(ChunkCoord, BlobHash)>>,
     /// Tombstoned coordinates grouped by region. Regions absent from both
-    /// `groups` and `tombstones` are unknown to the snapshot (created
+    /// `groups` and `tombstones` are unknown to the commit (created
     /// afterwards); regions in `tombstones` but not `groups` are fully
     /// tombstoned. Adapters need the distinction to apply keep-policies.
     pub tombstones: BTreeMap<RegionKey, Vec<ChunkCoord>>,
 }
 
-/// Failures while resolving a rollback plan.
+/// Failures while resolving a checkout plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RollbackError<M> {
+pub enum CheckoutError<M> {
     /// Metadata backend failure.
     Meta(M),
-    /// No snapshot with this ID exists.
-    UnknownSnapshot {
-        /// Requested snapshot ID.
+    /// No commit with this ID exists.
+    UnknownCommit {
+        /// Requested commit ID.
         id: u64,
     },
 }
 
-impl<M: fmt::Debug> fmt::Display for RollbackError<M> {
+impl<M: fmt::Debug> fmt::Display for CheckoutError<M> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Meta(_) => write!(f, "snapshot metadata failed"),
-            Self::UnknownSnapshot { id } => write!(f, "unknown snapshot: {id}"),
+            Self::Meta(_) => write!(f, "commit metadata failed"),
+            Self::UnknownCommit { id } => write!(f, "unknown commit: {id}"),
         }
     }
 }
 
-/// Resolve present snapshot rows grouped by region.
-pub async fn plan_rollback<M: MetaStore>(
+/// Resolve present commit rows grouped by region.
+pub async fn plan_checkout<M: MetaStore>(
     meta: &M,
-    snapshot: SnapshotId,
-) -> Result<RollbackPlan, RollbackError<M::Error>> {
+    commit: CommitId,
+) -> Result<CheckoutPlan, CheckoutError<M::Error>> {
     let created_at_ms = meta
-        .lookup_snapshot(snapshot)
+        .lookup_commit(commit)
         .await
-        .map_err(RollbackError::Meta)?
+        .map_err(CheckoutError::Meta)?
         .map(|s| s.created_at_ms)
-        .ok_or(RollbackError::UnknownSnapshot { id: snapshot.0 })?;
+        .ok_or(CheckoutError::UnknownCommit { id: commit.0 })?;
     let mut groups: BTreeMap<RegionKey, Vec<(ChunkCoord, BlobHash)>> = BTreeMap::new();
     let mut tombstones: BTreeMap<RegionKey, Vec<ChunkCoord>> = BTreeMap::new();
-    meta.visit_snapshot_chunks(snapshot, |entry| {
+    meta.visit_commit_chunks(commit, |entry| {
         if let Some(blob) = entry.blob {
             groups
                 .entry(RegionKey::of(entry.coord))
@@ -83,8 +83,8 @@ pub async fn plan_rollback<M: MetaStore>(
         true
     })
     .await
-    .map_err(RollbackError::Meta)?;
-    Ok(RollbackPlan {
+    .map_err(CheckoutError::Meta)?;
+    Ok(CheckoutPlan {
         created_at_ms,
         groups,
         tombstones,
@@ -95,7 +95,7 @@ pub async fn plan_rollback<M: MetaStore>(
 mod tests {
     use super::*;
     use crate::support::{MemMeta, block_on};
-    use sekai_util::{Dimension, RegionKind, SnapshotEntry};
+    use sekai_util::{CommitEntry, Dimension, RegionKind};
 
     const OVER: Dimension = Dimension::OVERWORLD;
     const REGION: RegionKind = RegionKind::Region;
@@ -106,13 +106,13 @@ mod tests {
         let a = ChunkCoord::new(OVER, REGION, 0, 0);
         let b = ChunkCoord::new(OVER, REGION, 1, 0);
         let gone = ChunkCoord::new(OVER, REGION, 2, 0);
-        let id = block_on(meta.apply_snapshot_incremental(
+        let id = block_on(meta.apply_commit_incremental(
             1_000,
             &[],
             &[
-                SnapshotEntry::new(a, Some(BlobHash([1; 32])), None),
-                SnapshotEntry::new(b, Some(BlobHash([2; 32])), None),
-                SnapshotEntry::new(gone, None, None),
+                CommitEntry::new(a, Some(BlobHash([1; 32])), None),
+                CommitEntry::new(b, Some(BlobHash([2; 32])), None),
+                CommitEntry::new(gone, None, None),
             ],
             None,
             &[],
@@ -121,7 +121,7 @@ mod tests {
         .unwrap()
         .id;
 
-        let plan = block_on(plan_rollback(&meta, id)).unwrap();
+        let plan = block_on(plan_checkout(&meta, id)).unwrap();
         assert_eq!(plan.created_at_ms, 1_000);
         assert_eq!(plan.groups.len(), 1);
         let rows = &plan.groups[&RegionKey::new(OVER, REGION, 0, 0)];
@@ -135,11 +135,11 @@ mod tests {
     }
 
     #[test]
-    fn unknown_snapshot_is_an_error() {
+    fn unknown_commit_is_an_error() {
         let meta = MemMeta::default();
         assert_eq!(
-            block_on(plan_rollback(&meta, SnapshotId(7))),
-            Err(RollbackError::UnknownSnapshot { id: 7 })
+            block_on(plan_checkout(&meta, CommitId(7))),
+            Err(CheckoutError::UnknownCommit { id: 7 })
         );
     }
 }

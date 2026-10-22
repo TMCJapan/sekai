@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use sekai_core::{
-    BlobHash, BlobStore as _, ChunkCoord, DEFAULT_IGNORED, MetaStore, NbtDiffEntry, RegionKey,
-    SnapshotId, diff_nbt,
+    BlobHash, BlobStore as _, ChunkCoord, CommitId, DEFAULT_IGNORED, MetaStore, NbtDiffEntry,
+    RegionKey, diff_nbt,
 };
 use sekai_storage::{BlockingBlobStore, SekaiStore, StoreLockMode};
 use sekai_world::{RegionFile, WorldLockMode, WorldTree};
@@ -20,7 +20,7 @@ use crate::regions::discover_regions;
 pub struct DiffTimings {
     /// Wall-clock total.
     pub total: Duration,
-    /// Snapshot metadata lookup plus CAS blob fetch, both sides.
+    /// Commit metadata lookup plus CAS blob fetch, both sides.
     pub blob_fetch: Duration,
     /// Payload decompression, both sides.
     pub decompress: Duration,
@@ -101,16 +101,16 @@ pub struct DiffProgress {
 }
 
 impl<S: SekaiStore> SekaiInstance<S> {
-    /// Compute AST diff for a chunk coordinate between two snapshots.
+    /// Compute AST diff for a chunk coordinate between two commits.
     pub async fn diff_chunk(
         &self,
-        old_snapshot: SnapshotId,
-        new_snapshot: SnapshotId,
+        old_commit: CommitId,
+        new_commit: CommitId,
         coord: &ChunkCoord,
         ignore: Option<&[&str]>,
     ) -> Result<Vec<NbtDiffEntry>, AppError> {
         let (diffs, _) = self
-            .diff_chunks(old_snapshot, new_snapshot, &[*coord], ignore, |_| {})
+            .diff_chunks(old_commit, new_commit, &[*coord], ignore, |_| {})
             .await?;
         Ok(diffs
             .into_iter()
@@ -131,14 +131,14 @@ pub struct ChunkDiff {
 impl<S: SekaiStore> SekaiInstance<S> {
     /// Compute AST diffs for explicit chunk coordinates.
     ///
-    /// Compares two snapshots in the store, additionally returning
+    /// Compares two commits in the store, additionally returning
     /// per-phase timings. A chunk absent (or tombstoned) on a side diffs as an
     /// empty compound there: absent on both sides yields no entries, present on
     /// one side reports whole-value Added/Removed entries.
     pub async fn diff_chunks(
         &self,
-        old_snapshot: SnapshotId,
-        new_snapshot: SnapshotId,
+        old_commit: CommitId,
+        new_commit: CommitId,
         coords: &[ChunkCoord],
         ignore: Option<&[&str]>,
         progress: impl FnMut(DiffProgress) + Send,
@@ -150,13 +150,13 @@ impl<S: SekaiStore> SekaiInstance<S> {
         let out = diff_coords(
             coords,
             ignore_set,
-            SnapshotDiff {
+            CommitDiff {
                 store: &self.store,
-                id: old_snapshot,
+                id: old_commit,
             },
-            SnapshotDiff {
+            CommitDiff {
                 store: &self.store,
-                id: new_snapshot,
+                id: new_commit,
             },
             progress,
             &mut timings,
@@ -166,19 +166,16 @@ impl<S: SekaiStore> SekaiInstance<S> {
         Ok((out, timings))
     }
 
-    /// Effective chunk coordinates of one snapshot (fallback-resolved set).
+    /// Effective chunk coordinates of one commit (fallback-resolved set).
     ///
     /// Takes its own shared store lock, so coordinates handed to a later
     /// [`Self::diff_chunks`] go stale if a prune runs in between (ADR-0014).
-    pub async fn snapshot_chunk_coords(
-        &self,
-        snapshot: SnapshotId,
-    ) -> Result<Vec<ChunkCoord>, AppError> {
+    pub async fn commit_chunk_coords(&self, commit: CommitId) -> Result<Vec<ChunkCoord>, AppError> {
         let _lock = self.lock_store(StoreLockMode::Shared)?;
         let mut coords = Vec::new();
         self.store
             .meta()
-            .visit_snapshot_chunks(snapshot, |entry| {
+            .visit_commit_chunks(commit, |entry| {
                 coords.push(entry.coord);
                 true
             })
@@ -190,7 +187,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
 /// Chunk coordinates present on disk in `world`.
 ///
 /// Takes its own shared world lock, so coordinates handed to a later
-/// [`WorldHandle::diff_world_chunks`] go stale if a rollback runs in
+/// [`WorldHandle::diff_world_chunks`] go stale if a checkout runs in
 /// between (ADR-0014).
 pub fn world_chunk_coords<T: WorldTree>(world: &T) -> Result<Vec<ChunkCoord>, AppError>
 where
@@ -217,15 +214,15 @@ where
     Ok(coords)
 }
 
-/// Fetch raw (still compressed) chunk payload for a snapshot from an open store.
+/// Fetch raw (still compressed) chunk payload for a commit from an open store.
 /// Returns `None` when the chunk is unknown there or tombstoned; a present
 /// blob missing from CAS still fails as corruption.
-async fn snapshot_chunk_compressed<S: SekaiStore>(
+async fn commit_chunk_compressed<S: SekaiStore>(
     store: &S,
-    snapshot_id: SnapshotId,
+    commit_id: CommitId,
     coord: &ChunkCoord,
 ) -> Result<Option<Vec<u8>>, AppError> {
-    let Some(entry) = store.meta().lookup_chunk(snapshot_id, coord).await? else {
+    let Some(entry) = store.meta().lookup_chunk(commit_id, coord).await? else {
         return Ok(None);
     };
     let Some(hash) = entry.blob else {
@@ -251,17 +248,17 @@ where
     AppError: From<W::Error>,
 {
     /// Compute AST diff for a chunk coordinate between the bound world state
-    /// and a snapshot.
+    /// and a commit.
     ///
-    /// If `snapshot` is `None`, the latest snapshot in the store is used.
+    /// If `commit` is `None`, the latest commit in the store is used.
     pub async fn diff_world_chunk(
         &self,
-        snapshot: Option<SnapshotId>,
+        commit: Option<CommitId>,
         coord: &ChunkCoord,
         ignore: Option<&[&str]>,
     ) -> Result<Vec<NbtDiffEntry>, AppError> {
         let (diffs, _) = self
-            .diff_world_chunks(snapshot, &[*coord], ignore, |_| {})
+            .diff_world_chunks(commit, &[*coord], ignore, |_| {})
             .await?;
         Ok(diffs
             .into_iter()
@@ -270,14 +267,14 @@ where
     }
 
     /// Compute AST diffs for explicit chunk coordinates between the bound
-    /// world state and a snapshot, additionally returning per-phase timings.
+    /// world state and a commit, additionally returning per-phase timings.
     ///
-    /// If `snapshot` is `None`, the latest snapshot in the store is used.
+    /// If `commit` is `None`, the latest commit in the store is used.
     /// World-side acquisition (region lookup, read, parse) counts under
     /// `blob_fetch`; both sides' decompression under `decompress`.
     pub async fn diff_world_chunks(
         &self,
-        snapshot: Option<SnapshotId>,
+        commit: Option<CommitId>,
         coords: &[ChunkCoord],
         ignore: Option<&[&str]>,
         progress: impl FnMut(DiffProgress) + Send,
@@ -289,13 +286,9 @@ where
             WorldLockMode::Shared,
         )?;
         let total_started = Instant::now();
-        let snapshot_id = match snapshot {
+        let commit_id = match commit {
             Some(id) => id,
-            None => {
-                self.instance
-                    .latest_snapshot_id_locked(locks.store())
-                    .await?
-            }
+            None => self.instance.latest_commit_id_locked(locks.store()).await?,
         };
 
         let ignore_set = ignore.unwrap_or(DEFAULT_IGNORED);
@@ -303,9 +296,9 @@ where
         let out = diff_coords(
             coords,
             ignore_set,
-            SnapshotDiff {
+            CommitDiff {
                 store: &self.instance.store,
-                id: snapshot_id,
+                id: commit_id,
             },
             WorldDiff {
                 regions: discover_regions(self.world)?,
@@ -326,24 +319,24 @@ where
     /// Compute AST diff for one chunk; see [`WorldHandle::diff_world_chunk`].
     pub async fn diff_world_chunk(
         &self,
-        snapshot: Option<SnapshotId>,
+        commit: Option<CommitId>,
         coord: &ChunkCoord,
         ignore: Option<&[&str]>,
     ) -> Result<Vec<NbtDiffEntry>, AppError> {
-        self.view().diff_world_chunk(snapshot, coord, ignore).await
+        self.view().diff_world_chunk(commit, coord, ignore).await
     }
 
     /// Compute AST diffs for explicit chunks; see
     /// [`WorldHandle::diff_world_chunks`].
     pub async fn diff_world_chunks(
         &self,
-        snapshot: Option<SnapshotId>,
+        commit: Option<CommitId>,
         coords: &[ChunkCoord],
         ignore: Option<&[&str]>,
         progress: impl FnMut(DiffProgress) + Send,
     ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
         self.view()
-            .diff_world_chunks(snapshot, coords, ignore, progress)
+            .diff_world_chunks(commit, coords, ignore, progress)
             .await
     }
 }
@@ -352,19 +345,19 @@ trait DiffSource {
     async fn payload(&self, coord: &ChunkCoord) -> Result<Option<Vec<u8>>, AppError>;
 }
 
-struct SnapshotDiff<'a, S> {
+struct CommitDiff<'a, S> {
     store: &'a S,
-    id: SnapshotId,
+    id: CommitId,
 }
 
-impl<S: SekaiStore> DiffSource for SnapshotDiff<'_, S> {
+impl<S: SekaiStore> DiffSource for CommitDiff<'_, S> {
     async fn payload(&self, coord: &ChunkCoord) -> Result<Option<Vec<u8>>, AppError> {
-        snapshot_chunk_compressed(self.store, self.id, coord).await
+        commit_chunk_compressed(self.store, self.id, coord).await
     }
 }
 
 /// One diff run's world side: region handles resolved once, not per chunk.
-/// The set is a snapshot taken when the run starts, so a region created
+/// The set is a commit taken when the run starts, so a region created
 /// mid-run is treated as absent until the next diff.
 struct WorldDiff<R> {
     regions: BTreeMap<RegionKey, R>,

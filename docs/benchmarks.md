@@ -1,6 +1,6 @@
 # Benchmarks
 
-Micro benchmarks (criterion) and integration backup flows. Baselines
+Micro benchmarks (criterion) and integration commit flows. Baselines
 below are medians on an i3-12100F (8 threads, 31 GiB RAM), `rustc 1.98.0`,
 release profile, September 2026. Your numbers will differ; compare
 before/after on the same machine, never across machines.
@@ -32,27 +32,27 @@ read-only flows.
 
 | Bench | Median | Notes |
 |---|---|---|
-| `backup/small-full` | 14.7 ms | fresh store |
-| `backup/small-incremental` | 3.1 ms | second backup, no changes; 2.7 ms before full-content fingerprinting |
-| `backup/medium-full` | 484 ms | fresh store |
-| `rollback/small` | 3.3 ms | ~200 chunks rewrite |
-| `rollback/corpus` | 19.0 ms | 1189 chunks rewrite |
+| `commit/small-full` | 14.7 ms | fresh store |
+| `commit/small-incremental` | 3.1 ms | second commit, no changes; 2.7 ms before full-content fingerprinting |
+| `commit/medium-full` | 484 ms | fresh store |
+| `checkout/small` | 3.3 ms | ~200 chunks rewrite |
+| `checkout/corpus` | 19.0 ms | 1189 chunks rewrite |
 | `diff/small-all` | 72.6 ms | ~200 chunks, self-diff; per-chunk CAS opens dominate |
 | `diff/corpus-all` | 655 ms | 1189 chunks, self-diff |
 | `gc-plan/small` | 2.1 ms | read-only plan, repeatable |
 
 Rule-of-thumb estimates per subcommand (same machine class):
 
-- `backup` full: ~500 ms for ~7K chunks; dominated by `db_apply`
+- `commit` full: ~500 ms for ~7K chunks; dominated by `db_apply`
   (WAL Full + per-blob fsync). Incremental no-change runs near
   `universe_load` plus the fingerprint pass, which reads every region
   file: ~2 GB/s warm, disk-bound cold. On the 9.6 MiB `test-world`
-  corpus a no-change backup reports `total=14ms` with `fp=5ms`, against
+  corpus a no-change commit reports `total=14ms` with `fp=5ms`, against
   `total=9ms`/`fp=0ms` when only the 4 KiB location table was hashed
   (i3-12100F, warm cache, release). That is the price of not skipping a
   real change under a preserved mtime; see
   [ADR-0012](adr/0012-fingerprint-covers-file-content.md).
-- `rollback`: rewrite-bound, ~15–20 ms per 1K chunks.
+- `checkout`: rewrite-bound, ~15–20 ms per 1K chunks.
 - `diff`: ~0.5 ms per chunk, dominated by per-chunk CAS file opens
   (batching opportunity, untracked).
 - `gc plan`: a few ms at small scale; grows with history length.
@@ -60,7 +60,7 @@ Rule-of-thumb estimates per subcommand (same machine class):
 ## World-level measurement
 
 For full-world numbers (real disks, cold/warm page cache), use the
-product flags instead of criterion: `backup --timing --json` reports
+product flags instead of criterion: `commit --timing --json` reports
 per-phase `total_ms`/`phases`/`regions`. The `perf` issue template
 requires this output from a release build; see
 `.github/ISSUE_TEMPLATE/perf.yaml` for the required conditions

@@ -1,6 +1,6 @@
-//! Region identities and incremental-backup fingerprints.
+//! Region identities and incremental-ingest fingerprints.
 
-use super::{BlobHash, ChunkCoord, DiffHash, Dimension, RegionKind, SnapshotId};
+use super::{BlobHash, ChunkCoord, CommitId, DiffHash, Dimension, RegionKind};
 
 /// Identity of one region file within its namespace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -27,7 +27,7 @@ impl RegionKey {
     }
 }
 
-/// Fingerprint observed on disk during backup planning.
+/// Fingerprint observed on disk during commit planning.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RegionFingerprint {
     /// Which file this fingerprint describes.
@@ -43,10 +43,10 @@ pub struct RegionFingerprint {
 /// Persisted fingerprint of the last ingested file state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RegionStateEntry {
-    /// The fingerprint as observed when `snapshot_id` confirmed it.
+    /// The fingerprint as observed when `commit_id` confirmed it.
     pub fingerprint: RegionFingerprint,
-    /// Snapshot that last confirmed this fingerprint.
-    pub snapshot_id: SnapshotId,
+    /// Commit that last confirmed this fingerprint.
+    pub commit_id: CommitId,
 }
 
 impl RegionFingerprint {
@@ -56,15 +56,15 @@ impl RegionFingerprint {
     /// cannot be silently ignored here, which is the point of comparing the
     /// whole value. A missing `mtime` on either side forces ingest instead:
     /// trusting a clock the platform cannot provide would risk stale
-    /// snapshots, so the fail-safe direction is to redo the work.
+    /// commits, so the fail-safe direction is to redo the work.
     pub fn matches_state(&self, state: &RegionStateEntry) -> bool {
         self.mtime_ms.is_some() && self == &state.fingerprint
     }
 }
 
-/// Chunk state staged for a snapshot commit.
+/// Chunk state staged for a commit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SnapshotEntry {
+pub struct CommitEntry {
     /// Which chunk this fact describes.
     pub coord: ChunkCoord,
     /// Exact CAS key, or `None` for a tombstone.
@@ -73,26 +73,26 @@ pub struct SnapshotEntry {
     pub diff: Option<DiffHash>,
 }
 
-impl SnapshotEntry {
+impl CommitEntry {
     /// Construct a chunk fact.
     pub const fn new(coord: ChunkCoord, blob: Option<BlobHash>, diff: Option<DiffHash>) -> Self {
         Self { coord, blob, diff }
     }
 }
 
-/// Result of a snapshot commit.
+/// Result of recording a commit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ApplyOutcome {
-    /// Newly recorded snapshot ID.
-    pub id: SnapshotId,
-    /// History rows carried over from the previous snapshot.
+    /// Newly recorded commit ID.
+    pub id: CommitId,
+    /// History rows carried over from the previous commit.
     pub carried_chunks: usize,
 }
 
-/// Result of retiring one snapshot into its successor.
+/// Result of retiring one commit into its successor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FoldOutcome {
-    /// Rows re-stamped onto the successor snapshot.
+    /// Rows re-stamped onto the successor commit.
     pub folded: usize,
     /// Rows superseded before the successor and removed.
     pub dropped: usize,
@@ -118,7 +118,7 @@ mod tests {
     const fn stored() -> RegionStateEntry {
         RegionStateEntry {
             fingerprint: fingerprint(),
-            snapshot_id: SnapshotId(1),
+            commit_id: CommitId(1),
         }
     }
 

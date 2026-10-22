@@ -9,7 +9,7 @@ use crate::{WorldLock, WorldLockMode, WorldLockState};
 
 pub use hostworld::{HostRegion, HostWorldLock, HostWorldLockError, HostWorldTree};
 
-/// World access shared by backup, export, rollback, and diff.
+/// World access shared by commit, clone, checkout, and diff.
 ///
 /// Bundles region discovery and handle derivation so `sekai-app` operations
 /// can accept any world implementation. Handles are cheap to clone: blocking
@@ -45,8 +45,8 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
     ///
     /// Raw codes are hashes of the canonical dimension ids, so this is not
     /// the trio order (`OVERWORLD`, `NETHER`, `END`) that the previous
-    /// combined discovery yielded; per-dimension walks (backup, diff,
-    /// rollback) visit dimensions in raw-code order instead.
+    /// combined discovery yielded; per-dimension walks (commit, diff,
+    /// checkout) visit dimensions in raw-code order instead.
     fn get_dims(&self) -> Result<Vec<Dimension>, Self::Error>;
 
     /// Every region file of `kind` inside `dim` as its identity and a
@@ -69,14 +69,14 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
     ) -> Result<Vec<(RegionKey, Self::Region)>, Self::Error>;
 
     /// Layout-derived handle of one region file, whether or not it exists
-    /// yet (export targets, restore targets for missing files).
+    /// yet (clone targets, restore targets for missing files).
     ///
     /// The name is canonical (`r.<x>.<z>.mca`). A world that holds a
     /// non-canonical spelling of the same region must be restored through
     /// that file's own handle: deriving the name here would create a
     /// second file for one region.
     ///
-    /// Output trees may point at roots that do not exist before export, so
+    /// Output trees may point at roots that do not exist before clone, so
     /// this never touches the filesystem: the dimension only has to be part
     /// of the layout. Writing to the handle creates the directories the
     /// file needs.
@@ -90,7 +90,7 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
     /// name comes from `key`. That directory is the one the region was
     /// observed in, so it exists.
     ///
-    /// Folders may have moved since the backup, so a restore prefers this
+    /// Folders may have moved since the commit, so a restore prefers this
     /// over the layout-derived handle: the live directory is what the
     /// sibling was observed in, while the derived handle names the
     /// layout's canonical directory.
@@ -107,7 +107,7 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
     /// [`WorldLockState::Guarded`] carries the guard, while
     /// [`WorldLockState::Unguarded`] names the reason the operation runs
     /// without exclusion. Every tree has to decide that explicitly: a
-    /// silent unguarded default would let a rollback overlap a backup
+    /// silent unguarded default would let a checkout overlap a commit
     /// without warning. Contention surfaces as its own failure so callers
     /// can tell "busy, retry" from a real one; [`HostWorldTree`] reports
     /// [`crate::WorldError::WorldLocked`].

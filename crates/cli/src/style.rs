@@ -59,7 +59,7 @@ impl Styler {
         self.enabled
     }
 
-    /// Bold (snapshot IDs, headings).
+    /// Bold (commit IDs, headings).
     pub fn bold(self, text: &str) -> String {
         self.paint(text, "1")
     }

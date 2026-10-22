@@ -1,4 +1,4 @@
-//! Fingerprinting region files for incremental snapshots.
+//! Fingerprinting region files for incremental commits.
 
 use std::fs::File;
 use std::path::Path;

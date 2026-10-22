@@ -8,20 +8,20 @@ sekai --store ./sekai-store status ./world
 sekai --store ./sekai-store diff 1 2 --in overworld:0,0
 ```
 
-- `list` prints snapshots oldest first with raw Unix-millis timestamps
+- `log` prints commits oldest first with raw Unix-millis timestamps
   (RFC 3339 rendering is human-output only). Tags pointing at each
-  snapshot are shown alongside; see [Tags](tags.md). `--stat` appends
-  per-snapshot change statistics (fresh/tombstone/new-blob/effective
+  commit are shown alongside; see [Tags](tags.md). `--stat` appends
+  per-commit change statistics (fresh/tombstone/new-blob/effective
   counts). An empty store prints a note to stderr and exits 0.
-- `status` previews what a backup would record: the basis snapshot
+- `status` previews what a commit would record: the basis commit
   (`latest`, `null` when the store is empty), changed regions (new and
   deleted files split out), chunks that would be newly recorded,
   tombstones, and blobs absent from CAS. `clean` means nothing in scope
-  differs from the latest snapshot; counts match a subsequent backup
+  differs from the latest commit; counts match a subsequent commit
   unless the world changes in between. There is deliberately no
-  `backup --dry-run`: `status` is that command.
-- `diff` compares chunk NBT between two snapshots, or between the live
-  world (`--world`) and a snapshot. One `--in DIM:x,z` selection keeps
+  `commit --dry-run`: `status` is that command.
+- `diff` compares chunk NBT between two commits, or between the live
+  world (`--world`) and a commit. One `--in DIM:x,z` selection keeps
   the single-chunk output; several selections switch to grouped output,
   omitting chunks without differences. Scope flags (`--in`, `--region`,
   `--kind`) select the compared chunks; see

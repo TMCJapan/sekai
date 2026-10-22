@@ -3,7 +3,7 @@
 Three server families share the `.mca` format but not the directory
 layout. Sekai reads the path you pass through one detection step, turns
 the result into a *dimension map* (one directory per observed dimension),
-and everything else — backup, rollback, diff, and export — works from that
+and everything else — commit, checkout, diff, and clone — works from that
 map. Pass the same path on every run.
 
 ## Layouts
@@ -86,7 +86,7 @@ Vanilla, legacy  region/ (overworld), DIM-1, DIM1,
 ## Discovery
 
 For every dimension in the map, sekai walks the three region families and
-yields the files a backup or rollback operates on:
+yields the files a commit or checkout operates on:
 
 ```text
 dimension dir ─▶ region/ entities/ poi/
@@ -106,8 +106,8 @@ dimension dir ─▶ region/ entities/ poi/
 - Symlinks are followed, like the game does; a missing kind directory is
   read as empty, but a missing world root or an unreadable directory fails
   loudly instead of silently dropping a dimension.
-- Rollback and export derive their target paths from the map; when folders
-  have moved since the backup, a missing region file is restored next to a
+- Checkout and clone derive their target paths from the map; when folders
+  have moved since the commit, a missing region file is restored next to a
   live sibling of the same dimension, and when no observed location exists
   the run fails loudly (`UnknownRegionPath`) rather than writing somewhere
   wrong.

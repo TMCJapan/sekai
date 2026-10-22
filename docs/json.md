@@ -14,11 +14,11 @@ carries the bare result only.
 
 | Command | `--json` | `--timing` | Notes |
 |---|---|---|---|
-| `backup` | report (+timings with `--timing`) | table + JSON block | regions list is timing detail, JSON-only |
+| `commit` | report (+timings with `--timing`) | table + JSON block | regions list is timing detail, JSON-only |
 | `status` | preview (+timings with `--timing`) | table + JSON block | read-only: never writes to world or store |
-| `rollback` | report (+timings with `--timing`) | table + JSON block | |
-| `list` | snapshot array (+stats with `--stat`) | n/a | no phases exist |
-| `export` | report (+timings with `--timing`) | table + JSON block | |
+| `checkout` | report (+timings with `--timing`) | table + JSON block | |
+| `log` | commit array (+stats with `--stat`) | n/a | no phases exist |
+| `clone` | report (+timings with `--timing`) | table + JSON block | |
 | `tag` | record, deletion record, or tag array | n/a | no phases exist |
 | `diff` | single array, grouped array (multi), or timed object | table + JSON block | `--in`/`--region` select chunks; one chunk keeps the single shape |
 | `gc` | report or dry-run plan (+timings with `--timing`) | table + JSON block | dry-run timings carry `plan_ms`; `apply_ms` is `0` |
@@ -27,7 +27,7 @@ carries the bare result only.
 Without `--timing`, `--json` emits the bare result. With `--timing`,
 the report that would be a bare array (`diff`) is promoted to an object
 holding the array (`diffs`) plus the timing block; object reports
-(backup/status/rollback/export/gc/prune) append the block in place.
+(commit/status/checkout/clone/gc/prune) append the block in place.
 
 ## Envelope
 
@@ -40,7 +40,9 @@ Every invocation prints exactly one JSON object to stdout:
 {"command": "<name>", "status": "error", "error": "<full context chain>"}
 ```
 
-`command` is one of `backup`, `status`, `rollback`, `list`, `export`, `tag`, `prune`, `diff`, `gc`.
+`command` is one of `commit`, `status`, `checkout`, `log`, `clone`, `tag`, `prune`, `diff`, `gc`.
+The canonical name is used even when an alias (`backup`, `rollback`,
+`export`, `list`) invoked the command.
 The error string is the full anyhow context chain (outermost message
 first, then `Caused by:` lines), JSON-escaped.
 
@@ -56,13 +58,13 @@ first, then `Caused by:` lines), JSON-escaped.
 
 All durations are integer milliseconds. Paths are OS strings as observed.
 
-### `backup`
+### `commit`
 
 Without `--timing`:
 
 ```jsonc
 {
-  "snapshot": 3, "chunks": 101, "new_blobs": 5, "tombstones": 0,
+  "commit": 3, "chunks": 101, "new_blobs": 5, "tombstones": 0,
   "skipped_regions": 2, "carried_chunks": 40
 }
 ```
@@ -71,7 +73,7 @@ With `--timing` the `total_ms`/`phases`/`regions` block is appended:
 
 ```jsonc
 {
-  "snapshot": 3, "chunks": 101, "new_blobs": 5, "tombstones": 0,
+  "commit": 3, "chunks": 101, "new_blobs": 5, "tombstones": 0,
   "skipped_regions": 2, "carried_chunks": 40, "total_ms": 123,
   "phases": {
     "discover_ms": 1, "universe_load_ms": 10, "fingerprint_ms": 2,
@@ -98,75 +100,75 @@ With `--timing` the `total_ms`/`phases`/`regions` block is appended:
 ```
 
 The `total_ms`/`phases` block appears only with `--timing`.
-`latest` is `null` when no snapshot exists yet. Counts describe what a
-backup would record; nothing is written.
+`latest` is `null` when no commit exists yet. Counts describe what a
+commit would record; nothing is written.
 
-### `rollback`
+### `checkout`
 
 ```jsonc
 {
   "files_written": 2, "files_deleted": 1, "chunks_restored": 90,
   "total_ms": 200,
-  "phases": {"plan_ms": 50, "discover_ms": 5, "rollback_files_ms": 140}
+  "phases": {"plan_ms": 50, "discover_ms": 5, "checkout_files_ms": 140}
 }
 ```
 
 The `total_ms`/`phases` block appears only with `--timing`.
 
-Restore strategy flags (`--keep-post-snapshot-files`,
-`--keep-post-snapshot-chunks`, `--keep-tombstoned-chunks`,
+Restore strategy flags (`--keep-post-commit-files`,
+`--keep-post-commit-chunks`, `--keep-tombstoned-chunks`,
 `--on-missing-blob`, `--on-missing-file`) change what is written or
 deleted, so the counts reflect the applied policy; the payload shape is
 unchanged.
 
-### `export`
+### `clone`
 
 ```jsonc
 {
   "files_written": 2, "chunks_restored": 90,
   "total_ms": 200,
-  "phases": {"plan_ms": 50, "export_files_ms": 140}
+  "phases": {"plan_ms": 50, "clone_files_ms": 140}
 }
 ```
 
 The `total_ms`/`phases` block appears only with `--timing`.
 
-### `list`
+### `log`
 
 ```jsonc
 [{"id": 1, "created_at_ms": 1700000000000, "tags": []}, {"id": 2, "created_at_ms": 1700000001000, "tags": ["stable"]}]
 ```
 
 Timestamps are raw Unix millis (RFC 3339 rendering stays human-only).
-`tags` names the tags pointing at each snapshot, in name order.
+`tags` names the tags pointing at each commit, in name order.
 
-With `--stat`, per-snapshot change statistics are appended in place:
+With `--stat`, per-commit change statistics are appended in place:
 
 ```jsonc
 [{"id": 1, "created_at_ms": 1700000000000, "tags": [], "fresh_chunks": 2, "fresh_tombstones": 0, "new_blobs": 1, "effective_chunks": 2}]
 ```
 
 `fresh_chunks`/`fresh_tombstones` count rows introduced at the
-snapshot, `new_blobs` their distinct blobs, and `effective_chunks` the
+commit, `new_blobs` their distinct blobs, and `effective_chunks` the
 live chunks after fallback.
 
 ### `tag`
 
-Create (`tag create <name> <snapshot>`) and delete (`tag delete
+Create (`tag create <name> <commit>`) and delete (`tag delete
 <name>`) return the record:
 
 ```jsonc
-{"name": "stable", "snapshot": 2, "created_at_ms": 1700000001000}
+{"name": "stable", "commit": 2, "created_at_ms": 1700000001000}
 ```
 
 Deletion returns `{"name": "stable"}`. `tag list` lists all tags in
 name order:
 
 ```jsonc
-[{"name": "stable", "snapshot": 2, "created_at_ms": 1700000001000}]
+[{"name": "stable", "commit": 2, "created_at_ms": 1700000001000}]
 ```
 
-Snapshot arguments to `rollback`, `export`, and `diff` accept `<id>` or
+Commit arguments to `checkout`, `clone`, and `diff` accept `<id>` or
 `@tag`; payloads always carry the resolved numeric ID.
 
 ### `diff`
@@ -216,9 +218,9 @@ appended (single and grouped alike):
 }
 ```
 
-`blob_fetch` covers snapshot lookup plus CAS fetch on both sides
+`blob_fetch` covers commit lookup plus CAS fetch on both sides
 (world-side acquisition included); `decompress` both sides'
-decompression; `diff_compute` the AST diff. Snapshot-ID resolution and
+decompression; `diff_compute` the AST diff. Commit-ID resolution and
 coordinate enumeration stay outside the measured phases.
 
 ### `gc`
@@ -261,7 +263,7 @@ Note: dry-run reports the orphan *count*, never the hashes.
 
 The `total_ms`/`phases` block appears only with `--timing`.
 
-Dry-run (`prune --dry-run --json`) lists snapshot IDs instead;
+Dry-run (`prune --dry-run --json`) lists commit IDs instead;
 `--timing` appends the plan timing block (`apply_ms` is always `0`):
 
 ```jsonc

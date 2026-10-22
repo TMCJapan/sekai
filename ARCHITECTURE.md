@@ -2,7 +2,7 @@
 
 ## Purpose
 
-A chunk-level deduplicated backup and rollback tool for Minecraft region
+A chunk-level deduplicated version control tool for Minecraft region
 files (`.mca`), designed for frequent hot-recovery rather than long-term
 archival, and a reusable Rust library for third-party server-management
 software.
@@ -12,7 +12,7 @@ software.
 - **In Scope**: Anvil sector parsing, chunk payload extraction, NBT
   decompression/normalization for diffing, content-addressed blob storage
   (CAS), history-graph metadata management over pluggable DB backends,
-  atomic rollback, and GC.
+  atomic checkout, and GC.
 - **Out of Scope**: External process lifecycle, server I/O synchronization
   (`save-off`, `save-all`, `save-on`), and cron/scheduling. These belong
   exclusively to caller software or administrators - never to library crates.
@@ -42,10 +42,10 @@ sekai-util (no_std, zero-dependency: coordinates, hashes, history value
 
 | Crate | `std` | `async` | Role |
 |---|---|---|---|
-| `sekai-util` | `no_std`, zero external dependencies | no | Shared value types: coordinates, hashes, region/history/snapshot/gc records, hex errors. Pure data plus total validation only. |
+| `sekai-util` | `no_std`, zero external dependencies | no | Shared value types: coordinates, hashes, region/history/commit/gc records, hex errors. Pure data plus total validation only. |
 | `sekai-anvil` | `no_std` + `alloc` | no | Pure Anvil sector codec including decompression. `&[u8]` sector payload in, raw NBT bytes out; also builds `Vec<u8>` images. Compression framing is MCA spec knowledge, so it lives here. No `Path`, no `fs`. Names custom dimensions with util `Dimension`. |
 | `sekai-nbt` | `no_std` + `alloc` | no | Pure `raw NBT bytes -> diff view`. Hand-rolled NBT parser (no `Serialize` by design; output uses SNBT), tag filtering, canonical digest returning util `DiffHash`. Never sees compression. |
-| `sekai-core` | `no_std` + `alloc` | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_rollback`, `gc plan`/`apply`) plus composition helpers (`hash_blob`, storage ports). Composes `anvil`/`nbt` over util types and re-exports them, so downstream paths stay stable. |
+| `sekai-core` | `no_std` + `alloc` | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_checkout`, `gc plan`/`apply`) plus composition helpers (`hash_blob`, storage ports). Composes `anvil`/`nbt` over util types and re-exports them, so downstream paths stay stable. |
 | `sekai-storage` | `std` + tokio | yes (RPITIT) | Backend-neutral boundaries: async `BlobStore`/`MetaStore` traits (owned by `core::port`, re-exported from the `api` module), high-level `SekaiStore`/`SekaiStoreOpener`/`BlockingBlobStore` traits, file CAS (`cas` module, `blobs/ab/cdef...` retained by design), store locks, and URL-based backend selection. Depends on `core`. |
 | `sekai-storage-sqlite` | `std` + tokio | yes | Concrete SQLite implementation over sqlx: `SqliteMeta` plus the SQLite-backed `SqliteStore`, schema/version gate, and opener. Implements the traits from `sekai-storage` (and `core::port`). Other backends become sibling crates without touching `core`/`app`. |
 | `sekai-world` | `std` | yes (I/O) / sync pure helpers where trivial | World access boundary: the `WorldTree` trait, the `RegionFile` handle, and the filesystem tree (`HostWorldTree`). |
@@ -98,14 +98,14 @@ rules:
 ## Data Flow
 
 ```text
-backup:
+commit:
   world: region handle -> Vec<u8> image
     -> anvil: image -> sector payloads -> decompress -> raw NBT bytes
     -> core::hash_blob(sector payload) -> BlobHash -> storage CAS put
     -> nbt (opt-in only): diff_hash(raw NBT bytes) -> diff cache column
 
-rollback:
-  core::plan_rollback -> groups of (coord, BlobHash)
+checkout:
+  core::plan_checkout -> groups of (coord, BlobHash)
     -> storage CAS fetch -> anvil builder -> Vec<u8> image
     -> world: region handle <- atomic swap(target, image)
 ```
@@ -149,9 +149,9 @@ classifies the root and resolves one directory per observed dimension
 once; operations then use those resolved handles and never re-inspect the
 layout. Region handles are derivable only for the ids a tree resolved;
 anything else fails loudly (`UnknownRegionPath`) instead of writing
-somewhere wrong, and rollback restores those files through their
+somewhere wrong, and checkout restores those files through their
 discovered folders, preferring same-dimension siblings over derived
-handles when folders moved since the backup.
+handles when folders moved since the commit.
 
 # Data & Hashing Model
 
@@ -159,7 +159,7 @@ handles when folders moved since the backup.
 
 - `blob_hash` (CAS key): hash over the exact raw byte payload as read from
   the sector (compression framing included). Immutable, persistent, restore
-  path. Rollback reproduces captured bytes verbatim, rewinding volatile tags
+  path. Checkout reproduces captured bytes verbatim, rewinding volatile tags
   (e.g. `LastUpdate`) to capture time.
 - `diff_hash` (volatile diff view): hash over uncompressed NBT with
   non-essential tags excluded (treated as absent), over a canonical encoding
@@ -179,7 +179,7 @@ owns all codec errors — type `127` surfaces as `CustomCompression`,
 `>= 128` (external `c.<x>.<z>.mcc` body) as `ExternalBody`, anything else
 as `UnknownCompression`. `sekai-nbt` only ever receives already-decompressed
 raw NBT bytes and parses them with a hand-rolled `no_std` parser (no
-`Serialize` by design). Backup ingests raw sector payloads opaquely into CAS;
+`Serialize` by design). Commit ingests raw sector payloads opaquely into CAS;
 unsupported codecs surface only when the raw NBT view is derived for
 diffing, never as ingest failures.
 
@@ -211,56 +211,56 @@ re-indexing.
 
 # History, State, and GC Model
 
-## The Snapshot Graph
+## The Commit Graph
 
-Snapshots form a history graph, not a timeline: every snapshot names the
-snapshots it continues in `parents` (empty for the root of a history, one
-entry for an ordinary snapshot, several for a merge). The graph - not the
-identifier order - decides what a snapshot inherits, so a snapshot never
+Commits form a history graph, not a timeline: every commit names the
+commits it continues in `parents` (empty for the root of a history, one
+entry for an ordinary commit, several for a merge). The graph - not the
+identifier order - decides what a commit inherits, so a commit never
 sees rows introduced by a history it does not descend from.
 
-Parent links are written with the snapshot row, in the same transaction,
-and read back through the `MetaStore` port (`snapshot_parents`) or walked
-to the root by the core use cases (`usecase::snapshot::snapshot_ancestors`
-/ `snapshot_history`). Every parent must exist, a snapshot may not name
+Parent links are written with the commit row, in the same transaction,
+and read back through the `MetaStore` port (`commit_parents`) or walked
+to the root by the core use cases (`usecase::graph::commit_ancestors`
+/ `commit_history`). Every parent must exist, a commit may not name
 itself, and a parent listed twice is recorded once.
 
 Ref objects (a movable `HEAD`, named branches) do not exist yet. Until
-they do, a new snapshot continues the snapshot it was planned against: the
-latest snapshot of the store, which is also the base its delta was
+they do, a new commit continues the commit it was planned against: the
+latest commit of the store, which is also the base its delta was
 computed from. Merges are representable in the model but nothing creates
 them yet, so a history is a chain in practice.
 
-Retiring a snapshot (`prune`) keeps the graph connected: the children of
-the retired snapshot continue the history of its own parents, so the
-surviving snapshots resolve to the same effective state as before.
+Retiring a commit (`prune`) keeps the graph connected: the children of
+the retired commit continue the history of its own parents, so the
+surviving commits resolve to the same effective state as before.
 
 ## Delta History Storage
 
-Snapshots store only fresh rows (ingested chunks plus tombstones).
-Unchanged chunks have no row at newer snapshots; reads resolve effective
+Commits store only fresh rows (ingested chunks plus tombstones).
+Unchanged chunks have no row at newer commits; reads resolve effective
 state through the graph - `lookup_chunk` returns the row introduced at
-the snapshot or at one of its ancestors (the nearest one wins),
-`visit_snapshot_chunks` synthesizes one effective row per known
+the commit or at one of its ancestors (the nearest one wins),
+`visit_commit_chunks` synthesizes one effective row per known
 coordinate. Carried regions advance only derived state (`region_state`),
-and their effective chunk count is aggregated for the report. Every backup
+and their effective chunk count is aggregated for the report. Every commit
 therefore grows metadata with changes, not with universe size - an
-unchanged backup writes one snapshot row plus state bumps instead of a
+unchanged commit writes one commit row plus state bumps instead of a
 full row copy.
 
 ## Tombstones
 
-Missing chunks are explicit `NULL`-blob rows, written once at the snapshot
+Missing chunks are explicit `NULL`-blob rows, written once at the commit
 where they vanish: a coordinate already tombstoned records nothing further,
 because its absence already resolves through fallback. Change detection
 therefore compares the world against the effective *present* coordinate set
-of the latest snapshot, so a repeated backup of an unchanged world writes no
-chunk rows at all. Rollback onto tombstones removes sectors (fully
+of the latest commit, so a repeated commit of an unchanged world writes no
+chunk rows at all. Checkout onto tombstones removes sectors (fully
 tombstoned regions delete the file rather than leaving a header-only shell).
 
 ## Scoped Operations
 
-Backup, rollback, and diff accept a scope: whole world (default) or
+Commit, checkout, and diff accept a scope: whole world (default) or
 per-dimension areas — whole dimension (`--in DIM`), chunk rectangle
 (`--in DIM:x0,z0..x1,z1`), explicit chunks (`--in DIM:x,z`), or region
 files (`--region DIM:RX,RZ`, rectangle sugar). Region kinds (`--kind`,
@@ -268,39 +268,39 @@ repeatable; empty means all) apply uniformly across every area, and on
 their own they narrow the whole world to those families (`Scope::Kinds`).
 The scope is a filter, not a partition:
 
-- Scoped backup ingests, carries, and tombstones only inside the scope.
+- Scoped commit ingests, carries, and tombstones only inside the scope.
   Out-of-scope coordinates record no rows and no tombstones, resolving
-  through fallback from earlier snapshots; stored state rows outside the
-  scope are never marked removed. A scoped backup therefore reads as the
+  through fallback from earlier commits; stored state rows outside the
+  scope are never marked removed. A scoped commit therefore reads as the
   truth for its scope only - a file deleted inside the scope tombstones
   its chunks, while anything outside is untouched. A file the scope covers
   only partly records no fingerprint and drops its stored one, so the next
-  backup that reaches it reads it again instead of carrying unread chunks.
-- Scoped rollback rebuilds and deletes only inside the scope; files
+  commit that reaches it reads it again instead of carrying unread chunks.
+- Scoped checkout rebuilds and deletes only inside the scope; files
   outside are never written, deleted, or otherwise touched.
-- Multi-chunk diff resolves coordinates from the snapshots (or world
+- Multi-chunk diff resolves coordinates from the commits (or world
   state) filtered by the scope and omits chunks without differences.
 
 ## Single Source of Truth vs Derived State
 
-- **Source of truth**: metadata history (`snapshots`, `snapshot_parents`,
+- **Source of truth**: metadata history (`commits`, `commit_parents`,
   `chunk_history`) in the selected DB backend + CAS blobs.
 - **Derived state**: `region_state` fingerprints. Wiping them costs at most
   one full ingest, never wrong data.
 
 ## Garbage Collection (GC)
 
-- **Reference scope**: global (all snapshots/dimensions/chunks), matching
+- **Reference scope**: global (all commits/dimensions/chunks), matching
   global CAS dedup.
 - **Two-phase safety**: `gc plan` (read-only candidates) then `gc apply`
   (re-verified unlink). No metadata writes in the orphan-only scope.
-- **Exclusivity**: a run that writes blobs holds `backup.inflight` in the
+- **Exclusivity**: a run that writes blobs holds `commit.inflight` in the
   store root for its duration; `gc` refuses at plan and apply time while it
-  is held, because a backup's blobs are in the CAS before the rows that
-  reference them. Readers (`rollback`, `export`, `diff`) never take it. See
+  is held, because a commit's blobs are in the CAS before the rows that
+  reference them. Readers (`checkout`, `clone`, `diff`) never take it. See
   [ADR-0011](docs/adr/0011-backup-run-marker.md).
-- **Snapshot pruning** (`prune`): oldest-first fold into the next
-  retained snapshot, then delete. Pruning dereferences blobs only;
+- **Commit pruning** (`prune`): oldest-first fold into the next
+  retained commit, then delete. Pruning dereferences blobs only;
   `gc` reclaims them afterwards.
 
 # Storage Backends
@@ -312,7 +312,7 @@ The scope is a filter, not a partition:
   come from `core::port` and are re-exported from storage's `api` module.
   Storage adds the high-level `SekaiStore` (metadata + blobs + the store
   lock), `SekaiStoreOpener` (URL selection), and `BlockingBlobStore` (the
-  synchronous blob operations used by backup ingest workers).
+  synchronous blob operations used by commit ingest workers).
 - `sekai-storage-sqlite` is the concrete sqlx backend. It owns `SqliteMeta`,
   `SqliteStore`, the schema, and the version gate, and implements the
   storage/core traits. Removing sqlx from `sekai-storage` keeps the
@@ -354,7 +354,7 @@ cancelled future cannot release the store while those tasks still run.
 ## Schema
 
 Owned by the backend crate (`crates/storage-sqlite/schema/sqlite.sql` for
-SQLite; `snapshots`, `snapshot_parents`, `chunk_history`, `region_state`;
+SQLite; `commits`, `commit_parents`, `chunk_history`, `region_state`;
 `SCHEMA_VERSION` gate; pre-release policy = recreate, don't migrate).
 The `cas` module stays independent of DB backend crates so future
 object-store CAS swaps don't touch metadata code.
@@ -368,7 +368,7 @@ object-store CAS swaps don't touch metadata code.
 - Pure orchestration steps (`assemble`, image building, canonical digest)
   stay synchronous.
 
-# Rollback & I/O Invariants
+# Checkout & I/O Invariants
 
 - **Atomic writes & cross-device safety**: `.mca` updates go to a temp file
   **in the same directory as the target** + `fsync` + `rename`. In-place
@@ -384,8 +384,8 @@ object-store CAS swaps don't touch metadata code.
 - **Crash consistency order**:
   - **Write path**: CAS blobs flushed + synced *before* DB metadata commit.
   - **GC delete path**: DB metadata commit *before* blob unlink.
-  - **Prune path**: each snapshot's fold (row restamp/drop, state
-    repoint, snapshot delete) commits atomically; blobs unlink only in
+  - **Prune path**: each commit's fold (row restamp/drop, state
+    repoint, commit delete) commits atomically; blobs unlink only in
     a later `gc`.
 - **No server orchestration in libraries**: `save-off`/`save-all`,
   scheduling, and process control belong to callers, never to `core`,

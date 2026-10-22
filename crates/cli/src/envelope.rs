@@ -62,23 +62,23 @@ mod tests {
             envelope_ok("list", &serde_json::json!([1, 2])).unwrap(),
             r#"{"command":"list","status":"ok","result":[1,2]}"#
         );
-        let err = anyhow::anyhow!("root cause").context("backup of /w failed");
+        let err = anyhow::anyhow!("root cause").context("commit of /w failed");
         assert_eq!(
-            envelope_err("backup", &err).unwrap(),
-            r#"{"command":"backup","status":"error","error":"backup of /w failed\n\nCaused by:\n    root cause"}"#
+            envelope_err("commit", &err).unwrap(),
+            r#"{"command":"commit","status":"error","error":"commit of /w failed\n\nCaused by:\n    root cause"}"#
         );
     }
 
     #[test]
     fn renders_error_with_chain() {
-        let err = anyhow::anyhow!("torn tail at sector 1034").context("backup of /w failed");
+        let err = anyhow::anyhow!("torn tail at sector 1034").context("commit of /w failed");
         assert_eq!(
             render_error(&err, Styler::enabled()),
-            "\x1b[1;31merror\x1b[0m: backup of /w failed\n\nCaused by:\n    torn tail at sector 1034"
+            "\x1b[1;31merror\x1b[0m: commit of /w failed\n\nCaused by:\n    torn tail at sector 1034"
         );
         assert_eq!(
             render_error(&err, Styler::disabled()),
-            "error: backup of /w failed\n\nCaused by:\n    torn tail at sector 1034"
+            "error: commit of /w failed\n\nCaused by:\n    torn tail at sector 1034"
         );
     }
 }

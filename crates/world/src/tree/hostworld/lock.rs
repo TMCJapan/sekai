@@ -84,7 +84,7 @@ impl HostWorldLock {
     /// existing file this user cannot open at all or a directory this user
     /// cannot search (where absence cannot be told), is an error: silently
     /// running unguarded would let a reader overlap another user's
-    /// rollback.
+    /// checkout.
     pub fn acquire(
         path: impl AsRef<Path>,
         mode: WorldLockMode,
@@ -516,7 +516,7 @@ mod tests {
         }
         let existing_lock = existing.join(HostWorldLock::FILE_NAME);
         let unreadable_lock = unreadable.join(HostWorldLock::FILE_NAME);
-        // Taken before the world turns read-only: another user's rollback.
+        // Taken before the world turns read-only: another user's checkout.
         let writer = HostWorldLock::acquire(&existing_lock, WorldLockMode::Exclusive)
             .unwrap()
             .guard()

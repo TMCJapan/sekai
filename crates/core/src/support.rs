@@ -8,8 +8,8 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use crate::port::{BlobStore, MetaStore};
 use sekai_util::{
-    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, DiffHash, FoldOutcome,
-    RegionFingerprint, RegionKey, RegionStateEntry, Snapshot, SnapshotId, SnapshotTag, TagName,
+    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitId, CommitTag, DiffHash,
+    FoldOutcome, RegionFingerprint, RegionKey, RegionStateEntry, TagName,
 };
 
 /// Fake backend failure.
@@ -24,34 +24,34 @@ pub enum MemError {
         /// Parent that was asked for.
         id: u64,
     },
-    /// A snapshot named itself as a parent.
+    /// A commit named itself as a parent.
     SelfParent {
-        /// Snapshot that named itself.
+        /// Commit that named itself.
         id: u64,
     },
     /// A retirement that does not follow the history.
     InvalidRetirement {
-        /// Snapshot being retired.
+        /// Commit being retired.
         from: u64,
         /// Intended successor.
         into: u64,
     },
 }
 
-/// Parent links by snapshot, for the walks over the history graph.
-fn parent_index(snapshots: &[Snapshot]) -> BTreeMap<SnapshotId, Vec<SnapshotId>> {
-    snapshots
+/// Parent links by commit, for the walks over the history graph.
+fn parent_index(commits: &[Commit]) -> BTreeMap<CommitId, Vec<CommitId>> {
+    commits
         .iter()
-        .map(|snapshot| (snapshot.id, snapshot.parents.clone()))
+        .map(|commit| (commit.id, commit.parents.clone()))
         .collect()
 }
 
-/// Ancestors of `snapshot`: every snapshot reachable through parent
-/// links, the snapshot itself excluded.
-fn ancestor_ids(snapshots: &[Snapshot], snapshot: SnapshotId) -> BTreeSet<SnapshotId> {
-    let index = parent_index(snapshots);
+/// Ancestors of `commit`: every commit reachable through parent
+/// links, the commit itself excluded.
+fn ancestor_ids(commits: &[Commit], commit: CommitId) -> BTreeSet<CommitId> {
+    let index = parent_index(commits);
     let mut seen = BTreeSet::new();
-    let mut stack: Vec<SnapshotId> = index.get(&snapshot).cloned().unwrap_or_default();
+    let mut stack: Vec<CommitId> = index.get(&commit).cloned().unwrap_or_default();
     while let Some(id) = stack.pop() {
         if !seen.insert(id) {
             continue;
@@ -63,24 +63,24 @@ fn ancestor_ids(snapshots: &[Snapshot], snapshot: SnapshotId) -> BTreeSet<Snapsh
     seen
 }
 
-/// Effective rows at `snapshot`: exactly one row per coordinate known
+/// Effective rows at `commit`: exactly one row per coordinate known
 /// then, tombstones included. Mirrors the backend: the row introduced at
-/// the snapshot or at one of its ancestors, the nearest one winning.
+/// the commit or at one of its ancestors, the nearest one winning.
 fn effective_at(
     rows: &[ChunkHistoryEntry],
-    snapshots: &[Snapshot],
-    snapshot: SnapshotId,
+    commits: &[Commit],
+    commit: CommitId,
 ) -> Vec<ChunkHistoryEntry> {
-    let ancestors = ancestor_ids(snapshots, snapshot);
+    let ancestors = ancestor_ids(commits, commit);
     let mut latest: BTreeMap<ChunkCoord, ChunkHistoryEntry> = BTreeMap::new();
     for row in rows {
-        if row.snapshot != snapshot && !ancestors.contains(&row.snapshot) {
+        if row.commit != commit && !ancestors.contains(&row.commit) {
             continue;
         }
         latest
             .entry(row.coord)
             .and_modify(|kept| {
-                if row.snapshot > kept.snapshot {
+                if row.commit > kept.commit {
                     *kept = *row;
                 }
             })
@@ -112,16 +112,16 @@ pub fn block_on<F: Future>(fut: F) -> F::Output {
 /// In-memory [`MetaStore`].
 #[derive(Debug, Default)]
 pub struct MemMeta {
-    /// Snapshots in ID order.
-    pub snapshots: Vec<Snapshot>,
+    /// Commits in ID order.
+    pub commits: Vec<Commit>,
     /// Every recorded row.
     pub rows: Vec<ChunkHistoryEntry>,
     /// Derived region states.
     pub states: Vec<RegionStateEntry>,
     /// Tags by name.
-    pub tags: BTreeMap<TagName, SnapshotTag>,
+    pub tags: BTreeMap<TagName, CommitTag>,
     /// The next identifier to hand out. Counted separately from the
-    /// stored snapshots so a retirement never makes an identifier
+    /// stored commits so a retirement never makes an identifier
     /// reusable.
     next_id: u64,
 }
@@ -129,16 +129,16 @@ pub struct MemMeta {
 impl MetaStore for MemMeta {
     type Error = MemError;
 
-    fn create_snapshot(
+    fn create_commit(
         &mut self,
         created_at_ms: u64,
-        parents: &[SnapshotId],
-    ) -> impl Future<Output = Result<SnapshotId, MemError>> + Send {
-        let id = SnapshotId(self.next_id + 1);
-        // Mirrors the backend: a parent must exist, a snapshot may not
+        parents: &[CommitId],
+    ) -> impl Future<Output = Result<CommitId, MemError>> + Send {
+        let id = CommitId(self.next_id + 1);
+        // Mirrors the backend: a parent must exist, a commit may not
         // name itself, and a parent listed twice is recorded once, in the
         // canonical (ascending identifier) order.
-        let known: BTreeSet<SnapshotId> = self.snapshots.iter().map(|s| s.id).collect();
+        let known: BTreeSet<CommitId> = self.commits.iter().map(|s| s.id).collect();
         for parent in parents {
             if *parent == id {
                 return core::future::ready(Err(MemError::SelfParent { id: parent.0 }));
@@ -147,27 +147,24 @@ impl MetaStore for MemMeta {
                 return core::future::ready(Err(MemError::UnknownParent { id: parent.0 }));
             }
         }
-        let mut unique: BTreeSet<SnapshotId> = BTreeSet::new();
+        let mut unique: BTreeSet<CommitId> = BTreeSet::new();
         for parent in parents {
             unique.insert(*parent);
         }
         self.next_id = id.0;
-        self.snapshots.push(Snapshot::new(
-            id,
-            created_at_ms,
-            unique.into_iter().collect(),
-        ));
+        self.commits
+            .push(Commit::new(id, created_at_ms, unique.into_iter().collect()));
         core::future::ready(Ok(id))
     }
 
-    fn snapshot_parents(
+    fn commit_parents(
         &self,
-        snapshot: SnapshotId,
-    ) -> impl Future<Output = Result<Vec<SnapshotId>, MemError>> + Send {
+        commit: CommitId,
+    ) -> impl Future<Output = Result<Vec<CommitId>, MemError>> + Send {
         let parents = self
-            .snapshots
+            .commits
             .iter()
-            .find(|s| s.id == snapshot)
+            .find(|s| s.id == commit)
             .map(|s| s.parents.clone())
             .unwrap_or_default();
         core::future::ready(Ok(parents))
@@ -175,14 +172,14 @@ impl MetaStore for MemMeta {
 
     fn record_chunk(
         &mut self,
-        snapshot: SnapshotId,
+        commit: CommitId,
         coord: &ChunkCoord,
         blob: Option<&BlobHash>,
         diff: Option<&DiffHash>,
     ) -> impl Future<Output = Result<(), MemError>> + Send {
         self.rows.push(ChunkHistoryEntry::new(
             *coord,
-            snapshot,
+            commit,
             blob.copied(),
             diff.copied(),
         ));
@@ -191,44 +188,43 @@ impl MetaStore for MemMeta {
 
     fn lookup_chunk(
         &self,
-        snapshot: SnapshotId,
+        commit: CommitId,
         coord: &ChunkCoord,
     ) -> impl Future<Output = Result<Option<ChunkHistoryEntry>, MemError>> + Send {
-        // The row introduced at the snapshot or at one of its ancestors,
+        // The row introduced at the commit or at one of its ancestors,
         // the nearest one winning (delta storage: unchanged chunks have
-        // no row at newer snapshots).
-        let ancestors = ancestor_ids(&self.snapshots, snapshot);
+        // no row at newer commits).
+        let ancestors = ancestor_ids(&self.commits, commit);
         core::future::ready(Ok(self
             .rows
             .iter()
             .filter(|row| {
-                (row.snapshot == snapshot || ancestors.contains(&row.snapshot))
-                    && row.coord == *coord
+                (row.commit == commit || ancestors.contains(&row.commit)) && row.coord == *coord
             })
-            .max_by_key(|row| row.snapshot)
+            .max_by_key(|row| row.commit)
             .copied()))
     }
 
-    fn lookup_snapshot(
+    fn lookup_commit(
         &self,
-        id: SnapshotId,
-    ) -> impl Future<Output = Result<Option<Snapshot>, MemError>> + Send {
-        core::future::ready(Ok(self.snapshots.iter().find(|s| s.id == id).cloned()))
+        id: CommitId,
+    ) -> impl Future<Output = Result<Option<Commit>, MemError>> + Send {
+        core::future::ready(Ok(self.commits.iter().find(|s| s.id == id).cloned()))
     }
 
-    fn latest_snapshot(&self) -> impl Future<Output = Result<Option<Snapshot>, MemError>> + Send {
-        core::future::ready(Ok(self.snapshots.last().cloned()))
+    fn latest_commit(&self) -> impl Future<Output = Result<Option<Commit>, MemError>> + Send {
+        core::future::ready(Ok(self.commits.last().cloned()))
     }
 
-    fn visit_snapshot_chunks<F>(
+    fn visit_commit_chunks<F>(
         &self,
-        snapshot: SnapshotId,
+        commit: CommitId,
         mut visit: F,
     ) -> impl Future<Output = Result<(), MemError>> + Send
     where
         F: FnMut(&ChunkHistoryEntry) -> bool + Send,
     {
-        for row in effective_at(&self.rows, &self.snapshots, snapshot) {
+        for row in effective_at(&self.rows, &self.commits, commit) {
             if !visit(&row) {
                 break;
             }
@@ -236,12 +232,12 @@ impl MetaStore for MemMeta {
         core::future::ready(Ok(()))
     }
 
-    fn visit_snapshots<F>(&self, mut visit: F) -> impl Future<Output = Result<(), MemError>> + Send
+    fn visit_commits<F>(&self, mut visit: F) -> impl Future<Output = Result<(), MemError>> + Send
     where
-        F: FnMut(&Snapshot) -> bool + Send,
+        F: FnMut(&Commit) -> bool + Send,
     {
-        for snapshot in &self.snapshots {
-            if !visit(snapshot) {
+        for commit in &self.commits {
+            if !visit(commit) {
                 break;
             }
         }
@@ -250,13 +246,13 @@ impl MetaStore for MemMeta {
 
     fn visit_fresh_rows<F>(
         &self,
-        snapshot: SnapshotId,
+        commit: CommitId,
         mut visit: F,
     ) -> impl Future<Output = Result<(), MemError>> + Send
     where
         F: FnMut(&ChunkHistoryEntry) -> bool + Send,
     {
-        for row in self.rows.iter().filter(|row| row.snapshot == snapshot) {
+        for row in self.rows.iter().filter(|row| row.commit == commit) {
             if !visit(row) {
                 break;
             }
@@ -270,16 +266,16 @@ impl MetaStore for MemMeta {
         core::future::ready(Ok(self.states.clone()))
     }
 
-    async fn apply_snapshot_incremental(
+    async fn apply_commit_incremental(
         &mut self,
         created_at_ms: u64,
-        parents: &[SnapshotId],
-        entries: &[sekai_util::SnapshotEntry],
-        carry_from: Option<(SnapshotId, &[RegionKey])>,
+        parents: &[CommitId],
+        entries: &[sekai_util::CommitEntry],
+        carry_from: Option<(CommitId, &[RegionKey])>,
         fingerprints: &[RegionFingerprint],
         removed: &[RegionKey],
     ) -> Result<ApplyOutcome, MemError> {
-        let id = self.create_snapshot(created_at_ms, parents).await?;
+        let id = self.create_commit(created_at_ms, parents).await?;
         for entry in entries {
             self.rows.push(ChunkHistoryEntry::new(
                 entry.coord,
@@ -289,11 +285,11 @@ impl MetaStore for MemMeta {
             ));
         }
         // Delta storage: carried regions contribute no rows. Their
-        // effective chunks are counted from the previous snapshot for the
+        // effective chunks are counted from the previous commit for the
         // report; only derived state advances.
         let mut carried_chunks = 0usize;
         if let Some((prev, keys)) = carry_from {
-            for row in effective_at(&self.rows, &self.snapshots, prev) {
+            for row in effective_at(&self.rows, &self.commits, prev) {
                 if row.blob.is_some() && keys.contains(&RegionKey::of(row.coord)) {
                     carried_chunks += 1;
                 }
@@ -301,7 +297,7 @@ impl MetaStore for MemMeta {
             for key in keys {
                 for state in &mut self.states {
                     if state.fingerprint.key == *key {
-                        state.snapshot_id = id;
+                        state.commit_id = id;
                     }
                 }
             }
@@ -309,7 +305,7 @@ impl MetaStore for MemMeta {
         for fp in fingerprints {
             let entry = RegionStateEntry {
                 fingerprint: *fp,
-                snapshot_id: id,
+                commit_id: id,
             };
             if let Some(state) = self.states.iter_mut().find(|s| s.fingerprint.key == fp.key) {
                 *state = entry;
@@ -322,10 +318,10 @@ impl MetaStore for MemMeta {
         Ok(ApplyOutcome { id, carried_chunks })
     }
 
-    fn tag_snapshot(
+    fn tag_commit(
         &mut self,
         name: &TagName,
-        snapshot: SnapshotId,
+        commit: CommitId,
         created_at_ms: u64,
     ) -> impl Future<Output = Result<(), MemError>> + Send {
         // Mirrors the backend PRIMARY KEY: duplicates are rejected.
@@ -334,7 +330,7 @@ impl MetaStore for MemMeta {
         }
         self.tags.insert(
             name.clone(),
-            SnapshotTag::new(name.clone(), snapshot, created_at_ms),
+            CommitTag::new(name.clone(), commit, created_at_ms),
         );
         core::future::ready(Ok(()))
     }
@@ -346,13 +342,13 @@ impl MetaStore for MemMeta {
     fn lookup_tag(
         &self,
         name: &TagName,
-    ) -> impl Future<Output = Result<Option<SnapshotTag>, MemError>> + Send {
+    ) -> impl Future<Output = Result<Option<CommitTag>, MemError>> + Send {
         core::future::ready(Ok(self.tags.get(name).cloned()))
     }
 
     fn visit_tags<F>(&self, mut visit: F) -> impl Future<Output = Result<(), MemError>> + Send
     where
-        F: FnMut(&SnapshotTag) -> bool + Send,
+        F: FnMut(&CommitTag) -> bool + Send,
     {
         // BTreeMap iteration is name order, matching the backend query.
         for tag in self.tags.values() {
@@ -363,22 +359,22 @@ impl MetaStore for MemMeta {
         core::future::ready(Ok(()))
     }
 
-    fn retire_snapshot(
+    fn retire_commit(
         &mut self,
-        from: SnapshotId,
-        into: SnapshotId,
+        from: CommitId,
+        into: CommitId,
     ) -> impl Future<Output = Result<FoldOutcome, MemError>> + Send {
         // Mirrors the backend: a retirement folds into a strictly newer,
-        // existing snapshot that descends from the retired one. Folding
+        // existing commit that descends from the retired one. Folding
         // into an unrelated history would graft rows the successor never
         // had.
-        if into <= from || !self.snapshots.iter().any(|s| s.id == into) {
+        if into <= from || !self.commits.iter().any(|s| s.id == into) {
             return core::future::ready(Err(MemError::InvalidRetirement {
                 from: from.0,
                 into: into.0,
             }));
         }
-        if !ancestor_ids(&self.snapshots, into).contains(&from) {
+        if !ancestor_ids(&self.commits, into).contains(&from) {
             return core::future::ready(Err(MemError::InvalidRetirement {
                 from: from.0,
                 into: into.0,
@@ -386,59 +382,59 @@ impl MetaStore for MemMeta {
         }
         // Rows superseded by the history `into` continues are dropped;
         // the survivors move onto it.
-        let mut superseding = ancestor_ids(&self.snapshots, into);
+        let mut superseding = ancestor_ids(&self.commits, into);
         superseding.insert(into);
         let mut folded = 0usize;
         let mut dropped = 0usize;
         let mut kept: Vec<ChunkHistoryEntry> = Vec::new();
         for row in &self.rows {
-            if row.snapshot != from {
+            if row.commit != from {
                 kept.push(*row);
                 continue;
             }
             let superseded = self.rows.iter().any(|other| {
                 other.coord == row.coord
-                    && other.snapshot > from
-                    && superseding.contains(&other.snapshot)
+                    && other.commit > from
+                    && superseding.contains(&other.commit)
             });
             if superseded {
                 dropped += 1;
             } else {
                 let mut moved = *row;
-                moved.snapshot = into;
+                moved.commit = into;
                 kept.push(moved);
                 folded += 1;
             }
         }
         self.rows = kept;
         for state in &mut self.states {
-            if state.snapshot_id == from {
-                state.snapshot_id = into;
+            if state.commit_id == from {
+                state.commit_id = into;
             }
         }
-        // The retired snapshot leaves the graph: its children continue the
+        // The retired commit leaves the graph: its children continue the
         // history of its own parents.
         let from_parents = self
-            .snapshots
+            .commits
             .iter()
             .find(|s| s.id == from)
             .map(|s| s.parents.clone())
             .unwrap_or_default();
-        for snapshot in &mut self.snapshots {
-            if !snapshot.parents.contains(&from) {
+        for commit in &mut self.commits {
+            if !commit.parents.contains(&from) {
                 continue;
             }
-            // The backend drops every edge naming the retired snapshot.
-            snapshot.parents.retain(|parent| *parent != from);
+            // The backend drops every edge naming the retired commit.
+            commit.parents.retain(|parent| *parent != from);
             for parent in &from_parents {
-                if !snapshot.parents.contains(parent) {
-                    snapshot.parents.push(*parent);
+                if !commit.parents.contains(parent) {
+                    commit.parents.push(*parent);
                 }
             }
-            snapshot.parents.sort();
+            commit.parents.sort();
         }
-        self.snapshots.retain(|snapshot| snapshot.id != from);
-        self.tags.retain(|_, tag| tag.snapshot != from);
+        self.commits.retain(|commit| commit.id != from);
+        self.tags.retain(|_, tag| tag.commit != from);
         core::future::ready(Ok(FoldOutcome { folded, dropped }))
     }
 }

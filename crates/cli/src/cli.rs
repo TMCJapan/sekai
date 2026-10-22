@@ -5,12 +5,12 @@ use clap::{Parser, Subcommand};
 use sekai_app::{Area, ChunkCoord, Dimension, Rect, RegionKind, Scope, TagName};
 use std::path::{Path, PathBuf};
 
-/// Chunk-level deduplicated snapshots for Minecraft region files.
+/// Chunk-level deduplicated version control for Minecraft region files.
 #[derive(Debug, Parser)]
 #[command(name = "sekai", version, about)]
 pub struct Cli {
-    /// Backup store directory (`backup` creates it when missing; other
-    /// commands fail). Prefix with `sqlite://` explicitly if preferred.
+    /// Store directory (`commit` creates it when missing; other commands
+    /// fail). Prefix with `sqlite://` explicitly if preferred.
     #[arg(long, global = true, default_value = "sekai-store")]
     pub store: String,
 
@@ -24,8 +24,9 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Record the current world state as a new snapshot.
-    Backup {
+    /// Record the current world state as a new commit.
+    #[command(visible_alias = "backup")]
+    Commit {
         /// World directory (the one containing `region/`, `DIM-1/`, or `dimensions/`).
         /// For Bukkit-family servers, pass the server root instead.
         world: PathBuf,
@@ -46,7 +47,7 @@ pub enum Command {
         #[command(flatten)]
         selection: Selection,
     },
-    /// Preview what a backup would record, without writing anything.
+    /// Preview what a commit would record, without writing anything.
     Status {
         /// World directory to preview.
         world: PathBuf,
@@ -64,12 +65,13 @@ pub enum Command {
         #[arg(long, default_value = "0")]
         jobs: usize,
     },
-    /// Rebuild the world from a snapshot, overwriting region files.
-    Rollback {
+    /// Rebuild the world from a commit, overwriting region files.
+    #[command(visible_alias = "rollback")]
+    Checkout {
         /// World directory to rebuild in place.
         world: PathBuf,
-        /// Snapshot reference to restore (`<id>` or `@tag`, see `list`).
-        snapshot: SnapshotRef,
+        /// Commit reference to restore (`<id>` or `@tag`, see `log`).
+        commit: CommitRef,
         /// Human or JSON rendering plus optional phase timings.
         #[command(flatten)]
         output: TimingArgs,
@@ -81,55 +83,57 @@ pub enum Command {
         /// the selection are never written, deleted, or otherwise touched.
         #[command(flatten)]
         selection: Selection,
-        /// Keep region files unknown to the snapshot instead of deleting
-        /// them (files created after the snapshot).
-        #[arg(long)]
-        keep_post_snapshot_files: bool,
-        /// Keep live bytes for chunks unknown to the snapshot (created
-        /// afterwards inside a snapshot-known region) instead of dropping
+        /// Keep region files unknown to the commit instead of deleting
+        /// them (files created after the commit).
+        #[arg(long, alias = "keep-post-snapshot-files")]
+        keep_post_commit_files: bool,
+        /// Keep live bytes for chunks unknown to the commit (created
+        /// afterwards inside a commit-known region) instead of dropping
         /// them.
-        #[arg(long)]
-        keep_post_snapshot_chunks: bool,
-        /// Keep live bytes for snapshot-tombstoned chunks instead of
+        #[arg(long, alias = "keep-post-snapshot-chunks")]
+        keep_post_commit_chunks: bool,
+        /// Keep live bytes for commit-tombstoned chunks instead of
         /// removing them. Fully tombstoned region files are left alone
         /// rather than deleted.
         #[arg(long)]
         keep_tombstoned_chunks: bool,
-        /// How to handle a snapshot blob missing from CAS.
+        /// How to handle a commit blob missing from CAS.
         #[arg(long, value_enum, default_value_t = OnMissingBlob::Abort)]
         on_missing_blob: OnMissingBlob,
-        /// Where to rebuild a snapshot-known region whose file is missing
+        /// Where to rebuild a commit-known region whose file is missing
         /// on disk.
         #[arg(long, value_enum, default_value_t = OnMissingFile::SiblingFirst)]
         on_missing_file: OnMissingFile,
     },
-    /// List recorded snapshots, oldest first.
-    List {
-        /// Emit snapshot list as JSON instead of human text.
+    /// List recorded commits, oldest first.
+    #[command(visible_alias = "list")]
+    Log {
+        /// Emit commit list as JSON instead of human text.
         /// See docs/json.md.
         #[arg(long)]
         json: bool,
-        /// Include per-snapshot change statistics.
+        /// Include per-commit change statistics.
         #[arg(long)]
         stat: bool,
     },
-    /// Rebuild a snapshot into a fresh directory (never touches the live world).
-    Export {
-        /// Snapshot reference to export (`<id>` or `@tag`, see `list`).
-        snapshot: SnapshotRef,
-        /// Directory to rebuild the snapshot into (created when missing;
+    /// Rebuild a commit into a fresh directory (never touches the live world).
+    #[command(visible_alias = "export")]
+    Clone {
+        /// Commit reference to clone (`<id>` or `@tag`, see `log`).
+        commit: CommitRef,
+        /// Directory to rebuild the commit into (created when missing;
         /// must otherwise be empty).
         out: PathBuf,
         /// Directory layout for the rebuilt world.
-        #[arg(long, value_enum, default_value_t = ExportFlavor::Legacy)]
-        flavor: ExportFlavor,
+        #[arg(long, value_enum, default_value_t = CloneFlavor::Legacy)]
+        flavor: CloneFlavor,
         /// Overworld folder name for `--flavor bukkit` (the `level-name`).
         #[arg(long, default_value = "world")]
         base: String,
-        /// How to handle a snapshot blob missing from CAS.
+        /// How to handle a commit blob missing from CAS.
         #[arg(long, value_enum, default_value_t = OnMissingBlob::Abort)]
         on_missing_blob: OnMissingBlob,
-        /// World portion to export (default: whole world).
+        /// World portion to clone (default: whole world).
         #[command(flatten)]
         selection: Selection,
         /// Human or JSON rendering plus optional phase timings.
@@ -140,22 +144,22 @@ pub enum Command {
         #[arg(long, conflicts_with = "json")]
         progress: bool,
     },
-    /// Tag snapshots with human-readable names.
+    /// Tag commits with human-readable names.
     Tag {
         #[command(subcommand)]
         action: TagCommand,
     },
-    /// Compare chunk NBT AST between two snapshots or between world state and a snapshot.
+    /// Compare chunk NBT AST between two commits or between world state and a commit.
     Diff(DiffArgs),
-    /// Delete old snapshots, folding their rows into retained ones.
+    /// Delete old commits, folding their rows into retained ones.
     /// At least one of `--keep-last` / `--before` is required.
     Prune {
-        /// Keep the newest N snapshots.
+        /// Keep the newest N commits.
         #[arg(long, required_unless_present = "before")]
         keep_last: Option<u64>,
-        /// Retain this snapshot and everything newer (`<id>` or `@tag`).
+        /// Retain this commit and everything newer (`<id>` or `@tag`).
         #[arg(long, required_unless_present = "keep_last")]
-        before: Option<SnapshotRef>,
+        before: Option<CommitRef>,
         /// Show what would be deleted without deleting anything.
         #[arg(long)]
         dry_run: bool,
@@ -188,11 +192,11 @@ impl Command {
     /// Stable command name for JSON envelopes and error objects.
     pub const fn name(&self) -> &'static str {
         match self {
-            Self::Backup { .. } => "backup",
+            Self::Commit { .. } => "commit",
             Self::Status { .. } => "status",
-            Self::Rollback { .. } => "rollback",
-            Self::List { .. } => "list",
-            Self::Export { .. } => "export",
+            Self::Checkout { .. } => "checkout",
+            Self::Log { .. } => "log",
+            Self::Clone { .. } => "clone",
             Self::Tag { .. } => "tag",
             Self::Prune { .. } => "prune",
             Self::Diff(_) => "diff",
@@ -204,13 +208,13 @@ impl Command {
     /// an envelope on stdout instead of styled text on stderr.
     pub const fn output_json(&self) -> bool {
         match self {
-            Self::Backup { output, .. }
+            Self::Commit { output, .. }
             | Self::Status { output, .. }
-            | Self::Rollback { output, .. }
-            | Self::Export { output, .. }
+            | Self::Checkout { output, .. }
+            | Self::Clone { output, .. }
             | Self::Prune { output, .. }
             | Self::Gc { output, .. } => output.json,
-            Self::List { json, .. } => *json,
+            Self::Log { json, .. } => *json,
             Self::Tag { action } => action.output_json(),
             Self::Diff(args) => args.output.json,
         }
@@ -218,16 +222,16 @@ impl Command {
 }
 
 /// Tag operations. Modeling them as subcommands keeps every invalid
-/// argument shape (create without a snapshot, delete without a name,
+/// argument shape (create without a commit, delete without a name,
 /// `--force` on a list) statically unrepresentable.
 #[derive(Debug, Subcommand)]
 pub enum TagCommand {
-    /// Point a tag at a snapshot.
+    /// Point a tag at a commit.
     Create {
         /// Tag name (`[A-Za-z0-9._-]`, 1-64 bytes, not all digits).
         name: TagName,
-        /// Snapshot reference (`<id>` or `@tag`, see `list`) to point at.
-        snapshot: SnapshotRef,
+        /// Commit reference (`<id>` or `@tag`, see `log`) to point at.
+        commit: CommitRef,
         /// Move an existing tag instead of failing.
         #[arg(long)]
         force: bool,
@@ -260,29 +264,29 @@ impl TagCommand {
     }
 }
 
-/// Snapshot reference on the command line: `<id>` or `@tag`.
+/// Commit reference on the command line: `<id>` or `@tag`.
 ///
 /// The shape is validated at parse time so a malformed reference never
-/// reaches the store; resolving it to an existing snapshot stays a
-/// runtime step. The grammar mirrors `core`'s `resolve_snapshot_ref`:
+/// reaches the store; resolving it to an existing commit stays a
+/// runtime step. The grammar mirrors `core`'s `resolve_commit_ref`:
 /// `@` followed by a valid [`TagName`], or a plain `u64` ID.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SnapshotRef(String);
+pub struct CommitRef(String);
 
-impl SnapshotRef {
+impl CommitRef {
     /// Raw reference text (`<id>` or `@tag`).
     pub fn as_str(&self) -> &str {
         &self.0
     }
 }
 
-impl std::fmt::Display for SnapshotRef {
+impl std::fmt::Display for CommitRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }
 }
 
-impl std::str::FromStr for SnapshotRef {
+impl std::str::FromStr for CommitRef {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -290,15 +294,14 @@ impl std::str::FromStr for SnapshotRef {
             TagName::parse(name)
                 .map_err(|err| format!("invalid tag reference {s:?}: {err}, expected @<tag>"))?;
         } else {
-            s.parse::<u64>().map_err(|_| {
-                format!("invalid snapshot reference {s:?}, expected <id> or @<tag>")
-            })?;
+            s.parse::<u64>()
+                .map_err(|_| format!("invalid commit reference {s:?}, expected <id> or @<tag>"))?;
         }
         Ok(Self(s.to_owned()))
     }
 }
 
-/// `--timing`/`--json` pair shared by every report command except `list`
+/// `--timing`/`--json` pair shared by every report command except `log`
 /// (which has no phases to time).
 #[derive(Debug, Clone, Copy, clap::Args)]
 pub struct TimingArgs {
@@ -311,7 +314,7 @@ pub struct TimingArgs {
     pub json: bool,
 }
 
-/// What to do when a snapshot blob is absent from CAS.
+/// What to do when a commit blob is absent from CAS.
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum OnMissingBlob {
     /// Abort loudly (a missing blob is corruption).
@@ -320,7 +323,7 @@ pub enum OnMissingBlob {
     SkipChunk,
 }
 
-/// Where to rebuild a snapshot-known region whose file is missing on disk.
+/// Where to rebuild a commit-known region whose file is missing on disk.
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum OnMissingFile {
     /// Prefer a same-dimension sibling's directory, then the derived path.
@@ -331,9 +334,9 @@ pub enum OnMissingFile {
     Error,
 }
 
-/// Directory layout for `export` output.
+/// Directory layout for `clone` output.
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
-pub enum ExportFlavor {
+pub enum CloneFlavor {
     /// Single world folder (`region/`, `DIM-1/`, `DIM1/`).
     Legacy,
     /// Modern layout (`dimensions/minecraft/<name>/`, since 26.1).
@@ -345,17 +348,17 @@ pub enum ExportFlavor {
 
 #[derive(Debug, clap::Args)]
 pub struct DiffArgs {
-    /// World directory to compare against snapshot (if specified).
+    /// World directory to compare against a commit (if specified).
     #[arg(long)]
     pub world: Option<PathBuf>,
-    /// Older snapshot reference (`<id>` or `@tag`; if omitted when
-    /// comparing snapshots, defaults to second-latest). With `--world`,
-    /// the single snapshot to compare against (default: latest).
-    pub old_snapshot: Option<SnapshotRef>,
-    /// Newer snapshot reference (`<id>` or `@tag`; if omitted, defaults
-    /// to latest snapshot). Snapshot-vs-snapshot only.
+    /// Older commit reference (`<id>` or `@tag`; if omitted when
+    /// comparing commits, defaults to second-latest). With `--world`,
+    /// the single commit to compare against (default: latest).
+    pub old_commit: Option<CommitRef>,
+    /// Newer commit reference (`<id>` or `@tag`; if omitted, defaults
+    /// to latest commit). Commit-vs-commit only.
     #[arg(conflicts_with = "world")]
-    pub new_snapshot: Option<SnapshotRef>,
+    pub new_commit: Option<CommitRef>,
     /// Chunks to compare (default: whole world). One chunk keeps the
     /// legacy single-chunk output; several switch to grouped output.
     #[command(flatten)]
@@ -374,18 +377,18 @@ pub struct DiffArgs {
 
 impl DiffArgs {
     /// What this invocation compares. Total over every argument shape clap
-    /// accepts: `--world` compares against at most one snapshot (the second
-    /// positional is refused at parse time), and the snapshot pair defaults
+    /// accepts: `--world` compares against at most one commit (the second
+    /// positional is refused at parse time), and the commit pair defaults
     /// resolve against the store at runtime.
     pub fn target(&self) -> DiffTarget<'_> {
         self.world.as_ref().map_or(
-            DiffTarget::Snapshots {
-                old: self.old_snapshot.as_ref(),
-                new: self.new_snapshot.as_ref(),
+            DiffTarget::Commits {
+                old: self.old_commit.as_ref(),
+                new: self.new_commit.as_ref(),
             },
             |world| DiffTarget::World {
                 world,
-                snapshot: self.old_snapshot.as_ref(),
+                commit: self.old_commit.as_ref(),
             },
         )
     }
@@ -395,20 +398,20 @@ impl DiffArgs {
 /// ambiguity resolved statically instead of juggling `Option`s at runtime.
 #[derive(Debug)]
 pub enum DiffTarget<'a> {
-    /// Live world state against one snapshot (`None` means latest).
+    /// Live world state against one commit (`None` means latest).
     World {
         world: &'a Path,
-        snapshot: Option<&'a SnapshotRef>,
+        commit: Option<&'a CommitRef>,
     },
-    /// Snapshot against snapshot (`None` defaults: second-latest vs latest).
-    Snapshots {
-        old: Option<&'a SnapshotRef>,
-        new: Option<&'a SnapshotRef>,
+    /// Commit against commit (`None` defaults: second-latest vs latest).
+    Commits {
+        old: Option<&'a CommitRef>,
+        new: Option<&'a CommitRef>,
     },
 }
 
-/// World-portion selection shared by backup, status, rollback, diff, and
-/// export.
+/// World-portion selection shared by commit, status, checkout, diff, and
+/// clone.
 ///
 /// Each `--in` picks one dimension whole, one chunk, or one rectangle;
 /// `--region` is shorthand for a region-aligned rectangle. Entries compose

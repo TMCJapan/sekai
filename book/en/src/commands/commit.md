@@ -1,11 +1,11 @@
-# Backup
+# Commit
 
 ```sh
-sekai --store ./sekai-store backup ./world
+sekai --store ./sekai-store commit ./world
 ```
 
-Records the current world state as a new snapshot and prints the
-snapshot id, chunk/blob counts, tombstones, skipped regions, and carried
+Records the current world state as a new commit and prints the
+commit id, chunk/blob counts, tombstones, skipped regions, and carried
 chunks.
 
 - `--with-diff` additionally derives volatile diff views alongside blobs
@@ -16,9 +16,9 @@ chunks.
   see [Scope selection](../scope.md).
 - For a dry-run preview of the above, see `status` under
   [Inspection](inspection.md).
-- When the store directory is created by the backup, the CLI says so
+- When the store directory is created by the commit, the CLI says so
   on stderr (human output only).
 
 Unchanged regions are skipped by fingerprint; unchanged chunks inside
-changed regions resolve through fallback and cost no new blobs. A backup
-with no changes still writes one snapshot row.
+changed regions resolve through fallback and cost no new blobs. A commit
+with no changes still writes one commit row.

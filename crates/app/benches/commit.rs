@@ -1,4 +1,4 @@
-//! Integration benchmarks for full backup flows.
+//! Integration benchmarks for full commit flows.
 
 #[path = "common.rs"]
 mod common;
@@ -10,7 +10,7 @@ use sekai_app::{HostWorldTree, Scope};
 fn benches(c: &mut Criterion) {
     let rt = runtime();
 
-    c.bench_function("backup/small-full", |b| {
+    c.bench_function("commit/small-full", |b| {
         b.iter(|| {
             let root = tempdir("small");
             let world_path = root.join("world");
@@ -23,14 +23,14 @@ fn benches(c: &mut Criterion) {
             rt.block_on(
                 instance
                     .world_mut(&mut world)
-                    .backup(options(), Scope::World, |_| {}),
+                    .commit(options(), Scope::World, |_| {}),
             )
-            .expect("backup works");
+            .expect("commit works");
             std::fs::remove_dir_all(&root).ok();
         });
     });
 
-    c.bench_function("backup/small-incremental", |b| {
+    c.bench_function("commit/small-incremental", |b| {
         let root = tempdir("incr");
         let world_path = root.join("world");
         let mut world = HostWorldTree::new(&world_path).expect("world resolves");
@@ -42,21 +42,21 @@ fn benches(c: &mut Criterion) {
         rt.block_on(
             instance
                 .world_mut(&mut world)
-                .backup(options(), Scope::World, |_| {}),
+                .commit(options(), Scope::World, |_| {}),
         )
-        .expect("backup works");
+        .expect("commit works");
         b.iter(|| {
             rt.block_on(
                 instance
                     .world_mut(&mut world)
-                    .backup(options(), Scope::World, |_| {}),
+                    .commit(options(), Scope::World, |_| {}),
             )
-            .expect("backup works");
+            .expect("commit works");
         });
         std::fs::remove_dir_all(&root).ok();
     });
 
-    c.bench_function("backup/medium-full", |b| {
+    c.bench_function("commit/medium-full", |b| {
         b.iter(|| {
             let root = tempdir("medium");
             let world_path = root.join("world");
@@ -69,9 +69,9 @@ fn benches(c: &mut Criterion) {
             rt.block_on(
                 instance
                     .world_mut(&mut world)
-                    .backup(options(), Scope::World, |_| {}),
+                    .commit(options(), Scope::World, |_| {}),
             )
-            .expect("backup works");
+            .expect("commit works");
             std::fs::remove_dir_all(&root).ok();
         });
     });

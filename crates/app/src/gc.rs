@@ -1,4 +1,4 @@
-//! Garbage collection over store snapshots and CAS blobs.
+//! Garbage collection over store commits and CAS blobs.
 
 use std::time::{Duration, Instant};
 
@@ -33,7 +33,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// additionally returning per-phase timings (`apply` is zero: dry-run
     /// never unlinks).
     ///
-    /// Refuses while a backup runs: its blobs reach the CAS before the rows
+    /// Refuses while a commit runs: its blobs reach the CAS before the rows
     /// that reference them, so the plan would list them as orphans.
     pub async fn gc_plan(&self) -> Result<(GcPlan, GcTimings), AppError> {
         let _lock = self.lock_store(StoreLockMode::Writer)?;
@@ -52,7 +52,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
     ///
     /// Each candidate is re-verified against the store under this call's
     /// lock, so a plan from an earlier [`Self::gc_plan`] never unlinks a
-    /// blob that a backup has referenced since; blobs orphaned after
+    /// blob that a commit has referenced since; blobs orphaned after
     /// planning wait for the next run. [`Self::gc`] does both under one
     /// lock.
     pub async fn gc_apply(
@@ -77,7 +77,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
         &mut self,
         progress: impl FnMut(GcProgress) + Send,
     ) -> Result<(GcReport, GcTimings), AppError> {
-        // One lock across both phases: a backup slipping in between would
+        // One lock across both phases: a commit slipping in between would
         // put blobs into the CAS that this very plan calls orphaned.
         let _lock = self.lock_store(StoreLockMode::Writer)?;
         let total_started = Instant::now();

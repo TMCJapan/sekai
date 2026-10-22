@@ -35,7 +35,7 @@ jobs:
         run: cargo bench -p sekai-anvil -p sekai-nbt -p sekai-core
 
       - name: Run integration benches
-        run: cargo bench -p sekai-app --bench backup
+        run: cargo bench -p sekai-app --bench commit
 
       - name: Upload criterion output
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9

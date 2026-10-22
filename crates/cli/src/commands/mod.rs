@@ -1,21 +1,21 @@
 //! Subcommand execution dispatcher and output control wrappers.
 
-mod backup;
+mod checkout;
+mod clone;
+mod commit;
 mod diff;
 mod diff_render;
-mod export;
 mod gc;
-mod list;
+mod log;
 mod progress;
 mod prune;
-mod rollback;
 mod status;
 mod tag;
 
 use crate::cli::{Cli, Command, TimingArgs};
 use crate::style::Styler;
 
-/// Output controls shared by report commands (backup, rollback, gc).
+/// Output controls shared by report commands (commit, checkout, gc).
 #[derive(Debug, Clone, Copy)]
 pub struct ReportOut {
     pub timing: bool,
@@ -37,7 +37,7 @@ impl ReportOut {
 pub async fn run(cli: &Cli) -> anyhow::Result<()> {
     let style = Styler::new(cli.color);
     match &cli.command {
-        Command::Backup {
+        Command::Commit {
             world,
             output,
             with_diff,
@@ -45,7 +45,7 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
             progress,
             selection,
         } => {
-            backup::run(
+            commit::run(
                 &cli.store,
                 world,
                 *with_diff,
@@ -73,27 +73,27 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
             )
             .await
         }
-        Command::Rollback {
+        Command::Checkout {
             world,
-            snapshot,
+            commit,
             output,
             progress,
             selection,
-            keep_post_snapshot_files,
-            keep_post_snapshot_chunks,
+            keep_post_commit_files,
+            keep_post_commit_chunks,
             keep_tombstoned_chunks,
             on_missing_blob,
             on_missing_file,
         } => {
-            rollback::run(
+            checkout::run(
                 &cli.store,
                 world,
-                snapshot,
+                commit,
                 *progress,
                 selection,
-                &rollback::RollbackFlags {
-                    keep_post_snapshot_files: *keep_post_snapshot_files,
-                    keep_post_snapshot_chunks: *keep_post_snapshot_chunks,
+                &checkout::CheckoutFlags {
+                    keep_post_commit_files: *keep_post_commit_files,
+                    keep_post_commit_chunks: *keep_post_commit_chunks,
                     keep_tombstoned_chunks: *keep_tombstoned_chunks,
                     on_missing_blob: *on_missing_blob,
                     on_missing_file: *on_missing_file,
@@ -102,10 +102,10 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
             )
             .await
         }
-        Command::List { json, stat } => list::run(&cli.store, *json, *stat, style).await,
+        Command::Log { json, stat } => log::run(&cli.store, *json, *stat, style).await,
         Command::Tag { action } => tag::run(&cli.store, action, style).await,
-        Command::Export {
-            snapshot,
+        Command::Clone {
+            commit,
             out,
             flavor,
             base,
@@ -114,13 +114,13 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
             output,
             progress,
         } => {
-            export::run(
+            clone::run(
                 &cli.store,
-                snapshot,
+                commit,
                 out,
                 *progress,
                 selection,
-                &export::ExportFlags {
+                &clone::CloneFlags {
                     flavor: *flavor,
                     base: base.clone(),
                     on_missing_blob: *on_missing_blob,

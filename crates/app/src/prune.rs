@@ -1,39 +1,39 @@
-//! Snapshot pruning over store metadata.
+//! Commit pruning over store metadata.
 //!
-//! Planning is read-only; applying folds each deleted snapshot into its
+//! Planning is read-only; applying folds each deleted commit into its
 //! next retained one atomically. Blobs are never unlinked here: pruning
 //! dereferences them, and a later GC reclaims the orphans.
 
 use std::time::{Duration, Instant};
 
-use sekai_core::{PrunePlan, PruneReport, SnapshotId};
+use sekai_core::{CommitId, PrunePlan, PruneReport};
 use sekai_storage::{SekaiStore, StoreLockMode};
 
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
 
-/// Per-phase timings for snapshot pruning.
+/// Per-phase timings for commit pruning.
 #[derive(Debug, Clone, Default)]
 pub struct PruneTimings {
     /// Wall-clock total.
     pub total: Duration,
     /// Selecting the retained set and listing deletions.
     pub plan: Duration,
-    /// Folding and deleting snapshots.
+    /// Folding and deleting commits.
     pub apply: Duration,
 }
 
-/// Per-snapshot progress report for the `progress` callback.
+/// Per-commit progress report for the `progress` callback.
 #[derive(Debug, Clone, Copy)]
 pub struct PruneProgress {
-    /// Snapshots deleted so far.
-    pub snapshots_done: usize,
-    /// Snapshots to delete in total.
-    pub snapshots_total: usize,
+    /// Commits deleted so far.
+    pub commits_done: usize,
+    /// Commits to delete in total.
+    pub commits_total: usize,
 }
 
 impl<S: SekaiStore> SekaiInstance<S> {
-    /// Inspect snapshots and return a deletion plan.
+    /// Inspect commits and return a deletion plan.
     ///
     /// Retention keeps `keep_last` newest intersected with `before`-and-newer.
     /// Additionally returns per-phase timings (`apply` is zero: dry-run never
@@ -41,7 +41,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
     pub async fn prune_plan(
         &self,
         keep_last: Option<u64>,
-        before: Option<SnapshotId>,
+        before: Option<CommitId>,
     ) -> Result<(PrunePlan, PruneTimings), AppError> {
         let _lock = self.lock_store(StoreLockMode::Shared)?;
         let total_started = Instant::now();
@@ -54,13 +54,13 @@ impl<S: SekaiStore> SekaiInstance<S> {
         Ok((plan, timings))
     }
 
-    /// Execute a pruning plan, deleting snapshots oldest-first.
-    /// `progress` fires per deleted snapshot.
+    /// Execute a pruning plan, deleting commits oldest-first.
+    /// `progress` fires per deleted commit.
     ///
     /// A plan from an earlier [`Self::prune_plan`] call stays applicable
-    /// after backups, which only add newer snapshots. If another prune
-    /// retired one of its snapshots first, applying fails with an
-    /// unknown-snapshot error rather than folding into the wrong one.
+    /// after commits, which only add newer commits. If another prune
+    /// retired one of its commits first, applying fails with an
+    /// unknown-commit error rather than folding into the wrong one.
     /// [`Self::prune`] plans and applies under one lock.
     pub async fn prune_apply(
         &mut self,
@@ -80,12 +80,12 @@ impl<S: SekaiStore> SekaiInstance<S> {
         Ok((report, timings))
     }
 
-    /// Plan and apply snapshot pruning in a single pass.
-    /// `progress` fires per deleted snapshot during apply.
+    /// Plan and apply commit pruning in a single pass.
+    /// `progress` fires per deleted commit during apply.
     pub async fn prune(
         &mut self,
         keep_last: Option<u64>,
-        before: Option<SnapshotId>,
+        before: Option<CommitId>,
         progress: impl FnMut(PruneProgress) + Send,
     ) -> Result<(PruneReport, PruneTimings), AppError> {
         let _lock = self.lock_store(StoreLockMode::Exclusive)?;
@@ -105,13 +105,13 @@ impl<S: SekaiStore> SekaiInstance<S> {
 async fn plan_within<S: SekaiStore>(
     store: &S,
     keep_last: Option<u64>,
-    before: Option<SnapshotId>,
+    before: Option<CommitId>,
 ) -> Result<(PrunePlan, Duration), AppError> {
     let started = Instant::now();
-    let snapshots = sekai_core::usecase::snapshot::list_snapshots(store.meta())
+    let commits = sekai_core::usecase::graph::list_commits(store.meta())
         .await
-        .map_err(AppError::Snapshot)?;
-    let retained = sekai_core::usecase::prune::select_retained(&snapshots, keep_last, before);
+        .map_err(AppError::Commit)?;
+    let retained = sekai_core::usecase::prune::select_retained(&commits, keep_last, before);
     let plan = sekai_core::usecase::prune::prune_plan(store.meta(), &retained)
         .await
         .map_err(AppError::Prune)?;
@@ -127,8 +127,8 @@ async fn apply_within<S: SekaiStore>(
     let started = Instant::now();
     let report = sekai_core::usecase::prune::prune_apply(store.meta_mut(), plan, |done, total| {
         progress(PruneProgress {
-            snapshots_done: done,
-            snapshots_total: total,
+            commits_done: done,
+            commits_total: total,
         });
     })
     .await
