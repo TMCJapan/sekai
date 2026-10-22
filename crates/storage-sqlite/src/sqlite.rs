@@ -424,11 +424,21 @@ fn decode_ref(row: &sqlx::sqlite::SqliteRow) -> Result<CommitRef, StorageError> 
     })?;
     let commit_raw: Option<i64> = row.try_get("commit_id").map_err(db_err)?;
     let commit = commit_raw.map(commit_id_from_i64).transpose()?;
-    let active: i64 = row.try_get("active").map_err(db_err)?;
+    let active_raw: i64 = row.try_get("active").map_err(db_err)?;
+    let active = match active_raw {
+        0 => false,
+        1 => true,
+        value => {
+            return Err(StorageError::InvalidHistoryValue {
+                column: "active",
+                value,
+            });
+        }
+    };
     Ok(CommitRef::new(
         name,
         commit,
-        active != 0,
+        active,
         millis_col(row, "created_at_ms")?,
     ))
 }
@@ -451,7 +461,11 @@ fn now_ms() -> Result<i64, StorageError> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|source| StorageError::backend("sqlite", source))?
         .as_millis();
-    i64::try_from(millis).map_err(|_| StorageError::InvalidTimestamp(u64::MAX))
+    // `as_millis` is `u128`: a value no `u64` can carry has no
+    // representable payload, so the ceiling stands for "at least this
+    // large". Everything that fits a `u64` is reported as itself.
+    let millis = u64::try_from(millis).unwrap_or(u64::MAX);
+    i64::try_from(millis).map_err(|_| StorageError::InvalidTimestamp(millis))
 }
 
 /// Shared `chunk_history` insert used by single-row and batch commits.
@@ -1089,8 +1103,23 @@ impl sekai_core::MetaStore for SqliteMeta {
         commit: Option<CommitId>,
         created_at_ms: u64,
     ) -> Result<(), StorageError> {
-        // Moving a ref keeps its creation time; only a new ref records
-        // one, and only the active ref keeps its flag.
+        // A new ref starts inactive; a moved ref keeps its flag and
+        // creation time. `commit = None` is the documented unborn state,
+        // so moving a ref back to unborn is allowed.
+        let mut tx = self.pool.begin().await.map_err(db_err)?;
+        if let Some(id) = commit {
+            // Pointing at a commit that does not exist is corruption, not
+            // a move: report it as such instead of the foreign-key
+            // violation the upsert would raise.
+            let found: Option<i64> = sqlx::query_scalar("SELECT 1 FROM commits WHERE id = ?")
+                .bind(commit_param(id)?)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(db_err)?;
+            if found.is_none() {
+                return Err(StorageError::UnknownCommit { id: id.raw() });
+            }
+        }
         sqlx::query(
             "INSERT INTO refs (name, commit_id, active, created_at_ms) VALUES (?, ?, 0, ?)
              ON CONFLICT(name) DO UPDATE SET commit_id = excluded.commit_id",
@@ -1098,9 +1127,10 @@ impl sekai_core::MetaStore for SqliteMeta {
         .bind(name.as_str())
         .bind(commit.map(commit_param).transpose()?)
         .bind(millis_param(created_at_ms)?)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await
         .map_err(db_err)?;
+        tx.commit().await.map_err(db_err)?;
         Ok(())
     }
 
@@ -1294,6 +1324,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_ref_cannot_name_a_missing_commit() {
+        let mut meta = memory_meta().await;
+        let feature = RefName::parse("feature").unwrap();
+
+        // A stale target is a typed error, not an opaque foreign-key
+        // violation, and the ref does not appear.
+        let err = meta
+            .set_ref(&feature, Some(CommitId(99)), 1_000)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StorageError::UnknownCommit { id: 99 }));
+        assert!(meta.lookup_ref(&feature).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_commit_without_an_active_ref_writes_nothing() {
+        let mut meta = memory_meta().await;
+        // A store whose active flag was lost (the app never clears it).
+        sqlx::query("UPDATE refs SET active = 0")
+            .execute(&meta.pool)
+            .await
+            .unwrap();
+
+        let err = meta
+            .apply_commit_incremental(1_000, &[], &[], None, &[], &[])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StorageError::NoActiveRef));
+
+        let mut commits = Vec::new();
+        meta.visit_commits(|commit| {
+            commits.push(commit.clone());
+            true
+        })
+        .await
+        .unwrap();
+        assert!(commits.is_empty(), "the failed commit left a row behind");
+    }
+
+    #[tokio::test]
     async fn the_active_ref_survives_a_delete_attempt() {
         let mut meta = memory_meta().await;
         let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
@@ -1336,6 +1406,14 @@ mod tests {
         );
         assert_eq!(
             meta.lookup_ref(&main).await.unwrap().unwrap().commit,
+            Some(second)
+        );
+
+        // The successor the refs followed is a valid active target:
+        // activating the ref names it, not the retired commit.
+        meta.activate_ref(&feature).await.unwrap();
+        assert_eq!(
+            meta.active_ref().await.unwrap().unwrap().commit,
             Some(second)
         );
     }

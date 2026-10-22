@@ -59,9 +59,10 @@ CREATE TABLE commit_tags(
 
 -- Named, movable pointers to commits: the store's branch model. A ref
 -- whose `commit_id` is NULL is unborn - it names a history without a
--- commit yet. Exactly one ref is active: the one new commits hang from
--- (the store's HEAD). `commit_id` has no cascade on purpose - a ref
--- naming a retired commit follows the fold instead of vanishing.
+-- commit yet. At most one ref is active, enforced by the partial index
+-- below; the application keeps exactly one, because new commits hang
+-- from it (the store's HEAD). `commit_id` has no cascade on purpose - a
+-- ref naming a retired commit follows the fold instead of vanishing.
 CREATE TABLE refs(
     name TEXT NOT NULL PRIMARY KEY,
     commit_id INTEGER NULL REFERENCES commits(id),
