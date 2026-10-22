@@ -64,6 +64,9 @@ CREATE TABLE commit_tags(
 -- from it (the store's HEAD). `commit_id` has no cascade: the default
 -- `NO ACTION` blocks deleting a commit a ref still names, so
 -- `retire_commit` re-points refs onto the successor before the row goes.
+-- Names are byte-wise and case-sensitive: `main` and `Main` are distinct,
+-- and `ORDER BY name` follows that byte order. Only the reserved `HEAD`
+-- spelling in the validator ignores case.
 CREATE TABLE refs(
     name TEXT NOT NULL COLLATE BINARY PRIMARY KEY,
     commit_id INTEGER NULL REFERENCES commits(id),

@@ -463,7 +463,7 @@ fn millis_param(ms: u64) -> Result<i64, StorageError> {
 fn now_ms() -> Result<i64, StorageError> {
     let millis = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|source| StorageError::backend("sqlite", source))?
+        .map_err(|_| StorageError::ClockBeforeEpoch)?
         .as_millis();
     // `as_millis` is `u128`: a value above `u64::MAX` has no
     // representation in the stored range, so it gets its own error rather
@@ -971,6 +971,25 @@ impl sekai_core::MetaStore for SqliteMeta {
         removed: &[RegionKey],
     ) -> Result<ApplyOutcome, StorageError> {
         let mut tx = self.pool.begin().await.map_err(db_err)?;
+        // The new commit must continue the active ref's target: moving the
+        // ref onto an unrelated history would fork it. Read the target
+        // before inserting, so a rejected call writes nothing.
+        let active_target: Option<Option<i64>> =
+            sqlx::query_scalar("SELECT commit_id FROM refs WHERE active = 1")
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(db_err)?;
+        let Some(active_target) = active_target else {
+            tx.rollback().await.map_err(db_err)?;
+            return Err(StorageError::NoActiveRef);
+        };
+        if let Some(target) = active_target {
+            let base = commit_id_from_i64(target)?;
+            if !parents.contains(&base) {
+                tx.rollback().await.map_err(db_err)?;
+                return Err(StorageError::NotContinuing { base: base.raw() });
+            }
+        }
         let commit = insert_commit(&mut tx, created_at_ms, parents).await?;
         let id_param = commit_param(commit)?;
         for entry in entries {
@@ -1092,6 +1111,7 @@ impl sekai_core::MetaStore for SqliteMeta {
             .map_err(db_err)?
             .rows_affected();
         if moved == 0 {
+            tx.rollback().await.map_err(db_err)?;
             return Err(StorageError::NoActiveRef);
         }
         tx.commit().await.map_err(db_err)?;
@@ -1110,17 +1130,20 @@ impl sekai_core::MetaStore for SqliteMeta {
         // A new ref starts inactive; a moved ref keeps its flag and
         // creation time. `commit = None` is the documented unborn state,
         // so moving a ref back to unborn is allowed.
+        let stored_commit = commit.map(commit_param).transpose()?;
+        let created_at_ms = millis_param(created_at_ms)?;
         let mut tx = self.pool.begin().await.map_err(db_err)?;
         if let Some(id) = commit {
             // Pointing at a commit that does not exist is corruption, not
             // a move: report it as such instead of the foreign-key
             // violation the upsert would raise.
             let found: Option<i64> = sqlx::query_scalar("SELECT 1 FROM commits WHERE id = ?")
-                .bind(commit_param(id)?)
+                .bind(stored_commit)
                 .fetch_optional(&mut *tx)
                 .await
                 .map_err(db_err)?;
             if found.is_none() {
+                tx.rollback().await.map_err(db_err)?;
                 return Err(StorageError::UnknownCommit { id: id.raw() });
             }
         }
@@ -1129,8 +1152,8 @@ impl sekai_core::MetaStore for SqliteMeta {
              ON CONFLICT(name) DO UPDATE SET commit_id = excluded.commit_id",
         )
         .bind(name.as_str())
-        .bind(commit.map(commit_param).transpose()?)
-        .bind(millis_param(created_at_ms)?)
+        .bind(stored_commit)
+        .bind(created_at_ms)
         .execute(&mut *tx)
         .await
         .map_err(db_err)?;
@@ -1228,6 +1251,7 @@ impl sekai_core::MetaStore for SqliteMeta {
             .await
             .map_err(db_err)?;
         if exists.is_none() {
+            tx.rollback().await.map_err(db_err)?;
             return Err(StorageError::UnknownRef {
                 name: name.as_str().to_owned(),
             });
@@ -1247,6 +1271,7 @@ impl sekai_core::MetaStore for SqliteMeta {
             .map_err(db_err)?
             .rows_affected();
         if activated == 0 {
+            tx.rollback().await.map_err(db_err)?;
             return Err(StorageError::UnknownRef {
                 name: name.as_str().to_owned(),
             });
@@ -1376,6 +1401,33 @@ mod tests {
             after.created_at_ms, before.created_at_ms,
             "the move kept the creation time"
         );
+    }
+
+    #[tokio::test]
+    async fn a_commit_must_continue_the_active_ref() {
+        let mut meta = memory_meta().await;
+        let root = meta
+            .apply_commit_incremental(1_000, &[], &[], None, &[], &[])
+            .await
+            .unwrap()
+            .id;
+
+        let err = meta
+            .apply_commit_incremental(2_000, &[], &[], None, &[], &[])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StorageError::NotContinuing { base } if base == root.raw()));
+
+        // The rejected call wrote nothing and consumed no identifier.
+        assert_eq!(meta.latest_commit().await.unwrap().unwrap().id, root);
+        assert_eq!(meta.active_ref().await.unwrap().unwrap().commit, Some(root));
+
+        let next = meta
+            .apply_commit_incremental(3_000, &[root], &[], None, &[], &[])
+            .await
+            .unwrap()
+            .id;
+        assert_eq!(next, CommitId(2));
     }
 
     #[tokio::test]
