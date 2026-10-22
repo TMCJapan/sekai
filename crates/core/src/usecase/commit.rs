@@ -21,7 +21,7 @@ use alloc::vec::Vec;
 
 use crate::port::meta::MetaStore;
 use sekai_util::{
-    ApplyOutcome, BlobHash, ChunkCoord, Commit, CommitEntry, CommitId, RefName, RegionFingerprint,
+    ApplyOutcome, BlobHash, ChunkCoord, Commit, CommitEntry, CommitId, RegionFingerprint,
     RegionKey, RegionStateEntry, Scope,
 };
 
@@ -48,9 +48,6 @@ pub struct Previous {
     /// The commit the new one continues: the target of the active ref,
     /// when the store has one (`None` on an unborn ref).
     pub commit: Option<Commit>,
-    /// The active ref the new commit belongs to. It moves onto the new
-    /// commit when the commit is recorded.
-    pub ref_name: Option<RefName>,
     /// Effective present coordinates of the base commit, tombstones
     /// excluded (empty on an unborn ref).
     pub universe: BTreeSet<ChunkCoord>,
@@ -117,6 +114,9 @@ pub async fn plan_commit<M: MetaStore>(
     scope: &Scope,
 ) -> Result<(Previous, Plan), M::Error> {
     let active = meta.active_ref().await?;
+    // `MetaStore::active_ref` rejects a dangling target (the port's
+    // contract), so the lookup below always finds the commit the ref
+    // names: a `None` here is an unborn ref.
     let base = match active.as_ref().and_then(|r| r.commit) {
         Some(id) => meta.lookup_commit(id).await?,
         None => None,
@@ -144,7 +144,6 @@ pub async fn plan_commit<M: MetaStore>(
     }
     let previous = Previous {
         commit: base,
-        ref_name: active.map(|r| r.name),
         universe,
         states,
     };
@@ -307,7 +306,7 @@ pub async fn record_commit<M: MetaStore>(
 mod tests {
     use super::*;
     use crate::support::MemMeta;
-    use sekai_util::{Area, ChunkHistoryEntry, Dimension, Rect, RegionKind};
+    use sekai_util::{Area, ChunkHistoryEntry, Dimension, Rect, RefName, RegionKind};
 
     const OVER: Dimension = Dimension::OVERWORLD;
     const NETHER: Dimension = Dimension::NETHER;
@@ -378,7 +377,6 @@ mod tests {
         // The active ref is unborn: the commit starts a history.
         let (previous, plan) =
             crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
-        assert_eq!(previous.ref_name.as_ref(), Some(&main));
         assert!(previous.commit.is_none());
         let staged = assemble(
             plan,
@@ -407,7 +405,6 @@ mod tests {
 
         let (previous, plan) =
             crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
-        assert_eq!(previous.ref_name.as_ref(), Some(&feature));
         assert_eq!(previous.commit.as_ref().map(|c| c.id), Some(first.commit));
         let staged = assemble(
             plan,
