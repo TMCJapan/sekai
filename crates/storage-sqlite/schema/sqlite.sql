@@ -65,7 +65,7 @@ CREATE TABLE commit_tags(
 -- `NO ACTION` blocks deleting a commit a ref still names, so
 -- `retire_commit` re-points refs onto the successor before the row goes.
 CREATE TABLE refs(
-    name TEXT NOT NULL PRIMARY KEY,
+    name TEXT NOT NULL COLLATE BINARY PRIMARY KEY,
     commit_id INTEGER NULL REFERENCES commits(id),
     active INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0, 1)),
     created_at_ms INTEGER NOT NULL
