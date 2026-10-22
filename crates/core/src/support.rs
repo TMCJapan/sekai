@@ -319,11 +319,17 @@ impl MetaStore for MemMeta {
         fingerprints: &[RegionFingerprint],
         removed: &[RegionKey],
     ) -> Result<ApplyOutcome, MemError> {
-        // The active ref must exist before anything is written: the backend
-        // does this in one transaction and rolls back on failure.
-        if !self.refs.values().any(|record| record.active) {
+        // The active ref decides where the commit lands: bind it before
+        // any write, so a store without one changes nothing (the backend
+        // does the same in one transaction and rolls back on failure).
+        let Some(active) = self
+            .refs
+            .iter()
+            .find(|(_, record)| record.active)
+            .map(|(name, _)| name.clone())
+        else {
             return Err(MemError::NoActiveRef);
-        }
+        };
         let id = self.create_commit(created_at_ms, parents).await?;
         for entry in entries {
             self.rows.push(ChunkHistoryEntry::new(
@@ -366,9 +372,12 @@ impl MetaStore for MemMeta {
             .retain(|state| !removed.contains(&state.fingerprint.key));
         // The active ref moves onto the new commit, in the same step: a
         // ref that lags behind its history would fork the next commit.
-        if let Some(active) = self.refs.values_mut().find(|record| record.active) {
-            active.commit = Some(id);
-        }
+        // The ref cannot be gone - nothing else runs in between - but the
+        // lookup still fails loudly rather than leaving the store headless.
+        self.refs
+            .get_mut(&active)
+            .ok_or(MemError::NoActiveRef)?
+            .commit = Some(id);
         Ok(ApplyOutcome { id, carried_chunks })
     }
 

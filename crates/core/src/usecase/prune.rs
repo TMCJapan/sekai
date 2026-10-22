@@ -157,7 +157,10 @@ pub async fn prune_apply<M: MetaStore>(
     .map_err(PruneError::Meta)?;
     // Retiring a commit contracts the graph: its children inherit its
     // parents, so reachability between the remaining commits does not
-    // change. One snapshot serves the whole run.
+    // change. Deletion runs oldest-first and descendants always have
+    // higher IDs, so a commit's descendants are still live when it is
+    // retired: one snapshot serves the whole run. `retire_commit`
+    // re-checks the live descent before it writes.
     let ancestry = retained_ancestry(&commits, &retained);
     let mut report = PruneReport {
         pruned: 0,
@@ -438,6 +441,40 @@ mod tests {
         assert!(block_on(meta.lookup_commit(CommitId(1))).unwrap().is_none());
         assert!(block_on(meta.lookup_commit(CommitId(2))).unwrap().is_none());
         assert_eq!(effective_present(&meta, &[CommitId(3)]), before);
+    }
+
+    #[test]
+    fn prune_refuses_a_forking_fold() {
+        use sekai_util::BlobHash;
+        let mut meta = MemMeta::default();
+        meta.with_active_ref(&RefName::parse("main").unwrap());
+        let row = |c: ChunkCoord, byte: u8| [CommitEntry::new(c, Some(BlobHash([byte; 32])), None)];
+        block_on(meta.apply_commit_incremental(1_000, &[], &row(coord(0, 0), 1), None, &[], &[]))
+            .unwrap();
+        // Two retained branches continue the same root: retiring it would
+        // have to fold its rows into both.
+        block_on(meta.apply_commit_incremental(
+            2_000,
+            &[CommitId(1)],
+            &row(coord(1, 0), 2),
+            None,
+            &[],
+            &[],
+        ))
+        .unwrap();
+        block_on(meta.apply_commit_incremental(
+            3_000,
+            &[CommitId(1)],
+            &row(coord(2, 0), 3),
+            None,
+            &[],
+            &[],
+        ))
+        .unwrap();
+
+        let retained = BTreeSet::from([CommitId(2), CommitId(3)]);
+        let err = block_on(prune_plan(&meta, &retained)).unwrap_err();
+        assert!(matches!(err, PruneError::SplitBranches { id: 1 }), "{err}");
     }
 
     #[test]

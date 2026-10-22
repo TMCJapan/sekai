@@ -252,10 +252,13 @@ impl<M: fmt::Debug> fmt::Display for ResolveError<M> {
 }
 
 /// Resolve a commit reference: a decimal ID, `@tag` for a tag name, or a
-/// ref name.
+/// bare ref name.
 ///
-/// A bare name that is not a decimal ID names a ref: the ref's target
-/// commit is the answer. An unborn ref has no commit to point at yet.
+/// The `@` prefix is tag-only: a ref called `main` is written `main`,
+/// and `@main` is an unknown tag, not that ref. A bare name is tried as
+/// a decimal ID first, so `01` (and every other spelling `u64` accepts)
+/// resolves to commit 1; anything else names a ref. An unborn ref has no
+/// commit to point at yet.
 pub async fn resolve_commit_ref<M: MetaStore>(
     meta: &M,
     raw: &str,

@@ -126,8 +126,12 @@ pub trait MetaStore {
     ///
     /// The active ref moves onto the new commit in the same
     /// transaction: a ref lagging behind its history would fork the
-    /// next commit. A store without an active ref has nowhere to put
-    /// the commit and fails.
+    /// next commit. The new commit must continue the active ref's
+    /// target - the use case passes it as a parent - but the store moves
+    /// the pointer without checking that relationship, so a caller that
+    /// commits an unrelated history forks the ref away from its own.
+    /// A store without an active ref has nowhere to put the commit and
+    /// fails.
     ///
     /// Referenced blobs must already be flushed to CAS.
     ///
@@ -185,7 +189,9 @@ pub trait MetaStore {
 
     /// Point `name` at `commit`, creating the ref when it does not exist.
     /// `commit = None` leaves the ref unborn: it names a history without
-    /// a commit.
+    /// a commit, and the next commit starts a new root from it. That is
+    /// the state a fresh store starts in, so moving the active ref to
+    /// unborn is allowed.
     ///
     /// A new ref starts inactive; moving an existing one leaves its flag
     /// and creation time untouched. `created_at_ms` is recorded only when
@@ -208,10 +214,12 @@ pub trait MetaStore {
     where
         F: FnMut(&CommitRef) -> bool + Send;
 
-    /// Remove `name`. Returns whether a ref was removed.
+    /// Remove `name`. Returns whether a ref was removed: `false` means
+    /// no ref of that name exists.
     ///
     /// The active ref is never removed: a store without one would have
-    /// nowhere to hang new commits from.
+    /// nowhere to hang new commits from. Asking to remove it is an
+    /// error, not a `false` result.
     fn delete_ref(
         &mut self,
         name: &RefName,
