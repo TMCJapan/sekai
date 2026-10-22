@@ -185,7 +185,11 @@ pub trait MetaStore {
 
     /// Point `name` at `commit`, creating the ref when it does not exist.
     /// `commit = None` leaves the ref unborn: it names a history without
-    /// a commit. Moving a ref keeps its creation time.
+    /// a commit.
+    ///
+    /// A new ref starts inactive; moving an existing one leaves its flag
+    /// and creation time untouched. `created_at_ms` is recorded only when
+    /// the ref is first created, ignored for an existing name.
     fn set_ref(
         &mut self,
         name: &RefName,

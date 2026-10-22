@@ -43,6 +43,11 @@ pub enum MemError {
         /// Ref that was asked for.
         name: String,
     },
+    /// The active ref names a commit the store does not hold.
+    DanglingRef {
+        /// Ref that names the missing commit.
+        name: String,
+    },
     /// The store has no active ref to hang a new commit from.
     NoActiveRef,
     /// The active ref cannot be removed.
@@ -314,6 +319,11 @@ impl MetaStore for MemMeta {
         fingerprints: &[RegionFingerprint],
         removed: &[RegionKey],
     ) -> Result<ApplyOutcome, MemError> {
+        // The active ref must exist before anything is written: the backend
+        // does this in one transaction and rolls back on failure.
+        if !self.refs.values().any(|record| record.active) {
+            return Err(MemError::NoActiveRef);
+        }
         let id = self.create_commit(created_at_ms, parents).await?;
         for entry in entries {
             self.rows.push(ChunkHistoryEntry::new(
@@ -356,12 +366,9 @@ impl MetaStore for MemMeta {
             .retain(|state| !removed.contains(&state.fingerprint.key));
         // The active ref moves onto the new commit, in the same step: a
         // ref that lags behind its history would fork the next commit.
-        let active = self
-            .refs
-            .values_mut()
-            .find(|record| record.active)
-            .ok_or(MemError::NoActiveRef)?;
-        active.commit = Some(id);
+        if let Some(active) = self.refs.values_mut().find(|record| record.active) {
+            active.commit = Some(id);
+        }
         Ok(ApplyOutcome { id, carried_chunks })
     }
 
@@ -547,6 +554,16 @@ impl MetaStore for MemMeta {
 
     fn active_ref(&self) -> impl Future<Output = Result<Option<CommitRef>, MemError>> + Send {
         let active = self.refs.values().find(|record| record.active).cloned();
+        // Mirrors the backend: the target commit must exist. A dangling
+        // target is corruption, not an unborn ref.
+        if let Some(record) = &active
+            && let Some(commit) = record.commit
+            && !self.commits.iter().any(|held| held.id == commit)
+        {
+            return core::future::ready(Err(MemError::DanglingRef {
+                name: record.name.as_str().to_owned(),
+            }));
+        }
         core::future::ready(Ok(active))
     }
 

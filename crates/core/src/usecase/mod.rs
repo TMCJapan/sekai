@@ -1,5 +1,5 @@
-//! Application use cases: commit, checkout, GC, commit-graph reads, and
-//! diffs.
+//! Application use cases: commit, checkout, GC, commit-graph reads, refs,
+//! and diffs.
 //!
 //! Use cases coordinate storage ports and enforce application-level policy.
 //! They own ordering and decisions such as carry, tombstone, restore, and GC.
