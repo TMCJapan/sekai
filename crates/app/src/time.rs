@@ -8,7 +8,8 @@ use crate::error::AppError;
 /// the clock is beyond the representable range.
 ///
 /// The SQLite backend keeps its own clock helper: its failures are
-/// `StorageError`s, and it rejects out-of-range times (`ClockOutOfRange`,
+/// `StorageError`s, and it rejects a clock before the epoch
+/// (`ClockBeforeEpoch`) and out-of-range times (`ClockOutOfRange`,
 /// `InvalidTimestamp`) instead of saturating. Here the value is a `u64`
 /// passed down to the port, so saturation keeps the app error-free; a
 /// value the backend cannot store fails there as `InvalidTimestamp`.

@@ -292,11 +292,14 @@ where
         let total_started = Instant::now();
         let commit_id = match commit {
             Some(id) => id,
-            None => self
-                .instance
-                .current_commit_id()
-                .await?
-                .ok_or(AppError::NoCommits)?,
+            None => {
+                // The outer lock is Shared and `current_commit_id` takes
+                // Shared too; Shared + Shared is compatible.
+                self.instance
+                    .current_commit_id()
+                    .await?
+                    .ok_or(AppError::NoCommits)?
+            }
         };
 
         let ignore_set = ignore.unwrap_or(DEFAULT_IGNORED);

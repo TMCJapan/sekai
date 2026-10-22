@@ -58,7 +58,13 @@ impl<S: SekaiStore> SekaiInstance<S> {
         self.store
             .meta_mut()
             .set_ref(name, commit, created_at_ms)
-            .await?;
+            .await
+            .map_err(|err| match err {
+                StorageError::UnknownCommit { id } => {
+                    AppError::CommitRef(sekai_core::ResolveError::UnknownCommit { id })
+                }
+                other => AppError::Storage(other),
+            })?;
         Ok(CommitRef::new(name.clone(), commit, active, created_at_ms))
     }
 
