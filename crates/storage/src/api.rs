@@ -67,14 +67,23 @@ pub enum StorageError {
     InvalidTagName { name: String },
     /// Stored ref name fails validation.
     #[error("stored ref name is invalid: {name}")]
-    InvalidRefName { name: String },
+    InvalidRefName {
+        /// Ref name that failed validation.
+        name: String,
+    },
     /// The named ref does not exist.
     #[error("unknown ref: {name}")]
-    UnknownRef { name: String },
+    UnknownRef {
+        /// Requested ref name.
+        name: String,
+    },
     /// The active ref cannot be removed: a store without one would have
     /// nowhere to hang new commits from.
     #[error("cannot remove the active ref: {name}")]
-    ActiveRefProtected { name: String },
+    ActiveRefProtected {
+        /// Ref that was asked for.
+        name: String,
+    },
     /// The store has no active ref, so a new commit has nowhere to land.
     #[error("store has no active ref: a new commit has nowhere to hang from")]
     NoActiveRef,
