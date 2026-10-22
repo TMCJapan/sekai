@@ -228,6 +228,43 @@ where
     assert_eq!(after_failures, after);
 }
 
+/// A whole chain retires into its tip: SQLite re-checks descent after each
+/// retirement, so the second fold must still see the survivor as its
+/// descendant once the first parent is gone.
+pub async fn prune_chain_flow<M>(meta: &mut M)
+where
+    M: MetaStore,
+    M::Error: core::fmt::Debug,
+{
+    use sekai_core::usecase::prune::{prune_apply, prune_plan, select_retained};
+    let first = meta.create_commit(1_000, &[]).await.unwrap();
+    meta.record_chunk(first, &coord(0, 0), Some(&BlobHash([1; 32])), None)
+        .await
+        .unwrap();
+    let second = meta.create_commit(2_000, &[first]).await.unwrap();
+    meta.record_chunk(second, &coord(1, 0), Some(&BlobHash([2; 32])), None)
+        .await
+        .unwrap();
+    let third = meta.create_commit(3_000, &[second]).await.unwrap();
+    meta.record_chunk(third, &coord(2, 0), Some(&BlobHash([3; 32])), None)
+        .await
+        .unwrap();
+
+    let before = effective_rows(meta, &[third]).await;
+    let listed = sekai_core::usecase::graph::list_commits(&*meta)
+        .await
+        .unwrap();
+    let retained = select_retained(&listed, Some(1), None);
+    let plan = prune_plan(&*meta, &retained).await.unwrap();
+    assert_eq!(plan.delete, [first, second]);
+    assert_eq!(plan.retained, [third]);
+    let report = prune_apply(meta, &plan, |_, _| {}).await.unwrap();
+    assert_eq!(report.pruned, 2);
+    assert_eq!(effective_rows(meta, &[third]).await, before);
+    assert!(meta.lookup_commit(first).await.unwrap().is_none());
+    assert!(meta.lookup_commit(second).await.unwrap().is_none());
+}
+
 async fn effective_rows<M>(meta: &M, ids: &[CommitId]) -> Vec<Vec<(ChunkCoord, Option<BlobHash>)>>
 where
     M: MetaStore,
