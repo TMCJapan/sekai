@@ -69,6 +69,8 @@ pub enum RefNameError {
     TooLong,
     /// Name held a character outside `[A-Za-z0-9._-/]`.
     BadChar(char),
+    /// Name has an empty path component or a `..` segment.
+    BadPath,
     /// Name consisted of digits alone (confusable with a commit ID).
     Numeric,
     /// Name is reserved for the store's active ref.
@@ -85,6 +87,10 @@ impl fmt::Display for RefNameError {
                 crate::refs::RefName::MAX_LEN
             ),
             Self::BadChar(c) => write!(f, "ref name holds invalid character: {c:?}"),
+            Self::BadPath => write!(
+                f,
+                "ref name has an invalid path shape: no leading, trailing, or doubled '/', and no '..'"
+            ),
             Self::Numeric => write!(f, "ref name must not be all digits"),
             Self::Reserved => write!(f, "ref name is reserved"),
         }

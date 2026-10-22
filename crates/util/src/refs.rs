@@ -22,6 +22,9 @@ pub const DEFAULT_REF_NAME: &str = "main";
 /// doubled `/`) and no `..` traversal segment. A name is never all digits
 /// (so it cannot be mistaken for a commit ID) and never `HEAD` (the active
 /// ref is the store's HEAD equivalent).
+///
+/// Ordering is byte-wise lexicographic - the same order SQLite's
+/// `ORDER BY name` yields - so both backends list refs alike.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RefName(String);
 
@@ -57,10 +60,10 @@ impl RefName {
         // Path-like names: no empty component, no leading or trailing
         // separator, no `..` traversal.
         if raw.starts_with('/') || raw.ends_with('/') || raw.contains("//") {
-            return Err(RefNameError::BadChar('/'));
+            return Err(RefNameError::BadPath);
         }
         if raw.contains("..") {
-            return Err(RefNameError::BadChar('.'));
+            return Err(RefNameError::BadPath);
         }
         if raw.eq_ignore_ascii_case(Self::RESERVED) {
             return Err(RefNameError::Reserved);
@@ -145,10 +148,10 @@ mod tests {
         // A multi-byte character is reported as itself, not as one of its
         // bytes.
         assert_eq!(RefName::parse("bré"), Err(RefNameError::BadChar('é')));
-        assert_eq!(RefName::parse("/main"), Err(RefNameError::BadChar('/')));
-        assert_eq!(RefName::parse("main/"), Err(RefNameError::BadChar('/')));
-        assert_eq!(RefName::parse("a//b"), Err(RefNameError::BadChar('/')));
-        assert_eq!(RefName::parse("a..b"), Err(RefNameError::BadChar('.')));
+        assert_eq!(RefName::parse("/main"), Err(RefNameError::BadPath));
+        assert_eq!(RefName::parse("main/"), Err(RefNameError::BadPath));
+        assert_eq!(RefName::parse("a//b"), Err(RefNameError::BadPath));
+        assert_eq!(RefName::parse("a..b"), Err(RefNameError::BadPath));
         assert_eq!(RefName::parse("HEAD"), Err(RefNameError::Reserved));
         assert_eq!(RefName::parse("head"), Err(RefNameError::Reserved));
         let long = "a".repeat(RefName::MAX_LEN + 1);
