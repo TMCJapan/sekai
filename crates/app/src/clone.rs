@@ -136,7 +136,8 @@ struct CloneJob<S: SekaiStore, W: WorldTree> {
     cas: S::Blobs,
     out: W,
     /// Owned by the file pass so a cancelled clone keeps `prune` out
-    /// until it stops reading blobs.
+    /// until it stops reading blobs (pinned by
+    /// `a_cancelled_clone_keeps_the_store_locked_until_its_files_finish`).
     _lock: S::LockGuard,
 }
 

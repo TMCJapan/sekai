@@ -415,6 +415,60 @@ async fn a_cancelled_checkout_keeps_the_world_locked_until_its_files_finish() {
     }
 }
 
+/// A cancelled clone future cannot stop its blocking file pass, so the
+/// pass itself must keep the store locked until it finishes: `prune`
+/// (exclusive) may not delete rows the pass is still reading.
+#[tokio::test]
+async fn a_cancelled_clone_keeps_the_store_locked_until_its_files_finish() {
+    let fx = Fixture::new("cancel-clone").await;
+    let (started, files_running) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+
+    let out = HostWorldTree::new_legacy(fx.root.join("cloned"));
+    let clone = fx.instance.clone_to(
+        &out,
+        CommitId(1),
+        CloneOptions::default(),
+        Scope::World,
+        move |_| {
+            let _ = started.send(());
+            // Parks the file pass until the test lets go (the sender drops).
+            let _ = released.recv();
+        },
+    );
+    tokio::select! {
+        outcome = clone => panic!("the clone must still be running: {outcome:?}"),
+        started = tokio::task::spawn_blocking(move || files_running.recv()) => {
+            assert!(matches!(started, Ok(Ok(()))), "the file pass never started: {started:?}");
+        }
+    }
+    // The future is gone; its file pass is parked in `progress`, still
+    // holding the store lock.
+    assert!(
+        fx.instance.store().cas().lock(Exclusive).is_err(),
+        "the store must stay locked while the clone file pass runs"
+    );
+
+    drop(release);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match fx.instance.store().cas().lock(Exclusive) {
+            Ok(lock) => {
+                drop(lock);
+                break;
+            }
+            Err(err) => {
+                assert!(
+                    matches!(err, StorageError::StoreLocked { .. }),
+                    "the file pass still holds the store: {err}"
+                );
+                assert!(Instant::now() < deadline, "the file pass never released");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        }
+    }
+}
+
 /// Pre-lock binaries left `commit.inflight` behind after a crash; it means
 /// nothing now and must not block collection.
 #[tokio::test]
