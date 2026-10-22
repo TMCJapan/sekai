@@ -31,7 +31,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
         let _lock = self.lock_store(StoreLockMode::Shared)?;
         if self.store.meta().lookup_commit(commit).await?.is_none() {
             return Err(AppError::CommitRef(
-                sekai_core::usecase::graph::ResolveError::UnknownCommit { id: commit.0 },
+                sekai_core::ResolveError::UnknownCommit { id: commit.0 },
             ));
         }
         if self.store.meta().lookup_tag(name).await?.is_some() {

@@ -20,8 +20,8 @@ pub use sekai_util::{
 pub use sekai_nbt::{DEFAULT_IGNORED, NbtChange, NbtDiffEntry, Value as NbtValue};
 
 pub use usecase::{
-    Assembled, CheckoutError, CheckoutPlan, CheckoutReport, CommitReport, CommitStats, DiffError,
-    GcError, GcReport, Observation, Plan, Previous, PruneError, PrunePlan, PruneReport,
+    Assembled, CheckoutError, CheckoutPlan, CheckoutReport, CommitError, CommitReport, CommitStats,
+    DiffError, GcError, GcReport, Observation, Plan, Previous, PruneError, PrunePlan, PruneReport,
     ResolveError, commit_ancestors, commit_history, commit_parents, diff_blobs, diff_blobs_v1,
 };
 

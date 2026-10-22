@@ -85,8 +85,8 @@ pub trait MetaStore {
     where
         F: FnMut(&ChunkHistoryEntry) -> bool + Send;
 
-    /// Visit the rows whose `commit_id` is exactly `commit` (fresh ingests
-    /// plus tombstones, no ancestor fallback). Return `false` to stop early.
+    /// Visit the rows introduced at exactly `commit` (fresh ingests plus
+    /// tombstones, no ancestor fallback). Return `false` to stop early.
     fn visit_fresh_rows<F>(
         &self,
         commit: CommitId,

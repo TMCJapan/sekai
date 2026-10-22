@@ -164,7 +164,6 @@ pub async fn commit_stats<M: MetaStore>(
     meta: &M,
     commit: CommitId,
 ) -> Result<CommitStats, CommitError<M::Error>> {
-    use alloc::collections::BTreeSet;
     let mut fresh_chunks = 0usize;
     let mut fresh_tombstones = 0usize;
     let mut blobs = BTreeSet::new();

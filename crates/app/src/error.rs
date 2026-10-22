@@ -51,10 +51,10 @@ pub enum AppError {
     Nbt(#[from] sekai_nbt::NbtError),
     /// Commit-graph operation failed.
     #[error("{0}")]
-    Commit(sekai_core::usecase::graph::CommitError<sekai_storage::StorageError>),
+    Commit(sekai_core::CommitError<sekai_storage::StorageError>),
     /// Commit reference (`<id>` or `@tag`) could not be resolved.
     #[error("{0}")]
-    CommitRef(sekai_core::usecase::graph::ResolveError<sekai_storage::StorageError>),
+    CommitRef(sekai_core::ResolveError<sekai_storage::StorageError>),
     /// Tag name is already taken.
     #[error("tag already exists: {name} (use --force to move it)")]
     TagExists {

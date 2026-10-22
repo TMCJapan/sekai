@@ -1142,6 +1142,36 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// The vocabulary rename bumped the schema to 9, so a store stamped
+    /// with the previous version must fail the gate - not fail later on a
+    /// missing table. The gate reads the version before any table is
+    /// touched, so the schema behind the stamp does not matter.
+    #[tokio::test]
+    async fn a_store_from_the_previous_schema_version_is_refused() {
+        let dir = tempdir("version-8");
+        let path = dir.join("meta.sqlite");
+        let mut seed = SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(true)
+            .connect()
+            .await
+            .unwrap();
+        sqlx::query(SCHEMA).execute(&mut seed).await.unwrap();
+        sqlx::query("PRAGMA user_version=8")
+            .execute(&mut seed)
+            .await
+            .unwrap();
+        seed.close().await.unwrap();
+        assert!(matches!(
+            SqliteMeta::open(&path).await,
+            Err(StorageError::UnsupportedSchema {
+                found: 8,
+                supported: SCHEMA_VERSION,
+            })
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn wiped_derived_state_degrades_to_full_ingest() {
         let mut meta = memory_meta().await;
