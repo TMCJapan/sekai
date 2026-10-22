@@ -124,14 +124,13 @@ pub trait MetaStore {
     /// refreshed atomically, and `removed` names regions whose state
     /// rows drop: files gone from disk or ingested only partly.
     ///
-    /// The active ref moves onto the new commit in the same
-    /// transaction: a ref lagging behind its history would fork the
-    /// next commit. The new commit must continue the active ref's
-    /// target - the use case passes it as a parent - but the store moves
-    /// the pointer without checking that relationship, so a caller that
-    /// commits an unrelated history forks the ref away from its own.
-    /// A store without an active ref has nowhere to put the commit and
-    /// fails.
+    /// The new commit must continue the active ref's target: when the
+    /// ref is born, `parents` includes its commit, and backends reject a
+    /// mismatch instead of silently forking the ref onto another
+    /// history. The active ref moves onto the new commit in the same
+    /// transaction, since a ref lagging behind its history would fork
+    /// the next commit. A store without an active ref has nowhere to put
+    /// the commit and fails.
     ///
     /// Referenced blobs must already be flushed to CAS.
     ///
@@ -196,7 +195,8 @@ pub trait MetaStore {
     /// A new ref starts inactive; moving an existing one leaves its flag
     /// and creation time untouched. `created_at_ms` is stored only when
     /// the ref is first created; an existing name keeps its original
-    /// timestamp even though the argument must still be representable.
+    /// timestamp even though the argument must still be storable by the
+    /// backend.
     fn set_ref(
         &mut self,
         name: &RefName,

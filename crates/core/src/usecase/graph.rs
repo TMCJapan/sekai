@@ -367,6 +367,25 @@ mod tests {
     }
 
     #[test]
+    fn numeric_spellings_are_commits_not_ref_names() {
+        use sekai_util::RefNameError;
+
+        // The resolver tries a decimal ID before a ref. `u64::from_str`
+        // accepts these spellings; `RefName` rejects digit-only names, so
+        // the two namespaces cannot overlap.
+        for raw in ["123", "01", "+1"] {
+            assert!(raw.parse::<u64>().is_ok());
+        }
+        assert_eq!(RefName::parse("123"), Err(RefNameError::Numeric));
+
+        let meta = MemMeta::default();
+        assert_eq!(
+            block_on(resolve_commit_ref(&meta, "123")),
+            Err(ResolveError::UnknownCommit { id: 123 })
+        );
+    }
+
+    #[test]
     fn an_unborn_ref_resolves_to_nothing() {
         let mut meta = MemMeta::default();
         let branch = RefName::parse("main").unwrap();

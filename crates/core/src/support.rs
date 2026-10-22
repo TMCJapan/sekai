@@ -1,8 +1,6 @@
 //! In-memory port fakes used by tests.
 
-use alloc::borrow::ToOwned;
 use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::string::String;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::pin;
@@ -46,19 +44,24 @@ pub enum MemError {
     /// The ref does not exist.
     UnknownRef {
         /// Ref that was asked for.
-        name: String,
+        name: RefName,
     },
     /// The active ref names a commit the store does not hold.
     DanglingRef {
         /// Ref that names the missing commit.
-        name: String,
+        name: RefName,
     },
     /// The store has no active ref to hang a new commit from.
     NoActiveRef,
+    /// The new commit does not continue the active ref's target.
+    NotContinuing {
+        /// Target the new commit had to include as a parent.
+        base: u64,
+    },
     /// The active ref cannot be removed.
     ActiveRefProtected {
         /// Ref that was asked for.
-        name: String,
+        name: RefName,
     },
 }
 
@@ -334,14 +337,21 @@ impl MetaStore for MemMeta {
         // The active ref decides where the commit lands: bind it before
         // any write, so a store without one changes nothing (the backend
         // does the same in one transaction and rolls back on failure).
-        let Some(active) = self
+        let Some((active, mut record)) = self
             .refs
             .iter()
             .find(|(_, record)| record.active)
-            .map(|(name, _)| name.clone())
+            .map(|(name, record)| (name.clone(), record.clone()))
         else {
             return Err(MemError::NoActiveRef);
         };
+        // A born ref moves along its own history: unrelated parents would
+        // fork it away from its target.
+        if let Some(base) = record.commit
+            && !parents.contains(&base)
+        {
+            return Err(MemError::NotContinuing { base: base.0 });
+        }
         let id = self.create_commit(created_at_ms, parents).await?;
         for entry in entries {
             self.rows.push(ChunkHistoryEntry::new(
@@ -384,12 +394,10 @@ impl MetaStore for MemMeta {
             .retain(|state| !removed.contains(&state.fingerprint.key));
         // The active ref moves onto the new commit, in the same step: a
         // ref that lags behind its history would fork the next commit.
-        // The ref cannot be gone - nothing else runs in between - but the
-        // lookup still fails loudly rather than leaving the store headless.
-        self.refs
-            .get_mut(&active)
-            .ok_or(MemError::NoActiveRef)?
-            .commit = Some(id);
+        // The record was bound before the writes, so this final update
+        // cannot fail and the fake never half-commits.
+        record.commit = Some(id);
+        self.refs.insert(active, record);
         Ok(ApplyOutcome { id, carried_chunks })
     }
 
@@ -572,9 +580,7 @@ impl MetaStore for MemMeta {
         name: &RefName,
     ) -> impl Future<Output = Result<bool, MemError>> + Send {
         if self.refs.get(name).is_some_and(|record| record.active) {
-            return core::future::ready(Err(MemError::ActiveRefProtected {
-                name: name.as_str().to_owned(),
-            }));
+            return core::future::ready(Err(MemError::ActiveRefProtected { name: name.clone() }));
         }
         core::future::ready(Ok(self.refs.remove(name).is_some()))
     }
@@ -588,7 +594,7 @@ impl MetaStore for MemMeta {
             && !self.commits.iter().any(|held| held.id == commit)
         {
             return core::future::ready(Err(MemError::DanglingRef {
-                name: record.name.as_str().to_owned(),
+                name: record.name.clone(),
             }));
         }
         core::future::ready(Ok(active))
@@ -599,9 +605,7 @@ impl MetaStore for MemMeta {
         name: &RefName,
     ) -> impl Future<Output = Result<(), MemError>> + Send {
         if !self.refs.contains_key(name) {
-            return core::future::ready(Err(MemError::UnknownRef {
-                name: name.as_str().to_owned(),
-            }));
+            return core::future::ready(Err(MemError::UnknownRef { name: name.clone() }));
         }
         for record in self.refs.values_mut() {
             record.active = record.name == *name;

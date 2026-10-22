@@ -309,7 +309,7 @@ pub async fn record_commit<M: MetaStore>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::support::MemMeta;
+    use crate::support::{MemError, MemMeta};
     use sekai_util::{Area, ChunkHistoryEntry, Dimension, Rect, RefName, RegionKind};
 
     const OVER: Dimension = Dimension::OVERWORLD;
@@ -485,6 +485,54 @@ mod tests {
         assert_eq!(
             crate::support::block_on(meta.commit_parents(second.commit)).unwrap(),
             alloc::vec![first.commit]
+        );
+    }
+
+    #[test]
+    fn a_commit_must_continue_the_active_ref() {
+        let mut meta = store_with_ref();
+        let first = crate::support::block_on(meta.apply_commit_incremental(
+            1_000,
+            &[],
+            &[stage_present(coord(0, 0), BlobHash([1; 32]))],
+            None,
+            &[],
+            &[],
+        ))
+        .unwrap()
+        .id;
+
+        // An empty parent list on a born ref would move the active ref
+        // into an unrelated history.
+        let err = crate::support::block_on(meta.apply_commit_incremental(
+            2_000,
+            &[],
+            &[stage_present(coord(1, 0), BlobHash([2; 32]))],
+            None,
+            &[],
+            &[],
+        ))
+        .unwrap_err();
+        assert_eq!(err, MemError::NotContinuing { base: first.0 });
+
+        // The rejected call wrote nothing and consumed no identifier.
+        let second = crate::support::block_on(meta.apply_commit_incremental(
+            3_000,
+            &[first],
+            &[stage_present(coord(1, 0), BlobHash([2; 32]))],
+            None,
+            &[],
+            &[],
+        ))
+        .unwrap()
+        .id;
+        assert_eq!(second, CommitId(2));
+        assert_eq!(
+            crate::support::block_on(meta.lookup_ref(&main_ref()))
+                .unwrap()
+                .unwrap()
+                .commit,
+            Some(second)
         );
     }
 

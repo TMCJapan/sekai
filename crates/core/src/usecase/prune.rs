@@ -487,6 +487,9 @@ mod tests {
             &[],
         ))
         .unwrap();
+        // Point the active ref back at the root: the second branch is a
+        // deliberate fork, which starts from commit 1 again.
+        block_on(meta.set_ref(&RefName::parse("main").unwrap(), Some(CommitId(1)), 2_500)).unwrap();
         block_on(meta.apply_commit_incremental(
             3_000,
             &[CommitId(1)],
