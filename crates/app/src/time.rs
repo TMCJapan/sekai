@@ -4,18 +4,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::error::AppError;
 
-/// The current time in Unix milliseconds, saturating to `u64::MAX` when
-/// the clock is beyond the representable range.
+/// The current time in Unix milliseconds.
 ///
-/// The SQLite backend keeps its own clock helper: its failures are
-/// `StorageError`s, and it rejects a clock before the epoch
-/// (`ClockBeforeEpoch`) and out-of-range times (`ClockOutOfRange`,
-/// `InvalidTimestamp`) instead of saturating. Here the value is a `u64`
-/// passed down to the port, so saturation keeps the app error-free; a
-/// value the backend cannot store fails there as `InvalidTimestamp`.
+/// A clock before the epoch or a reading beyond `u64` milliseconds is an
+/// error, never a sentinel timestamp: the port requires `created_at_ms`
+/// to be storable, and substituting a value would hide the anomaly. A
+/// backend with a narrower range (SQLite stores a signed `i64`) rejects
+/// the value itself as `InvalidTimestamp`.
 pub(crate) fn now_ms() -> Result<u64, AppError> {
-    SystemTime::now()
+    let elapsed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(AppError::Clock)
-        .map(|elapsed| u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
+        .map_err(AppError::Clock)?;
+    u64::try_from(elapsed.as_millis()).map_err(|_| AppError::ClockOutOfRange)
 }

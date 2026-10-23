@@ -88,6 +88,9 @@ pub enum AppError {
     /// System clock went backwards or overflowed.
     #[error("system clock error: {0}")]
     Clock(#[from] std::time::SystemTimeError),
+    /// System clock reading does not fit a Unix-millisecond `u64`.
+    #[error("system clock is out of range")]
+    ClockOutOfRange,
     /// Background worker task failed.
     #[error("worker task failed: {0}")]
     Join(#[from] tokio::task::JoinError),
