@@ -28,9 +28,8 @@ pub const DEFAULT_REF_NAME: &str = "main";
 /// commit ID) and never `HEAD` (the active ref is the store's HEAD
 /// equivalent).
 ///
-/// Ordering and uniqueness are byte-wise and case-sensitive - the order
-/// and identity SQLite's `BINARY` collation yields - so `main` and `Main`
-/// are distinct refs, while only the `HEAD` reservation ignores ASCII
+/// Ordering and uniqueness are byte-wise and case-sensitive, so `main`
+/// and `Main` are distinct refs; only the `HEAD` reservation ignores ASCII
 /// case.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RefName(String);

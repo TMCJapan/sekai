@@ -65,7 +65,8 @@ impl core::error::Error for TagNameError {}
 pub enum RefNameError {
     /// Name was empty.
     Empty,
-    /// Name exceeded the limit, in bytes.
+    /// Name exceeded the limit; the payload is that limit in bytes
+    /// (`RefName::MAX_LEN`).
     TooLong(usize),
     /// Name held a character outside ASCII alphanumerics, `.`, `_`, `-`,
     /// or `/`.
