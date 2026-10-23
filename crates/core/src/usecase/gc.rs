@@ -114,7 +114,7 @@ pub async fn gc_apply<B: BlobStore, M: MetaStore>(
 mod tests {
     use super::*;
     use crate::support::{MemCas, MemMeta, block_on};
-    use sekai_util::{ChunkCoord, CommitEntry, Dimension, RegionKind};
+    use sekai_util::{ChunkCoord, CommitEntry, Dimension, RefName, RegionKind};
 
     const OVER: Dimension = Dimension::OVERWORLD;
     const REGION: RegionKind = RegionKind::Region;
@@ -126,6 +126,7 @@ mod tests {
     #[test]
     fn reclaims_only_true_orphans() {
         let mut meta = MemMeta::default();
+        meta.with_active_ref(&RefName::parse("main").unwrap());
         let mut cas = MemCas::default();
         let live = BlobHash([1; 32]);
         let orphan = BlobHash([2; 32]);

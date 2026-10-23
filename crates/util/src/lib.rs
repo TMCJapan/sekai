@@ -15,6 +15,7 @@ pub mod error;
 pub mod gc;
 pub mod hash;
 pub mod history;
+pub mod refs;
 pub mod region;
 pub mod region_kind;
 pub mod scope;
@@ -23,10 +24,11 @@ pub mod tag;
 pub use chunk_coord::ChunkCoord;
 pub use commit::{Commit, CommitId, CommitTag};
 pub use dimension::Dimension;
-pub use error::{HexError, ParseCodeError, TagNameError};
+pub use error::{HexError, ParseCodeError, RefNameError, TagNameError};
 pub use gc::GcPlan;
 pub use hash::{BlobHash, DiffHash};
 pub use history::ChunkHistoryEntry;
+pub use refs::{CommitRef, DEFAULT_REF_NAME, RefName};
 pub use region::{
     ApplyOutcome, CommitEntry, FoldOutcome, RegionFingerprint, RegionKey, RegionStateEntry,
 };

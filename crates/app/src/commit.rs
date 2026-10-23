@@ -16,7 +16,7 @@
 use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use sekai_core::usecase::commit::Ingested;
 use sekai_core::{
@@ -29,6 +29,7 @@ use sekai_world::{RegionFile, WorldLock, WorldLockMode, WorldTree};
 use crate::error::AppError;
 use crate::instance::{OperationLocks, WorldHandle, WorldHandleMut};
 use crate::regions::discover_regions;
+use crate::time::now_ms;
 
 /// Commit behavior knobs.
 #[derive(Debug, Clone, Default)]
@@ -55,7 +56,10 @@ pub struct StatusOptions {
 pub struct StatusReport {
     /// Nothing in scope differs from the latest commit.
     pub clean: bool,
-    /// Latest commit the preview is measured against, if any.
+    /// The active ref's target the preview is measured against, if any.
+    ///
+    /// `None` when that ref is unborn, even if the store already holds
+    /// commits from an earlier history.
     pub latest: Option<CommitId>,
     /// In-scope regions that changed (new files included).
     pub changed_regions: usize,
@@ -175,6 +179,9 @@ where
     /// Scan the bound world and record it as a new commit in the store,
     /// additionally returning per-phase timings.
     ///
+    /// The recorded timestamp is read after ingestion, when the metadata
+    /// write begins.
+    ///
     /// Only `scope` is ingested: out-of-scope coordinates record no rows and
     /// no tombstones, resolving through fallback from earlier commits.
     /// `progress` fires as changed files complete. The report is identical
@@ -205,7 +212,7 @@ where
             universe_load,
         } = prepare(store, self.world, &options, &scope, progress, false, &locks).await?;
 
-        let now_ms = now_ms()?;
+        let created_at_ms = now_ms()?;
         // Persist batched shard-directory renames before the metadata commit:
         // file data is already synced per blob, and this single barrier (at
         // most one fsync per touched shard) is what makes every referenced blob
@@ -220,7 +227,7 @@ where
             store.meta_mut(),
             &previous,
             &staged,
-            now_ms,
+            created_at_ms,
         )
         .await?;
         let db_apply = db_started.elapsed();
@@ -826,11 +833,4 @@ fn ingest_timed<C: BlockingBlobStore>(
         .push(CommitEntry::new(coord, Some(hash), diff.flatten()));
     ctx.present.insert(coord);
     Ok((hash_elapsed, cas_elapsed))
-}
-
-fn now_ms() -> Result<u64, AppError> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(AppError::Clock)
-        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
 }

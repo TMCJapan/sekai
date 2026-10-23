@@ -250,7 +250,8 @@ where
     /// Compute AST diff for a chunk coordinate between the bound world state
     /// and a commit.
     ///
-    /// If `commit` is `None`, the latest commit in the store is used.
+    /// If `commit` is `None`, the active ref's target is used; an unborn
+    /// active ref fails with [`AppError::NoCommits`].
     pub async fn diff_world_chunk(
         &self,
         commit: Option<CommitId>,
@@ -269,9 +270,10 @@ where
     /// Compute AST diffs for explicit chunk coordinates between the bound
     /// world state and a commit, additionally returning per-phase timings.
     ///
-    /// If `commit` is `None`, the latest commit in the store is used.
-    /// World-side acquisition (region lookup, read, parse) counts under
-    /// `blob_fetch`; both sides' decompression under `decompress`.
+    /// If `commit` is `None`, the active ref's target is used - the
+    /// commit the next one would continue. World-side acquisition
+    /// (region lookup, read, parse) counts under `blob_fetch`; both
+    /// sides' decompression under `decompress`.
     pub async fn diff_world_chunks(
         &self,
         commit: Option<CommitId>,
@@ -279,6 +281,8 @@ where
         ignore: Option<&[&str]>,
         progress: impl FnMut(DiffProgress) + Send,
     ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
+        // Held across resolution and the reads below: the store and world
+        // snapshots must outlive the operation.
         let locks = OperationLocks::acquire(
             self.instance,
             StoreLockMode::Shared,
@@ -288,7 +292,14 @@ where
         let total_started = Instant::now();
         let commit_id = match commit {
             Some(id) => id,
-            None => self.instance.latest_commit_id_locked(locks.store()).await?,
+            None => {
+                // The outer lock is Shared and `current_commit_id` takes
+                // Shared too; Shared + Shared is compatible.
+                self.instance
+                    .current_commit_id()
+                    .await?
+                    .ok_or(AppError::NoCommits)?
+            }
         };
 
         let ignore_set = ignore.unwrap_or(DEFAULT_IGNORED);
@@ -308,6 +319,7 @@ where
         )
         .await?;
         timings.total = total_started.elapsed();
+        drop(locks);
         Ok((out, timings))
     }
 }

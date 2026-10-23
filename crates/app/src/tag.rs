@@ -5,13 +5,12 @@
 //! check-then-inserts so duplicates fail loudly instead of surfacing
 //! backend constraint errors.
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use sekai_core::{CommitId, CommitTag, MetaStore as _, TagName};
 use sekai_storage::{SekaiStore, StoreLockMode};
 
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
+use crate::time::now_ms;
 
 impl<S: SekaiStore> SekaiInstance<S> {
     /// Point `name` at `commit`, returning the created record.
@@ -34,17 +33,16 @@ impl<S: SekaiStore> SekaiInstance<S> {
                 sekai_core::ResolveError::UnknownCommit { id: commit.0 },
             ));
         }
-        if self.store.meta().lookup_tag(name).await?.is_some() {
-            if !force {
-                return Err(AppError::TagExists {
-                    name: name.as_str().to_owned(),
-                });
-            }
+        let replacing = self.store.meta().lookup_tag(name).await?.is_some();
+        if replacing && !force {
+            return Err(AppError::TagExists {
+                name: name.as_str().to_owned(),
+            });
+        }
+        let created_at_ms = now_ms()?;
+        if replacing {
             self.store.meta_mut().untag(name).await?;
         }
-        let created_at_ms =
-            u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis())
-                .unwrap_or(u64::MAX);
         self.store
             .meta_mut()
             .tag_commit(name, commit, created_at_ms)

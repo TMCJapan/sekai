@@ -56,3 +56,24 @@ CREATE TABLE commit_tags(
     commit_id INTEGER NOT NULL REFERENCES commits(id) ON DELETE CASCADE,
     created_at_ms INTEGER NOT NULL
 );
+
+-- Named, movable pointers to commits: the store's branch model. A ref
+-- whose `commit_id` is NULL is unborn - it names a history without a
+-- commit yet. At most one ref is active, enforced by the partial index
+-- below; the application keeps exactly one, because new commits hang
+-- from it (the store's HEAD). `commit_id` has no cascade: the default
+-- `NO ACTION` blocks deleting a commit a ref still names, so
+-- `retire_commit` re-points refs onto the successor before the row goes.
+-- Names are byte-wise and case-sensitive: `main` and `Main` are distinct,
+-- and `ORDER BY name` follows that byte order. Only the reserved `HEAD`
+-- spelling in the validator ignores case.
+CREATE TABLE refs(
+    name TEXT NOT NULL COLLATE BINARY PRIMARY KEY,
+    commit_id INTEGER NULL REFERENCES commits(id),
+    active INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0, 1)),
+    created_at_ms INTEGER NOT NULL
+);
+
+-- At most one active ref: the partial index covers the active rows only.
+CREATE UNIQUE INDEX idx_refs_active
+    ON refs(active) WHERE active = 1;

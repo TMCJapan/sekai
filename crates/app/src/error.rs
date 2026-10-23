@@ -61,8 +61,27 @@ pub enum AppError {
         /// Conflicting tag name.
         name: String,
     },
-    /// No commits exist in the store.
-    #[error("no commits found in store")]
+    /// Ref name is already taken.
+    #[error("ref already exists: {name} (use --force to move it)")]
+    RefExists {
+        /// Conflicting ref name.
+        name: String,
+    },
+    /// The named ref does not exist.
+    #[error("unknown ref: {name}")]
+    UnknownRef {
+        /// Ref that was asked for.
+        name: String,
+    },
+    /// The active ref cannot be removed.
+    #[error("cannot remove the active ref: {name} (activate another ref first)")]
+    ActiveRef {
+        /// Ref that was asked for.
+        name: String,
+    },
+    /// No commit is available for the operation: the store is empty or
+    /// the active ref is unborn.
+    #[error("no commit selected: the store is empty or the active ref is unborn")]
     NoCommits,
     /// I/O operation failed.
     #[error(transparent)]
@@ -70,6 +89,9 @@ pub enum AppError {
     /// System clock went backwards or overflowed.
     #[error("system clock error: {0}")]
     Clock(#[from] std::time::SystemTimeError),
+    /// System clock reading does not fit a Unix-millisecond `u64`.
+    #[error("system clock is out of range")]
+    ClockOutOfRange,
     /// Background worker task failed.
     #[error("worker task failed: {0}")]
     Join(#[from] tokio::task::JoinError),

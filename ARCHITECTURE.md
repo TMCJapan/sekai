@@ -225,11 +225,39 @@ to the root by the core use cases (`usecase::graph::commit_ancestors`
 / `commit_history`). Every parent must exist, a commit may not name
 itself, and a parent listed twice is recorded once.
 
-Ref objects (a movable `HEAD`, named branches) do not exist yet. Until
-they do, a new commit continues the commit it was planned against: the
-latest commit of the store, which is also the base its delta was
-computed from. Merges are representable in the model but nothing creates
-them yet, so a history is a chain in practice.
+## Ref Objects
+
+Ref objects are the store's movable pointers to commits: named
+branches. A ref names a commit and moves with the history it names; a
+ref without a commit is *unborn*. Exactly one ref is *active* - the one
+new commits hang from (the store's `HEAD`). A fresh store starts with
+one active ref, `main`, unborn.
+
+A new commit continues the target of the active ref - the port rejects
+one whose parents omit it - and the active ref moves onto the new commit
+in the same transaction. Switching the active ref forks the history: the
+next commit continues the ref it was planned against, not the newest
+commit in the store. Commit references accept `<id>`, `@tag`, or a bare
+ref name.
+
+Refs point at commit identifiers, not at content hashes: a sekai commit
+is not content-addressed (`prune` folds its rows into a successor), so
+no digest over it stays stable. Git can use an object id because a git
+commit object is immutable; sekai's commit identifier is the same
+counterpart. See [ADR-0019](docs/adr/0019-ref-objects.md).
+
+Two rules follow from the graph:
+
+- **Fingerprints are per history.** `region_state` records which commit
+  last confirmed a file. A fingerprint confirmed outside the active
+  ref's history describes another branch, so it is not carried into
+  this one: the plan reads the fingerprints within the base commit's
+  ancestry only.
+- **Pruning folds into a descendant.** A retired commit hands its rows
+  to a retained commit that continues it, and a ref naming the retired
+  commit follows the fold. A commit that several branches continue
+  cannot be retired - folding it would strip the other branches of the
+  rows they inherit through it - so `prune` refuses and names it.
 
 Retiring a commit (`prune`) keeps the graph connected: the children of
 the retired commit continue the history of its own parents, so the
@@ -299,9 +327,11 @@ The scope is a filter, not a partition:
   is held, because a commit's blobs are in the CAS before the rows that
   reference them. Readers (`checkout`, `clone`, `diff`) never take it. See
   [ADR-0011](docs/adr/0011-backup-run-marker.md).
-- **Commit pruning** (`prune`): oldest-first fold into the next
-  retained commit, then delete. Pruning dereferences blobs only;
-  `gc` reclaims them afterwards.
+- **Commit pruning** (`prune`): oldest-first fold into the retained
+  commit that continues the retired one, then delete. A commit that
+  several branches continue cannot be retired, so `prune` refuses and
+  names it. Pruning dereferences blobs only; `gc` reclaims them
+  afterwards.
 
 # Storage Backends
 
@@ -354,8 +384,9 @@ cancelled future cannot release the store while those tasks still run.
 ## Schema
 
 Owned by the backend crate (`crates/storage-sqlite/schema/sqlite.sql` for
-SQLite; `commits`, `commit_parents`, `chunk_history`, `region_state`;
-`SCHEMA_VERSION` gate; pre-release policy = recreate, don't migrate).
+SQLite; `commits`, `commit_parents`, `chunk_history`, `region_state`,
+`commit_tags`, `refs`; `SCHEMA_VERSION` gate; pre-release policy =
+recreate, don't migrate).
 The `cas` module stays independent of DB backend crates so future
 object-store CAS swaps don't touch metadata code.
 

@@ -60,6 +60,44 @@ impl fmt::Display for TagNameError {
 
 impl core::error::Error for TagNameError {}
 
+/// Ref name validation failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefNameError {
+    /// Name was empty.
+    Empty,
+    /// Name exceeded the limit; the payload is that limit in bytes
+    /// (`RefName::MAX_LEN`).
+    TooLong(usize),
+    /// Name held a character outside ASCII alphanumerics, `.`, `_`, `-`,
+    /// or `/`.
+    BadChar(char),
+    /// Name has an invalid path shape; the payload is the violated rule
+    /// (an empty component, or a `.`/`..` segment).
+    BadPath(&'static str),
+    /// Name consisted of digits alone (confusable with a commit ID).
+    Numeric,
+    /// Name is reserved for the store's active ref; the payload is the
+    /// reserved spelling (`RefName::RESERVED`).
+    Reserved(&'static str),
+}
+
+impl fmt::Display for RefNameError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "ref name is empty"),
+            Self::TooLong(limit) => write!(f, "ref name exceeds {limit} bytes"),
+            Self::BadChar(c) => write!(f, "ref name holds invalid character: {c:?}"),
+            Self::BadPath(reason) => {
+                write!(f, "ref name has an invalid path shape: {reason}")
+            }
+            Self::Numeric => write!(f, "ref name must not be all digits"),
+            Self::Reserved(name) => write!(f, "ref name {name:?} is reserved"),
+        }
+    }
+}
+
+impl core::error::Error for RefNameError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

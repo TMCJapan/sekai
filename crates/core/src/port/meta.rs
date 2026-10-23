@@ -9,7 +9,8 @@ use alloc::vec::Vec;
 use core::future::Future;
 use sekai_util::{
     ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitEntry, CommitId,
-    CommitTag, DiffHash, FoldOutcome, RegionFingerprint, RegionKey, RegionStateEntry, TagName,
+    CommitRef, CommitTag, DiffHash, FoldOutcome, RefName, RegionFingerprint, RegionKey,
+    RegionStateEntry, TagName,
 };
 
 /// Commit metadata and per-chunk history storage.
@@ -101,8 +102,16 @@ pub trait MetaStore {
         F: FnMut(&Commit) -> bool + Send;
 
     /// Load every stored region fingerprint (for skip decisions in commit).
+    ///
+    /// `within` restricts the result to the history of that commit: a
+    /// fingerprint confirmed outside it describes another history (another
+    /// ref) and must not be carried into this one. "Inside" means stamped
+    /// at `within` or at one of its ancestors - the same ancestry the
+    /// effective chunk reads use. `None` - an unborn ref - yields nothing:
+    /// its history holds no confirmed file yet.
     fn load_region_states(
         &self,
+        within: Option<CommitId>,
     ) -> impl Future<Output = Result<Vec<RegionStateEntry>, Self::Error>> + Send;
 
     /// Record a commit and optionally carry unchanged regions.
@@ -116,6 +125,20 @@ pub trait MetaStore {
     /// per-chunk rows for them (delta storage). Fingerprints are
     /// refreshed atomically, and `removed` names regions whose state
     /// rows drop: files gone from disk or ingested only partly.
+    ///
+    /// The new commit must continue the active ref's target: when the
+    /// ref is born, `parents` includes its commit, and backends reject a
+    /// mismatch instead of silently forking the ref onto another
+    /// history. The active ref moves onto the new commit in the same
+    /// transaction, since a ref lagging behind its history would fork
+    /// the next commit. A store without an active ref has nowhere to put
+    /// the commit and fails.
+    ///
+    /// A store with no active ref fails with the backend's no-active-ref
+    /// error before any parent check. An unborn active ref imposes no
+    /// parent constraint: the new commit starts its history. Only a born
+    /// active ref whose target is absent from `parents` fails as "not
+    /// continuing".
     ///
     /// Referenced blobs must already be flushed to CAS.
     ///
@@ -170,4 +193,77 @@ pub trait MetaStore {
         from: CommitId,
         into: CommitId,
     ) -> impl Future<Output = Result<FoldOutcome, Self::Error>> + Send;
+
+    /// Point `name` at `commit`, creating the ref when it does not exist.
+    /// `commit = None` leaves the ref unborn: it names a history without
+    /// a commit, and the next commit starts a new root from it. That is
+    /// the state a fresh store starts in, so moving the active ref to
+    /// unborn is allowed and is not the dangling target
+    /// [`Self::active_ref`] rejects: an unborn active ref reads back as
+    /// a valid ref whose `commit` is `None`. A non-`None` target must name
+    /// an existing commit; otherwise the backend fails with its
+    /// unknown-commit error.
+    ///
+    /// A new ref starts inactive; moving an existing one leaves its flag
+    /// and creation time untouched. `created_at_ms` is stored only when
+    /// the ref is first created; an existing name keeps its original
+    /// timestamp even though the argument must still be storable by the
+    /// backend.
+    fn set_ref(
+        &mut self,
+        name: &RefName,
+        commit: Option<CommitId>,
+        created_at_ms: u64,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// The ref with this name, or `None` when it does not exist.
+    fn lookup_ref(
+        &self,
+        name: &RefName,
+    ) -> impl Future<Output = Result<Option<CommitRef>, Self::Error>> + Send;
+
+    /// Visit refs in name order - the order [`RefName`]'s `Ord` yields -
+    /// so every backend lists them alike. Return `false` to stop early;
+    /// `Ok(())` only reports that the visit ran without error. Early
+    /// stopping is not signalled: a caller that needs a complete set must
+    /// keep returning `true`.
+    fn visit_refs<F>(&self, visit: F) -> impl Future<Output = Result<(), Self::Error>> + Send
+    where
+        F: FnMut(&CommitRef) -> bool + Send;
+
+    /// Remove `name`. Returns whether a ref was removed: `false` means
+    /// no ref of that name exists.
+    ///
+    /// The active ref is never removed: a store without one would have
+    /// nowhere to hang new commits from. Asking to remove it is an
+    /// error, not a `false` result. The check is part of the delete
+    /// itself, so callers need not read the active ref first (and doing
+    /// so races against a concurrent [`Self::activate_ref`]).
+    fn delete_ref(
+        &mut self,
+        name: &RefName,
+    ) -> impl Future<Output = Result<bool, Self::Error>> + Send;
+
+    /// The active ref - the one new commits hang from - or `None` when
+    /// the store has none.
+    ///
+    /// The commit it names must exist: a dangling target is corruption,
+    /// not an unborn ref, and fails with the backend's unknown-commit
+    /// error.
+    fn active_ref(&self) -> impl Future<Output = Result<Option<CommitRef>, Self::Error>> + Send;
+
+    /// Make `name` the active ref. The name must exist; a missing name
+    /// fails with the backend's unknown-ref error. A non-`None` target
+    /// must also exist: activating a ref whose target is dangling is
+    /// corruption, and the backend fails with its unknown-commit error
+    /// rather than making a headless store.
+    ///
+    /// The previous active ref is cleared before `name` is set: a store
+    /// holds at most one active ref. Backends keep that order; SQLite
+    /// enforces it with a partial unique index, so setting without
+    /// clearing fails on the constraint.
+    fn activate_ref(
+        &mut self,
+        name: &RefName,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 }

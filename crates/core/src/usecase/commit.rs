@@ -45,12 +45,14 @@ pub struct CommitReport {
 /// Previous commit plus the state the walk needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Previous {
-    /// Latest commit, when the store is non-empty.
+    /// The commit the new one continues: the target of the active ref,
+    /// when the store has one (`None` on an unborn ref).
     pub commit: Option<Commit>,
-    /// Effective present coordinates of the latest commit, tombstones
-    /// excluded (empty on first run).
+    /// Effective present coordinates of the base commit, tombstones
+    /// excluded (empty on an unborn ref).
     pub universe: BTreeSet<ChunkCoord>,
-    /// Stored fingerprints keyed by region identity.
+    /// Stored fingerprints inherited from the base commit, keyed by
+    /// region identity.
     pub states: BTreeMap<RegionKey, RegionStateEntry>,
 }
 
@@ -99,6 +101,14 @@ pub struct Assembled {
 
 /// Load prior state and classify observed regions as carried or ingested.
 ///
+/// The base is the target of the active ref: a new commit continues the
+/// history that ref names, not the newest commit in the store. A store
+/// without an active ref (or with an unborn one) starts a new history.
+///
+/// The caller must hold the store's writer lock from this call through
+/// [`record_commit`]: a commit that moves the active ref in between
+/// would make the plan's base and the recorded parent disagree.
+///
 /// Regions outside `scope` are ignored entirely: they are neither carried
 /// nor ingested, and their stored state rows are never marked removed.
 /// Callers must quiesce the source while fingerprinting; a concurrent rewrite
@@ -108,10 +118,17 @@ pub async fn plan_commit<M: MetaStore>(
     observed: &[Observation],
     scope: &Scope,
 ) -> Result<(Previous, Plan), M::Error> {
+    let active = meta.active_ref().await?;
+    // `MetaStore::active_ref` rejects a dangling target (the port's
+    // contract), so the lookup below always finds the commit the ref
+    // names: a `None` here is an unborn ref.
+    let base = match active.as_ref().and_then(|r| r.commit) {
+        Some(id) => meta.lookup_commit(id).await?,
+        None => None,
+    };
     let mut universe: BTreeSet<ChunkCoord> = BTreeSet::new();
-    let commit = meta.latest_commit().await?;
-    if let Some(latest) = commit.as_ref() {
-        meta.visit_commit_chunks(latest.id, |entry| {
+    if let Some(base) = base.as_ref() {
+        meta.visit_commit_chunks(base.id, |entry| {
             // Present coordinates only. A tombstoned coordinate is already
             // absent from the effective state, so keeping it would re-record
             // the same tombstone row on every later commit and count a
@@ -124,11 +141,14 @@ pub async fn plan_commit<M: MetaStore>(
         .await?;
     }
     let mut states: BTreeMap<RegionKey, RegionStateEntry> = BTreeMap::new();
-    for state in meta.load_region_states().await? {
+    // Only fingerprints confirmed inside the base's own history may be
+    // carried: one confirmed in another history describes a different
+    // state of the file.
+    for state in meta.load_region_states(base.as_ref().map(|c| c.id)).await? {
         states.insert(state.fingerprint.key, state);
     }
     let previous = Previous {
-        commit,
+        commit: base,
         universe,
         states,
     };
@@ -239,8 +259,9 @@ pub fn assemble(plan: Plan, previous: &Previous, ingested: Ingested, scope: &Sco
 /// metadata transaction is committed.
 ///
 /// The new commit continues the history it was planned against: its
-/// parent is `previous.commit` - the commit the plan read and the
-/// base its delta was computed from. Plan and commit must not be
+/// parent is `previous.commit` - the target of the active ref, which is
+/// also the base its delta was computed from. The active ref moves onto
+/// the new commit in the same transaction. Plan and commit must not be
 /// interleaved with another commit; the app holds the store's writer
 /// lock for the whole run.
 pub async fn record_commit<M: MetaStore>(
@@ -289,8 +310,8 @@ pub async fn record_commit<M: MetaStore>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::support::MemMeta;
-    use sekai_util::{Area, ChunkHistoryEntry, Dimension, Rect, RegionKind};
+    use crate::support::{MemError, MemMeta};
+    use sekai_util::{Area, ChunkHistoryEntry, Dimension, Rect, RefName, RegionKind};
 
     const OVER: Dimension = Dimension::OVERWORLD;
     const NETHER: Dimension = Dimension::NETHER;
@@ -312,6 +333,18 @@ mod tests {
         ChunkCoord::new(NETHER, REGION, x, z)
     }
 
+    /// The store's active ref: new commits hang from it.
+    fn main_ref() -> RefName {
+        RefName::parse("main").unwrap()
+    }
+
+    /// A fake store with one active ref, the way a fresh store looks.
+    fn store_with_ref() -> MemMeta {
+        let mut meta = MemMeta::default();
+        meta.with_active_ref(&main_ref());
+        meta
+    }
+
     fn fingerprint(key: RegionKey) -> RegionFingerprint {
         RegionFingerprint {
             key,
@@ -323,7 +356,7 @@ mod tests {
 
     #[test]
     fn first_commit_ingests_everything() {
-        let meta = MemMeta::default();
+        let meta = store_with_ref();
         let observed = [Observation {
             key: key(0, 0),
             fingerprint: fingerprint(key(0, 0)),
@@ -338,8 +371,73 @@ mod tests {
     }
 
     #[test]
+    fn a_new_commit_continues_the_active_ref() {
+        let mut meta = store_with_ref();
+        let main = main_ref();
+        let observed = [Observation {
+            key: key(0, 0),
+            fingerprint: fingerprint(key(0, 0)),
+        }];
+
+        // The active ref is unborn: the commit starts a history.
+        let (previous, plan) =
+            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
+        assert!(previous.commit.is_none());
+        let staged = assemble(
+            plan,
+            &previous,
+            Ingested {
+                entries: alloc::vec![stage_present(coord(0, 0), BlobHash([1; 32]))],
+                present: BTreeSet::from([coord(0, 0)]),
+                new_blobs: 1,
+                fingerprints: alloc::vec![fingerprint(key(0, 0))],
+            },
+            &Scope::World,
+        );
+        let first =
+            crate::support::block_on(record_commit(&mut meta, &previous, &staged, 1_000)).unwrap();
+        // The ref moved onto the new commit.
+        let active = crate::support::block_on(meta.active_ref())
+            .unwrap()
+            .unwrap();
+        assert_eq!(active.commit, Some(first.commit));
+
+        // A second ref at the same commit forks the history: the next
+        // commit continues the ref that is active.
+        let feature = RefName::parse("feature").unwrap();
+        crate::support::block_on(meta.set_ref(&feature, Some(first.commit), 1_500)).unwrap();
+        crate::support::block_on(meta.activate_ref(&feature)).unwrap();
+
+        let (previous, plan) =
+            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
+        assert_eq!(previous.commit.as_ref().map(|c| c.id), Some(first.commit));
+        let staged = assemble(
+            plan,
+            &previous,
+            Ingested {
+                entries: alloc::vec![stage_present(coord(0, 0), BlobHash([2; 32]))],
+                present: BTreeSet::from([coord(0, 0)]),
+                new_blobs: 1,
+                fingerprints: alloc::vec![fingerprint(key(0, 0))],
+            },
+            &Scope::World,
+        );
+        let second =
+            crate::support::block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        assert_eq!(
+            crate::support::block_on(meta.commit_parents(second.commit)).unwrap(),
+            alloc::vec![first.commit]
+        );
+        // The ref that was left behind keeps naming the first commit.
+        let main = crate::support::block_on(meta.lookup_ref(&main))
+            .unwrap()
+            .unwrap();
+        assert_eq!(main.commit, Some(first.commit));
+    }
+
+    #[test]
     fn the_recorded_commit_continues_the_previous_one() {
-        let mut meta = MemMeta::default();
+        let mut meta = store_with_ref();
         let observed = [Observation {
             key: key(0, 0),
             fingerprint: fingerprint(key(0, 0)),
@@ -392,8 +490,56 @@ mod tests {
     }
 
     #[test]
+    fn a_commit_must_continue_the_active_ref() {
+        let mut meta = store_with_ref();
+        let first = crate::support::block_on(meta.apply_commit_incremental(
+            1_000,
+            &[],
+            &[stage_present(coord(0, 0), BlobHash([1; 32]))],
+            None,
+            &[],
+            &[],
+        ))
+        .unwrap()
+        .id;
+
+        // An empty parent list on a born ref would move the active ref
+        // into an unrelated history.
+        let err = crate::support::block_on(meta.apply_commit_incremental(
+            2_000,
+            &[],
+            &[stage_present(coord(1, 0), BlobHash([2; 32]))],
+            None,
+            &[],
+            &[],
+        ))
+        .unwrap_err();
+        assert_eq!(err, MemError::NotContinuing { base: first.0 });
+
+        // The rejected call wrote nothing and consumed no identifier.
+        let second = crate::support::block_on(meta.apply_commit_incremental(
+            3_000,
+            &[first],
+            &[stage_present(coord(1, 0), BlobHash([2; 32]))],
+            None,
+            &[],
+            &[],
+        ))
+        .unwrap()
+        .id;
+        assert_eq!(second, CommitId(2));
+        assert_eq!(
+            crate::support::block_on(meta.lookup_ref(&main_ref()))
+                .unwrap()
+                .unwrap()
+                .commit,
+            Some(second)
+        );
+    }
+
+    #[test]
     fn changed_region_reingests_while_rest_carries() {
-        let mut meta = MemMeta::default();
+        let mut meta = store_with_ref();
         let fp0 = fingerprint(key(0, 0));
         let fp1 = fingerprint(key(1, 0));
         crate::support::block_on(meta.apply_commit_incremental(
@@ -461,7 +607,7 @@ mod tests {
 
     #[test]
     fn missing_coordinates_become_tombstones_and_states_drop() {
-        let mut meta = MemMeta::default();
+        let mut meta = store_with_ref();
         let s1 = crate::support::block_on(meta.apply_commit_incremental(
             1_000,
             &[],
@@ -496,7 +642,7 @@ mod tests {
 
     #[test]
     fn already_tombstoned_coordinates_record_no_further_rows() {
-        let mut meta = MemMeta::default();
+        let mut meta = store_with_ref();
         let fp0 = fingerprint(key(0, 0));
         let fp1 = fingerprint(key(1, 0));
         crate::support::block_on(meta.apply_commit_incremental(
@@ -559,7 +705,7 @@ mod tests {
 
     #[test]
     fn scoped_plan_ignores_out_of_scope_regions() {
-        let mut meta = MemMeta::default();
+        let mut meta = store_with_ref();
         let fp_over = fingerprint(key(0, 0));
         let fp_nether = RegionFingerprint {
             key: nether_key(0, 0),
@@ -608,7 +754,7 @@ mod tests {
 
     #[test]
     fn scoped_assemble_tombstones_only_in_scope() {
-        let mut meta = MemMeta::default();
+        let mut meta = store_with_ref();
         let fp_nether = RegionFingerprint {
             key: nether_key(0, 0),
             ..fingerprint(key(0, 0))
@@ -681,7 +827,7 @@ mod tests {
 
     #[test]
     fn partial_ingest_invalidates_state_so_full_commit_reingests() {
-        let mut meta = MemMeta::default();
+        let mut meta = store_with_ref();
         let fp0 = fingerprint(key(0, 0));
         crate::support::block_on(meta.apply_commit_incremental(
             1_000,
@@ -734,7 +880,7 @@ mod tests {
 
     #[test]
     fn covering_scope_refreshes_the_fingerprint_so_later_commits_carry() {
-        let mut meta = MemMeta::default();
+        let mut meta = store_with_ref();
         let fp0 = fingerprint(key(0, 0));
         crate::support::block_on(meta.apply_commit_incremental(
             1_000,
@@ -781,7 +927,7 @@ mod tests {
 
     #[test]
     fn mem_meta_satisfies_lookup_contract() {
-        let mut meta = MemMeta::default();
+        let mut meta = store_with_ref();
         let id = crate::support::block_on(meta.create_commit(5, &[])).unwrap();
         crate::support::block_on(meta.record_chunk(
             id,

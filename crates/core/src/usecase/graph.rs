@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::port::meta::MetaStore;
-use sekai_util::{Commit, CommitId, CommitTag, TagName};
+use sekai_util::{Commit, CommitId, CommitTag, RefName, TagName};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommitError<M> {
@@ -218,7 +218,17 @@ pub enum ResolveError<M> {
         /// Requested tag name.
         name: TagName,
     },
-    /// Reference is neither a commit ID nor `@tag`.
+    /// No ref with this name exists.
+    UnknownRef {
+        /// Requested ref name.
+        name: RefName,
+    },
+    /// The ref exists but names no commit yet.
+    UnbornRef {
+        /// Requested ref name.
+        name: RefName,
+    },
+    /// Reference is neither a commit ID, a `@tag`, nor a ref name.
     InvalidRef {
         /// Raw reference text.
         raw: alloc::string::String,
@@ -231,15 +241,26 @@ impl<M: fmt::Debug> fmt::Display for ResolveError<M> {
             Self::Meta(_) => write!(f, "commit metadata failed"),
             Self::UnknownCommit { id } => write!(f, "unknown commit: {id}"),
             Self::UnknownTag { name } => write!(f, "unknown tag: {name}"),
+            Self::UnknownRef { name } => write!(f, "unknown ref: {name}"),
+            Self::UnbornRef { name } => write!(f, "ref has no commit yet: {name}"),
             Self::InvalidRef { raw } => write!(
                 f,
-                "invalid commit reference: {raw:?}, expected <id> or @<tag>"
+                "invalid reference: {raw:?}, expected <id>, @<tag>, or <ref>"
             ),
         }
     }
 }
 
-/// Resolve a commit reference: a decimal ID, or `@tag` for a tag name.
+/// Resolve a commit reference: a decimal ID, `@tag` for a tag name, or a
+/// bare ref name.
+///
+/// The `@` prefix is tag-only: a ref called `main` is written `main`,
+/// and `@main` is an unknown tag, not that ref. A bare name is tried as
+/// a decimal ID first, so `01` (and every other spelling `u64` accepts)
+/// resolves to commit 1; anything else names a ref. A valid ref name is
+/// never entirely digits, so the decimal branch can never shadow one: a
+/// numeric spelling is either a commit ID or `UnknownCommit`, never a
+/// ref. An unborn ref has no commit to point at yet.
 pub async fn resolve_commit_ref<M: MetaStore>(
     meta: &M,
     raw: &str,
@@ -255,14 +276,21 @@ pub async fn resolve_commit_ref<M: MetaStore>(
             .map(|record| record.commit)
             .ok_or(ResolveError::UnknownTag { name: tag });
     }
-    let id: u64 = raw.parse().map_err(|_| ResolveError::InvalidRef {
+    if let Ok(id) = raw.parse::<u64>() {
+        return meta
+            .lookup_commit(CommitId(id))
+            .await
+            .map_err(ResolveError::Meta)?
+            .map(|commit| commit.id)
+            .ok_or(ResolveError::UnknownCommit { id });
+    }
+    let name = RefName::parse(raw).map_err(|_| ResolveError::InvalidRef {
         raw: alloc::string::String::from(raw),
     })?;
-    meta.lookup_commit(CommitId(id))
-        .await
-        .map_err(ResolveError::Meta)?
-        .map(|commit| commit.id)
-        .ok_or(ResolveError::UnknownCommit { id })
+    let Some(record) = meta.lookup_ref(&name).await.map_err(ResolveError::Meta)? else {
+        return Err(ResolveError::UnknownRef { name });
+    };
+    record.commit.ok_or(ResolveError::UnbornRef { name })
 }
 
 #[cfg(test)]
@@ -282,15 +310,32 @@ mod tests {
     }
 
     #[test]
-    fn resolves_ids_and_tags() {
+    fn resolves_ids_tags_and_refs() {
         use sekai_util::TagName;
         let mut meta = MemMeta::default();
         let first = block_on(meta.create_commit(100, &[])).unwrap();
         let second = block_on(meta.create_commit(200, &[first])).unwrap();
         block_on(meta.tag_commit(&TagName::parse("stable").unwrap(), second, 250)).unwrap();
+        let branch = RefName::parse("main").unwrap();
+        block_on(meta.set_ref(&branch, Some(second), 300)).unwrap();
 
         assert_eq!(block_on(resolve_commit_ref(&meta, "1")), Ok(first));
+        // `u64` accepts leading zeroes and a leading `+`; both spellings
+        // resolve as IDs, and no valid ref name can take that shape.
+        assert_eq!(block_on(resolve_commit_ref(&meta, "01")), Ok(first));
+        assert_eq!(block_on(resolve_commit_ref(&meta, "+1")), Ok(first));
+        assert_eq!(
+            block_on(resolve_commit_ref(&meta, " 1")),
+            Err(ResolveError::InvalidRef { raw: " 1".into() })
+        );
+        assert_eq!(
+            block_on(resolve_commit_ref(&meta, "")),
+            Err(ResolveError::InvalidRef {
+                raw: alloc::string::String::new()
+            })
+        );
         assert_eq!(block_on(resolve_commit_ref(&meta, "@stable")), Ok(second));
+        assert_eq!(block_on(resolve_commit_ref(&meta, "main")), Ok(second));
         assert_eq!(
             block_on(resolve_commit_ref(&meta, "9")),
             Err(ResolveError::UnknownCommit { id: 9 })
@@ -301,8 +346,14 @@ mod tests {
                 name: TagName::parse("missing").unwrap()
             })
         );
+        assert_eq!(
+            block_on(resolve_commit_ref(&meta, "other")),
+            Err(ResolveError::UnknownRef {
+                name: RefName::parse("other").unwrap()
+            })
+        );
         assert!(matches!(
-            block_on(resolve_commit_ref(&meta, "abc")),
+            block_on(resolve_commit_ref(&meta, "a b")),
             Err(ResolveError::InvalidRef { .. })
         ));
         assert!(matches!(
@@ -313,6 +364,38 @@ mod tests {
             block_on(resolve_commit_ref(&meta, "")),
             Err(ResolveError::InvalidRef { .. })
         ));
+    }
+
+    #[test]
+    fn numeric_spellings_are_commits_not_ref_names() {
+        use sekai_util::RefNameError;
+
+        // The resolver tries a decimal ID before a ref. `u64::from_str`
+        // accepts these spellings; `RefName` rejects digit-only names, so
+        // the two namespaces cannot overlap.
+        for raw in ["123", "01", "+1"] {
+            assert!(raw.parse::<u64>().is_ok());
+        }
+        assert_eq!(RefName::parse("123"), Err(RefNameError::Numeric));
+
+        let meta = MemMeta::default();
+        assert_eq!(
+            block_on(resolve_commit_ref(&meta, "123")),
+            Err(ResolveError::UnknownCommit { id: 123 })
+        );
+    }
+
+    #[test]
+    fn an_unborn_ref_resolves_to_nothing() {
+        let mut meta = MemMeta::default();
+        let branch = RefName::parse("main").unwrap();
+        block_on(meta.set_ref(&branch, None, 100)).unwrap();
+        assert_eq!(
+            block_on(resolve_commit_ref(&meta, "main")),
+            Err(ResolveError::UnbornRef {
+                name: RefName::parse("main").unwrap()
+            })
+        );
     }
 
     #[test]
