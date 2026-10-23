@@ -24,9 +24,10 @@ pub const DEFAULT_REF_NAME: &str = "main";
 /// Ref names are path-like (`main`, `feature/nightly`): 1-64 bytes of
 /// ASCII alphanumerics plus `.`, `_`, `-`, and `/`, with no empty path
 /// component (no leading, trailing, or doubled `/`) and no `.` or `..`
-/// segment. A name is never all digits (so it cannot be mistaken for a
-/// commit ID) and never `HEAD` (the active ref is the store's HEAD
-/// equivalent).
+/// segment. The whole name is never all digits, so a decimal commit
+/// reference cannot resolve to a ref; digit-only segments in a path-like
+/// name are allowed. No ref may be named `HEAD` (the active ref is the
+/// store's HEAD equivalent).
 ///
 /// Ordering and uniqueness are byte-wise and case-sensitive, so `main`
 /// and `Main` are distinct refs; only the `HEAD` reservation ignores ASCII
@@ -39,7 +40,7 @@ impl RefName {
     pub const MAX_LEN: usize = 64;
 
     /// Name the store keeps for itself: no ref may carry it.
-    const RESERVED: &str = "HEAD";
+    pub const RESERVED: &str = "HEAD";
 
     /// Validate `raw` into a ref name.
     ///
@@ -70,10 +71,10 @@ impl RefName {
         // Path-like names: no empty component, no leading or trailing
         // separator, and no current- or parent-directory segment.
         if raw.starts_with('/') || raw.ends_with('/') || raw.contains("//") {
-            return Err(RefNameError::BadPath);
+            return Err(RefNameError::BadPath("empty path component"));
         }
         if raw.split('/').any(|segment| matches!(segment, "." | "..")) {
-            return Err(RefNameError::BadPath);
+            return Err(RefNameError::BadPath("'.' or '..' segment"));
         }
         if raw.eq_ignore_ascii_case(Self::RESERVED) {
             return Err(RefNameError::Reserved(Self::RESERVED));
@@ -162,6 +163,7 @@ mod tests {
             "v..1",
             "a..b",
             "release..2024",
+            "1/2",
         ] {
             assert_eq!(RefName::parse(raw).unwrap().as_str(), raw);
         }
@@ -177,15 +179,42 @@ mod tests {
         // A multi-byte character is reported as itself, not as one of its
         // bytes.
         assert_eq!(RefName::parse("bré"), Err(RefNameError::BadChar('é')));
-        assert_eq!(RefName::parse("/main"), Err(RefNameError::BadPath));
-        assert_eq!(RefName::parse("main/"), Err(RefNameError::BadPath));
-        assert_eq!(RefName::parse("a//b"), Err(RefNameError::BadPath));
-        assert_eq!(RefName::parse(".."), Err(RefNameError::BadPath));
-        assert_eq!(RefName::parse("a/../b"), Err(RefNameError::BadPath));
-        assert_eq!(RefName::parse("a/.."), Err(RefNameError::BadPath));
-        assert_eq!(RefName::parse("."), Err(RefNameError::BadPath));
-        assert_eq!(RefName::parse("a/./b"), Err(RefNameError::BadPath));
-        assert_eq!(RefName::parse("a/."), Err(RefNameError::BadPath));
+        assert_eq!(
+            RefName::parse("/main"),
+            Err(RefNameError::BadPath("empty path component"))
+        );
+        assert_eq!(
+            RefName::parse("main/"),
+            Err(RefNameError::BadPath("empty path component"))
+        );
+        assert_eq!(
+            RefName::parse("a//b"),
+            Err(RefNameError::BadPath("empty path component"))
+        );
+        assert_eq!(
+            RefName::parse(".."),
+            Err(RefNameError::BadPath("'.' or '..' segment"))
+        );
+        assert_eq!(
+            RefName::parse("a/../b"),
+            Err(RefNameError::BadPath("'.' or '..' segment"))
+        );
+        assert_eq!(
+            RefName::parse("a/.."),
+            Err(RefNameError::BadPath("'.' or '..' segment"))
+        );
+        assert_eq!(
+            RefName::parse("."),
+            Err(RefNameError::BadPath("'.' or '..' segment"))
+        );
+        assert_eq!(
+            RefName::parse("a/./b"),
+            Err(RefNameError::BadPath("'.' or '..' segment"))
+        );
+        assert_eq!(
+            RefName::parse("a/."),
+            Err(RefNameError::BadPath("'.' or '..' segment"))
+        );
         assert_eq!(
             RefName::parse("HEAD"),
             Err(RefNameError::Reserved(RefName::RESERVED))
@@ -216,5 +245,15 @@ mod tests {
         assert!(record.is_unborn());
         assert!(record.active);
         assert_eq!(record.name, name);
+    }
+
+    #[test]
+    fn born_refs_name_a_commit() {
+        let name = RefName::parse("main").unwrap();
+        let commit = CommitId(7);
+        let record = CommitRef::new(name, Some(commit), false, 1_700_000_000_000);
+        assert!(!record.is_unborn());
+        assert!(!record.active);
+        assert_eq!(record.commit, Some(commit));
     }
 }

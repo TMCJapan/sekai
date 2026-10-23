@@ -179,6 +179,9 @@ where
     /// Scan the bound world and record it as a new commit in the store,
     /// additionally returning per-phase timings.
     ///
+    /// The recorded timestamp is read after ingestion, when the metadata
+    /// write begins.
+    ///
     /// Only `scope` is ingested: out-of-scope coordinates record no rows and
     /// no tombstones, resolving through fallback from earlier commits.
     /// `progress` fires as changed files complete. The report is identical

@@ -33,15 +33,16 @@ impl<S: SekaiStore> SekaiInstance<S> {
                 sekai_core::ResolveError::UnknownCommit { id: commit.0 },
             ));
         }
-        if self.store.meta().lookup_tag(name).await?.is_some() {
-            if !force {
-                return Err(AppError::TagExists {
-                    name: name.as_str().to_owned(),
-                });
-            }
-            self.store.meta_mut().untag(name).await?;
+        let replacing = self.store.meta().lookup_tag(name).await?.is_some();
+        if replacing && !force {
+            return Err(AppError::TagExists {
+                name: name.as_str().to_owned(),
+            });
         }
         let created_at_ms = now_ms()?;
+        if replacing {
+            self.store.meta_mut().untag(name).await?;
+        }
         self.store
             .meta_mut()
             .tag_commit(name, commit, created_at_ms)

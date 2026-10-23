@@ -12,9 +12,9 @@ use crate::error::AppError;
 /// and substituting a value would hide the anomaly.
 ///
 /// The app's `ClockOutOfRange` covers only the `u64` conversion. A
-/// backend whose stored type is narrower (SQLite's signed `i64`) reports
-/// its own error (`StorageError::InvalidTimestamp`) after the value
-/// reaches it.
+/// backend whose stored range is narrower may reject the value with its
+/// own error after it reaches the backend; callers see that as
+/// [`AppError::Storage`].
 pub(crate) fn now_ms() -> Result<u64, AppError> {
     let elapsed = SystemTime::now()
         .duration_since(UNIX_EPOCH)

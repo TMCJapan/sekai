@@ -26,11 +26,12 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// `force` is a policy of this layer: the port's `set_ref` always
     /// moves the ref.
     ///
-    /// Every read runs under the writer lock. That serializes this
-    /// sequence against the app operations that change commits or refs
-    /// (`commit`, `prune`, and the other ref mutations), so a staged
-    /// target cannot vanish between the check and the write. Handles
-    /// using the backend directly are outside this protocol.
+    /// Every read runs under the writer lock, which excludes the app
+    /// operations that change commits or refs (`commit`, `prune`, and the
+    /// other ref mutations): a conflicting operation fails fast with
+    /// `StoreLocked` instead of running concurrently. A staged target
+    /// cannot vanish between the check and the write. Handles using the
+    /// backend directly are outside this protocol.
     pub async fn create_ref(
         &mut self,
         name: &RefName,
@@ -74,22 +75,11 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// no ref had that name, not that the removal failed.
     ///
     /// The active ref is never removed: a store without one would have
-    /// nowhere to hang new commits from. The app checks first so the
-    /// error can say which ref to activate instead; the port repeats the
-    /// check because it is the guard every caller needs.
+    /// nowhere to hang new commits from. The port is the guard and returns
+    /// the protected name, so the app can say which ref to activate
+    /// instead.
     pub async fn delete_ref(&mut self, name: &RefName) -> Result<bool, AppError> {
         let _lock = self.lock_store(StoreLockMode::Writer)?;
-        if self
-            .store
-            .meta()
-            .active_ref()
-            .await?
-            .is_some_and(|active| active.name == *name)
-        {
-            return Err(AppError::ActiveRef {
-                name: name.as_str().to_owned(),
-            });
-        }
         self.store
             .meta_mut()
             .delete_ref(name)
@@ -121,6 +111,9 @@ impl<S: SekaiStore> SekaiInstance<S> {
             .await
             .map_err(|err| match err {
                 StorageError::UnknownRef { name } => AppError::UnknownRef { name },
+                StorageError::UnknownCommit { id } => {
+                    AppError::CommitRef(sekai_core::ResolveError::UnknownCommit { id })
+                }
                 other => AppError::Storage(other),
             })?;
         self.store
@@ -149,6 +142,10 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// This is not [`SekaiInstance::latest_commit_id`], which reports the
     /// newest stored commit: activating an older ref changes the target
     /// here without changing the newest commit.
+    ///
+    /// Takes a shared store lock. A caller already holding a shared lock
+    /// (such as `diff_world_chunks`) may call this; a writer-locked caller
+    /// must not nest another acquisition.
     pub async fn current_commit_id(&self) -> Result<Option<CommitId>, AppError> {
         let _lock = self.lock_store(StoreLockMode::Shared)?;
         Ok(sekai_core::usecase::refs::active_ref(self.store.meta())

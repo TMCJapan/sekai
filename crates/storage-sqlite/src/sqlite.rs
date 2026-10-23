@@ -767,7 +767,7 @@ impl sekai_core::MetaStore for SqliteMeta {
     ) -> Result<Vec<RegionStateEntry>, StorageError> {
         // Only fingerprints confirmed inside the given history may be
         // carried over: one confirmed elsewhere describes another state
-        // of the file. An unborn history knows no file at all.
+        // of the file. An unborn history has no confirmed file.
         let Some(within) = within else {
             return Ok(Vec::new());
         };
@@ -1383,7 +1383,9 @@ mod tests {
 
     #[tokio::test]
     async fn activating_a_ref_refuses_a_dangling_target() {
-        let mut meta = memory_meta().await;
+        let dir = tempdir("dangling-target");
+        let path = dir.join("meta.sqlite");
+        let mut meta = SqliteMeta::open(&path).await.unwrap();
         let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
         let feature = RefName::parse("feature").unwrap();
         let root = meta
@@ -1393,26 +1395,24 @@ mod tests {
             .id;
         meta.set_ref(&feature, Some(root), 2_000).await.unwrap();
 
-        // Simulate corruption that bypassed the foreign key; activation
-        // must not turn `feature` into the active head.
-        let mut conn = meta.pool.acquire().await.unwrap();
-        sqlx::query("PRAGMA foreign_keys = OFF")
-            .execute(&mut *conn)
+        // Simulate corruption that bypassed the foreign key on a dedicated
+        // connection, so no pooled connection inherits the pragma.
+        let mut raw = SqliteConnectOptions::new()
+            .filename(&path)
+            .foreign_keys(false)
+            .connect()
             .await
             .unwrap();
         sqlx::query("UPDATE refs SET commit_id = 99 WHERE name = 'feature'")
-            .execute(&mut *conn)
+            .execute(&mut raw)
             .await
             .unwrap();
-        sqlx::query("PRAGMA foreign_keys = ON")
-            .execute(&mut *conn)
-            .await
-            .unwrap();
-        drop(conn);
+        raw.close().await.unwrap();
 
         let err = meta.activate_ref(&feature).await.unwrap_err();
         assert!(matches!(err, StorageError::UnknownCommit { id: 99 }));
         assert_eq!(meta.active_ref().await.unwrap().unwrap().name, main);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -1532,7 +1532,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_corrupt_ref_row_fails_loudly() {
-        let meta = memory_meta().await;
+        let dir = tempdir("corrupt-ref");
+        let path = dir.join("meta.sqlite");
+        let meta = SqliteMeta::open(&path).await.unwrap();
         // Names are re-validated on decode: a row the schema no longer
         // accepts is corruption, never a new ref name.
         sqlx::query(
@@ -1546,24 +1548,27 @@ mod tests {
         let err = meta.visit_refs(|_| true).await.unwrap_err();
         assert!(matches!(err, StorageError::InvalidRefName { name } if name == "bad name"));
 
-        // The table's CHECK normally rejects this; disable it on one
-        // connection to prove the decoder itself refuses a value that a
-        // corrupt or older table could hold.
-        let mut conn = meta.pool.acquire().await.unwrap();
+        // The table's CHECK normally rejects this; disable it on a
+        // dedicated connection so no pooled connection inherits the pragma.
+        let mut raw = SqliteConnectOptions::new()
+            .filename(&path)
+            .connect()
+            .await
+            .unwrap();
         sqlx::query("PRAGMA ignore_check_constraints = ON")
-            .execute(&mut *conn)
+            .execute(&mut raw)
             .await
             .unwrap();
         sqlx::query("UPDATE refs SET active = 2 WHERE name = ?")
             .bind(DEFAULT_REF_NAME)
-            .execute(&mut *conn)
+            .execute(&mut raw)
             .await
             .unwrap();
         sqlx::query("PRAGMA ignore_check_constraints = OFF")
-            .execute(&mut *conn)
+            .execute(&mut raw)
             .await
             .unwrap();
-        drop(conn);
+        raw.close().await.unwrap();
 
         let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
         assert!(matches!(
@@ -1573,6 +1578,7 @@ mod tests {
                 value: 2
             })
         ));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -1582,8 +1588,8 @@ mod tests {
         meta.apply_commit_incremental(1_000, &[], &[], None, &[], &[])
             .await
             .unwrap();
-        // A store whose active flag was lost (the app neither deletes the
-        // active ref nor clears its flag).
+        // A store whose active flag was lost (corruption or a legacy row),
+        // leaving the history intact but with no head.
         sqlx::query("UPDATE refs SET active = 0")
             .execute(&meta.pool)
             .await

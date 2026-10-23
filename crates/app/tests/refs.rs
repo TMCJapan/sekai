@@ -53,10 +53,10 @@ fn write_region(path: impl AsRef<Path>, chunks: &[(i32, i32, Vec<u8>)]) {
 
 async fn commit<S: sekai_app::SekaiStore>(
     instance: &mut sekai_app::SekaiInstance<S>,
-    world: &mut HostWorldTree,
+    world_tree: &mut HostWorldTree,
 ) -> sekai_app::CommitReport {
     instance
-        .world_mut(world)
+        .world_mut(world_tree)
         .commit(
             sekai_app::CommitOptions::default(),
             sekai_app::Scope::World,
@@ -195,7 +195,7 @@ async fn forcing_a_move_keeps_the_active_flag() {
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let first = commit(&mut instance, &mut world).await;
-    let second = commit(&mut instance, &mut world).await;
+    let _second = commit(&mut instance, &mut world).await;
     let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
 
     // Moving the active ref back moves the flag with it: it stays the
@@ -206,17 +206,21 @@ async fn forcing_a_move_keeps_the_active_flag() {
         .unwrap();
     assert!(record.active);
     assert_eq!(record.commit, Some(first.commit));
+    let created_at_ms = record.created_at_ms;
     assert_eq!(
         instance.current_commit_id().await.unwrap(),
         Some(first.commit)
     );
 
-    // A forced move to unborn keeps the flag too.
+    // A forced move to unborn keeps the flag and creation time too.
     let record = instance.create_ref(&main, None, true).await.unwrap();
     assert!(record.active);
     assert!(record.commit.is_none());
+    assert_eq!(record.created_at_ms, created_at_ms);
     assert_eq!(instance.list_refs().await.unwrap().len(), 1);
-    assert_ne!(first.commit, second.commit);
+    let active = instance.active_ref().await.unwrap().unwrap();
+    assert_eq!(active.name, main);
+    assert!(active.commit.is_none());
 }
 
 #[tokio::test]

@@ -238,6 +238,9 @@ where
     M::Error: core::fmt::Debug,
 {
     use sekai_core::usecase::prune::{prune_apply, prune_plan, select_retained};
+    // The production apply path requires an active ref; make that
+    // dependency explicit rather than relying on the runner's setup.
+    assert!(meta.active_ref().await.unwrap().is_some());
     // Build the chain through the production apply path, so the active
     // ref follows each commit rather than being positioned by hand.
     let first = meta

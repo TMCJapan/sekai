@@ -121,7 +121,7 @@ pub enum StorageError {
     /// The system clock is past the representable range.
     ///
     /// Raised when a millisecond reading of the system clock does not fit
-    /// the timestamp type a backend stores (for SQLite, a signed `i64`).
+    /// the timestamp range the backend stores.
     #[error("system clock is out of range")]
     ClockOutOfRange,
     /// Region file size does not fit `i64`.

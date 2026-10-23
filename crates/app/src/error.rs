@@ -79,8 +79,9 @@ pub enum AppError {
         /// Ref that was asked for.
         name: String,
     },
-    /// No commits exist in the store.
-    #[error("no commits found in store")]
+    /// No commit is available for the operation: the store is empty or
+    /// the active ref is unborn.
+    #[error("no commit selected: the store is empty or the active ref is unborn")]
     NoCommits,
     /// I/O operation failed.
     #[error(transparent)]

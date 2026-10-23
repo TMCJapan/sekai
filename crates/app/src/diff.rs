@@ -283,7 +283,7 @@ where
     ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
         // Held across resolution and the reads below: the store and world
         // snapshots must outlive the operation.
-        let _locks = OperationLocks::acquire(
+        let locks = OperationLocks::acquire(
             self.instance,
             StoreLockMode::Shared,
             self.world,
@@ -319,6 +319,7 @@ where
         )
         .await?;
         timings.total = total_started.elapsed();
+        drop(locks);
         Ok((out, timings))
     }
 }
