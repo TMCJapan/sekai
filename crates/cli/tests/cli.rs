@@ -304,7 +304,7 @@ fn validates_commit_refs_at_parse_time() {
         .expect_err("an out-of-range id is refused");
     let message = err.to_string();
     assert!(
-        message.contains("invalid commit reference"),
+        message.contains("invalid reference"),
         "the refusal names the reference: {message}"
     );
     assert!(

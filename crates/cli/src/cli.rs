@@ -359,7 +359,7 @@ impl std::str::FromStr for CommitRef {
                 .map_err(|err| format!("invalid tag reference {s:?}: {err}, expected @<tag>"))?;
         } else if s.parse::<u64>().is_err() {
             RefName::parse(s).map_err(|err| {
-                format!("invalid commit reference {s:?}: {err}, expected <id>, @<tag>, or <ref>")
+                format!("invalid reference {s:?}: {err}, expected <id>, @<tag>, or <ref>")
             })?;
         }
         Ok(Self(s.to_owned()))
