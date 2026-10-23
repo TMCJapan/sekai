@@ -4,7 +4,7 @@
 
 use sekai_core::{
     BlobHash, BlobStore, ChunkCoord, CommitEntry, CommitId, CommitTag, Dimension, MetaStore,
-    Observation, RegionFingerprint, RegionKey, RegionKind, Scope, TagName,
+    Observation, RefName, RegionFingerprint, RegionKey, RegionKind, Scope, TagName,
     usecase::{
         checkout::plan_checkout,
         commit::{Ingested, assemble, plan_commit, record_commit, stage_present},
@@ -230,7 +230,8 @@ where
 
 /// A whole chain retires into its tip: SQLite re-checks descent after each
 /// retirement, so the second fold must still see the survivor as its
-/// descendant once the first parent is gone.
+/// descendant once the first parent is gone. Refs that named a retired
+/// commit follow the fold, including the active head.
 pub async fn prune_chain_flow<M>(meta: &mut M)
 where
     M: MetaStore,
@@ -250,6 +251,15 @@ where
         .await
         .unwrap();
 
+    // The active head names the tip; two more refs name commits the prune
+    // retires, so the flow exercises the re-pointing UPDATE.
+    let head = RefName::parse("main").unwrap();
+    let at_first = RefName::parse("at-first").unwrap();
+    let at_second = RefName::parse("at-second").unwrap();
+    meta.set_ref(&head, Some(third), 3_100).await.unwrap();
+    meta.set_ref(&at_first, Some(first), 1_100).await.unwrap();
+    meta.set_ref(&at_second, Some(second), 2_100).await.unwrap();
+
     let before = effective_rows(meta, &[third]).await;
     let listed = sekai_core::usecase::graph::list_commits(&*meta)
         .await
@@ -263,6 +273,17 @@ where
     assert_eq!(effective_rows(meta, &[third]).await, before);
     assert!(meta.lookup_commit(first).await.unwrap().is_none());
     assert!(meta.lookup_commit(second).await.unwrap().is_none());
+    for name in [&at_first, &at_second] {
+        let record = meta.lookup_ref(name).await.unwrap().unwrap();
+        assert_eq!(
+            record.commit,
+            Some(third),
+            "ref {name} must follow the fold"
+        );
+    }
+    let active = meta.active_ref().await.unwrap().unwrap();
+    assert_eq!(active.name, head);
+    assert_eq!(active.commit, Some(third));
 }
 
 async fn effective_rows<M>(meta: &M, ids: &[CommitId]) -> Vec<Vec<(ChunkCoord, Option<BlobHash>)>>
