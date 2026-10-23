@@ -72,6 +72,10 @@ pub enum StorageError {
         name: String,
     },
     /// The named ref does not exist.
+    ///
+    /// Emitted by operations that require the ref to exist
+    /// (`activate_ref`); lookups and `delete_ref` report absence as
+    /// `None`/`false` instead.
     #[error("unknown ref: {name}")]
     UnknownRef {
         /// Requested ref name.
@@ -87,14 +91,16 @@ pub enum StorageError {
     /// The store has no active ref, so a new commit has nowhere to land.
     ///
     /// Field-less on purpose: the condition is store-wide, not tied to a
-    /// name the caller passed.
+    /// name the caller passed. A backend checks for the active ref before
+    /// its parent constraint, so `NoActiveRef` takes priority over
+    /// [`Self::NotContinuing`] when both conditions hold.
     #[error("store has no active ref: a new commit has nowhere to hang from")]
     NoActiveRef,
     /// A new commit does not continue the active ref's target, which
     /// would fork the ref onto another history.
     #[error("new commit does not continue the active ref's target {base}")]
     NotContinuing {
-        /// Target the new commit had to include as a parent.
+        /// Target commit ID the new commit had to include as a parent.
         base: u64,
     },
     /// Stored region-family code does not name a known kind.
@@ -107,9 +113,15 @@ pub enum StorageError {
     #[error("timestamp out of range: {0}")]
     InvalidTimestamp(u64),
     /// The system clock is before the Unix epoch.
+    ///
+    /// Raised when a millisecond reading of the system clock cannot be
+    /// represented as a non-negative `u64` timestamp.
     #[error("system clock is before the Unix epoch")]
     ClockBeforeEpoch,
     /// The system clock is past the representable range.
+    ///
+    /// Raised when a millisecond reading of the system clock does not fit
+    /// the timestamp type a backend stores (for SQLite, a signed `i64`).
     #[error("system clock is out of range")]
     ClockOutOfRange,
     /// Region file size does not fit `i64`.
