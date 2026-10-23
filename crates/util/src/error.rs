@@ -71,7 +71,7 @@ pub enum RefNameError {
     /// Name held a character outside ASCII alphanumerics, `.`, `_`, `-`,
     /// or `/`.
     BadChar(char),
-    /// Name has an empty path component or a `..` segment.
+    /// Name has an empty path component or a `.`/`..` segment.
     BadPath,
     /// Name consisted of digits alone (confusable with a commit ID).
     Numeric,
@@ -87,7 +87,7 @@ impl fmt::Display for RefNameError {
             Self::BadChar(c) => write!(f, "ref name holds invalid character: {c:?}"),
             Self::BadPath => write!(
                 f,
-                "ref name has an invalid path shape: no leading, trailing, or doubled '/', and no '..'"
+                "ref name has an invalid path shape: no leading, trailing, or doubled '/', and no '.' or '..' segment"
             ),
             Self::Numeric => write!(f, "ref name must not be all digits"),
             Self::Reserved => write!(f, "ref name is reserved"),

@@ -23,7 +23,7 @@ pub const DEFAULT_REF_NAME: &str = "main";
 ///
 /// Ref names are path-like (`main`, `feature/nightly`): 1-64 bytes of
 /// ASCII alphanumerics plus `.`, `_`, `-`, and `/`, with no empty path
-/// component (no leading, trailing, or doubled `/`) and no `..` traversal
+/// component (no leading, trailing, or doubled `/`) and no `.` or `..`
 /// segment. A name is never all digits (so it cannot be mistaken for a
 /// commit ID) and never `HEAD` (the active ref is the store's HEAD
 /// equivalent).
@@ -55,6 +55,8 @@ impl RefName {
             return Err(RefNameError::TooLong(Self::MAX_LEN));
         }
         let mut all_digits = true;
+        // Walk characters, not bytes: `BadChar` must name the rejected
+        // character itself, not the first byte of its UTF-8 encoding.
         for c in raw.chars() {
             let valid = c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/');
             if !valid {
@@ -66,11 +68,11 @@ impl RefName {
             return Err(RefNameError::Numeric);
         }
         // Path-like names: no empty component, no leading or trailing
-        // separator, no `..` traversal.
+        // separator, and no current- or parent-directory segment.
         if raw.starts_with('/') || raw.ends_with('/') || raw.contains("//") {
             return Err(RefNameError::BadPath);
         }
-        if raw.split('/').any(|segment| segment == "..") {
+        if raw.split('/').any(|segment| matches!(segment, "." | "..")) {
             return Err(RefNameError::BadPath);
         }
         if raw.eq_ignore_ascii_case(Self::RESERVED) {
@@ -178,6 +180,9 @@ mod tests {
         assert_eq!(RefName::parse(".."), Err(RefNameError::BadPath));
         assert_eq!(RefName::parse("a/../b"), Err(RefNameError::BadPath));
         assert_eq!(RefName::parse("a/.."), Err(RefNameError::BadPath));
+        assert_eq!(RefName::parse("."), Err(RefNameError::BadPath));
+        assert_eq!(RefName::parse("a/./b"), Err(RefNameError::BadPath));
+        assert_eq!(RefName::parse("a/."), Err(RefNameError::BadPath));
         assert_eq!(RefName::parse("HEAD"), Err(RefNameError::Reserved));
         assert_eq!(RefName::parse("head"), Err(RefNameError::Reserved));
         let long = "a".repeat(RefName::MAX_LEN + 1);
