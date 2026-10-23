@@ -416,12 +416,13 @@ pub struct DiffArgs {
     /// World directory to compare against a commit (if specified).
     #[arg(long)]
     pub world: Option<PathBuf>,
-    /// Older commit reference (`<id>` or `@tag`; if omitted when
-    /// comparing commits, defaults to second-latest). With `--world`,
-    /// the single commit to compare against (default: latest).
+    /// Older commit reference (`<id>`, `@tag`, or `<ref>`; when comparing
+    /// commits and omitted, defaults to the first parent of the newer
+    /// side). With `--world`, the single commit to compare against
+    /// (default: the active ref's target).
     pub old_commit: Option<CommitRef>,
-    /// Newer commit reference (`<id>` or `@tag`; if omitted, defaults
-    /// to latest commit). Commit-vs-commit only.
+    /// Newer commit reference (`<id>`, `@tag`, or `<ref>`; if omitted,
+    /// defaults to the active ref's target). Commit-vs-commit only.
     #[arg(conflicts_with = "world")]
     pub new_commit: Option<CommitRef>,
     /// Chunks to compare (default: whole world). One chunk keeps the
@@ -463,12 +464,14 @@ impl DiffArgs {
 /// ambiguity resolved statically instead of juggling `Option`s at runtime.
 #[derive(Debug)]
 pub enum DiffTarget<'a> {
-    /// Live world state against one commit (`None` means latest).
+    /// Live world state against one commit (`None` means the active
+    /// ref's target).
     World {
         world: &'a Path,
         commit: Option<&'a CommitRef>,
     },
-    /// Commit against commit (`None` defaults: second-latest vs latest).
+    /// Commit against commit (`None` newer side means the active ref's
+    /// target; `None` older side means the newer side's first parent).
     Commits {
         old: Option<&'a CommitRef>,
         new: Option<&'a CommitRef>,

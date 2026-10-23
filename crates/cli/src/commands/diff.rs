@@ -168,25 +168,40 @@ async fn resolve_commit_pair(
             .await
             .with_context(|| format!("commit {raw} failed to resolve"))
     }
+    async fn active_commit(
+        instance: &sekai_app::SekaiInstance<impl SekaiStore>,
+    ) -> anyhow::Result<CommitId> {
+        instance
+            .current_commit_id()
+            .await?
+            .context("the active ref is unborn: no commit to diff")
+    }
+    async fn first_parent(
+        instance: &sekai_app::SekaiInstance<impl SekaiStore>,
+        commit: CommitId,
+    ) -> anyhow::Result<CommitId> {
+        instance
+            .commit_parents(commit)
+            .await?
+            .into_iter()
+            .next()
+            .with_context(|| format!("commit {} has no parent to diff against", commit.raw()))
+    }
     match (old_commit, new_commit) {
         (Some(old), Some(new)) => {
             Ok((resolve(instance, old).await?, resolve(instance, new).await?))
         }
         (Some(old), None) => {
-            let latest = instance.latest_commit_id().await?;
-            Ok((resolve(instance, old).await?, latest))
+            let new_id = active_commit(instance).await?;
+            Ok((resolve(instance, old).await?, new_id))
         }
-        (None, new) => {
-            let commits = instance.list_commits().await?;
-            if commits.len() < 2 {
-                anyhow::bail!("at least 2 commits are required when commit IDs are omitted");
-            }
-            let old = commits[commits.len() - 2].id;
-            let new_id = match new {
-                Some(raw) => resolve(instance, raw).await?,
-                None => commits[commits.len() - 1].id,
-            };
-            Ok((old, new_id))
+        (None, Some(new)) => {
+            let new_id = resolve(instance, new).await?;
+            Ok((first_parent(instance, new_id).await?, new_id))
+        }
+        (None, None) => {
+            let new_id = active_commit(instance).await?;
+            Ok((first_parent(instance, new_id).await?, new_id))
         }
     }
 }
