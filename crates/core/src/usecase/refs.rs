@@ -11,7 +11,8 @@ use sekai_util::CommitRef;
 
 use super::graph::CommitError;
 
-/// List all refs in name order.
+/// List all refs in name order (byte-wise, the order `RefName` compares
+/// by).
 pub async fn list_refs<M: MetaStore>(meta: &M) -> Result<Vec<CommitRef>, CommitError<M::Error>> {
     let mut out = Vec::new();
     meta.visit_refs(|r| {
@@ -24,7 +25,8 @@ pub async fn list_refs<M: MetaStore>(meta: &M) -> Result<Vec<CommitRef>, CommitE
 }
 
 /// The active ref - the one new commits hang from - or `None` when the
-/// store has none.
+/// store has no active ref row. A fresh store is not `None`: it starts
+/// with an active, unborn ref whose `commit` is `None`.
 pub async fn active_ref<M: MetaStore>(
     meta: &M,
 ) -> Result<Option<CommitRef>, CommitError<M::Error>> {

@@ -19,7 +19,9 @@ use sekai_util::{Commit, CommitId};
 pub struct PrunePlan {
     /// Commit IDs to delete, ascending.
     pub delete: Vec<CommitId>,
-    /// Commit IDs to keep, ascending.
+    /// Commit IDs to keep, ascending. Only IDs that existed at planning
+    /// time appear here: an unknown requested ID is dropped, so comparing
+    /// this list with the request reveals the discrepancy.
     pub retained: Vec<CommitId>,
 }
 
@@ -375,6 +377,19 @@ mod tests {
         );
         assert!(select_retained(&all, Some(0), None).is_empty());
         assert!(select_retained(&all, None, Some(CommitId(9))).is_empty());
+    }
+
+    #[test]
+    fn prune_plan_drops_unknown_retained_ids() {
+        let mut meta = MemMeta::default();
+        block_on(meta.create_commit(100, &[])).unwrap();
+        block_on(meta.create_commit(200, &[CommitId(1)])).unwrap();
+        let retained = BTreeSet::from([CommitId(2), CommitId(99)]);
+        let plan = block_on(prune_plan(&meta, &retained)).unwrap();
+        // The unknown ID is not invented as retained; the returned set is
+        // the existing intersection.
+        assert_eq!(plan.retained, [CommitId(2)]);
+        assert_eq!(plan.delete, [CommitId(1)]);
     }
 
     #[test]

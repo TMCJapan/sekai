@@ -105,8 +105,10 @@ pub trait MetaStore {
     ///
     /// `within` restricts the result to the history of that commit: a
     /// fingerprint confirmed outside it describes another history (another
-    /// ref) and must not be carried into this one. `None` - an unborn
-    /// ref - yields nothing: its history holds no confirmed file yet.
+    /// ref) and must not be carried into this one. "Inside" means stamped
+    /// at `within` or at one of its ancestors - the same ancestry the
+    /// effective chunk reads use. `None` - an unborn ref - yields nothing:
+    /// its history holds no confirmed file yet.
     fn load_region_states(
         &self,
         within: Option<CommitId>,
@@ -131,6 +133,12 @@ pub trait MetaStore {
     /// transaction, since a ref lagging behind its history would fork
     /// the next commit. A store without an active ref has nowhere to put
     /// the commit and fails.
+    ///
+    /// A store with no active ref fails with the backend's no-active-ref
+    /// error before any parent check. An unborn active ref imposes no
+    /// parent constraint: the new commit starts its history. Only a born
+    /// active ref whose target is absent from `parents` fails as "not
+    /// continuing".
     ///
     /// Referenced blobs must already be flushed to CAS.
     ///
@@ -190,7 +198,11 @@ pub trait MetaStore {
     /// `commit = None` leaves the ref unborn: it names a history without
     /// a commit, and the next commit starts a new root from it. That is
     /// the state a fresh store starts in, so moving the active ref to
-    /// unborn is allowed.
+    /// unborn is allowed and is not the dangling target
+    /// [`Self::active_ref`] rejects: an unborn active ref reads back as
+    /// a valid ref whose `commit` is `None`. A non-`None` target must name
+    /// an existing commit; otherwise the backend fails with its
+    /// unknown-commit error.
     ///
     /// A new ref starts inactive; moving an existing one leaves its flag
     /// and creation time untouched. `created_at_ms` is stored only when
@@ -210,10 +222,11 @@ pub trait MetaStore {
         name: &RefName,
     ) -> impl Future<Output = Result<Option<CommitRef>, Self::Error>> + Send;
 
-    /// Visit refs in byte-wise name order - the order [`RefName`]'s `Ord`
-    /// yields - so every backend lists them alike. Return `false` to stop
-    /// early; `Ok(())` reports that the visit finished, not that it read
-    /// every ref.
+    /// Visit refs in name order - the order [`RefName`]'s `Ord` yields -
+    /// so every backend lists them alike. Return `false` to stop early;
+    /// `Ok(())` only reports that the visit ran without error. Early
+    /// stopping is not signalled: a caller that needs a complete set must
+    /// keep returning `true`.
     fn visit_refs<F>(&self, visit: F) -> impl Future<Output = Result<(), Self::Error>> + Send
     where
         F: FnMut(&CommitRef) -> bool + Send;
@@ -223,7 +236,9 @@ pub trait MetaStore {
     ///
     /// The active ref is never removed: a store without one would have
     /// nowhere to hang new commits from. Asking to remove it is an
-    /// error, not a `false` result.
+    /// error, not a `false` result. The check is part of the delete
+    /// itself, so callers need not read the active ref first (and doing
+    /// so races against a concurrent [`Self::activate_ref`]).
     fn delete_ref(
         &mut self,
         name: &RefName,
@@ -236,7 +251,8 @@ pub trait MetaStore {
     /// not an unborn ref, and fails loudly.
     fn active_ref(&self) -> impl Future<Output = Result<Option<CommitRef>, Self::Error>> + Send;
 
-    /// Make `name` the active ref. The name must exist.
+    /// Make `name` the active ref. The name must exist; a missing name
+    /// fails with the backend's unknown-ref error.
     ///
     /// The previous active ref is cleared before `name` is set: a store
     /// holds at most one active ref. Backends keep that order; SQLite

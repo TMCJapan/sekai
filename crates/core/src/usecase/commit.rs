@@ -51,7 +51,8 @@ pub struct Previous {
     /// Effective present coordinates of the base commit, tombstones
     /// excluded (empty on an unborn ref).
     pub universe: BTreeSet<ChunkCoord>,
-    /// Stored fingerprints keyed by region identity.
+    /// Stored fingerprints inherited from the base commit, keyed by
+    /// region identity.
     pub states: BTreeMap<RegionKey, RegionStateEntry>,
 }
 
