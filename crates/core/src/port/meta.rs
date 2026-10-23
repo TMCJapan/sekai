@@ -253,7 +253,10 @@ pub trait MetaStore {
     fn active_ref(&self) -> impl Future<Output = Result<Option<CommitRef>, Self::Error>> + Send;
 
     /// Make `name` the active ref. The name must exist; a missing name
-    /// fails with the backend's unknown-ref error.
+    /// fails with the backend's unknown-ref error. A non-`None` target
+    /// must also exist: activating a ref whose target is dangling is
+    /// corruption, and the backend fails with its unknown-commit error
+    /// rather than making a headless store.
     ///
     /// The previous active ref is cleared before `name` is set: a store
     /// holds at most one active ref. Backends keep that order; SQLite

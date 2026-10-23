@@ -1175,11 +1175,13 @@ impl sekai_core::MetaStore for SqliteMeta {
     where
         F: FnMut(&CommitRef) -> bool + Send,
     {
-        let rows =
-            sqlx::query("SELECT name, commit_id, active, created_at_ms FROM refs ORDER BY name")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(db_err)?;
+        let rows = sqlx::query(
+            "SELECT name, commit_id, active, created_at_ms
+             FROM refs ORDER BY name COLLATE BINARY",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
         for row in &rows {
             if !visit(&decode_ref(row)?) {
                 break;
@@ -1245,16 +1247,29 @@ impl sekai_core::MetaStore for SqliteMeta {
 
     async fn activate_ref(&mut self, name: &RefName) -> Result<(), StorageError> {
         let mut tx = self.pool.begin().await.map_err(db_err)?;
-        let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM refs WHERE name = ?")
-            .bind(name.as_str())
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(db_err)?;
-        if exists.is_none() {
+        let row = sqlx::query(
+            "SELECT refs.name, refs.commit_id, refs.active, refs.created_at_ms,
+                    commits.id AS target
+             FROM refs LEFT JOIN commits ON commits.id = refs.commit_id
+             WHERE refs.name = ?",
+        )
+        .bind(name.as_str())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(db_err)?;
+        let Some(row) = row else {
             tx.rollback().await.map_err(db_err)?;
             return Err(StorageError::UnknownRef {
                 name: name.as_str().to_owned(),
             });
+        };
+        let record = decode_ref(&row)?;
+        if let Some(commit) = record.commit {
+            let target: Option<i64> = row.try_get("target").map_err(db_err)?;
+            if target.is_none() {
+                tx.rollback().await.map_err(db_err)?;
+                return Err(StorageError::UnknownCommit { id: commit.raw() });
+            }
         }
         // The partial unique index allows one active row: clear the old
         // one before marking the new one.
@@ -1364,6 +1379,66 @@ mod tests {
             Err(StorageError::UnknownRef { .. })
         ));
         assert_eq!(meta.active_ref().await.unwrap().unwrap().name, other);
+    }
+
+    #[tokio::test]
+    async fn activating_a_ref_refuses_a_dangling_target() {
+        let mut meta = memory_meta().await;
+        let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
+        let feature = RefName::parse("feature").unwrap();
+        let root = meta
+            .apply_commit_incremental(1_000, &[], &[], None, &[], &[])
+            .await
+            .unwrap()
+            .id;
+        meta.set_ref(&feature, Some(root), 2_000).await.unwrap();
+
+        // Simulate corruption that bypassed the foreign key; activation
+        // must not turn `feature` into the active head.
+        let mut conn = meta.pool.acquire().await.unwrap();
+        sqlx::query("PRAGMA foreign_keys = OFF")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE refs SET commit_id = 99 WHERE name = 'feature'")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        sqlx::query("PRAGMA foreign_keys = ON")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        drop(conn);
+
+        let err = meta.activate_ref(&feature).await.unwrap_err();
+        assert!(matches!(err, StorageError::UnknownCommit { id: 99 }));
+        assert_eq!(meta.active_ref().await.unwrap().unwrap().name, main);
+    }
+
+    #[tokio::test]
+    async fn an_unborn_active_ref_starts_a_new_root() {
+        let mut meta = memory_meta().await;
+        let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
+        let first = meta
+            .apply_commit_incremental(1_000, &[], &[], None, &[], &[])
+            .await
+            .unwrap()
+            .id;
+
+        // Moving the active ref to unborn deliberately drops the parent
+        // constraint: the next commit is a fresh root.
+        meta.set_ref(&main, None, 2_000).await.unwrap();
+        let second = meta
+            .apply_commit_incremental(3_000, &[], &[], None, &[], &[])
+            .await
+            .unwrap()
+            .id;
+        assert_ne!(first, second);
+        assert_eq!(
+            meta.active_ref().await.unwrap().unwrap().commit,
+            Some(second)
+        );
+        assert_eq!(meta.commit_parents(second).await.unwrap(), Vec::new());
     }
 
     #[tokio::test]
@@ -1507,7 +1582,8 @@ mod tests {
         meta.apply_commit_incremental(1_000, &[], &[], None, &[], &[])
             .await
             .unwrap();
-        // A store whose active flag was lost (the app never clears it).
+        // A store whose active flag was lost (the app neither deletes the
+        // active ref nor clears its flag).
         sqlx::query("UPDATE refs SET active = 0")
             .execute(&meta.pool)
             .await

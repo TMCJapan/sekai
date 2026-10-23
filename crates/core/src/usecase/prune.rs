@@ -1,10 +1,10 @@
 //! Commit pruning: delete old commits while keeping every
 //! retained commit's effective state intact.
 //!
-//! Deletion folds oldest-first: each retired commit moves its
-//! still-effective rows onto the next retained commit and drops rows
-//! already superseded there. Pruning never unlinks blobs; run GC
-//! afterwards to reclaim the dereferenced ones.
+//! Deletion folds in ascending commit-ID order (creation order): each
+//! retired commit moves its still-effective rows onto the next retained
+//! commit and drops rows already superseded there. Pruning never unlinks
+//! blobs; run GC afterwards to reclaim the dereferenced ones.
 
 use crate::port::meta::MetaStore;
 use alloc::collections::{BTreeMap, BTreeSet};
@@ -14,14 +14,14 @@ use core::fmt;
 use sekai_util::{BlobHash, ChunkCoord};
 use sekai_util::{Commit, CommitId};
 
-/// Commits selected for deletion, oldest first, plus what survives.
+/// Commits selected for deletion in ascending commit-ID order
+/// (creation order), plus what survives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrunePlan {
     /// Commit IDs to delete, ascending.
     pub delete: Vec<CommitId>,
-    /// Commit IDs to keep, ascending. Only IDs that existed at planning
-    /// time appear here: an unknown requested ID is dropped, so comparing
-    /// this list with the request reveals the discrepancy.
+    /// Commit IDs to keep, ascending. Every ID existed at planning time;
+    /// [`prune_plan`] rejects unknown IDs.
     pub retained: Vec<CommitId>,
 }
 
@@ -44,6 +44,11 @@ pub enum PruneError<M> {
     /// The selection would delete every commit; at least the latest
     /// must survive for checkout targets to exist.
     NothingRetained,
+    /// A requested retained commit does not exist.
+    UnknownRetained {
+        /// Requested commit ID that is not in the store.
+        id: u64,
+    },
     /// A planned deletion has no retained commit continuing it, so its
     /// rows cannot be folded into the retained history.
     NoSuccessor {
@@ -69,6 +74,9 @@ impl<M: fmt::Debug> fmt::Display for PruneError<M> {
         match self {
             Self::Meta(_) => write!(f, "commit metadata failed"),
             Self::NothingRetained => write!(f, "prune selection retains no commits"),
+            Self::UnknownRetained { id } => {
+                write!(f, "retained commit {id} does not exist")
+            }
             Self::NoSuccessor { id } => {
                 write!(f, "no retained commit continues commit {id}")
             }
@@ -107,16 +115,16 @@ pub fn select_retained(
 
 /// List commits to delete under `retained` (everything else, ascending).
 ///
-/// Refuses selections that would leave no commit behind, and selections
-/// that would delete a commit no retained commit continues: such a
-/// commit has nowhere to fold its rows into.
+/// Refuses selections that would leave no commit behind, selections
+/// containing an unknown retained ID, and selections that would delete a
+/// commit no retained commit continues: such a commit has nowhere to fold
+/// its rows into.
 ///
-/// `retained` must name existing commits; an unknown ID is ignored, not
-/// retained. The returned `retained` set is the intersection of the input
-/// set and the commits actually present in `meta`. A selection that leaves
-/// a fork point with retained commits on more than one branch refuses with
-/// [`PruneError::SplitBranches`]: retaining the common ancestor, or pruning
-/// one branch at a time, is the caller's recourse.
+/// Every ID in `retained` must exist; the plan rechecks the store rather
+/// than inventing a commit. A selection that leaves a fork point with
+/// retained commits on more than one branch refuses with
+/// [`PruneError::SplitBranches`]: retaining the common ancestor, or
+/// pruning one branch at a time, is the caller's recourse.
 pub async fn prune_plan<M: MetaStore>(
     meta: &M,
     retained: &BTreeSet<CommitId>,
@@ -125,21 +133,20 @@ pub async fn prune_plan<M: MetaStore>(
     if !commits.is_empty() && retained.is_empty() {
         return Err(PruneError::NothingRetained);
     }
+    let existing: BTreeSet<CommitId> = commits.iter().map(|c| c.id).collect();
+    if let Some(id) = retained.difference(&existing).next() {
+        return Err(PruneError::UnknownRetained { id: id.0 });
+    }
     let mut delete: Vec<CommitId> = commits
         .iter()
         .map(|c| c.id)
         .filter(|id| !retained.contains(id))
         .collect();
     delete.sort();
-    let retained_existing: BTreeSet<CommitId> = commits
-        .iter()
-        .map(|c| c.id)
-        .filter(|id| retained.contains(id))
-        .collect();
-    let retained_ids: Vec<CommitId> = retained_existing.iter().copied().collect();
-    let ancestry = retained_ancestry(&commits, &retained_existing);
+    let retained_ids: Vec<CommitId> = retained.iter().copied().collect();
+    let ancestry = retained_ancestry(&commits, retained);
     for id in &delete {
-        fold_target(&ancestry, &retained_existing, *id).map_err(|err| fold_failure(err, *id))?;
+        fold_target(&ancestry, retained, *id).map_err(|err| fold_failure(err, *id))?;
     }
     Ok(PrunePlan {
         delete,
@@ -159,9 +166,9 @@ async fn load_commits<M: MetaStore>(meta: &M) -> Result<Vec<Commit>, PruneError<
     Ok(commits)
 }
 
-/// Delete planned commits oldest-first, folding each into the oldest
-/// retained commit that continues it. `progress` fires per deleted
-/// commit as `(done, total)`.
+/// Delete planned commits in ascending commit-ID order (creation order),
+/// folding each into the oldest retained commit that continues it.
+/// `progress` fires per deleted commit as `(done, total)`.
 ///
 /// The fold target is a *descendant*, not merely a newer commit: folding
 /// into an unrelated history would graft rows the successor never had.
@@ -236,9 +243,9 @@ fn fold_target(
             .get(&other)
             .is_some_and(|ancestors| ancestors.contains(&commit))
     };
-    // The retained commits that descend from the retired one, oldest
-    // first: the target is the oldest of them that continues all the
-    // others.
+    // The retained commits that descend from the retired one, in
+    // ascending ID (creation) order: the target is the oldest of them
+    // that continues all the others.
     let descendants: Vec<CommitId> = retained
         .iter()
         .copied()
@@ -381,16 +388,13 @@ mod tests {
     }
 
     #[test]
-    fn prune_plan_drops_unknown_retained_ids() {
+    fn prune_plan_rejects_unknown_retained_ids() {
         let mut meta = MemMeta::default();
         block_on(meta.create_commit(100, &[])).unwrap();
         block_on(meta.create_commit(200, &[CommitId(1)])).unwrap();
         let retained = BTreeSet::from([CommitId(2), CommitId(99)]);
-        let plan = block_on(prune_plan(&meta, &retained)).unwrap();
-        // The unknown ID is not invented as retained; the returned set is
-        // the existing intersection.
-        assert_eq!(plan.retained, [CommitId(2)]);
-        assert_eq!(plan.delete, [CommitId(1)]);
+        let err = block_on(prune_plan(&meta, &retained)).unwrap_err();
+        assert_eq!(err, PruneError::UnknownRetained { id: 99 });
     }
 
     #[test]

@@ -75,8 +75,9 @@ pub enum RefNameError {
     BadPath,
     /// Name consisted of digits alone (confusable with a commit ID).
     Numeric,
-    /// Name is reserved for the store's active ref.
-    Reserved,
+    /// Name is reserved for the store's active ref; the payload is the
+    /// reserved spelling (`RefName::RESERVED`).
+    Reserved(&'static str),
 }
 
 impl fmt::Display for RefNameError {
@@ -90,7 +91,7 @@ impl fmt::Display for RefNameError {
                 "ref name has an invalid path shape: no leading, trailing, or doubled '/', and no '.' or '..' segment"
             ),
             Self::Numeric => write!(f, "ref name must not be all digits"),
-            Self::Reserved => write!(f, "ref name is reserved"),
+            Self::Reserved(name) => write!(f, "ref name {name:?} is reserved"),
         }
     }
 }

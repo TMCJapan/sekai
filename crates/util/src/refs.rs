@@ -76,7 +76,7 @@ impl RefName {
             return Err(RefNameError::BadPath);
         }
         if raw.eq_ignore_ascii_case(Self::RESERVED) {
-            return Err(RefNameError::Reserved);
+            return Err(RefNameError::Reserved(Self::RESERVED));
         }
         Ok(Self(String::from(raw)))
     }
@@ -124,6 +124,9 @@ pub struct CommitRef {
 
 impl CommitRef {
     /// Construct a ref record.
+    ///
+    /// A struct literal is equally valid and clearer when only a few
+    /// fields differ; this helper exists for all-field construction.
     pub const fn new(
         name: RefName,
         commit: Option<CommitId>,
@@ -183,8 +186,14 @@ mod tests {
         assert_eq!(RefName::parse("."), Err(RefNameError::BadPath));
         assert_eq!(RefName::parse("a/./b"), Err(RefNameError::BadPath));
         assert_eq!(RefName::parse("a/."), Err(RefNameError::BadPath));
-        assert_eq!(RefName::parse("HEAD"), Err(RefNameError::Reserved));
-        assert_eq!(RefName::parse("head"), Err(RefNameError::Reserved));
+        assert_eq!(
+            RefName::parse("HEAD"),
+            Err(RefNameError::Reserved(RefName::RESERVED))
+        );
+        assert_eq!(
+            RefName::parse("head"),
+            Err(RefNameError::Reserved(RefName::RESERVED))
+        );
         let long = "a".repeat(RefName::MAX_LEN + 1);
         assert_eq!(
             RefName::parse(&long),

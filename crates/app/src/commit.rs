@@ -209,7 +209,7 @@ where
             universe_load,
         } = prepare(store, self.world, &options, &scope, progress, false, &locks).await?;
 
-        let now_ms = now_ms()?;
+        let created_at_ms = now_ms()?;
         // Persist batched shard-directory renames before the metadata commit:
         // file data is already synced per blob, and this single barrier (at
         // most one fsync per touched shard) is what makes every referenced blob
@@ -224,7 +224,7 @@ where
             store.meta_mut(),
             &previous,
             &staged,
-            now_ms,
+            created_at_ms,
         )
         .await?;
         let db_apply = db_started.elapsed();

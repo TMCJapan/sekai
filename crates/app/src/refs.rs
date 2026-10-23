@@ -109,16 +109,12 @@ impl<S: SekaiStore> SekaiInstance<S> {
     }
 
     /// Make `name` the active ref: the one new commits hang from.
+    ///
+    /// The port validates both the name and its target, then moves the
+    /// flag. The record is read back after activation so the caller sees
+    /// what the store actually holds, not a copy staged before the write.
     pub async fn activate_ref(&mut self, name: &RefName) -> Result<CommitRef, AppError> {
         let _lock = self.lock_store(StoreLockMode::Writer)?;
-        let existing =
-            self.store
-                .meta()
-                .lookup_ref(name)
-                .await?
-                .ok_or_else(|| AppError::UnknownRef {
-                    name: name.as_str().to_owned(),
-                })?;
         self.store
             .meta_mut()
             .activate_ref(name)
@@ -127,12 +123,13 @@ impl<S: SekaiStore> SekaiInstance<S> {
                 StorageError::UnknownRef { name } => AppError::UnknownRef { name },
                 other => AppError::Storage(other),
             })?;
-        // Activation moves the flag, not the target: the record read
-        // before the write is the one the store now holds as active.
-        Ok(CommitRef {
-            active: true,
-            ..existing
-        })
+        self.store
+            .meta()
+            .lookup_ref(name)
+            .await?
+            .ok_or_else(|| AppError::UnknownRef {
+                name: name.as_str().to_owned(),
+            })
     }
 
     /// The active ref, or `None` when the store has none.

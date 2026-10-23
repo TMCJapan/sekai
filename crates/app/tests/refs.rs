@@ -10,19 +10,33 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn tempdir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "sekai-ref-{name}-{}-{}",
-        std::process::id(),
-        TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+struct TempDir(PathBuf);
+
+impl TempDir {
+    fn new(name: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!(
+            "sekai-ref-{name}-{}-{}",
+            std::process::id(),
+            TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
 }
 
-fn cleanup(dir: impl AsRef<Path>) {
-    let _ = std::fs::remove_dir_all(dir);
+impl std::ops::Deref for TempDir {
+    type Target = Path;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 
 fn write_region(path: impl AsRef<Path>, chunks: &[(i32, i32, Vec<u8>)]) {
@@ -55,7 +69,7 @@ async fn commit<S: sekai_app::SekaiStore>(
 
 #[tokio::test]
 async fn a_fresh_store_starts_with_one_active_ref() {
-    let root = tempdir("fresh");
+    let root = TempDir::new("fresh");
     let store = root.join("store").to_string_lossy().into_owned();
     let instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
 
@@ -65,12 +79,11 @@ async fn a_fresh_store_starts_with_one_active_ref() {
     assert!(refs[0].active);
     // Unborn: the store has no commit yet.
     assert!(refs[0].commit.is_none());
-    cleanup(&root);
 }
 
 #[tokio::test]
 async fn a_commit_hangs_from_the_active_ref() {
-    let root = tempdir("hang");
+    let root = TempDir::new("hang");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -80,7 +93,11 @@ async fn a_commit_hangs_from_the_active_ref() {
     let first = commit(&mut instance, &mut world).await;
 
     // The active ref moved onto the new commit.
-    let active = instance.active_ref().await.unwrap().unwrap();
+    let active = instance
+        .active_ref()
+        .await
+        .unwrap()
+        .expect("a store always has an active ref");
     assert_eq!(active.name.as_str(), DEFAULT_REF_NAME);
     assert_eq!(active.commit, Some(first.commit));
     assert_eq!(
@@ -94,12 +111,11 @@ async fn a_commit_hangs_from_the_active_ref() {
         instance.commit_parents(second.commit).await.unwrap(),
         vec![first.commit]
     );
-    cleanup(&root);
 }
 
 #[tokio::test]
 async fn switching_refs_forks_the_history() {
-    let root = tempdir("fork");
+    let root = TempDir::new("fork");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -150,12 +166,11 @@ async fn switching_refs_forks_the_history() {
         instance.resolve_commit_ref("feature").await.unwrap(),
         on_feature.commit
     );
-    cleanup(&root);
 }
 
 #[tokio::test]
 async fn the_active_ref_is_protected() {
-    let root = tempdir("protect");
+    let root = TempDir::new("protect");
     let store = root.join("store").to_string_lossy().into_owned();
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
@@ -168,12 +183,11 @@ async fn the_active_ref_is_protected() {
     assert!(instance.delete_ref(&other).await.unwrap());
     assert!(!instance.delete_ref(&other).await.unwrap());
     assert_eq!(instance.list_refs().await.unwrap().len(), 1);
-    cleanup(&root);
 }
 
 #[tokio::test]
 async fn forcing_a_move_keeps_the_active_flag() {
-    let root = tempdir("force");
+    let root = TempDir::new("force");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -203,12 +217,11 @@ async fn forcing_a_move_keeps_the_active_flag() {
     assert!(record.commit.is_none());
     assert_eq!(instance.list_refs().await.unwrap().len(), 1);
     assert_ne!(first.commit, second.commit);
-    cleanup(&root);
 }
 
 #[tokio::test]
 async fn ref_writes_report_a_missing_target() {
-    let root = tempdir("missing");
+    let root = TempDir::new("missing");
     let store = root.join("store").to_string_lossy().into_owned();
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let feature = RefName::parse("feature").unwrap();
@@ -234,9 +247,10 @@ async fn ref_writes_report_a_missing_target() {
         matches!(err, sekai_app::AppError::UnknownRef { .. }),
         "{err}"
     );
-    assert_eq!(
-        instance.active_ref().await.unwrap().unwrap().name.as_str(),
-        DEFAULT_REF_NAME
-    );
-    cleanup(&root);
+    let active = instance
+        .active_ref()
+        .await
+        .unwrap()
+        .expect("a store always has an active ref");
+    assert_eq!(active.name.as_str(), DEFAULT_REF_NAME);
 }

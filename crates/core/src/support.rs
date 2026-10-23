@@ -162,12 +162,14 @@ impl MemMeta {
         }
         self.refs
             .entry(name.clone())
+            .and_modify(|record| record.active = true)
             .or_insert_with(|| CommitRef::new(name.clone(), None, true, 0));
     }
 }
 
 impl MetaStore for MemMeta {
     type Error = MemError;
+
     fn create_commit(
         &mut self,
         created_at_ms: u64,
@@ -351,9 +353,13 @@ impl MetaStore for MemMeta {
         {
             return Err(MemError::NotContinuing { base: base.0 });
         }
-        // The last fallible step: it runs before any row or state write,
-        // so a rejection leaves the store unchanged. Do not add fallible
-        // work after this point until the ref record is re-inserted.
+        // The last `?` step: it runs before any row or state write, so a
+        // rejection leaves the store unchanged. Do not add fallible work
+        // after this point until the ref record is re-inserted.
+        //
+        // Panics (including allocation failure) are outside this fake's
+        // model: unlike SQLite's transaction, the in-memory writes cannot
+        // roll back.
         let id = self.create_commit(created_at_ms, parents).await?;
         for entry in entries {
             self.rows.push(ChunkHistoryEntry::new(
@@ -604,8 +610,13 @@ impl MetaStore for MemMeta {
         &mut self,
         name: &RefName,
     ) -> impl Future<Output = Result<(), MemError>> + Send {
-        if !self.refs.contains_key(name) {
+        let Some(record) = self.refs.get(name) else {
             return core::future::ready(Err(MemError::UnknownRef { name: name.clone() }));
+        };
+        if let Some(commit) = record.commit
+            && !self.commits.iter().any(|held| held.id == commit)
+        {
+            return core::future::ready(Err(MemError::UnknownCommit { id: commit.0 }));
         }
         for record in self.refs.values_mut() {
             record.active = record.name == *name;

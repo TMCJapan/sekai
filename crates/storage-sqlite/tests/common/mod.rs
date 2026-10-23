@@ -238,25 +238,54 @@ where
     M::Error: core::fmt::Debug,
 {
     use sekai_core::usecase::prune::{prune_apply, prune_plan, select_retained};
-    let first = meta.create_commit(1_000, &[]).await.unwrap();
-    meta.record_chunk(first, &coord(0, 0), Some(&BlobHash([1; 32])), None)
+    // Build the chain through the production apply path, so the active
+    // ref follows each commit rather than being positioned by hand.
+    let first = meta
+        .apply_commit_incremental(
+            1_000,
+            &[],
+            &[CommitEntry::new(coord(0, 0), Some(BlobHash([1; 32])), None)],
+            None,
+            &[],
+            &[],
+        )
         .await
-        .unwrap();
-    let second = meta.create_commit(2_000, &[first]).await.unwrap();
-    meta.record_chunk(second, &coord(1, 0), Some(&BlobHash([2; 32])), None)
+        .unwrap()
+        .id;
+    let second = meta
+        .apply_commit_incremental(
+            2_000,
+            &[first],
+            &[CommitEntry::new(coord(1, 0), Some(BlobHash([2; 32])), None)],
+            None,
+            &[],
+            &[],
+        )
         .await
-        .unwrap();
-    let third = meta.create_commit(3_000, &[second]).await.unwrap();
-    meta.record_chunk(third, &coord(2, 0), Some(&BlobHash([3; 32])), None)
+        .unwrap()
+        .id;
+    let third = meta
+        .apply_commit_incremental(
+            3_000,
+            &[second],
+            &[CommitEntry::new(coord(2, 0), Some(BlobHash([3; 32])), None)],
+            None,
+            &[],
+            &[],
+        )
         .await
-        .unwrap();
+        .unwrap()
+        .id;
 
     // The active head names the tip; two more refs name commits the prune
     // retires, so the flow exercises the re-pointing UPDATE.
     let head = RefName::parse("main").unwrap();
     let at_first = RefName::parse("at-first").unwrap();
     let at_second = RefName::parse("at-second").unwrap();
-    meta.set_ref(&head, Some(third), 3_100).await.unwrap();
+    assert_eq!(
+        meta.active_ref().await.unwrap().unwrap().commit,
+        Some(third)
+    );
     meta.set_ref(&at_first, Some(first), 1_100).await.unwrap();
     meta.set_ref(&at_second, Some(second), 2_100).await.unwrap();
 
