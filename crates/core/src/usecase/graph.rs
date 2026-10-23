@@ -245,7 +245,7 @@ impl<M: fmt::Debug> fmt::Display for ResolveError<M> {
             Self::UnbornRef { name } => write!(f, "ref has no commit yet: {name}"),
             Self::InvalidRef { raw } => write!(
                 f,
-                "invalid commit reference: {raw:?}, expected <id>, @<tag>, or <ref>"
+                "invalid reference: {raw:?}, expected <id>, @<tag>, or <ref>"
             ),
         }
     }

@@ -112,10 +112,11 @@ pub fn select_retained(
 /// commit has nowhere to fold its rows into.
 ///
 /// `retained` must name existing commits; an unknown ID is ignored, not
-/// retained. A selection that leaves a fork point with retained commits
-/// on more than one branch refuses with [`PruneError::SplitBranches`]:
-/// retaining the common ancestor, or pruning one branch at a time, is the
-/// caller's recourse.
+/// retained. The returned `retained` set is the intersection of the input
+/// set and the commits actually present in `meta`. A selection that leaves
+/// a fork point with retained commits on more than one branch refuses with
+/// [`PruneError::SplitBranches`]: retaining the common ancestor, or pruning
+/// one branch at a time, is the caller's recourse.
 pub async fn prune_plan<M: MetaStore>(
     meta: &M,
     retained: &BTreeSet<CommitId>,

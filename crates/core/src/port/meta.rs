@@ -248,7 +248,8 @@ pub trait MetaStore {
     /// the store has none.
     ///
     /// The commit it names must exist: a dangling target is corruption,
-    /// not an unborn ref, and fails loudly.
+    /// not an unborn ref, and fails with the backend's unknown-commit
+    /// error.
     fn active_ref(&self) -> impl Future<Output = Result<Option<CommitRef>, Self::Error>> + Send;
 
     /// Make `name` the active ref. The name must exist; a missing name

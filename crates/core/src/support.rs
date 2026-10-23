@@ -46,11 +46,6 @@ pub enum MemError {
         /// Ref that was asked for.
         name: RefName,
     },
-    /// The active ref names a commit the store does not hold.
-    DanglingRef {
-        /// Ref that names the missing commit.
-        name: RefName,
-    },
     /// The store has no active ref to hang a new commit from.
     NoActiveRef,
     /// The new commit does not continue the active ref's target.
@@ -345,6 +340,10 @@ impl MetaStore for MemMeta {
         else {
             return Err(MemError::NoActiveRef);
         };
+        debug_assert!(
+            self.refs.values().filter(|record| record.active).count() <= 1,
+            "fake store holds more than one active ref"
+        );
         // A born ref moves along its own history: unrelated parents would
         // fork it away from its target.
         if let Some(base) = record.commit
@@ -352,6 +351,9 @@ impl MetaStore for MemMeta {
         {
             return Err(MemError::NotContinuing { base: base.0 });
         }
+        // The last fallible step: it runs before any row or state write,
+        // so a rejection leaves the store unchanged. Do not add fallible
+        // work after this point until the ref record is re-inserted.
         let id = self.create_commit(created_at_ms, parents).await?;
         for entry in entries {
             self.rows.push(ChunkHistoryEntry::new(
@@ -394,8 +396,8 @@ impl MetaStore for MemMeta {
             .retain(|state| !removed.contains(&state.fingerprint.key));
         // The active ref moves onto the new commit, in the same step: a
         // ref that lags behind its history would fork the next commit.
-        // The record was bound before the writes, so this final update
-        // cannot fail and the fake never half-commits.
+        // No fallible step follows the write phase; the bound record is
+        // re-inserted here, so the active ref cannot lag.
         record.commit = Some(id);
         self.refs.insert(active, record);
         Ok(ApplyOutcome { id, carried_chunks })
@@ -593,9 +595,7 @@ impl MetaStore for MemMeta {
             && let Some(commit) = record.commit
             && !self.commits.iter().any(|held| held.id == commit)
         {
-            return core::future::ready(Err(MemError::DanglingRef {
-                name: record.name.clone(),
-            }));
+            return core::future::ready(Err(MemError::UnknownCommit { id: commit.0 }));
         }
         core::future::ready(Ok(active))
     }
