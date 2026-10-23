@@ -1,7 +1,7 @@
 //! Diff subcommand execution, DTOs, and coordination.
 
 use anyhow::Context as _;
-use sekai_app::{ChunkCoord, ChunkDiff, CommitId, HostWorldTree, Scope, SekaiStore};
+use sekai_app::{AppError, ChunkCoord, ChunkDiff, CommitId, HostWorldTree, Scope, SekaiStore};
 
 use super::diff_render::{
     TimedDiffs, diff_entry_payload, diff_group_payload, print_diff_timing_table,
@@ -171,10 +171,11 @@ async fn resolve_commit_pair(
     async fn active_commit(
         instance: &sekai_app::SekaiInstance<impl SekaiStore>,
     ) -> anyhow::Result<CommitId> {
-        instance
-            .current_commit_id()
-            .await?
-            .context("the active ref is unborn: no commit to diff")
+        let id = instance.current_commit_id().await?;
+        match id {
+            Some(id) => Ok(id),
+            None => Err(AppError::NoCommits.into()),
+        }
     }
     async fn first_parent(
         instance: &sekai_app::SekaiInstance<impl SekaiStore>,

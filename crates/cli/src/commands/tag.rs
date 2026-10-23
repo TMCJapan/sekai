@@ -75,7 +75,7 @@ pub async fn run(store: &str, action: &TagCommand, style: Styler) -> anyhow::Res
                     "{}\t{}\t{}",
                     style.bold(tag.name.as_str()),
                     tag.commit.raw(),
-                    format_time(tag.created_at_ms)
+                    super::format_time(tag.created_at_ms)
                 );
             }
         }
@@ -101,12 +101,6 @@ fn tag_payload(tag: &CommitTag) -> TagJson {
         commit: tag.commit.raw(),
         created_at_ms: tag.created_at_ms,
     }
-}
-
-fn format_time(created_at_ms: u64) -> String {
-    let millis = i64::try_from(created_at_ms).unwrap_or(i64::MAX);
-    chrono::DateTime::from_timestamp_millis(millis)
-        .map_or_else(|| format!("{created_at_ms}ms"), |time| time.to_rfc3339())
 }
 
 #[cfg(test)]

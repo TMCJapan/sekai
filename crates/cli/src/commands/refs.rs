@@ -19,7 +19,7 @@ pub async fn run(store: &str, action: &RefCommand, style: Styler) -> anyhow::Res
             json,
         } => {
             // Without an explicit target the ref starts where the active
-            // ref stands, the way a branch starts at HEAD.
+            // ref stands; an unborn active ref creates an unborn ref.
             let target = match commit {
                 Some(reference) => Some(
                     instance
@@ -89,8 +89,8 @@ pub async fn run(store: &str, action: &RefCommand, style: Styler) -> anyhow::Res
                 return Ok(());
             }
             for record in &refs {
-                // The active ref leads the list: it is where new commits
-                // land.
+                // Refs come in name order; the active one carries the `*`
+                // marker wherever it sorts.
                 println!(
                     "{}{}\t{}\t{}",
                     if record.active { "* " } else { "  " },
@@ -98,7 +98,7 @@ pub async fn run(store: &str, action: &RefCommand, style: Styler) -> anyhow::Res
                     record
                         .commit
                         .map_or_else(|| "-".to_owned(), |commit| commit.raw().to_string()),
-                    format_time(record.created_at_ms)
+                    super::format_time(record.created_at_ms)
                 );
             }
         }
@@ -142,12 +142,6 @@ fn ref_payload(record: &CommitRef) -> RefJson {
     }
 }
 
-fn format_time(created_at_ms: u64) -> String {
-    let millis = i64::try_from(created_at_ms).unwrap_or(i64::MAX);
-    chrono::DateTime::from_timestamp_millis(millis)
-        .map_or_else(|| format!("{created_at_ms}ms"), |time| time.to_rfc3339())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,7 +164,5 @@ mod tests {
             serde_json::to_string(&ref_payload(&unborn)).unwrap(),
             r#"{"name":"feature","commit":null,"active":false,"created_at_ms":0}"#
         );
-        let refs: Vec<RefJson> = Vec::new();
-        assert_eq!(serde_json::to_string(&refs).unwrap(), "[]");
     }
 }

@@ -16,6 +16,12 @@ mod tag;
 use crate::cli::{Cli, Command, TimingArgs};
 use crate::style::Styler;
 
+pub(crate) fn format_time(created_at_ms: u64) -> String {
+    let millis = i64::try_from(created_at_ms).unwrap_or(i64::MAX);
+    chrono::DateTime::from_timestamp_millis(millis)
+        .map_or_else(|| format!("{created_at_ms}ms"), |time| time.to_rfc3339())
+}
+
 /// Output controls shared by report commands (commit, status, checkout,
 /// clone, prune, gc).
 #[derive(Debug, Clone, Copy)]

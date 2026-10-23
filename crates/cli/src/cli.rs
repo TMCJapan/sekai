@@ -329,11 +329,13 @@ impl RefCommand {
 
 /// Commit reference on the command line: `<id>`, `@tag`, or a ref name.
 ///
+/// Either `@` followed by a valid [`TagName`], a bare `u64` ID, or a bare
+/// valid [`RefName`]. The bare forms are tried in order: `u64` first, then
+/// [`RefName`]; `@` never falls through to a bare name.
+///
 /// The shape is validated at parse time so a malformed reference never
 /// reaches the store; resolving it to an existing commit stays a
 /// runtime step. The grammar mirrors `core`'s `resolve_commit_ref`:
-/// `@` followed by a valid [`TagName`], a plain `u64` ID, or a valid
-/// [`RefName`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitRef(String);
 
