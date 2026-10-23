@@ -281,8 +281,8 @@ where
         ignore: Option<&[&str]>,
         progress: impl FnMut(DiffProgress) + Send,
     ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
-        // Held across resolution and the blocking reads below: the store
-        // lock must outlive the operation.
+        // Held across resolution and the reads below: the store and world
+        // snapshots must outlive the operation.
         let _locks = OperationLocks::acquire(
             self.instance,
             StoreLockMode::Shared,

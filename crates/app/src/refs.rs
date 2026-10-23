@@ -26,9 +26,11 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// `force` is a policy of this layer: the port's `set_ref` always
     /// moves the ref.
     ///
-    /// Every read runs under the writer lock, which excludes the runs
-    /// that write rows (`commit`) and the one that deletes them (`prune`),
-    /// so the commit cannot vanish between the check and the write.
+    /// Every read runs under the writer lock. That serializes this
+    /// sequence against the app operations that change commits or refs
+    /// (`commit`, `prune`, and the other ref mutations), so a staged
+    /// target cannot vanish between the check and the write. Handles
+    /// using the backend directly are outside this protocol.
     pub async fn create_ref(
         &mut self,
         name: &RefName,
