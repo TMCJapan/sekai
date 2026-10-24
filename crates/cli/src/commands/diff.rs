@@ -172,10 +172,7 @@ async fn resolve_commit_pair(
         instance: &sekai_app::SekaiInstance<impl SekaiStore>,
     ) -> anyhow::Result<CommitId> {
         let id = instance.current_commit_id().await?;
-        match id {
-            Some(id) => Ok(id),
-            None => Err(AppError::NoCommits.into()),
-        }
+        id.map_or_else(|| Err(AppError::NoCommits.into()), Ok)
     }
     async fn first_parent(
         instance: &sekai_app::SekaiInstance<impl SekaiStore>,
