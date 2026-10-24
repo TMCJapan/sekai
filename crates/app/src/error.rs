@@ -52,7 +52,7 @@ pub enum AppError {
     /// Commit-graph operation failed.
     #[error("{0}")]
     Commit(sekai_core::CommitError<sekai_storage::StorageError>),
-    /// Commit reference (`<id>` or `@tag`) could not be resolved.
+    /// Commit reference (`<64-char hash>` or `@tag`) could not be resolved.
     #[error("{0}")]
     CommitRef(sekai_core::ResolveError<sekai_storage::StorageError>),
     /// Tag name is already taken.

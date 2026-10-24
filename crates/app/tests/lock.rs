@@ -48,7 +48,9 @@ struct Fixture {
     world_path: PathBuf,
     world: HostWorldTree,
     instance: SekaiInstance<SqliteStore>,
-    /// A blob that commit 1 references, for blob-level operations.
+    /// The fixture's only commit.
+    commit: CommitId,
+    /// A blob that the fixture commit references, for blob-level operations.
     blob: BlobHash,
 }
 
@@ -62,17 +64,18 @@ impl Fixture {
         let mut world = HostWorldTree::new(&world_path).unwrap();
         let store = root.join("store").to_string_lossy().into_owned();
         let mut instance = SekaiInstance::init(&store).await.unwrap();
-        instance
+        let (report, _) = instance
             .world_mut(&mut world)
             .commit(CommitOptions::default(), Scope::World, |_| {})
             .await
             .unwrap();
-        let coords = instance.commit_chunk_coords(CommitId(1)).await.unwrap();
+        let commit = report.commit;
+        let coords = instance.commit_chunk_coords(commit).await.unwrap();
         let coord = coords.first().expect("the fixture commit holds chunks");
         let blob = instance
             .store()
             .meta()
-            .lookup_chunk(CommitId(1), coord)
+            .lookup_chunk(commit, coord)
             .await
             .unwrap()
             .and_then(|entry| entry.blob)
@@ -82,6 +85,7 @@ impl Fixture {
             world_path,
             world,
             instance,
+            commit,
             blob,
         }
     }
@@ -215,9 +219,9 @@ impl Op {
     /// Payloads are minimal but valid, so an operation the held lock lets
     /// through must succeed. State only grows across the matrix: prunes
     /// keep every commit, commits add newer ones, and checkouts restore
-    /// commit 1, which every row keeps addressing.
+    /// the fixture commit, which every row keeps addressing.
     async fn run(self, fx: &mut Fixture) -> Result<(), sekai_app::AppError> {
-        let id = CommitId(1);
+        let id = fx.commit;
         let tag = TagName::parse("held").unwrap();
         let instance = &mut fx.instance;
         match self {
@@ -226,7 +230,10 @@ impl Op {
             Self::ListTags => instance.list_tags().await.map(drop),
             Self::CreateTag => instance.create_tag(&tag, id, true).await.map(drop),
             Self::DeleteTag => instance.delete_tag(&tag).await.map(drop),
-            Self::ResolveRef => instance.resolve_commit_ref("1").await.map(drop),
+            Self::ResolveRef => {
+                let raw = fx.commit.to_string();
+                instance.resolve_commit_ref(&raw).await.map(drop)
+            }
             Self::CommitStats => instance.commit_stats(id).await.map(drop),
             Self::CommitCoords => instance.commit_chunk_coords(id).await.map(drop),
             Self::DiffBlobs => instance
@@ -379,11 +386,14 @@ async fn a_cancelled_checkout_keeps_the_world_locked_until_its_files_finish() {
     let (release, released) = std::sync::mpsc::channel::<()>();
 
     let Fixture {
-        instance, world, ..
+        instance,
+        world,
+        commit,
+        ..
     } = &mut fx;
     let mut handle = instance.world_mut(world);
     let checkout = handle.checkout(
-        CommitId(1),
+        *commit,
         CheckoutOptions::default(),
         Scope::World,
         move |_| {
@@ -433,7 +443,7 @@ async fn a_cancelled_clone_keeps_the_store_locked_until_its_files_finish() {
     )));
     let clone = fx
         .instance
-        .clone_to(&out, CommitId(1), CloneOptions::default(), Scope::World, {
+        .clone_to(&out, fx.commit, CloneOptions::default(), Scope::World, {
             let done = Arc::clone(&files_done);
             let total = Arc::clone(&files_total);
             move |update| {

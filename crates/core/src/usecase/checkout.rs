@@ -42,7 +42,7 @@ pub enum CheckoutError<M> {
     /// No commit with this ID exists.
     UnknownCommit {
         /// Requested commit ID.
-        id: u64,
+        id: CommitId,
     },
 }
 
@@ -65,7 +65,7 @@ pub async fn plan_checkout<M: MetaStore>(
         .await
         .map_err(CheckoutError::Meta)?
         .map(|c| c.created_at_ms)
-        .ok_or(CheckoutError::UnknownCommit { id: commit.0 })?;
+        .ok_or(CheckoutError::UnknownCommit { id: commit })?;
     let mut groups: BTreeMap<RegionKey, Vec<(ChunkCoord, BlobHash)>> = BTreeMap::new();
     let mut tombstones: BTreeMap<RegionKey, Vec<ChunkCoord>> = BTreeMap::new();
     meta.visit_commit_chunks(commit, |entry| {
@@ -139,8 +139,10 @@ mod tests {
     fn unknown_commit_is_an_error() {
         let meta = MemMeta::default();
         assert_eq!(
-            block_on(plan_checkout(&meta, CommitId(7))),
-            Err(CheckoutError::UnknownCommit { id: 7 })
+            block_on(plan_checkout(&meta, CommitId([7; 32]))),
+            Err(CheckoutError::UnknownCommit {
+                id: CommitId([7; 32])
+            })
         );
     }
 }

@@ -2,7 +2,7 @@
 
 use crate::style::ColorChoice;
 use clap::{Parser, Subcommand};
-use sekai_app::{Area, ChunkCoord, Dimension, Rect, RegionKind, Scope, TagName};
+use sekai_app::{Area, ChunkCoord, CommitId, Dimension, Rect, RegionKind, Scope, TagName};
 use std::path::{Path, PathBuf};
 
 /// Chunk-level deduplicated version control for Minecraft region files.
@@ -70,7 +70,7 @@ pub enum Command {
     Checkout {
         /// World directory to rebuild in place.
         world: PathBuf,
-        /// Commit reference to restore (`<id>` or `@tag`, see `log`).
+        /// Commit reference to restore (`<64-char hash>` or `@tag`, see `log`).
         commit: CommitRef,
         /// Human or JSON rendering plus optional phase timings.
         #[command(flatten)]
@@ -119,7 +119,7 @@ pub enum Command {
     /// Rebuild a commit into a fresh directory (never touches the live world).
     #[command(visible_alias = "export")]
     Clone {
-        /// Commit reference to clone (`<id>` or `@tag`, see `log`).
+        /// Commit reference to clone (`<64-char hash>` or `@tag`, see `log`).
         commit: CommitRef,
         /// Directory to rebuild the commit into (created when missing;
         /// must otherwise be empty).
@@ -157,7 +157,7 @@ pub enum Command {
         /// Keep the newest N commits.
         #[arg(long, required_unless_present = "before")]
         keep_last: Option<u64>,
-        /// Retain this commit and everything newer (`<id>` or `@tag`).
+        /// Retain this commit and everything newer (`<64-char hash>` or `@tag`).
         #[arg(long, required_unless_present = "keep_last")]
         before: Option<CommitRef>,
         /// Show what would be deleted without deleting anything.
@@ -230,7 +230,7 @@ pub enum TagCommand {
     Create {
         /// Tag name (`[A-Za-z0-9._-]`, 1-64 bytes, not all digits).
         name: TagName,
-        /// Commit reference (`<id>` or `@tag`, see `log`) to point at.
+        /// Commit reference (`<64-char hash>` or `@tag`, see `log`) to point at.
         commit: CommitRef,
         /// Move an existing tag instead of failing.
         #[arg(long)]
@@ -264,17 +264,18 @@ impl TagCommand {
     }
 }
 
-/// Commit reference on the command line: `<id>` or `@tag`.
+/// Commit reference on the command line: `<64-char hash>` or `@tag`.
 ///
 /// The shape is validated at parse time so a malformed reference never
 /// reaches the store; resolving it to an existing commit stays a
 /// runtime step. The grammar mirrors `core`'s `resolve_commit_ref`:
-/// `@` followed by a valid [`TagName`], or a plain `u64` ID.
+/// `@` followed by a valid [`TagName`], or a 64-character hexadecimal
+/// commit hash.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitRef(String);
 
 impl CommitRef {
-    /// Raw reference text (`<id>` or `@tag`).
+    /// Raw reference text (`<64-char hash>` or `@tag`).
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -294,8 +295,9 @@ impl std::str::FromStr for CommitRef {
             TagName::parse(name)
                 .map_err(|err| format!("invalid tag reference {s:?}: {err}, expected @<tag>"))?;
         } else {
-            s.parse::<u64>()
-                .map_err(|_| format!("invalid commit reference {s:?}, expected <id> or @<tag>"))?;
+            s.parse::<CommitId>().map_err(|_| {
+                format!("invalid commit reference {s:?}, expected <64-char commit hash> or @<tag>")
+            })?;
         }
         Ok(Self(s.to_owned()))
     }
@@ -351,11 +353,11 @@ pub struct DiffArgs {
     /// World directory to compare against a commit (if specified).
     #[arg(long)]
     pub world: Option<PathBuf>,
-    /// Older commit reference (`<id>` or `@tag`; if omitted when
+    /// Older commit reference (`<64-char hash>` or `@tag`; if omitted when
     /// comparing commits, defaults to second-latest). With `--world`,
     /// the single commit to compare against (default: latest).
     pub old_commit: Option<CommitRef>,
-    /// Newer commit reference (`<id>` or `@tag`; if omitted, defaults
+    /// Newer commit reference (`<64-char hash>` or `@tag`; if omitted, defaults
     /// to latest commit). Commit-vs-commit only.
     #[arg(conflicts_with = "world")]
     pub new_commit: Option<CommitRef>,

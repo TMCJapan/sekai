@@ -1,7 +1,7 @@
 //! Commit pruning: delete old commits while keeping every
 //! retained commit's effective state intact.
 //!
-//! Deletion folds in ascending commit-ID order (creation order): each
+//! Deletion folds in local record order (creation order): each
 //! retired commit moves its still-effective rows onto the next retained
 //! commit and drops rows already superseded there. Pruning never unlinks
 //! blobs; run GC afterwards to reclaim the dereferenced ones.
@@ -14,13 +14,13 @@ use core::fmt;
 use sekai_util::{BlobHash, ChunkCoord};
 use sekai_util::{Commit, CommitId};
 
-/// Commits selected for deletion in ascending commit-ID order
-/// (creation order), plus what survives.
+/// Commits selected for deletion oldest-first (local sequence order),
+/// plus what survives.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrunePlan {
-    /// Commit IDs to delete, ascending.
+    /// Commit IDs to delete, oldest first.
     pub delete: Vec<CommitId>,
-    /// Commit IDs to keep, ascending. Every ID existed at planning time;
+    /// Commit IDs to keep, oldest first. Every ID existed at planning time;
     /// [`prune_plan`] rejects unknown IDs.
     pub retained: Vec<CommitId>,
 }
@@ -47,25 +47,25 @@ pub enum PruneError<M> {
     /// A requested retained commit does not exist.
     UnknownRetained {
         /// Requested commit ID that is not in the store.
-        id: u64,
+        id: CommitId,
     },
     /// A planned deletion has no retained commit continuing it, so its
     /// rows cannot be folded into the retained history.
     NoSuccessor {
         /// Commit without a fold target.
-        id: u64,
+        id: CommitId,
     },
     /// A planned deletion continues into retained commits on different
     /// branches. Folding it into one of them would strip the others of
     /// the rows they inherit through it.
     SplitBranches {
         /// Commit that cannot be retired.
-        id: u64,
+        id: CommitId,
     },
     /// A commit is both retained and scheduled for deletion.
     OverlappingPlan {
         /// Commit present on both sides.
-        id: u64,
+        id: CommitId,
     },
 }
 
@@ -93,27 +93,31 @@ impl<M: fmt::Debug> fmt::Display for PruneError<M> {
 
 /// Retain the newest `keep_last` commits intersected with `before` and
 /// newer (`None` selects everything on its axis).
+///
+/// Ordering follows the input slice, which backends visit in local
+/// sequence order; commit hashes carry no intrinsic timeline order.
 pub fn select_retained(
     commits: &[Commit],
     keep_last: Option<u64>,
     before: Option<CommitId>,
 ) -> BTreeSet<CommitId> {
-    let mut ids: Vec<CommitId> = commits.iter().map(|c| c.id).collect();
-    ids.sort();
+    let start = match before {
+        Some(b) => match commits.iter().position(|commit| commit.id == b) {
+            Some(pos) => pos,
+            None => return BTreeSet::new(),
+        },
+        None => 0,
+    };
+    let candidates = &commits[start..];
+    let mut ids: Vec<CommitId> = candidates.iter().map(|commit| commit.id).collect();
     if let Some(n) = keep_last {
         let n = usize::try_from(n).unwrap_or(usize::MAX);
-        let keep = ids.split_off(ids.len().saturating_sub(n));
-        return keep
-            .into_iter()
-            .filter(|id| before.is_none_or(|b| *id >= b))
-            .collect();
+        ids = ids.split_off(ids.len().saturating_sub(n));
     }
-    ids.into_iter()
-        .filter(|id| before.is_none_or(|b| *id >= b))
-        .collect()
+    ids.into_iter().collect()
 }
 
-/// List commits to delete under `retained` (everything else, ascending).
+/// List commits to delete under `retained` (everything else, oldest first).
 ///
 /// Refuses selections that would leave no commit behind, selections
 /// containing an unknown retained ID, and selections that would delete a
@@ -135,15 +139,18 @@ pub async fn prune_plan<M: MetaStore>(
     }
     let existing: BTreeSet<CommitId> = commits.iter().map(|c| c.id).collect();
     if let Some(id) = retained.difference(&existing).next() {
-        return Err(PruneError::UnknownRetained { id: id.0 });
+        return Err(PruneError::UnknownRetained { id: *id });
     }
-    let mut delete: Vec<CommitId> = commits
+    let delete: Vec<CommitId> = commits
         .iter()
-        .map(|c| c.id)
+        .map(|commit| commit.id)
         .filter(|id| !retained.contains(id))
         .collect();
-    delete.sort();
-    let retained_ids: Vec<CommitId> = retained.iter().copied().collect();
+    let retained_ids: Vec<CommitId> = commits
+        .iter()
+        .map(|commit| commit.id)
+        .filter(|id| retained.contains(id))
+        .collect();
     let ancestry = retained_ancestry(&commits, retained);
     for id in &delete {
         fold_target(&ancestry, retained, *id).map_err(|err| fold_failure(err, *id))?;
@@ -166,8 +173,8 @@ async fn load_commits<M: MetaStore>(meta: &M) -> Result<Vec<Commit>, PruneError<
     Ok(commits)
 }
 
-/// Delete planned commits in ascending commit-ID order (creation order),
-/// folding each into the oldest retained commit that continues it.
+/// Delete planned commits oldest-first (local sequence order), folding
+/// each into the oldest retained commit that continues it.
 /// `progress` fires per deleted commit as `(done, total)`.
 ///
 /// The fold target is a *descendant*, not merely a newer commit: folding
@@ -187,7 +194,7 @@ pub async fn prune_apply<M: MetaStore>(
 ) -> Result<PruneReport, PruneError<M::Error>> {
     let retained: BTreeSet<CommitId> = plan.retained.iter().copied().collect();
     if let Some(id) = plan.delete.iter().find(|id| retained.contains(id)) {
-        return Err(PruneError::OverlappingPlan { id: id.0 });
+        return Err(PruneError::OverlappingPlan { id: *id });
     }
     let commits = load_commits(meta).await?;
     // Retiring a commit contracts the graph: its children inherit its
@@ -243,9 +250,9 @@ fn fold_target(
             .get(&other)
             .is_some_and(|ancestors| ancestors.contains(&commit))
     };
-    // The retained commits that descend from the retired one, in
-    // ascending ID (creation) order: the target is the oldest of them
-    // that continues all the others.
+    // The retained commits that descend from the retired one, in hash
+    // order. Only one of them can continue all the others, so the
+    // selection order does not pick the target.
     let descendants: Vec<CommitId> = retained
         .iter()
         .copied()
@@ -277,8 +284,8 @@ enum FoldError {
 /// The prune failure a fold error stands for.
 const fn fold_failure<M>(err: FoldError, id: CommitId) -> PruneError<M> {
     match err {
-        FoldError::NoSuccessor => PruneError::NoSuccessor { id: id.0 },
-        FoldError::SplitBranches => PruneError::SplitBranches { id: id.0 },
+        FoldError::NoSuccessor => PruneError::NoSuccessor { id },
+        FoldError::SplitBranches => PruneError::SplitBranches { id },
     }
 }
 
@@ -345,7 +352,7 @@ where
 mod tests {
     use super::*;
     use crate::support::{MemMeta, block_on};
-    use sekai_util::{ChunkCoord, CommitEntry, Dimension, RefName, RegionKind};
+    use sekai_util::{BlobHash, ChunkCoord, CommitEntry, Dimension, RefName, RegionKind};
 
     const OVER: Dimension = Dimension::OVERWORLD;
     const REGION: RegionKind = RegionKind::Region;
@@ -354,17 +361,20 @@ mod tests {
         ChunkCoord::new(OVER, REGION, x, z)
     }
 
-    /// A linear history of `n` commits, each continuing the one
-    /// before it - the shape the store keeps.
-    fn commits(n: u64) -> Vec<Commit> {
+    fn main_ref() -> RefName {
+        RefName::parse("main").unwrap()
+    }
+
+    /// A linear sequence of synthetic commits, newest last.
+    fn commits(n: u8) -> Vec<Commit> {
         (1..=n)
             .map(|id| {
                 let parents = if id > 1 {
-                    alloc::vec![CommitId(id - 1)]
+                    alloc::vec![CommitId([id - 1; 32])]
                 } else {
                     alloc::vec![]
                 };
-                Commit::new(CommitId(id), id * 1_000, parents)
+                Commit::new(CommitId([id; 32]), u64::from(id) * 1_000, parents)
             })
             .collect()
     }
@@ -372,36 +382,46 @@ mod tests {
     #[test]
     fn select_retained_intersects_axes() {
         let all = commits(5);
-        let ids = |set: BTreeSet<CommitId>| set.into_iter().map(|id| id.0).collect::<Vec<_>>();
-        assert_eq!(ids(select_retained(&all, None, None)), [1, 2, 3, 4, 5]);
-        assert_eq!(ids(select_retained(&all, Some(2), None)), [4, 5]);
+        let retained = |keep_last, before| {
+            select_retained(&all, keep_last, before)
+                .into_iter()
+                .collect::<Vec<_>>()
+        };
         assert_eq!(
-            ids(select_retained(&all, None, Some(CommitId(3)))),
-            [3, 4, 5]
+            retained(None, None),
+            (1..=5).map(|id| CommitId([id; 32])).collect::<Vec<_>>()
         );
         assert_eq!(
-            ids(select_retained(&all, Some(3), Some(CommitId(4)))),
-            [4, 5]
+            retained(Some(2), None),
+            [CommitId([4; 32]), CommitId([5; 32])]
         );
-        assert!(select_retained(&all, Some(0), None).is_empty());
-        assert!(select_retained(&all, None, Some(CommitId(9))).is_empty());
+        assert_eq!(
+            retained(None, Some(CommitId([3; 32]))),
+            [CommitId([3; 32]), CommitId([4; 32]), CommitId([5; 32])]
+        );
+        assert_eq!(
+            retained(Some(3), Some(CommitId([4; 32]))),
+            [CommitId([4; 32]), CommitId([5; 32])]
+        );
+        assert_eq!(retained(Some(0), None), [] as [CommitId; 0]);
+        assert_eq!(retained(None, Some(CommitId([9; 32]))), [] as [CommitId; 0]);
     }
 
     #[test]
     fn prune_plan_rejects_unknown_retained_ids() {
         let mut meta = MemMeta::default();
-        block_on(meta.create_commit(100, &[])).unwrap();
-        block_on(meta.create_commit(200, &[CommitId(1)])).unwrap();
-        let retained = BTreeSet::from([CommitId(2), CommitId(99)]);
+        let first = block_on(meta.create_commit(100, &[])).unwrap();
+        let second = block_on(meta.create_commit(200, &[first])).unwrap();
+        let missing = CommitId([0xFF; 32]);
+        let retained = BTreeSet::from([second, missing]);
         let err = block_on(prune_plan(&meta, &retained)).unwrap_err();
-        assert_eq!(err, PruneError::UnknownRetained { id: 99 });
+        assert_eq!(err, PruneError::UnknownRetained { id: missing });
     }
 
     #[test]
     fn prune_folds_oldest_first_and_keeps_effective_states() {
-        use sekai_util::BlobHash;
         let mut meta = MemMeta::default();
-        meta.with_active_ref(&RefName::parse("main").unwrap());
+        meta.with_active_ref(&main_ref());
         // S1: A@0,0 B@1,0 / S2: C@0,0 (B carried) / S3: D@2,0.
         let s1 = [
             CommitEntry::new(coord(0, 0), Some(BlobHash([1; 32])), None),
@@ -409,22 +429,21 @@ mod tests {
         ];
         let s2 = [CommitEntry::new(coord(0, 0), Some(BlobHash([3; 32])), None)];
         let s3 = [CommitEntry::new(coord(2, 0), Some(BlobHash([4; 32])), None)];
-        let mut parent: Vec<CommitId> = Vec::new();
-        for (id, entries) in [
-            (1u64, s1.as_slice()),
-            (2, s2.as_slice()),
-            (3, s3.as_slice()),
-        ] {
-            block_on(meta.apply_commit_incremental(id * 1_000, &parent, entries, None, &[], &[]))
-                .unwrap();
-            parent = alloc::vec![CommitId(id)];
-        }
-        let before = effective_present(&meta, &[CommitId(1), CommitId(2), CommitId(3)]);
+        let first = block_on(meta.apply_commit_incremental(1_000, &[], &s1, None, &[], &[]))
+            .unwrap()
+            .id;
+        let second = block_on(meta.apply_commit_incremental(2_000, &[first], &s2, None, &[], &[]))
+            .unwrap()
+            .id;
+        let third = block_on(meta.apply_commit_incremental(3_000, &[second], &s3, None, &[], &[]))
+            .unwrap()
+            .id;
+        let before = effective_present(&meta, &[first, second, third]);
 
-        let retained = select_retained(&commits(3), Some(2), None);
+        let retained = BTreeSet::from([second, third]);
         let plan = block_on(prune_plan(&meta, &retained)).unwrap();
-        assert_eq!(plan.delete, [CommitId(1)]);
-        assert_eq!(plan.retained, [CommitId(2), CommitId(3)]);
+        assert_eq!(plan.delete, [first]);
+        assert_eq!(plan.retained, [second, third]);
         let report = block_on(prune_apply(&mut meta, &plan, |_, _| {})).unwrap();
         assert_eq!(
             report,
@@ -435,44 +454,42 @@ mod tests {
             }
         );
 
-        let after = effective_present(&meta, &[CommitId(2), CommitId(3)]);
+        let after = effective_present(&meta, &[second, third]);
         assert_eq!(after, before[1..]);
-        assert!(block_on(meta.lookup_commit(CommitId(1))).unwrap().is_none());
+        assert!(block_on(meta.lookup_commit(first)).unwrap().is_none());
     }
 
     #[test]
     fn prune_folds_a_chain_into_the_retained_successor() {
-        use sekai_util::BlobHash;
         let mut meta = MemMeta::default();
-        meta.with_active_ref(&RefName::parse("main").unwrap());
+        meta.with_active_ref(&main_ref());
         // S1: A@0,0 / S2: B@1,0 / S3: C@2,0.
-        let mut parent: Vec<CommitId> = Vec::new();
-        for (id, entries) in [
-            (
-                1u64,
-                [CommitEntry::new(coord(0, 0), Some(BlobHash([1; 32])), None)].as_slice(),
-            ),
-            (
-                2,
-                [CommitEntry::new(coord(1, 0), Some(BlobHash([2; 32])), None)].as_slice(),
-            ),
-            (
-                3,
-                [CommitEntry::new(coord(2, 0), Some(BlobHash([3; 32])), None)].as_slice(),
-            ),
-        ] {
-            block_on(meta.apply_commit_incremental(id * 1_000, &parent, entries, None, &[], &[]))
-                .unwrap();
-            parent = alloc::vec![CommitId(id)];
-        }
-        let before = effective_present(&meta, &[CommitId(3)]);
+        let rows = |x: i32, byte: u8| {
+            [CommitEntry::new(
+                coord(x, 0),
+                Some(BlobHash([byte; 32])),
+                None,
+            )]
+        };
+        let first =
+            block_on(meta.apply_commit_incremental(1_000, &[], &rows(0, 1), None, &[], &[]))
+                .unwrap()
+                .id;
+        let second =
+            block_on(meta.apply_commit_incremental(2_000, &[first], &rows(1, 2), None, &[], &[]))
+                .unwrap()
+                .id;
+        let third =
+            block_on(meta.apply_commit_incremental(3_000, &[second], &rows(2, 3), None, &[], &[]))
+                .unwrap()
+                .id;
+        let before = effective_present(&meta, &[third]);
 
         // Keep only the last commit: the two below it retire in one run,
         // the second folding a graph the first already changed.
-        let retained = select_retained(&commits(3), Some(1), None);
-        assert_eq!(retained, BTreeSet::from([CommitId(3)]));
+        let retained = BTreeSet::from([third]);
         let plan = block_on(prune_plan(&meta, &retained)).unwrap();
-        assert_eq!(plan.delete, [CommitId(1), CommitId(2)]);
+        assert_eq!(plan.delete, [first, second]);
         let report = block_on(prune_apply(&mut meta, &plan, |_, _| {})).unwrap();
         assert_eq!(
             report,
@@ -483,97 +500,119 @@ mod tests {
             }
         );
 
-        assert!(block_on(meta.lookup_commit(CommitId(1))).unwrap().is_none());
-        assert!(block_on(meta.lookup_commit(CommitId(2))).unwrap().is_none());
-        assert_eq!(effective_present(&meta, &[CommitId(3)]), before);
+        assert!(block_on(meta.lookup_commit(first)).unwrap().is_none());
+        assert!(block_on(meta.lookup_commit(second)).unwrap().is_none());
+        assert_eq!(effective_present(&meta, &[third]), before);
     }
 
     #[test]
     fn prune_refuses_a_forking_fold() {
-        use sekai_util::BlobHash;
         let mut meta = MemMeta::default();
-        meta.with_active_ref(&RefName::parse("main").unwrap());
+        meta.with_active_ref(&main_ref());
         let row = |c: ChunkCoord, byte: u8| [CommitEntry::new(c, Some(BlobHash([byte; 32])), None)];
-        block_on(meta.apply_commit_incremental(1_000, &[], &row(coord(0, 0), 1), None, &[], &[]))
-            .unwrap();
+        let first = block_on(meta.apply_commit_incremental(
+            1_000,
+            &[],
+            &row(coord(0, 0), 1),
+            None,
+            &[],
+            &[],
+        ))
+        .unwrap()
+        .id;
         // Two retained branches continue the same root: retiring it would
         // have to fold its rows into both.
-        block_on(meta.apply_commit_incremental(
+        let second = block_on(meta.apply_commit_incremental(
             2_000,
-            &[CommitId(1)],
+            &[first],
             &row(coord(1, 0), 2),
             None,
             &[],
             &[],
         ))
-        .unwrap();
-        // Point the active ref back at the root: the second branch is a
-        // deliberate fork, which starts from commit 1 again.
-        block_on(meta.set_ref(&RefName::parse("main").unwrap(), Some(CommitId(1)), 2_500)).unwrap();
-        block_on(meta.apply_commit_incremental(
+        .unwrap()
+        .id;
+        // Point the active ref back at the root: the third commit is a
+        // deliberate fork.
+        block_on(meta.set_ref(&main_ref(), Some(first), 2_500)).unwrap();
+        let third = block_on(meta.apply_commit_incremental(
             3_000,
-            &[CommitId(1)],
+            &[first],
             &row(coord(2, 0), 3),
             None,
             &[],
             &[],
         ))
-        .unwrap();
+        .unwrap()
+        .id;
 
-        let retained = BTreeSet::from([CommitId(2), CommitId(3)]);
+        let retained = BTreeSet::from([second, third]);
         let err = block_on(prune_plan(&meta, &retained)).unwrap_err();
-        assert!(matches!(err, PruneError::SplitBranches { id: 1 }), "{err}");
+        assert!(
+            matches!(err, PruneError::SplitBranches { id } if id == first),
+            "{err}"
+        );
     }
 
     #[test]
     fn prune_folds_a_forked_parent_graph_into_one_target() {
-        use sekai_util::BlobHash;
         let mut meta = MemMeta::default();
-        meta.with_active_ref(&RefName::parse("main").unwrap());
+        meta.with_active_ref(&main_ref());
         let row = |c: ChunkCoord, byte: u8| [CommitEntry::new(c, Some(BlobHash([byte; 32])), None)];
-        // 1 <- 2, and 3 merges both: retiring 1 and 2 fold into 3.
-        block_on(meta.apply_commit_incremental(1_000, &[], &row(coord(0, 0), 1), None, &[], &[]))
-            .unwrap();
-        block_on(meta.apply_commit_incremental(
+        // first <- second, and third merges both: retiring first and
+        // second fold into third.
+        let first = block_on(meta.apply_commit_incremental(
+            1_000,
+            &[],
+            &row(coord(0, 0), 1),
+            None,
+            &[],
+            &[],
+        ))
+        .unwrap()
+        .id;
+        let second = block_on(meta.apply_commit_incremental(
             2_000,
-            &[CommitId(1)],
+            &[first],
             &row(coord(1, 0), 2),
             None,
             &[],
             &[],
         ))
-        .unwrap();
-        block_on(meta.apply_commit_incremental(
+        .unwrap()
+        .id;
+        let third = block_on(meta.apply_commit_incremental(
             3_000,
-            &[CommitId(1), CommitId(2)],
+            &[first, second],
             &row(coord(2, 0), 3),
             None,
             &[],
             &[],
         ))
-        .unwrap();
+        .unwrap()
+        .id;
 
-        let before = effective_present(&meta, &[CommitId(3)]);
-        let retained = BTreeSet::from([CommitId(3)]);
+        let before = effective_present(&meta, &[third]);
+        let retained = BTreeSet::from([third]);
         let plan = block_on(prune_plan(&meta, &retained)).unwrap();
-        assert_eq!(plan.delete, [CommitId(1), CommitId(2)]);
+        assert_eq!(plan.delete, [first, second]);
         let report = block_on(prune_apply(&mut meta, &plan, |_, _| {})).unwrap();
         assert_eq!(report.pruned, 2);
-        assert_eq!(effective_present(&meta, &[CommitId(3)]), before);
-        assert!(block_on(meta.lookup_commit(CommitId(1))).unwrap().is_none());
-        assert!(block_on(meta.lookup_commit(CommitId(2))).unwrap().is_none());
+        assert_eq!(effective_present(&meta, &[third]), before);
+        assert!(block_on(meta.lookup_commit(first)).unwrap().is_none());
+        assert!(block_on(meta.lookup_commit(second)).unwrap().is_none());
     }
 
     #[test]
     fn prune_refuses_an_overlapping_plan() {
         let mut meta = MemMeta::default();
-        block_on(meta.create_commit(100, &[])).unwrap();
+        let first = block_on(meta.create_commit(100, &[])).unwrap();
         let plan = PrunePlan {
-            delete: alloc::vec![CommitId(1)],
-            retained: alloc::vec![CommitId(1)],
+            delete: alloc::vec![first],
+            retained: alloc::vec![first],
         };
         let err = block_on(prune_apply(&mut meta, &plan, |_, _| {})).unwrap_err();
-        assert_eq!(err, PruneError::OverlappingPlan { id: 1 });
+        assert_eq!(err, PruneError::OverlappingPlan { id: first });
     }
 
     #[test]
@@ -585,6 +624,6 @@ mod tests {
         // An empty store plans empty instead of erroring.
         let empty = MemMeta::default();
         let plan = block_on(prune_plan(&empty, &BTreeSet::new())).unwrap();
-        assert_eq!(plan.delete, [] as [sekai_util::CommitId; 0]);
+        assert_eq!(plan.delete, [] as [CommitId; 0]);
     }
 }

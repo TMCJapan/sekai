@@ -64,8 +64,8 @@ Without `--timing`:
 
 ```jsonc
 {
-  "commit": 3, "chunks": 101, "new_blobs": 5, "tombstones": 0,
-  "skipped_regions": 2, "carried_chunks": 40
+  "commit": "3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f", "chunks": 101, "new_blobs": 5,
+  "tombstones": 0, "skipped_regions": 2, "carried_chunks": 40
 }
 ```
 
@@ -73,8 +73,8 @@ With `--timing` the `total_ms`/`phases`/`regions` block is appended:
 
 ```jsonc
 {
-  "commit": 3, "chunks": 101, "new_blobs": 5, "tombstones": 0,
-  "skipped_regions": 2, "carried_chunks": 40, "total_ms": 123,
+  "commit": "3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f", "chunks": 101, "new_blobs": 5,
+  "tombstones": 0, "skipped_regions": 2, "carried_chunks": 40, "total_ms": 123,
   "phases": {
     "discover_ms": 1, "universe_load_ms": 10, "fingerprint_ms": 2,
     "region_open_ms": 3, "ingest_ms": 40, "hash_ms": 5, "cas_put_ms": 30,
@@ -91,7 +91,8 @@ With `--timing` the `total_ms`/`phases`/`regions` block is appended:
 
 ```jsonc
 {
-  "clean": false, "latest": 2, "changed_regions": 1, "new_files": 0,
+  "clean": false, "latest": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a", "changed_regions": 1,
+  "new_files": 0,
   "deleted_files": 0, "new_chunks": 3, "tombstones": 1, "new_blobs": 2,
   "total_ms": 50,
   "phases": {"discover_ms": 1, "fingerprint_ms": 2, "universe_load_ms": 3,
@@ -136,7 +137,8 @@ The `total_ms`/`phases` block appears only with `--timing`.
 ### `log`
 
 ```jsonc
-[{"id": 1, "created_at_ms": 1700000000000, "tags": []}, {"id": 2, "created_at_ms": 1700000001000, "tags": ["stable"]}]
+[{"id": "1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b", "created_at_ms": 1700000000000, "tags": []},
+ {"id": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a", "created_at_ms": 1700000001000, "tags": ["stable"]}]
 ```
 
 Timestamps are raw Unix millis (RFC 3339 rendering stays human-only).
@@ -145,7 +147,9 @@ Timestamps are raw Unix millis (RFC 3339 rendering stays human-only).
 With `--stat`, per-commit change statistics are appended in place:
 
 ```jsonc
-[{"id": 1, "created_at_ms": 1700000000000, "tags": [], "fresh_chunks": 2, "fresh_tombstones": 0, "new_blobs": 1, "effective_chunks": 2}]
+[{"id": "1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b", "created_at_ms": 1700000000000, "tags": [],
+  "fresh_chunks": 2, "fresh_tombstones": 0, "new_blobs": 1,
+  "effective_chunks": 2}]
 ```
 
 `fresh_chunks`/`fresh_tombstones` count rows introduced at the
@@ -158,18 +162,20 @@ Create (`tag create <name> <commit>`) and delete (`tag delete
 <name>`) return the record:
 
 ```jsonc
-{"name": "stable", "commit": 2, "created_at_ms": 1700000001000}
+{"name": "stable", "commit": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a", "created_at_ms": 1700000001000}
 ```
 
 Deletion returns `{"name": "stable"}`. `tag list` lists all tags in
 name order:
 
 ```jsonc
-[{"name": "stable", "commit": 2, "created_at_ms": 1700000001000}]
+[{"name": "stable", "commit": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a", "created_at_ms": 1700000001000}]
 ```
 
-Commit arguments to `checkout`, `clone`, and `diff` accept `<id>` or
-`@tag`; payloads always carry the resolved numeric ID.
+Commit arguments to `checkout`, `clone`, and `diff` accept a 64-character
+lowercase hexadecimal commit hash or `@tag`; payloads always carry the
+resolved hash in that form. A 64-character hex spelling is resolved as a
+commit hash before any ref name, so a ref with such a name is shadowed.
 
 ### `diff`
 
@@ -263,12 +269,13 @@ Note: dry-run reports the orphan *count*, never the hashes.
 
 The `total_ms`/`phases` block appears only with `--timing`.
 
-Dry-run (`prune --dry-run --json`) lists commit IDs instead;
+Dry-run (`prune --dry-run --json`) lists commit hashes instead;
 `--timing` appends the plan timing block (`apply_ms` is always `0`):
 
 ```jsonc
 {
-  "delete": [1, 2], "retained": [3, 4], "total_ms": 20,
+  "delete": ["1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b", "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a"],
+  "retained": ["3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f", "4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e"], "total_ms": 20,
   "phases": {"plan_ms": 20, "apply_ms": 0}
 }
 ```

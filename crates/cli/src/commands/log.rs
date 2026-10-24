@@ -32,7 +32,7 @@ pub async fn run(store: &str, json: bool, stat: bool, style: Styler) -> anyhow::
     for (index, commit) in commits.iter().enumerate() {
         let mut line = format!(
             "{}\t{}",
-            style.bold(&commit.id.raw().to_string()),
+            style.bold(&commit.id.to_string()),
             format_time(commit.created_at_ms)
         );
         let names: Vec<&str> = tags
@@ -57,7 +57,7 @@ pub async fn run(store: &str, json: bool, stat: bool, style: Styler) -> anyhow::
 
 #[derive(Serialize)]
 struct CommitJson {
-    id: u64,
+    id: String,
     created_at_ms: u64,
     tags: Vec<String>,
     #[serde(flatten)]
@@ -81,7 +81,7 @@ fn log_payload(
         .iter()
         .enumerate()
         .map(|(index, commit)| CommitJson {
-            id: commit.id.raw(),
+            id: commit.id.to_string(),
             created_at_ms: commit.created_at_ms,
             tags: tags
                 .iter()
@@ -125,30 +125,36 @@ mod tests {
             serde_json::to_string(&log_payload(&empty, &no_tags, None)).unwrap(),
             "[]"
         );
+        let first = sekai_app::CommitId([1; 32]);
+        let second = sekai_app::CommitId([2; 32]);
         let commits = vec![
             sekai_app::Commit {
-                id: sekai_app::CommitId(1),
+                id: first,
                 created_at_ms: 1_700_000_000_000,
                 parents: vec![],
             },
             sekai_app::Commit {
-                id: sekai_app::CommitId(2),
+                id: second,
                 created_at_ms: 1_700_000_001_000,
-                parents: vec![sekai_app::CommitId(1)],
+                parents: vec![first],
             },
         ];
         assert_eq!(
             serde_json::to_string(&log_payload(&commits, &no_tags, None)).unwrap(),
-            r#"[{"id":1,"created_at_ms":1700000000000,"tags":[]},{"id":2,"created_at_ms":1700000001000,"tags":[]}]"#
+            format!(
+                r#"[{{"id":"{first}","created_at_ms":1700000000000,"tags":[]}},{{"id":"{second}","created_at_ms":1700000001000,"tags":[]}}]"#
+            )
         );
         let tags = vec![sekai_app::CommitTag::new(
             sekai_app::TagName::parse("stable").unwrap(),
-            sekai_app::CommitId(2),
+            second,
             1_700_000_002_000,
         )];
         assert_eq!(
             serde_json::to_string(&log_payload(&commits, &tags, None)).unwrap(),
-            r#"[{"id":1,"created_at_ms":1700000000000,"tags":[]},{"id":2,"created_at_ms":1700000001000,"tags":["stable"]}]"#
+            format!(
+                r#"[{{"id":"{first}","created_at_ms":1700000000000,"tags":[]}},{{"id":"{second}","created_at_ms":1700000001000,"tags":["stable"]}}]"#
+            )
         );
         let stats = vec![
             sekai_app::CommitStats {
@@ -166,11 +172,15 @@ mod tests {
         ];
         assert_eq!(
             serde_json::to_string(&log_payload(&commits, &tags, Some(&stats))).unwrap(),
-            r#"[{"id":1,"created_at_ms":1700000000000,"tags":[],"fresh_chunks":2,"fresh_tombstones":0,"new_blobs":1,"effective_chunks":2},{"id":2,"created_at_ms":1700000001000,"tags":["stable"],"fresh_chunks":0,"fresh_tombstones":1,"new_blobs":0,"effective_chunks":1}]"#
+            format!(
+                r#"[{{"id":"{first}","created_at_ms":1700000000000,"tags":[],"fresh_chunks":2,"fresh_tombstones":0,"new_blobs":1,"effective_chunks":2}},{{"id":"{second}","created_at_ms":1700000001000,"tags":["stable"],"fresh_chunks":0,"fresh_tombstones":1,"new_blobs":0,"effective_chunks":1}}]"#
+            )
         );
         assert_eq!(
             serde_json::to_string(&log_payload(&commits, &tags, Some(&no_stats))).unwrap(),
-            r#"[{"id":1,"created_at_ms":1700000000000,"tags":[]},{"id":2,"created_at_ms":1700000001000,"tags":["stable"]}]"#
+            format!(
+                r#"[{{"id":"{first}","created_at_ms":1700000000000,"tags":[]}},{{"id":"{second}","created_at_ms":1700000001000,"tags":["stable"]}}]"#
+            )
         );
     }
 }

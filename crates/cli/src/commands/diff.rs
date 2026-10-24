@@ -71,11 +71,7 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
                 })
                 .await
                 .with_context(|| {
-                    format!(
-                        "failed to compute chunk diffs between commit {} and {}",
-                        old_id.raw(),
-                        new_id.raw()
-                    )
+                    format!("failed to compute chunk diffs between commit {old_id} and {new_id}")
                 })?
         }
     };

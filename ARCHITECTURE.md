@@ -216,14 +216,26 @@ re-indexing.
 Commits form a history graph, not a timeline: every commit names the
 commits it continues in `parents` (empty for the root of a history, one
 entry for an ordinary commit, several for a merge). The graph - not the
-identifier order - decides what a commit inherits, so a commit never
+local record order - decides what a commit inherits, so a commit never
 sees rows introduced by a history it does not descend from.
 
 Parent links are written with the commit row, in the same transaction,
 and read back through the `MetaStore` port (`commit_parents`) or walked
 to the root by the core use cases (`usecase::graph::commit_ancestors`
-/ `commit_history`). Every parent must exist, a commit may not name
-itself, and a parent listed twice is recorded once.
+/ `commit_history`). Every parent must exist, and a parent listed twice
+is recorded once.
+
+Commit IDs are content-addressed: a Blake3 digest over the canonical
+parents, creation time, fresh history rows (present or tombstone), and
+removed regions. Carried regions and fingerprints are excluded because
+they describe storage representation and observation metadata, not the
+logical delta. Input order never enters the hash - parents, entries, and
+removed regions are sorted before hashing - so equal commits produce
+equal IDs, and recording one twice is idempotent: the existing ID is
+returned without duplicating rows. Backends keep a separate local record
+sequence for traversal, latest-commit lookup, and fold ordering; that
+sequence is never part of the public ID. See
+[ADR-0020](docs/adr/0020-content-addressed-commit-ids.md).
 
 ## Ref Objects
 
@@ -237,14 +249,14 @@ A new commit continues the target of the active ref - the port rejects
 one whose parents omit it - and the active ref moves onto the new commit
 in the same transaction. Switching the active ref forks the history: the
 next commit continues the ref it was planned against, not the newest
-commit in the store. Commit references accept `<id>`, `@tag`, or a bare
-ref name.
+commit in the store. Commit references accept `<64-char commit hash>`,
+`@tag`, or a bare ref name.
 
-Refs point at commit identifiers, not at content hashes: a sekai commit
-is not content-addressed (`prune` folds its rows into a successor), so
-no digest over it stays stable. Git can use an object id because a git
-commit object is immutable; sekai's commit identifier is the same
-counterpart. See [ADR-0019](docs/adr/0019-ref-objects.md).
+Refs point at commit hashes. Like Git, identity is derived from content;
+unlike Git, `prune` may fold a retired commit's rows into a retained
+successor. Folding changes where rows physically live, never the
+successor's logical delta or ID, so refs and tags stay stable across a
+prune. See [ADR-0019](docs/adr/0019-ref-objects.md).
 
 Two rules follow from the graph:
 
