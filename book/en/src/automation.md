@@ -2,7 +2,7 @@
 
 Every command accepts `--json`: stdout carries exactly one JSON document,
 stderr stays silent on success, and colors never appear. Every command
-except `log` and `tag` accepts `--timing`, which prints a per-phase table in human
+except `log`, `tag`, and `ref` accepts `--timing`, which prints a per-phase table in human
 mode and merges the same block into the JSON document in `--json` mode.
 `--progress` draws a stderr bar and is refused with `--json`.
 
