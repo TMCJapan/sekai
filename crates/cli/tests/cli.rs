@@ -272,9 +272,11 @@ fn validates_commit_refs_at_parse_time() {
         vec!["sekai", "prune", "--before", "bad name"],
         vec!["sekai", "diff", "1", "bad name"],
         vec!["sekai", "tag", "create", "stable", "bad name"],
+        vec!["sekai", "tag", "create", "stable", "@123"],
         vec!["sekai", "ref", "create", ""],
         vec!["sekai", "ref", "create", "bad name"],
         vec!["sekai", "ref", "create", "main", "HEAD"],
+        vec!["sekai", "ref", "create", "HEAD"],
         vec!["sekai", "ref", "delete"],
         vec!["sekai", "ref", "list", "--force"],
     ] {
@@ -710,12 +712,15 @@ fn parses_timing_and_json_flags() {
         &cli.command,
         Command::Ref {
             action: RefCommand::Create {
+                name,
+                commit,
                 force: true,
                 json: true,
-                ..
             }
-        }
+        } if name.as_str() == "feature/nightly"
+            && commit.as_ref().is_some_and(|c| c.as_str() == "@stable")
     ));
+    assert_eq!(cli.command.name(), "ref");
     assert!(cli.command.output_json());
 
     let cli = Cli::try_parse_from(["sekai", "ref", "delete", "stable"]).expect("ref delete parses");
@@ -735,6 +740,17 @@ fn parses_timing_and_json_flags() {
             action: RefCommand::List { json: true }
         }
     ));
+    assert!(cli.command.output_json());
+
+    let cli =
+        Cli::try_parse_from(["sekai", "ref", "activate", "main", "--json"]).expect("ref activate --json parses");
+    assert!(matches!(
+        &cli.command,
+        Command::Ref {
+            action: RefCommand::Activate { json: true, .. }
+        }
+    ));
+    assert_eq!(cli.command.name(), "ref");
     assert!(cli.command.output_json());
 
     let cli = Cli::try_parse_from(["sekai", "log", "--json"]).expect("log --json parses");

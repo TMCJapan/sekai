@@ -28,5 +28,9 @@ sekai --store ./sekai-store diff 1 2 --in overworld:0,0
   [Scope selection](../scope.md). A chunk absent or tombstoned on a
   side diffs as an empty compound there — missing coordinates are never
   errors (see [ADR-0006](https://github.com/tmcjapan/sekai/blob/main/docs/adr/0006-diff-missing-as-empty.md));
-  only corrupt payloads and missing blobs fail loudly. `--show-values`
+  only corrupt payloads and missing blobs fail loudly. When both commit
+  arguments are omitted (or only the older one is given), the older
+  side defaults to the newer side's lowest-ID parent, so a root commit
+  has no implicit older side and the command errors — pass the older
+  commit explicitly or use `--world`. `--show-values`
   prints concrete old/new values in human output.

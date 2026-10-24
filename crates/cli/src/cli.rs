@@ -271,9 +271,9 @@ impl TagCommand {
     }
 }
 
-/// Ref operations. Modeling them as subcommands keeps every invalid
-/// argument shape (create without a name, delete without a name,
-/// `--force` on a list) statically unrepresentable.
+/// Ref operations. The name position is required and the commit target
+/// is optional: missing names, missing delete targets, and `--force`
+/// anywhere but `create` stay statically unrepresentable.
 #[derive(Debug, Subcommand)]
 pub enum RefCommand {
     /// Point a ref at a commit.
@@ -329,13 +329,16 @@ impl RefCommand {
 
 /// Commit reference on the command line: `<id>`, `@tag`, or a ref name.
 ///
-/// Either `@` followed by a valid [`TagName`], a bare `u64` ID, or a bare
-/// valid [`RefName`]. The bare forms are tried in order: `u64` first, then
-/// [`RefName`]; `@` never falls through to a bare name.
+/// Either `@<tag>`, a bare `u64` ID, or a bare valid [`RefName`], tried in
+/// that exclusive order: `@` is tag-only and never falls through to a bare
+/// name, while a bare token is parsed as a `u64` first and only treated as
+/// a [`RefName`] when that fails. Because [`RefName`] rejects all-digit
+/// names, the numeric ID namespace and the ref-name namespace cannot overlap:
+/// a numeric token is always a commit ID (or `UnknownCommit`), never a ref.
 ///
 /// The shape is validated at parse time so a malformed reference never
 /// reaches the store; resolving it to an existing commit stays a
-/// runtime step. The grammar mirrors `core`'s `resolve_commit_ref`:
+/// runtime step. The grammar mirrors `core`'s `resolve_commit_ref`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitRef(String);
 
@@ -357,14 +360,22 @@ impl std::str::FromStr for CommitRef {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if let Some(name) = s.strip_prefix('@') {
-            TagName::parse(name)
-                .map_err(|err| format!("invalid tag reference {s:?}: {err}, expected @<tag>"))?;
-        } else if s.parse::<u64>().is_err() {
+            TagName::parse(name).map_err(|err| {
+                format!(
+                    "invalid reference {s:?}: {err}, expected @<tag> (refs are written without '@')"
+                )
+            })?;
+            Ok(Self(s.to_owned()))
+        } else if let Ok(id) = s.parse::<u64>() {
+            // Canonicalise so the stored spelling can never diverge from
+            // the validation that accepted it.
+            Ok(Self(id.to_string()))
+        } else {
             RefName::parse(s).map_err(|err| {
                 format!("invalid reference {s:?}: {err}, expected <id>, @<tag>, or <ref>")
             })?;
+            Ok(Self(s.to_owned()))
         }
-        Ok(Self(s.to_owned()))
     }
 }
 
@@ -473,7 +484,9 @@ pub enum DiffTarget<'a> {
         commit: Option<&'a CommitRef>,
     },
     /// Commit against commit (`None` newer side means the active ref's
-    /// target; `None` older side means the newer side's first parent).
+    /// target; `None` older side means the newer side's lowest-ID parent).
+    /// A root commit has no implicit older side and errors; pass it or
+    /// `--world` explicitly in that case.
     Commits {
         old: Option<&'a CommitRef>,
         new: Option<&'a CommitRef>,

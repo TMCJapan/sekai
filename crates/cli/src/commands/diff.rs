@@ -171,10 +171,22 @@ async fn resolve_commit_pair(
     async fn active_commit(
         instance: &sekai_app::SekaiInstance<impl SekaiStore>,
     ) -> anyhow::Result<CommitId> {
-        let id = instance.current_commit_id().await?;
-        id.map_or_else(|| Err(AppError::NoCommits.into()), Ok)
+        match instance.active_ref().await? {
+            None => Err(AppError::NoCommits.into()),
+            Some(active) => match active.commit {
+                Some(id) => Ok(id),
+                None => anyhow::bail!(
+                    "active ref {} is unborn (no commit yet); activate a born ref first",
+                    active.name.as_str()
+                ),
+            },
+        }
     }
-    async fn first_parent(
+    /// Commit parents are stored sorted by ID in both backends, so this
+    /// returns the lowest-ID parent. For the single-parent commits that
+    /// `commit` creates this is the continued commit; prune may produce
+    /// merges whose parents are reported in ID order.
+    async fn lowest_id_parent(
         instance: &sekai_app::SekaiInstance<impl SekaiStore>,
         commit: CommitId,
     ) -> anyhow::Result<CommitId> {
@@ -195,11 +207,11 @@ async fn resolve_commit_pair(
         }
         (None, Some(new)) => {
             let new_id = resolve(instance, new).await?;
-            Ok((first_parent(instance, new_id).await?, new_id))
+            Ok((lowest_id_parent(instance, new_id).await?, new_id))
         }
         (None, None) => {
             let new_id = active_commit(instance).await?;
-            Ok((first_parent(instance, new_id).await?, new_id))
+            Ok((lowest_id_parent(instance, new_id).await?, new_id))
         }
     }
 }
