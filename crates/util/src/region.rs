@@ -63,7 +63,7 @@ impl RegionFingerprint {
 }
 
 /// Chunk state staged for a commit.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CommitEntry {
     /// Which chunk this fact describes.
     pub coord: ChunkCoord,
@@ -118,7 +118,7 @@ mod tests {
     const fn stored() -> RegionStateEntry {
         RegionStateEntry {
             fingerprint: fingerprint(),
-            commit_id: CommitId(1),
+            commit_id: CommitId([1; 32]),
         }
     }
 

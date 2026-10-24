@@ -5,8 +5,9 @@ sekai --store ./sekai-store commit ./world
 ```
 
 Records the current world state as a new commit and prints the
-commit id, chunk/blob counts, tombstones, skipped regions, and carried
-chunks.
+commit hash, chunk/blob counts, tombstones, skipped regions, and carried
+chunks. Recording an identical commit again returns the existing hash
+without adding rows.
 
 - `--with-diff` additionally derives volatile diff views alongside blobs
   (slower ingest; the hot path stays decode-free without it).

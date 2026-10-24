@@ -232,13 +232,15 @@ async fn ref_writes_report_a_missing_target() {
 
     // A target no commit carries is refused before the ref exists.
     let err = instance
-        .create_ref(&feature, Some(sekai_app::CommitId(99)), false)
+        .create_ref(&feature, Some(sekai_app::CommitId([99; 32])), false)
         .await
         .unwrap_err();
     assert!(
         matches!(
             err,
-            sekai_app::AppError::CommitRef(sekai_core::ResolveError::UnknownCommit { id: 99 })
+            sekai_app::AppError::CommitRef(sekai_core::ResolveError::UnknownCommit {
+                id: sekai_app::CommitId(id)
+            }) if id == [99; 32]
         ),
         "{err}"
     );

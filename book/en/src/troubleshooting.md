@@ -1,7 +1,9 @@
 # Troubleshooting
 
-- `unknown commit: N` — the id does not exist. Check `log`; ids are
-  never reused.
+- `unknown commit: <hash>` — no commit with that hash exists in this
+  store. Check `log` and copy the full 64-character hash. IDs are
+  content-derived: the same parents, timestamp, and delta always produce
+  the same hash, so an identical history in another store shares it.
 - `blob missing from CAS: <hex>` — store corruption (or a store copied
   incompletely). Checkout aborts rather than writing a partial world;
   `--on-missing-blob skip-chunk` (checkout/clone) continues without the

@@ -88,7 +88,7 @@ pub async fn run(
 
 fn ids(ids: &[sekai_app::CommitId]) -> String {
     ids.iter()
-        .map(|id| id.raw().to_string())
+        .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(", ")
 }
@@ -117,8 +117,8 @@ struct PrunePhases {
 
 #[derive(Serialize)]
 struct PrunePlanPayload {
-    delete: Vec<u64>,
-    retained: Vec<u64>,
+    delete: Vec<String>,
+    retained: Vec<String>,
     #[serde(flatten)]
     timing: Option<PruneTiming>,
 }
@@ -140,8 +140,8 @@ fn prune_payload(report: &PruneReport, timings: &PruneTimings, timing: bool) -> 
 
 fn prune_plan_payload(plan: &PrunePlan, timings: &PruneTimings, timing: bool) -> PrunePlanPayload {
     PrunePlanPayload {
-        delete: plan.delete.iter().map(|id| id.raw()).collect(),
-        retained: plan.retained.iter().map(|id| id.raw()).collect(),
+        delete: plan.delete.iter().map(ToString::to_string).collect(),
+        retained: plan.retained.iter().map(ToString::to_string).collect(),
         timing: timing.then_some(PruneTiming {
             total_ms: timings.total.as_millis(),
             phases: PrunePhases {
@@ -207,20 +207,25 @@ mod tests {
 
     #[test]
     fn renders_prune_plan_payload() {
+        let one = sekai_app::CommitId([1; 32]);
+        let two = sekai_app::CommitId([2; 32]);
+        let three = sekai_app::CommitId([3; 32]);
         let plan = PrunePlan {
-            delete: vec![sekai_app::CommitId(1)],
-            retained: vec![sekai_app::CommitId(2), sekai_app::CommitId(3)],
+            delete: vec![one],
+            retained: vec![two, three],
         };
         let payload = prune_plan_payload(&plan, &timings(), false);
         assert_eq!(
             serde_json::to_string(&payload).unwrap(),
-            r#"{"delete":[1],"retained":[2,3]}"#
+            format!(r#"{{"delete":["{one}"],"retained":["{two}","{three}"]}}"#)
         );
         let payload_timed = prune_plan_payload(&plan, &timings(), true);
         assert_eq!(
             serde_json::to_string(&payload_timed).unwrap(),
-            r#"{"delete":[1],"retained":[2,3],"total_ms":30,"phases":{"plan_ms":20,"apply_ms":10}}"#
+            format!(
+                r#"{{"delete":["{one}"],"retained":["{two}","{three}"],"total_ms":30,"phases":{{"plan_ms":20,"apply_ms":10}}}}"#
+            )
         );
-        assert_eq!(ids(&plan.delete), "1");
+        assert_eq!(ids(&plan.delete), one.to_string());
     }
 }

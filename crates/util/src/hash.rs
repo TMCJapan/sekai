@@ -27,6 +27,34 @@ const fn decode_nibble(byte: u8) -> Result<u8, HexError> {
     }
 }
 
+/// Encode a 32-byte value as lowercase hex without allocation.
+pub(crate) const fn hex32_into(bytes: [u8; 32]) -> [u8; 64] {
+    let mut out = [0u8; 64];
+    let mut i = 0;
+    while i < 32 {
+        out[i * 2] = HEX[(bytes[i] >> 4) as usize];
+        out[i * 2 + 1] = HEX[(bytes[i] & 0x0F) as usize];
+        i += 1;
+    }
+    out
+}
+
+/// Parse a 64-byte hexadecimal value into raw bytes.
+pub(crate) fn hex32_from(input: &[u8]) -> Result<[u8; 32], HexError> {
+    if input.len() != 64 {
+        return Err(HexError::BadHexLength(input.len()));
+    }
+    let mut out = [0u8; 32];
+    let mut i = 0;
+    while i < 32 {
+        let hi = decode_nibble(input[i * 2])?;
+        let lo = decode_nibble(input[i * 2 + 1])?;
+        out[i] = (hi << 4) | lo;
+        i += 1;
+    }
+    Ok(out)
+}
+
 impl BlobHash {
     /// Raw 32 bytes (e.g. for binary DB columns).
     #[inline]
@@ -36,14 +64,7 @@ impl BlobHash {
 
     /// Encode as lowercase hex without allocation.
     pub const fn hex_into(self) -> [u8; 64] {
-        let mut out = [0u8; 64];
-        let mut i = 0;
-        while i < 32 {
-            out[i * 2] = HEX[(self.0[i] >> 4) as usize];
-            out[i * 2 + 1] = HEX[(self.0[i] & 0x0F) as usize];
-            i += 1;
-        }
-        out
+        hex32_into(self.0)
     }
 
     /// Encode as a lowercase hex string.
@@ -55,18 +76,7 @@ impl BlobHash {
 
     /// Parse a 64-byte hexadecimal value.
     pub fn from_hex(input: &[u8]) -> Result<Self, HexError> {
-        if input.len() != 64 {
-            return Err(HexError::BadHexLength(input.len()));
-        }
-        let mut out = [0u8; 32];
-        let mut i = 0;
-        while i < 32 {
-            let hi = decode_nibble(input[i * 2])?;
-            let lo = decode_nibble(input[i * 2 + 1])?;
-            out[i] = (hi << 4) | lo;
-            i += 1;
-        }
-        Ok(Self(out))
+        hex32_from(input).map(Self)
     }
 }
 

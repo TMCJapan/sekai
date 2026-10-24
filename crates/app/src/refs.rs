@@ -43,7 +43,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
             && self.store.meta().lookup_commit(commit).await?.is_none()
         {
             return Err(AppError::CommitRef(
-                sekai_core::ResolveError::UnknownCommit { id: commit.raw() },
+                sekai_core::ResolveError::UnknownCommit { id: commit },
             ));
         }
         let existing = self.store.meta().lookup_ref(name).await?;

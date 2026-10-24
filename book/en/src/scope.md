@@ -6,9 +6,9 @@ world by default, or per-dimension areas. Entries compose by union;
 
 ```sh
 sekai --store ./sekai-store commit ./world --in overworld --kind region --kind entities
-sekai --store ./sekai-store checkout ./world 3 --in overworld:0,0..31,31
-sekai --store ./sekai-store diff 1 2 --in overworld:0,0
-sekai --store ./sekai-store clone 3 ./restored --region overworld:0,0
+sekai --store ./sekai-store checkout ./world 3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d --in overworld:0,0..31,31
+sekai --store ./sekai-store diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a --in overworld:0,0
+sekai --store ./sekai-store clone 3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d ./restored --region overworld:0,0
 ```
 
 - `--in DIM` selects a whole dimension; `--in DIM:x,z` one chunk;

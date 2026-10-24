@@ -1,9 +1,11 @@
 # Concepts
 
-- **Commit**: one recorded world state, numbered in creation order
-  (`log` shows them oldest first). Commits store only fresh rows;
-  reads resolve effective state through fallback, so metadata grows with
-  changes, not with universe size.
+- **Commit**: one recorded world state, identified by a content-addressed
+  Blake3 hash over its parents, creation time, and delta (`log` shows
+  them oldest first, using the store's local record order). Commits store
+  only fresh rows; reads resolve effective state through fallback, so
+  metadata grows with changes, not with universe size. Recording the same
+  commit twice is idempotent.
 - **Blob (CAS key)**: the exact raw chunk payload, hashed with framing
   included. Identical payloads share one stored copy across all
   commits; checkout restores these bytes verbatim, rewinding volatile

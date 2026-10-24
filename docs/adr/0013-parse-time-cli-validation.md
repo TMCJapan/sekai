@@ -23,10 +23,10 @@ alone, before any command code runs:
   `tag delete <name>`, `tag list`. Invalid shapes are unrepresentable
   in the parsed type, so `parse_action` and its `Action` enum are gone.
   This supersedes the flat `tag` surface of ADR-0009.
-- Snapshot references (`rollback`, `export`, `diff`, `prune --before`,
-  `tag create`) use a `SnapshotRef` value type whose `FromStr` enforces
-  the `<id>` / `@tag` grammar (mirroring `core`'s `resolve_snapshot_ref`)
-  at parse time.
+- Commit references (`rollback`, `export`, `diff`, `prune --before`,
+  `tag create`) use a `CommitRef` value type whose `FromStr` enforces
+  the 64-character hash / `@tag` grammar (mirroring `core`'s
+  `resolve_commit_ref`) at parse time.
 - Mode ambiguity becomes structure: `diff` rejects a second positional
   next to `--world` (`conflicts_with`) instead of silently ignoring it,
   and `DiffArgs::target()` projects the parsed arguments onto a total

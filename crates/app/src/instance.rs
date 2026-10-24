@@ -70,7 +70,7 @@ impl<T: SekaiStore> SekaiInstance<T> {
         Ok(self.store.lock(mode)?)
     }
 
-    /// List all commits in ID order (for `log` and pre-flight checks).
+    /// List all commits in local record order (for `log` and pre-flight checks).
     pub async fn list_commits(&self) -> Result<Vec<Commit>, AppError> {
         let _lock = self.lock_store(StoreLockMode::Shared)?;
         sekai_core::usecase::graph::list_commits(self.store.meta())
