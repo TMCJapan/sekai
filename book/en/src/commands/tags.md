@@ -1,19 +1,21 @@
 # Tags
 
 ```sh
-sekai --store ./sekai-store tag create stable 1
+sekai --store ./sekai-store tag create stable 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b
 sekai --store ./sekai-store tag create stable @prev --force
 sekai --store ./sekai-store tag delete stable
 sekai --store ./sekai-store tag list
 ```
 
 Tags give commits human-readable aliases so checkout targets stay
-readable (`checkout ./world @stable` instead of an ID). Names use
-`[A-Za-z0-9._-]`, run 1–64 bytes, and are never all digits, so `@123`
-cannot be confused with commit `123`.
+readable (`checkout ./world @stable` instead of a 64-character hash).
+Names use `[A-Za-z0-9._-]`, run 1–64 bytes, and never consist of
+digits alone.
 
-- Commit arguments to `checkout`, `clone`, and `diff` accept `<id>`
-  or `@tag`; reports always carry the resolved numeric ID. Malformed
+- Commit arguments to `checkout`, `clone`, and `diff` accept a
+  64-character lowercase hexadecimal commit hash or `@tag`; reports
+  always carry the resolved hash. A 64-character hex spelling resolves
+  as a commit hash first, so it shadows a ref of that name. Malformed
   references are refused at parse time, before the store is touched.
 - `tag create` fails over an existing name unless `--force` moves it.
   `tag delete` on a missing tag fails loudly.

@@ -74,7 +74,7 @@ pub async fn run(
     let style = out.style;
     println!(
         "commit {} recorded: {} chunks, {} new blobs, {} tombstones",
-        style.bold(&report.commit.raw().to_string()),
+        style.bold(&report.commit.to_string()),
         report.chunks,
         report.new_blobs,
         report.tombstones
@@ -87,7 +87,7 @@ pub async fn run(
 
 #[derive(Serialize)]
 struct CommitPayload {
-    commit: u64,
+    commit: String,
     chunks: usize,
     new_blobs: usize,
     tombstones: usize,
@@ -130,7 +130,7 @@ struct RegionTimingJson {
 
 fn commit_payload(report: &CommitReport, timings: &CommitTimings, timing: bool) -> CommitPayload {
     CommitPayload {
-        commit: report.commit.raw(),
+        commit: report.commit.to_string(),
         chunks: report.chunks,
         new_blobs: report.new_blobs,
         tombstones: report.tombstones,
@@ -214,7 +214,7 @@ mod tests {
     #[test]
     fn renders_commit_payload() {
         let report = CommitReport {
-            commit: sekai_app::CommitId(3),
+            commit: sekai_app::CommitId([3; 32]),
             chunks: 40,
             new_blobs: 2,
             tombstones: 0,
@@ -243,15 +243,20 @@ mod tests {
                 cas: Duration::from_millis(7),
             }],
         };
+        let id = report.commit;
         let payload = commit_payload(&report, &timings, false);
         assert_eq!(
             serde_json::to_string(&payload).unwrap(),
-            r#"{"commit":3,"chunks":40,"new_blobs":2,"tombstones":0,"skipped_regions":1,"carried_chunks":8}"#
+            format!(
+                r#"{{"commit":"{id}","chunks":40,"new_blobs":2,"tombstones":0,"skipped_regions":1,"carried_chunks":8}}"#
+            )
         );
         let payload_timed = commit_payload(&report, &timings, true);
         assert_eq!(
             serde_json::to_string(&payload_timed).unwrap(),
-            r#"{"commit":3,"chunks":40,"new_blobs":2,"tombstones":0,"skipped_regions":1,"carried_chunks":8,"total_ms":100,"phases":{"discover_ms":1,"universe_load_ms":2,"fingerprint_ms":3,"region_open_ms":4,"ingest_ms":50,"hash_ms":6,"cas_put_ms":7,"db_apply_ms":8},"regions":[{"path":"region/r.0.0.mca","bytes":100,"chunks":32,"open_ms":4,"ingest_ms":5,"hash_ms":6,"cas_ms":7}]}"#
+            format!(
+                r#"{{"commit":"{id}","chunks":40,"new_blobs":2,"tombstones":0,"skipped_regions":1,"carried_chunks":8,"total_ms":100,"phases":{{"discover_ms":1,"universe_load_ms":2,"fingerprint_ms":3,"region_open_ms":4,"ingest_ms":50,"hash_ms":6,"cas_put_ms":7,"db_apply_ms":8}},"regions":[{{"path":"region/r.0.0.mca","bytes":100,"chunks":32,"open_ms":4,"ingest_ms":5,"hash_ms":6,"cas_ms":7}}]}}"#
+            )
         );
     }
 

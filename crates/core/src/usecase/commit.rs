@@ -514,9 +514,9 @@ mod tests {
             &[],
         ))
         .unwrap_err();
-        assert_eq!(err, MemError::NotContinuing { base: first.0 });
+        assert_eq!(err, MemError::NotContinuing { base: first });
 
-        // The rejected call wrote nothing and consumed no identifier.
+        // The rejected call wrote nothing.
         let second = crate::support::block_on(meta.apply_commit_incremental(
             3_000,
             &[first],
@@ -527,7 +527,7 @@ mod tests {
         ))
         .unwrap()
         .id;
-        assert_eq!(second, CommitId(2));
+        assert_ne!(second, first);
         assert_eq!(
             crate::support::block_on(meta.lookup_ref(&main_ref()))
                 .unwrap()
@@ -608,7 +608,7 @@ mod tests {
     #[test]
     fn missing_coordinates_become_tombstones_and_states_drop() {
         let mut meta = store_with_ref();
-        let s1 = crate::support::block_on(meta.apply_commit_incremental(
+        let _s1 = crate::support::block_on(meta.apply_commit_incremental(
             1_000,
             &[],
             &[
@@ -621,8 +621,6 @@ mod tests {
         ))
         .unwrap()
         .id;
-        assert_eq!(s1, CommitId(1));
-
         let (previous, plan) =
             crate::support::block_on(plan_commit(&meta, &[], &Scope::World)).unwrap();
         assert_eq!(plan.removed, alloc::vec![key(0, 0)]);
@@ -944,7 +942,7 @@ mod tests {
             ChunkHistoryEntry::new(coord(0, 0), id, Some(BlobHash([3; 32])), None)
         );
         assert!(
-            crate::support::block_on(meta.lookup_commit(CommitId(999)))
+            crate::support::block_on(meta.lookup_commit(CommitId([0xFF; 32])))
                 .unwrap()
                 .is_none()
         );

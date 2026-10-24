@@ -71,11 +71,7 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
                 })
                 .await
                 .with_context(|| {
-                    format!(
-                        "failed to compute chunk diffs between commit {} and {}",
-                        old_id.raw(),
-                        new_id.raw()
-                    )
+                    format!("failed to compute chunk diffs between commit {old_id} and {new_id}")
                 })?
         }
     };
@@ -191,7 +187,7 @@ async fn resolve_commit_pair(
             .await?
             .into_iter()
             .min()
-            .with_context(|| format!("commit {} has no parent to diff against", commit.raw()))
+            .with_context(|| format!("commit {} has no parent to diff against", commit.to_string()))
     }
     match (old_commit, new_commit) {
         (Some(old), Some(new)) => {

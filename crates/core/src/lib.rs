@@ -4,6 +4,7 @@
 
 extern crate alloc;
 
+pub mod commit;
 pub mod port;
 #[cfg(test)]
 pub(crate) mod support;
@@ -32,6 +33,8 @@ pub use sekai_nbt::diff_hash;
 
 /// Compute a diff hash using the default ignore set.
 pub use sekai_nbt::diff_hash_v1;
+
+pub use commit::commit_hash;
 
 /// Hash the exact raw chunk payload into its CAS key.
 pub fn hash_blob(payload: &[u8]) -> BlobHash {

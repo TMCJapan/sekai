@@ -10,9 +10,9 @@ only covered that one pair, and a crashed backup left the marker behind,
 blocking `gc` until an operator deleted it. Other pairs were unguarded:
 
 - Two backups plan against the same latest snapshot, ingest, then commit
-  in turn. Snapshot IDs come from `AUTOINCREMENT` and never collide, but
-  the later commit records its delta and `region_state` fingerprints
-  against a stale base. Fingerprints can then disagree with the effective
+  in turn. Content-addressed commit IDs do not collide, but the later
+  commit records its delta and `region_state` fingerprints against a
+  stale base. Fingerprints can then disagree with the effective
   rows, and a later backup may skip a region whose stored rows no longer
   match its file.
 - `prune` deletes rows a reader resolved moments earlier. A rollback can

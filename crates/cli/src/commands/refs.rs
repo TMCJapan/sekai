@@ -47,7 +47,7 @@ pub async fn run(store: &str, action: &RefCommand, style: Styler) -> anyhow::Res
                 Some(commit) => println!(
                     "ref {} points at {}",
                     style.bold(record.name.as_str()),
-                    style.bold(&commit.raw().to_string())
+                    style.bold(&commit.to_string())
                 ),
                 None => println!(
                     "ref {} is unborn (no commit yet)",
@@ -98,7 +98,7 @@ pub async fn run(store: &str, action: &RefCommand, style: Styler) -> anyhow::Res
                     style.bold(record.name.as_str()),
                     record
                         .commit
-                        .map_or_else(|| "-".to_owned(), |commit| commit.raw().to_string()),
+                        .map_or_else(|| "-".to_owned(), |commit| commit.to_string()),
                     super::format_time(record.created_at_ms)
                 );
             }
@@ -124,7 +124,7 @@ pub async fn run(store: &str, action: &RefCommand, style: Styler) -> anyhow::Res
 #[derive(Serialize)]
 struct RefJson {
     name: String,
-    commit: Option<u64>,
+    commit: Option<String>,
     active: bool,
     created_at_ms: u64,
 }
@@ -137,7 +137,7 @@ struct RefDelete {
 fn ref_payload(record: &CommitRef) -> RefJson {
     RefJson {
         name: record.name.as_str().to_owned(),
-        commit: record.commit.map(sekai_app::CommitId::raw),
+        commit: record.commit.map(|id| id.to_string()),
         active: record.active,
         created_at_ms: record.created_at_ms,
     }
@@ -146,19 +146,20 @@ fn ref_payload(record: &CommitRef) -> RefJson {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
     use sekai_app::{CommitId, RefName};
 
     #[test]
     fn renders_ref_payloads() {
         let record = CommitRef::new(
             RefName::parse("main").unwrap(),
-            Some(CommitId(3)),
+            Some(CommitId::from_str("0303030303030303030303030303030303030303030303030303030303030303").unwrap()),
             true,
             1_700_000_000_000,
         );
         assert_eq!(
             serde_json::to_string(&ref_payload(&record)).unwrap(),
-            r#"{"name":"main","commit":3,"active":true,"created_at_ms":1700000000000}"#
+            r#"{"name":"main","commit":"0303030303030303030303030303030303030303030303030303030303030303","active":true,"created_at_ms":1700000000000}"#
         );
         let unborn = CommitRef::new(RefName::parse("feature").unwrap(), None, false, 0);
         assert_eq!(

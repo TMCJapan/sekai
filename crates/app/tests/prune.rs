@@ -158,27 +158,25 @@ async fn prune_before_ref_and_empty_guards() {
             .unwrap();
     }
 
-    // `--before 2` retains 2 and newer.
-    let (report, _) = instance
-        .prune(None, Some(CommitId(2)), |_| {})
-        .await
-        .unwrap();
+    let commits = instance.list_commits().await.unwrap();
+    let second = commits[1].id;
+    let third = commits[2].id;
+
+    // `--before` the second commit retains it and newer.
+    let (report, _) = instance.prune(None, Some(second), |_| {}).await.unwrap();
     assert_eq!(report.pruned, 1);
     assert_eq!(instance.list_commits().await.unwrap().len(), 2);
 
-    // Intersected with keep-last: only commit 3 survives.
-    let (plan, _) = instance
-        .prune_plan(Some(1), Some(CommitId(2)))
-        .await
-        .unwrap();
-    assert_eq!(plan.delete, [CommitId(2)]);
-    assert_eq!(plan.retained, [CommitId(3)]);
+    // Intersected with keep-last: only the newest commit survives.
+    let (plan, _) = instance.prune_plan(Some(1), Some(second)).await.unwrap();
+    assert_eq!(plan.delete, [second]);
+    assert_eq!(plan.retained, [third]);
 
     // Selections retaining nothing fail loudly instead of wiping the store.
     assert!(instance.prune(Some(0), None, |_| {}).await.is_err());
     assert!(
         instance
-            .prune(None, Some(CommitId(99)), |_| {})
+            .prune(None, Some(CommitId([0xFF; 32])), |_| {})
             .await
             .is_err()
     );

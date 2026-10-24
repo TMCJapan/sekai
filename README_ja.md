@@ -33,14 +33,14 @@ sekai --store ./sekai-store status ./world
 # コミットの一覧を表示
 sekai --store ./sekai-store log
 
-# コミット 1 からワールドを再構築（リージョンファイルを上書き）
-sekai --store ./sekai-store checkout ./world 1
+# コミットに後から参照できるタグ名を付与（`log` で完全なハッシュを確認）
+sekai --store ./sekai-store tag create stable 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a
 
-# コミット 1 と 2 の間でチャンクの NBT を比較
-sekai --store ./sekai-store diff 1 2 --in overworld:0,0
+# タグ付けしたコミットからワールドを再構築（リージョンファイルを上書き）
+sekai --store ./sekai-store checkout ./world @stable
 
-# コミット 2 に後から参照できるタグ名を付与
-sekai --store ./sekai-store tag create stable 2
+# 2 つのコミット間でチャンクの NBT を比較（ハッシュは `log` で確認）
+sekai --store ./sekai-store diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a --in overworld:0,0
 
 # ブランチ: 現在位置の名前付けを行い、そのブランチへコミットする
 sekai --store ./sekai-store ref create feature
@@ -54,8 +54,8 @@ sekai --store ./sekai-store gc
 sekai --store ./sekai-store prune --keep-last 10
 sekai --store ./sekai-store gc
 
-# コミット 1 を新しいディレクトリに復元（稼働中のワールドには影響しません）
-sekai --store ./sekai-store clone 1 ./restored
+# タグ付けしたコミットを新しいディレクトリに復元（稼働中のワールドには影響しません）
+sekai --store ./sekai-store clone @stable ./restored
 ```
 
 すべてのコマンドは `--json` オプションに対応しており、単一の機械可読な JSON レポートを出力できます。また、`log`、`tag`、`ref` を除くすべてのコマンドは `--timing` オプションでフェーズごとの処理時間内訳を表示できます（両方を組み合わせることで、所要時間付きの JSON が得られます）。さらに、`commit`、`status`、`checkout`、`diff`、`clone`、`gc`、`prune` では `--progress` を指定すると標準エラー出力に進捗バーを表示できます（`--json` との併用は不可）。

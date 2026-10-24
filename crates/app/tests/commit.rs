@@ -924,7 +924,7 @@ async fn errors_surface_loudly() {
         instance
             .world_mut(&mut world)
             .checkout(
-                CommitId(99),
+                CommitId([99; 32]),
                 sekai_app::CheckoutOptions::default(),
                 sekai_app::Scope::World,
                 |_| {},
@@ -1849,7 +1849,7 @@ async fn randomized_commit_checkout_round_trip() {
                 read_world(&world, &world_path),
                 want,
                 "seed {seed} commit {}",
-                commit.id.0
+                commit.id
             );
         }
         cleanup(&root);

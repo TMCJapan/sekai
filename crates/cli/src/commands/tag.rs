@@ -32,7 +32,7 @@ pub async fn run(store: &str, action: &TagCommand, style: Styler) -> anyhow::Res
             }
             println!(
                 "tagged {} as {}",
-                style.bold(&record.commit.raw().to_string()),
+                style.bold(&record.commit.to_string()),
                 style.bold(name.as_str())
             );
         }
@@ -74,7 +74,7 @@ pub async fn run(store: &str, action: &TagCommand, style: Styler) -> anyhow::Res
                 println!(
                     "{}\t{}\t{}",
                     style.bold(tag.name.as_str()),
-                    tag.commit.raw(),
+                    tag.commit,
                     super::format_time(tag.created_at_ms)
                 );
             }
@@ -86,7 +86,7 @@ pub async fn run(store: &str, action: &TagCommand, style: Styler) -> anyhow::Res
 #[derive(Serialize)]
 struct TagJson {
     name: String,
-    commit: u64,
+    commit: String,
     created_at_ms: u64,
 }
 
@@ -98,7 +98,7 @@ struct TagDelete {
 fn tag_payload(tag: &CommitTag) -> TagJson {
     TagJson {
         name: tag.name.as_str().to_owned(),
-        commit: tag.commit.raw(),
+        commit: tag.commit.to_string(),
         created_at_ms: tag.created_at_ms,
     }
 }
@@ -112,12 +112,15 @@ mod tests {
     fn renders_tag_payloads() {
         let tag = CommitTag::new(
             TagName::parse("stable").unwrap(),
-            sekai_app::CommitId(3),
+            sekai_app::CommitId([3; 32]),
             1_700_000_000_000,
         );
         assert_eq!(
             serde_json::to_string(&tag_payload(&tag)).unwrap(),
-            r#"{"name":"stable","commit":3,"created_at_ms":1700000000000}"#
+            format!(
+                r#"{{"name":"stable","commit":"{}","created_at_ms":1700000000000}}"#,
+                tag.commit
+            )
         );
         let tags: Vec<TagJson> = Vec::new();
         assert_eq!(serde_json::to_string(&tags).unwrap(), "[]");

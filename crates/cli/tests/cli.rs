@@ -269,7 +269,7 @@ fn parses_diff_command() {
 #[test]
 fn validates_commit_refs_at_parse_time() {
     // Malformed references are refused before any code runs, so they can
-    // never touch the store (`<id>` is u64, `@tag` follows TagName rules,
+    // never touch the store (a 64-char hash, `@tag` follows TagName rules,
     // a bare name follows RefName rules).
     for args in [
         vec!["sekai", "checkout", "w", ""],
@@ -301,14 +301,13 @@ fn validates_commit_refs_at_parse_time() {
     }
 
     for args in [
-        vec!["sekai", "checkout", "w", "3"],
         vec!["sekai", "checkout", "w", "@stable"],
         vec!["sekai", "checkout", "w", "main"],
         vec!["sekai", "checkout", "w", "feature/nightly"],
         vec!["sekai", "clone", "@v1.2_x-1", "out"],
         vec!["sekai", "prune", "--before", "@stable"],
-        vec!["sekai", "diff", "@stable", "2"],
-        vec!["sekai", "tag", "create", "stable", "0"],
+        vec!["sekai", "diff", "@stable", H2],
+        vec!["sekai", "tag", "create", "stable", H1],
         vec!["sekai", "ref", "create", "main"],
         vec![
             "sekai",
@@ -342,7 +341,7 @@ fn validates_commit_refs_at_parse_time() {
         "the refusal names the reference: {message}"
     );
     assert!(
-        message.contains("expected <id>, @<tag>, or <ref>"),
+        message.contains("expected <64-char hash>, @<tag>, or <ref>"),
         "the refusal names the accepted shapes: {message}"
     );
 }

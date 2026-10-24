@@ -81,12 +81,13 @@ async fn tag_create_list_resolve_delete() {
         instance.resolve_commit_ref("@stable").await.unwrap(),
         commits[0].id
     );
+    let hash = commits[0].id.to_string();
     assert_eq!(
-        instance.resolve_commit_ref("1").await.unwrap(),
+        instance.resolve_commit_ref(&hash).await.unwrap(),
         commits[0].id
     );
     assert!(instance.resolve_commit_ref("@missing").await.is_err());
-    assert!(instance.resolve_commit_ref("99").await.is_err());
+    assert!(instance.resolve_commit_ref(&"f".repeat(64)).await.is_err());
     assert!(instance.resolve_commit_ref("nope").await.is_err());
 
     // Clone accepts the tag ref end to end.
@@ -132,7 +133,7 @@ async fn tag_missing_commit_is_an_error() {
     // No commits exist: tagging fails instead of pointing nowhere.
     assert!(
         instance
-            .create_tag(&TagName::parse("x").unwrap(), CommitId(1), false)
+            .create_tag(&TagName::parse("x").unwrap(), CommitId([1; 32]), false)
             .await
             .is_err()
     );

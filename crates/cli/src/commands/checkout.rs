@@ -60,7 +60,7 @@ pub async fn run(
         eprintln!(
             "checkout {} to commit {} (scope: {}, policy: {})",
             world_path.as_ref().display(),
-            id.raw(),
+            id,
             selection.describe(),
             policy_summary(flags),
         );
@@ -95,7 +95,7 @@ pub async fn run(
     let style = out.style;
     println!(
         "commit {} restored: {} files rewritten, {} files deleted, {} chunks restored",
-        style.bold(&id.raw().to_string()),
+        style.bold(&id.to_string()),
         report.files_written,
         report.files_deleted,
         report.chunks_restored
