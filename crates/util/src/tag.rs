@@ -26,12 +26,12 @@ impl TagName {
             return Err(TagNameError::TooLong);
         }
         let mut all_digits = true;
-        for byte in raw.bytes() {
-            let valid = byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-');
+        for c in raw.chars() {
+            let valid = c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-');
             if !valid {
-                return Err(TagNameError::BadChar(byte as char));
+                return Err(TagNameError::BadChar(c));
             }
-            all_digits &= byte.is_ascii_digit();
+            all_digits &= c.is_ascii_digit();
         }
         if all_digits {
             return Err(TagNameError::Numeric);
@@ -81,6 +81,6 @@ mod tests {
         assert_eq!(TagName::parse(" слоvo"), Err(TagNameError::BadChar(' ')));
         let long = "a".repeat(TagName::MAX_LEN + 1);
         assert_eq!(TagName::parse(&long), Err(TagNameError::TooLong));
-        assert!(TagName::parse("a".repeat(TagName::MAX_LEN).as_str()).is_ok());
+        assert!(TagName::parse(&"a".repeat(TagName::MAX_LEN)).is_ok());
     }
 }

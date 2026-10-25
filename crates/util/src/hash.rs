@@ -70,8 +70,7 @@ impl BlobHash {
     /// Encode as a lowercase hex string.
     pub fn hex_string(self) -> String {
         let raw = self.hex_into();
-        // SAFETY: hex_into produces only lowercase hex ASCII bytes.
-        unsafe { String::from_utf8_unchecked(raw.to_vec()) }
+        String::from_utf8(raw.to_vec()).unwrap_or_default()
     }
 
     /// Parse a 64-byte hexadecimal value.
