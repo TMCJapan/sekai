@@ -3,10 +3,7 @@
 use anyhow::Context as _;
 use sekai_app::{AppError, ChunkCoord, ChunkDiff, CommitId, HostWorldTree, Scope, SekaiStore};
 
-use super::diff_render::{
-    TimedDiffs, diff_entry_payload, diff_group_payload, print_diff_timing_table,
-    render_diff_grouped, render_diff_human,
-};
+use super::diff_render::{TimedDiffs, diff_group_payload, print_diff_timing_table};
 use super::progress::{finish_progress, progress_bar, report_progress};
 use crate::cli::{CommitRef, DiffArgs, DiffTarget};
 use crate::envelope::envelope_ok;
@@ -41,7 +38,7 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
             };
             instance
                 .world(&world)
-                .diff_world_chunks(commit_id, &coords, None, |update| {
+                .diff_world_chunks(commit_id, &coords, |update| {
                     report_progress(
                         bar.as_ref(),
                         update.chunks_done,
@@ -61,7 +58,7 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
             }
             let coords = scoped_coords(coords, &scope);
             instance
-                .diff_chunks(old_id, new_id, &coords, None, |update| {
+                .diff_chunks(old_id, new_id, &coords, |update| {
                     report_progress(
                         bar.as_ref(),
                         update.chunks_done,
@@ -76,44 +73,6 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
         }
     };
     finish_progress(bar.as_ref());
-
-    if diffs.len() == 1 {
-        let diff = &diffs[0];
-        if args.output.json {
-            if args.output.timing {
-                println!(
-                    "{}",
-                    envelope_ok(
-                        "diff",
-                        &TimedDiffs {
-                            diffs: diff_entry_payload(&diff.entries),
-                            timing: Some((&timings).into()),
-                        }
-                    )?
-                );
-            } else {
-                println!(
-                    "{}",
-                    envelope_ok("diff", &diff_entry_payload(&diff.entries))?
-                );
-            }
-            return Ok(());
-        }
-        println!(
-            "{}",
-            render_diff_human(
-                diff.coord.x,
-                diff.coord.z,
-                &diff.entries,
-                args.show_values,
-                style
-            )
-        );
-        if args.output.timing {
-            print_diff_timing_table(&timings, diffs.len(), style);
-        }
-        return Ok(());
-    }
 
     let nonempty: Vec<&ChunkDiff> = diffs
         .iter()
@@ -140,10 +99,6 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
         println!("No differences found.");
         return Ok(());
     }
-    println!(
-        "{}",
-        render_diff_grouped(&nonempty, args.show_values, style)
-    );
     if args.output.timing {
         print_diff_timing_table(&timings, diffs.len(), style);
     }

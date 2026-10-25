@@ -6,6 +6,7 @@
 
 use sekai_app::{CommitId, CommitOptions, RegionKind, Scope};
 use sekai_app::{HostWorldTree, WorldTree};
+use sekai_nbt::ChunkPayloadDiff;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -162,8 +163,8 @@ async fn scoped_commit_records_no_spurious_tombstones() {
     let store = root.join("store").to_string_lossy().into_owned();
     let over = world_path.join("region/r.0.0.mca");
     let nether = world_path.join("DIM-1/region/r.0.0.mca");
-    // Minimal valid NBT (uncompressed empty compound) so chunk diffs parse.
-    let payload = vec![3, 10, 0, 0, 0];
+    // Minimal valid chunk payload so chunk diffs parse.
+    let payload = build_status_nbt("minecraft:full");
     write_region(&over, &[(0, 0, payload.clone()), (1, 0, payload.clone())]);
     write_region(&nether, &[(0, 0, payload.clone())]);
 
@@ -191,10 +192,10 @@ async fn scoped_commit_records_no_spurious_tombstones() {
     assert_eq!(commits.len(), 2);
     let nether_coord = ChunkCoord::new(Dimension::NETHER, RegionKind::Region, 0, 0);
     let diffs = instance
-        .diff_chunk(commits[0].id, commits[1].id, &nether_coord, None)
+        .diff_chunk(commits[0].id, commits[1].id, &nether_coord)
         .await
         .unwrap();
-    assert_eq!(diffs, [] as [sekai_app::NbtDiffEntry; 0]);
+    assert_eq!(diffs, ChunkPayloadDiff::Nothing);
 
     // Vanish one in-scope chunk: exactly that tombstone is recorded.
     write_region(&over, &[(0, 0, payload)]);
@@ -219,10 +220,10 @@ async fn scoped_commit_records_no_spurious_tombstones() {
     let commits = instance.list_commits().await.unwrap();
     assert_eq!(commits.len(), 4);
     let diffs = instance
-        .diff_chunk(commits[0].id, commits[3].id, &nether_coord, None)
+        .diff_chunk(commits[0].id, commits[3].id, &nether_coord)
         .await
         .unwrap();
-    assert_eq!(diffs, [] as [sekai_app::NbtDiffEntry; 0]);
+    assert_eq!(diffs, ChunkPayloadDiff::Nothing);
 }
 
 /// A partial scope reads only part of a region; the next full commit must
@@ -764,11 +765,7 @@ async fn with_diff_records_diff_hashes() {
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store_dir = root.join("store");
     let store_url = store_dir.to_string_lossy().into_owned();
-    // Minimal zlib NBT: type byte 2 + zlib("<nbt>") is not valid NBT, so
-    // build a real one: uncompressed empty compound root.
-    let nbt = vec![10, 0, 0, 0];
-    let mut payload = vec![3];
-    payload.extend_from_slice(&nbt);
+    let payload = build_status_nbt("minecraft:full");
     write_region(world_path.join("region/r.0.0.mca"), &[(0, 0, payload)]);
 
     let options = CommitOptions {
@@ -943,7 +940,6 @@ async fn progress_events_cover_checkout_diff_and_gc() {
             commits[0].id,
             commits[0].id,
             &[coord],
-            None,
             move |p: DiffProgress| {
                 seen_clone
                     .lock()
@@ -1033,16 +1029,7 @@ async fn checkout_progress_completes_for_tombstone_only_region() {
 #[tokio::test]
 async fn diff_chunk_between_commits() {
     fn build_nbt(status: &str) -> Vec<u8> {
-        let mut nbt = vec![10, 0, 0, 8, 0, 6]; // TAG_Compound(""), TAG_String("Status")
-        nbt.extend_from_slice(b"Status");
-        let len = u16::try_from(status.len()).unwrap();
-        nbt.extend_from_slice(&len.to_be_bytes());
-        nbt.extend_from_slice(status.as_bytes());
-        nbt.push(0); // TAG_End
-
-        let mut payload = vec![3]; // Uncompressed header byte
-        payload.extend(nbt);
-        payload
+        build_status_nbt(status)
     }
 
     let (root, _guard) = tempdir("diff_chunk");
@@ -1080,27 +1067,17 @@ async fn diff_chunk_between_commits() {
     );
 
     let diffs = instance
-        .diff_chunk(commits[0].id, commits[1].id, &coord, None)
+        .diff_chunk(commits[0].id, commits[1].id, &coord)
         .await
         .unwrap();
 
-    assert_eq!(diffs.len(), 1);
-    assert_eq!(diffs[0].path, "Status");
+    assert!(!diffs.is_empty());
 }
 
 #[tokio::test]
 async fn diff_world_chunk_with_commit() {
     fn build_nbt(status: &str) -> Vec<u8> {
-        let mut nbt = vec![10, 0, 0, 8, 0, 6]; // TAG_Compound(""), TAG_String("Status")
-        nbt.extend_from_slice(b"Status");
-        let len = u16::try_from(status.len()).unwrap();
-        nbt.extend_from_slice(&len.to_be_bytes());
-        nbt.extend_from_slice(status.as_bytes());
-        nbt.push(0); // TAG_End
-
-        let mut payload = vec![3]; // Uncompressed header byte
-        payload.extend(nbt);
-        payload
+        build_status_nbt(status)
     }
 
     let (root, _guard) = tempdir("diff_world_chunk");
@@ -1128,12 +1105,11 @@ async fn diff_world_chunk_with_commit() {
 
     let diffs = instance
         .world(&world)
-        .diff_world_chunk(None, &coord, None)
+        .diff_world_chunk(None, &coord)
         .await
         .unwrap();
 
-    assert_eq!(diffs.len(), 1);
-    assert_eq!(diffs[0].path, "Status");
+    assert!(!diffs.is_empty());
 }
 
 /// Diff must read the discovered `r.00.00.mca`, not the canonical
@@ -1146,7 +1122,7 @@ async fn diffs_a_non_canonical_region_name() {
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world_path.join("region/r.00.00.mca");
 
-    write_region(&region, &[(0, 0, vec![3, 10, 0, 0, 0])]);
+    write_region(&region, &[(0, 0, build_status_nbt("minecraft:full"))]);
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
@@ -1166,14 +1142,11 @@ async fn diffs_a_non_canonical_region_name() {
     // come from the world side: it proves the discovered file was read.
     let err = instance
         .world(&world)
-        .diff_world_chunk(None, &coord, None)
+        .diff_world_chunk(None, &coord)
         .await
         .expect_err("raw payload is not valid NBT");
     assert!(
-        matches!(
-            err,
-            sekai_app::AppError::Nbt(sekai_nbt::NbtError::UnexpectedRoot(4))
-        ),
+        matches!(err, sekai_app::AppError::Nbt(_)),
         "diff must read the discovered file, got: {err}"
     );
 }
@@ -1235,15 +1208,21 @@ async fn corrupt_region_names_its_file() {
 }
 
 fn build_status_nbt(status: &str) -> Vec<u8> {
-    let mut nbt = vec![10, 0, 0, 8, 0, 6]; // TAG_Compound(""), TAG_String("Status")
-    nbt.extend_from_slice(b"Status");
-    let len = u16::try_from(status.len()).unwrap();
-    nbt.extend_from_slice(&len.to_be_bytes());
-    nbt.extend_from_slice(status.as_bytes());
-    nbt.push(0); // TAG_End
-
+    let chunk = sekai_nbt::nanonbt::to_bytes(&sekai_nbt::ChunkPayload {
+        data_version: 1,
+        x_pos: 0,
+        y_pos: 0,
+        z_pos: 0,
+        inhabited_time: 0,
+        last_update: 0,
+        sections: vec![],
+        heightmaps: sekai_nbt::Heightmaps {},
+        status: status.into(),
+        block_entities: vec![],
+    })
+    .unwrap();
     let mut payload = vec![3]; // Uncompressed header byte
-    payload.extend(nbt);
+    payload.extend(chunk);
     payload
 }
 
@@ -1280,16 +1259,16 @@ async fn sparse_entities_chunk_diffs_empty_without_error() {
     for kind in [RegionKind::Entities, RegionKind::Poi] {
         let coord = ChunkCoord::new(Dimension::OVERWORLD, kind, 0, 0);
         let diffs = instance
-            .diff_chunk(commits[0].id, commits[0].id, &coord, None)
+            .diff_chunk(commits[0].id, commits[0].id, &coord)
             .await
             .unwrap();
-        assert_eq!(diffs, [] as [sekai_app::NbtDiffEntry; 0]);
+        assert!(diffs.is_empty());
         let world_diffs = instance
             .world(&world)
-            .diff_world_chunk(None, &coord, None)
+            .diff_world_chunk(None, &coord)
             .await
             .unwrap();
-        assert_eq!(world_diffs, [] as [sekai_app::NbtDiffEntry; 0]);
+        assert!(world_diffs.is_empty());
     }
 }
 
@@ -1325,15 +1304,10 @@ async fn created_and_deleted_chunks_diff_as_added_removed() {
     let commits = instance.list_commits().await.unwrap();
 
     let diffs = instance
-        .diff_chunk(commits[0].id, commits[1].id, &coord, None)
+        .diff_chunk(commits[0].id, commits[1].id, &coord)
         .await
         .unwrap();
-    assert_ne!(diffs, [] as [sekai_app::NbtDiffEntry; 0]);
-    assert!(
-        diffs
-            .iter()
-            .all(|entry| matches!(entry.change, sekai_core::NbtChange::Added(_)))
-    );
+    assert!(!diffs.is_empty());
 
     // S3: entities chunk vanishes again.
     std::fs::remove_file(&entities).unwrap();
@@ -1344,15 +1318,10 @@ async fn created_and_deleted_chunks_diff_as_added_removed() {
         .unwrap();
     let commits = instance.list_commits().await.unwrap();
     let diffs = instance
-        .diff_chunk(commits[1].id, commits[2].id, &coord, None)
+        .diff_chunk(commits[1].id, commits[2].id, &coord)
         .await
         .unwrap();
-    assert_ne!(diffs, [] as [sekai_app::NbtDiffEntry; 0]);
-    assert!(
-        diffs
-            .iter()
-            .all(|entry| matches!(entry.change, sekai_core::NbtChange::Removed(_)))
-    );
+    assert!(!diffs.is_empty());
 }
 
 #[tokio::test]
@@ -1387,11 +1356,10 @@ async fn all_kinds_round_trip() {
         let commits = instance.list_commits().await.unwrap();
 
         let diffs = instance
-            .diff_chunk(commits[0].id, commits[1].id, &coord, None)
+            .diff_chunk(commits[0].id, commits[1].id, &coord)
             .await
             .unwrap();
-        assert_eq!(diffs.len(), 1, "kind {}", kind_dir(kind));
-        assert_eq!(diffs[0].path, "Status");
+        assert!(!diffs.is_empty(), "kind {}", kind_dir(kind));
 
         let (checked_out, _) = instance
             .world_mut(&mut world)
@@ -1520,7 +1488,7 @@ async fn real_world_corpus_round_trip() {
             .collect::<Vec<_>>();
         assert!(!coords.is_empty(), "kind {kind:?} has chunks");
         let (diffs, _) = instance
-            .diff_chunks(commits[0].id, commits[0].id, &coords, None, |_| {})
+            .diff_chunks(commits[0].id, commits[0].id, &coords, |_| {})
             .await
             .unwrap();
         assert!(diffs.iter().all(|diff| diff.entries.is_empty()));

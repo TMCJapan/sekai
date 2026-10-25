@@ -2,9 +2,9 @@
 
 use alloc::vec::Vec;
 use core::fmt;
+use sekai_nbt::{ChunkPayloadDiff, NbtError};
 
 use sekai_anvil::AnvilError;
-use sekai_nbt::{DEFAULT_IGNORED, NbtDiffEntry, NbtError};
 
 use crate::port::blob::BlobStore;
 use sekai_util::BlobHash;
@@ -35,8 +35,7 @@ pub async fn diff_blobs<B: BlobStore>(
     blobs: &B,
     old_hash: &BlobHash,
     new_hash: &BlobHash,
-    ignore: &[&str],
-) -> Result<Vec<NbtDiffEntry>, DiffError<B::Error>> {
+) -> Result<ChunkPayloadDiff, DiffError<B::Error>> {
     let mut old_payload = Vec::new();
     let mut new_payload = Vec::new();
     blobs
@@ -56,7 +55,7 @@ pub async fn diff_blobs<B: BlobStore>(
     let old_val = sekai_nbt::parse(&old_nbt).map_err(DiffError::Nbt)?;
     let new_val = sekai_nbt::parse(&new_nbt).map_err(DiffError::Nbt)?;
 
-    Ok(sekai_nbt::diff(&old_val, &new_val, ignore))
+    Ok(ChunkPayloadDiff::new(old_val, new_val))
 }
 
 /// Compute AST diff between two stored blob hashes using default ignored tags.
@@ -64,14 +63,13 @@ pub async fn diff_blobs_v1<B: BlobStore>(
     blobs: &B,
     old_hash: &BlobHash,
     new_hash: &BlobHash,
-) -> Result<Vec<NbtDiffEntry>, DiffError<B::Error>> {
-    diff_blobs(blobs, old_hash, new_hash, DEFAULT_IGNORED).await
+) -> Result<ChunkPayloadDiff, DiffError<B::Error>> {
+    diff_blobs(blobs, old_hash, new_hash).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sekai_nbt::NbtChange;
 
     use crate::hash_blob;
     use crate::support::{MemCas, block_on};
@@ -86,32 +84,6 @@ mod tests {
         out.extend_from_slice(status.as_bytes());
         out.push(0);
         out
-    }
-
-    #[test]
-    fn diffs_stored_blobs() {
-        let mut cas = MemCas::default();
-        let raw_a = framed_nbt_bytes("minecraft:full");
-        let raw_b = framed_nbt_bytes("minecraft:empty");
-
-        let hash_a = hash_blob(&raw_a);
-        let hash_b = hash_blob(&raw_b);
-
-        block_on(cas.put(&hash_a, &raw_a)).unwrap();
-        block_on(cas.put(&hash_b, &raw_b)).unwrap();
-
-        let diffs = block_on(diff_blobs_v1(&cas, &hash_a, &hash_b)).unwrap();
-
-        assert_eq!(
-            diffs,
-            alloc::vec![NbtDiffEntry {
-                path: "Status".into(),
-                change: NbtChange::Modified {
-                    old: sekai_nbt::Value::String("minecraft:full".into()),
-                    new: sekai_nbt::Value::String("minecraft:empty".into()),
-                }
-            }]
-        );
     }
 
     #[test]

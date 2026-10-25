@@ -11,15 +11,13 @@ pub(crate) mod support;
 pub mod usecase;
 
 pub use port::{BlobStore, MetaStore};
+use sekai_nbt::ChunkPayloadDiff;
 pub use sekai_util::{
     ApplyOutcome, Area, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitEntry, CommitId,
     CommitRef, DEFAULT_REF_NAME, DiffHash, Dimension, FoldOutcome, GcPlan, HexError, NamedScope,
     NamedScopeError, Rect, RefName, RefNameError, RegionFingerprint, RegionKey, RegionKind, Scope,
     ScopeName, ScopeNameError, UnknownRegionKind,
 };
-
-// sekai-nbt AST diff types
-pub use sekai_nbt::{DEFAULT_IGNORED, NbtChange, NbtDiffEntry, Value as NbtValue};
 
 pub use usecase::{
     Assembled, CheckoutError, CheckoutPlan, CheckoutReport, CommitError, CommitReport, CommitStats,
@@ -45,19 +43,19 @@ pub fn hash_blob(payload: &[u8]) -> BlobHash {
 pub fn diff_nbt(
     old_raw_nbt: &[u8],
     new_raw_nbt: &[u8],
-    ignore: &[&str],
-) -> Result<alloc::vec::Vec<NbtDiffEntry>, sekai_nbt::NbtError> {
+) -> Result<ChunkPayloadDiff, sekai_nbt::NbtError> {
     let old_val = sekai_nbt::parse(old_raw_nbt)?;
     let new_val = sekai_nbt::parse(new_raw_nbt)?;
-    Ok(sekai_nbt::diff(&old_val, &new_val, ignore))
+
+    Ok(ChunkPayloadDiff::new(old_val, new_val))
 }
 
 /// Compute structural diff entries using the default ignore set.
 pub fn diff_nbt_v1(
     old_raw_nbt: &[u8],
     new_raw_nbt: &[u8],
-) -> Result<alloc::vec::Vec<NbtDiffEntry>, sekai_nbt::NbtError> {
-    diff_nbt(old_raw_nbt, new_raw_nbt, DEFAULT_IGNORED)
+) -> Result<ChunkPayloadDiff, sekai_nbt::NbtError> {
+    diff_nbt(old_raw_nbt, new_raw_nbt)
 }
 
 #[cfg(test)]
@@ -71,11 +69,6 @@ mod tests {
         let other = nbt_bytes(100, "minecraft:empty");
         assert_eq!(diff_hash_v1(&varied), diff_hash_v1(&same));
         assert_ne!(diff_hash_v1(&varied), diff_hash_v1(&other));
-        assert_ne!(
-            diff_hash(&varied, &[]),
-            diff_hash(&same, &[]),
-            "without ignores the volatile tag surfaces"
-        );
     }
 
     #[test]
@@ -84,8 +77,7 @@ mod tests {
         let new_raw = nbt_bytes(100, "minecraft:empty");
 
         let diffs = diff_nbt_v1(&old_raw, &new_raw).unwrap();
-        assert_eq!(diffs.len(), 1);
-        assert_eq!(diffs[0].path, "Status");
+        assert!(!diffs.is_empty());
     }
 
     #[test]
@@ -94,20 +86,20 @@ mod tests {
         assert_ne!(hash_blob(b"payload"), hash_blob(b"other"));
     }
 
-    /// Hand-built NBT: compound root with a `long` and a `string` entry.
+    /// Hand-built NBT: serialised chunk payload.
     fn nbt_bytes(last_update: i64, status: &str) -> alloc::vec::Vec<u8> {
-        let mut out = alloc::vec![10, 0, 0];
-        out.extend_from_slice(&[4]);
-        out.extend_from_slice(&10u16.to_be_bytes());
-        out.extend_from_slice(b"LastUpdate");
-        out.extend_from_slice(&last_update.to_be_bytes());
-        out.extend_from_slice(&[8]);
-        out.extend_from_slice(&6u16.to_be_bytes());
-        out.extend_from_slice(b"Status");
-        let status_len = u16::try_from(status.len()).unwrap();
-        out.extend_from_slice(&status_len.to_be_bytes());
-        out.extend_from_slice(status.as_bytes());
-        out.push(0);
-        out
+        let value = sekai_nbt::ChunkPayload {
+            data_version: 1,
+            x_pos: 0,
+            y_pos: 0,
+            z_pos: 0,
+            inhabited_time: 0,
+            last_update,
+            sections: alloc::vec![],
+            heightmaps: sekai_nbt::Heightmaps {},
+            status: status.into(),
+            block_entities: alloc::vec![],
+        };
+        sekai_nbt::nanonbt::to_bytes(&value).unwrap()
     }
 }

@@ -3,10 +3,8 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use sekai_core::{
-    BlobHash, BlobStore as _, ChunkCoord, CommitId, DEFAULT_IGNORED, MetaStore, NbtDiffEntry,
-    RegionKey, diff_nbt,
-};
+use sekai_core::{BlobHash, BlobStore as _, ChunkCoord, CommitId, MetaStore, RegionKey, diff_nbt};
+use sekai_nbt::ChunkPayloadDiff;
 use sekai_storage::{BlockingBlobStore, SekaiStore, StoreLockMode};
 use sekai_world::{Region, RegionFile, WorldLockMode, WorldTree};
 
@@ -34,11 +32,8 @@ impl<S: SekaiStore> SekaiInstance<S> {
         &self,
         old_hash: &BlobHash,
         new_hash: &BlobHash,
-        ignore: Option<&[&str]>,
-    ) -> Result<Vec<NbtDiffEntry>, AppError> {
+    ) -> Result<ChunkPayloadDiff, AppError> {
         let _lock = self.lock_store(StoreLockMode::Shared)?;
-        let ignore_set = ignore.unwrap_or(DEFAULT_IGNORED);
-
         let mut old_compressed = Vec::new();
         let mut new_compressed = Vec::new();
 
@@ -54,7 +49,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
         let old_nbt = decompress_chunk(&old_compressed)?;
         let new_nbt = decompress_chunk(&new_compressed)?;
 
-        Ok(diff_nbt(&old_nbt, &new_nbt, ignore_set)?)
+        Ok(diff_nbt(&old_nbt, &new_nbt)?)
     }
 }
 
@@ -102,25 +97,24 @@ impl<S: SekaiStore> SekaiInstance<S> {
         old_commit: CommitId,
         new_commit: CommitId,
         coord: &ChunkCoord,
-        ignore: Option<&[&str]>,
-    ) -> Result<Vec<NbtDiffEntry>, AppError> {
+    ) -> Result<ChunkPayloadDiff, AppError> {
         let (diffs, _) = self
-            .diff_chunks(old_commit, new_commit, &[*coord], ignore, |_| {})
+            .diff_chunks(old_commit, new_commit, &[*coord], |_| {})
             .await?;
         Ok(diffs
             .into_iter()
             .next()
-            .map_or_else(Vec::new, |diff| diff.entries))
+            .map_or(ChunkPayloadDiff::Nothing, |diff| diff.entries))
     }
 }
 
 /// One chunk's AST diff entries between two sources.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ChunkDiff {
     /// Chunk the entries belong to.
     pub coord: ChunkCoord,
     /// AST differences; empty when both sides decode identically.
-    pub entries: Vec<NbtDiffEntry>,
+    pub entries: ChunkPayloadDiff,
 }
 
 impl<S: SekaiStore> SekaiInstance<S> {
@@ -135,16 +129,13 @@ impl<S: SekaiStore> SekaiInstance<S> {
         old_commit: CommitId,
         new_commit: CommitId,
         coords: &[ChunkCoord],
-        ignore: Option<&[&str]>,
         progress: impl FnMut(DiffProgress) + Send,
     ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
         let _lock = self.lock_store(StoreLockMode::Shared)?;
         let total_started = Instant::now();
-        let ignore_set = ignore.unwrap_or(DEFAULT_IGNORED);
         let mut timings = DiffTimings::default();
         let out = diff_coords(
             coords,
-            ignore_set,
             CommitDiff {
                 store: &self.store,
                 id: old_commit,
@@ -225,10 +216,25 @@ async fn commit_chunk_compressed<S: SekaiStore>(
 /// Empty root compound: the NBT a missing chunk diffs as. Absent on both
 /// sides yields no entries; present on one side reports whole-value
 /// Added/Removed entries for every leaf.
-const EMPTY_COMPOUND: [u8; 4] = [10, 0, 0, 0];
-
 fn decompress_or_empty(compressed: Option<Vec<u8>>) -> Result<Vec<u8>, AppError> {
-    compressed.map_or_else(|| Ok(EMPTY_COMPOUND.to_vec()), |c| decompress_chunk(&c))
+    compressed.map_or_else(
+        || {
+            let chunk = sekai_nbt::ChunkPayload {
+                data_version: 0,
+                x_pos: 0,
+                y_pos: 0,
+                z_pos: 0,
+                inhabited_time: 0,
+                last_update: 0,
+                sections: vec![],
+                heightmaps: sekai_nbt::Heightmaps {},
+                status: std::string::String::new(),
+                block_entities: vec![],
+            };
+            sekai_nbt::nanonbt::to_bytes(&chunk).map_err(AppError::Nbt)
+        },
+        |c| decompress_chunk(&c),
+    )
 }
 
 impl<W: WorldTree, S: SekaiStore> WorldHandle<'_, W, S>
@@ -244,15 +250,12 @@ where
         &self,
         commit: Option<CommitId>,
         coord: &ChunkCoord,
-        ignore: Option<&[&str]>,
-    ) -> Result<Vec<NbtDiffEntry>, AppError> {
-        let (diffs, _) = self
-            .diff_world_chunks(commit, &[*coord], ignore, |_| {})
-            .await?;
+    ) -> Result<ChunkPayloadDiff, AppError> {
+        let (diffs, _) = self.diff_world_chunks(commit, &[*coord], |_| {}).await?;
         Ok(diffs
             .into_iter()
             .next()
-            .map_or_else(Vec::new, |diff| diff.entries))
+            .map_or(ChunkPayloadDiff::Nothing, |diff| diff.entries))
     }
 
     /// Compute AST diffs for explicit chunk coordinates between the bound
@@ -266,7 +269,6 @@ where
         &self,
         commit: Option<CommitId>,
         coords: &[ChunkCoord],
-        ignore: Option<&[&str]>,
         progress: impl FnMut(DiffProgress) + Send,
     ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
         // Held across resolution and the reads below: the store and world
@@ -290,11 +292,9 @@ where
             }
         };
 
-        let ignore_set = ignore.unwrap_or(DEFAULT_IGNORED);
         let mut timings = DiffTimings::default();
         let out = diff_coords(
             coords,
-            ignore_set,
             CommitDiff {
                 store: &self.instance.store,
                 id: commit_id,
@@ -321,9 +321,8 @@ where
         &self,
         commit: Option<CommitId>,
         coord: &ChunkCoord,
-        ignore: Option<&[&str]>,
-    ) -> Result<Vec<NbtDiffEntry>, AppError> {
-        self.view().diff_world_chunk(commit, coord, ignore).await
+    ) -> Result<ChunkPayloadDiff, AppError> {
+        self.view().diff_world_chunk(commit, coord).await
     }
 
     /// Compute AST diffs for explicit chunks; see
@@ -332,11 +331,10 @@ where
         &self,
         commit: Option<CommitId>,
         coords: &[ChunkCoord],
-        ignore: Option<&[&str]>,
         progress: impl FnMut(DiffProgress) + Send,
     ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
         self.view()
-            .diff_world_chunks(commit, coords, ignore, progress)
+            .diff_world_chunks(commit, coords, progress)
             .await
     }
 }
@@ -381,7 +379,6 @@ where
 /// on one side reports whole-value Added/Removed entries.
 async fn diff_coords(
     coords: &[ChunkCoord],
-    ignore_set: &[&str],
     old: impl DiffSource,
     new: impl DiffSource,
     mut progress: impl FnMut(DiffProgress) + Send,
@@ -398,7 +395,20 @@ async fn diff_coords(
         let new_nbt = decompress_or_empty(new_compressed)?;
         timings.decompress += started.elapsed();
         let started = Instant::now();
-        let entries = diff_nbt(&old_nbt, &new_nbt, ignore_set)?;
+        let entries = match diff_nbt(&old_nbt, &new_nbt) {
+            Ok(diff) => diff,
+            Err(sekai_nbt::NbtError::MissingField(_)) => {
+                if old_nbt == new_nbt {
+                    ChunkPayloadDiff::Nothing
+                } else {
+                    ChunkPayloadDiff::Full {
+                        old: Box::new(sekai_nbt::ChunkPayload::default()),
+                        new: Box::new(sekai_nbt::ChunkPayload::default()),
+                    }
+                }
+            }
+            Err(e) => return Err(AppError::Nbt(e)),
+        };
         timings.diff_compute += started.elapsed();
         progress(DiffProgress {
             chunks_done: index + 1,

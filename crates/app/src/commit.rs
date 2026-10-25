@@ -570,19 +570,11 @@ where
     for group in groups {
         let cas = cas.clone();
         let with_diff = options.with_diff;
-        let ignore_tags = options.ignore_tags.clone();
         let scope = scope.clone();
         let locks = Arc::clone(locks);
         set.spawn_blocking(move || {
             let _locks = locks;
-            ingest_group(
-                group,
-                cas,
-                with_diff,
-                ignore_tags.as_deref(),
-                &scope,
-                dry_run,
-            )
+            ingest_group(group, cas, with_diff, &scope, dry_run)
         });
     }
     while let Some(outcome) = set.join_next().await {
@@ -636,7 +628,6 @@ fn ingest_group<R: RegionFile, C: BlockingBlobStore>(
     group: Vec<Changed<R>>,
     mut cas: C,
     with_diff: bool,
-    ignore_tags: Option<&[String]>,
     scope: &Scope,
     dry_run: bool,
 ) -> Result<(Vec<FileOutcome>, Duration), AppError>
@@ -645,15 +636,7 @@ where
 {
     let mut outcomes = Vec::with_capacity(group.len());
     for (region, observed) in group {
-        let outcome = ingest_file(
-            &region,
-            observed,
-            &mut cas,
-            with_diff,
-            ignore_tags,
-            scope,
-            dry_run,
-        )?;
+        let outcome = ingest_file(&region, observed, &mut cas, with_diff, scope, dry_run)?;
         outcomes.push(outcome);
     }
     if dry_run {
@@ -685,7 +668,6 @@ struct ChunkIngestCtx<'a, C> {
     scratch: &'a mut Vec<u8>,
     with_diff: bool,
     dry_run: bool,
-    ignore: &'a [&'a str],
     entries: &'a mut Vec<CommitEntry>,
     present: &'a mut HashSet<ChunkCoord>,
     new_blobs: &'a mut usize,
@@ -703,7 +685,6 @@ fn ingest_file<R: RegionFile, C: BlockingBlobStore>(
     observed: RegionFingerprint,
     cas: &mut C,
     with_diff: bool,
-    ignore_tags: Option<&[String]>,
     scope: &Scope,
     dry_run: bool,
 ) -> Result<FileOutcome, AppError>
@@ -714,12 +695,6 @@ where
     let opened = Instant::now();
     let image = region.read(key)?;
     let open_elapsed = opened.elapsed();
-
-    let mut ignore_vec = Vec::new();
-    let ignore: &[&str] = ignore_tags.map_or(sekai_nbt::DEFAULT_IGNORED, |tags| {
-        ignore_vec = tags.iter().map(String::as_str).collect();
-        &ignore_vec
-    });
 
     let mut scratch = Vec::new();
     let mut entries = Vec::new();
@@ -741,8 +716,6 @@ where
             scratch: &mut scratch,
             with_diff,
             dry_run,
-            ignore,
-
             entries: &mut entries,
             present: &mut present,
             new_blobs: &mut new_blobs,
@@ -800,7 +773,7 @@ fn ingest_timed<C: BlockingBlobStore>(
     let diff = ctx.with_diff.then(|| {
         sekai_anvil::decompress_into(chunk.payload, ctx.scratch)
             .ok()
-            .and_then(|_| sekai_core::diff_hash(ctx.scratch, ctx.ignore).ok())
+            .and_then(|_| sekai_core::diff_hash(ctx.scratch).ok())
     });
     let hash_elapsed = hash_started.elapsed();
     let cas_started = Instant::now();

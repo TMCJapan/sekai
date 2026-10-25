@@ -30,7 +30,7 @@ fn benches(c: &mut Criterion) {
             .block_on(instance.commit_chunk_coords(commits[0].id))
             .expect("coords work");
         b.iter(|| {
-            rt.block_on(instance.diff_chunks(commits[0].id, commits[0].id, &coords, None, |_| {}))
+            rt.block_on(instance.diff_chunks(commits[0].id, commits[0].id, &coords, |_| {}))
                 .expect("diff works");
         });
     });
@@ -59,7 +59,7 @@ fn benches(c: &mut Criterion) {
             .block_on(instance.commit_chunk_coords(commits[0].id))
             .expect("coords work");
         b.iter(|| {
-            rt.block_on(instance.diff_chunks(commits[0].id, commits[0].id, &coords, None, |_| {}))
+            rt.block_on(instance.diff_chunks(commits[0].id, commits[0].id, &coords, |_| {}))
                 .expect("diff works");
         });
     });
