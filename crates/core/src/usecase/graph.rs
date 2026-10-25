@@ -134,7 +134,6 @@ async fn lookup_record<M: MetaStore>(
         .ok_or(CommitError::UnknownCommit { id: commit })
 }
 
-
 /// Per-commit change statistics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommitStats {

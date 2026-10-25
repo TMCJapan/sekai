@@ -3,8 +3,8 @@
 //! The flows target `sekai-core` traits; backend-specific setup stays in each runner.
 
 use sekai_core::{
-    BlobHash, BlobStore, ChunkCoord, CommitEntry, CommitId, Dimension, MetaStore,
-    Observation, RefName, RegionFingerprint, RegionKey, RegionKind, Scope,
+    BlobHash, BlobStore, ChunkCoord, CommitEntry, CommitId, Dimension, MetaStore, Observation,
+    RefName, RegionFingerprint, RegionKey, RegionKind, Scope,
     usecase::{
         checkout::plan_checkout,
         commit::{Ingested, assemble, plan_commit, record_commit, stage_present},

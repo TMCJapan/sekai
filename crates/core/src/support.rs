@@ -8,8 +8,8 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use crate::port::{BlobStore, MetaStore};
 use sekai_util::{
-    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitId, CommitRef,
-    DiffHash, FoldOutcome, RefName, RegionFingerprint, RegionKey, RegionStateEntry,
+    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitId, CommitRef, DiffHash,
+    FoldOutcome, RefName, RegionFingerprint, RegionKey, RegionStateEntry,
 };
 
 /// Fake backend failure.

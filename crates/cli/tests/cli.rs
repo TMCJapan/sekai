@@ -632,7 +632,6 @@ fn parses_timing_and_json_flags() {
         "unknown clone flavor is refused"
     );
 
-
     let cli = Cli::try_parse_from(["sekai", "ref", "create", "main"]).expect("ref create parses");
     assert!(matches!(
         &cli.command,
@@ -811,15 +810,8 @@ fn parses_prune_command() {
     assert_eq!(cli.command.name(), "prune");
     assert!(!cli.command.output_json());
 
-    let cli = Cli::try_parse_from([
-        "sekai",
-        "prune",
-        "--before",
-        "main",
-        "--dry-run",
-        "--json",
-    ])
-    .expect("prune --before --dry-run parses");
+    let cli = Cli::try_parse_from(["sekai", "prune", "--before", "main", "--dry-run", "--json"])
+        .expect("prune --before --dry-run parses");
     assert!(matches!(
         &cli.command,
         Command::Prune {

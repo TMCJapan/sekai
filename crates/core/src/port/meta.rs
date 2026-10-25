@@ -11,8 +11,7 @@ use alloc::vec::Vec;
 use core::future::Future;
 use sekai_util::{
     ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitEntry, CommitId,
-    CommitRef, DiffHash, FoldOutcome, RefName, RegionFingerprint, RegionKey,
-    RegionStateEntry,
+    CommitRef, DiffHash, FoldOutcome, RefName, RegionFingerprint, RegionKey, RegionStateEntry,
 };
 
 /// Commit metadata and per-chunk history storage.
