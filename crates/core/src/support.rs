@@ -101,6 +101,8 @@ fn effective_at(
         if row.commit != commit && !ancestors.contains(&row.commit) {
             continue;
         }
+        // A row whose commit has no local sequence is corruption:
+        // retirement re-stamps or drops rows before forgetting a seq.
         let Some(seq) = seqs.get(&row.commit).copied() else {
             continue;
         };
@@ -210,8 +212,9 @@ impl MetaStore for MemMeta {
             }
             unique.insert(*parent);
         }
-        let id = crate::commit::commit_hash(parents, created_at_ms, &[], &[]);
-        self.insert_commit(id, created_at_ms, unique.into_iter().collect());
+        let canonical: Vec<CommitId> = unique.into_iter().collect();
+        let id = crate::commit::commit_hash(&canonical, created_at_ms, &[], &[]);
+        self.insert_commit(id, created_at_ms, canonical);
         core::future::ready(Ok(id))
     }
 
@@ -280,6 +283,10 @@ impl MetaStore for MemMeta {
     }
 
     fn latest_commit(&self) -> impl Future<Output = Result<Option<Commit>, MemError>> + Send {
+        debug_assert!(
+            self.commits.iter().all(|commit| self.seqs.contains_key(&commit.id)),
+            "every recorded commit has a local sequence"
+        );
         let latest = self
             .commits
             .iter()
@@ -400,8 +407,9 @@ impl MetaStore for MemMeta {
             }
             unique.insert(*parent);
         }
-        let id = crate::commit::commit_hash(parents, created_at_ms, entries, removed);
-        if self.insert_commit(id, created_at_ms, unique.into_iter().collect()) {
+        let canonical: Vec<CommitId> = unique.into_iter().collect();
+        let id = crate::commit::commit_hash(&canonical, created_at_ms, entries, removed);
+        if self.insert_commit(id, created_at_ms, canonical) {
             for entry in entries {
                 self.rows.push(ChunkHistoryEntry::new(
                     entry.coord,
