@@ -149,12 +149,6 @@ pub enum StorageError {
         /// Requested commit ID.
         id: CommitId,
     },
-    /// A commit may not continue itself.
-    #[error("commit {id} cannot be its own parent")]
-    SelfParent {
-        /// Commit that identified itself.
-        id: CommitId,
-    },
     /// Database schema version is not supported.
     #[error(
         "unsupported schema version: {found}, this binary supports {supported} (recreate the store; pre-release stores are not migrated)"

@@ -1,6 +1,7 @@
 -- Content-addressed commits. `id` is the public commit hash; `seq` is a
 -- local ordering key used by MVCC queries. The sequence is never part of
--- the commit identity and may differ across replicas.
+-- the commit identity and may differ across replicas. Reads order by
+-- it, so it must increase monotonically with record order inside a store.
 CREATE TABLE commits(
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     id BLOB NOT NULL UNIQUE,

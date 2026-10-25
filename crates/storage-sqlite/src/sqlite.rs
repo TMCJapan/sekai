@@ -530,6 +530,13 @@ SELECT dim, kind, cx, cz, blob, diff, commit_id FROM (
 /// Rows of a retired commit that the history of its successor already
 /// supersedes. `?1` is the retired commit, `?2` the successor, `?3` the
 /// retired commit's local sequence.
+///
+/// Soundness depends on the retired commit preceding every superseding
+/// row in local *record* order: a commit must be recorded before any of
+/// its successors' rows are. Prune always retires an older commit into a
+/// newer (larger-sequence) descendant, so the invariant holds for a
+/// single store; a store whose sequence order diverges from graph order
+/// could drop surviving rows here.
 const RETIRE_SUPERSEDED_SQL: &str = concat!(
     ancestor_cte!("?2"),
     "
@@ -573,15 +580,10 @@ async fn insert_commit(
     created_at_ms: u64,
     parents: &[CommitId],
 ) -> Result<(i64, bool), StorageError> {
-    for parent in parents {
-        if *parent == id {
-            return Err(StorageError::SelfParent { id: *parent });
-        }
-    }
     // One query for the whole list, so a merge does not cost a round
     // trip per parent.
-    let existing: Vec<Vec<u8>> = if parents.is_empty() {
-        Vec::new()
+    let existing: BTreeSet<CommitId> = if parents.is_empty() {
+        BTreeSet::new()
     } else {
         let mut qb = sqlx::QueryBuilder::new("SELECT id FROM commits WHERE id IN (");
         let mut separated = qb.separated(", ");
@@ -593,9 +595,12 @@ async fn insert_commit(
             .fetch_all(&mut **tx)
             .await
             .map_err(db_err)?
+            .into_iter()
+            .map(commit_id_from_blob)
+            .collect::<Result<_, _>>()?
     };
     for parent in parents {
-        if !existing.contains(&commit_param(*parent)) {
+        if !existing.contains(parent) {
             return Err(StorageError::UnknownCommit { id: *parent });
         }
     }
@@ -658,9 +663,10 @@ impl sekai_core::MetaStore for SqliteMeta {
         blob: Option<&BlobHash>,
         diff: Option<&DiffHash>,
     ) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await.map_err(db_err)?;
         let seq: i64 = sqlx::query_scalar("SELECT seq FROM commits WHERE id = ?")
             .bind(commit_param(commit))
-            .fetch_optional(&self.pool)
+            .fetch_optional(&mut *tx)
             .await
             .map_err(db_err)?
             .ok_or(StorageError::UnknownCommit { id: commit })?;
@@ -673,9 +679,10 @@ impl sekai_core::MetaStore for SqliteMeta {
             .bind(i64::from(coord.z))
             .bind(blob.map(|h| &h.0[..]))
             .bind(diff.map(|h| &h.0[..]))
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(db_err)?;
+        tx.commit().await.map_err(db_err)?;
         Ok(())
     }
 
