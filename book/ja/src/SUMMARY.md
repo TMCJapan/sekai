@@ -3,6 +3,7 @@
 - [はじめに](introduction.md)
 - [インストール](installation.md)
 - [クイックスタート](quickstart.md)
+- [ストアの場所](store.md)
 - [サーバー連携](server-coordination.md)
 - [ワールドレイアウト](world-layouts.md)
 - [基本概念](concepts.md)

@@ -25,37 +25,37 @@ cargo install --git https://github.com/tmcjapan/sekai
 ```sh
 # 現在のワールド状態を記録（事前にサーバーの書き込みを停止してください:
 # `save-off`、`save-all` を実行し、完了後に `save-on` で再開）
-sekai --store ./sekai-store commit ./world
+sekai commit ./world
 
 # ワールドに変更を加えずに、コミットで何が記録されるかをプレビュー
-sekai --store ./sekai-store status ./world
+sekai status ./world
 
 # コミットの一覧を表示
-sekai --store ./sekai-store log
+sekai log
 
 # コミットに後から参照できるタグ名を付与（`log` で完全なハッシュを確認）
-sekai --store ./sekai-store tag create stable 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a
+sekai tag create stable 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a
 
 # タグ付けしたコミットからワールドを再構築（リージョンファイルを上書き）
-sekai --store ./sekai-store checkout ./world @stable
+sekai checkout ./world @stable
 
 # 2 つのコミット間でチャンクの NBT を比較（ハッシュは `log` で確認）
-sekai --store ./sekai-store diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a --in overworld:0,0
+sekai diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a --in overworld:0,0
 
 # ブランチ: 現在位置の名前付けを行い、そのブランチへコミットする
-sekai --store ./sekai-store ref create feature
-sekai --store ./sekai-store ref activate feature
+sekai ref create feature
+sekai ref activate feature
 
 # 参照されていない Blob をプレビュー後、ガベージコレクション (GC) で回収
-sekai --store ./sekai-store gc --dry-run
-sekai --store ./sekai-store gc
+sekai gc --dry-run
+sekai gc
 
 # 古いコミットを削除（最新 10 件を残す）し、不要になった Blob を回収
-sekai --store ./sekai-store prune --keep-last 10
-sekai --store ./sekai-store gc
+sekai prune --keep-last 10
+sekai gc
 
 # タグ付けしたコミットを新しいディレクトリに復元（稼働中のワールドには影響しません）
-sekai --store ./sekai-store clone @stable ./restored
+sekai clone @stable ./restored
 ```
 
 すべてのコマンドは `--json` オプションに対応しており、単一の機械可読な JSON レポートを出力できます。また、`log`、`tag`、`ref` を除くすべてのコマンドは `--timing` オプションでフェーズごとの処理時間内訳を表示できます（両方を組み合わせることで、所要時間付きの JSON が得られます）。さらに、`commit`、`status`、`checkout`、`diff`、`clone`、`gc`、`prune` では `--progress` を指定すると標準エラー出力に進捗バーを表示できます（`--json` との併用は不可）。

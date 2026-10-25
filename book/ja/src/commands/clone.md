@@ -1,7 +1,7 @@
 # クローン
 
 ```sh
-sekai --store ./sekai-store clone 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b ./restored
+sekai clone 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b ./restored
 ```
 
 指定したコミットを新しいディレクトリに再構築（出力）します。

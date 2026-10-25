@@ -1,10 +1,10 @@
 # Ref
 
 ```sh
-sekai --store ./sekai-store ref list
-sekai --store ./sekai-store ref create feature
-sekai --store ./sekai-store ref activate feature
-sekai --store ./sekai-store ref delete feature
+sekai ref list
+sekai ref create feature
+sekai ref activate feature
+sekai ref delete feature
 ```
 
 ref はコミットを指す名前付きの可変ポインタ（sekai のブランチ）で

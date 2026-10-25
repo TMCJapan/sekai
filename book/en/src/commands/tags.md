@@ -1,10 +1,10 @@
 # Tags
 
 ```sh
-sekai --store ./sekai-store tag create stable 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b
-sekai --store ./sekai-store tag create stable @prev --force
-sekai --store ./sekai-store tag delete stable
-sekai --store ./sekai-store tag list
+sekai tag create stable 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b
+sekai tag create stable @prev --force
+sekai tag delete stable
+sekai tag list
 ```
 
 Tags give commits human-readable aliases so checkout targets stay
