@@ -173,12 +173,9 @@ async fn resolve_commit_pair(
     ) -> anyhow::Result<CommitId> {
         match instance.active_ref().await? {
             None => Err(AppError::NoCommits.into()),
-            Some(active) => match active.commit {
-                Some(id) => Ok(id),
-                // AppError::NoCommits documents "the store is empty or the
-                // active ref is unborn"; reuse it instead of a raw string.
-                None => Err(AppError::NoCommits.into()),
-            },
+            Some(active) => active
+                .commit
+                .map_or_else(|| Err(AppError::NoCommits.into()), Ok),
         }
     }
     /// Commit parents are stored sorted by ID in both backends, so this
