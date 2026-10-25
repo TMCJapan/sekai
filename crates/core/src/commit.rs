@@ -68,7 +68,10 @@ pub fn commit_hash(
 }
 
 fn count_bytes(count: usize) -> [u8; 8] {
-    debug_assert!(u64::try_from(count).is_ok(), "commit list length fits in u64");
+    debug_assert!(
+        u64::try_from(count).is_ok(),
+        "commit list length fits in u64"
+    );
     u64::try_from(count).unwrap_or(u64::MAX).to_be_bytes()
 }
 

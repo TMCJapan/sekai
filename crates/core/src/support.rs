@@ -284,7 +284,9 @@ impl MetaStore for MemMeta {
 
     fn latest_commit(&self) -> impl Future<Output = Result<Option<Commit>, MemError>> + Send {
         debug_assert!(
-            self.commits.iter().all(|commit| self.seqs.contains_key(&commit.id)),
+            self.commits
+                .iter()
+                .all(|commit| self.seqs.contains_key(&commit.id)),
             "every recorded commit has a local sequence"
         );
         let latest = self

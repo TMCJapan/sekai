@@ -371,11 +371,13 @@ impl std::str::FromStr for CommitRef {
             // Canonicalise so the stored spelling can never diverge from
             // the validation that accepted it.
             Ok(Self(id.to_string()))
-        } else {
-            RefName::parse(s).map_err(|err| {
-                format!("invalid reference {s:?}: {err}, expected <64-char hash>, @<tag>, or <ref>")
-            })?;
+        } else if RefName::parse(s).is_ok() {
             Ok(Self(s.to_owned()))
+        } else {
+            let err = s.parse::<CommitId>().unwrap_err();
+            Err(format!(
+                "invalid reference {s:?}: {err}, expected <64-char commit hash>, @<tag>, or <ref>"
+            ))
         }
     }
 }

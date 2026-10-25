@@ -146,14 +146,19 @@ fn ref_payload(record: &CommitRef) -> RefJson {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::str::FromStr;
     use sekai_app::{CommitId, RefName};
+    use std::str::FromStr;
 
     #[test]
     fn renders_ref_payloads() {
         let record = CommitRef::new(
             RefName::parse("main").unwrap(),
-            Some(CommitId::from_str("0303030303030303030303030303030303030303030303030303030303030303").unwrap()),
+            Some(
+                CommitId::from_str(
+                    "0303030303030303030303030303030303030303030303030303030303030303",
+                )
+                .unwrap(),
+            ),
             true,
             1_700_000_000_000,
         );

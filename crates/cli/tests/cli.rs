@@ -1,4 +1,8 @@
 use clap::Parser as _;
+
+const H1: &str = "0101010101010101010101010101010101010101010101010101010101010101";
+const H2: &str = "0202020202020202020202020202020202020202020202020202020202020202";
+const H3: &str = "0303030303030303030303030303030303030303030303030303030303030303";
 use sekai_app::Dimension;
 use sekai_cli::{
     cli::{
@@ -19,9 +23,9 @@ fn parses_subcommands() {
     assert!(matches!(cli.command, Command::Commit { .. }));
     assert_eq!(cli.store, "sekai-store");
 
-    let cli = Cli::try_parse_from(["sekai", "--store", "s", "checkout", "w", "3"])
+    let cli = Cli::try_parse_from(["sekai", "--store", "s", "checkout", "w", H3])
         .expect("checkout parses");
-    assert!(matches!(&cli.command, Command::Checkout { commit, .. } if commit.as_str() == "3"));
+    assert!(matches!(&cli.command, Command::Checkout { commit, .. } if commit.as_str() == H3));
 
     let cli =
         Cli::try_parse_from(["sekai", "checkout", "w", "main"]).expect("checkout bare ref parses");
@@ -91,13 +95,13 @@ fn parses_progress_flag() {
     assert!(Cli::try_parse_from(["sekai", "commit", "world", "--json", "--progress"]).is_err());
 
     for args in [
-        vec!["sekai", "checkout", "w", "3", "--progress"],
+        vec!["sekai", "checkout", "w", H3, "--progress"],
         vec!["sekai", "gc", "--progress"],
         vec!["sekai", "diff", "--in", "overworld:0,0", "--progress"],
     ] {
         Cli::try_parse_from(args).expect("progress parses");
     }
-    assert!(Cli::try_parse_from(["sekai", "checkout", "w", "3", "--progress", "--json"]).is_err());
+    assert!(Cli::try_parse_from(["sekai", "checkout", "w", H3, "--progress", "--json"]).is_err());
     assert!(Cli::try_parse_from(["sekai", "gc", "--progress", "--json"]).is_err());
     assert!(
         Cli::try_parse_from([
@@ -117,11 +121,11 @@ fn legacy_command_names_still_parse() {
     let cli = Cli::try_parse_from(["sekai", "backup", "world"]).expect("backup alias parses");
     assert!(matches!(cli.command, Command::Commit { .. }));
 
-    let cli = Cli::try_parse_from(["sekai", "rollback", "w", "3"]).expect("rollback alias parses");
-    assert!(matches!(&cli.command, Command::Checkout { commit, .. } if commit.as_str() == "3"));
+    let cli = Cli::try_parse_from(["sekai", "rollback", "w", H3]).expect("rollback alias parses");
+    assert!(matches!(&cli.command, Command::Checkout { commit, .. } if commit.as_str() == H3));
 
-    let cli = Cli::try_parse_from(["sekai", "export", "3", "out"]).expect("export alias parses");
-    assert!(matches!(&cli.command, Command::Clone { commit, .. } if commit.as_str() == "3"));
+    let cli = Cli::try_parse_from(["sekai", "export", H3, "out"]).expect("export alias parses");
+    assert!(matches!(&cli.command, Command::Clone { commit, .. } if commit.as_str() == H3));
 
     let cli = Cli::try_parse_from(["sekai", "list", "--json"]).expect("list alias parses");
     assert!(matches!(cli.command, Command::Log { json: true, .. }));
@@ -133,7 +137,7 @@ fn legacy_keep_post_flags_still_parse() {
         "sekai",
         "checkout",
         "w",
-        "3",
+        H3,
         "--keep-post-snapshot-files",
         "--keep-post-snapshot-chunks",
     ])
@@ -150,7 +154,7 @@ fn legacy_keep_post_flags_still_parse() {
 
 #[test]
 fn parses_diff_command() {
-    let cli = Cli::try_parse_from(["sekai", "diff", "1", "2", "--in", "overworld:10,-5"])
+    let cli = Cli::try_parse_from(["sekai", "diff", H1, H2, "--in", "overworld:10,-5"])
         .expect("diff parses");
     assert!(matches!(
         cli.command,
@@ -169,13 +173,13 @@ fn parses_diff_command() {
     if let Command::Diff(args) = &cli.command {
         // Default kinds cover all three families.
         assert_eq!(args.selection.explicit_chunks().len(), 3);
-        assert_eq!(ref_str(args.old_commit.as_ref()), Some("1"));
-        assert_eq!(ref_str(args.new_commit.as_ref()), Some("2"));
+        assert_eq!(ref_str(args.old_commit.as_ref()), Some(H1));
+        assert_eq!(ref_str(args.new_commit.as_ref()), Some(H2));
     } else {
         panic!("expected diff");
     }
 
-    let cli = Cli::try_parse_from(["sekai", "diff", "@stable", "2"]).expect("diff tag refs parse");
+    let cli = Cli::try_parse_from(["sekai", "diff", "@stable", H2]).expect("diff tag refs parse");
     if let Command::Diff(args) = &cli.command {
         assert_eq!(ref_str(args.old_commit.as_ref()), Some("@stable"));
     } else {
@@ -218,8 +222,8 @@ fn parses_diff_command() {
     let cli = Cli::try_parse_from([
         "sekai",
         "diff",
-        "1",
-        "2",
+        H1,
+        H2,
         "--in",
         "overworld:0,0",
         "--show-values",
@@ -284,7 +288,7 @@ fn validates_commit_refs_at_parse_time() {
         vec!["sekai", "checkout", "w", "a/../b"],
         vec!["sekai", "clone", "bad name", "out"],
         vec!["sekai", "prune", "--before", "bad name"],
-        vec!["sekai", "diff", "1", "bad name"],
+        vec!["sekai", "diff", H1, "bad name"],
         vec!["sekai", "tag", "create", "stable", "bad name"],
         vec!["sekai", "tag", "create", "stable", "@123"],
         vec!["sekai", "ref", "create", ""],
@@ -293,7 +297,7 @@ fn validates_commit_refs_at_parse_time() {
         vec!["sekai", "ref", "create", "HEAD"],
         vec!["sekai", "ref", "create"],
         vec!["sekai", "ref", "create", "123"],
-        vec!["sekai", "ref", "create", "main", "3", "4"],
+        vec!["sekai", "ref", "create", "main", H3, "4"],
         vec!["sekai", "ref", "delete"],
         vec!["sekai", "ref"],
     ] {
@@ -327,7 +331,7 @@ fn validates_commit_refs_at_parse_time() {
     Cli::try_parse_from(["sekai", "diff", "--world", "w", "@stable"])
         .expect("diff --world with one commit parses");
     assert!(
-        Cli::try_parse_from(["sekai", "diff", "--world", "w", "1", "2"]).is_err(),
+        Cli::try_parse_from(["sekai", "diff", "--world", "w", H1, H2]).is_err(),
         "diff --world with two commits is refused"
     );
 
@@ -341,7 +345,7 @@ fn validates_commit_refs_at_parse_time() {
         "the refusal names the reference: {message}"
     );
     assert!(
-        message.contains("expected <64-char hash>, @<tag>, or <ref>"),
+        message.contains("expected <64-char commit hash>, @<tag>, or <ref>"),
         "the refusal names the accepted shapes: {message}"
     );
 }
@@ -389,9 +393,9 @@ fn parses_selection_for_commit_and_checkout() {
         panic!("expected commit");
     }
 
-    let cli = Cli::try_parse_from(["sekai", "checkout", "w", "3", "--region", "nether:1,-1"])
+    let cli = Cli::try_parse_from(["sekai", "checkout", "w", H3, "--region", "nether:1,-1"])
         .expect("checkout --region parses");
-    assert!(matches!(&cli.command, Command::Checkout { commit, .. } if commit.as_str() == "3"));
+    assert!(matches!(&cli.command, Command::Checkout { commit, .. } if commit.as_str() == H3));
 
     // `--in` and `--region` compose; kinds are repeatable.
     assert!(
@@ -521,7 +525,7 @@ fn parses_timing_and_json_flags() {
         }
     ));
 
-    let cli = Cli::try_parse_from(["sekai", "checkout", "--timing", "w", "3"])
+    let cli = Cli::try_parse_from(["sekai", "checkout", "--timing", "w", H3])
         .expect("checkout --timing parses");
     assert!(matches!(
         cli.command,
@@ -531,7 +535,7 @@ fn parses_timing_and_json_flags() {
         }
     ));
 
-    let cli = Cli::try_parse_from(["sekai", "checkout", "--json", "w", "3"])
+    let cli = Cli::try_parse_from(["sekai", "checkout", "--json", "w", H3])
         .expect("checkout --json parses");
     assert!(matches!(
         cli.command,
@@ -541,8 +545,7 @@ fn parses_timing_and_json_flags() {
         }
     ));
 
-    let cli =
-        Cli::try_parse_from(["sekai", "checkout", "w", "3"]).expect("checkout defaults parse");
+    let cli = Cli::try_parse_from(["sekai", "checkout", "w", H3]).expect("checkout defaults parse");
     assert!(matches!(
         cli.command,
         Command::Checkout {
@@ -559,7 +562,7 @@ fn parses_timing_and_json_flags() {
         "sekai",
         "checkout",
         "w",
-        "3",
+        H3,
         "--keep-post-commit-files",
         "--keep-post-commit-chunks",
         "--keep-tombstoned-chunks",
@@ -581,12 +584,11 @@ fn parses_timing_and_json_flags() {
         }
     ));
     assert!(
-        Cli::try_parse_from(["sekai", "checkout", "w", "3", "--on-missing-blob", "ignore"])
-            .is_err(),
+        Cli::try_parse_from(["sekai", "checkout", "w", H3, "--on-missing-blob", "ignore"]).is_err(),
         "unknown missing-blob policy is refused"
     );
 
-    let cli = Cli::try_parse_from(["sekai", "clone", "3", "out"]).expect("clone parses");
+    let cli = Cli::try_parse_from(["sekai", "clone", H3, "out"]).expect("clone parses");
     assert!(matches!(
         &cli.command,
         Command::Clone {
@@ -598,13 +600,13 @@ fn parses_timing_and_json_flags() {
                 json: false,
             },
             ..
-        } if commit.as_str() == "3"
+        } if commit.as_str() == H3
     ));
 
     let cli = Cli::try_parse_from([
         "sekai",
         "clone",
-        "3",
+        H3,
         "out",
         "--flavor",
         "bukkit",
@@ -627,15 +629,15 @@ fn parses_timing_and_json_flags() {
                 json: true,
             },
             ..
-        } if commit.as_str() == "3"
+        } if commit.as_str() == H3
     ));
     assert!(
-        Cli::try_parse_from(["sekai", "clone", "3", "out", "--flavor", "tarball"]).is_err(),
+        Cli::try_parse_from(["sekai", "clone", H3, "out", "--flavor", "tarball"]).is_err(),
         "unknown clone flavor is refused"
     );
 
     let cli =
-        Cli::try_parse_from(["sekai", "tag", "create", "stable", "3"]).expect("tag create parses");
+        Cli::try_parse_from(["sekai", "tag", "create", "stable", H3]).expect("tag create parses");
     assert!(matches!(
         &cli.command,
         Command::Tag {
@@ -645,7 +647,7 @@ fn parses_timing_and_json_flags() {
                 force: false,
                 json: false,
             }
-        } if name.as_str() == "stable" && commit.as_str() == "3"
+        } if name.as_str() == "stable" && commit.as_str() == H3
     ));
     assert_eq!(cli.command.name(), "tag");
     assert!(!cli.command.output_json());
@@ -688,11 +690,11 @@ fn parses_timing_and_json_flags() {
     // missing operands, and flags that belong to another operation.
     for args in [
         vec!["sekai", "tag"],
-        vec!["sekai", "tag", "stable", "3"],
+        vec!["sekai", "tag", "stable", H3],
         vec!["sekai", "tag", "stable", "--delete"],
         vec!["sekai", "tag", "create", "stable"],
         vec!["sekai", "tag", "delete"],
-        vec!["sekai", "tag", "create", "bad name", "3"],
+        vec!["sekai", "tag", "create", "bad name", H3],
         vec!["sekai", "tag", "delete", "stable", "--force"],
         vec!["sekai", "tag", "list", "stable"],
         vec!["sekai", "ref", "list", "--force"],
@@ -913,7 +915,7 @@ fn parses_prune_command() {
             "sekai",
             "prune",
             "--keep-last",
-            "3",
+            H3,
             "--dry-run",
             "--progress"
         ])
@@ -954,10 +956,10 @@ fn reports_json_mode_per_command() {
         Cli::try_parse_from(["sekai", "diff", "--in", "overworld:0,0", "--json"]).expect("parses");
     assert!(cli.command.output_json());
 
-    let cli = Cli::try_parse_from(["sekai", "clone", "3", "out"]).expect("parses");
+    let cli = Cli::try_parse_from(["sekai", "clone", H3, "out"]).expect("parses");
     assert!(!cli.command.output_json());
 
-    let cli = Cli::try_parse_from(["sekai", "clone", "3", "out", "--json"]).expect("parses");
+    let cli = Cli::try_parse_from(["sekai", "clone", H3, "out", "--json"]).expect("parses");
     assert!(cli.command.output_json());
     assert_eq!(cli.command.name(), "clone");
 }
