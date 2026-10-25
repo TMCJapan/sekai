@@ -742,8 +742,8 @@ fn parses_timing_and_json_flags() {
     ));
     assert!(cli.command.output_json());
 
-    let cli =
-        Cli::try_parse_from(["sekai", "ref", "activate", "main", "--json"]).expect("ref activate --json parses");
+    let cli = Cli::try_parse_from(["sekai", "ref", "activate", "main", "--json"])
+        .expect("ref activate --json parses");
     assert!(matches!(
         &cli.command,
         Command::Ref {

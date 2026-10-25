@@ -102,16 +102,13 @@ fn log_payload(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::format_time;
+    use super::*;
 
     #[test]
     fn formats_times() {
         assert_eq!(format_time(0), "1970-01-01T00:00:00+00:00");
-        assert_eq!(
-            format_time(u64::MAX),
-            format!("{}ms", u64::MAX)
-        );
+        assert_eq!(format_time(u64::MAX), format!("{}ms", u64::MAX));
     }
 
     #[test]
