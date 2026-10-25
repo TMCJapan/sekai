@@ -728,7 +728,7 @@ fn parses_timing_and_json_flags() {
                 json: true,
             }
         } if name.as_str() == "feature/nightly"
-            && commit.as_ref().is_some_and(|c| c.as_str() == "@stable")
+            && ref_str(commit.as_ref()) == Some("@stable")
     ));
     assert_eq!(cli.command.name(), "ref");
     assert!(cli.command.output_json());

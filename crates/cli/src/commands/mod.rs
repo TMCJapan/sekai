@@ -19,8 +19,9 @@ use crate::style::Styler;
 /// Render Unix milliseconds as RFC 3339, falling back to raw millis when
 /// the timestamp does not fit.
 fn format_time(created_at_ms: u64) -> String {
-    let millis = i64::try_from(created_at_ms).unwrap_or(i64::MAX);
-    chrono::DateTime::from_timestamp_millis(millis)
+    i64::try_from(created_at_ms)
+        .ok()
+        .and_then(chrono::DateTime::from_timestamp_millis)
         .map_or_else(|| format!("{created_at_ms}ms"), |time| time.to_rfc3339())
 }
 

@@ -272,8 +272,8 @@ impl TagCommand {
 }
 
 /// Ref operations. The name position is required and the commit target
-/// is optional: missing names, missing delete targets, and `--force`
-/// anywhere but `create` stay statically unrepresentable.
+/// is optional: a missing name and a `--force` outside `create` stay
+/// statically unrepresentable.
 #[derive(Debug, Subcommand)]
 pub enum RefCommand {
     /// Point a ref at a commit.
