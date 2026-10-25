@@ -63,6 +63,10 @@ sekai --store ./sekai-store clone @stable ./restored
 
 ```
 
+`--store` names the store directory (`commit` creates it when
+missing; every other command fails on a missing store) and defaults
+to `.sekai` when omitted.
+
 Every command accepts `--json` for a single-document machine-readable
 report, and every command except `log`, `tag`, and `ref` accepts
 `--timing`
