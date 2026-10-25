@@ -46,6 +46,10 @@ sekai --store ./sekai-store diff 1 2 --in overworld:0,0
 # Name commit 2 for later reference
 sekai --store ./sekai-store tag create stable 2
 
+# Branch: name the current position, then commit onto it
+sekai --store ./sekai-store ref create feature
+sekai --store ./sekai-store ref activate feature
+
 # Preview unreferenced blobs, then collect them
 sekai --store ./sekai-store gc --dry-run
 sekai --store ./sekai-store gc
@@ -60,7 +64,8 @@ sekai --store ./sekai-store clone 1 ./restored
 ```
 
 Every command accepts `--json` for a single-document machine-readable
-report, and every command except `log` and `tag` accepts `--timing`
+report, and every command except `log`, `tag`, and `ref` accepts
+`--timing`
 for a per-phase breakdown (combine both for timed JSON). `commit`,
 `status`, `checkout`, `diff`, `clone`, `gc`, and `prune` also take
 `--progress` for a stderr progress bar (refused with `--json`).

@@ -4,6 +4,9 @@
   (`log` shows them oldest first). Commits store only fresh rows;
   reads resolve effective state through fallback, so metadata grows with
   changes, not with universe size.
+- **Ref**: a named, movable pointer to a commit - sekai's branch. One
+  ref is active, and new commits hang from it; switching the active ref
+  forks the history. See [Refs](commands/refs.md).
 - **Blob (CAS key)**: the exact raw chunk payload, hashed with framing
   included. Identical payloads share one stored copy across all
   commits; checkout restores these bytes verbatim, rewinding volatile

@@ -20,6 +20,7 @@ carries the bare result only.
 | `log` | commit array (+stats with `--stat`) | n/a | no phases exist |
 | `clone` | report (+timings with `--timing`) | table + JSON block | |
 | `tag` | record, deletion record, or tag array | n/a | no phases exist |
+| `ref` | record, deletion record, or ref array | n/a | no phases exist |
 | `diff` | single array, grouped array (multi), or timed object | table + JSON block | `--in`/`--region` select chunks; one chunk keeps the single shape |
 | `gc` | report or dry-run plan (+timings with `--timing`) | table + JSON block | dry-run timings carry `plan_ms`; `apply_ms` is `0` |
 | `prune` | report or dry-run plan (+timings with `--timing`) | table + JSON block | dry-run lists IDs; blobs are never unlinked, run `gc` after |
@@ -40,7 +41,7 @@ Every invocation prints exactly one JSON object to stdout:
 {"command": "<name>", "status": "error", "error": "<full context chain>"}
 ```
 
-`command` is one of `commit`, `status`, `checkout`, `log`, `clone`, `tag`, `prune`, `diff`, `gc`.
+`command` is one of `commit`, `status`, `checkout`, `log`, `clone`, `tag`, `ref`, `prune`, `diff`, `gc`.
 The canonical name is used even when an alias (`backup`, `rollback`,
 `export`, `list`) invoked the command.
 The error string is the full anyhow context chain (outermost message
@@ -101,7 +102,9 @@ With `--timing` the `total_ms`/`phases`/`regions` block is appended:
 
 The `total_ms`/`phases` block appears only with `--timing`.
 `latest` is `null` when no commit exists yet. Counts describe what a
-commit would record; nothing is written.
+commit would record; nothing is written. `latest` is the commit the
+preview is measured against - the target of the active ref, which is
+what the next commit would continue.
 
 ### `checkout`
 
@@ -170,6 +173,30 @@ name order:
 
 Commit arguments to `checkout`, `clone`, and `diff` accept `<id>` or
 `@tag`; payloads always carry the resolved numeric ID.
+
+### `ref`
+
+Create (`ref create <name> [<commit>]`) and activate (`ref activate
+<name>`) return the record:
+
+```jsonc
+{"name": "main", "commit": 2, "active": true, "created_at_ms": 1700000001000}
+```
+
+Deletion returns `{"name": "main"}`. `ref list` lists all refs in name
+order:
+
+```jsonc
+[{"name": "feature", "commit": null, "active": false, "created_at_ms": 1700000001000},
+ {"name": "main", "commit": 2, "active": true, "created_at_ms": 1700000000000}]
+```
+
+A ref created without a commit starts at the active ref's target. The
+active ref is the one new commits hang from; it is never removed.
+
+Commit arguments to `checkout`, `clone`, `diff`, `prune --before`, and
+`ref create` accept `<id>`, `@tag`, or a bare ref name; payloads always
+carry the resolved numeric ID.
 
 ### `diff`
 

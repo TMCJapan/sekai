@@ -2,7 +2,7 @@
 
 use crate::style::ColorChoice;
 use clap::{Parser, Subcommand};
-use sekai_app::{Area, ChunkCoord, Dimension, Rect, RegionKind, Scope, TagName};
+use sekai_app::{Area, ChunkCoord, Dimension, Rect, RefName, RegionKind, Scope, TagName};
 use std::path::{Path, PathBuf};
 
 /// Chunk-level deduplicated version control for Minecraft region files.
@@ -149,6 +149,11 @@ pub enum Command {
         #[command(subcommand)]
         action: TagCommand,
     },
+    /// Manage refs: named, movable pointers to commits.
+    Ref {
+        #[command(subcommand)]
+        action: RefCommand,
+    },
     /// Compare chunk NBT AST between two commits or between world state and a commit.
     Diff(DiffArgs),
     /// Delete old commits, folding their rows into retained ones.
@@ -198,6 +203,7 @@ impl Command {
             Self::Log { .. } => "log",
             Self::Clone { .. } => "clone",
             Self::Tag { .. } => "tag",
+            Self::Ref { .. } => "ref",
             Self::Prune { .. } => "prune",
             Self::Diff(_) => "diff",
             Self::Gc { .. } => "gc",
@@ -216,6 +222,7 @@ impl Command {
             | Self::Gc { output, .. } => output.json,
             Self::Log { json, .. } => *json,
             Self::Tag { action } => action.output_json(),
+            Self::Ref { action } => action.output_json(),
             Self::Diff(args) => args.output.json,
         }
     }
@@ -264,17 +271,80 @@ impl TagCommand {
     }
 }
 
-/// Commit reference on the command line: `<id>` or `@tag`.
+/// Ref operations. The name position is required and the commit target
+/// is optional: a missing name and a `--force` outside `create` stay
+/// statically unrepresentable.
+#[derive(Debug, Subcommand)]
+pub enum RefCommand {
+    /// Point a ref at a commit.
+    Create {
+        /// Ref name (ASCII alphanumerics plus ".", "_", "-", "/"; 1-64
+        /// bytes; not all digits). Written bare (never `@`-prefixed); ref
+        /// names feed back as `RefName` tokens, not as `CommitRef`s.
+        name: RefName,
+        /// Commit reference (`<id>`, `@tag`, or a ref name) to point at.
+        /// Defaults to the active ref's target.
+        commit: Option<CommitRef>,
+        /// Move an existing ref instead of failing.
+        #[arg(long)]
+        force: bool,
+        /// Emit output as JSON instead of human text. See docs/json.md.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete a ref.
+    Delete {
+        /// Ref name to delete.
+        name: RefName,
+        /// Emit output as JSON instead of human text. See docs/json.md.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List all refs in name order.
+    List {
+        /// Emit output as JSON instead of human text. See docs/json.md.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Make a ref the active one: new commits hang from it.
+    Activate {
+        /// Ref name to activate.
+        name: RefName,
+        /// Emit output as JSON instead of human text. See docs/json.md.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+impl RefCommand {
+    /// Whether the operation runs in JSON mode (`--json`).
+    pub const fn output_json(&self) -> bool {
+        match self {
+            Self::Create { json, .. }
+            | Self::Delete { json, .. }
+            | Self::List { json }
+            | Self::Activate { json, .. } => *json,
+        }
+    }
+}
+
+/// Commit reference on the command line: `<id>`, `@tag`, or a ref name.
+///
+/// Either `@<tag>`, a bare `u64` ID, or a bare valid [`RefName`], tried in
+/// that exclusive order: `@` is tag-only and never falls through to a bare
+/// name, while a bare token is parsed as a `u64` first and only treated as
+/// a [`RefName`] when that fails. Because [`RefName`] rejects all-digit
+/// names, the numeric ID namespace and the ref-name namespace cannot overlap:
+/// a numeric token is always a commit ID (or `UnknownCommit`), never a ref.
 ///
 /// The shape is validated at parse time so a malformed reference never
 /// reaches the store; resolving it to an existing commit stays a
-/// runtime step. The grammar mirrors `core`'s `resolve_commit_ref`:
-/// `@` followed by a valid [`TagName`], or a plain `u64` ID.
+/// runtime step. The grammar mirrors `core`'s `resolve_commit_ref`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitRef(String);
 
 impl CommitRef {
-    /// Raw reference text (`<id>` or `@tag`).
+    /// Raw reference text (`<id>`, `@tag`, or a ref name).
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -291,13 +361,22 @@ impl std::str::FromStr for CommitRef {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if let Some(name) = s.strip_prefix('@') {
-            TagName::parse(name)
-                .map_err(|err| format!("invalid tag reference {s:?}: {err}, expected @<tag>"))?;
+            TagName::parse(name).map_err(|err| {
+                format!(
+                    "invalid reference {s:?}: {err}, expected @<tag> (refs are written without '@')"
+                )
+            })?;
+            Ok(Self(s.to_owned()))
+        } else if let Ok(id) = s.parse::<u64>() {
+            // Canonicalise so the stored spelling can never diverge from
+            // the validation that accepted it.
+            Ok(Self(id.to_string()))
         } else {
-            s.parse::<u64>()
-                .map_err(|_| format!("invalid commit reference {s:?}, expected <id> or @<tag>"))?;
+            RefName::parse(s).map_err(|err| {
+                format!("invalid reference {s:?}: {err}, expected <id>, @<tag>, or <ref>")
+            })?;
+            Ok(Self(s.to_owned()))
         }
-        Ok(Self(s.to_owned()))
     }
 }
 
@@ -351,12 +430,13 @@ pub struct DiffArgs {
     /// World directory to compare against a commit (if specified).
     #[arg(long)]
     pub world: Option<PathBuf>,
-    /// Older commit reference (`<id>` or `@tag`; if omitted when
-    /// comparing commits, defaults to second-latest). With `--world`,
-    /// the single commit to compare against (default: latest).
+    /// Older commit reference (`<id>`, `@tag`, or `<ref>`; when comparing
+    /// commits and omitted, defaults to the lowest-ID parent of the newer
+    /// side). With `--world`, the single commit to compare against
+    /// (default: the active ref's target).
     pub old_commit: Option<CommitRef>,
-    /// Newer commit reference (`<id>` or `@tag`; if omitted, defaults
-    /// to latest commit). Commit-vs-commit only.
+    /// Newer commit reference (`<id>`, `@tag`, or `<ref>`; if omitted,
+    /// defaults to the active ref's target). Commit-vs-commit only.
     #[arg(conflicts_with = "world")]
     pub new_commit: Option<CommitRef>,
     /// Chunks to compare (default: whole world). One chunk keeps the
@@ -398,12 +478,16 @@ impl DiffArgs {
 /// ambiguity resolved statically instead of juggling `Option`s at runtime.
 #[derive(Debug)]
 pub enum DiffTarget<'a> {
-    /// Live world state against one commit (`None` means latest).
+    /// Live world state against one commit (`None` means the active
+    /// ref's target).
     World {
         world: &'a Path,
         commit: Option<&'a CommitRef>,
     },
-    /// Commit against commit (`None` defaults: second-latest vs latest).
+    /// Commit against commit (`None` newer side means the active ref's
+    /// target; `None` older side means the newer side's lowest-ID parent).
+    /// A root commit has no implicit older side and errors; pass it or
+    /// `--world` explicitly in that case.
     Commits {
         old: Option<&'a CommitRef>,
         new: Option<&'a CommitRef>,

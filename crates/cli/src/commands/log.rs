@@ -33,7 +33,7 @@ pub async fn run(store: &str, json: bool, stat: bool, style: Styler) -> anyhow::
         let mut line = format!(
             "{}\t{}",
             style.bold(&commit.id.raw().to_string()),
-            format_time(commit.created_at_ms)
+            super::format_time(commit.created_at_ms)
         );
         let names: Vec<&str> = tags
             .iter()
@@ -100,14 +100,9 @@ fn log_payload(
         .collect()
 }
 
-fn format_time(created_at_ms: u64) -> String {
-    let millis = i64::try_from(created_at_ms).unwrap_or(i64::MAX);
-    chrono::DateTime::from_timestamp_millis(millis)
-        .map_or_else(|| format!("{created_at_ms}ms"), |time| time.to_rfc3339())
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::format_time;
     use super::*;
 
     #[test]

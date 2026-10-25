@@ -9,11 +9,21 @@ mod gc;
 mod log;
 mod progress;
 mod prune;
+mod refs;
 mod status;
 mod tag;
 
 use crate::cli::{Cli, Command, TimingArgs};
 use crate::style::Styler;
+
+/// Render Unix milliseconds as RFC 3339, falling back to raw millis when
+/// the timestamp does not fit.
+fn format_time(created_at_ms: u64) -> String {
+    i64::try_from(created_at_ms)
+        .ok()
+        .and_then(chrono::DateTime::from_timestamp_millis)
+        .map_or_else(|| format!("{created_at_ms}ms"), |time| time.to_rfc3339())
+}
 
 /// Output controls shared by report commands (commit, status, checkout,
 /// clone, prune, gc).
@@ -105,6 +115,7 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
         }
         Command::Log { json, stat } => log::run(&cli.store, *json, *stat, style).await,
         Command::Tag { action } => tag::run(&cli.store, action, style).await,
+        Command::Ref { action } => refs::run(&cli.store, action, style).await,
         Command::Clone {
             commit,
             out,
