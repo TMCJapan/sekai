@@ -94,6 +94,9 @@ impl<M: fmt::Debug> fmt::Display for PruneError<M> {
 /// Retain the newest `keep_last` commits intersected with `before` and
 /// newer (`None` selects everything on its axis).
 ///
+/// A `before` that names no stored commit selects nothing; callers can
+/// validate unknown IDs through [`prune_plan`] first.
+///
 /// Ordering follows the input slice, which backends visit in local
 /// sequence order; commit hashes carry no intrinsic timeline order.
 pub fn select_retained(

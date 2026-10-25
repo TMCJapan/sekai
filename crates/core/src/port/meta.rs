@@ -125,8 +125,12 @@ pub trait MetaStore {
     /// history. As in [`Self::create_commit`], every parent must exist
     /// and a parent listed twice is recorded once. Recording a commit
     /// whose hash already exists is idempotent: the existing ID is
-    /// returned and its fresh rows are not inserted again. `entries`
-    /// contains fresh rows and tombstones.
+    /// returned and no fresh rows are written. Shared derived state
+    /// (carried region state, fingerprints, and removals), the row
+    /// counts from `carry_from`, and the active-ref move are still
+    /// applied to that commit, so a repeat record advances derived
+    /// state and the ref while the commit graph stays unchanged.
+    /// `entries` contains fresh rows and tombstones.
     /// `carry_from` identifies unchanged regions: backends advance their
     /// commit state and count their effective chunks, but write no
     /// per-chunk rows for them (delta storage). Fingerprints are
@@ -185,8 +189,8 @@ pub trait MetaStore {
     where
         F: FnMut(&CommitTag) -> bool + Send;
 
-    /// Retire `from` into `into` (`into` must be retained and newer in
-    /// local record order):
+    /// Retire `from` into `into` (`into` must be retained and have a
+    /// larger local sequence than `from`):
     /// rows superseded along the history `into` continues are removed,
     /// surviving rows are re-stamped onto `into`, derived states follow,
     /// and the commit row (plus its tags, by cascade) is deleted - all
