@@ -17,7 +17,7 @@ ref はコミットを指す名前付きの可変ポインタ（sekai のブラ�
 unborn）用意されます。`ref list` では `*` が付きます。
 
 - `ref create <name>` は active な ref の指す位置から ref を作りま
-  す。コミット（`<id>`、`@tag`、または他の ref 名）を渡すと別の位置を
+  す。コミット（`<id>`、または他の ref 名）を渡すと別の位置を
   指します。既存の ref 名があると `--force` がない限り失敗します。
 - `ref activate <name>` は active な ref を切り替えます。次のコミット
   はストア内の最新コミットではなく、この ref を継続します。git の

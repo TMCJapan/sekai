@@ -31,7 +31,6 @@ muscle memory keep working.
 | `checkout` | `rollback` | rebuild the live world from a commit |
 | `log` | `list` | list recorded commits, oldest first |
 | `clone` | `export` | rebuild a commit into a fresh directory |
-| `tag` | - | give commits human-readable names |
 | `diff` | - | compare chunk NBT between commits (or the world) |
 | `prune` | - | retire old commits, folding their rows into retained ones |
 | `gc` | - | collect orphan blobs |

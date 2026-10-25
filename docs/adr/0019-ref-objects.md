@@ -70,7 +70,7 @@ it belongs to. The pointer lives in the table instead:
 one row, one boolean, updated in the commit's own transaction.
 
 Commit references accept a ref name as well: a 64-character hash,
-`@tag`, or a bare ref name. `HEAD` stays reserved so the active ref is
+a bare ref name. `HEAD` stays reserved so the active ref is
 never ambiguous.
 
 Two consequences of the graph have to follow:

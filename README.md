@@ -37,11 +37,8 @@ sekai status ./world
 # List commits
 sekai log
 
-# Name a commit for later reference (copy its full hash from `log`)
-sekai tag create stable 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a
-
-# Rebuild the world from the tagged commit (overwrites region files)
-sekai checkout ./world @stable
+# Rebuild the world from a known commit (overwrites region files)
+sekai checkout ./world 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a
 
 # Compare chunk NBT between two commits (hashes from `log`)
 sekai diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a --in overworld:0,0
@@ -58,17 +55,16 @@ sekai gc
 sekai prune --keep-last 10
 sekai gc
 
-# Rebuild the tagged commit into a fresh directory (live world untouched)
-sekai clone @stable ./restored
+# Rebuild a commit into a fresh directory (live world untouched)
+sekai clone 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a ./restored
 
 ```
 
-`--store` names the store directory (`commit` creates it when
 missing; every other command fails on a missing store) and defaults
 to `.sekai` when omitted.
 
 Every command accepts `--json` for a single-document machine-readable
-report, and every command except `log`, `tag`, and `ref` accepts
+report, and every command except `log` and `ref` accepts
 `--timing`
 for a per-phase breakdown (combine both for timed JSON). `commit`,
 `status`, `checkout`, `diff`, `clone`, `gc`, and `prune` also take
@@ -85,7 +81,6 @@ aliases: `backup` (`commit`), `rollback` (`checkout`), `export`
 
 > [!Note]
 > If you want to make a full secondary backup of all your commits and storage, 
-> simply copy or archive the entire directory specified by `--store` to an external location.
 
 `sekai` never touches the server process; save coordination belongs to the
 caller. 

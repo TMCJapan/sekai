@@ -19,7 +19,6 @@ carries the bare result only.
 | `checkout` | report (+timings with `--timing`) | table + JSON block | |
 | `log` | commit array (+stats with `--stat`) | n/a | no phases exist |
 | `clone` | report (+timings with `--timing`) | table + JSON block | |
-| `tag` | record, deletion record, or tag array | n/a | no phases exist |
 | `ref` | record, deletion record, or ref array | n/a | no phases exist |
 | `diff` | single array, grouped array (multi), or timed object | table + JSON block | `--in`/`--region` select chunks; one chunk keeps the single shape |
 | `gc` | report or dry-run plan (+timings with `--timing`) | table + JSON block | dry-run timings carry `plan_ms`; `apply_ms` is `0` |
@@ -41,7 +40,7 @@ Every invocation prints exactly one JSON object to stdout:
 {"command": "<name>", "status": "error", "error": "<full context chain>"}
 ```
 
-`command` is one of `commit`, `status`, `checkout`, `log`, `clone`, `tag`, `ref`, `prune`, `diff`, `gc`.
+`command` is one of `commit`, `status`, `checkout`, `log`, `clone`, `ref`, `prune`, `diff`, `gc`.
 The canonical name is used even when an alias (`backup`, `rollback`,
 `export`, `list`) invoked the command.
 The error string is the full anyhow context chain (outermost message
@@ -140,17 +139,15 @@ The `total_ms`/`phases` block appears only with `--timing`.
 ### `log`
 
 ```jsonc
-[{"id": "1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b", "created_at_ms": 1700000000000, "tags": []},
- {"id": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a", "created_at_ms": 1700000001000, "tags": ["stable"]}]
+[{"id": "1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b", "created_at_ms": 1700000000000},
+ {"id": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a", "created_at_ms": 1700000001000}]
 ```
 
 Timestamps are raw Unix millis (RFC 3339 rendering stays human-only).
-`tags` names the tags pointing at each commit, in name order.
-
 With `--stat`, per-commit change statistics are appended in place:
 
 ```jsonc
-[{"id": "1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b", "created_at_ms": 1700000000000, "tags": [],
+[{"id": "1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b", "created_at_ms": 1700000000000,
   "fresh_chunks": 2, "fresh_tombstones": 0, "new_blobs": 1,
   "effective_chunks": 2}]
 ```
@@ -158,27 +155,6 @@ With `--stat`, per-commit change statistics are appended in place:
 `fresh_chunks`/`fresh_tombstones` count rows introduced at the
 commit, `new_blobs` their distinct blobs, and `effective_chunks` the
 live chunks after fallback.
-
-### `tag`
-
-Create (`tag create <name> <commit>`) and delete (`tag delete
-<name>`) return the record:
-
-```jsonc
-{"name": "stable", "commit": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a", "created_at_ms": 1700000001000}
-```
-
-Deletion returns `{"name": "stable"}`. `tag list` lists all tags in
-name order:
-
-```jsonc
-[{"name": "stable", "commit": "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a", "created_at_ms": 1700000001000}]
-```
-
-Commit arguments to `checkout`, `clone`, and `diff` accept a 64-character
-lowercase hexadecimal commit hash or `@tag`; payloads always carry the
-resolved hash in that form. A 64-character hex spelling is resolved as a
-commit hash before any ref name, so a ref with such a name is shadowed.
 
 ### `ref`
 
@@ -201,8 +177,8 @@ A ref created without a commit starts at the active ref's target. The
 active ref is the one new commits hang from; it is never removed.
 
 Commit arguments to `checkout`, `clone`, `diff`, `prune --before`, and
-`ref create` accept `<id>`, `@tag`, or a bare ref name; payloads always
-carry the resolved numeric ID.
+`ref create` accept `<id>` or a bare ref name; payloads always carry the
+resolved numeric ID.
 
 ### `diff`
 
