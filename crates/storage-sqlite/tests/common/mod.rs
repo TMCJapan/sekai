@@ -3,8 +3,8 @@
 //! The flows target `sekai-core` traits; backend-specific setup stays in each runner.
 
 use sekai_core::{
-    BlobHash, BlobStore, ChunkCoord, CommitEntry, CommitId, CommitTag, Dimension, MetaStore,
-    Observation, RefName, RegionFingerprint, RegionKey, RegionKind, Scope, TagName,
+    BlobHash, BlobStore, ChunkCoord, CommitEntry, CommitId, Dimension, MetaStore,
+    Observation, RefName, RegionFingerprint, RegionKey, RegionKind, Scope,
     usecase::{
         checkout::plan_checkout,
         commit::{Ingested, assemble, plan_commit, record_commit, stage_present},
@@ -60,48 +60,6 @@ where
     assert_eq!(listed.len(), 1);
 }
 
-/// Tag CRUD plus name-ordered visits and ref resolution.
-pub async fn tags<M>(meta: &mut M)
-where
-    M: MetaStore,
-    M::Error: core::fmt::Debug,
-{
-    let first = meta.create_commit(1_000, &[]).await.unwrap();
-    let second = meta.create_commit(2_000, &[first]).await.unwrap();
-    let zeta = TagName::parse("zeta").unwrap();
-    let alpha = TagName::parse("alpha").unwrap();
-    meta.tag_commit(&zeta, first, 1_500).await.unwrap();
-    meta.tag_commit(&alpha, second, 2_500).await.unwrap();
-
-    let record = meta.lookup_tag(&alpha).await.unwrap().unwrap();
-    assert_eq!(record, CommitTag::new(alpha.clone(), second, 2_500));
-    assert!(
-        meta.lookup_tag(&TagName::parse("missing").unwrap())
-            .await
-            .unwrap()
-            .is_none()
-    );
-
-    let mut seen = Vec::new();
-    meta.visit_tags(|tag| {
-        seen.push(tag.name.as_str().to_owned());
-        true
-    })
-    .await
-    .unwrap();
-    assert_eq!(seen, ["alpha", "zeta"]);
-
-    assert_eq!(
-        sekai_core::usecase::graph::resolve_commit_ref(&*meta, "@zeta")
-            .await
-            .unwrap(),
-        first
-    );
-
-    assert!(meta.untag(&alpha).await.unwrap());
-    assert!(!meta.untag(&alpha).await.unwrap());
-}
-
 /// Fresh-row visits and per-commit statistics.
 pub async fn fresh_stats<M>(meta: &mut M)
 where
@@ -152,14 +110,12 @@ where
     );
 }
 
-/// Pruning folds oldest-first without changing retained effective states,
-/// and drops tags of deleted commits by cascade.
+/// Pruning folds oldest-first without changing retained effective states.
 pub async fn prune_flow<M>(meta: &mut M)
 where
     M: MetaStore,
     M::Error: core::fmt::Debug,
 {
-    use sekai_core::TagName;
     use sekai_core::usecase::prune::{PruneReport, prune_apply, prune_plan, select_retained};
     // S1: A@0,0 B@1,0 / S2: C@0,0 (B carried) / S3: D@2,0.
     let first = meta.create_commit(1_000, &[]).await.unwrap();
@@ -177,10 +133,6 @@ where
     meta.record_chunk(third, &coord(2, 0), Some(&BlobHash([4; 32])), None)
         .await
         .unwrap();
-    meta.tag_commit(&TagName::parse("doomed").unwrap(), first, 1_500)
-        .await
-        .unwrap();
-
     let before: Vec<Vec<(ChunkCoord, Option<BlobHash>)>> =
         effective_rows(meta, &[first, second, third]).await;
 
@@ -205,12 +157,6 @@ where
         effective_rows(meta, &[second, third]).await;
     assert_eq!(after, before[1..]);
     assert!(meta.lookup_commit(first).await.unwrap().is_none());
-    assert!(
-        meta.lookup_tag(&TagName::parse("doomed").unwrap())
-            .await
-            .unwrap()
-            .is_none()
-    );
 
     // A retirement into an older or equal commit, or into one that does
     // not exist, is a backend error rather than a silent no-op: the first

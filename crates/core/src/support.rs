@@ -8,8 +8,8 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use crate::port::{BlobStore, MetaStore};
 use sekai_util::{
-    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitId, CommitRef, CommitTag,
-    DiffHash, FoldOutcome, RefName, RegionFingerprint, RegionKey, RegionStateEntry, TagName,
+    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitId, CommitRef,
+    DiffHash, FoldOutcome, RefName, RegionFingerprint, RegionKey, RegionStateEntry,
 };
 
 /// Fake backend failure.
@@ -17,8 +17,6 @@ use sekai_util::{
 pub enum MemError {
     /// The blob is absent from the fake store.
     MissingBlob,
-    /// The tag name is taken.
-    DuplicateTag,
     /// A named parent does not exist.
     UnknownParent {
         /// Parent that was asked for.
@@ -151,8 +149,6 @@ pub struct MemMeta {
     pub rows: Vec<ChunkHistoryEntry>,
     /// Derived region states.
     pub states: Vec<RegionStateEntry>,
-    /// Tags by name.
-    pub tags: BTreeMap<TagName, CommitTag>,
     /// Refs by name.
     pub refs: BTreeMap<RefName, CommitRef>,
     /// Stable local sequence per commit hash. Retirement never renumbers
@@ -461,47 +457,6 @@ impl MetaStore for MemMeta {
         core::future::ready(Ok(ApplyOutcome { id, carried_chunks }))
     }
 
-    fn tag_commit(
-        &mut self,
-        name: &TagName,
-        commit: CommitId,
-        created_at_ms: u64,
-    ) -> impl Future<Output = Result<(), MemError>> + Send {
-        // Mirrors the backend PRIMARY KEY: duplicates are rejected.
-        if self.tags.contains_key(name) {
-            return core::future::ready(Err(MemError::DuplicateTag));
-        }
-        self.tags.insert(
-            name.clone(),
-            CommitTag::new(name.clone(), commit, created_at_ms),
-        );
-        core::future::ready(Ok(()))
-    }
-
-    fn untag(&mut self, name: &TagName) -> impl Future<Output = Result<bool, MemError>> + Send {
-        core::future::ready(Ok(self.tags.remove(name).is_some()))
-    }
-
-    fn lookup_tag(
-        &self,
-        name: &TagName,
-    ) -> impl Future<Output = Result<Option<CommitTag>, MemError>> + Send {
-        core::future::ready(Ok(self.tags.get(name).cloned()))
-    }
-
-    fn visit_tags<F>(&self, mut visit: F) -> impl Future<Output = Result<(), MemError>> + Send
-    where
-        F: FnMut(&CommitTag) -> bool + Send,
-    {
-        // BTreeMap iteration is name order, matching the backend query.
-        for tag in self.tags.values() {
-            if !visit(tag) {
-                break;
-            }
-        }
-        core::future::ready(Ok(()))
-    }
-
     fn retire_commit(
         &mut self,
         from: CommitId,
@@ -574,7 +529,6 @@ impl MetaStore for MemMeta {
         // The ID may be recorded again later; forget its sequence so the
         // re-added commit gets a fresh position at the end of the timeline.
         self.seqs.remove(&from);
-        self.tags.retain(|_, tag| tag.commit != from);
         // A ref naming the retired commit follows the fold: the
         // successor holds the same effective state, so the ref keeps
         // naming it.

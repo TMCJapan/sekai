@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use sekai_core::{
     ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitEntry, CommitId,
-    CommitRef, CommitTag, DEFAULT_REF_NAME, DiffHash, Dimension, FoldOutcome, MetaStore, RefName,
-    RegionFingerprint, RegionKey, RegionKind, RegionStateEntry, TagName, commit_hash,
+    CommitRef, DEFAULT_REF_NAME, DiffHash, Dimension, FoldOutcome, MetaStore, RefName,
+    RegionFingerprint, RegionKey, RegionKind, RegionStateEntry, commit_hash,
 };
 use sqlx::Row as _;
 use sqlx::sqlite::{
@@ -23,7 +23,7 @@ use sekai_storage::{
 };
 
 /// Managed schema version (`PRAGMA user_version`).
-pub const SCHEMA_VERSION: i64 = 11;
+pub const SCHEMA_VERSION: i64 = 12;
 
 const SCHEMA: &str = include_str!("../schema/sqlite.sql");
 
@@ -397,22 +397,6 @@ fn decode_state(row: &sqlx::sqlite::SqliteRow) -> Result<RegionStateEntry, Stora
         },
         commit_id,
     })
-}
-
-/// Decode one `commit_tags` row. Stored names always re-validate:
-/// anything else is corruption, never silent reinterpretation.
-fn decode_tag(row: &sqlx::sqlite::SqliteRow) -> Result<CommitTag, StorageError> {
-    let name_raw: String = row.try_get("name").map_err(db_err)?;
-    let name = TagName::parse(&name_raw).map_err(|_| StorageError::InvalidTagName {
-        name: name_raw.clone(),
-    })?;
-    let commit_raw: Vec<u8> = row.try_get("commit_id").map_err(db_err)?;
-    let commit = commit_id_from_blob(commit_raw)?;
-    Ok(CommitTag::new(
-        name,
-        commit,
-        millis_col(row, "created_at_ms")?,
-    ))
 }
 
 /// Decode one `refs` row. Stored names always re-validate: anything
@@ -807,58 +791,6 @@ impl sekai_core::MetaStore for SqliteMeta {
         );
         let rows = qb.build().fetch_all(&self.pool).await.map_err(db_err)?;
         rows.iter().map(decode_state).collect()
-    }
-
-    async fn tag_commit(
-        &mut self,
-        name: &TagName,
-        commit: CommitId,
-        created_at_ms: u64,
-    ) -> Result<(), StorageError> {
-        sqlx::query("INSERT INTO commit_tags (name, commit_id, created_at_ms) VALUES (?, ?, ?)")
-            .bind(name.as_str())
-            .bind(commit_param(commit))
-            .bind(millis_param(created_at_ms)?)
-            .execute(&self.pool)
-            .await
-            .map_err(db_err)?;
-        Ok(())
-    }
-
-    async fn untag(&mut self, name: &TagName) -> Result<bool, StorageError> {
-        let done = sqlx::query("DELETE FROM commit_tags WHERE name = ?")
-            .bind(name.as_str())
-            .execute(&self.pool)
-            .await
-            .map_err(db_err)?;
-        Ok(done.rows_affected() > 0)
-    }
-
-    async fn lookup_tag(&self, name: &TagName) -> Result<Option<CommitTag>, StorageError> {
-        let row =
-            sqlx::query("SELECT name, commit_id, created_at_ms FROM commit_tags WHERE name = ?")
-                .bind(name.as_str())
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(db_err)?;
-        row.map(|row| decode_tag(&row)).transpose()
-    }
-
-    async fn visit_tags<F>(&self, mut visit: F) -> Result<(), StorageError>
-    where
-        F: FnMut(&CommitTag) -> bool + Send,
-    {
-        let rows =
-            sqlx::query("SELECT name, commit_id, created_at_ms FROM commit_tags ORDER BY name")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(db_err)?;
-        for row in &rows {
-            if !visit(&decode_tag(row)?) {
-                break;
-            }
-        }
-        Ok(())
     }
 
     async fn visit_fresh_rows<F>(&self, commit: CommitId, mut visit: F) -> Result<(), StorageError>

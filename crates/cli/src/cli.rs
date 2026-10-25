@@ -2,7 +2,7 @@
 
 use crate::style::ColorChoice;
 use clap::{Parser, Subcommand};
-use sekai_app::{Area, ChunkCoord, CommitId, Dimension, Rect, RefName, RegionKind, Scope, TagName};
+use sekai_app::{Area, ChunkCoord, CommitId, Dimension, Rect, RefName, RegionKind, Scope};
 use std::path::{Path, PathBuf};
 
 /// Chunk-level deduplicated version control for Minecraft region files.
@@ -145,11 +145,6 @@ pub enum Command {
         #[arg(long, conflicts_with = "json")]
         progress: bool,
     },
-    /// Tag commits with human-readable names.
-    Tag {
-        #[command(subcommand)]
-        action: TagCommand,
-    },
     /// Manage refs: named, movable pointers to commits.
     Ref {
         #[command(subcommand)]
@@ -203,7 +198,6 @@ impl Command {
             Self::Checkout { .. } => "checkout",
             Self::Log { .. } => "log",
             Self::Clone { .. } => "clone",
-            Self::Tag { .. } => "tag",
             Self::Ref { .. } => "ref",
             Self::Prune { .. } => "prune",
             Self::Diff(_) => "diff",
@@ -222,52 +216,8 @@ impl Command {
             | Self::Prune { output, .. }
             | Self::Gc { output, .. } => output.json,
             Self::Log { json, .. } => *json,
-            Self::Tag { action } => action.output_json(),
             Self::Ref { action } => action.output_json(),
             Self::Diff(args) => args.output.json,
-        }
-    }
-}
-
-/// Tag operations. Modeling them as subcommands keeps every invalid
-/// argument shape (create without a commit, delete without a name,
-/// `--force` on a list) statically unrepresentable.
-#[derive(Debug, Subcommand)]
-pub enum TagCommand {
-    /// Point a tag at a commit.
-    Create {
-        /// Tag name (`[A-Za-z0-9._-]`, 1-64 bytes, not all digits).
-        name: TagName,
-        /// Commit reference (`<64-char hash>` or `@tag`, see `log`) to point at.
-        commit: CommitRef,
-        /// Move an existing tag instead of failing.
-        #[arg(long)]
-        force: bool,
-        /// Emit output as JSON instead of human text. See docs/json.md.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Delete a tag.
-    Delete {
-        /// Tag name to delete.
-        name: TagName,
-        /// Emit output as JSON instead of human text. See docs/json.md.
-        #[arg(long)]
-        json: bool,
-    },
-    /// List all tags in name order.
-    List {
-        /// Emit output as JSON instead of human text. See docs/json.md.
-        #[arg(long)]
-        json: bool,
-    },
-}
-
-impl TagCommand {
-    /// Whether the operation runs in JSON mode (`--json`).
-    pub const fn output_json(&self) -> bool {
-        match self {
-            Self::Create { json, .. } | Self::Delete { json, .. } | Self::List { json } => *json,
         }
     }
 }
@@ -345,7 +295,7 @@ impl RefCommand {
 pub struct CommitRef(String);
 
 impl CommitRef {
-    /// Raw reference text (`<64-char hash>`, `@tag`, or a ref name).
+    /// Raw reference text (`<64-char hash>` or a ref name).
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -361,14 +311,7 @@ impl std::str::FromStr for CommitRef {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if let Some(name) = s.strip_prefix('@') {
-            TagName::parse(name).map_err(|err| {
-                format!(
-                    "invalid reference {s:?}: {err}, expected @<tag> (refs are written without '@')"
-                )
-            })?;
-            Ok(Self(s.to_owned()))
-        } else if let Ok(id) = s.parse::<CommitId>() {
+        if let Ok(id) = s.parse::<CommitId>() {
             // Canonicalise so the stored spelling can never diverge from
             // the validation that accepted it.
             Ok(Self(id.to_string()))
@@ -377,7 +320,7 @@ impl std::str::FromStr for CommitRef {
         } else {
             let err = s.parse::<CommitId>().unwrap_err();
             Err(format!(
-                "invalid reference {s:?}: {err}, expected <64-char commit hash>, @<tag>, or <ref>"
+                "invalid reference {s:?}: {err}, expected <64-char commit hash> or <ref>"
             ))
         }
     }

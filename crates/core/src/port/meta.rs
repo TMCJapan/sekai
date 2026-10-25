@@ -11,8 +11,8 @@ use alloc::vec::Vec;
 use core::future::Future;
 use sekai_util::{
     ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitEntry, CommitId,
-    CommitRef, CommitTag, DiffHash, FoldOutcome, RefName, RegionFingerprint, RegionKey,
-    RegionStateEntry, TagName,
+    CommitRef, DiffHash, FoldOutcome, RefName, RegionFingerprint, RegionKey,
+    RegionStateEntry,
 };
 
 /// Commit metadata and per-chunk history storage.
@@ -165,29 +165,6 @@ pub trait MetaStore {
         fingerprints: &[RegionFingerprint],
         removed: &[RegionKey],
     ) -> impl Future<Output = Result<ApplyOutcome, Self::Error>> + Send;
-
-    /// Point `name` at `commit`. Duplicate names are a backend error;
-    /// callers check-then-insert when they need friendlier failures.
-    fn tag_commit(
-        &mut self,
-        name: &TagName,
-        commit: CommitId,
-        created_at_ms: u64,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
-
-    /// Remove `name`. Returns whether a tag was removed.
-    fn untag(&mut self, name: &TagName) -> impl Future<Output = Result<bool, Self::Error>> + Send;
-
-    /// Tag record for `name`, or `None` when it does not exist.
-    fn lookup_tag(
-        &self,
-        name: &TagName,
-    ) -> impl Future<Output = Result<Option<CommitTag>, Self::Error>> + Send;
-
-    /// Visit tags in name order. Return `false` to stop early.
-    fn visit_tags<F>(&self, visit: F) -> impl Future<Output = Result<(), Self::Error>> + Send
-    where
-        F: FnMut(&CommitTag) -> bool + Send;
 
     /// Retire `from` into `into` (`into` must be retained and have a
     /// larger local sequence than `from`):

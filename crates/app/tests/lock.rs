@@ -9,7 +9,7 @@
 
 use sekai_app::{
     BlobHash, CheckoutOptions, CloneOptions, CommitId, CommitOptions, HostWorldTree, Scope,
-    SekaiInstance, StatusOptions, TagName, WorldError, WorldLockMode, WorldTree,
+    SekaiInstance, StatusOptions, WorldError, WorldLockMode, WorldTree,
 };
 use sekai_core::MetaStore as _;
 use sekai_storage::{StorageError, StoreLockMode};
@@ -119,9 +119,6 @@ const fn is_lock_error(err: &sekai_app::AppError) -> bool {
 enum Op {
     ListCommits,
     LatestCommit,
-    ListTags,
-    CreateTag,
-    DeleteTag,
     ResolveRef,
     CommitStats,
     CommitCoords,
@@ -142,12 +139,9 @@ enum Op {
 }
 
 impl Op {
-    const ALL: [Self; 22] = [
+    const ALL: [Self; 19] = [
         Self::ListCommits,
         Self::LatestCommit,
-        Self::ListTags,
-        Self::CreateTag,
-        Self::DeleteTag,
         Self::ResolveRef,
         Self::CommitStats,
         Self::CommitCoords,
@@ -174,9 +168,6 @@ impl Op {
             Self::WorldChunkCoords => None,
             Self::ListCommits
             | Self::LatestCommit
-            | Self::ListTags
-            | Self::CreateTag
-            | Self::DeleteTag
             | Self::ResolveRef
             | Self::CommitStats
             | Self::CommitCoords
@@ -198,9 +189,6 @@ impl Op {
             Self::Checkout => Some(WorldLockMode::Exclusive),
             Self::ListCommits
             | Self::LatestCommit
-            | Self::ListTags
-            | Self::CreateTag
-            | Self::DeleteTag
             | Self::ResolveRef
             | Self::CommitStats
             | Self::CommitCoords
@@ -222,14 +210,10 @@ impl Op {
     /// the fixture commit, which every row keeps addressing.
     async fn run(self, fx: &mut Fixture) -> Result<(), sekai_app::AppError> {
         let id = fx.commit;
-        let tag = TagName::parse("held").unwrap();
         let instance = &mut fx.instance;
         match self {
             Self::ListCommits => instance.list_commits().await.map(drop),
             Self::LatestCommit => instance.latest_commit_id().await.map(drop),
-            Self::ListTags => instance.list_tags().await.map(drop),
-            Self::CreateTag => instance.create_tag(&tag, id, true).await.map(drop),
-            Self::DeleteTag => instance.delete_tag(&tag).await.map(drop),
             Self::ResolveRef => {
                 let raw = fx.commit.to_string();
                 instance.resolve_commit_ref(&raw).await.map(drop)

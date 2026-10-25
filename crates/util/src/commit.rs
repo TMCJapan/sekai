@@ -6,7 +6,6 @@ use core::str::FromStr;
 
 use crate::error::HexError;
 use crate::hash::{hex32_from, hex32_into};
-use crate::tag::TagName;
 
 /// Content-addressed commit identifier.
 ///
@@ -88,27 +87,6 @@ impl Commit {
     }
 }
 
-/// Named alias for one commit.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CommitTag {
-    /// Validated tag name.
-    pub name: TagName,
-    /// Commit the tag points at.
-    pub commit: CommitId,
-    /// Tag creation time as Unix millis (informational only).
-    pub created_at_ms: u64,
-}
-
-impl CommitTag {
-    /// Construct a tag record.
-    pub const fn new(name: TagName, commit: CommitId, created_at_ms: u64) -> Self {
-        Self {
-            name,
-            commit,
-            created_at_ms,
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {

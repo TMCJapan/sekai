@@ -55,14 +55,6 @@ CREATE TABLE region_state(
     PRIMARY KEY(dim, kind, rx, rz)
 );
 
--- Human-readable commit aliases. Tags die with their commit
--- (`ON DELETE CASCADE`): pruning a tagged commit drops its tags.
-CREATE TABLE commit_tags(
-    name TEXT PRIMARY KEY,
-    commit_id BLOB NOT NULL REFERENCES commits(id) ON DELETE CASCADE,
-    created_at_ms INTEGER NOT NULL
-);
-
 -- Named, movable pointers to commits: the store's branch model. A ref
 -- whose `commit_id` is NULL is unborn - it names a history without a
 -- commit yet. At most one ref is active, enforced by the partial index

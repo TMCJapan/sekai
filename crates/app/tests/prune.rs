@@ -65,7 +65,6 @@ fn blob_count(store: impl AsRef<Path>) -> usize {
 
 #[tokio::test]
 async fn prune_folds_and_gc_reclaims() {
-    use sekai_app::TagName;
     let root = tempdir("lifecycle");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -96,10 +95,6 @@ async fn prune_folds_and_gc_reclaims() {
         .unwrap();
     let commits = instance.list_commits().await.unwrap();
     assert_eq!(commits.len(), 3);
-    instance
-        .create_tag(&TagName::parse("doomed").unwrap(), commits[0].id, false)
-        .await
-        .unwrap();
     assert_eq!(blob_count(&store_dir), 3);
 
     // Dry-run first: one deletion planned, nothing touched.
@@ -114,11 +109,6 @@ async fn prune_folds_and_gc_reclaims() {
     assert_eq!(report.rows_folded + report.rows_dropped, 1);
     let remaining = instance.list_commits().await.unwrap();
     assert_eq!(remaining.len(), 2);
-    // The tag died with its commit by cascade.
-    assert_eq!(
-        instance.list_tags().await.unwrap(),
-        [] as [sekai_app::CommitTag; 0]
-    );
 
     // Retained commits still restore faithfully through fallback.
     let (checked_out, _) = instance
