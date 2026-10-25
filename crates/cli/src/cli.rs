@@ -311,18 +311,21 @@ impl std::str::FromStr for CommitRef {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if let Ok(id) = s.parse::<CommitId>() {
-            // Canonicalise so the stored spelling can never diverge from
-            // the validation that accepted it.
-            Ok(Self(id.to_string()))
-        } else if RefName::parse(s).is_ok() {
-            Ok(Self(s.to_owned()))
-        } else {
-            let err = s.parse::<CommitId>().unwrap_err();
-            Err(format!(
-                "invalid reference {s:?}: {err}, expected <64-char commit hash> or <ref>"
-            ))
-        }
+        s.parse::<CommitId>()
+            .map(|id| {
+                // Canonicalise so the stored spelling can never diverge from
+                // the validation that accepted it.
+                Self(id.to_string())
+            })
+            .or_else(|err| {
+                if RefName::parse(s).is_ok() {
+                    Ok(Self(s.to_owned()))
+                } else {
+                    Err(format!(
+                        "invalid reference {s:?}: {err}, expected <64-char commit hash> or <ref>"
+                    ))
+                }
+            })
     }
 }
 
