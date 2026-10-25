@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 pub struct Cli {
     /// Store directory (`commit` creates it when missing; other commands
     /// fail). Prefix with `sqlite://` explicitly if preferred.
-    #[arg(long, global = true, default_value = "sekai-store")]
+    #[arg(long, global = true, default_value = ".sekai")]
     pub store: String,
 
     /// Colorize human output. JSON output is never colorized.

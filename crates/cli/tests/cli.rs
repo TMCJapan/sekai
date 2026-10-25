@@ -21,7 +21,7 @@ fn ref_str(value: Option<&CommitRef>) -> Option<&str> {
 fn parses_subcommands() {
     let cli = Cli::try_parse_from(["sekai", "commit", "world"]).expect("commit parses");
     assert!(matches!(cli.command, Command::Commit { .. }));
-    assert_eq!(cli.store, "sekai-store");
+    assert_eq!(cli.store, ".sekai");
 
     let cli = Cli::try_parse_from(["sekai", "--store", "s", "checkout", "w", H3])
         .expect("checkout parses");
