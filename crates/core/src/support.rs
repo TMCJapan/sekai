@@ -22,24 +22,19 @@ pub enum MemError {
     /// A named parent does not exist.
     UnknownParent {
         /// Parent that was asked for.
-        id: u64,
+        id: CommitId,
     },
     /// A ref would name a commit the store does not hold.
     UnknownCommit {
         /// Commit that was asked for.
-        id: u64,
-    },
-    /// A commit named itself as a parent.
-    SelfParent {
-        /// Commit that named itself.
-        id: u64,
+        id: CommitId,
     },
     /// A retirement that does not follow the history.
     InvalidRetirement {
         /// Commit being retired.
-        from: u64,
+        from: CommitId,
         /// Intended successor.
-        into: u64,
+        into: CommitId,
     },
     /// The ref does not exist.
     UnknownRef {
@@ -51,7 +46,7 @@ pub enum MemError {
     /// The new commit does not continue the active ref's target.
     NotContinuing {
         /// Target the new commit had to include as a parent.
-        base: u64,
+        base: CommitId,
     },
     /// The active ref cannot be removed.
     ActiveRefProtected {
@@ -88,27 +83,43 @@ fn ancestor_ids(commits: &[Commit], commit: CommitId) -> BTreeSet<CommitId> {
 /// Effective rows at `commit`: exactly one row per coordinate known
 /// then, tombstones included. Mirrors the backend: the row introduced at
 /// the commit or at one of its ancestors, the nearest one winning.
+///
+/// "Nearest" follows the local sequence, never the commit hash: hashes
+/// carry no timeline order.
 fn effective_at(
     rows: &[ChunkHistoryEntry],
     commits: &[Commit],
+    seqs: &BTreeMap<CommitId, u64>,
     commit: CommitId,
 ) -> Vec<ChunkHistoryEntry> {
     let ancestors = ancestor_ids(commits, commit);
-    let mut latest: BTreeMap<ChunkCoord, ChunkHistoryEntry> = BTreeMap::new();
+    let Some(target) = seqs.get(&commit).copied() else {
+        return Vec::new();
+    };
+    let mut latest: BTreeMap<ChunkCoord, (u64, ChunkHistoryEntry)> = BTreeMap::new();
     for row in rows {
         if row.commit != commit && !ancestors.contains(&row.commit) {
             continue;
         }
+        // A row whose commit has no local sequence is corruption:
+        // retirement re-stamps or drops rows before forgetting a seq.
+        let Some(seq) = seqs.get(&row.commit).copied() else {
+            continue;
+        };
+        if seq > target {
+            continue;
+        }
         latest
             .entry(row.coord)
-            .and_modify(|kept| {
-                if row.commit > kept.commit {
+            .and_modify(|(kept_seq, kept)| {
+                if seq > *kept_seq {
+                    *kept_seq = seq;
                     *kept = *row;
                 }
             })
-            .or_insert(*row);
+            .or_insert((seq, *row));
     }
-    latest.into_values().collect()
+    latest.into_values().map(|(_, row)| row).collect()
 }
 
 /// Drive an immediately-ready future without an executor.
@@ -134,7 +145,7 @@ pub fn block_on<F: Future>(fut: F) -> F::Output {
 /// In-memory [`MetaStore`].
 #[derive(Debug, Default)]
 pub struct MemMeta {
-    /// Commits in ID order.
+    /// Commits in local record order (oldest first).
     pub commits: Vec<Commit>,
     /// Every recorded row.
     pub rows: Vec<ChunkHistoryEntry>,
@@ -144,13 +155,30 @@ pub struct MemMeta {
     pub tags: BTreeMap<TagName, CommitTag>,
     /// Refs by name.
     pub refs: BTreeMap<RefName, CommitRef>,
-    /// The next identifier to hand out. Counted separately from the
-    /// stored commits so a retirement never makes an identifier
-    /// reusable.
-    next_id: u64,
+    /// Stable local sequence per commit hash. Retirement never renumbers
+    /// surviving commits.
+    pub seqs: BTreeMap<CommitId, u64>,
+    /// Next local sequence number to assign.
+    next_seq: u64,
 }
 
 impl MemMeta {
+    fn seq_of(&self, id: CommitId) -> Option<u64> {
+        self.seqs.get(&id).copied()
+    }
+
+    /// Assign a local sequence and append the commit. Returns `false`
+    /// when the content-addressed ID already exists.
+    fn insert_commit(&mut self, id: CommitId, created_at_ms: u64, parents: Vec<CommitId>) -> bool {
+        if self.seqs.contains_key(&id) {
+            return false;
+        }
+        self.next_seq += 1;
+        self.seqs.insert(id, self.next_seq);
+        self.commits.push(Commit::new(id, created_at_ms, parents));
+        true
+    }
+
     /// Add an active ref, the way a fresh store looks: one ref, unborn,
     /// waiting for the first commit.
     ///
@@ -175,26 +203,18 @@ impl MetaStore for MemMeta {
         created_at_ms: u64,
         parents: &[CommitId],
     ) -> impl Future<Output = Result<CommitId, MemError>> + Send {
-        let id = CommitId(self.next_id + 1);
-        // Mirrors the backend: a parent must exist, a commit may not
-        // name itself, and a parent listed twice is recorded once, in the
-        // canonical (ascending identifier) order.
-        let known: BTreeSet<CommitId> = self.commits.iter().map(|c| c.id).collect();
-        for parent in parents {
-            if *parent == id {
-                return core::future::ready(Err(MemError::SelfParent { id: parent.0 }));
-            }
-            if !known.contains(parent) {
-                return core::future::ready(Err(MemError::UnknownParent { id: parent.0 }));
-            }
-        }
+        // Mirrors the backend: a parent must exist and a parent listed
+        // twice is recorded once, in canonical hash order.
         let mut unique: BTreeSet<CommitId> = BTreeSet::new();
         for parent in parents {
+            if !self.commits.iter().any(|commit| commit.id == *parent) {
+                return core::future::ready(Err(MemError::UnknownParent { id: *parent }));
+            }
             unique.insert(*parent);
         }
-        self.next_id = id.0;
-        self.commits
-            .push(Commit::new(id, created_at_ms, unique.into_iter().collect()));
+        let canonical: Vec<CommitId> = unique.into_iter().collect();
+        let id = crate::commit::commit_hash(&canonical, created_at_ms, &[], &[]);
+        self.insert_commit(id, created_at_ms, canonical);
         core::future::ready(Ok(id))
     }
 
@@ -234,16 +254,25 @@ impl MetaStore for MemMeta {
     ) -> impl Future<Output = Result<Option<ChunkHistoryEntry>, MemError>> + Send {
         // The row introduced at the commit or at one of its ancestors,
         // the nearest one winning (delta storage: unchanged chunks have
-        // no row at newer commits).
+        // no row at newer commits). Ordering uses the local sequence,
+        // never the commit hash.
         let ancestors = ancestor_ids(&self.commits, commit);
-        core::future::ready(Ok(self
-            .rows
-            .iter()
-            .filter(|row| {
-                (row.commit == commit || ancestors.contains(&row.commit)) && row.coord == *coord
-            })
-            .max_by_key(|row| row.commit)
-            .copied()))
+        let target = self.seq_of(commit);
+        let found = target.and_then(|target| {
+            self.rows
+                .iter()
+                .filter(|row| {
+                    (row.commit == commit || ancestors.contains(&row.commit)) && row.coord == *coord
+                })
+                .filter_map(|row| {
+                    self.seq_of(row.commit)
+                        .filter(|seq| *seq <= target)
+                        .map(|seq| (seq, row))
+                })
+                .max_by_key(|(seq, _)| *seq)
+                .map(|(_, row)| *row)
+        });
+        core::future::ready(Ok(found))
     }
 
     fn lookup_commit(
@@ -254,7 +283,18 @@ impl MetaStore for MemMeta {
     }
 
     fn latest_commit(&self) -> impl Future<Output = Result<Option<Commit>, MemError>> + Send {
-        core::future::ready(Ok(self.commits.last().cloned()))
+        debug_assert!(
+            self.commits
+                .iter()
+                .all(|commit| self.seqs.contains_key(&commit.id)),
+            "every recorded commit has a local sequence"
+        );
+        let latest = self
+            .commits
+            .iter()
+            .max_by_key(|commit| self.seq_of(commit.id))
+            .cloned();
+        core::future::ready(Ok(latest))
     }
 
     fn visit_commit_chunks<F>(
@@ -265,7 +305,7 @@ impl MetaStore for MemMeta {
     where
         F: FnMut(&ChunkHistoryEntry) -> bool + Send,
     {
-        for row in effective_at(&self.rows, &self.commits, commit) {
+        for row in effective_at(&self.rows, &self.commits, &self.seqs, commit) {
             if !visit(&row) {
                 break;
             }
@@ -277,7 +317,9 @@ impl MetaStore for MemMeta {
     where
         F: FnMut(&Commit) -> bool + Send,
     {
-        for commit in &self.commits {
+        let mut ordered: Vec<&Commit> = self.commits.iter().collect();
+        ordered.sort_by_key(|commit| self.seq_of(commit.id));
+        for commit in ordered {
             if !visit(commit) {
                 break;
             }
@@ -322,7 +364,7 @@ impl MetaStore for MemMeta {
         core::future::ready(Ok(states))
     }
 
-    async fn apply_commit_incremental(
+    fn apply_commit_incremental(
         &mut self,
         created_at_ms: u64,
         parents: &[CommitId],
@@ -330,7 +372,7 @@ impl MetaStore for MemMeta {
         carry_from: Option<(CommitId, &[RegionKey])>,
         fingerprints: &[RegionFingerprint],
         removed: &[RegionKey],
-    ) -> Result<ApplyOutcome, MemError> {
+    ) -> impl Future<Output = Result<ApplyOutcome, MemError>> + Send {
         // The active ref decides where the commit lands: bind it before
         // any write, so a store without one changes nothing (the backend
         // does the same in one transaction and rolls back on failure).
@@ -340,7 +382,7 @@ impl MetaStore for MemMeta {
             .find(|(_, record)| record.active)
             .map(|(name, record)| (name.clone(), record.clone()))
         else {
-            return Err(MemError::NoActiveRef);
+            return core::future::ready(Err(MemError::NoActiveRef));
         };
         debug_assert!(
             self.refs.values().filter(|record| record.active).count() <= 1,
@@ -351,7 +393,7 @@ impl MetaStore for MemMeta {
         if let Some(base) = record.commit
             && !parents.contains(&base)
         {
-            return Err(MemError::NotContinuing { base: base.0 });
+            return core::future::ready(Err(MemError::NotContinuing { base }));
         }
         // The last `?` step: it runs before any row or state write, so a
         // rejection leaves the store unchanged. Do not add fallible work
@@ -360,21 +402,31 @@ impl MetaStore for MemMeta {
         // Panics (including allocation failure) are outside this fake's
         // model: unlike SQLite's transaction, the in-memory writes cannot
         // roll back.
-        let id = self.create_commit(created_at_ms, parents).await?;
-        for entry in entries {
-            self.rows.push(ChunkHistoryEntry::new(
-                entry.coord,
-                id,
-                entry.blob,
-                entry.diff,
-            ));
+        let mut unique: BTreeSet<CommitId> = BTreeSet::new();
+        for parent in parents {
+            if !self.commits.iter().any(|commit| commit.id == *parent) {
+                return core::future::ready(Err(MemError::UnknownParent { id: *parent }));
+            }
+            unique.insert(*parent);
+        }
+        let canonical: Vec<CommitId> = unique.into_iter().collect();
+        let id = crate::commit::commit_hash(&canonical, created_at_ms, entries, removed);
+        if self.insert_commit(id, created_at_ms, canonical) {
+            for entry in entries {
+                self.rows.push(ChunkHistoryEntry::new(
+                    entry.coord,
+                    id,
+                    entry.blob,
+                    entry.diff,
+                ));
+            }
         }
         // Delta storage: carried regions contribute no rows. Their
         // effective chunks are counted from the previous commit for the
         // report; only derived state advances.
         let mut carried_chunks = 0usize;
         if let Some((prev, keys)) = carry_from {
-            for row in effective_at(&self.rows, &self.commits, prev) {
+            for row in effective_at(&self.rows, &self.commits, &self.seqs, prev) {
                 if row.blob.is_some() && keys.contains(&RegionKey::of(row.coord)) {
                     carried_chunks += 1;
                 }
@@ -406,7 +458,7 @@ impl MetaStore for MemMeta {
         // re-inserted here, so the active ref cannot lag.
         record.commit = Some(id);
         self.refs.insert(active, record);
-        Ok(ApplyOutcome { id, carried_chunks })
+        core::future::ready(Ok(ApplyOutcome { id, carried_chunks }))
     }
 
     fn tag_commit(
@@ -458,18 +510,12 @@ impl MetaStore for MemMeta {
         // Mirrors the backend: a retirement folds into a strictly newer,
         // existing commit that descends from the retired one. Folding
         // into an unrelated history would graft rows the successor never
-        // had.
-        if into <= from || !self.commits.iter().any(|c| c.id == into) {
-            return core::future::ready(Err(MemError::InvalidRetirement {
-                from: from.0,
-                into: into.0,
-            }));
-        }
-        if !ancestor_ids(&self.commits, into).contains(&from) {
-            return core::future::ready(Err(MemError::InvalidRetirement {
-                from: from.0,
-                into: into.0,
-            }));
+        // had. "Newer" follows the local sequence, not the hash.
+        let (Some(from_seq), Some(into_seq)) = (self.seq_of(from), self.seq_of(into)) else {
+            return core::future::ready(Err(MemError::InvalidRetirement { from, into }));
+        };
+        if into_seq <= from_seq || !ancestor_ids(&self.commits, into).contains(&from) {
+            return core::future::ready(Err(MemError::InvalidRetirement { from, into }));
         }
         // Rows superseded by the history `into` continues are dropped;
         // the survivors move onto it.
@@ -485,7 +531,7 @@ impl MetaStore for MemMeta {
             }
             let superseded = self.rows.iter().any(|other| {
                 other.coord == row.coord
-                    && other.commit > from
+                    && self.seq_of(other.commit).is_some_and(|seq| seq > from_seq)
                     && superseding.contains(&other.commit)
             });
             if superseded {
@@ -525,6 +571,9 @@ impl MetaStore for MemMeta {
             commit.parents.sort();
         }
         self.commits.retain(|commit| commit.id != from);
+        // The ID may be recorded again later; forget its sequence so the
+        // re-added commit gets a fresh position at the end of the timeline.
+        self.seqs.remove(&from);
         self.tags.retain(|_, tag| tag.commit != from);
         // A ref naming the retired commit follows the fold: the
         // successor holds the same effective state, so the ref keeps
@@ -547,7 +596,7 @@ impl MetaStore for MemMeta {
         if let Some(id) = commit
             && !self.commits.iter().any(|held| held.id == id)
         {
-            return core::future::ready(Err(MemError::UnknownCommit { id: id.0 }));
+            return core::future::ready(Err(MemError::UnknownCommit { id }));
         }
         // Moving a ref keeps its creation time; only a new ref records one.
         let (active, created_at_ms) = self
@@ -601,7 +650,7 @@ impl MetaStore for MemMeta {
             && let Some(commit) = record.commit
             && !self.commits.iter().any(|held| held.id == commit)
         {
-            return core::future::ready(Err(MemError::UnknownCommit { id: commit.0 }));
+            return core::future::ready(Err(MemError::UnknownCommit { id: commit }));
         }
         core::future::ready(Ok(active))
     }
@@ -616,7 +665,7 @@ impl MetaStore for MemMeta {
         if let Some(commit) = record.commit
             && !self.commits.iter().any(|held| held.id == commit)
         {
-            return core::future::ready(Err(MemError::UnknownCommit { id: commit.0 }));
+            return core::future::ready(Err(MemError::UnknownCommit { id: commit }));
         }
         for record in self.refs.values_mut() {
             record.active = record.name == *name;

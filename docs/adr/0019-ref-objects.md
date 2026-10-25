@@ -18,12 +18,10 @@ moves onto the new commit. Git keeps those pointers in files, not in
 the object database, and they are the anchors a remote sync exchanges.
 
 Sekai stores its metadata in a database, so the pointers belong there
-too. The question is what a ref *points at*: git stores an object id
-(SHA-1/SHA-256 of the commit object), because a git commit object is
-immutable and self-contained. A sekai commit is not: `prune` folds its
-rows into a successor, so no digest over its content stays stable.
-Sekai therefore points at the commit identifier - the same identifier
-`log` prints.
+too. A ref points at a commit ID. Like Git, that ID is a content hash
+(ADR-0020): it covers the logical delta recorded at commit time, not the
+physical rows a store happens to hold later. `prune` folding rows into a
+successor changes placement, not the successor's ID.
 
 The store must also answer "which ref is current" without scanning
 rows, and the answer must survive a crash with the same atomicity as
@@ -36,7 +34,7 @@ The metadata store carries a `refs` table:
 ```sql
 CREATE TABLE refs(
     name TEXT NOT NULL PRIMARY KEY,
-    commit_id INTEGER NULL REFERENCES commits(id),
+    commit_id BLOB NULL REFERENCES commits(id),
     active INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0, 1)),
     created_at_ms INTEGER NOT NULL
 );
@@ -49,9 +47,10 @@ CREATE UNIQUE INDEX idx_refs_active ON refs(active) WHERE active = 1;
   the ref a new commit hangs from - sekai's `HEAD`.
 - A fresh store starts with one active ref, `main`, unborn.
 - `RefName` allows ASCII alphanumerics plus `.`, `_`, `-`, and `/`, up
-  to 64 bytes, never all digits (a name cannot be mistaken for a commit
-  ID), never `HEAD` (reserved for the store's active ref), and no empty
-  or traversing path component.
+  to 64 bytes, never all digits, never `HEAD` (reserved for the store's
+  active ref), and no empty or traversing path component. A 64-character
+  hex spelling is always resolved as a commit hash first, so it shadows a
+  ref of that name.
 - The active ref is **never removed**: a store without one would have
   nowhere to hang new commits from.
 
@@ -65,13 +64,14 @@ store.
 Where the active ref lives was considered against SQLite's two
 application-owned header slots (`PRAGMA user_version`, taken by the
 schema version, and `PRAGMA application_id`, conventionally a file-type
-magic number). Both are 32 bits, so neither can hold a 64-bit commit
-identifier, and a header slot cannot be written together with the
-commit rows it belongs to. The pointer lives in the table instead:
+magic number). Both are 32 bits, so neither can hold a 32-byte commit
+hash, and a header slot cannot be written together with the commit rows
+it belongs to. The pointer lives in the table instead:
 one row, one boolean, updated in the commit's own transaction.
 
-Commit references accept a ref name as well: `<id>`, `@tag`, or a bare
-ref name. `HEAD` stays reserved so the active ref is never ambiguous.
+Commit references accept a ref name as well: a 64-character hash,
+`@tag`, or a bare ref name. `HEAD` stays reserved so the active ref is
+never ambiguous.
 
 Two consequences of the graph have to follow:
 

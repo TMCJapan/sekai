@@ -3,7 +3,9 @@
 //! Commits form a history graph: every commit names the commits it
 //! continues (`parents`). A store therefore answers "what did this
 //! commit inherit?" by walking parent links, not by comparing
-//! identifiers.
+//! identifiers. Commit IDs are content-addressed hashes; backends keep a
+//! local record order for traversal and tie-breaking but never expose it
+//! as an ID.
 
 use alloc::vec::Vec;
 use core::future::Future;
@@ -19,10 +21,12 @@ pub trait MetaStore {
     type Error;
 
     /// Append a commit continuing `parents`; an empty list starts a
-    /// history. IDs are monotone increasing.
+    /// history.
     ///
-    /// Every parent must exist, a commit may not name itself, and a
-    /// parent listed twice is recorded once.
+    /// The ID is derived from the commit's canonical content, so
+    /// recording the same logical commit twice returns the existing ID
+    /// instead of adding a row. Every parent must exist and a parent
+    /// listed twice is recorded once.
     fn create_commit(
         &mut self,
         created_at_ms: u64,
@@ -51,8 +55,8 @@ pub trait MetaStore {
 
     /// Effective row for (`commit`, `coord`): the row introduced at
     /// `commit` or at one of its ancestors. Of the ancestor rows, the
-    /// one with the highest commit ID wins, or `None` when no
-    /// ancestor ever recorded the coordinate.
+    /// most recently recorded one wins, or `None` when no ancestor ever
+    /// recorded the coordinate.
     fn lookup_chunk(
         &self,
         commit: CommitId,
@@ -65,13 +69,13 @@ pub trait MetaStore {
         id: CommitId,
     ) -> impl Future<Output = Result<Option<Commit>, Self::Error>> + Send;
 
-    /// Highest-ID commit in the store, or `None` when no commit has been
-    /// recorded yet.
+    /// Most recently recorded commit in the store, or `None` when no
+    /// commit has been recorded yet.
     fn latest_commit(&self) -> impl Future<Output = Result<Option<Commit>, Self::Error>> + Send;
 
     /// Visit effective rows of one commit: exactly one row per
     /// coordinate known at `commit` (the row introduced at it or at one
-    /// of its ancestors, the highest commit ID winning), including
+    /// of its ancestors, the most recently recorded winning), including
     /// tombstones. Return `false` to stop early.
     ///
     /// The effective set is materialized before the visitor runs, so the
@@ -96,7 +100,8 @@ pub trait MetaStore {
     where
         F: FnMut(&ChunkHistoryEntry) -> bool + Send;
 
-    /// Visit commits in ID order. Return `false` to stop early.
+    /// Visit commits in local record order (oldest first). Return `false`
+    /// to stop early.
     fn visit_commits<F>(&self, visit: F) -> impl Future<Output = Result<(), Self::Error>> + Send
     where
         F: FnMut(&Commit) -> bool + Send;
@@ -117,9 +122,15 @@ pub trait MetaStore {
     /// Record a commit and optionally carry unchanged regions.
     ///
     /// The new commit continues `parents`; an empty list starts a
-    /// history. As in [`Self::create_commit`], every parent must
-    /// exist, a commit may not name itself, and a parent listed twice
-    /// is recorded once. `entries` contains fresh rows and tombstones.
+    /// history. As in [`Self::create_commit`], every parent must exist
+    /// and a parent listed twice is recorded once. Recording a commit
+    /// whose hash already exists is idempotent: the existing ID is
+    /// returned and no fresh rows are written. Shared derived state
+    /// (carried region state, fingerprints, and removals), the row
+    /// counts from `carry_from`, and the active-ref move are still
+    /// applied to that commit, so a repeat record advances derived
+    /// state and the ref while the commit graph stays unchanged.
+    /// `entries` contains fresh rows and tombstones.
     /// `carry_from` identifies unchanged regions: backends advance their
     /// commit state and count their effective chunks, but write no
     /// per-chunk rows for them (delta storage). Fingerprints are
@@ -178,7 +189,8 @@ pub trait MetaStore {
     where
         F: FnMut(&CommitTag) -> bool + Send;
 
-    /// Retire `from` into `into` (`into` must be retained and newer):
+    /// Retire `from` into `into` (`into` must be retained and have a
+    /// larger local sequence than `from`):
     /// rows superseded along the history `into` continues are removed,
     /// surviving rows are re-stamped onto `into`, derived states follow,
     /// and the commit row (plus its tags, by cascade) is deleted - all

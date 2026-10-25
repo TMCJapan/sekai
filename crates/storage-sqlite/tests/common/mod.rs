@@ -42,7 +42,12 @@ where
     assert!(meta.latest_commit().await.unwrap().is_none());
     let id = meta.create_commit(1_000, &[]).await.unwrap();
     assert_eq!(meta.latest_commit().await.unwrap().unwrap().id, id);
-    assert!(meta.lookup_commit(CommitId(999)).await.unwrap().is_none());
+    assert!(
+        meta.lookup_commit(CommitId([0xFF; 32]))
+            .await
+            .unwrap()
+            .is_none()
+    );
     meta.record_chunk(id, &coord(0, 0), Some(&BlobHash([1; 32])), None)
         .await
         .unwrap();
@@ -214,8 +219,8 @@ where
         (second, first),
         (first, first),
         (second, second),
-        (second, CommitId(999)),
-        (CommitId(999), third),
+        (second, CommitId([0xFF; 32])),
+        (CommitId([0xFF; 32]), third),
     ] {
         assert!(
             meta.retire_commit(from, into).await.is_err(),
@@ -455,7 +460,7 @@ where
     let other = meta.create_commit(3_000, &[]).await.unwrap();
     let child = meta.create_commit(4_000, &[other]).await.unwrap();
 
-    // The graph, not the identifier order, decides what a commit
+    // The graph, not the local record order, decides what a commit
     // inherits: the chunk of `first` is invisible from `child`.
     assert_eq!(meta.commit_parents(second).await.unwrap(), vec![first]);
     assert_eq!(meta.commit_parents(first).await.unwrap(), vec![]);
@@ -474,7 +479,11 @@ where
             .is_some()
     );
     // A parent must exist: the graph never points at a missing commit.
-    assert!(meta.create_commit(5_000, &[CommitId(999)]).await.is_err());
+    assert!(
+        meta.create_commit(5_000, &[CommitId([0xFF; 32])])
+            .await
+            .is_err()
+    );
     // A parent listed twice is recorded once, not a broken edge.
     let twice = meta.create_commit(6_000, &[first, first]).await.unwrap();
     assert_eq!(meta.commit_parents(twice).await.unwrap(), vec![first]);
@@ -491,17 +500,18 @@ where
     assert!(walked[1].is_root());
 
     // A merge commit continues two histories at once. The parents are
-    // recorded in the canonical (ascending identifier) order, and the
-    // walk reports the direct parents first, in that order.
+    // recorded in canonical (ascending hash) order, and the walk reports
+    // the direct parents first, in that order.
     let merge = meta.create_commit(6_500, &[other, second]).await.unwrap();
-    assert_eq!(
-        meta.commit_parents(merge).await.unwrap(),
-        vec![second, other]
-    );
-    assert_eq!(
-        commit_ancestors(meta, merge).await.unwrap(),
-        vec![second, other, first]
-    );
+    let mut direct = vec![second, other];
+    direct.sort();
+    assert_eq!(meta.commit_parents(merge).await.unwrap(), direct);
+    let mut ancestors = direct.clone();
+    ancestors.push(first);
+    assert_eq!(commit_ancestors(meta, merge).await.unwrap(), ancestors);
+    let mut history = vec![merge];
+    history.extend(direct);
+    history.push(first);
     assert_eq!(
         commit_history(meta, merge)
             .await
@@ -509,7 +519,7 @@ where
             .iter()
             .map(|c| c.id)
             .collect::<Vec<_>>(),
-        vec![merge, second, other, first]
+        history
     );
 
     // Retiring a commit hands its children the history of its own

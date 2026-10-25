@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use sekai_core::{
     ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitEntry, CommitId,
     CommitRef, CommitTag, DEFAULT_REF_NAME, DiffHash, Dimension, FoldOutcome, MetaStore, RefName,
-    RegionFingerprint, RegionKey, RegionKind, RegionStateEntry, TagName,
+    RegionFingerprint, RegionKey, RegionKind, RegionStateEntry, TagName, commit_hash,
 };
 use sqlx::Row as _;
 use sqlx::sqlite::{
@@ -23,7 +23,7 @@ use sekai_storage::{
 };
 
 /// Managed schema version (`PRAGMA user_version`).
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 
 const SCHEMA: &str = include_str!("../schema/sqlite.sql");
 
@@ -294,8 +294,8 @@ impl SqliteMeta {
         .map_err(db_err)?;
         let mut map: BTreeMap<CommitId, Vec<CommitId>> = BTreeMap::new();
         for row in &rows {
-            let child = commit_id_from_i64(row.try_get("child_id").map_err(db_err)?)?;
-            let parent = commit_id_from_i64(row.try_get("parent_id").map_err(db_err)?)?;
+            let child = commit_id_from_blob(row.try_get("child_id").map_err(db_err)?)?;
+            let parent = commit_id_from_blob(row.try_get("parent_id").map_err(db_err)?)?;
             map.entry(child).or_default().push(parent);
         }
         Ok(map)
@@ -312,9 +312,9 @@ fn i64_to_u64(value: i64, column: &'static str) -> Result<u64, StorageError> {
     u64::try_from(value).map_err(|_| StorageError::InvalidHistoryValue { column, value })
 }
 
-/// Fallible `i64` row ID -> domain `CommitId`.
-fn commit_id_from_i64(id: i64) -> Result<CommitId, StorageError> {
-    i64_to_u64(id, "id").map(CommitId)
+/// Decode a 32-byte commit-ID BLOB.
+fn commit_id_from_blob(bytes: Vec<u8>) -> Result<CommitId, StorageError> {
+    hash32(bytes).map(CommitId)
 }
 
 /// Read an `i32` column with a loud error on out-of-range values.
@@ -367,8 +367,8 @@ fn decode_history(row: &sqlx::sqlite::SqliteRow) -> Result<ChunkHistoryEntry, St
     let diff = diff_bytes
         .map(|bytes| hash32(bytes).map(DiffHash))
         .transpose()?;
-    let commit_raw: i64 = row.try_get("commit_id").map_err(db_err)?;
-    let commit = commit_id_from_i64(commit_raw)?;
+    let commit_raw: Vec<u8> = row.try_get("commit_id").map_err(db_err)?;
+    let commit = commit_id_from_blob(commit_raw)?;
     Ok(ChunkHistoryEntry::new(coord, commit, blob, diff))
 }
 
@@ -386,8 +386,8 @@ fn decode_state(row: &sqlx::sqlite::SqliteRow) -> Result<RegionStateEntry, Stora
     let size = i64_to_u64(size_raw, "size")?;
     let content: Vec<u8> = row.try_get("content_hash").map_err(db_err)?;
     let content_hash = hash32(content)?;
-    let commit_raw: i64 = row.try_get("commit_id").map_err(db_err)?;
-    let commit_id = commit_id_from_i64(commit_raw)?;
+    let commit_raw: Vec<u8> = row.try_get("commit_id").map_err(db_err)?;
+    let commit_id = commit_id_from_blob(commit_raw)?;
     Ok(RegionStateEntry {
         fingerprint: RegionFingerprint {
             key,
@@ -406,8 +406,8 @@ fn decode_tag(row: &sqlx::sqlite::SqliteRow) -> Result<CommitTag, StorageError> 
     let name = TagName::parse(&name_raw).map_err(|_| StorageError::InvalidTagName {
         name: name_raw.clone(),
     })?;
-    let commit_raw: i64 = row.try_get("commit_id").map_err(db_err)?;
-    let commit = commit_id_from_i64(commit_raw)?;
+    let commit_raw: Vec<u8> = row.try_get("commit_id").map_err(db_err)?;
+    let commit = commit_id_from_blob(commit_raw)?;
     Ok(CommitTag::new(
         name,
         commit,
@@ -421,8 +421,8 @@ fn decode_ref(row: &sqlx::sqlite::SqliteRow) -> Result<CommitRef, StorageError> 
     let name_raw: String = row.try_get("name").map_err(db_err)?;
     let name =
         RefName::parse(&name_raw).map_err(|_| StorageError::InvalidRefName { name: name_raw })?;
-    let commit_raw: Option<i64> = row.try_get("commit_id").map_err(db_err)?;
-    let commit = commit_raw.map(commit_id_from_i64).transpose()?;
+    let commit_raw: Option<Vec<u8>> = row.try_get("commit_id").map_err(db_err)?;
+    let commit = commit_raw.map(commit_id_from_blob).transpose()?;
     let active_raw: i64 = row.try_get("active").map_err(db_err)?;
     let active = match active_raw {
         0 => false,
@@ -442,9 +442,9 @@ fn decode_ref(row: &sqlx::sqlite::SqliteRow) -> Result<CommitRef, StorageError> 
     ))
 }
 
-/// `CommitId` as an `INTEGER` bind parameter.
-fn commit_param(id: CommitId) -> Result<i64, StorageError> {
-    i64::try_from(id.0).map_err(|_| StorageError::InvalidCommitId(id.0))
+/// `CommitId` as a BLOB bind parameter.
+fn commit_param(id: CommitId) -> Vec<u8> {
+    id.0.to_vec()
 }
 
 /// Millis as an `INTEGER` parameter. Genuinely fallible: callers compute the
@@ -474,15 +474,15 @@ fn now_ms() -> Result<i64, StorageError> {
 
 /// Shared `chunk_history` insert used by single-row and batch commits.
 const INSERT_CHUNK_SQL: &str =
-    "INSERT INTO chunk_history (commit_id, dim, kind, cx, cz, blob, diff)
-             VALUES (?, ?, ?, ?, ?, ?, ?)";
+    "INSERT INTO chunk_history (commit_id, seq, dim, kind, cx, cz, blob, diff)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
 
 /// Ancestors of a commit: the commit itself plus every commit
 /// reachable through parent links.
 ///
 /// The recursive term walks the history graph upwards, so the set
 /// answers "what does this commit inherit?" without relying on the
-/// identifier order. `UNION` (not `UNION ALL`) keeps the walk finite even
+/// local record order. `UNION` (not `UNION ALL`) keeps the walk finite even
 /// if the graph ever holds a cycle. The seed parameter is the commit
 /// the walk starts at; `head`/`tail` split it around the seed for the
 /// queries that build their SQL piece by piece.
@@ -511,7 +511,7 @@ const LOOKUP_CHUNK_SQL: &str = concat!(
 SELECT commit_id, dim, kind, cx, cz, blob, diff FROM chunk_history
 WHERE dim = ? AND kind = ? AND cx = ? AND cz = ?
   AND commit_id IN (SELECT id FROM ancestors)
-ORDER BY commit_id DESC LIMIT 1"
+ORDER BY seq DESC LIMIT 1"
 );
 
 /// Effective rows of every coordinate at a commit.
@@ -521,21 +521,29 @@ const VISIT_CHUNKS_SQL: &str = concat!(
 SELECT dim, kind, cx, cz, blob, diff, commit_id FROM (
    SELECT dim, kind, cx, cz, blob, diff, commit_id,
      ROW_NUMBER() OVER (
-       PARTITION BY dim, kind, cx, cz ORDER BY commit_id DESC
+       PARTITION BY dim, kind, cx, cz ORDER BY seq DESC
      ) AS rn
    FROM chunk_history WHERE commit_id IN (SELECT id FROM ancestors)
 ) WHERE rn = 1 ORDER BY dim, kind, cx, cz"
 );
 
 /// Rows of a retired commit that the history of its successor already
-/// supersedes. `?1` is the retired commit, `?2` the successor.
+/// supersedes. `?1` is the retired commit, `?2` the successor, `?3` the
+/// retired commit's local sequence.
+///
+/// Soundness depends on the retired commit preceding every superseding
+/// row in local *record* order: a commit must be recorded before any of
+/// its successors' rows are. Prune always retires an older commit into a
+/// newer (larger-sequence) descendant, so the invariant holds for a
+/// single store; a store whose sequence order diverges from graph order
+/// could drop surviving rows here.
 const RETIRE_SUPERSEDED_SQL: &str = concat!(
     ancestor_cte!("?2"),
     "
 DELETE FROM chunk_history WHERE commit_id = ?1
  AND (dim, kind, cx, cz) IN (
      SELECT dim, kind, cx, cz FROM chunk_history
-     WHERE commit_id > ?1 AND commit_id IN (SELECT id FROM ancestors)
+     WHERE seq > ?3 AND commit_id IN (SELECT id FROM ancestors)
  )"
 );
 
@@ -551,9 +559,9 @@ fn decode_commit(
     row: &sqlx::sqlite::SqliteRow,
     parents: &[CommitId],
 ) -> Result<Commit, StorageError> {
-    let id: i64 = row.try_get("id").map_err(db_err)?;
+    let id: Vec<u8> = row.try_get("id").map_err(db_err)?;
     Ok(Commit::new(
-        commit_id_from_i64(id)?,
+        commit_id_from_blob(id)?,
         millis_col(row, "created_at_ms")?,
         parents.to_vec(),
     ))
@@ -561,54 +569,63 @@ fn decode_commit(
 
 /// Insert a commit row and the edges naming its parents.
 ///
-/// Every parent must exist and none of them may be the commit
-/// itself; a parent listed twice is recorded once. The checks run in
-/// the transaction, so a rejected commit leaves nothing behind.
+/// Every parent must exist and none of them may be the commit itself; a
+/// parent listed twice is recorded once. The checks run in the
+/// transaction, so a rejected commit leaves nothing behind. An identical
+/// commit (same hash) is idempotent: its row and edges already exist, and
+/// `inserted` reports `false`.
 async fn insert_commit(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    id: CommitId,
     created_at_ms: u64,
     parents: &[CommitId],
-) -> Result<CommitId, StorageError> {
-    let id: i64 = sqlx::query("INSERT INTO commits (created_at_ms) VALUES (?)")
-        .bind(millis_param(created_at_ms)?)
-        .execute(&mut **tx)
-        .await
-        .map_err(db_err)?
-        .last_insert_rowid();
-    let commit = commit_id_from_i64(id)?;
-    for parent in parents {
-        if *parent == commit {
-            return Err(StorageError::SelfParent { id: parent.0 });
-        }
-    }
+) -> Result<(i64, bool), StorageError> {
     // One query for the whole list, so a merge does not cost a round
     // trip per parent.
-    let existing: Vec<i64> = if parents.is_empty() {
-        Vec::new()
+    let existing: BTreeSet<CommitId> = if parents.is_empty() {
+        BTreeSet::new()
     } else {
         let mut qb = sqlx::QueryBuilder::new("SELECT id FROM commits WHERE id IN (");
         let mut separated = qb.separated(", ");
         for parent in parents {
-            separated.push_bind(commit_param(*parent)?);
+            separated.push_bind(commit_param(*parent));
         }
         separated.push_unseparated(")");
         qb.build_query_scalar()
             .fetch_all(&mut **tx)
             .await
             .map_err(db_err)?
+            .into_iter()
+            .map(commit_id_from_blob)
+            .collect::<Result<_, _>>()?
     };
     for parent in parents {
-        if !existing.contains(&commit_param(*parent)?) {
-            return Err(StorageError::UnknownCommit { id: parent.0 });
+        if !existing.contains(parent) {
+            return Err(StorageError::UnknownCommit { id: *parent });
         }
+    }
+    let inserted = sqlx::query("INSERT OR IGNORE INTO commits (id, created_at_ms) VALUES (?, ?)")
+        .bind(commit_param(id))
+        .bind(millis_param(created_at_ms)?)
+        .execute(&mut **tx)
+        .await
+        .map_err(db_err)?
+        .rows_affected()
+        > 0;
+    let seq: i64 = sqlx::query_scalar("SELECT seq FROM commits WHERE id = ?")
+        .bind(commit_param(id))
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(db_err)?;
+    for parent in parents {
         sqlx::query("INSERT OR IGNORE INTO commit_parents (child_id, parent_id) VALUES (?, ?)")
-            .bind(id)
-            .bind(commit_param(*parent)?)
+            .bind(commit_param(id))
+            .bind(commit_param(*parent))
             .execute(&mut **tx)
             .await
             .map_err(db_err)?;
     }
-    Ok(commit)
+    Ok((seq, inserted))
 }
 
 impl sekai_core::MetaStore for SqliteMeta {
@@ -619,8 +636,9 @@ impl sekai_core::MetaStore for SqliteMeta {
         created_at_ms: u64,
         parents: &[CommitId],
     ) -> Result<CommitId, StorageError> {
+        let id = commit_hash(parents, created_at_ms, &[], &[]);
         let mut tx = self.pool.begin().await.map_err(db_err)?;
-        let id = insert_commit(&mut tx, created_at_ms, parents).await?;
+        insert_commit(&mut tx, id, created_at_ms, parents).await?;
         tx.commit().await.map_err(db_err)?;
         Ok(id)
     }
@@ -629,12 +647,12 @@ impl sekai_core::MetaStore for SqliteMeta {
         let rows = sqlx::query(
             "SELECT parent_id FROM commit_parents WHERE child_id = ? ORDER BY parent_id",
         )
-        .bind(commit_param(commit)?)
+        .bind(commit_param(commit))
         .fetch_all(&self.pool)
         .await
         .map_err(db_err)?;
         rows.iter()
-            .map(|row| commit_id_from_i64(row.try_get("parent_id").map_err(db_err)?))
+            .map(|row| commit_id_from_blob(row.try_get("parent_id").map_err(db_err)?))
             .collect()
     }
 
@@ -645,17 +663,26 @@ impl sekai_core::MetaStore for SqliteMeta {
         blob: Option<&BlobHash>,
         diff: Option<&DiffHash>,
     ) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await.map_err(db_err)?;
+        let seq: i64 = sqlx::query_scalar("SELECT seq FROM commits WHERE id = ?")
+            .bind(commit_param(commit))
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db_err)?
+            .ok_or(StorageError::UnknownCommit { id: commit })?;
         sqlx::query(INSERT_CHUNK_SQL)
-            .bind(commit_param(commit)?)
+            .bind(commit_param(commit))
+            .bind(seq)
             .bind(i64::from(coord.dim.raw()))
             .bind(i64::from(coord.kind.raw()))
             .bind(i64::from(coord.x))
             .bind(i64::from(coord.z))
             .bind(blob.map(|h| &h.0[..]))
             .bind(diff.map(|h| &h.0[..]))
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(db_err)?;
+        tx.commit().await.map_err(db_err)?;
         Ok(())
     }
 
@@ -668,7 +695,7 @@ impl sekai_core::MetaStore for SqliteMeta {
         // ancestors: unchanged chunks have no row at newer commits
         // (delta storage). The coord index serves the point lookup.
         let row = sqlx::query(LOOKUP_CHUNK_SQL)
-            .bind(commit_param(commit)?)
+            .bind(commit_param(commit))
             .bind(i64::from(coord.dim.raw()))
             .bind(i64::from(coord.kind.raw()))
             .bind(i64::from(coord.x))
@@ -681,7 +708,7 @@ impl sekai_core::MetaStore for SqliteMeta {
 
     async fn lookup_commit(&self, id: CommitId) -> Result<Option<Commit>, StorageError> {
         let row = sqlx::query("SELECT id, created_at_ms FROM commits WHERE id = ?")
-            .bind(commit_param(id)?)
+            .bind(commit_param(id))
             .fetch_optional(&self.pool)
             .await
             .map_err(db_err)?;
@@ -693,14 +720,14 @@ impl sekai_core::MetaStore for SqliteMeta {
     }
 
     async fn latest_commit(&self) -> Result<Option<Commit>, StorageError> {
-        let row = sqlx::query("SELECT id, created_at_ms FROM commits ORDER BY id DESC LIMIT 1")
+        let row = sqlx::query("SELECT id, created_at_ms FROM commits ORDER BY seq DESC LIMIT 1")
             .fetch_optional(&self.pool)
             .await
             .map_err(db_err)?;
         let Some(row) = row else {
             return Ok(None);
         };
-        let id = commit_id_from_i64(row.try_get("id").map_err(db_err)?)?;
+        let id = commit_id_from_blob(row.try_get("id").map_err(db_err)?)?;
         let parents = self.commit_parents(id).await?;
         Ok(Some(decode_commit(&row, &parents)?))
     }
@@ -720,7 +747,7 @@ impl sekai_core::MetaStore for SqliteMeta {
         // and every caller materializes the full effective set anyway
         // (checkout groups, GC sets, plan universes).
         let rows = sqlx::query(VISIT_CHUNKS_SQL)
-            .bind(commit_param(commit)?)
+            .bind(commit_param(commit))
             .fetch_all(&self.pool)
             .await
             .map_err(db_err)?;
@@ -736,14 +763,14 @@ impl sekai_core::MetaStore for SqliteMeta {
     where
         F: FnMut(&Commit) -> bool + Send,
     {
-        let rows = sqlx::query("SELECT id, created_at_ms FROM commits ORDER BY id")
+        let rows = sqlx::query("SELECT id, created_at_ms FROM commits ORDER BY seq")
             .fetch_all(&self.pool)
             .await
             .map_err(db_err)?;
         let parents = self.parent_map().await?;
         let mut ids: Vec<CommitId> = Vec::with_capacity(rows.len());
         for row in &rows {
-            ids.push(commit_id_from_i64(row.try_get("id").map_err(db_err)?)?);
+            ids.push(commit_id_from_blob(row.try_get("id").map_err(db_err)?)?);
         }
         // The map holds every edge, so a commit without an entry is a
         // root; an edge naming a commit that is gone is corruption.
@@ -772,7 +799,7 @@ impl sekai_core::MetaStore for SqliteMeta {
             return Ok(Vec::new());
         };
         let mut qb = sqlx::QueryBuilder::new(ancestor_cte!(head));
-        qb.push_bind(commit_param(within)?);
+        qb.push_bind(commit_param(within));
         qb.push(ancestor_cte!(tail));
         qb.push(
             " SELECT dim, kind, rx, rz, mtime_ms, size, content_hash, commit_id
@@ -790,7 +817,7 @@ impl sekai_core::MetaStore for SqliteMeta {
     ) -> Result<(), StorageError> {
         sqlx::query("INSERT INTO commit_tags (name, commit_id, created_at_ms) VALUES (?, ?, ?)")
             .bind(name.as_str())
-            .bind(commit_param(commit)?)
+            .bind(commit_param(commit))
             .bind(millis_param(created_at_ms)?)
             .execute(&self.pool)
             .await
@@ -842,7 +869,7 @@ impl sekai_core::MetaStore for SqliteMeta {
             "SELECT commit_id, dim, kind, cx, cz, blob, diff FROM chunk_history
              WHERE commit_id = ?",
         )
-        .bind(commit_param(commit)?)
+        .bind(commit_param(commit))
         .fetch_all(&self.pool)
         .await
         .map_err(db_err)?;
@@ -862,62 +889,62 @@ impl sekai_core::MetaStore for SqliteMeta {
         // Preconditions are cheap to check and expensive to get wrong:
         // folding a commit into an older or equal one rewrites history
         // (a chunk first seen later becomes visible at the earlier
-        // commit), and a missing target silently no-ops.
-        if into <= from {
-            return Err(StorageError::InvalidRetirement {
-                from: from.0,
-                into: into.0,
-            });
-        }
-        for id in [from, into] {
-            let found: Option<i64> = sqlx::query_scalar("SELECT 1 FROM commits WHERE id = ?")
-                .bind(commit_param(id)?)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(db_err)?;
-            if found.is_none() {
-                return Err(StorageError::UnknownCommit { id: id.0 });
-            }
+        // commit), and a missing target silently no-ops. "Newer" follows
+        // the local sequence, not the content hash.
+        let from_seq: Option<i64> = sqlx::query_scalar("SELECT seq FROM commits WHERE id = ?")
+            .bind(commit_param(from))
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db_err)?;
+        let from_seq = from_seq.ok_or(StorageError::UnknownCommit { id: from })?;
+        let into_seq: Option<i64> = sqlx::query_scalar("SELECT seq FROM commits WHERE id = ?")
+            .bind(commit_param(into))
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db_err)?;
+        let into_seq = into_seq.ok_or(StorageError::UnknownCommit { id: into })?;
+        if into_seq <= from_seq {
+            return Err(StorageError::InvalidRetirement { from, into });
         }
         // The successor must descend from the retired commit: folding
         // into an unrelated history would graft rows the successor never
         // had.
         let descends: i64 = sqlx::query_scalar(DESCENDS_SQL)
-            .bind(commit_param(into)?)
-            .bind(commit_param(from)?)
+            .bind(commit_param(into))
+            .bind(commit_param(from))
             .fetch_one(&self.pool)
             .await
             .map_err(db_err)?;
         if descends == 0 {
-            return Err(StorageError::UnrelatedRetirement {
-                from: from.0,
-                into: into.0,
-            });
+            return Err(StorageError::UnrelatedRetirement { from, into });
         }
-        let from = commit_param(from)?;
-        let into = commit_param(into)?;
+        let from_blob = commit_param(from);
+        let into_blob = commit_param(into);
         let mut tx = self.pool.begin().await.map_err(db_err)?;
         // Rows already superseded along the history the successor continues
         // vanish; survivors move onto it. Tags follow the commit row by
         // cascade. Positional convention below: `?1` is always the retired
-        // commit, `?2` the successor.
+        // commit, `?2` the successor, `?3` its local sequence.
         let dropped = sqlx::query(RETIRE_SUPERSEDED_SQL)
-            .bind(from)
-            .bind(into)
+            .bind(&from_blob[..])
+            .bind(&into_blob[..])
+            .bind(from_seq)
             .execute(&mut *tx)
             .await
             .map_err(db_err)?
             .rows_affected();
-        let folded = sqlx::query("UPDATE chunk_history SET commit_id = ?2 WHERE commit_id = ?1")
-            .bind(from)
-            .bind(into)
-            .execute(&mut *tx)
-            .await
-            .map_err(db_err)?
-            .rows_affected();
+        let folded =
+            sqlx::query("UPDATE chunk_history SET commit_id = ?2, seq = ?3 WHERE commit_id = ?1")
+                .bind(&from_blob[..])
+                .bind(&into_blob[..])
+                .bind(into_seq)
+                .execute(&mut *tx)
+                .await
+                .map_err(db_err)?
+                .rows_affected();
         sqlx::query("UPDATE region_state SET commit_id = ?2 WHERE commit_id = ?1")
-            .bind(from)
-            .bind(into)
+            .bind(&from_blob[..])
+            .bind(&into_blob[..])
             .execute(&mut *tx)
             .await
             .map_err(db_err)?;
@@ -926,8 +953,8 @@ impl sekai_core::MetaStore for SqliteMeta {
         // naming it. The update runs before the commit row goes away -
         // the foreign key would refuse the delete otherwise.
         sqlx::query("UPDATE refs SET commit_id = ?2 WHERE commit_id = ?1")
-            .bind(from)
-            .bind(into)
+            .bind(&from_blob[..])
+            .bind(&into_blob[..])
             .execute(&mut *tx)
             .await
             .map_err(db_err)?;
@@ -940,17 +967,17 @@ impl sekai_core::MetaStore for SqliteMeta {
              FROM commit_parents AS child, commit_parents AS parent
              WHERE parent.child_id = ?1 AND child.parent_id = ?1",
         )
-        .bind(from)
+        .bind(&from_blob[..])
         .execute(&mut *tx)
         .await
         .map_err(db_err)?;
         sqlx::query("DELETE FROM commit_parents WHERE child_id = ?1 OR parent_id = ?1")
-            .bind(from)
+            .bind(&from_blob[..])
             .execute(&mut *tx)
             .await
             .map_err(db_err)?;
         sqlx::query("DELETE FROM commits WHERE id = ?")
-            .bind(from)
+            .bind(&from_blob[..])
             .execute(&mut *tx)
             .await
             .map_err(db_err)?;
@@ -970,11 +997,12 @@ impl sekai_core::MetaStore for SqliteMeta {
         fingerprints: &[RegionFingerprint],
         removed: &[RegionKey],
     ) -> Result<ApplyOutcome, StorageError> {
+        let commit = commit_hash(parents, created_at_ms, entries, removed);
         let mut tx = self.pool.begin().await.map_err(db_err)?;
         // The new commit must continue the active ref's target: moving the
         // ref onto an unrelated history would fork it. Read the target
         // before inserting, so a rejected call writes nothing.
-        let active_target: Option<Option<i64>> =
+        let active_target: Option<Option<Vec<u8>>> =
             sqlx::query_scalar("SELECT commit_id FROM refs WHERE active = 1")
                 .fetch_optional(&mut *tx)
                 .await
@@ -984,26 +1012,29 @@ impl sekai_core::MetaStore for SqliteMeta {
             return Err(StorageError::NoActiveRef);
         };
         if let Some(target) = active_target {
-            let base = commit_id_from_i64(target)?;
+            let base = commit_id_from_blob(target)?;
             if !parents.contains(&base) {
                 tx.rollback().await.map_err(db_err)?;
-                return Err(StorageError::NotContinuing { base: base.raw() });
+                return Err(StorageError::NotContinuing { base });
             }
         }
-        let commit = insert_commit(&mut tx, created_at_ms, parents).await?;
-        let id_param = commit_param(commit)?;
-        for entry in entries {
-            sqlx::query(INSERT_CHUNK_SQL)
-                .bind(id_param)
-                .bind(i64::from(entry.coord.dim.raw()))
-                .bind(i64::from(entry.coord.kind.raw()))
-                .bind(i64::from(entry.coord.x))
-                .bind(i64::from(entry.coord.z))
-                .bind(entry.blob.as_ref().map(|h| &h.0[..]))
-                .bind(entry.diff.as_ref().map(|h| &h.0[..]))
-                .execute(&mut *tx)
-                .await
-                .map_err(db_err)?;
+        let (seq, inserted) = insert_commit(&mut tx, commit, created_at_ms, parents).await?;
+        let id_param = commit_param(commit);
+        if inserted {
+            for entry in entries {
+                sqlx::query(INSERT_CHUNK_SQL)
+                    .bind(&id_param[..])
+                    .bind(seq)
+                    .bind(i64::from(entry.coord.dim.raw()))
+                    .bind(i64::from(entry.coord.kind.raw()))
+                    .bind(i64::from(entry.coord.x))
+                    .bind(i64::from(entry.coord.z))
+                    .bind(entry.blob.as_ref().map(|h| &h.0[..]))
+                    .bind(entry.diff.as_ref().map(|h| &h.0[..]))
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db_err)?;
+            }
         }
         let mut carried_chunks = 0usize;
         if let Some((prev, keys)) = carry_from {
@@ -1015,12 +1046,12 @@ impl sekai_core::MetaStore for SqliteMeta {
                 // Region predicates are structural (fixed shape per region);
                 // all values stay bound parameters.
                 let mut qb = sqlx::QueryBuilder::new(ancestor_cte!(head));
-                qb.push_bind(commit_param(prev)?);
+                qb.push_bind(commit_param(prev));
                 qb.push(ancestor_cte!(tail));
                 qb.push(
                     " SELECT COUNT(*) FROM (
                        SELECT ROW_NUMBER() OVER (
-                         PARTITION BY dim, kind, cx, cz ORDER BY commit_id DESC
+                         PARTITION BY dim, kind, cx, cz ORDER BY seq DESC
                        ) AS rn, blob
                        FROM chunk_history WHERE commit_id IN (SELECT id FROM ancestors) AND (",
                 );
@@ -1055,7 +1086,7 @@ impl sekai_core::MetaStore for SqliteMeta {
                     "UPDATE region_state SET commit_id = ?
                      WHERE dim = ? AND kind = ? AND rx = ? AND rz = ?",
                 )
-                .bind(id_param)
+                .bind(&id_param[..])
                 .bind(i64::from(key.dim.raw()))
                 .bind(i64::from(key.kind.raw()))
                 .bind(i64::from(key.rx))
@@ -1085,7 +1116,7 @@ impl sekai_core::MetaStore for SqliteMeta {
             .bind(mtime_ms)
             .bind(size)
             .bind(&fp.content_hash[..])
-            .bind(id_param)
+            .bind(&id_param[..])
             .execute(&mut *tx)
             .await.map_err(db_err)?;
         }
@@ -1105,7 +1136,7 @@ impl sekai_core::MetaStore for SqliteMeta {
         // transaction: a ref lagging behind its history would fork the
         // next commit.
         let moved = sqlx::query("UPDATE refs SET commit_id = ? WHERE active = 1")
-            .bind(id_param)
+            .bind(&id_param[..])
             .execute(&mut *tx)
             .await
             .map_err(db_err)?
@@ -1130,7 +1161,7 @@ impl sekai_core::MetaStore for SqliteMeta {
         // A new ref starts inactive; a moved ref keeps its flag and
         // creation time. `commit = None` is the documented unborn state,
         // so moving a ref back to unborn is allowed.
-        let stored_commit = commit.map(commit_param).transpose()?;
+        let stored_commit = commit.map(commit_param);
         let created_at_ms = millis_param(created_at_ms)?;
         let mut tx = self.pool.begin().await.map_err(db_err)?;
         if let Some(id) = commit {
@@ -1138,13 +1169,13 @@ impl sekai_core::MetaStore for SqliteMeta {
             // a move: report it as such instead of the foreign-key
             // violation the upsert would raise.
             let found: Option<i64> = sqlx::query_scalar("SELECT 1 FROM commits WHERE id = ?")
-                .bind(stored_commit)
+                .bind(stored_commit.as_deref())
                 .fetch_optional(&mut *tx)
                 .await
                 .map_err(db_err)?;
             if found.is_none() {
                 tx.rollback().await.map_err(db_err)?;
-                return Err(StorageError::UnknownCommit { id: id.raw() });
+                return Err(StorageError::UnknownCommit { id });
             }
         }
         sqlx::query(
@@ -1152,7 +1183,7 @@ impl sekai_core::MetaStore for SqliteMeta {
              ON CONFLICT(name) DO UPDATE SET commit_id = excluded.commit_id",
         )
         .bind(name.as_str())
-        .bind(stored_commit)
+        .bind(stored_commit.as_deref())
         .bind(created_at_ms)
         .execute(&mut *tx)
         .await
@@ -1237,9 +1268,9 @@ impl sekai_core::MetaStore for SqliteMeta {
         };
         let record = decode_ref(&row)?;
         if let Some(commit) = record.commit {
-            let target: Option<i64> = row.try_get("target").map_err(db_err)?;
+            let target: Option<Vec<u8>> = row.try_get("target").map_err(db_err)?;
             if target.is_none() {
-                return Err(StorageError::UnknownCommit { id: commit.raw() });
+                return Err(StorageError::UnknownCommit { id: commit });
             }
         }
         Ok(Some(record))
@@ -1265,10 +1296,10 @@ impl sekai_core::MetaStore for SqliteMeta {
         };
         let record = decode_ref(&row)?;
         if let Some(commit) = record.commit {
-            let target: Option<i64> = row.try_get("target").map_err(db_err)?;
+            let target: Option<Vec<u8>> = row.try_get("target").map_err(db_err)?;
             if target.is_none() {
                 tx.rollback().await.map_err(db_err)?;
-                return Err(StorageError::UnknownCommit { id: commit.raw() });
+                return Err(StorageError::UnknownCommit { id: commit });
             }
         }
         // The partial unique index allows one active row: clear the old
@@ -1403,14 +1434,16 @@ mod tests {
             .connect()
             .await
             .unwrap();
-        sqlx::query("UPDATE refs SET commit_id = 99 WHERE name = 'feature'")
+        let missing = CommitId([0xEE; 32]);
+        sqlx::query("UPDATE refs SET commit_id = ? WHERE name = 'feature'")
+            .bind(missing.0.to_vec())
             .execute(&mut raw)
             .await
             .unwrap();
         raw.close().await.unwrap();
 
         let err = meta.activate_ref(&feature).await.unwrap_err();
-        assert!(matches!(err, StorageError::UnknownCommit { id: 99 }));
+        assert!(matches!(err, StorageError::UnknownCommit { id } if id == missing));
         assert_eq!(meta.active_ref().await.unwrap().unwrap().name, main);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1448,11 +1481,12 @@ mod tests {
 
         // A stale target is a typed error, not an opaque foreign-key
         // violation, and the ref does not appear.
+        let missing = CommitId([0xEE; 32]);
         let err = meta
-            .set_ref(&feature, Some(CommitId(99)), 1_000)
+            .set_ref(&feature, Some(missing), 1_000)
             .await
             .unwrap_err();
-        assert!(matches!(err, StorageError::UnknownCommit { id: 99 }));
+        assert!(matches!(err, StorageError::UnknownCommit { id } if id == missing));
         assert!(meta.lookup_ref(&feature).await.unwrap().is_none());
     }
 
@@ -1479,6 +1513,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn recording_the_same_commit_twice_is_idempotent() {
+        let mut meta = memory_meta().await;
+        let first = meta.create_commit(1_000, &[]).await.unwrap();
+        let again = meta.create_commit(1_000, &[]).await.unwrap();
+        assert_eq!(first, again);
+        let mut commits = Vec::new();
+        meta.visit_commits(|commit| {
+            commits.push(commit.id);
+            true
+        })
+        .await
+        .unwrap();
+        assert_eq!(commits, [first]);
+
+        // Existence is the commit row, not a cached hash: a retired
+        // commit can be recorded again and gets a fresh local position.
+        let second = meta.create_commit(2_000, &[first]).await.unwrap();
+        meta.retire_commit(first, second).await.unwrap();
+        assert!(meta.lookup_commit(first).await.unwrap().is_none());
+        let again = meta.create_commit(1_000, &[]).await.unwrap();
+        assert_eq!(again, first);
+        assert!(meta.lookup_commit(first).await.unwrap().is_some());
+        assert_eq!(meta.latest_commit().await.unwrap().unwrap().id, first);
+    }
+
+    #[tokio::test]
     async fn a_commit_must_continue_the_active_ref() {
         let mut meta = memory_meta().await;
         let root = meta
@@ -1491,9 +1551,9 @@ mod tests {
             .apply_commit_incremental(2_000, &[], &[], None, &[], &[])
             .await
             .unwrap_err();
-        assert!(matches!(err, StorageError::NotContinuing { base } if base == root.raw()));
+        assert!(matches!(err, StorageError::NotContinuing { base } if base == root));
 
-        // The rejected call wrote nothing and consumed no identifier.
+        // The rejected call wrote nothing.
         assert_eq!(meta.latest_commit().await.unwrap().unwrap().id, root);
         assert_eq!(meta.active_ref().await.unwrap().unwrap().commit, Some(root));
 
@@ -1502,7 +1562,7 @@ mod tests {
             .await
             .unwrap()
             .id;
-        assert_eq!(next, CommitId(2));
+        assert_ne!(next, root);
     }
 
     #[tokio::test]
@@ -1585,9 +1645,11 @@ mod tests {
     async fn a_commit_without_an_active_ref_writes_nothing() {
         let mut meta = memory_meta().await;
         // A first commit gives the store a history.
-        meta.apply_commit_incremental(1_000, &[], &[], None, &[], &[])
+        let first = meta
+            .apply_commit_incremental(1_000, &[], &[], None, &[], &[])
             .await
-            .unwrap();
+            .unwrap()
+            .id;
         // A store whose active flag was lost (corruption or a legacy row),
         // leaving the history intact but with no head.
         sqlx::query("UPDATE refs SET active = 0")
@@ -1609,7 +1671,7 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(commits.len(), 1, "the failed commit left a row behind");
-        assert_eq!(commits[0].id, CommitId(1));
+        assert_eq!(commits[0].id, first);
     }
 
     #[tokio::test]
@@ -1711,18 +1773,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_commit_cannot_name_itself_or_a_missing_commit_as_parent() {
+    async fn a_commit_cannot_name_a_missing_commit_as_parent() {
         let mut meta = memory_meta().await;
-        // The first commit takes id 1, so naming it is a self-reference.
+        let missing = CommitId([9; 32]);
         assert!(matches!(
-            meta.create_commit(1_000, &[CommitId(1)]).await,
-            Err(StorageError::SelfParent { id: 1 })
+            meta.create_commit(1_000, &[missing]).await,
+            Err(StorageError::UnknownCommit { id }) if id == missing
         ));
-        assert!(matches!(
-            meta.create_commit(1_000, &[CommitId(9)]).await,
-            Err(StorageError::UnknownCommit { id: 9 })
-        ));
-        // The rejected attempts left nothing behind.
+        // The rejected attempt left nothing behind.
         assert!(meta.latest_commit().await.unwrap().is_none());
         let edges: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM commit_parents")
             .fetch_one(&meta.pool)
@@ -1734,12 +1792,8 @@ mod tests {
         // history alone.
         let root = meta.create_commit(2_000, &[]).await.unwrap();
         assert!(matches!(
-            meta.create_commit(3_000, &[CommitId(2)]).await,
-            Err(StorageError::SelfParent { id: 2 })
-        ));
-        assert!(matches!(
-            meta.create_commit(3_000, &[CommitId(9)]).await,
-            Err(StorageError::UnknownCommit { id: 9 })
+            meta.create_commit(3_000, &[missing]).await,
+            Err(StorageError::UnknownCommit { id }) if id == missing
         ));
         assert_eq!(meta.latest_commit().await.unwrap().unwrap().id, root);
         let edges: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM commit_parents")
@@ -1897,19 +1951,21 @@ mod tests {
         let c1 = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 32, 0);
         // The commit belongs to the store's active ref, so the next
         // commit continues it.
-        meta.apply_commit_incremental(
-            1_000,
-            &[],
-            &[
-                stage_present(c0, BlobHash([1; 32])),
-                stage_present(c1, BlobHash([2; 32])),
-            ],
-            None,
-            &[fp(key0), fp(key1)],
-            &[],
-        )
-        .await
-        .unwrap();
+        let first = meta
+            .apply_commit_incremental(
+                1_000,
+                &[],
+                &[
+                    stage_present(c0, BlobHash([1; 32])),
+                    stage_present(c1, BlobHash([2; 32])),
+                ],
+                None,
+                &[fp(key0), fp(key1)],
+                &[],
+            )
+            .await
+            .unwrap()
+            .id;
 
         // Second commit: region 0 changes, region 1 carries.
         let mut changed = fp(key0);
@@ -1950,7 +2006,7 @@ mod tests {
         // carried chunk stays readable through fallback.
         let physical: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM chunk_history WHERE commit_id = ?")
-                .bind(commit_param(report.commit).unwrap())
+                .bind(commit_param(report.commit))
                 .fetch_one(&meta.pool)
                 .await
                 .unwrap();
@@ -1961,7 +2017,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(kept.blob, Some(BlobHash([2; 32])));
-        assert_eq!(kept.commit, CommitId(1));
+        assert_eq!(kept.commit, first);
     }
 
     #[tokio::test]

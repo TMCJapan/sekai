@@ -89,7 +89,7 @@ pub async fn run(
     let style = out.style;
     println!(
         "commit {} cloned: {} files written, {} chunks restored",
-        style.bold(&id.raw().to_string()),
+        style.bold(&id.to_string()),
         report.files_written,
         report.chunks_restored
     );

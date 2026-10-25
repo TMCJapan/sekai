@@ -1,13 +1,13 @@
 # Clone
 
 ```sh
-sekai --store ./sekai-store clone 1 ./restored
+sekai --store ./sekai-store clone 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b ./restored
 ```
 
 Rebuilds a commit into a fresh directory. Unlike checkout, the live
 world is never touched — clone shares the checkout restore set but
 writes every file under the output directory at its layout-derived path.
-The commit argument accepts `<id>` or `@tag` (see [Tags](tags.md)).
+The commit argument accepts a 64-character commit hash or `@tag` (see [Tags](tags.md)).
 
 - The output directory is created when missing and must otherwise be
   empty; anything else fails loudly so clone can never clobber data.

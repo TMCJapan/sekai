@@ -1,17 +1,22 @@
+-- Content-addressed commits. `id` is the public commit hash; `seq` is a
+-- local ordering key used by MVCC queries. The sequence is never part of
+-- the commit identity and may differ across replicas. Reads order by
+-- it, so it must increase monotonically with record order inside a store.
 CREATE TABLE commits(
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    id BLOB NOT NULL UNIQUE,
     created_at_ms INTEGER NOT NULL
 );
 
 -- History graph: which commits a commit continues. The root of a
 -- history has no row, an ordinary commit one, a merge several. The
--- graph - not the identifier order - decides what a commit inherits.
+-- graph - not the local record order - decides what a commit inherits.
 -- `parent_id` has no cascade on purpose: deleting a commit that
 -- children still point at fails loudly, so a retirement rewires the
 -- children before it drops the row.
 CREATE TABLE commit_parents(
-    child_id INTEGER NOT NULL REFERENCES commits(id) ON DELETE CASCADE,
-    parent_id INTEGER NOT NULL REFERENCES commits(id),
+    child_id BLOB NOT NULL REFERENCES commits(id) ON DELETE CASCADE,
+    parent_id BLOB NOT NULL REFERENCES commits(id),
     PRIMARY KEY(child_id, parent_id)
 );
 
@@ -21,7 +26,8 @@ CREATE INDEX idx_parents_parent
     ON commit_parents(parent_id);
 
 CREATE TABLE chunk_history(
-    commit_id INTEGER NOT NULL REFERENCES commits(id),
+    commit_id BLOB NOT NULL REFERENCES commits(id),
+    seq INTEGER NOT NULL,
     dim INTEGER NOT NULL,
     kind INTEGER NOT NULL,
     cx INTEGER NOT NULL,
@@ -32,7 +38,7 @@ CREATE TABLE chunk_history(
 );
 
 CREATE INDEX idx_history_coord
-    ON chunk_history(dim, kind, cx, cz, commit_id);
+    ON chunk_history(dim, kind, cx, cz, seq);
 
 -- Derived per-region fingerprints: which commit last confirmed each
 -- file and what the file looked like. Re-observed from live world files
@@ -45,7 +51,7 @@ CREATE TABLE region_state(
     mtime_ms INTEGER NULL,
     size INTEGER NOT NULL,
     content_hash BLOB NOT NULL,
-    commit_id INTEGER NOT NULL REFERENCES commits(id),
+    commit_id BLOB NOT NULL REFERENCES commits(id),
     PRIMARY KEY(dim, kind, rx, rz)
 );
 
@@ -53,7 +59,7 @@ CREATE TABLE region_state(
 -- (`ON DELETE CASCADE`): pruning a tagged commit drops its tags.
 CREATE TABLE commit_tags(
     name TEXT PRIMARY KEY,
-    commit_id INTEGER NOT NULL REFERENCES commits(id) ON DELETE CASCADE,
+    commit_id BLOB NOT NULL REFERENCES commits(id) ON DELETE CASCADE,
     created_at_ms INTEGER NOT NULL
 );
 
@@ -69,7 +75,7 @@ CREATE TABLE commit_tags(
 -- spelling in the validator ignores case.
 CREATE TABLE refs(
     name TEXT NOT NULL COLLATE BINARY PRIMARY KEY,
-    commit_id INTEGER NULL REFERENCES commits(id),
+    commit_id BLOB NULL REFERENCES commits(id),
     active INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0, 1)),
     created_at_ms INTEGER NOT NULL
 );

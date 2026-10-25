@@ -1,9 +1,11 @@
 # Concepts
 
-- **Commit**: one recorded world state, numbered in creation order
-  (`log` shows them oldest first). Commits store only fresh rows;
-  reads resolve effective state through fallback, so metadata grows with
-  changes, not with universe size.
+- **Commit**: one recorded world state, identified by a content-addressed
+  Blake3 hash over its parents, creation time, and delta (`log` shows
+  them oldest first, using the store's local record order). Commits store
+  only fresh rows; reads resolve effective state through fallback, so
+  metadata grows with changes, not with universe size. Recording the same
+  commit twice is idempotent.
 - **Ref**: a named, movable pointer to a commit - sekai's branch. One
   ref is active, and new commits hang from it; switching the active ref
   forks the history. See [Refs](commands/refs.md).

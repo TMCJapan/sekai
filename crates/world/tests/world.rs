@@ -1369,7 +1369,7 @@ fn fingerprint_sees_a_payload_edit_with_preserved_size_and_mtime() {
     // before skipping a file.
     let stored = sekai_core::RegionStateEntry {
         fingerprint: before,
-        commit_id: sekai_core::CommitId(1),
+        commit_id: sekai_core::CommitId([1; 32]),
     };
     assert!(
         !after.matches_state(&stored),

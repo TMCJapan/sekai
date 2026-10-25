@@ -5,7 +5,7 @@
 ```sh
 sekai --store ./sekai-store log
 sekai --store ./sekai-store status ./world
-sekai --store ./sekai-store diff 1 2 --in overworld:0,0
+sekai --store ./sekai-store diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a --in overworld:0,0
 ```
 
 - `log`: コミットを古い順に表示します。日時は Unix ミリ秒タイムスタンプで保持されます（RFC 3339 形式の日時表示は通常テキスト出力時のみ）。各コミットに付与されているタグも併記されます（詳細は[タグ](tags.md)を参照）。`--stat` を指定すると、コミットごとの変更統計（fresh / tombstone / new-blob / effective の件数）も追加表示されます。ストアが空の場合は標準エラー出力に案内を表示し、終了コード 0 で正常終了します。

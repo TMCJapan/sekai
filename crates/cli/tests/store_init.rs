@@ -9,6 +9,8 @@ use sekai_cli::cli::Cli;
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+const HASH: &str = "0101010101010101010101010101010101010101010101010101010101010101";
+
 fn tempdir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "sekai-cli-{name}-{}-{}",
@@ -36,8 +38,8 @@ async fn commands_on_a_missing_store_fail_without_creating_it() {
         vec!["sekai", "--store", store, "prune", "--keep-last", "1"],
         vec!["sekai", "--store", store, "status", world],
         vec!["sekai", "--store", store, "diff"],
-        vec!["sekai", "--store", store, "checkout", world, "1"],
-        vec!["sekai", "--store", store, "clone", "1", "out"],
+        vec!["sekai", "--store", store, "checkout", world, HASH],
+        vec!["sekai", "--store", store, "clone", HASH, "out"],
     ] {
         let cli = Cli::try_parse_from(&args).expect("valid invocation");
         let err = sekai_cli::commands::run(&cli)

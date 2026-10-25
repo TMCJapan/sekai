@@ -24,10 +24,9 @@ pub const DEFAULT_REF_NAME: &str = "main";
 /// Ref names are path-like (`main`, `feature/nightly`): 1-64 bytes of
 /// ASCII alphanumerics plus `.`, `_`, `-`, and `/`, with no empty path
 /// component (no leading, trailing, or doubled `/`) and no `.` or `..`
-/// segment. The whole name is never all digits, so a decimal commit
-/// reference cannot resolve to a ref; digit-only segments in a path-like
-/// name are allowed. No ref may be named `HEAD` (the active ref is the
-/// store's HEAD equivalent).
+/// segment. The whole name is never all digits; digit-only segments in a
+/// path-like name are allowed. No ref may be named `HEAD` (the active
+/// ref is the store's HEAD equivalent).
 ///
 /// Ordering and uniqueness are byte-wise and case-sensitive, so `main`
 /// and `Main` are distinct refs; only the `HEAD` reservation ignores ASCII
@@ -250,7 +249,7 @@ mod tests {
     #[test]
     fn born_refs_name_a_commit() {
         let name = RefName::parse("main").unwrap();
-        let commit = CommitId(7);
+        let commit = CommitId([7; 32]);
         let record = CommitRef::new(name, Some(commit), false, 1_700_000_000_000);
         assert!(!record.is_unborn());
         assert!(!record.active);

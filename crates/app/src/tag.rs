@@ -30,7 +30,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
         let _lock = self.lock_store(StoreLockMode::Shared)?;
         if self.store.meta().lookup_commit(commit).await?.is_none() {
             return Err(AppError::CommitRef(
-                sekai_core::ResolveError::UnknownCommit { id: commit.0 },
+                sekai_core::ResolveError::UnknownCommit { id: commit },
             ));
         }
         let replacing = self.store.meta().lookup_tag(name).await?.is_some();
@@ -64,7 +64,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
             .map_err(AppError::Commit)
     }
 
-    /// Resolve a commit reference (`<id>` or `@tag`).
+    /// Resolve a commit reference (`<64-char hash>` or `@tag`).
     pub async fn resolve_commit_ref(&self, raw: &str) -> Result<CommitId, AppError> {
         let _lock = self.lock_store(StoreLockMode::Shared)?;
         sekai_core::usecase::graph::resolve_commit_ref(self.store.meta(), raw)

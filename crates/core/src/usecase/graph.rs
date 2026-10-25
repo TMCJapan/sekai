@@ -15,7 +15,7 @@ pub enum CommitError<M> {
     /// No commit with this ID exists.
     UnknownCommit {
         /// Requested commit ID.
-        id: u64,
+        id: CommitId,
     },
 }
 
@@ -28,7 +28,7 @@ impl<M: fmt::Debug> fmt::Display for CommitError<M> {
     }
 }
 
-/// List all commits in ID order.
+/// List all commits in local record order (oldest first).
 pub async fn list_commits<M: MetaStore>(meta: &M) -> Result<Vec<Commit>, CommitError<M::Error>> {
     let mut out = Vec::new();
     meta.visit_commits(|commit| {
@@ -58,7 +58,7 @@ pub async fn commit_parents<M: MetaStore>(
 /// The walk follows parent links, so it covers the whole history the
 /// commit descends from. The ancestors come by distance: the direct
 /// parents first, then their parents, and so on; within one distance
-/// they come in ascending ID order. Each commit is reported once.
+/// they come in ascending hash order. Each commit is reported once.
 ///
 /// A commit continues commits that are older than it, so the graph
 /// is acyclic by construction; the visited set is the guard that keeps
@@ -131,7 +131,7 @@ async fn lookup_record<M: MetaStore>(
     meta.lookup_commit(commit)
         .await
         .map_err(CommitError::Meta)?
-        .ok_or(CommitError::UnknownCommit { id: commit.0 })
+        .ok_or(CommitError::UnknownCommit { id: commit })
 }
 
 /// List all tags in name order.
@@ -211,7 +211,7 @@ pub enum ResolveError<M> {
     /// No commit with this ID exists.
     UnknownCommit {
         /// Requested commit ID.
-        id: u64,
+        id: CommitId,
     },
     /// No tag with this name exists.
     UnknownTag {
@@ -245,22 +245,21 @@ impl<M: fmt::Debug> fmt::Display for ResolveError<M> {
             Self::UnbornRef { name } => write!(f, "ref has no commit yet: {name}"),
             Self::InvalidRef { raw } => write!(
                 f,
-                "invalid reference: {raw:?}, expected <id>, @<tag>, or <ref>"
+                "invalid reference: {raw:?}, expected <64-char commit hash>, @<tag>, or <ref>"
             ),
         }
     }
 }
 
-/// Resolve a commit reference: a decimal ID, `@tag` for a tag name, or a
-/// bare ref name.
+/// Resolve a commit reference: a 64-character hexadecimal commit ID,
+/// `@tag` for a tag name, or a bare ref name.
 ///
 /// The `@` prefix is tag-only: a ref called `main` is written `main`,
 /// and `@main` is an unknown tag, not that ref. A bare name is tried as
-/// a decimal ID first, so `01` (and every other spelling `u64` accepts)
-/// resolves to commit 1; anything else names a ref. A valid ref name is
-/// never entirely digits, so the decimal branch can never shadow one: a
-/// numeric spelling is either a commit ID or `UnknownCommit`, never a
-/// ref. An unborn ref has no commit to point at yet.
+/// a commit ID first: a 64-character hexadecimal spelling is either a
+/// commit ID or `UnknownCommit`, never a ref, so a ref whose name is
+/// exactly 64 hex characters is shadowed. An unborn ref has no commit to
+/// point at yet.
 pub async fn resolve_commit_ref<M: MetaStore>(
     meta: &M,
     raw: &str,
@@ -276,9 +275,9 @@ pub async fn resolve_commit_ref<M: MetaStore>(
             .map(|record| record.commit)
             .ok_or(ResolveError::UnknownTag { name: tag });
     }
-    if let Ok(id) = raw.parse::<u64>() {
+    if let Ok(id) = raw.parse::<CommitId>() {
         return meta
-            .lookup_commit(CommitId(id))
+            .lookup_commit(id)
             .await
             .map_err(ResolveError::Meta)?
             .map(|commit| commit.id)
@@ -297,20 +296,22 @@ pub async fn resolve_commit_ref<M: MetaStore>(
 mod tests {
     use super::*;
     use crate::support::{MemMeta, block_on};
+    use alloc::string::ToString;
     use sekai_util::CommitTag;
 
     #[test]
-    fn lists_in_id_order() {
+    fn lists_in_local_sequence_order() {
         let mut meta = MemMeta::default();
-        block_on(meta.create_commit(300, &[])).unwrap();
-        block_on(meta.create_commit(100, &[])).unwrap();
+        let first = block_on(meta.create_commit(300, &[])).unwrap();
+        let second = block_on(meta.create_commit(100, &[])).unwrap();
         let listed = block_on(list_commits(&meta)).unwrap();
         assert_eq!(listed.len(), 2);
-        assert!(listed[0].id < listed[1].id);
+        assert_eq!(listed[0].id, first);
+        assert_eq!(listed[1].id, second);
     }
 
     #[test]
-    fn resolves_ids_tags_and_refs() {
+    fn resolves_hashes_tags_and_refs() {
         use sekai_util::TagName;
         let mut meta = MemMeta::default();
         let first = block_on(meta.create_commit(100, &[])).unwrap();
@@ -319,11 +320,17 @@ mod tests {
         let branch = RefName::parse("main").unwrap();
         block_on(meta.set_ref(&branch, Some(second), 300)).unwrap();
 
-        assert_eq!(block_on(resolve_commit_ref(&meta, "1")), Ok(first));
-        // `u64` accepts leading zeroes and a leading `+`; both spellings
-        // resolve as IDs, and no valid ref name can take that shape.
-        assert_eq!(block_on(resolve_commit_ref(&meta, "01")), Ok(first));
-        assert_eq!(block_on(resolve_commit_ref(&meta, "+1")), Ok(first));
+        let first_hex = first.to_string();
+        assert_eq!(first_hex.len(), 64);
+        assert_eq!(block_on(resolve_commit_ref(&meta, &first_hex)), Ok(first));
+        assert_eq!(block_on(resolve_commit_ref(&meta, "@stable")), Ok(second));
+        assert_eq!(block_on(resolve_commit_ref(&meta, "main")), Ok(second));
+        assert_eq!(
+            block_on(resolve_commit_ref(&meta, &"f".repeat(64))),
+            Err(ResolveError::UnknownCommit {
+                id: CommitId::from_hex("f".repeat(64).as_bytes()).unwrap()
+            })
+        );
         assert_eq!(
             block_on(resolve_commit_ref(&meta, " 1")),
             Err(ResolveError::InvalidRef { raw: " 1".into() })
@@ -333,12 +340,6 @@ mod tests {
             Err(ResolveError::InvalidRef {
                 raw: alloc::string::String::new()
             })
-        );
-        assert_eq!(block_on(resolve_commit_ref(&meta, "@stable")), Ok(second));
-        assert_eq!(block_on(resolve_commit_ref(&meta, "main")), Ok(second));
-        assert_eq!(
-            block_on(resolve_commit_ref(&meta, "9")),
-            Err(ResolveError::UnknownCommit { id: 9 })
         );
         assert_eq!(
             block_on(resolve_commit_ref(&meta, "@missing")),
@@ -360,28 +361,21 @@ mod tests {
             block_on(resolve_commit_ref(&meta, "@123")),
             Err(ResolveError::InvalidRef { .. })
         ));
-        assert!(matches!(
-            block_on(resolve_commit_ref(&meta, "")),
-            Err(ResolveError::InvalidRef { .. })
-        ));
     }
 
     #[test]
-    fn numeric_spellings_are_commits_not_ref_names() {
-        use sekai_util::RefNameError;
-
-        // The resolver tries a decimal ID before a ref. `u64::from_str`
-        // accepts these spellings; `RefName` rejects digit-only names, so
-        // the two namespaces cannot overlap.
-        for raw in ["123", "01", "+1"] {
-            assert!(raw.parse::<u64>().is_ok());
-        }
-        assert_eq!(RefName::parse("123"), Err(RefNameError::Numeric));
-
-        let meta = MemMeta::default();
+    fn a_hex_ref_name_is_shadowed_by_commit_resolution() {
+        // A 64-character hex spelling always resolves as a commit ID: an
+        // unknown one is `UnknownCommit`, never the ref of the same name.
+        let mut meta = MemMeta::default();
+        let hex = "a".repeat(64);
+        let name = RefName::parse(&hex).unwrap();
+        block_on(meta.set_ref(&name, None, 100)).unwrap();
         assert_eq!(
-            block_on(resolve_commit_ref(&meta, "123")),
-            Err(ResolveError::UnknownCommit { id: 123 })
+            block_on(resolve_commit_ref(&meta, &hex)),
+            Err(ResolveError::UnknownCommit {
+                id: CommitId::from_hex(hex.as_bytes()).unwrap()
+            })
         );
     }
 
@@ -537,32 +531,29 @@ mod tests {
     #[test]
     fn an_unknown_commit_is_not_a_root() {
         let meta = MemMeta::default();
+        let id = CommitId([7; 32]);
         assert_eq!(
-            block_on(commit_parents(&meta, CommitId(7))).unwrap_err(),
-            CommitError::UnknownCommit { id: 7 }
+            block_on(commit_parents(&meta, id)).unwrap_err(),
+            CommitError::UnknownCommit { id }
         );
         assert_eq!(
-            block_on(commit_ancestors(&meta, CommitId(7))).unwrap_err(),
-            CommitError::UnknownCommit { id: 7 }
+            block_on(commit_ancestors(&meta, id)).unwrap_err(),
+            CommitError::UnknownCommit { id }
         );
         assert_eq!(
-            block_on(commit_history(&meta, CommitId(7))).unwrap_err(),
-            CommitError::UnknownCommit { id: 7 }
+            block_on(commit_history(&meta, id)).unwrap_err(),
+            CommitError::UnknownCommit { id }
         );
     }
 
     #[test]
-    fn a_commit_cannot_name_a_missing_or_itself_as_parent() {
+    fn a_commit_cannot_name_a_missing_parent() {
         use crate::support::MemError;
         let mut meta = MemMeta::default();
-        // The first commit takes id 1, so naming it is a self-reference.
+        let missing = CommitId([9; 32]);
         assert_eq!(
-            block_on(meta.create_commit(100, &[CommitId(1)])).unwrap_err(),
-            MemError::SelfParent { id: 1 }
-        );
-        assert_eq!(
-            block_on(meta.create_commit(100, &[CommitId(9)])).unwrap_err(),
-            MemError::UnknownParent { id: 9 }
+            block_on(meta.create_commit(100, &[missing])).unwrap_err(),
+            MemError::UnknownParent { id: missing }
         );
         // A parent listed twice is recorded once.
         let root = block_on(meta.create_commit(100, &[])).unwrap();
@@ -583,8 +574,8 @@ mod tests {
         assert_eq!(
             block_on(meta.retire_commit(first, other)).unwrap_err(),
             MemError::InvalidRetirement {
-                from: first.0,
-                into: other.0
+                from: first,
+                into: other
             }
         );
         // The successor in the same history is fine.
@@ -592,14 +583,26 @@ mod tests {
     }
 
     #[test]
-    fn identifiers_are_never_reused_after_a_retirement() {
+    fn repeating_a_commit_is_idempotent() {
+        let mut meta = MemMeta::default();
+        let first = block_on(meta.create_commit(100, &[])).unwrap();
+        let again = block_on(meta.create_commit(100, &[])).unwrap();
+        assert_eq!(first, again);
+        assert_eq!(block_on(list_commits(&meta)).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_retired_commit_can_be_recorded_again() {
         let mut meta = MemMeta::default();
         let first = block_on(meta.create_commit(100, &[])).unwrap();
         let second = block_on(meta.create_commit(200, &[first])).unwrap();
         block_on(meta.retire_commit(first, second)).unwrap();
-        // The retired identifier is gone, but it is not handed out again:
-        // history rows still reference it.
-        let third = block_on(meta.create_commit(300, &[])).unwrap();
-        assert!(third > second);
+        // Retirement forgets the commit and its local position, so the
+        // same content-addressed commit can enter the store again.
+        assert!(block_on(meta.lookup_commit(first)).unwrap().is_none());
+        let again = block_on(meta.create_commit(100, &[])).unwrap();
+        assert_eq!(again, first);
+        assert!(block_on(meta.lookup_commit(first)).unwrap().is_some());
+        assert_eq!(block_on(list_commits(&meta)).unwrap().len(), 2);
     }
 }

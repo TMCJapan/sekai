@@ -1,13 +1,13 @@
 # Checkout
 
 ```sh
-sekai --store ./sekai-store checkout ./world 1
+sekai --store ./sekai-store checkout ./world 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b
 sekai --store ./sekai-store checkout ./world @stable --in overworld
 ```
 
 Rebuilds the world from a commit, overwriting region files atomically
 (temp file in the target directory + `fsync` + `rename`; in-place
-mutation never happens). The commit argument accepts `<id>` or `@tag`
+mutation never happens). The commit argument accepts a 64-character commit hash or `@tag`
 (see [Tags](tags.md)). Files are stamped with the commit time, and
 volatile tags are rewound to capture values.
 

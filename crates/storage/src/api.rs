@@ -4,7 +4,7 @@
 
 use std::path::{Path, PathBuf};
 
-pub use sekai_core::{BlobStore, MetaStore};
+pub use sekai_core::{BlobStore, CommitId, MetaStore};
 
 /// Failures while storing blobs or metadata.
 #[derive(Debug, thiserror::Error)]
@@ -101,7 +101,7 @@ pub enum StorageError {
     #[error("new commit does not continue the active ref's target {base}")]
     NotContinuing {
         /// Target commit ID the new commit had to include as a parent.
-        base: u64,
+        base: CommitId,
     },
     /// Stored region-family code does not name a known kind.
     #[error("stored region kind is unknown: {kind}")]
@@ -127,36 +127,27 @@ pub enum StorageError {
     /// Region file size does not fit `i64`.
     #[error("region size out of range: {0}")]
     InvalidSize(u64),
-    /// Commit ID does not fit SQLite's signed integer type.
-    #[error("commit ID out of range: {0}")]
-    InvalidCommitId(u64),
     /// A retirement must fold a commit into a strictly newer one.
     #[error("cannot retire commit {from} into {into}: the successor must be newer")]
     InvalidRetirement {
         /// Commit being retired.
-        from: u64,
+        from: CommitId,
         /// Intended successor.
-        into: u64,
+        into: CommitId,
     },
     /// A retirement must fold a commit into one of its descendants.
     #[error("cannot retire commit {from} into {into}: the successor must descend from it")]
     UnrelatedRetirement {
         /// Commit being retired.
-        from: u64,
+        from: CommitId,
         /// Intended successor.
-        into: u64,
+        into: CommitId,
     },
     /// The named commit does not exist.
     #[error("unknown commit: {id}")]
     UnknownCommit {
         /// Requested commit ID.
-        id: u64,
-    },
-    /// A commit may not continue itself.
-    #[error("commit {id} cannot be its own parent")]
-    SelfParent {
-        /// Commit that named itself.
-        id: u64,
+        id: CommitId,
     },
     /// Database schema version is not supported.
     #[error(
