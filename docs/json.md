@@ -176,16 +176,15 @@ Commit arguments to `checkout`, `clone`, and `diff` accept `<id>` or
 
 ### `ref`
 
-Create (`ref create <name> [<commit>]`), activate (`ref activate
-<name>`) and the deletion record (`ref delete <name>`) return the
-record:
+Create (`ref create <name> [<commit>]`) and activate (`ref activate
+<name>`) return the record:
 
 ```jsonc
 {"name": "main", "commit": 2, "active": true, "created_at_ms": 1700000001000}
 ```
 
-`commit` is `null` while the ref is unborn (it names a history without
-a commit yet). `ref list` lists all refs in name order:
+Deletion returns `{"name": "main"}`. `ref list` lists all refs in name
+order:
 
 ```jsonc
 [{"name": "feature", "commit": null, "active": false, "created_at_ms": 1700000001000},

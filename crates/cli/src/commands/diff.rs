@@ -172,7 +172,7 @@ async fn resolve_commit_pair(
         instance: &sekai_app::SekaiInstance<impl SekaiStore>,
     ) -> anyhow::Result<CommitId> {
         match instance.active_ref().await? {
-            None => Err(AppError::NoCommits.into()),
+            None => anyhow::bail!("no active ref to diff against"),
             Some(active) => active
                 .commit
                 .map_or_else(|| Err(AppError::NoCommits.into()), Ok),
