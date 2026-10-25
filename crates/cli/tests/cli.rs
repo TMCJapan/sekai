@@ -278,6 +278,10 @@ fn validates_commit_refs_at_parse_time() {
         vec!["sekai", "checkout", "w", "@bad name"],
         vec!["sekai", "checkout", "w", "bad name"],
         vec!["sekai", "checkout", "w", "HEAD"],
+        vec!["sekai", "checkout", "w", "/main"],
+        vec!["sekai", "checkout", "w", "main/"],
+        vec!["sekai", "checkout", "w", "a//b"],
+        vec!["sekai", "checkout", "w", "a/../b"],
         vec!["sekai", "clone", "bad name", "out"],
         vec!["sekai", "prune", "--before", "bad name"],
         vec!["sekai", "diff", "1", "bad name"],
@@ -287,7 +291,11 @@ fn validates_commit_refs_at_parse_time() {
         vec!["sekai", "ref", "create", "bad name"],
         vec!["sekai", "ref", "create", "main", "HEAD"],
         vec!["sekai", "ref", "create", "HEAD"],
+        vec!["sekai", "ref", "create"],
+        vec!["sekai", "ref", "create", "123"],
+        vec!["sekai", "ref", "create", "main", "3", "4"],
         vec!["sekai", "ref", "delete"],
+        vec!["sekai", "ref"],
     ] {
         assert!(Cli::try_parse_from(&args).is_err(), "{args:?} is refused");
     }
@@ -737,8 +745,8 @@ fn parses_timing_and_json_flags() {
     assert!(matches!(
         &cli.command,
         Command::Ref {
-            action: RefCommand::Delete { json: false, .. }
-        }
+            action: RefCommand::Delete { name, json: false }
+        } if name.as_str() == "stable"
     ));
     assert_eq!(cli.command.name(), "ref");
     assert!(!cli.command.output_json());

@@ -190,7 +190,7 @@ async fn resolve_commit_pair(
             .commit_parents(commit)
             .await?
             .into_iter()
-            .next()
+            .min()
             .with_context(|| format!("commit {} has no parent to diff against", commit.raw()))
     }
     match (old_commit, new_commit) {
