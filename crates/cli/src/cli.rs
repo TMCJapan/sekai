@@ -279,7 +279,8 @@ pub enum RefCommand {
     /// Point a ref at a commit.
     Create {
         /// Ref name (ASCII alphanumerics plus ".", "_", "-", "/"; 1-64
-        /// bytes; not all digits).
+        /// bytes; not all digits). Written bare (never `@`-prefixed); ref
+        /// names feed back as `RefName` tokens, not as `CommitRef`s.
         name: RefName,
         /// Commit reference (`<id>`, `@tag`, or a ref name) to point at.
         /// Defaults to the active ref's target.
@@ -430,7 +431,7 @@ pub struct DiffArgs {
     #[arg(long)]
     pub world: Option<PathBuf>,
     /// Older commit reference (`<id>`, `@tag`, or `<ref>`; when comparing
-    /// commits and omitted, defaults to the first parent of the newer
+    /// commits and omitted, defaults to the lowest-ID parent of the newer
     /// side). With `--world`, the single commit to compare against
     /// (default: the active ref's target).
     pub old_commit: Option<CommitRef>,

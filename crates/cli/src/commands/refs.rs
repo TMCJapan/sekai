@@ -6,6 +6,7 @@ use serde::Serialize;
 use crate::cli::RefCommand;
 use crate::envelope::envelope_ok;
 use crate::style::Styler;
+use anyhow::Context as _;
 
 pub async fn run(store: &str, action: &RefCommand, style: Styler) -> anyhow::Result<()> {
     let mut instance = sekai_app::SekaiInstance::open(store).await?;
@@ -18,15 +19,26 @@ pub async fn run(store: &str, action: &RefCommand, style: Styler) -> anyhow::Res
             json,
         } => {
             // Without an explicit target the ref starts where the active
-            // ref stands; an unborn active ref creates an unborn ref.
-            // Without an explicit target the ref starts where the active
             // ref stands (possibly unborn, yielding an unborn ref); an
             // explicit target must already name a stored commit.
             let target = match commit {
-                Some(reference) => Some(instance.resolve_commit_ref(reference.as_str()).await?),
-                None => instance.current_commit_id().await?,
+                Some(reference) => Some(
+                    instance
+                        .resolve_commit_ref(reference.as_str())
+                        .await
+                        .with_context(|| {
+                            format!("ref target commit {reference} failed to resolve")
+                        })?,
+                ),
+                None => instance
+                    .current_commit_id()
+                    .await
+                    .with_context(|| format!("ref target of {store} failed to resolve"))?,
             };
-            let record = instance.create_ref(name, target, *force).await?;
+            let record = instance
+                .create_ref(name, target, *force)
+                .await
+                .with_context(|| format!("ref {name} failed"))?;
             if *json {
                 println!("{}", envelope_ok("ref", &ref_payload(&record))?);
                 return Ok(());
@@ -44,9 +56,10 @@ pub async fn run(store: &str, action: &RefCommand, style: Styler) -> anyhow::Res
             }
         }
         RefCommand::Delete { name, json } => {
-            // Errors from the store (such as removing the active ref)
-            // surface with their own message; do not wrap them.
-            let removed = instance.delete_ref(name).await?;
+            let removed = instance
+                .delete_ref(name)
+                .await
+                .with_context(|| format!("delete of ref {name} failed"))?;
             if !removed {
                 anyhow::bail!("unknown ref: {name}");
             }
@@ -65,7 +78,10 @@ pub async fn run(store: &str, action: &RefCommand, style: Styler) -> anyhow::Res
             println!("deleted ref {}", style.bold(name.as_str()));
         }
         RefCommand::List { json } => {
-            let refs = instance.list_refs().await?;
+            let refs = instance
+                .list_refs()
+                .await
+                .with_context(|| format!("ref list for {store} failed"))?;
             if *json {
                 println!(
                     "{}",
@@ -88,7 +104,10 @@ pub async fn run(store: &str, action: &RefCommand, style: Styler) -> anyhow::Res
             }
         }
         RefCommand::Activate { name, json } => {
-            let record = instance.activate_ref(name).await?;
+            let record = instance
+                .activate_ref(name)
+                .await
+                .with_context(|| format!("activation of ref {name} failed"))?;
             if *json {
                 println!("{}", envelope_ok("ref", &ref_payload(&record))?);
                 return Ok(());

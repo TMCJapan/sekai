@@ -23,6 +23,16 @@ fn parses_subcommands() {
         .expect("checkout parses");
     assert!(matches!(&cli.command, Command::Checkout { commit, .. } if commit.as_str() == "3"));
 
+    let cli =
+        Cli::try_parse_from(["sekai", "checkout", "w", "main"]).expect("checkout bare ref parses");
+    assert!(matches!(&cli.command, Command::Checkout { commit, .. } if commit.as_str() == "main"));
+    let cli = Cli::try_parse_from(["sekai", "checkout", "w", "feature/nightly"])
+        .expect("checkout bare ref parses");
+    assert!(matches!(
+        &cli.command,
+        Command::Checkout { commit, .. } if commit.as_str() == "feature/nightly"
+    ));
+
     assert!(Cli::try_parse_from(["sekai", "checkout", "w"]).is_err());
 
     let cli = Cli::try_parse_from(["sekai", "status", "w"]).expect("status parses");
@@ -278,7 +288,6 @@ fn validates_commit_refs_at_parse_time() {
         vec!["sekai", "ref", "create", "main", "HEAD"],
         vec!["sekai", "ref", "create", "HEAD"],
         vec!["sekai", "ref", "delete"],
-        vec!["sekai", "ref", "list", "--force"],
     ] {
         assert!(Cli::try_parse_from(&args).is_err(), "{args:?} is refused");
     }
@@ -679,6 +688,7 @@ fn parses_timing_and_json_flags() {
         vec!["sekai", "tag", "create", "bad name", "3"],
         vec!["sekai", "tag", "delete", "stable", "--force"],
         vec!["sekai", "tag", "list", "stable"],
+        vec!["sekai", "ref", "list", "--force"],
     ] {
         assert!(Cli::try_parse_from(&args).is_err(), "{args:?} is refused");
     }
@@ -727,10 +737,21 @@ fn parses_timing_and_json_flags() {
     assert!(matches!(
         &cli.command,
         Command::Ref {
-            action: RefCommand::Delete { .. }
+            action: RefCommand::Delete { json: false, .. }
         }
     ));
     assert_eq!(cli.command.name(), "ref");
+    assert!(!cli.command.output_json());
+
+    let cli = Cli::try_parse_from(["sekai", "ref", "delete", "stable", "--json"])
+        .expect("ref delete --json parses");
+    assert!(matches!(
+        &cli.command,
+        Command::Ref {
+            action: RefCommand::Delete { json: true, .. }
+        }
+    ));
+    assert!(cli.command.output_json());
 
     let cli =
         Cli::try_parse_from(["sekai", "ref", "list", "--json"]).expect("ref list --json parses");
@@ -747,8 +768,8 @@ fn parses_timing_and_json_flags() {
     assert!(matches!(
         &cli.command,
         Command::Ref {
-            action: RefCommand::Activate { json: true, .. }
-        }
+            action: RefCommand::Activate { name, json: true }
+        } if name.as_str() == "main"
     ));
     assert_eq!(cli.command.name(), "ref");
     assert!(cli.command.output_json());

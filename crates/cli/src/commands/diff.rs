@@ -175,10 +175,9 @@ async fn resolve_commit_pair(
             None => Err(AppError::NoCommits.into()),
             Some(active) => match active.commit {
                 Some(id) => Ok(id),
-                None => anyhow::bail!(
-                    "active ref {} is unborn (no commit yet); activate a born ref first",
-                    active.name.as_str()
-                ),
+                // AppError::NoCommits documents "the store is empty or the
+                // active ref is unborn"; reuse it instead of a raw string.
+                None => Err(AppError::NoCommits.into()),
             },
         }
     }
