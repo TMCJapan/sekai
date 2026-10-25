@@ -1,8 +1,8 @@
 # メンテナンス
 
 ```sh
-sekai --store ./sekai-store gc --dry-run
-sekai --store ./sekai-store gc
+sekai gc --dry-run
+sekai gc
 ```
 
 `gc` は、どのコミットからも参照されていない孤立した CAS Blob を回収（削除）します。
@@ -17,9 +17,9 @@ GC が削除するのは孤立した Blob のみであり、メタデータを�
 ## コミットの整理・削減 (Prune)
 
 ```sh
-sekai --store ./sekai-store prune --keep-last 10 --dry-run
-sekai --store ./sekai-store prune --keep-last 10
-sekai --store ./sekai-store prune --before @stable
+sekai prune --keep-last 10 --dry-run
+sekai prune --keep-last 10
+sekai prune --before @stable
 ```
 
 `prune` は不要になった古いコミットを削除します。

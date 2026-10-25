@@ -1,10 +1,10 @@
 # タグ
 
 ```sh
-sekai --store ./sekai-store tag create stable 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b
-sekai --store ./sekai-store tag create stable @prev --force
-sekai --store ./sekai-store tag delete stable
-sekai --store ./sekai-store tag list
+sekai tag create stable 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b
+sekai tag create stable @prev --force
+sekai tag delete stable
+sekai tag list
 ```
 
 タグはコミットにわかりやすいエイリアス（別名）を付与し、チェックアウト時などの対象指定を可読性の高い状態に保ちます（64 文字のハッシュの代わりに `checkout ./world @stable` と指定可能）。

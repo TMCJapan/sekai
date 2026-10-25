@@ -1,7 +1,7 @@
 # Clone
 
 ```sh
-sekai --store ./sekai-store clone 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b ./restored
+sekai clone 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b ./restored
 ```
 
 Rebuilds a commit into a fresh directory. Unlike checkout, the live

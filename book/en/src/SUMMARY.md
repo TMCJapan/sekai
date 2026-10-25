@@ -3,6 +3,7 @@
 - [Introduction](introduction.md)
 - [Installation](installation.md)
 - [Quickstart](quickstart.md)
+- [Store location](store.md)
 - [Server coordination](server-coordination.md)
 - [World layouts](world-layouts.md)
 - [Concepts](concepts.md)

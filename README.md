@@ -29,37 +29,37 @@ The installed binary is named `sekai`.
 ```sh
 # Record the current world state (pause the server first:
 # `save-off`, `save-all`, then `save-on` afterwards)
-sekai --store ./sekai-store commit ./world
+sekai commit ./world
 
 # Preview what a commit would record, without writing anything
-sekai --store ./sekai-store status ./world
+sekai status ./world
 
 # List commits
-sekai --store ./sekai-store log
+sekai log
 
 # Name a commit for later reference (copy its full hash from `log`)
-sekai --store ./sekai-store tag create stable 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a
+sekai tag create stable 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a
 
 # Rebuild the world from the tagged commit (overwrites region files)
-sekai --store ./sekai-store checkout ./world @stable
+sekai checkout ./world @stable
 
 # Compare chunk NBT between two commits (hashes from `log`)
-sekai --store ./sekai-store diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a --in overworld:0,0
+sekai diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a --in overworld:0,0
 
 # Branch: name the current position, then commit onto it
-sekai --store ./sekai-store ref create feature
-sekai --store ./sekai-store ref activate feature
+sekai ref create feature
+sekai ref activate feature
 
 # Preview unreferenced blobs, then collect them
-sekai --store ./sekai-store gc --dry-run
-sekai --store ./sekai-store gc
+sekai gc --dry-run
+sekai gc
 
 # Delete old commits (keep newest 10), then reclaim their blobs
-sekai --store ./sekai-store prune --keep-last 10
-sekai --store ./sekai-store gc
+sekai prune --keep-last 10
+sekai gc
 
 # Rebuild the tagged commit into a fresh directory (live world untouched)
-sekai --store ./sekai-store clone @stable ./restored
+sekai clone @stable ./restored
 
 ```
 

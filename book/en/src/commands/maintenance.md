@@ -1,8 +1,8 @@
 # Maintenance
 
 ```sh
-sekai --store ./sekai-store gc --dry-run
-sekai --store ./sekai-store gc
+sekai gc --dry-run
+sekai gc
 ```
 
 `gc` collects CAS blobs no commit references. Planning is read-only;
@@ -26,9 +26,9 @@ blocked by a stale marker. See
 ## Pruning commits
 
 ```sh
-sekai --store ./sekai-store prune --keep-last 10 --dry-run
-sekai --store ./sekai-store prune --keep-last 10
-sekai --store ./sekai-store prune --before @stable
+sekai prune --keep-last 10 --dry-run
+sekai prune --keep-last 10
+sekai prune --before @stable
 ```
 
 `prune` deletes old commits. Retention keeps the newest `--keep-last`

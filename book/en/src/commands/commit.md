@@ -1,7 +1,7 @@
 # Commit
 
 ```sh
-sekai --store ./sekai-store commit ./world
+sekai commit ./world
 ```
 
 Records the current world state as a new commit and prints the
