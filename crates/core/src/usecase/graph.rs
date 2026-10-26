@@ -279,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn resolves_hashes_tags_and_refs() {
+    fn resolves_hashes_and_refs() {
         let mut meta = MemMeta::default();
         let first = block_on(meta.create_commit(100, &[])).unwrap();
         let second = block_on(meta.create_commit(200, &[first])).unwrap();
@@ -318,6 +318,10 @@ mod tests {
         ));
         assert!(matches!(
             block_on(resolve_commit_ref(&meta, "@123")),
+            Err(ResolveError::InvalidRef { .. })
+        ));
+        assert!(matches!(
+            block_on(resolve_commit_ref(&meta, "@main")),
             Err(ResolveError::InvalidRef { .. })
         ));
     }

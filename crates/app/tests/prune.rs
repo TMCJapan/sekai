@@ -74,7 +74,7 @@ async fn prune_folds_and_gc_reclaims() {
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
 
-    // Three commits with distinct payloads; the oldest is tagged.
+    // Three commits with distinct payloads.
     write_region(&region, &[(0, 0, vec![3, 1])]);
     instance
         .world_mut(&mut world)

@@ -2,7 +2,7 @@
 
 ```sh
 sekai checkout ./world 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b
-sekai checkout ./world @stable --in overworld
+sekai checkout ./world main --in overworld
 ```
 
 指定したコミットからワールドを再構築し、リージョンファイルをアトミックに上書きします（同一ディレクトリ内に一時ファイルを作成し、`fsync` を実行した後に `rename` で置き換えるため、既存ファイルがインプレースで破損することはありません）。コミットの引数には 64 文字のコミットハッシュまたは ref 名を指定できます。復元されたファイルにはコミット取得時のタイムスタンプが付与され、`LastUpdate` などの揮発性タグもキャプチャ時の値へと巻き戻されます。

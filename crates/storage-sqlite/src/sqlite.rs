@@ -854,8 +854,8 @@ impl sekai_core::MetaStore for SqliteMeta {
         let into_blob = commit_param(into);
         let mut tx = self.pool.begin().await.map_err(db_err)?;
         // Rows already superseded along the history the successor continues
-        // vanish; survivors move onto it. Tags follow the commit row by
-        // cascade. Positional convention below: `?1` is always the retired
+        // vanish; survivors move onto it. Positional convention below: `?1`
+        // is always the retired
         // commit, `?2` the successor, `?3` its local sequence.
         let dropped = sqlx::query(RETIRE_SUPERSEDED_SQL)
             .bind(&from_blob[..])
@@ -1782,13 +1782,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The vocabulary rename bumped the schema to 9, so a store stamped
+    /// Dropping `commit_tags` bumped the schema to 12, so a store stamped
     /// with the previous version must fail the gate - not fail later on a
     /// missing table. The gate reads the version before any table is
     /// touched, so the schema behind the stamp does not matter.
     #[tokio::test]
     async fn a_store_from_the_previous_schema_version_is_refused() {
-        let dir = tempdir("version-8");
+        let dir = tempdir("version-11");
         let path = dir.join("meta.sqlite");
         let mut seed = SqliteConnectOptions::new()
             .filename(&path)
@@ -1797,7 +1797,7 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(SCHEMA).execute(&mut seed).await.unwrap();
-        sqlx::query("PRAGMA user_version=8")
+        sqlx::query("PRAGMA user_version=11")
             .execute(&mut seed)
             .await
             .unwrap();
@@ -1805,7 +1805,7 @@ mod tests {
         assert!(matches!(
             SqliteMeta::open(&path).await,
             Err(StorageError::UnsupportedSchema {
-                found: 8,
+                found: 11,
                 supported: SCHEMA_VERSION,
             })
         ));

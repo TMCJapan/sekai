@@ -281,12 +281,12 @@ impl RefCommand {
 
 /// Commit reference on the command line: `<64-char hash>` or a ref name.
 ///
-/// Either a 64-character hexadecimal commit ID or a bare valid [`RefName`], tried in
-/// that exclusive order: `@` is tag-only and never falls through to a bare
-/// name, while a bare token is parsed as a `u64` first and only treated as
-/// a [`RefName`] when that fails. Because [`RefName`] rejects all-digit
-/// names, the numeric ID namespace and the ref-name namespace cannot overlap:
-/// a numeric token is always a commit ID (or `UnknownCommit`), never a ref.
+/// Either a 64-character hexadecimal commit ID or a bare valid [`RefName`],
+/// tried in that exclusive order: a bare token is parsed as a commit ID
+/// first and only treated as a [`RefName`] when that fails. Because
+/// [`RefName`] rejects all-digit names, the numeric ID namespace and the
+/// ref-name namespace cannot overlap: a numeric token is always a commit ID
+/// (or `UnknownCommit`), never a ref.
 ///
 /// The shape is validated at parse time so a malformed reference never
 /// reaches the store; resolving it to an existing commit stays a
@@ -317,14 +317,11 @@ impl std::str::FromStr for CommitRef {
                 // the validation that accepted it.
                 Self(id.to_string())
             })
-            .or_else(|err| {
-                if RefName::parse(s).is_ok() {
-                    Ok(Self(s.to_owned()))
-                } else {
-                    Err(format!(
-                        "invalid reference {s:?}: {err}, expected <64-char commit hash> or <ref>"
-                    ))
-                }
+            .or_else(|id_err| match RefName::parse(s) {
+                Ok(_) => Ok(Self(s.to_owned())),
+                Err(name_err) => Err(format!(
+                    "invalid reference {s:?}: {name_err} (not a 64-char commit hash: {id_err}), expected <64-char commit hash> or <ref>"
+                )),
             })
     }
 }

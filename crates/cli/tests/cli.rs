@@ -179,9 +179,11 @@ fn parses_diff_command() {
         panic!("expected diff");
     }
 
+    let err = Cli::try_parse_from(["sekai", "diff", "@stable", H2])
+        .expect_err("@-prefixed tag refs are no longer accepted");
     assert!(
-        Cli::try_parse_from(["sekai", "diff", "@stable", H2]).is_err(),
-        "@-prefixed tag refs are no longer accepted"
+        err.to_string().contains("invalid reference"),
+        "the @ prefix is refused as a malformed reference: {err}"
     );
 
     let cli = Cli::try_parse_from([
@@ -275,8 +277,8 @@ fn parses_diff_command() {
 #[test]
 fn validates_commit_refs_at_parse_time() {
     // Malformed references are refused before any code runs, so they can
-    // never touch the store (a 64-char hash, a bare name follows RefName rules,
-    // a bare name follows RefName rules).
+    // never touch the store (a 64-char hash or a bare name following RefName
+    // rules).
     for args in [
         vec!["sekai", "checkout", "w", ""],
         vec!["sekai", "checkout", "w", "@"],
@@ -290,7 +292,9 @@ fn validates_commit_refs_at_parse_time() {
         vec!["sekai", "checkout", "w", "a/../b"],
         vec!["sekai", "clone", "bad name", "out"],
         vec!["sekai", "prune", "--before", "bad name"],
+        vec!["sekai", "prune", "--before", "@stable"],
         vec!["sekai", "diff", H1, "bad name"],
+        vec!["sekai", "ref", "create", "main", "@stable"],
         vec!["sekai", "ref", "create", ""],
         vec!["sekai", "ref", "create", "bad name"],
         vec!["sekai", "ref", "create", "main", "HEAD"],

@@ -28,7 +28,7 @@ blocked by a stale marker. See
 ```sh
 sekai prune --keep-last 10 --dry-run
 sekai prune --keep-last 10
-sekai prune --before @stable
+sekai prune --before main
 ```
 
 `prune` deletes old commits. Retention keeps the newest `--keep-last`
