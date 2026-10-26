@@ -33,7 +33,7 @@ jobs:
             with:
               persist-credentials: false
           - name: Install cargo-deny and cargo-machete
-            uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8
+            uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283
             with:
               tool: cargo-deny,cargo-machete
 
@@ -69,7 +69,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install ast-grep
-        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283
         with:
           tool: ast-grep
       - name: Run ast-grep tests
@@ -108,7 +108,7 @@ jobs:
           cache-key: ${{ matrix.target }}
 
       - name: Install cargo-hack
-        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283
         with:
           tool: cargo-hack
 
@@ -189,7 +189,7 @@ jobs:
       # After the cache step on purpose: `rust-cache` restores `~/.cargo/bin`,
       # which is where `install-action` drops the binary.
       - name: Install cargo-nextest and cargo-hack
-        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283
         with:
           tool: cargo-nextest,cargo-hack
 
@@ -218,7 +218,7 @@ jobs:
         run: python3 .github/scripts/check-docs.py
 
       - name: Install mdbook
-        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8
+        uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283
         with:
           tool: mdbook
 
