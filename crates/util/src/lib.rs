@@ -2,7 +2,7 @@
 //! the record types every other crate passes around.
 //!
 //! Pure data plus the invariants that belong to it (coordinate arithmetic,
-//! hex encoding, tag validation); no I/O and no policy.
+//! hex encoding); no I/O and no policy.
 
 #![no_std]
 
@@ -19,12 +19,11 @@ pub mod refs;
 pub mod region;
 pub mod region_kind;
 pub mod scope;
-pub mod tag;
 
 pub use chunk_coord::ChunkCoord;
-pub use commit::{Commit, CommitId, CommitTag};
+pub use commit::{Commit, CommitId};
 pub use dimension::Dimension;
-pub use error::{HexError, ParseCodeError, RefNameError, TagNameError};
+pub use error::{HexError, ParseCodeError, RefNameError};
 pub use gc::GcPlan;
 pub use hash::{BlobHash, DiffHash};
 pub use history::ChunkHistoryEntry;
@@ -34,4 +33,3 @@ pub use region::{
 };
 pub use region_kind::{RegionKind, UnknownRegionKind};
 pub use scope::{Area, Rect, Scope};
-pub use tag::TagName;

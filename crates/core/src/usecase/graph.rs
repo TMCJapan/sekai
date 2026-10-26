@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::port::meta::MetaStore;
-use sekai_util::{Commit, CommitId, CommitTag, RefName, TagName};
+use sekai_util::{Commit, CommitId, RefName};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommitError<M> {
@@ -134,18 +134,6 @@ async fn lookup_record<M: MetaStore>(
         .ok_or(CommitError::UnknownCommit { id: commit })
 }
 
-/// List all tags in name order.
-pub async fn list_tags<M: MetaStore>(meta: &M) -> Result<Vec<CommitTag>, CommitError<M::Error>> {
-    let mut out = Vec::new();
-    meta.visit_tags(|tag| {
-        out.push(tag.clone());
-        true
-    })
-    .await
-    .map_err(CommitError::Meta)?;
-    Ok(out)
-}
-
 /// Per-commit change statistics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommitStats {
@@ -213,11 +201,6 @@ pub enum ResolveError<M> {
         /// Requested commit ID.
         id: CommitId,
     },
-    /// No tag with this name exists.
-    UnknownTag {
-        /// Requested tag name.
-        name: TagName,
-    },
     /// No ref with this name exists.
     UnknownRef {
         /// Requested ref name.
@@ -228,7 +211,7 @@ pub enum ResolveError<M> {
         /// Requested ref name.
         name: RefName,
     },
-    /// Reference is neither a commit ID, a `@tag`, nor a ref name.
+    /// Reference is neither a commit ID nor a ref name.
     InvalidRef {
         /// Raw reference text.
         raw: alloc::string::String,
@@ -240,41 +223,27 @@ impl<M: fmt::Debug> fmt::Display for ResolveError<M> {
         match self {
             Self::Meta(_) => write!(f, "commit metadata failed"),
             Self::UnknownCommit { id } => write!(f, "unknown commit: {id}"),
-            Self::UnknownTag { name } => write!(f, "unknown tag: {name}"),
             Self::UnknownRef { name } => write!(f, "unknown ref: {name}"),
             Self::UnbornRef { name } => write!(f, "ref has no commit yet: {name}"),
             Self::InvalidRef { raw } => write!(
                 f,
-                "invalid reference: {raw:?}, expected <64-char commit hash>, @<tag>, or <ref>"
+                "invalid reference: {raw:?}, expected <64-char commit hash> or <ref>"
             ),
         }
     }
 }
 
-/// Resolve a commit reference: a 64-character hexadecimal commit ID,
-/// `@tag` for a tag name, or a bare ref name.
+/// Resolve a commit reference: a 64-character hexadecimal commit ID or a
+/// bare ref name.
 ///
-/// The `@` prefix is tag-only: a ref called `main` is written `main`,
-/// and `@main` is an unknown tag, not that ref. A bare name is tried as
-/// a commit ID first: a 64-character hexadecimal spelling is either a
-/// commit ID or `UnknownCommit`, never a ref, so a ref whose name is
-/// exactly 64 hex characters is shadowed. An unborn ref has no commit to
-/// point at yet.
+/// A bare name is tried as a commit ID first: a 64-character hexadecimal
+/// spelling is either a commit ID or `UnknownCommit`, never a ref, so a ref
+/// whose name is exactly 64 hex characters is shadowed. An unborn ref has
+/// no commit to point at yet.
 pub async fn resolve_commit_ref<M: MetaStore>(
     meta: &M,
     raw: &str,
 ) -> Result<CommitId, ResolveError<M::Error>> {
-    if let Some(name) = raw.strip_prefix('@') {
-        let tag = TagName::parse(name).map_err(|_| ResolveError::InvalidRef {
-            raw: alloc::string::String::from(raw),
-        })?;
-        return meta
-            .lookup_tag(&tag)
-            .await
-            .map_err(ResolveError::Meta)?
-            .map(|record| record.commit)
-            .ok_or(ResolveError::UnknownTag { name: tag });
-    }
     if let Ok(id) = raw.parse::<CommitId>() {
         return meta
             .lookup_commit(id)
@@ -297,7 +266,6 @@ mod tests {
     use super::*;
     use crate::support::{MemMeta, block_on};
     use alloc::string::ToString;
-    use sekai_util::CommitTag;
 
     #[test]
     fn lists_in_local_sequence_order() {
@@ -311,19 +279,16 @@ mod tests {
     }
 
     #[test]
-    fn resolves_hashes_tags_and_refs() {
-        use sekai_util::TagName;
+    fn resolves_hashes_and_refs() {
         let mut meta = MemMeta::default();
         let first = block_on(meta.create_commit(100, &[])).unwrap();
         let second = block_on(meta.create_commit(200, &[first])).unwrap();
-        block_on(meta.tag_commit(&TagName::parse("stable").unwrap(), second, 250)).unwrap();
         let branch = RefName::parse("main").unwrap();
         block_on(meta.set_ref(&branch, Some(second), 300)).unwrap();
 
         let first_hex = first.to_string();
         assert_eq!(first_hex.len(), 64);
         assert_eq!(block_on(resolve_commit_ref(&meta, &first_hex)), Ok(first));
-        assert_eq!(block_on(resolve_commit_ref(&meta, "@stable")), Ok(second));
         assert_eq!(block_on(resolve_commit_ref(&meta, "main")), Ok(second));
         assert_eq!(
             block_on(resolve_commit_ref(&meta, &"f".repeat(64))),
@@ -342,12 +307,6 @@ mod tests {
             })
         );
         assert_eq!(
-            block_on(resolve_commit_ref(&meta, "@missing")),
-            Err(ResolveError::UnknownTag {
-                name: TagName::parse("missing").unwrap()
-            })
-        );
-        assert_eq!(
             block_on(resolve_commit_ref(&meta, "other")),
             Err(ResolveError::UnknownRef {
                 name: RefName::parse("other").unwrap()
@@ -359,6 +318,10 @@ mod tests {
         ));
         assert!(matches!(
             block_on(resolve_commit_ref(&meta, "@123")),
+            Err(ResolveError::InvalidRef { .. })
+        ));
+        assert!(matches!(
+            block_on(resolve_commit_ref(&meta, "@main")),
             Err(ResolveError::InvalidRef { .. })
         ));
     }
@@ -390,26 +353,6 @@ mod tests {
                 name: RefName::parse("main").unwrap()
             })
         );
-    }
-
-    #[test]
-    fn tags_round_trip_in_order() {
-        use alloc::borrow::ToOwned;
-        use sekai_util::TagName;
-        let mut meta = MemMeta::default();
-        let id = block_on(meta.create_commit(100, &[])).unwrap();
-        for name in ["zeta", "alpha"] {
-            block_on(meta.tag_commit(&TagName::parse(name).unwrap(), id, 150)).unwrap();
-        }
-        let mut seen = Vec::new();
-        block_on(meta.visit_tags(|tag: &CommitTag| {
-            seen.push(tag.name.as_str().to_owned());
-            true
-        }))
-        .unwrap();
-        assert_eq!(seen, ["alpha", "zeta"]);
-        assert!(block_on(meta.untag(&TagName::parse("alpha").unwrap())).unwrap());
-        assert!(!block_on(meta.untag(&TagName::parse("alpha").unwrap())).unwrap());
     }
 
     #[test]

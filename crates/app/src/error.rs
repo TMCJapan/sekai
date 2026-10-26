@@ -52,15 +52,9 @@ pub enum AppError {
     /// Commit-graph operation failed.
     #[error("{0}")]
     Commit(sekai_core::CommitError<sekai_storage::StorageError>),
-    /// Commit reference (`<64-char hash>` or `@tag`) could not be resolved.
+    /// Commit reference (`<64-char hash>` or ref name) could not be resolved.
     #[error("{0}")]
     CommitRef(sekai_core::ResolveError<sekai_storage::StorageError>),
-    /// Tag name is already taken.
-    #[error("tag already exists: {name} (use --force to move it)")]
-    TagExists {
-        /// Conflicting tag name.
-        name: String,
-    },
     /// Ref name is already taken.
     #[error("ref already exists: {name} (use --force to move it)")]
     RefExists {

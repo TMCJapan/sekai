@@ -62,9 +62,6 @@ pub enum StorageError {
     /// Stored history integer does not fit its domain type.
     #[error("stored history column {column} has out-of-range value: {value}")]
     InvalidHistoryValue { column: &'static str, value: i64 },
-    /// Stored tag name fails validation.
-    #[error("stored tag name is invalid: {name}")]
-    InvalidTagName { name: String },
     /// Stored ref name fails validation.
     #[error("stored ref name is invalid: {name}")]
     InvalidRefName {

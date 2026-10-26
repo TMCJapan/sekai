@@ -33,7 +33,7 @@ deleted:
 
 | Mode | `writer.lock` | `store.lock` | Operations |
 |---|---|---|---|
-| shared | - | shared | list, status, diff, export, rollback, tags, prune plan |
+| shared | - | shared | list, status, diff, clone, checkout, prune plan |
 | writer | exclusive | shared | backup, gc plan/apply |
 | exclusive | exclusive | exclusive | prune apply |
 

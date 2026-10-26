@@ -28,7 +28,7 @@ blocked by a stale marker. See
 ```sh
 sekai prune --keep-last 10 --dry-run
 sekai prune --keep-last 10
-sekai prune --before @stable
+sekai prune --before main
 ```
 
 `prune` deletes old commits. Retention keeps the newest `--keep-last`
@@ -39,7 +39,7 @@ the store.
 Deletion folds oldest-first: each retired commit moves its
 still-effective rows onto the next retained commit and drops rows
 already superseded there, so every retained commit restores exactly
-as before. Tags on deleted commits disappear with them. Pruning never
+as before. Pruning never
 unlinks blobs — run `gc` afterwards to reclaim the dereferenced ones.
 `--dry-run` prints the planned deletions only.
 

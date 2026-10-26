@@ -1,4 +1,6 @@
--- Content-addressed commits. `id` is the public commit hash; `seq` is a
+-- Schema version 12: `commit_tags` (snapshot tag references) was removed
+-- in favour of refs; there is no migration path, old stores are rejected
+-- via `UnsupportedSchema`. Content-addressed commits below. `id` is the public commit hash; `seq` is a
 -- local ordering key used by MVCC queries. The sequence is never part of
 -- the commit identity and may differ across replicas. Reads order by
 -- it, so it must increase monotonically with record order inside a store.
@@ -53,14 +55,6 @@ CREATE TABLE region_state(
     content_hash BLOB NOT NULL,
     commit_id BLOB NOT NULL REFERENCES commits(id),
     PRIMARY KEY(dim, kind, rx, rz)
-);
-
--- Human-readable commit aliases. Tags die with their commit
--- (`ON DELETE CASCADE`): pruning a tagged commit drops its tags.
-CREATE TABLE commit_tags(
-    name TEXT PRIMARY KEY,
-    commit_id BLOB NOT NULL REFERENCES commits(id) ON DELETE CASCADE,
-    created_at_ms INTEGER NOT NULL
 );
 
 -- Named, movable pointers to commits: the store's branch model. A ref

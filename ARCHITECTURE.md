@@ -249,13 +249,13 @@ A new commit continues the target of the active ref - the port rejects
 one whose parents omit it - and the active ref moves onto the new commit
 in the same transaction. Switching the active ref forks the history: the
 next commit continues the ref it was planned against, not the newest
-commit in the store. Commit references accept `<64-char commit hash>`,
-`@tag`, or a bare ref name.
+commit in the store. Commit references accept a `<64-char commit hash>`
+or a bare ref name.
 
 Refs point at commit hashes. Like Git, identity is derived from content;
 unlike Git, `prune` may fold a retired commit's rows into a retained
 successor. Folding changes where rows physically live, never the
-successor's logical delta or ID, so refs and tags stay stable across a
+successor's logical delta or ID, so refs stay stable across a
 prune. See [ADR-0019](docs/adr/0019-ref-objects.md).
 
 Two rules follow from the graph:
@@ -397,7 +397,7 @@ cancelled future cannot release the store while those tasks still run.
 
 Owned by the backend crate (`crates/storage-sqlite/schema/sqlite.sql` for
 SQLite; `commits`, `commit_parents`, `chunk_history`, `region_state`,
-`commit_tags`, `refs`; `SCHEMA_VERSION` gate; pre-release policy =
+`refs`; `SCHEMA_VERSION` gate; pre-release policy =
 recreate, don't migrate).
 The `cas` module stays independent of DB backend crates so future
 object-store CAS swaps don't touch metadata code.

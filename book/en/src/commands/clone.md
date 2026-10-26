@@ -7,7 +7,7 @@ sekai clone 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b ./r
 Rebuilds a commit into a fresh directory. Unlike checkout, the live
 world is never touched — clone shares the checkout restore set but
 writes every file under the output directory at its layout-derived path.
-The commit argument accepts a 64-character commit hash or `@tag` (see [Tags](tags.md)).
+The commit argument accepts a 64-character commit hash or a ref name.
 
 - The output directory is created when missing and must otherwise be
   empty; anything else fails loudly so clone can never clobber data.

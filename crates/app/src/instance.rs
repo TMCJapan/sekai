@@ -120,6 +120,25 @@ impl<T: SekaiStore> SekaiInstance<T> {
             .map_err(AppError::Commit)?
             .ok_or(AppError::NoCommits)
     }
+
+    /// Resolve a commit reference (`<64-char hash>` or a ref name).
+    pub async fn resolve_commit_ref(&self, raw: &str) -> Result<CommitId, AppError> {
+        let _lock = self.lock_store(StoreLockMode::Shared)?;
+        sekai_core::usecase::graph::resolve_commit_ref(self.store.meta(), raw)
+            .await
+            .map_err(AppError::CommitRef)
+    }
+
+    /// Count fresh and effective rows for one commit.
+    pub async fn commit_stats(
+        &self,
+        commit: CommitId,
+    ) -> Result<sekai_core::CommitStats, AppError> {
+        let _lock = self.lock_store(StoreLockMode::Shared)?;
+        sekai_core::usecase::graph::commit_stats(self.store.meta(), commit)
+            .await
+            .map_err(AppError::Commit)
+    }
 }
 
 #[cfg(feature = "backend-sqlite")]

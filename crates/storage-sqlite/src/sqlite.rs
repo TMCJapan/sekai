@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use sekai_core::{
     ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitEntry, CommitId,
-    CommitRef, CommitTag, DEFAULT_REF_NAME, DiffHash, Dimension, FoldOutcome, MetaStore, RefName,
-    RegionFingerprint, RegionKey, RegionKind, RegionStateEntry, TagName, commit_hash,
+    CommitRef, DEFAULT_REF_NAME, DiffHash, Dimension, FoldOutcome, MetaStore, RefName,
+    RegionFingerprint, RegionKey, RegionKind, RegionStateEntry, commit_hash,
 };
 use sqlx::Row as _;
 use sqlx::sqlite::{
@@ -23,7 +23,7 @@ use sekai_storage::{
 };
 
 /// Managed schema version (`PRAGMA user_version`).
-pub const SCHEMA_VERSION: i64 = 11;
+pub const SCHEMA_VERSION: i64 = 12;
 
 const SCHEMA: &str = include_str!("../schema/sqlite.sql");
 
@@ -397,22 +397,6 @@ fn decode_state(row: &sqlx::sqlite::SqliteRow) -> Result<RegionStateEntry, Stora
         },
         commit_id,
     })
-}
-
-/// Decode one `commit_tags` row. Stored names always re-validate:
-/// anything else is corruption, never silent reinterpretation.
-fn decode_tag(row: &sqlx::sqlite::SqliteRow) -> Result<CommitTag, StorageError> {
-    let name_raw: String = row.try_get("name").map_err(db_err)?;
-    let name = TagName::parse(&name_raw).map_err(|_| StorageError::InvalidTagName {
-        name: name_raw.clone(),
-    })?;
-    let commit_raw: Vec<u8> = row.try_get("commit_id").map_err(db_err)?;
-    let commit = commit_id_from_blob(commit_raw)?;
-    Ok(CommitTag::new(
-        name,
-        commit,
-        millis_col(row, "created_at_ms")?,
-    ))
 }
 
 /// Decode one `refs` row. Stored names always re-validate: anything
@@ -809,58 +793,6 @@ impl sekai_core::MetaStore for SqliteMeta {
         rows.iter().map(decode_state).collect()
     }
 
-    async fn tag_commit(
-        &mut self,
-        name: &TagName,
-        commit: CommitId,
-        created_at_ms: u64,
-    ) -> Result<(), StorageError> {
-        sqlx::query("INSERT INTO commit_tags (name, commit_id, created_at_ms) VALUES (?, ?, ?)")
-            .bind(name.as_str())
-            .bind(commit_param(commit))
-            .bind(millis_param(created_at_ms)?)
-            .execute(&self.pool)
-            .await
-            .map_err(db_err)?;
-        Ok(())
-    }
-
-    async fn untag(&mut self, name: &TagName) -> Result<bool, StorageError> {
-        let done = sqlx::query("DELETE FROM commit_tags WHERE name = ?")
-            .bind(name.as_str())
-            .execute(&self.pool)
-            .await
-            .map_err(db_err)?;
-        Ok(done.rows_affected() > 0)
-    }
-
-    async fn lookup_tag(&self, name: &TagName) -> Result<Option<CommitTag>, StorageError> {
-        let row =
-            sqlx::query("SELECT name, commit_id, created_at_ms FROM commit_tags WHERE name = ?")
-                .bind(name.as_str())
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(db_err)?;
-        row.map(|row| decode_tag(&row)).transpose()
-    }
-
-    async fn visit_tags<F>(&self, mut visit: F) -> Result<(), StorageError>
-    where
-        F: FnMut(&CommitTag) -> bool + Send,
-    {
-        let rows =
-            sqlx::query("SELECT name, commit_id, created_at_ms FROM commit_tags ORDER BY name")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(db_err)?;
-        for row in &rows {
-            if !visit(&decode_tag(row)?) {
-                break;
-            }
-        }
-        Ok(())
-    }
-
     async fn visit_fresh_rows<F>(&self, commit: CommitId, mut visit: F) -> Result<(), StorageError>
     where
         F: FnMut(&ChunkHistoryEntry) -> bool + Send,
@@ -922,9 +854,10 @@ impl sekai_core::MetaStore for SqliteMeta {
         let into_blob = commit_param(into);
         let mut tx = self.pool.begin().await.map_err(db_err)?;
         // Rows already superseded along the history the successor continues
-        // vanish; survivors move onto it. Tags follow the commit row by
-        // cascade. Positional convention below: `?1` is always the retired
-        // commit, `?2` the successor, `?3` its local sequence.
+        // vanish; survivors move onto it. Positional convention: `?1` is the
+        // retired commit, `?2` the successor; `?3` is the retired commit's
+        // local sequence in RETIRE_SUPERSEDED_SQL and the successor's local
+        // sequence in the chunk_history UPDATE below.
         let dropped = sqlx::query(RETIRE_SUPERSEDED_SQL)
             .bind(&from_blob[..])
             .bind(&into_blob[..])
@@ -1850,13 +1783,13 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The vocabulary rename bumped the schema to 9, so a store stamped
-    /// with the previous version must fail the gate - not fail later on a
-    /// missing table. The gate reads the version before any table is
-    /// touched, so the schema behind the stamp does not matter.
+    /// The version gate rejects any store whose `user_version` is not
+    /// `SCHEMA_VERSION` (12) before any table is touched. A store stamped
+    /// 11 is therefore refused with `UnsupportedSchema { found: 11,
+    /// supported: SCHEMA_VERSION }`.
     #[tokio::test]
     async fn a_store_from_the_previous_schema_version_is_refused() {
-        let dir = tempdir("version-8");
+        let dir = tempdir("version-11");
         let path = dir.join("meta.sqlite");
         let mut seed = SqliteConnectOptions::new()
             .filename(&path)
@@ -1865,7 +1798,7 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(SCHEMA).execute(&mut seed).await.unwrap();
-        sqlx::query("PRAGMA user_version=8")
+        sqlx::query("PRAGMA user_version=11")
             .execute(&mut seed)
             .await
             .unwrap();
@@ -1873,7 +1806,7 @@ mod tests {
         assert!(matches!(
             SqliteMeta::open(&path).await,
             Err(StorageError::UnsupportedSchema {
-                found: 8,
+                found: 11,
                 supported: SCHEMA_VERSION,
             })
         ));

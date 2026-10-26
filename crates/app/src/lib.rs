@@ -25,7 +25,6 @@ mod instance;
 mod prune;
 mod refs;
 mod regions;
-mod tag;
 mod time;
 
 pub use checkout::{
@@ -43,9 +42,9 @@ pub use instance::{SekaiInstance, WorldHandle, WorldHandleMut};
 pub use prune::{PruneProgress, PruneTimings};
 pub use sekai_core::{
     Area, BlobHash, CheckoutReport, ChunkCoord, Commit, CommitId, CommitRef, CommitReport,
-    CommitStats, CommitTag, DEFAULT_IGNORED, DEFAULT_REF_NAME, Dimension, GcPlan, GcReport,
-    NbtChange, NbtDiffEntry, NbtValue, PrunePlan, PruneReport, Rect, RefName, RefNameError,
-    RegionFingerprint, RegionKey, RegionKind, Scope, TagName,
+    CommitStats, DEFAULT_IGNORED, DEFAULT_REF_NAME, Dimension, GcPlan, GcReport, NbtChange,
+    NbtDiffEntry, NbtValue, PrunePlan, PruneReport, Rect, RefName, RefNameError, RegionFingerprint,
+    RegionKey, RegionKind, Scope,
 };
 pub use sekai_storage::{BlockingBlobStore, SekaiStore, SekaiStoreOpener};
 pub use sekai_world::{

@@ -65,7 +65,6 @@ fn blob_count(store: impl AsRef<Path>) -> usize {
 
 #[tokio::test]
 async fn prune_folds_and_gc_reclaims() {
-    use sekai_app::TagName;
     let root = tempdir("lifecycle");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -75,7 +74,7 @@ async fn prune_folds_and_gc_reclaims() {
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
 
-    // Three commits with distinct payloads; the oldest is tagged.
+    // Three commits with distinct payloads.
     write_region(&region, &[(0, 0, vec![3, 1])]);
     instance
         .world_mut(&mut world)
@@ -96,11 +95,13 @@ async fn prune_folds_and_gc_reclaims() {
         .unwrap();
     let commits = instance.list_commits().await.unwrap();
     assert_eq!(commits.len(), 3);
+    assert_eq!(blob_count(&store_dir), 3);
+
+    let doomed_name = sekai_app::RefName::parse("doomed").unwrap();
     instance
-        .create_tag(&TagName::parse("doomed").unwrap(), commits[0].id, false)
+        .create_ref(&doomed_name, Some(commits[0].id), false)
         .await
         .unwrap();
-    assert_eq!(blob_count(&store_dir), 3);
 
     // Dry-run first: one deletion planned, nothing touched.
     let (plan, plan_timings) = instance.prune_plan(Some(2), None).await.unwrap();
@@ -114,10 +115,17 @@ async fn prune_folds_and_gc_reclaims() {
     assert_eq!(report.rows_folded + report.rows_dropped, 1);
     let remaining = instance.list_commits().await.unwrap();
     assert_eq!(remaining.len(), 2);
-    // The tag died with its commit by cascade.
+    let doomed_ref = instance
+        .list_refs()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|r| r.name == doomed_name)
+        .expect("doomed ref carried onto the successor");
+    assert_eq!(doomed_ref.commit, Some(commits[1].id));
     assert_eq!(
-        instance.list_tags().await.unwrap(),
-        [] as [sekai_app::CommitTag; 0]
+        instance.resolve_commit_ref("doomed").await.unwrap(),
+        commits[1].id
     );
 
     // Retained commits still restore faithfully through fallback.

@@ -31,7 +31,6 @@ muscle memory keep working.
 | `checkout` | `rollback` | rebuild the live world from a commit |
 | `log` | `list` | list recorded commits, oldest first |
 | `clone` | `export` | rebuild a commit into a fresh directory |
-| `tag` | - | give commits human-readable names |
 | `diff` | - | compare chunk NBT between commits (or the world) |
 | `prune` | - | retire old commits, folding their rows into retained ones |
 | `gc` | - | collect orphan blobs |
@@ -44,7 +43,7 @@ that still calls the old command with the old flags keeps working.
 
 The domain follows the same vocabulary: `Snapshot`/`SnapshotId`/
 `SnapshotTag`/`SnapshotEntry`/`SnapshotStats` become `Commit`/`CommitId`/
-`CommitTag`/`CommitEntry`/`CommitStats`; the graph-read use case module
+`CommitEntry`/`CommitStats` (tag removed); the graph-read use case module
 `usecase::snapshot` becomes `usecase::graph`; the record step
 `usecase::backup::commit` becomes `usecase::commit::record_commit` (a
 module and a function may not share a name); the app API becomes
@@ -53,7 +52,7 @@ module and a function may not share a name); the app API becomes
 be mistaken for `Clone::clone`.
 
 The storage schema follows as well: `snapshots` -> `commits`,
-`snapshot_parents` -> `commit_parents`, `snapshot_tags` -> `commit_tags`,
+`snapshot_parents` -> `commit_parents`, `snapshot_tags` -> removed (no commit_tags table),
 and the `snapshot_id` columns of `chunk_history` and `region_state` become
 `commit_id`. `SCHEMA_VERSION` goes from 8 to 9, and the pre-release policy
 applies: old stores are recreated, never migrated.
@@ -63,7 +62,7 @@ The run marker becomes `commit.inflight` (ADR-0011 keeps its decision).
 The JSON contract follows the canonical names: the envelope carries
 `"command":"commit"` (an alias invocation still reports the canonical
 name), the commit report carries `"commit": 3` instead of `"snapshot": 3`,
-a tag record carries `"commit": 2`, and the timing phases are
+a ref record carries `"commit": 2`, and the timing phases are
 `checkout_files_ms` and `clone_files_ms`.
 
 ## Consequences

@@ -8,7 +8,6 @@ use std::fmt::Write as _;
 pub async fn run(store: &str, json: bool, stat: bool, style: Styler) -> anyhow::Result<()> {
     let instance = sekai_app::SekaiInstance::open(store).await?;
     let commits = instance.list_commits().await?;
-    let tags = instance.list_tags().await?;
     let mut stats = Vec::new();
     if stat {
         for commit in &commits {
@@ -20,7 +19,7 @@ pub async fn run(store: &str, json: bool, stat: bool, style: Styler) -> anyhow::
             "{}",
             envelope_ok(
                 "log",
-                &log_payload(&commits, &tags, stat.then_some(stats.as_slice()))
+                &log_payload(&commits, stat.then_some(stats.as_slice()))
             )?
         );
         return Ok(());
@@ -35,14 +34,6 @@ pub async fn run(store: &str, json: bool, stat: bool, style: Styler) -> anyhow::
             style.bold(&commit.id.to_string()),
             super::format_time(commit.created_at_ms)
         );
-        let names: Vec<&str> = tags
-            .iter()
-            .filter(|tag| tag.commit == commit.id)
-            .map(|tag| tag.name.as_str())
-            .collect();
-        if !names.is_empty() {
-            let _ = write!(line, " @{}", names.join(" @"));
-        }
         if let Some(entry) = stats.get(index) {
             let _ = write!(
                 line,
@@ -59,7 +50,6 @@ pub async fn run(store: &str, json: bool, stat: bool, style: Styler) -> anyhow::
 struct CommitJson {
     id: String,
     created_at_ms: u64,
-    tags: Vec<String>,
     #[serde(flatten)]
     stats: Option<StatsJson>,
 }
@@ -74,7 +64,6 @@ struct StatsJson {
 
 fn log_payload(
     commits: &[sekai_app::Commit],
-    tags: &[sekai_app::CommitTag],
     stats: Option<&[sekai_app::CommitStats]>,
 ) -> Vec<CommitJson> {
     commits
@@ -83,11 +72,6 @@ fn log_payload(
         .map(|(index, commit)| CommitJson {
             id: commit.id.to_string(),
             created_at_ms: commit.created_at_ms,
-            tags: tags
-                .iter()
-                .filter(|tag| tag.commit == commit.id)
-                .map(|tag| tag.name.as_str().to_owned())
-                .collect(),
             stats: stats
                 .and_then(|rows| rows.get(index))
                 .map(|entry| StatsJson {
@@ -114,10 +98,9 @@ mod tests {
     #[test]
     fn renders_log_json() {
         let empty: Vec<sekai_app::Commit> = Vec::new();
-        let no_tags: Vec<sekai_app::CommitTag> = Vec::new();
         let no_stats: Vec<sekai_app::CommitStats> = Vec::new();
         assert_eq!(
-            serde_json::to_string(&log_payload(&empty, &no_tags, None)).unwrap(),
+            serde_json::to_string(&log_payload(&empty, None)).unwrap(),
             "[]"
         );
         let first = sekai_app::CommitId([1; 32]);
@@ -135,20 +118,9 @@ mod tests {
             },
         ];
         assert_eq!(
-            serde_json::to_string(&log_payload(&commits, &no_tags, None)).unwrap(),
+            serde_json::to_string(&log_payload(&commits, None)).unwrap(),
             format!(
-                r#"[{{"id":"{first}","created_at_ms":1700000000000,"tags":[]}},{{"id":"{second}","created_at_ms":1700000001000,"tags":[]}}]"#
-            )
-        );
-        let tags = vec![sekai_app::CommitTag::new(
-            sekai_app::TagName::parse("stable").unwrap(),
-            second,
-            1_700_000_002_000,
-        )];
-        assert_eq!(
-            serde_json::to_string(&log_payload(&commits, &tags, None)).unwrap(),
-            format!(
-                r#"[{{"id":"{first}","created_at_ms":1700000000000,"tags":[]}},{{"id":"{second}","created_at_ms":1700000001000,"tags":["stable"]}}]"#
+                r#"[{{"id":"{first}","created_at_ms":1700000000000}},{{"id":"{second}","created_at_ms":1700000001000}}]"#
             )
         );
         let stats = vec![
@@ -166,15 +138,15 @@ mod tests {
             },
         ];
         assert_eq!(
-            serde_json::to_string(&log_payload(&commits, &tags, Some(&stats))).unwrap(),
+            serde_json::to_string(&log_payload(&commits, Some(&stats))).unwrap(),
             format!(
-                r#"[{{"id":"{first}","created_at_ms":1700000000000,"tags":[],"fresh_chunks":2,"fresh_tombstones":0,"new_blobs":1,"effective_chunks":2}},{{"id":"{second}","created_at_ms":1700000001000,"tags":["stable"],"fresh_chunks":0,"fresh_tombstones":1,"new_blobs":0,"effective_chunks":1}}]"#
+                r#"[{{"id":"{first}","created_at_ms":1700000000000,"fresh_chunks":2,"fresh_tombstones":0,"new_blobs":1,"effective_chunks":2}},{{"id":"{second}","created_at_ms":1700000001000,"fresh_chunks":0,"fresh_tombstones":1,"new_blobs":0,"effective_chunks":1}}]"#
             )
         );
         assert_eq!(
-            serde_json::to_string(&log_payload(&commits, &tags, Some(&no_stats))).unwrap(),
+            serde_json::to_string(&log_payload(&commits, Some(&no_stats))).unwrap(),
             format!(
-                r#"[{{"id":"{first}","created_at_ms":1700000000000,"tags":[]}},{{"id":"{second}","created_at_ms":1700000001000,"tags":["stable"]}}]"#
+                r#"[{{"id":"{first}","created_at_ms":1700000000000}},{{"id":"{second}","created_at_ms":1700000001000}}]"#
             )
         );
     }

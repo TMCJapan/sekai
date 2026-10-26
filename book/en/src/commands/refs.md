@@ -17,7 +17,7 @@ store starts with one active ref, `main`, unborn. `ref list` marks it
 with `*`.
 
 - `ref create <name>` starts the ref at the active ref's target; pass a
-  commit (`<id>`, `@tag`, or another ref name) to point it elsewhere.
+  commit (`<id>` or another ref name) to point it elsewhere.
   `ref create` fails over an existing name unless `--force` moves it.
 - `ref activate <name>` switches the active ref. The next commit
   continues that ref instead of the newest commit in the store, so

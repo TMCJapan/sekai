@@ -20,7 +20,7 @@ pub use diff::{DiffError, diff_blobs, diff_blobs_v1};
 pub use gc::{GcError, GcReport};
 pub use graph::{
     CommitError, CommitStats, ResolveError, commit_ancestors, commit_history, commit_parents,
-    commit_stats, latest_commit_id, list_commits, list_tags, resolve_commit_ref,
+    commit_stats, latest_commit_id, list_commits, resolve_commit_ref,
 };
 pub use prune::{PruneError, PrunePlan, PruneReport, prune_apply, prune_plan, select_retained};
 pub use refs::{active_ref, list_refs};

@@ -49,7 +49,7 @@ ID is returned and no rows are duplicated. `create_commit` hashes an
 empty delta; the commit path uses `apply_commit_incremental`, which
 hashes the fresh entries and removed regions.
 
-References accept the full 64-character hash or `@tag`. A 64-character
+References accept the full 64-character hash or a ref name. A 64-character
 hex spelling is resolved as a commit hash first and shadows a ref of the
 same name. Abbreviated hashes are not accepted. The SQLite schema moves
 to version 11 with `BLOB` IDs; the pre-release policy applies: old stores
