@@ -1,9 +1,8 @@
-use alloc::string::String;
-use nanonbt::{DeserializeNbt, SerializeNbt};
+use nanonbt::{Cesu8, DeserializeNbt, SerializeNbt};
 
 #[derive(SerializeNbt, DeserializeNbt, Debug, Clone, Eq, PartialEq)]
-pub struct BlockEntity {
-    pub id: String,
+pub struct BlockEntity<'de> {
+    pub id: &'de Cesu8,
     pub x: i32,
     pub y: i32,
     pub z: i32,

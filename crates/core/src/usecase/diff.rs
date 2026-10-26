@@ -55,7 +55,7 @@ pub async fn diff_blobs<B: BlobStore>(
     let old_val = sekai_nbt::parse(&old_nbt).map_err(DiffError::Nbt)?;
     let new_val = sekai_nbt::parse(&new_nbt).map_err(DiffError::Nbt)?;
 
-    Ok(ChunkPayloadDiff::new(old_val, new_val))
+    ChunkPayloadDiff::new(&old_val, &new_val).map_err(DiffError::Nbt)
 }
 
 /// Compute AST diff between two stored blob hashes using default ignored tags.

@@ -47,7 +47,7 @@ pub fn diff_nbt(
     let old_val = sekai_nbt::parse(old_raw_nbt)?;
     let new_val = sekai_nbt::parse(new_raw_nbt)?;
 
-    Ok(ChunkPayloadDiff::new(old_val, new_val))
+    ChunkPayloadDiff::new(&old_val, &new_val)
 }
 
 /// Compute structural diff entries using the default ignore set.
@@ -60,6 +60,8 @@ pub fn diff_nbt_v1(
 
 #[cfg(test)]
 mod tests {
+    use sekai_nbt::nanonbt::Cesu8;
+
     use super::*;
 
     #[test]
@@ -97,7 +99,7 @@ mod tests {
             last_update,
             sections: alloc::vec![],
             heightmaps: sekai_nbt::Heightmaps {},
-            status: status.into(),
+            status: &Cesu8::from_str(status),
             block_entities: alloc::vec![],
         };
         sekai_nbt::nanonbt::to_bytes(&value).unwrap()

@@ -3,8 +3,11 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use sekai_core::{BlobHash, BlobStore as _, ChunkCoord, CommitId, MetaStore, RegionKey, diff_nbt};
+use sekai_core::{
+    BlobHash, BlobStore as _, ChunkCoord, CommitId, DiffHash, MetaStore, RegionKey, diff_nbt,
+};
 use sekai_nbt::ChunkPayloadDiff;
+use sekai_nbt::nanonbt::Cesu8Buf;
 use sekai_storage::{BlockingBlobStore, SekaiStore, StoreLockMode};
 use sekai_world::{Region, RegionFile, WorldLockMode, WorldTree};
 
@@ -228,7 +231,7 @@ fn decompress_or_empty(compressed: Option<Vec<u8>>) -> Result<Vec<u8>, AppError>
                 last_update: 0,
                 sections: vec![],
                 heightmaps: sekai_nbt::Heightmaps {},
-                status: std::string::String::new(),
+                status: &Cesu8Buf::new(),
                 block_entities: vec![],
             };
             sekai_nbt::nanonbt::to_bytes(&chunk).map_err(AppError::Nbt)
@@ -402,8 +405,8 @@ async fn diff_coords(
                     ChunkPayloadDiff::Nothing
                 } else {
                     ChunkPayloadDiff::Full {
-                        old: Box::new(sekai_nbt::ChunkPayload::default()),
-                        new: Box::new(sekai_nbt::ChunkPayload::default()),
+                        old: DiffHash([0; 32]),
+                        new: DiffHash([0; 32]),
                     }
                 }
             }

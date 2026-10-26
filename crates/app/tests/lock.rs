@@ -13,6 +13,7 @@ use sekai_app::{
     WorldTree,
 };
 use sekai_core::MetaStore as _;
+use sekai_nbt::nanonbt::Cesu8;
 use sekai_storage::{StorageError, StoreLockMode};
 use sekai_storage_sqlite::SqliteStore;
 use std::path::{Path, PathBuf};
@@ -72,7 +73,7 @@ impl Fixture {
             last_update: 0,
             sections: vec![],
             heightmaps: sekai_nbt::Heightmaps {},
-            status: "minecraft:full".into(),
+            status: &Cesu8::from_str("minecraft:full"),
             block_entities: vec![],
         })
         .unwrap();

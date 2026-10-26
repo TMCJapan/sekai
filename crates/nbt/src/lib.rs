@@ -12,8 +12,8 @@ pub use nanonbt::Error as NbtError;
 use sekai_util::DiffHash;
 
 /// Parses a complete NBT document with a compound root.
-pub fn parse(bytes: &[u8]) -> Result<ChunkPayload, NbtError> {
-    nanonbt::from_bytes(bytes)
+pub fn parse(bytes: &[u8]) -> Result<ChunkPayload<'_>, NbtError> {
+    nanonbt::from_slice(bytes)
 }
 
 /// Hashes NBT after excluding the specified tag names at every depth.
@@ -31,6 +31,8 @@ pub fn diff_hash_v1(raw_nbt: &[u8]) -> Result<DiffHash, NbtError> {
 
 #[cfg(test)]
 mod tests {
+    use nanonbt::Cesu8;
+
     use super::*;
 
     #[test]
@@ -44,11 +46,11 @@ mod tests {
             last_update: 9,
             sections: alloc::vec![],
             heightmaps: Heightmaps {},
-            status: "minecraft:full".into(),
+            status: &Cesu8::from_str("minecraft:full"),
             block_entities: alloc::vec![],
         };
         let bytes = nanonbt::to_bytes(&payload).unwrap();
-        let parsed = nanonbt::from_bytes::<ChunkPayload>(&bytes).unwrap();
+        let parsed = nanonbt::from_slice::<ChunkPayload>(&bytes).unwrap();
         assert_eq!(payload, parsed);
     }
 }

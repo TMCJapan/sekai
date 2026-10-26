@@ -7,6 +7,7 @@
 use sekai_app::{CommitId, CommitOptions, RegionKind, Scope};
 use sekai_app::{HostWorldTree, WorldTree};
 use sekai_nbt::ChunkPayloadDiff;
+use sekai_nbt::nanonbt::Cesu8;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -1217,7 +1218,7 @@ fn build_status_nbt(status: &str) -> Vec<u8> {
         last_update: 0,
         sections: vec![],
         heightmaps: sekai_nbt::Heightmaps {},
-        status: status.into(),
+        status: &Cesu8::from_str(status),
         block_entities: vec![],
     })
     .unwrap();
