@@ -2,7 +2,7 @@
 
 ```sh
 sekai checkout ./world 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b
-sekai checkout ./world @stable --in overworld
+sekai checkout ./world 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a --in overworld
 ```
 
 Rebuilds the world from a commit, overwriting region files atomically

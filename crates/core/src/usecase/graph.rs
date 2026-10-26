@@ -211,7 +211,7 @@ pub enum ResolveError<M> {
         /// Requested ref name.
         name: RefName,
     },
-    /// Reference is neither a commit ID, a `@tag`, nor a ref name.
+    /// Reference is neither a commit ID nor a ref name.
     InvalidRef {
         /// Raw reference text.
         raw: alloc::string::String,

@@ -258,6 +258,10 @@ fn parses_diff_command() {
         panic!("expected diff");
     }
 
+    // The `tag` subcommand is gone.
+    assert!(Cli::try_parse_from(["sekai", "tag", "list"]).is_err());
+    assert!(Cli::try_parse_from(["sekai", "tag"]).is_err());
+
     // Removed flags fail loudly.
     assert!(Cli::try_parse_from(["sekai", "diff", "--cx", "0"]).is_err());
     assert!(Cli::try_parse_from(["sekai", "diff", "--dimension"]).is_err());
@@ -287,8 +291,6 @@ fn validates_commit_refs_at_parse_time() {
         vec!["sekai", "clone", "bad name", "out"],
         vec!["sekai", "prune", "--before", "bad name"],
         vec!["sekai", "diff", H1, "bad name"],
-        vec!["sekai", "tag", "create", "stable", "bad name"],
-        vec!["sekai", "tag", "create", "stable", "@123"],
         vec!["sekai", "ref", "create", ""],
         vec!["sekai", "ref", "create", "bad name"],
         vec!["sekai", "ref", "create", "main", "HEAD"],
@@ -701,6 +703,10 @@ fn parses_timing_and_json_flags() {
         }
     ));
     assert!(cli.command.output_json());
+    assert!(
+        Cli::try_parse_from(["sekai", "ref", "list", "--force"]).is_err(),
+        "ref list --force is refused"
+    );
 
     let cli = Cli::try_parse_from(["sekai", "ref", "activate", "main", "--json"])
         .expect("ref activate --json parses");

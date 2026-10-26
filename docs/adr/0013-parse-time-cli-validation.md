@@ -19,13 +19,13 @@ Everything statically decidable is validated by the clap structure
 alone, before any command code runs:
 
 - Operations whose operands depend on the operation become
-  subcommands: `tag create <name> <snapshot> [--force]`,
-  `tag delete <name>`, `tag list`. Invalid shapes are unrepresentable
+  subcommands for refs (`ref create`, `ref delete`, `ref list`, etc.).
+  Invalid shapes are unrepresentable
   in the parsed type, so `parse_action` and its `Action` enum are gone.
   This supersedes the flat `tag` surface of ADR-0009.
 - Commit references (`rollback`, `export`, `diff`, `prune --before`,
   `tag create`) use a `CommitRef` value type whose `FromStr` enforces
-  the 64-character hash / `@tag` grammar (mirroring `core`'s
+  the 64-character hash / ref-name grammar (mirroring `core`'s
   `resolve_commit_ref`) at parse time.
 - Mode ambiguity becomes structure: `diff` rejects a second positional
   next to `--world` (`conflicts_with`) instead of silently ignoring it,

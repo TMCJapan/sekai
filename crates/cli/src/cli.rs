@@ -71,7 +71,7 @@ pub enum Command {
     Checkout {
         /// World directory to rebuild in place.
         world: PathBuf,
-        /// Commit reference to restore (`<64-char hash>` or `@tag`, see `log`).
+        /// Commit reference to restore (`<64-char hash>` or a ref name, see `log`).
         commit: CommitRef,
         /// Human or JSON rendering plus optional phase timings.
         #[command(flatten)]
@@ -120,7 +120,7 @@ pub enum Command {
     /// Rebuild a commit into a fresh directory (never touches the live world).
     #[command(visible_alias = "export")]
     Clone {
-        /// Commit reference to clone (`<64-char hash>` or `@tag`, see `log`).
+        /// Commit reference to clone (`<64-char hash>` or a ref name, see `log`).
         commit: CommitRef,
         /// Directory to rebuild the commit into (created when missing;
         /// must otherwise be empty).
@@ -158,7 +158,7 @@ pub enum Command {
         /// Keep the newest N commits.
         #[arg(long, required_unless_present = "before")]
         keep_last: Option<u64>,
-        /// Retain this commit and everything newer (`<64-char hash>` or `@tag`).
+        /// Retain this commit and everything newer (`<64-char hash>` or a ref name).
         #[arg(long, required_unless_present = "keep_last")]
         before: Option<CommitRef>,
         /// Show what would be deleted without deleting anything.
@@ -233,7 +233,7 @@ pub enum RefCommand {
         /// bytes; not all digits). Written bare (never `@`-prefixed); ref
         /// names feed back as `RefName` tokens, not as `CommitRef`s.
         name: RefName,
-        /// Commit reference (`<64-char hash>`, `@tag`, or a ref name) to point at.
+        /// Commit reference (`<64-char hash>` or a ref name) to point at.
         /// Defaults to the active ref's target.
         commit: Option<CommitRef>,
         /// Move an existing ref instead of failing.
@@ -279,9 +279,9 @@ impl RefCommand {
     }
 }
 
-/// Commit reference on the command line: `<64-char hash>`, `@tag`, or a ref name.
+/// Commit reference on the command line: `<64-char hash>` or a ref name.
 ///
-/// Either `@<tag>`, a 64-character hexadecimal commit ID, or a bare valid [`RefName`], tried in
+/// Either a 64-character hexadecimal commit ID or a bare valid [`RefName`], tried in
 /// that exclusive order: `@` is tag-only and never falls through to a bare
 /// name, while a bare token is parsed as a `u64` first and only treated as
 /// a [`RefName`] when that fails. Because [`RefName`] rejects all-digit
@@ -379,12 +379,12 @@ pub struct DiffArgs {
     /// World directory to compare against a commit (if specified).
     #[arg(long)]
     pub world: Option<PathBuf>,
-    /// Older commit reference (`<64-char hash>`, `@tag`, or `<ref>`; when comparing
+    /// Older commit reference (`<64-char hash>` or `<ref>`; when comparing
     /// commits and omitted, defaults to the lowest-ID parent of the newer
     /// side). With `--world`, the single commit to compare against
     /// (default: the active ref's target).
     pub old_commit: Option<CommitRef>,
-    /// Newer commit reference (`<64-char hash>`, `@tag`, or `<ref>`; if omitted,
+    /// Newer commit reference (`<64-char hash>` or `<ref>`; if omitted,
     /// defaults to the active ref's target). Commit-vs-commit only.
     #[arg(conflicts_with = "world")]
     pub new_commit: Option<CommitRef>,

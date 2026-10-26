@@ -169,7 +169,7 @@ pub trait MetaStore {
     /// larger local sequence than `from`):
     /// rows superseded along the history `into` continues are removed,
     /// surviving rows are re-stamped onto `into`, derived states follow,
-    /// and the commit row (plus its tags, by cascade) is deleted - all
+    /// and the commit row is deleted, retro-parented onto its parent - all
     /// atomically. The children of `from` continue the history of its
     /// own parents, so the graph stays connected. Effective states of
     /// retained commits never change.

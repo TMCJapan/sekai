@@ -9,8 +9,7 @@ sekai diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a
 ```
 
 - `log` prints commits oldest first with raw Unix-millis timestamps
-  (RFC 3339 rendering is human-output only). Tags pointing at each
-  commits are listed oldest first. `--stat` appends
+  (RFC 3339 rendering is human-output only). `--stat` appends
   per-commit change statistics (fresh/tombstone/new-blob/effective
   counts). An empty store prints a note to stderr and exits 0.
 - `status` previews what a commit would record: the basis commit

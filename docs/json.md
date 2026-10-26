@@ -54,6 +54,13 @@ first, then `Caused by:` lines), JSON-escaped.
 | 1 | Runtime failure; stdout holds the `error` envelope. |
 | 2 | Usage error (unknown flags, bad values). clap prints its own human-readable error to stderr. |
 
+## Compatibility
+
+Breaking change (PR #145): `log --json` no longer carries the `tags`
+field on commit objects (tags were removed in favor of refs). Consumers
+that read `tags` must be updated; the array was always empty after this
+release for newly produced stores.
+
 ## Result payloads
 
 All durations are integer milliseconds. Paths are OS strings as observed.

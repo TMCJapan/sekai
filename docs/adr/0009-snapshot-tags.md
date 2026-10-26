@@ -1,6 +1,6 @@
-# ADR-0009: Snapshot tags and `@tag` references
+# ADR-0009: Snapshot tags and `@tag` references (superseded: tag concept removed)
 
-- Status: Accepted (flat `tag` surface superseded by ADR-0013)
+- Status: Superseded (tag concept removed in PR #145; refs replaced tags)
 - Date: 2026-09-18
 
 ## Context
@@ -13,7 +13,7 @@ collide with reference syntax.
 
 `TagName` allows ASCII `[A-Za-z0-9._-]` up to 64 bytes, never all
 digits. `rollback`, `export`, `diff`, and `prune --before` accept a full
-64-character commit hash or `@tag`; payloads carry the resolved hash.
+64-character commit hash or a ref name; payloads carry the resolved ref/name or hash.
 Duplicate names fail unless `--force` moves
 the tag; tags vanish with their snapshot on prune (cascade). Bare
 `tag` lists, `tag -d` deletes.
