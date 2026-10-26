@@ -854,9 +854,10 @@ impl sekai_core::MetaStore for SqliteMeta {
         let into_blob = commit_param(into);
         let mut tx = self.pool.begin().await.map_err(db_err)?;
         // Rows already superseded along the history the successor continues
-        // vanish; survivors move onto it. Positional convention below: `?1`
-        // is always the retired
-        // commit, `?2` the successor, `?3` its local sequence.
+        // vanish; survivors move onto it. Positional convention: `?1` is the
+        // retired commit, `?2` the successor; `?3` is the retired commit's
+        // local sequence in RETIRE_SUPERSEDED_SQL and the successor's local
+        // sequence in the chunk_history UPDATE below.
         let dropped = sqlx::query(RETIRE_SUPERSEDED_SQL)
             .bind(&from_blob[..])
             .bind(&into_blob[..])
@@ -1782,10 +1783,10 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Dropping `commit_tags` bumped the schema to 12, so a store stamped
-    /// with the previous version must fail the gate - not fail later on a
-    /// missing table. The gate reads the version before any table is
-    /// touched, so the schema behind the stamp does not matter.
+    /// The version gate rejects any store whose `user_version` is not
+    /// `SCHEMA_VERSION` (12) before any table is touched. A store stamped
+    /// 11 is therefore refused with `UnsupportedSchema { found: 11,
+    /// supported: SCHEMA_VERSION }`.
     #[tokio::test]
     async fn a_store_from_the_previous_schema_version_is_refused() {
         let dir = tempdir("version-11");

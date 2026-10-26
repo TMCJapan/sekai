@@ -8,8 +8,8 @@
 #![cfg(feature = "backend-sqlite")]
 
 use sekai_app::{
-    BlobHash, CheckoutOptions, CloneOptions, CommitId, CommitOptions, HostWorldTree, Scope,
-    SekaiInstance, StatusOptions, WorldError, WorldLockMode, WorldTree,
+    BlobHash, CheckoutOptions, CloneOptions, CommitId, CommitOptions, HostWorldTree, RefName,
+    Scope, SekaiInstance, StatusOptions, WorldError, WorldLockMode, WorldTree,
 };
 use sekai_core::MetaStore as _;
 use sekai_storage::{StorageError, StoreLockMode};
@@ -120,6 +120,8 @@ enum Op {
     ListCommits,
     LatestCommit,
     ResolveRef,
+    CreateRef,
+    DeleteRef,
     CommitStats,
     CommitCoords,
     DiffBlobs,
@@ -139,10 +141,12 @@ enum Op {
 }
 
 impl Op {
-    const ALL: [Self; 19] = [
+    const ALL: [Self; 21] = [
         Self::ListCommits,
         Self::LatestCommit,
         Self::ResolveRef,
+        Self::CreateRef,
+        Self::DeleteRef,
         Self::CommitStats,
         Self::CommitCoords,
         Self::DiffBlobs,
@@ -163,12 +167,19 @@ impl Op {
 
     const fn store_mode(self) -> Option<StoreLockMode> {
         match self {
-            Self::GcPlan | Self::GcApply | Self::Gc | Self::Commit => Some(Writer),
+            Self::GcPlan
+            | Self::GcApply
+            | Self::Gc
+            | Self::Commit
+            | Self::CreateRef
+            | Self::DeleteRef => Some(Writer),
             Self::PruneApply | Self::Prune => Some(Exclusive),
             Self::WorldChunkCoords => None,
             Self::ListCommits
             | Self::LatestCommit
             | Self::ResolveRef
+            | Self::CreateRef
+            | Self::DeleteRef
             | Self::CommitStats
             | Self::CommitCoords
             | Self::DiffBlobs
@@ -190,6 +201,8 @@ impl Op {
             Self::ListCommits
             | Self::LatestCommit
             | Self::ResolveRef
+            | Self::CreateRef
+            | Self::DeleteRef
             | Self::CommitStats
             | Self::CommitCoords
             | Self::DiffBlobs
@@ -217,6 +230,14 @@ impl Op {
             Self::ResolveRef => {
                 let raw = fx.commit.to_string();
                 instance.resolve_commit_ref(&raw).await.map(drop)
+            }
+            Self::CreateRef => {
+                let name = RefName::parse("lock-matrix").unwrap();
+                instance.create_ref(&name, Some(id), true).await.map(drop)
+            }
+            Self::DeleteRef => {
+                let name = RefName::parse("lock-matrix").unwrap();
+                instance.delete_ref(&name).await.map(drop)
             }
             Self::CommitStats => instance.commit_stats(id).await.map(drop),
             Self::CommitCoords => instance.commit_chunk_coords(id).await.map(drop),

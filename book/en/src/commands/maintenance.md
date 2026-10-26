@@ -39,7 +39,7 @@ the store.
 Deletion folds oldest-first: each retired commit moves its
 still-effective rows onto the next retained commit and drops rows
 already superseded there, so every retained commit restores exactly
-as before. Tags on deleted commits disappear with them. Pruning never
+as before. Pruning never
 unlinks blobs — run `gc` afterwards to reclaim the dereferenced ones.
 `--dry-run` prints the planned deletions only.
 

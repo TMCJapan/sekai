@@ -1,4 +1,6 @@
--- Content-addressed commits. `id` is the public commit hash; `seq` is a
+-- Schema version 12: `commit_tags` (snapshot tag references) was removed
+-- in favour of refs; there is no migration path, old stores are rejected
+-- via `UnsupportedSchema`. Content-addressed commits below. `id` is the public commit hash; `seq` is a
 -- local ordering key used by MVCC queries. The sequence is never part of
 -- the commit identity and may differ across replicas. Reads order by
 -- it, so it must increase monotonically with record order inside a store.

@@ -320,7 +320,7 @@ impl std::str::FromStr for CommitRef {
             .or_else(|id_err| match RefName::parse(s) {
                 Ok(_) => Ok(Self(s.to_owned())),
                 Err(name_err) => Err(format!(
-                    "invalid reference {s:?}: {name_err} (not a 64-char commit hash: {id_err}), expected <64-char commit hash> or <ref>"
+                    "invalid reference {s:?}: {id_err}; not a valid ref name: {name_err}, expected <64-char commit hash> or <ref>"
                 )),
             })
     }

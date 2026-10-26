@@ -29,11 +29,11 @@ const STORE_LOCK: &str = "store.lock";
 /// How an operation uses the store.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum StoreLockMode {
-    /// Reads and ref edits: run alongside each other and alongside commits.
-    /// Every blob a shared holder can resolve survives a concurrent `gc`,
-    /// which unlinks only blobs no row references, while rows disappear
-    /// only under [`Self::Exclusive`]. Refs never change which blobs rows
-    /// reference, so editing them needs no writer lock.
+    /// Reads run concurrently. Ref mutations such as `create_ref`,
+    /// `delete_ref`, and `activate_ref` take [`Self::Writer`] because they
+    /// rewrite metadata that other writers and readers must not observe
+    /// partially; `commit` and `gc` also take [`Self::Writer`]. Rows are
+    /// deleted only under [`Self::Exclusive`].
     Shared,
     /// Runs that write or collect blobs (`commit`, `gc`):
     /// one at a time, while readers keep going.

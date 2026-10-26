@@ -97,6 +97,12 @@ async fn prune_folds_and_gc_reclaims() {
     assert_eq!(commits.len(), 3);
     assert_eq!(blob_count(&store_dir), 3);
 
+    let doomed_name = sekai_app::RefName::parse("doomed").unwrap();
+    instance
+        .create_ref(&doomed_name, Some(commits[0].id), false)
+        .await
+        .unwrap();
+
     // Dry-run first: one deletion planned, nothing touched.
     let (plan, plan_timings) = instance.prune_plan(Some(2), None).await.unwrap();
     assert_eq!(plan.delete, [commits[0].id]);
@@ -109,6 +115,18 @@ async fn prune_folds_and_gc_reclaims() {
     assert_eq!(report.rows_folded + report.rows_dropped, 1);
     let remaining = instance.list_commits().await.unwrap();
     assert_eq!(remaining.len(), 2);
+    let doomed_ref = instance
+        .list_refs()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|r| r.name == doomed_name)
+        .expect("doomed ref carried onto the successor");
+    assert_eq!(doomed_ref.commit, Some(commits[1].id));
+    assert_eq!(
+        instance.resolve_commit_ref("doomed").await.unwrap(),
+        commits[1].id
+    );
 
     // Retained commits still restore faithfully through fallback.
     let (checked_out, _) = instance
