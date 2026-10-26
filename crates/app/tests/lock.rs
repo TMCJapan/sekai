@@ -178,8 +178,6 @@ impl Op {
             Self::ListCommits
             | Self::LatestCommit
             | Self::ResolveRef
-            | Self::CreateRef
-            | Self::DeleteRef
             | Self::CommitStats
             | Self::CommitCoords
             | Self::DiffBlobs
