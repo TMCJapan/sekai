@@ -1364,17 +1364,6 @@ fn fingerprint_sees_a_payload_edit_with_preserved_size_and_mtime() {
         after.content_hash, before.content_hash,
         "a same-size payload edit under a preserved mtime must be detected"
     );
-
-    // And therefore the pair does not match, which is what plan_commit asks
-    // before skipping a file.
-    let stored = sekai_core::RegionStateEntry {
-        fingerprint: before,
-        commit_id: sekai_core::CommitId([1; 32]),
-    };
-    assert!(
-        !after.matches_state(&stored),
-        "the file must not be treated as unchanged"
-    );
     cleanup(&world);
 }
 

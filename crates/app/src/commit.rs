@@ -1,9 +1,9 @@
-//! Recording a world state as a commit: fingerprint, ingest changes, carry
-//! the rest.
+//! Recording a world state as a commit: observe files, ingest, filter the
+//! delta.
 //!
 //! Rationale: this is the orchestration half of commit. All policy lives in
-//! [`core`](sekai_core::usecase::commit): the previous-state plan (carry vs
-//! ingest), per-chunk staging, tombstone assembly, and the atomic commit.
+//! [`core`](sekai_core::usecase::commit): the previous-state plan, per-chunk
+//! staging, delta filtering, tombstone assembly, and the atomic commit.
 //! What stays here is mechanics `core` cannot own without breaking its
 //! `no_std` boundary: world discovery and fingerprint observation
 //! (filesystem), worker ingest on a blocking pool (threads + fsync), the
@@ -13,7 +13,7 @@
 //! *before* the single metadata batch commits, so a torn commit leaves at
 //! most orphan blobs (reclaimed by future GC), never dangling references.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -61,7 +61,7 @@ pub struct StatusReport {
     /// `None` when that ref is unborn, even if the store already holds
     /// commits from an earlier history.
     pub latest: Option<CommitId>,
-    /// In-scope regions that changed (new files included).
+    /// In-scope regions with fresh rows (changed chunks or tombstones).
     pub changed_regions: usize,
     /// Changed regions with no stored state.
     pub new_files: usize,
@@ -84,7 +84,7 @@ pub struct StatusTimings {
     pub discover: Duration,
     /// Fingerprint observation.
     pub fingerprint: Duration,
-    /// Previous-state load plus carry/ingest planning.
+    /// Previous-state load plus ingest planning.
     pub universe_load: Duration,
     /// Opening changed region files.
     pub region_open: Duration,
@@ -114,7 +114,7 @@ pub struct CommitTimings {
     pub discover: Duration,
     /// Fingerprint observation.
     pub fingerprint: Duration,
-    /// Previous-state load plus carry/ingest planning.
+    /// Previous-state load plus ingest planning.
     pub universe_load: Duration,
     /// Opening changed region files.
     pub region_open: Duration,
@@ -126,9 +126,10 @@ pub struct CommitTimings {
     pub cas_put: Duration,
     /// Metadata commit.
     pub db_apply: Duration,
-    /// Fingerprint-matched regions carried over.
+    /// Region files skipped by file metadata. Always zero: region skipping
+    /// was removed with the derived-state table.
     pub skipped_regions: usize,
-    /// History rows carried over.
+    /// History rows carried over. Always zero.
     pub carried_chunks: usize,
     /// Per-region details for ingested files, ordered by region identity:
     /// dimension (by its code), then family, then coordinates - the order
@@ -410,17 +411,17 @@ where
         universe_load,
     } = prepare(store, world, &preview, &scope, progress, true, locks).await?;
 
-    let new_files = staged
-        .fingerprints
-        .iter()
-        .filter(|fp| !previous.states.contains_key(&fp.key))
-        .count();
     let new_chunks = staged.entries.iter().filter(|e| e.blob.is_some()).count();
+    let changed_regions: BTreeSet<RegionKey> = staged
+        .entries
+        .iter()
+        .map(|entry| RegionKey::of(entry.coord))
+        .collect();
     let report = StatusReport {
-        clean: staged.entries.is_empty() && staged.removed.is_empty() && new_files == 0,
+        clean: staged.entries.is_empty() && staged.removed.is_empty() && staged.new_files == 0,
         latest: previous.commit.map(|commit| commit.id),
-        changed_regions: walk.regions.len(),
-        new_files,
+        changed_regions: changed_regions.len(),
+        new_files: staged.new_files,
         deleted_files: staged.removed.len(),
         new_chunks,
         tombstones: staged.tombstones,
@@ -481,8 +482,6 @@ struct RegionWalk {
     present: HashSet<ChunkCoord>,
     /// Blobs newly written to CAS.
     new_blobs: usize,
-    /// Fresh fingerprints for ingested files.
-    fingerprints: Vec<RegionFingerprint>,
     /// Time spent opening changed region files.
     region_open: Duration,
     /// Time spent visiting, hashing, and storing changed chunks.
@@ -502,7 +501,6 @@ impl RegionWalk {
             entries: self.entries,
             present: self.present.into_iter().collect(),
             new_blobs: self.new_blobs,
-            fingerprints: self.fingerprints,
         };
         let timings = IngestTimings {
             region_open: self.region_open,
@@ -679,7 +677,6 @@ fn merge_outcome(walk: &mut RegionWalk, outcome: FileOutcome) {
     walk.ingest += outcome.timing.ingest;
     walk.hash += outcome.timing.hash;
     walk.cas += outcome.timing.cas;
-    walk.fingerprints.push(outcome.fingerprint);
     walk.timings.push((outcome.fingerprint.key, outcome.timing));
 }
 

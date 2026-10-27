@@ -11,7 +11,7 @@ use alloc::vec::Vec;
 use core::future::Future;
 use sekai_util::{
     ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitEntry, CommitId,
-    CommitRef, DiffHash, FoldOutcome, RefName, RegionFingerprint, RegionKey, RegionStateEntry,
+    CommitRef, DiffHash, FoldOutcome, RefName,
 };
 
 /// Commit metadata and per-chunk history storage.
@@ -105,36 +105,15 @@ pub trait MetaStore {
     where
         F: FnMut(&Commit) -> bool + Send;
 
-    /// Load every stored region fingerprint (for skip decisions in commit).
-    ///
-    /// `within` restricts the result to the history of that commit: a
-    /// fingerprint confirmed outside it describes another history (another
-    /// ref) and must not be carried into this one. "Inside" means stamped
-    /// at `within` or at one of its ancestors - the same ancestry the
-    /// effective chunk reads use. `None` - an unborn ref - yields nothing:
-    /// its history holds no confirmed file yet.
-    fn load_region_states(
-        &self,
-        within: Option<CommitId>,
-    ) -> impl Future<Output = Result<Vec<RegionStateEntry>, Self::Error>> + Send;
-
-    /// Record a commit and optionally carry unchanged regions.
+    /// Record a commit whose `entries` are the fresh rows and tombstones
+    /// of its delta.
     ///
     /// The new commit continues `parents`; an empty list starts a
     /// history. As in [`Self::create_commit`], every parent must exist
     /// and a parent listed twice is recorded once. Recording a commit
     /// whose hash already exists is idempotent: the existing ID is
-    /// returned and no fresh rows are written. Shared derived state
-    /// (carried region state, fingerprints, and removals), the row
-    /// counts from `carry_from`, and the active-ref move are still
-    /// applied to that commit, so a repeat record advances derived
-    /// state and the ref while the commit graph stays unchanged.
-    /// `entries` contains fresh rows and tombstones.
-    /// `carry_from` identifies unchanged regions: backends advance their
-    /// commit state and count their effective chunks, but write no
-    /// per-chunk rows for them (delta storage). Fingerprints are
-    /// refreshed atomically, and `removed` names regions whose state
-    /// rows drop: files gone from disk or ingested only partly.
+    /// returned and no fresh rows are written, while the active ref still
+    /// moves onto that commit.
     ///
     /// The new commit must continue the active ref's target: when the
     /// ref is born, `parents` includes its commit, and backends reject a
@@ -151,18 +130,11 @@ pub trait MetaStore {
     /// continuing".
     ///
     /// Referenced blobs must already be flushed to CAS.
-    ///
-    /// The outcome names the commit just recorded and how many chunks it
-    /// carries over from `carry_from` (the effective chunks of the carried
-    /// regions, not the fresh rows in `entries`).
     fn apply_commit_incremental(
         &mut self,
         created_at_ms: u64,
         parents: &[CommitId],
         entries: &[CommitEntry],
-        carry_from: Option<(CommitId, &[RegionKey])>,
-        fingerprints: &[RegionFingerprint],
-        removed: &[RegionKey],
     ) -> impl Future<Output = Result<ApplyOutcome, Self::Error>> + Send;
 
     /// Retire `from` into `into` (`into` must be retained and have a

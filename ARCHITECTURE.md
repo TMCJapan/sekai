@@ -226,11 +226,10 @@ to the root by the core use cases (`usecase::graph::commit_ancestors`
 is recorded once.
 
 Commit IDs are content-addressed: a Blake3 digest over the canonical
-parents, creation time, fresh history rows (present or tombstone), and
-removed regions. Carried regions and fingerprints are excluded because
-they describe storage representation and observation metadata, not the
-logical delta. Input order never enters the hash - parents, entries, and
-removed regions are sorted before hashing - so equal commits produce
+parents, creation time, and fresh history rows (present or tombstone).
+Observation metadata and storage representation are excluded because they
+are not part of the logical delta. Input order never enters the hash -
+parents and entries are sorted before hashing - so equal commits produce
 equal IDs, and recording one twice is idempotent: the existing ID is
 returned without duplicating rows. Backends keep a separate local record
 sequence for traversal, latest-commit lookup, and fold ordering; that
@@ -258,13 +257,8 @@ successor. Folding changes where rows physically live, never the
 successor's logical delta or ID, so refs stay stable across a
 prune. See [ADR-0019](docs/adr/0019-ref-objects.md).
 
-Two rules follow from the graph:
+One rule follows from the graph:
 
-- **Fingerprints are per history.** `region_state` records which commit
-  last confirmed a file. A fingerprint confirmed outside the active
-  ref's history describes another branch, so it is not carried into
-  this one: the plan reads the fingerprints within the base commit's
-  ancestry only.
 - **Pruning folds into a descendant.** A retired commit hands its rows
   to a retained commit that continues it, and a ref naming the retired
   commit follows the fold. A commit that several branches continue
@@ -277,16 +271,15 @@ surviving commits resolve to the same effective state as before.
 
 ## Delta History Storage
 
-Commits store only fresh rows (ingested chunks plus tombstones).
+Commits store only fresh rows (changed chunks plus tombstones).
 Unchanged chunks have no row at newer commits; reads resolve effective
 state through the graph - `lookup_chunk` returns the row introduced at
 the commit or at one of its ancestors (the nearest one wins),
 `visit_commit_chunks` synthesizes one effective row per known
-coordinate. Carried regions advance only derived state (`region_state`),
-and their effective chunk count is aggregated for the report. Every commit
-therefore grows metadata with changes, not with universe size - an
-unchanged commit writes one commit row plus state bumps instead of a
-full row copy.
+coordinate. Every in-scope file is reread on commit; a row is written
+only when its blob differs from the base commit. Every commit therefore
+grows metadata with changes, not with universe size - an unchanged commit
+writes one commit row and no chunk rows.
 
 ## Tombstones
 
@@ -308,25 +301,25 @@ repeatable; empty means all) apply uniformly across every area, and on
 their own they narrow the whole world to those families (`Scope::Kinds`).
 The scope is a filter, not a partition:
 
-- Scoped commit ingests, carries, and tombstones only inside the scope.
+- Scoped commit ingests and tombstones only inside the scope.
   Out-of-scope coordinates record no rows and no tombstones, resolving
-  through fallback from earlier commits; stored state rows outside the
-  scope are never marked removed. A scoped commit therefore reads as the
-  truth for its scope only - a file deleted inside the scope tombstones
-  its chunks, while anything outside is untouched. A file the scope covers
-  only partly records no fingerprint and drops its stored one, so the next
-  commit that reaches it reads it again instead of carrying unread chunks.
+  through fallback from earlier commits. A scoped commit therefore reads
+  as the truth for its scope only - a file deleted inside the scope
+  tombstones its chunks, while anything outside is untouched. A file the
+  scope covers only partly records only its in-scope changes; the next
+  commit that reaches it rereads the whole file and picks up the rest.
 - Scoped checkout rebuilds and deletes only inside the scope; files
   outside are never written, deleted, or otherwise touched.
 - Multi-chunk diff resolves coordinates from the commits (or world
   state) filtered by the scope and omits chunks without differences.
 
-## Single Source of Truth vs Derived State
+## Single Source of Truth
 
 - **Source of truth**: metadata history (`commits`, `commit_parents`,
   `chunk_history`) in the selected DB backend + CAS blobs.
-- **Derived state**: `region_state` fingerprints. Wiping them costs at most
-  one full ingest, never wrong data.
+- **No persisted derived state**: region fingerprints are not stored.
+  Commit decisions compare per-chunk history, so there is no cache to
+  wipe and no derived table to keep consistent.
 
 ## Garbage Collection (GC)
 
@@ -396,9 +389,8 @@ cancelled future cannot release the store while those tasks still run.
 ## Schema
 
 Owned by the backend crate (`crates/storage-sqlite/schema/sqlite.sql` for
-SQLite; `commits`, `commit_parents`, `chunk_history`, `region_state`,
-`refs`; `SCHEMA_VERSION` gate; pre-release policy =
-recreate, don't migrate).
+SQLite; `commits`, `commit_parents`, `chunk_history`, `refs`;
+`SCHEMA_VERSION` gate; pre-release policy = recreate, don't migrate).
 The `cas` module stays independent of DB backend crates so future
 object-store CAS swaps don't touch metadata code.
 
@@ -427,14 +419,10 @@ object-store CAS swaps don't touch metadata code.
 - **Crash consistency order**:
   - **Write path**: CAS blobs flushed + synced *before* DB metadata commit.
   - **GC delete path**: DB metadata commit *before* blob unlink.
-  - **Prune path**: each commit's fold (row restamp/drop, state
-    repoint, commit delete) commits atomically; blobs unlink only in
-    a later `gc`.
+  - **Prune path**: each commit's fold (row restamp/drop and commit
+    delete) commits atomically; blobs unlink only in a later `gc`.
 - **No server orchestration in libraries**: `save-off`/`save-all`,
   scheduling, and process control belong to callers, never to `core`,
   `anvil`, `nbt`, `storage`, `world`, or `app` internals.
-- **Rebuildable derived state** and **two-phase destructive operations**
-  (plan before apply) hold for every change. A fingerprint must therefore be
-  a *content* signal: hashing only part of a file would let a changed file
-  look unchanged, which is wrong data rather than a cache miss
-  ([ADR-0012](docs/adr/0012-fingerprint-covers-file-content.md)).
+- **Two-phase destructive operations** (plan before apply) hold for every
+  change.

@@ -3,8 +3,8 @@
 //! Three hazards need it. A commit puts blobs into the CAS *before* it
 //! commits the rows that reference them, so a `gc` scanning in between
 //! unlinks live blobs. Two commits plan against the same base commit,
-//! so the later commit leaves `region_state` fingerprints out of step
-//! with the effective rows. And `prune` deletes rows a reader may have
+//! so the later commit would fork the active ref or record a delta against
+//! a state the first commit already replaced. And `prune` deletes rows a reader may have
 //! resolved moments earlier, so a checkout could restore a partial
 //! commit.
 //!

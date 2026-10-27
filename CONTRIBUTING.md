@@ -84,9 +84,9 @@ any exception in the PR body.
   commit, it does not preserve their live values.
 - **No server orchestration in libraries**: `save-off`/`save-all`, process
   control, and scheduling belong to the caller, never to library crates.
-- **Rebuildable derived state**: caches like `region_state` are derived;
-  wiping them must cost at most a full ingest on the next commit, never
-  wrong data.
+- **No persisted derived state**: commit decisions compare per-chunk
+  history, so the schema holds no cache that can drift from the source of
+  truth.
 - **Two-phase destructive operations**: GC and similar destructive
   operations keep a dry-run/plan phase separate from apply/execution.
 - **Crash order**: CAS blobs flushed + synced *before* DB metadata commit;
@@ -274,5 +274,6 @@ The metadata schema is backend-owned and versioned
   sufficient.
 - The project is pre-release: old stores are recreated, not migrated. Never
   silently reinterpret an unknown version.
-- Derived state (e.g., `region_state`) must degrade gracefully: wiping it may
-  cost one slow ingest, never correctness. Cover that path with a test.
+- The schema keeps only source-of-truth history. Derived data (fingerprints,
+  cached counts) stays out of the database so no rebuild path can drift;
+  cover commit decisions with tests against `chunk_history` itself.

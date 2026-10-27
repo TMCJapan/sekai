@@ -19,8 +19,9 @@
 - **Tombstone**: an explicit "chunk absent" row. A chunk deleted between
   commits is recorded as a tombstone, not as silence — this is what lets
   checkout delete it again faithfully.
-- **Derived state**: `region_state` fingerprints speed up the next commit.
-  Wiping them costs at most one full ingest, never wrong data.
+- **No derived state table**: region fingerprints are not persisted. Every
+  commit rereads in-scope files and writes rows only for chunks whose blob
+  changed, so history stays correct without a cache to rebuild.
 
 The authoritative definitions are in
 [ARCHITECTURE.md](https://github.com/tmcjapan/sekai/blob/main/ARCHITECTURE.md) ("Data & Hashing Model" and

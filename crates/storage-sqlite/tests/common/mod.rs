@@ -3,34 +3,16 @@
 //! The flows target `sekai-core` traits; backend-specific setup stays in each runner.
 
 use sekai_core::{
-    BlobHash, BlobStore, ChunkCoord, CommitEntry, CommitId, Dimension, MetaStore, Observation,
-    RefName, RegionFingerprint, RegionKey, RegionKind, Scope,
-    usecase::{
-        checkout::plan_checkout,
-        commit::{Ingested, assemble, plan_commit, record_commit, stage_present},
-        gc::{gc_apply, gc_plan},
-    },
+    BlobHash, BlobStore, ChunkCoord, CommitEntry, CommitId, Dimension, MetaStore, RefName,
+    RegionKind,
+    usecase::gc::{gc_apply, gc_plan},
 };
-use std::collections::BTreeSet;
 
 const OVER: Dimension = Dimension::OVERWORLD;
 const REGION: RegionKind = RegionKind::Region;
 
-pub const fn key(rx: i32, rz: i32) -> RegionKey {
-    RegionKey::new(OVER, REGION, rx, rz)
-}
-
 pub const fn coord(x: i32, z: i32) -> ChunkCoord {
     ChunkCoord::new(OVER, REGION, x, z)
-}
-
-pub const fn fingerprint(key: RegionKey) -> RegionFingerprint {
-    RegionFingerprint {
-        key,
-        mtime_ms: Some(1_700_000_000_000),
-        size: 8192,
-        content_hash: [7; 32],
-    }
 }
 
 /// Commit CRUD plus point lookups.
@@ -199,9 +181,6 @@ where
             1_000,
             &[],
             &[CommitEntry::new(coord(0, 0), Some(BlobHash([1; 32])), None)],
-            None,
-            &[],
-            &[],
         )
         .await
         .unwrap()
@@ -211,9 +190,6 @@ where
             2_000,
             &[first],
             &[CommitEntry::new(coord(1, 0), Some(BlobHash([2; 32])), None)],
-            None,
-            &[],
-            &[],
         )
         .await
         .unwrap()
@@ -223,9 +199,6 @@ where
             3_000,
             &[second],
             &[CommitEntry::new(coord(2, 0), Some(BlobHash([3; 32])), None)],
-            None,
-            &[],
-            &[],
         )
         .await
         .unwrap()
@@ -287,103 +260,6 @@ where
         out.push(rows);
     }
     out
-}
-
-/// Fingerprint carry: unchanged regions skip ingest, changed ones re-ingest.
-pub async fn commit_carry<M>(meta: &mut M)
-where
-    M: MetaStore,
-    M::Error: core::fmt::Debug,
-{
-    let fp0 = fingerprint(key(0, 0));
-    let fp1 = fingerprint(key(1, 0));
-    meta.apply_commit_incremental(
-        1_000,
-        &[],
-        &[
-            stage_present(coord(0, 0), BlobHash([1; 32])),
-            stage_present(coord(32, 0), BlobHash([2; 32])),
-        ],
-        None,
-        &[fp0, fp1],
-        &[],
-    )
-    .await
-    .unwrap();
-
-    let mut changed = fp0;
-    changed.size += 1;
-    let observed = [
-        Observation {
-            key: key(0, 0),
-            fingerprint: changed,
-        },
-        Observation {
-            key: key(1, 0),
-            fingerprint: fp1,
-        },
-    ];
-    let (previous, plan) = plan_commit(&*meta, &observed, &Scope::World).await.unwrap();
-    assert_eq!(plan.carries, vec![key(1, 0)]);
-    assert_eq!(plan.ingest, vec![key(0, 0)]);
-
-    let staged = assemble(
-        plan,
-        &previous,
-        Ingested {
-            entries: vec![stage_present(coord(0, 0), BlobHash([9; 32]))],
-            present: BTreeSet::from([coord(0, 0)]),
-            new_blobs: 1,
-            fingerprints: vec![changed],
-        },
-        &Scope::World,
-    );
-    let report = record_commit(meta, &previous, &staged, 2_000)
-        .await
-        .unwrap();
-    assert_eq!(report.carried_chunks, 1);
-    assert_eq!(report.skipped_regions, 1);
-    let kept = meta
-        .lookup_chunk(report.commit, &coord(32, 0))
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(kept.blob, Some(BlobHash([2; 32])));
-}
-
-/// Vanished coordinates become tombstones; vanished regions drop state.
-pub async fn tombstones<M>(meta: &mut M)
-where
-    M: MetaStore,
-    M::Error: core::fmt::Debug,
-{
-    let fp = fingerprint(key(0, 0));
-    meta.apply_commit_incremental(
-        1_000,
-        &[],
-        &[stage_present(coord(0, 0), BlobHash([1; 32]))],
-        None,
-        &[fp],
-        &[],
-    )
-    .await
-    .unwrap();
-    let (previous, plan) = plan_commit(&*meta, &[], &Scope::World).await.unwrap();
-    assert_eq!(plan.removed, vec![key(0, 0)]);
-    let staged = assemble(plan, &previous, Ingested::default(), &Scope::World);
-    assert_eq!(staged.tombstones, 1);
-    let report = record_commit(meta, &previous, &staged, 2_000)
-        .await
-        .unwrap();
-    assert_eq!(report.tombstones, 1);
-    let tomb = meta
-        .lookup_chunk(report.commit, &coord(0, 0))
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(tomb.is_tombstone());
-    let plan = plan_checkout(&*meta, report.commit).await.unwrap();
-    assert!(plan.groups.is_empty());
 }
 
 /// The history graph: parents, the walk back to the root, and the
@@ -548,9 +424,6 @@ where
             1_000,
             &[],
             &[CommitEntry::new(coord(0, 0), Some(live), None)],
-            None,
-            &[],
-            &[],
         )
         .await
         .unwrap();

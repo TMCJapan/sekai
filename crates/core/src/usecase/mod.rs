@@ -2,7 +2,8 @@
 //! and diffs.
 //!
 //! Use cases coordinate storage ports and enforce application-level policy.
-//! They own ordering and decisions such as carry, tombstone, restore, and GC.
+//! They own ordering and decisions such as delta filtering, tombstoning,
+//! restore, and GC.
 //! Backends own SQLite, CAS layout, threading, and clocks. Policy here is
 //! portable (`no_std` + `alloc` only) and tested without I/O.
 

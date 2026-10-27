@@ -4,14 +4,15 @@
 //! every chunk would multiply scan cost for data no consumer reads yet.
 //!
 //! The policy is stated in ARCHITECTURE.md ("Delta History Storage" and
-//! "Tombstones"): unchanged files carry no new rows, vanished coordinates
-//! tombstone once, and everything else resolves through fallback. This
-//! module is the orchestration split that keeps adapters out of `core`:
+//! "Tombstones"): chunks unchanged since the base commit write no fresh
+//! rows, vanished coordinates tombstone once, and everything else resolves
+//! through fallback. This module is the orchestration split that keeps
+//! adapters out of `core`:
 //!
 //! ```text
-//! plan_commit    read previous state, decide carry vs ingest (policy)
-//!   -> adapter ingests changed regions (hash + CAS put per chunk)
-//! assemble       merge ingested rows, carried presence, tombstones (pure)
+//! plan_commit    read the base state and list in-scope regions to ingest
+//!   -> adapter ingests every in-scope region (hash + CAS put per chunk)
+//! assemble       drop unchanged rows, add tombstones (pure)
 //!   -> adapter flushes CAS (durability barrier before metadata)
 //! record_commit  record the commit atomically (single metadata batch)
 //! ```
@@ -21,8 +22,8 @@ use alloc::vec::Vec;
 
 use crate::port::meta::MetaStore;
 use sekai_util::{
-    ApplyOutcome, BlobHash, ChunkCoord, Commit, CommitEntry, CommitId, RegionFingerprint,
-    RegionKey, RegionStateEntry, Scope,
+    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitEntry, CommitId,
+    RegionFingerprint, RegionKey, Scope,
 };
 
 /// Outcome of one commit run.
@@ -36,9 +37,10 @@ pub struct CommitReport {
     pub new_blobs: usize,
     /// Tombstone rows recorded for vanished chunks.
     pub tombstones: usize,
-    /// Region files skipped via fingerprint match.
+    /// Region files skipped via fingerprint match. Always zero: region
+    /// skipping was removed together with the derived-state table.
     pub skipped_regions: usize,
-    /// History rows carried over for skipped regions.
+    /// History rows carried over for skipped regions. Always zero.
     pub carried_chunks: usize,
 }
 
@@ -48,12 +50,10 @@ pub struct Previous {
     /// The commit the new one continues: the target of the active ref,
     /// when the store has one (`None` on an unborn ref).
     pub commit: Option<Commit>,
-    /// Effective present coordinates of the base commit, tombstones
-    /// excluded (empty on an unborn ref).
-    pub universe: BTreeSet<ChunkCoord>,
-    /// Stored fingerprints inherited from the base commit, keyed by
-    /// region identity.
-    pub states: BTreeMap<RegionKey, RegionStateEntry>,
+    /// Effective present rows of the base commit, tombstones excluded
+    /// (empty on an unborn ref). Keyed by coordinate; the row carries the
+    /// blob hash used for chunk-level change detection.
+    pub state: BTreeMap<ChunkCoord, ChunkHistoryEntry>,
 }
 
 /// One region file observed on disk by the adapter.
@@ -61,45 +61,41 @@ pub struct Previous {
 pub struct Observation {
     /// Which region file was observed.
     pub key: RegionKey,
-    /// Fresh fingerprint of the file.
+    /// Fresh fingerprint of the file. Kept for diagnostics and timing;
+    /// commit decisions compare chunk hashes instead of file metadata.
     pub fingerprint: RegionFingerprint,
 }
 
-/// Staged commit decision: what to ingest, carry, or drop.
+/// Staged commit decision: what to ingest or report as gone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
-    /// Fingerprint-matched regions, carried from the previous commit.
-    pub carries: Vec<RegionKey>,
-    /// Changed regions the adapter must ingest.
+    /// In-scope regions the adapter must ingest.
     pub ingest: Vec<RegionKey>,
-    /// Stored regions gone from disk (state rows leave with this commit).
+    /// Regions with present chunks at the base but no file on disk now.
     pub removed: Vec<RegionKey>,
-    /// Discovered region identities (for dropping stale state).
+    /// Discovered region identities inside the scope.
     pub discovered: BTreeSet<RegionKey>,
 }
 
 /// Merged rows ready to commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Assembled {
-    /// Fresh history rows (ingested chunks plus tombstones).
+    /// Fresh history rows (changed chunks plus tombstones).
     pub entries: Vec<CommitEntry>,
-    /// Coordinates present on disk (ingested plus carried).
+    /// Coordinates present on disk.
     pub chunks: usize,
     /// Blobs newly written to CAS.
     pub new_blobs: usize,
     /// Tombstone rows recorded for vanished chunks.
     pub tombstones: usize,
-    /// Fresh fingerprints for ingested files the scope fully covers.
-    pub fingerprints: Vec<RegionFingerprint>,
-    /// Ingested files the scope covers only partly; their state rows drop.
-    pub invalidated: Vec<RegionKey>,
-    /// Fingerprint-matched regions, carried from the previous commit.
-    pub carries: Vec<RegionKey>,
+    /// In-scope files that contributed a chunk with no row at the base
+    /// commit.
+    pub new_files: usize,
     /// Stored regions gone from disk.
     pub removed: Vec<RegionKey>,
 }
 
-/// Load prior state and classify observed regions as carried or ingested.
+/// Load prior state and list the in-scope regions to ingest.
 ///
 /// The base is the target of the active ref: a new commit continues the
 /// history that ref names, not the newest commit in the store. A store
@@ -109,10 +105,15 @@ pub struct Assembled {
 /// [`record_commit`]: a commit that moves the active ref in between
 /// would make the plan's base and the recorded parent disagree.
 ///
-/// Regions outside `scope` are ignored entirely: they are neither carried
-/// nor ingested, and their stored state rows are never marked removed.
-/// Callers must quiesce the source while fingerprinting; a concurrent rewrite
-/// after the match is not detected until a later commit.
+/// Regions outside `scope` are ignored entirely: they are neither ingested
+/// nor reported as removed. Callers must quiesce the source while reading;
+/// a concurrent rewrite after the read is not detected until a later
+/// commit.
+///
+/// Every in-scope file is ingested: persisted file fingerprints were
+/// removed with the derived-state table, so skipping is impossible without
+/// rereading the file. Chunk-level delta writes are preserved by
+/// [`assemble`], which drops rows whose blob matches the base commit.
 pub async fn plan_commit<M: MetaStore>(
     meta: &M,
     observed: &[Observation],
@@ -126,59 +127,43 @@ pub async fn plan_commit<M: MetaStore>(
         Some(id) => meta.lookup_commit(id).await?,
         None => None,
     };
-    let mut universe: BTreeSet<ChunkCoord> = BTreeSet::new();
+    let mut state: BTreeMap<ChunkCoord, ChunkHistoryEntry> = BTreeMap::new();
     if let Some(base) = base.as_ref() {
         meta.visit_commit_chunks(base.id, |entry| {
-            // Present coordinates only. A tombstoned coordinate is already
-            // absent from the effective state, so keeping it would re-record
-            // the same tombstone row on every later commit and count a
-            // vanished chunk as present.
+            // Present rows only. A tombstoned coordinate is already absent
+            // from the effective state, so keeping it would re-record the
+            // same tombstone row on every later commit and count a vanished
+            // chunk as present.
             if entry.blob.is_some() {
-                universe.insert(entry.coord);
+                state.insert(entry.coord, *entry);
             }
             true
         })
         .await?;
     }
-    let mut states: BTreeMap<RegionKey, RegionStateEntry> = BTreeMap::new();
-    // Only fingerprints confirmed inside the base's own history may be
-    // carried: one confirmed in another history describes a different
-    // state of the file.
-    for state in meta.load_region_states(base.as_ref().map(|c| c.id)).await? {
-        states.insert(state.fingerprint.key, state);
-    }
     let previous = Previous {
         commit: base,
-        universe,
-        states,
+        state,
     };
     let mut plan = Plan {
-        carries: Vec::new(),
         ingest: Vec::new(),
         removed: Vec::new(),
         discovered: BTreeSet::new(),
     };
     for obs in observed {
-        if !scope.matches_region(obs.key) {
-            continue;
-        }
-        plan.discovered.insert(obs.key);
-        if previous
-            .states
-            .get(&obs.key)
-            .is_some_and(|state| obs.fingerprint.matches_state(state))
-        {
-            plan.carries.push(obs.key);
-        } else {
+        if scope.matches_region(obs.key) {
+            plan.discovered.insert(obs.key);
             plan.ingest.push(obs.key);
         }
     }
-    for state in previous.states.values() {
-        let key = state.fingerprint.key;
+    let mut removed: BTreeSet<RegionKey> = BTreeSet::new();
+    for coord in previous.state.keys() {
+        let key = RegionKey::of(*coord);
         if scope.matches_region(key) && !plan.discovered.contains(&key) {
-            plan.removed.push(key);
+            removed.insert(key);
         }
     }
+    plan.removed = removed.into_iter().collect();
     Ok((previous, plan))
 }
 
@@ -187,7 +172,7 @@ pub const fn stage_present(coord: ChunkCoord, hash: BlobHash) -> CommitEntry {
     CommitEntry::new(coord, Some(hash), None)
 }
 
-/// What the adapter's ingest pass produced for the changed files.
+/// What the adapter's ingest pass produced for the in-scope files.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Ingested {
     /// Fresh history rows for every chunk read.
@@ -196,59 +181,57 @@ pub struct Ingested {
     pub present: BTreeSet<ChunkCoord>,
     /// Blobs newly written to CAS.
     pub new_blobs: usize,
-    /// Fresh fingerprints for the ingested files.
-    pub fingerprints: Vec<RegionFingerprint>,
 }
 
-/// Merge fresh rows with carried coordinates and tombstones.
+/// Merge fresh rows with tombstones.
 ///
 /// Previously present coordinates inside `scope` but not present in the new
 /// scan become tombstones; out-of-scope coordinates keep resolving through
 /// fallback, so scoped commits never record spurious tombstones. Coordinates
 /// already tombstoned at the previous commit are absent from
-/// `Previous::universe` and therefore neither carried nor re-tombstoned.
+/// `Previous::state` and therefore never re-tombstoned.
 ///
-/// A stored fingerprint promises that the whole file matches the latest
-/// history, which is what lets a later commit carry it unread. A partial
-/// ingest records only the in-scope chunks, so its fingerprint is dropped
-/// and any older state row is invalidated rather than left to match a
-/// file whose history it no longer describes.
+/// Rows whose blob matches the base commit are dropped: the file was
+/// reread, but its content did not change, so writing the row again would
+/// bloat history without changing the effective state. The diff column is a
+/// volatile cache and does not participate in the comparison.
 pub fn assemble(plan: Plan, previous: &Previous, ingested: Ingested, scope: &Scope) -> Assembled {
     let Ingested {
-        mut entries,
-        mut present,
+        entries,
+        present,
         new_blobs,
-        fingerprints,
     } = ingested;
-    let (fingerprints, partial): (Vec<_>, Vec<_>) = fingerprints
+    let mut fresh: Vec<CommitEntry> = entries
         .into_iter()
-        .partition(|fp| scope.covers_region(fp.key));
-    // A carried file is still on disk, so its coordinates count as present
-    // without being read again.
-    if !plan.carries.is_empty() {
-        let skipped: BTreeSet<RegionKey> = plan.carries.iter().copied().collect();
-        for coord in &previous.universe {
-            if scope.contains(*coord) && skipped.contains(&RegionKey::of(*coord)) {
-                present.insert(*coord);
-            }
-        }
-    }
+        .filter(|entry| {
+            previous
+                .state
+                .get(&entry.coord)
+                .is_none_or(|base| base.blob != entry.blob)
+        })
+        .collect();
+    // An empty file contributes no rows and is not part of the logical
+    // world state, so it must not keep the preview permanently dirty.
+    let new_files: BTreeSet<RegionKey> = fresh
+        .iter()
+        .filter(|entry| entry.blob.is_some() && !previous.state.contains_key(&entry.coord))
+        .map(|entry| RegionKey::of(entry.coord))
+        .collect();
+    let new_files = new_files.len();
     // Present before, absent from this scan: the coordinate just vanished.
     let mut tombstones = 0usize;
-    for coord in &previous.universe {
+    for coord in previous.state.keys() {
         if scope.contains(*coord) && !present.contains(coord) {
-            entries.push(CommitEntry::new(*coord, None, None));
+            fresh.push(CommitEntry::new(*coord, None, None));
             tombstones += 1;
         }
     }
     Assembled {
         chunks: present.len(),
-        entries,
+        entries: fresh,
         new_blobs,
         tombstones,
-        fingerprints,
-        invalidated: partial.into_iter().map(|fp| fp.key).collect(),
-        carries: plan.carries,
+        new_files,
         removed: plan.removed,
     }
 }
@@ -270,40 +253,21 @@ pub async fn record_commit<M: MetaStore>(
     staged: &Assembled,
     created_at_ms: u64,
 ) -> Result<CommitReport, M::Error> {
-    let carry_from = previous
-        .commit
-        .as_ref()
-        .map(|commit| (commit.id, staged.carries.as_slice()));
     let parents: Vec<CommitId> = previous
         .commit
         .as_ref()
         .map(|commit| alloc::vec![commit.id])
         .unwrap_or_default();
-    // Both drop state rows; they stay apart in `Assembled` so previews
-    // report only vanished files as deleted.
-    let dropped_states: Vec<RegionKey> = staged
-        .removed
-        .iter()
-        .chain(&staged.invalidated)
-        .copied()
-        .collect();
     let outcome: ApplyOutcome = meta
-        .apply_commit_incremental(
-            created_at_ms,
-            &parents,
-            &staged.entries,
-            carry_from,
-            &staged.fingerprints,
-            &dropped_states,
-        )
+        .apply_commit_incremental(created_at_ms, &parents, &staged.entries)
         .await?;
     Ok(CommitReport {
         commit: outcome.id,
         chunks: staged.chunks,
         new_blobs: staged.new_blobs,
         tombstones: staged.tombstones,
-        skipped_regions: staged.carries.len(),
-        carried_chunks: outcome.carried_chunks,
+        skipped_regions: 0,
+        carried_chunks: 0,
     })
 }
 
@@ -364,10 +328,9 @@ mod tests {
         let (previous, plan) =
             crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
         assert!(previous.commit.is_none());
-        assert!(previous.universe.is_empty());
-        assert_eq!(plan.carries, [] as [sekai_util::RegionKey; 0]);
+        assert!(previous.state.is_empty());
         assert_eq!(plan.ingest, alloc::vec![key(0, 0)]);
-        assert_eq!(plan.removed, [] as [sekai_util::RegionKey; 0]);
+        assert_eq!(plan.removed, [] as [RegionKey; 0]);
     }
 
     #[test]
@@ -390,7 +353,6 @@ mod tests {
                 entries: alloc::vec![stage_present(coord(0, 0), BlobHash([1; 32]))],
                 present: BTreeSet::from([coord(0, 0)]),
                 new_blobs: 1,
-                fingerprints: alloc::vec![fingerprint(key(0, 0))],
             },
             &Scope::World,
         );
@@ -418,7 +380,6 @@ mod tests {
                 entries: alloc::vec![stage_present(coord(0, 0), BlobHash([2; 32]))],
                 present: BTreeSet::from([coord(0, 0)]),
                 new_blobs: 1,
-                fingerprints: alloc::vec![fingerprint(key(0, 0))],
             },
             &Scope::World,
         );
@@ -454,7 +415,6 @@ mod tests {
                 entries: alloc::vec![stage_present(coord(0, 0), BlobHash([1; 32]))],
                 present: BTreeSet::from([coord(0, 0)]),
                 new_blobs: 1,
-                fingerprints: alloc::vec![fingerprint(key(0, 0))],
             },
             &Scope::World,
         );
@@ -477,7 +437,6 @@ mod tests {
                 entries: alloc::vec![stage_present(coord(0, 0), BlobHash([2; 32]))],
                 present: BTreeSet::from([coord(0, 0)]),
                 new_blobs: 1,
-                fingerprints: alloc::vec![fingerprint(key(0, 0))],
             },
             &Scope::World,
         );
@@ -496,9 +455,6 @@ mod tests {
             1_000,
             &[],
             &[stage_present(coord(0, 0), BlobHash([1; 32]))],
-            None,
-            &[],
-            &[],
         ))
         .unwrap()
         .id;
@@ -509,9 +465,6 @@ mod tests {
             2_000,
             &[],
             &[stage_present(coord(1, 0), BlobHash([2; 32]))],
-            None,
-            &[],
-            &[],
         ))
         .unwrap_err();
         assert_eq!(err, MemError::NotContinuing { base: first });
@@ -521,9 +474,6 @@ mod tests {
             3_000,
             &[first],
             &[stage_present(coord(1, 0), BlobHash([2; 32]))],
-            None,
-            &[],
-            &[],
         ))
         .unwrap()
         .id;
@@ -538,89 +488,141 @@ mod tests {
     }
 
     #[test]
-    fn changed_region_reingests_while_rest_carries() {
-        let mut meta = store_with_ref();
-        let fp0 = fingerprint(key(0, 0));
-        let fp1 = fingerprint(key(1, 0));
-        crate::support::block_on(meta.apply_commit_incremental(
-            1_000,
-            &[],
-            &[
-                stage_present(coord(0, 0), BlobHash([1; 32])),
-                stage_present(coord(32, 0), BlobHash([2; 32])),
-            ],
-            None,
-            &[fp0, fp1],
-            &[],
-        ))
-        .unwrap();
-
-        let mut changed = fp0;
-        changed.size += 1;
-        let observed = [
-            Observation {
-                key: key(0, 0),
-                fingerprint: changed,
-            },
-            Observation {
-                key: key(1, 0),
-                fingerprint: fp1,
-            },
-        ];
+    fn an_empty_region_is_not_a_new_file() {
+        let meta = store_with_ref();
+        let observed = [Observation {
+            key: key(0, 0),
+            fingerprint: fingerprint(key(0, 0)),
+        }];
         let (previous, plan) =
             crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
-        assert_eq!(plan.carries, alloc::vec![key(1, 0)]);
-        assert_eq!(plan.ingest, alloc::vec![key(0, 0)]);
-        assert_eq!(plan.removed, [] as [sekai_util::RegionKey; 0]);
+        let staged = assemble(plan, &previous, Ingested::default(), &Scope::World);
+        assert_eq!(staged.entries, [] as [CommitEntry; 0]);
+        assert_eq!(staged.new_files, 0);
+        assert_eq!(staged.chunks, 0);
+    }
 
+    #[test]
+    fn unchanged_chunks_write_no_rows() {
+        let mut meta = store_with_ref();
+        let observed = [Observation {
+            key: key(0, 0),
+            fingerprint: fingerprint(key(0, 0)),
+        }];
+        let entries = [
+            stage_present(coord(0, 0), BlobHash([1; 32])),
+            stage_present(coord(1, 0), BlobHash([2; 32])),
+        ];
+        let present = BTreeSet::from([coord(0, 0), coord(1, 0)]);
+        let (previous, plan) =
+            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
         let staged = assemble(
             plan,
             &previous,
             Ingested {
-                entries: alloc::vec![stage_present(coord(0, 0), BlobHash([9; 32]))],
-                present: BTreeSet::from([coord(0, 0)]),
-                new_blobs: 1,
-                fingerprints: alloc::vec![changed],
+                entries: entries.to_vec(),
+                present: present.clone(),
+                new_blobs: 2,
             },
             &Scope::World,
         );
-        assert_eq!(staged.chunks, 2);
-        assert_eq!(staged.tombstones, 0);
+        let first =
+            crate::support::block_on(record_commit(&mut meta, &previous, &staged, 1_000)).unwrap();
 
+        let (previous, plan) =
+            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
+        let staged = assemble(
+            plan,
+            &previous,
+            Ingested {
+                entries: entries.to_vec(),
+                present,
+                new_blobs: 0,
+            },
+            &Scope::World,
+        );
+        assert_eq!(staged.entries, [] as [CommitEntry; 0]);
+        assert_eq!(staged.chunks, 2);
+        let report =
+            crate::support::block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        assert_ne!(report.commit, first.commit);
+        assert_eq!(report.new_blobs, 0);
+        assert_eq!(report.tombstones, 0);
+        assert!(meta.rows.iter().all(|row| row.commit != report.commit));
+    }
+
+    #[test]
+    fn changed_chunk_writes_only_its_row() {
+        let mut meta = store_with_ref();
+        let observed = [Observation {
+            key: key(0, 0),
+            fingerprint: fingerprint(key(0, 0)),
+        }];
+        let (previous, plan) =
+            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
+        let staged = assemble(
+            plan,
+            &previous,
+            Ingested {
+                entries: alloc::vec![
+                    stage_present(coord(0, 0), BlobHash([1; 32])),
+                    stage_present(coord(1, 0), BlobHash([2; 32])),
+                ],
+                present: BTreeSet::from([coord(0, 0), coord(1, 0)]),
+                new_blobs: 2,
+            },
+            &Scope::World,
+        );
+        crate::support::block_on(record_commit(&mut meta, &previous, &staged, 1_000)).unwrap();
+
+        let (previous, plan) =
+            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
+        let staged = assemble(
+            plan,
+            &previous,
+            Ingested {
+                entries: alloc::vec![
+                    stage_present(coord(0, 0), BlobHash([9; 32])),
+                    stage_present(coord(1, 0), BlobHash([2; 32])),
+                ],
+                present: BTreeSet::from([coord(0, 0), coord(1, 0)]),
+                new_blobs: 1,
+            },
+            &Scope::World,
+        );
+        assert_eq!(
+            staged.entries,
+            alloc::vec![stage_present(coord(0, 0), BlobHash([9; 32]))]
+        );
+        assert_eq!(staged.chunks, 2);
         let report =
             crate::support::block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
         assert_eq!(report.chunks, 2);
         assert_eq!(report.new_blobs, 1);
-        assert_eq!(report.skipped_regions, 1);
-        assert_eq!(report.carried_chunks, 1);
         assert_eq!(report.tombstones, 0);
 
         let got = crate::support::block_on(meta.lookup_chunk(report.commit, &coord(0, 0)))
             .unwrap()
             .unwrap();
         assert_eq!(got.blob, Some(BlobHash([9; 32])));
-        let kept = crate::support::block_on(meta.lookup_chunk(report.commit, &coord(32, 0)))
+        let kept = crate::support::block_on(meta.lookup_chunk(report.commit, &coord(1, 0)))
             .unwrap()
             .unwrap();
         assert_eq!(kept.blob, Some(BlobHash([2; 32])));
     }
 
     #[test]
-    fn missing_coordinates_become_tombstones_and_states_drop() {
+    fn missing_coordinates_become_tombstones() {
         let mut meta = store_with_ref();
-        let _s1 = crate::support::block_on(meta.apply_commit_incremental(
+        crate::support::block_on(meta.apply_commit_incremental(
             1_000,
             &[],
             &[
                 stage_present(coord(0, 0), BlobHash([1; 32])),
                 stage_present(coord(1, 0), BlobHash([2; 32])),
             ],
-            None,
-            &[fingerprint(key(0, 0))],
-            &[],
         ))
-        .unwrap()
-        .id;
+        .unwrap();
         let (previous, plan) =
             crate::support::block_on(plan_commit(&meta, &[], &Scope::World)).unwrap();
         assert_eq!(plan.removed, alloc::vec![key(0, 0)]);
@@ -631,7 +633,6 @@ mod tests {
         let report =
             crate::support::block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
         assert_eq!(report.tombstones, 2);
-        assert_eq!(meta.states, [] as [sekai_util::RegionStateEntry; 0]);
         let tomb = crate::support::block_on(meta.lookup_chunk(report.commit, &coord(0, 0)))
             .unwrap()
             .unwrap();
@@ -641,8 +642,6 @@ mod tests {
     #[test]
     fn already_tombstoned_coordinates_record_no_further_rows() {
         let mut meta = store_with_ref();
-        let fp0 = fingerprint(key(0, 0));
-        let fp1 = fingerprint(key(1, 0));
         crate::support::block_on(meta.apply_commit_incremental(
             1_000,
             &[],
@@ -650,47 +649,54 @@ mod tests {
                 stage_present(coord(0, 0), BlobHash([1; 32])),
                 stage_present(coord(32, 0), BlobHash([2; 32])),
             ],
-            None,
-            &[fp0, fp1],
-            &[],
         ))
         .unwrap();
 
         // Region (0,0) is gone from disk: its chunk tombstones once while
-        // region (1,0) carries over.
-        let (previous, plan) = crate::support::block_on(plan_commit(
-            &meta,
-            &[Observation {
-                key: key(1, 0),
-                fingerprint: fp1,
-            }],
+        // region (1,0) is still present.
+        let observed = [Observation {
+            key: key(1, 0),
+            fingerprint: fingerprint(key(1, 0)),
+        }];
+        let (previous, plan) =
+            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
+        let staged = assemble(
+            plan,
+            &previous,
+            Ingested {
+                entries: alloc::vec![stage_present(coord(32, 0), BlobHash([2; 32]))],
+                present: BTreeSet::from([coord(32, 0)]),
+                new_blobs: 0,
+            },
             &Scope::World,
-        ))
-        .unwrap();
-        let staged = assemble(plan, &previous, Ingested::default(), &Scope::World);
+        );
         assert_eq!(staged.tombstones, 1);
         assert_eq!(staged.chunks, 1);
         let report =
             crate::support::block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
         assert_eq!(report.tombstones, 1);
         assert_eq!(report.chunks, 1);
-        assert_eq!(report.carried_chunks, 1);
 
         // Repeat commit with the same world: the tombstone already resolves
         // through fallback, so it records no fresh row and the vanished
         // chunk is not carried back as present.
-        let (previous, plan) = crate::support::block_on(plan_commit(
-            &meta,
-            &[Observation {
-                key: key(1, 0),
-                fingerprint: fp1,
-            }],
+        let (previous, plan) =
+            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
+        assert_eq!(
+            previous.state.keys().copied().collect::<Vec<_>>(),
+            [coord(32, 0)]
+        );
+        let staged = assemble(
+            plan,
+            &previous,
+            Ingested {
+                entries: alloc::vec![stage_present(coord(32, 0), BlobHash([2; 32]))],
+                present: BTreeSet::from([coord(32, 0)]),
+                new_blobs: 0,
+            },
             &Scope::World,
-        ))
-        .unwrap();
-        assert_eq!(previous.universe, BTreeSet::from([coord(32, 0)]));
-        let staged = assemble(plan, &previous, Ingested::default(), &Scope::World);
-        assert_eq!(staged.entries, [] as [sekai_util::CommitEntry; 0]);
+        );
+        assert_eq!(staged.entries, [] as [CommitEntry; 0]);
         assert_eq!(staged.tombstones, 0);
         assert_eq!(staged.chunks, 1);
 
@@ -704,11 +710,6 @@ mod tests {
     #[test]
     fn scoped_plan_ignores_out_of_scope_regions() {
         let mut meta = store_with_ref();
-        let fp_over = fingerprint(key(0, 0));
-        let fp_nether = RegionFingerprint {
-            key: nether_key(0, 0),
-            ..fingerprint(key(0, 0))
-        };
         crate::support::block_on(meta.apply_commit_incremental(
             1_000,
             &[],
@@ -716,9 +717,6 @@ mod tests {
                 stage_present(coord(0, 0), BlobHash([1; 32])),
                 stage_present(nether_coord(0, 0), BlobHash([2; 32])),
             ],
-            None,
-            &[fp_over, fp_nether],
-            &[],
         ))
         .unwrap();
 
@@ -726,37 +724,32 @@ mod tests {
         // disk), but the overworld scope sees neither ingest nor removal.
         let observed = [Observation {
             key: nether_key(0, 0),
-            fingerprint: fp_nether,
+            fingerprint: fingerprint(nether_key(0, 0)),
         }];
         let scope = Scope::dimension(NETHER);
         let (_, plan) = crate::support::block_on(plan_commit(&meta, &observed, &scope)).unwrap();
-        assert_eq!(plan.carries, alloc::vec![nether_key(0, 0)]);
-        assert_eq!(plan.ingest, [] as [sekai_util::RegionKey; 0]);
-        assert_eq!(plan.removed, [] as [sekai_util::RegionKey; 0]);
+        assert_eq!(plan.ingest, alloc::vec![nether_key(0, 0)]);
+        assert_eq!(plan.removed, [] as [RegionKey; 0]);
 
         // Out-of-scope observations never enter the plan at all.
         let observed = [
             Observation {
                 key: key(0, 0),
-                fingerprint: fp_over,
+                fingerprint: fingerprint(key(0, 0)),
             },
             Observation {
                 key: nether_key(0, 0),
-                fingerprint: fp_nether,
+                fingerprint: fingerprint(nether_key(0, 0)),
             },
         ];
         let (_, plan) =
             crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
-        assert_eq!(plan.carries, alloc::vec![key(0, 0), nether_key(0, 0)]);
+        assert_eq!(plan.ingest, alloc::vec![key(0, 0), nether_key(0, 0)]);
     }
 
     #[test]
     fn scoped_assemble_tombstones_only_in_scope() {
         let mut meta = store_with_ref();
-        let fp_nether = RegionFingerprint {
-            key: nether_key(0, 0),
-            ..fingerprint(key(0, 0))
-        };
         crate::support::block_on(meta.apply_commit_incremental(
             1_000,
             &[],
@@ -765,26 +758,21 @@ mod tests {
                 stage_present(coord(1, 0), BlobHash([2; 32])),
                 stage_present(nether_coord(0, 0), BlobHash([3; 32])),
             ],
-            None,
-            &[fingerprint(key(0, 0)), fp_nether],
-            &[],
         ))
         .unwrap();
 
-        // Scoped commit of the overworld re-ingests its (changed) region:
+        // Scoped commit of the overworld re-ingests its changed region:
         // (1,0) is genuinely gone, the nether chunk is out of scope and
         // must not become a tombstone.
-        let mut changed = fingerprint(key(0, 0));
-        changed.size += 1;
         let observed = [Observation {
             key: key(0, 0),
-            fingerprint: changed,
+            fingerprint: fingerprint(key(0, 0)),
         }];
         let scope = Scope::dimension(OVER);
         let (previous, plan) =
             crate::support::block_on(plan_commit(&meta, &observed, &scope)).unwrap();
         assert_eq!(plan.ingest, alloc::vec![key(0, 0)]);
-        assert_eq!(plan.removed, [] as [sekai_util::RegionKey; 0]);
+        assert_eq!(plan.removed, [] as [RegionKey; 0]);
         let staged = assemble(
             plan,
             &previous,
@@ -792,7 +780,6 @@ mod tests {
                 entries: alloc::vec![stage_present(coord(0, 0), BlobHash([9; 32]))],
                 present: BTreeSet::from([coord(0, 0)]),
                 new_blobs: 1,
-                fingerprints: alloc::vec::Vec::new(),
             },
             &scope,
         );
@@ -824,9 +811,8 @@ mod tests {
     }
 
     #[test]
-    fn partial_ingest_invalidates_state_so_full_commit_reingests() {
+    fn partial_scope_then_full_commit_reingests_unread_chunks() {
         let mut meta = store_with_ref();
-        let fp0 = fingerprint(key(0, 0));
         crate::support::block_on(meta.apply_commit_incremental(
             1_000,
             &[],
@@ -834,18 +820,13 @@ mod tests {
                 stage_present(coord(0, 0), BlobHash([1; 32])),
                 stage_present(coord(1, 0), BlobHash([2; 32])),
             ],
-            None,
-            &[fp0],
-            &[],
         ))
         .unwrap();
 
         // Both chunks changed on disk, but the scope reads only (0,0).
-        let mut changed = fp0;
-        changed.size += 1;
         let observed = [Observation {
             key: key(0, 0),
-            fingerprint: changed,
+            fingerprint: fingerprint(key(0, 0)),
         }];
         let scope = over_rect(Rect::new(0, 0, 0, 0));
         let (previous, plan) =
@@ -858,69 +839,39 @@ mod tests {
                 entries: alloc::vec![stage_present(coord(0, 0), BlobHash([9; 32]))],
                 present: BTreeSet::from([coord(0, 0)]),
                 new_blobs: 1,
-                fingerprints: alloc::vec![changed],
             },
             &scope,
         );
-        assert_eq!(staged.fingerprints, [] as [RegionFingerprint; 0]);
-        assert_eq!(staged.invalidated, alloc::vec![key(0, 0)]);
-        assert_eq!(staged.removed, [] as [RegionKey; 0]);
         assert_eq!(staged.tombstones, 0);
         crate::support::block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
-        assert_eq!(meta.states, [] as [RegionStateEntry; 0]);
 
-        // The unread (1,0) change must not be carried as unchanged.
-        let (_, plan) =
-            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
-        assert_eq!(plan.carries, [] as [RegionKey; 0]);
-        assert_eq!(plan.ingest, alloc::vec![key(0, 0)]);
-    }
-
-    #[test]
-    fn covering_scope_refreshes_the_fingerprint_so_later_commits_carry() {
-        let mut meta = store_with_ref();
-        let fp0 = fingerprint(key(0, 0));
-        crate::support::block_on(meta.apply_commit_incremental(
-            1_000,
-            &[],
-            &[stage_present(coord(0, 0), BlobHash([1; 32]))],
-            None,
-            &[fp0],
-            &[],
-        ))
-        .unwrap();
-
-        let mut changed = fp0;
-        changed.size += 1;
-        let observed = [Observation {
-            key: key(0, 0),
-            fingerprint: changed,
-        }];
-        let scope = over_rect(Rect::region(0, 0));
+        // The next full commit rereads the whole file and records the
+        // unread (1,0) change, while (0,0) stays unchanged.
         let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &observed, &scope)).unwrap();
+            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
         let staged = assemble(
             plan,
             &previous,
             Ingested {
-                entries: alloc::vec![stage_present(coord(0, 0), BlobHash([9; 32]))],
-                present: BTreeSet::from([coord(0, 0)]),
+                entries: alloc::vec![
+                    stage_present(coord(0, 0), BlobHash([9; 32])),
+                    stage_present(coord(1, 0), BlobHash([7; 32])),
+                ],
+                present: BTreeSet::from([coord(0, 0), coord(1, 0)]),
                 new_blobs: 1,
-                fingerprints: alloc::vec![changed],
             },
-            &scope,
+            &Scope::World,
         );
-        assert_eq!(staged.fingerprints, alloc::vec![changed]);
-        assert_eq!(staged.invalidated, [] as [RegionKey; 0]);
-        crate::support::block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
-        let fingerprints: alloc::vec::Vec<RegionFingerprint> =
-            meta.states.iter().map(|state| state.fingerprint).collect();
-        assert_eq!(fingerprints, alloc::vec![changed]);
-
-        let (_, plan) =
-            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
-        assert_eq!(plan.carries, alloc::vec![key(0, 0)]);
-        assert_eq!(plan.ingest, [] as [RegionKey; 0]);
+        assert_eq!(
+            staged.entries,
+            alloc::vec![stage_present(coord(1, 0), BlobHash([7; 32]))]
+        );
+        let report =
+            crate::support::block_on(record_commit(&mut meta, &previous, &staged, 3_000)).unwrap();
+        let got = crate::support::block_on(meta.lookup_chunk(report.commit, &coord(1, 0)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(got.blob, Some(BlobHash([7; 32])));
     }
 
     #[test]

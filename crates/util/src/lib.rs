@@ -28,8 +28,6 @@ pub use gc::GcPlan;
 pub use hash::{BlobHash, DiffHash};
 pub use history::ChunkHistoryEntry;
 pub use refs::{CommitRef, DEFAULT_REF_NAME, RefName};
-pub use region::{
-    ApplyOutcome, CommitEntry, FoldOutcome, RegionFingerprint, RegionKey, RegionStateEntry,
-};
+pub use region::{ApplyOutcome, CommitEntry, FoldOutcome, RegionFingerprint, RegionKey};
 pub use region_kind::{RegionKind, UnknownRegionKind};
 pub use scope::{Area, Rect, Scope};

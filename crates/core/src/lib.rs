@@ -14,8 +14,7 @@ pub use port::{BlobStore, MetaStore};
 pub use sekai_util::{
     ApplyOutcome, Area, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitEntry, CommitId,
     CommitRef, DEFAULT_REF_NAME, DiffHash, Dimension, FoldOutcome, GcPlan, HexError, Rect, RefName,
-    RefNameError, RegionFingerprint, RegionKey, RegionKind, RegionStateEntry, Scope,
-    UnknownRegionKind,
+    RefNameError, RegionFingerprint, RegionKey, RegionKind, Scope, UnknownRegionKind,
 };
 
 // sekai-nbt AST diff types

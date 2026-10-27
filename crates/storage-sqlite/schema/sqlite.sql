@@ -1,9 +1,16 @@
--- Schema version 12: `commit_tags` (snapshot tag references) was removed
--- in favour of refs; there is no migration path, old stores are rejected
--- via `UnsupportedSchema`. Content-addressed commits below. `id` is the public commit hash; `seq` is a
--- local ordering key used by MVCC queries. The sequence is never part of
--- the commit identity and may differ across replicas. Reads order by
--- it, so it must increase monotonically with record order inside a store.
+-- Schema version 13: `region_state` (persisted region fingerprints) was
+-- removed. Commit and checkout decisions now compare per-chunk history
+-- directly, so no derived table remains. There is no migration path from
+-- version 12: old stores are rejected via `UnsupportedSchema`.
+--
+-- Schema version 12: `commit_tags` (snapshot tag references) was removed in
+-- favour of refs. That step also had no migration path.
+--
+-- Content-addressed commits live below. `id` is the public commit hash;
+-- `seq` is a local ordering key used by MVCC queries. The sequence is never
+-- part of the commit identity and may differ across replicas. Reads order
+-- by it, so it must increase monotonically with record order inside a
+-- store.
 CREATE TABLE commits(
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     id BLOB NOT NULL UNIQUE,
@@ -41,21 +48,6 @@ CREATE TABLE chunk_history(
 
 CREATE INDEX idx_history_coord
     ON chunk_history(dim, kind, cx, cz, seq);
-
--- Derived per-region fingerprints: which commit last confirmed each
--- file and what the file looked like. Re-observed from live world files
--- when wiped, so they never need data migration.
-CREATE TABLE region_state(
-    dim INTEGER NOT NULL,
-    kind INTEGER NOT NULL,
-    rx INTEGER NOT NULL,
-    rz INTEGER NOT NULL,
-    mtime_ms INTEGER NULL,
-    size INTEGER NOT NULL,
-    content_hash BLOB NOT NULL,
-    commit_id BLOB NOT NULL REFERENCES commits(id),
-    PRIMARY KEY(dim, kind, rx, rz)
-);
 
 -- Named, movable pointers to commits: the store's branch model. A ref
 -- whose `commit_id` is NULL is unborn - it names a history without a
