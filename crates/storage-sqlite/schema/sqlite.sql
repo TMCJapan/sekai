@@ -42,21 +42,6 @@ CREATE TABLE chunk_history(
 CREATE INDEX idx_history_coord
     ON chunk_history(dim, kind, cx, cz, seq);
 
--- Derived per-region fingerprints: which commit last confirmed each
--- file and what the file looked like. Re-observed from live world files
--- when wiped, so they never need data migration.
-CREATE TABLE region_state(
-    dim INTEGER NOT NULL,
-    kind INTEGER NOT NULL,
-    rx INTEGER NOT NULL,
-    rz INTEGER NOT NULL,
-    mtime_ms INTEGER NULL,
-    size INTEGER NOT NULL,
-    content_hash BLOB NOT NULL,
-    commit_id BLOB NOT NULL REFERENCES commits(id),
-    PRIMARY KEY(dim, kind, rx, rz)
-);
-
 -- Named, movable pointers to commits: the store's branch model. A ref
 -- whose `commit_id` is NULL is unborn - it names a history without a
 -- commit yet. At most one ref is active, enforced by the partial index

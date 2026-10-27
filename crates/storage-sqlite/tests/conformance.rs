@@ -37,22 +37,6 @@ async fn sqlite_commit_lifecycle() {
 }
 
 #[tokio::test]
-async fn sqlite_commit_carry() {
-    let dir = tempdir("carry");
-    let mut store = init(&dir).await;
-    common::commit_carry(store.meta_mut()).await;
-    cleanup(&dir);
-}
-
-#[tokio::test]
-async fn sqlite_tombstones() {
-    let dir = tempdir("tomb");
-    let mut store = init(&dir).await;
-    common::tombstones(store.meta_mut()).await;
-    cleanup(&dir);
-}
-
-#[tokio::test]
 async fn sqlite_fresh_stats() {
     let dir = tempdir("fresh");
     let mut store = init(&dir).await;

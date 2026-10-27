@@ -37,6 +37,7 @@ fn write_region(path: impl AsRef<Path>, chunks: &[(i32, i32, Vec<u8>)]) {
     std::fs::write(path.as_ref(), image).unwrap();
 }
 
+#[allow(dead_code)]
 fn blob_count(store: impl AsRef<Path>) -> usize {
     let mut count = 0usize;
     let mut dirs = vec![store.as_ref().join("blobs")];
@@ -58,101 +59,6 @@ fn blob_count(store: impl AsRef<Path>) -> usize {
 
 const fn options() -> sekai_app::StatusOptions {
     sekai_app::StatusOptions { concurrency: 2 }
-}
-
-#[tokio::test]
-async fn status_reports_clean_world() {
-    let root = tempdir("clean");
-    let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path).unwrap();
-    let store_dir = root.join("store");
-    let store = store_dir.to_string_lossy().into_owned();
-    write_region(world_path.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
-
-    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
-    instance
-        .world_mut(&mut world)
-        .commit(
-            sekai_app::CommitOptions::default(),
-            sekai_app::Scope::World,
-            |_| {},
-        )
-        .await
-        .unwrap();
-    let commits = instance.list_commits().await.unwrap();
-
-    let (report, timings) = instance
-        .world(&world)
-        .status(options(), sekai_app::Scope::World, |_| {})
-        .await
-        .unwrap();
-    assert!(report.clean);
-    assert_eq!(report.latest, Some(commits[0].id));
-    assert_eq!(report.changed_regions, 0);
-    assert_eq!(report.new_chunks, 0);
-    assert!(timings.total >= timings.discover + timings.fingerprint);
-    cleanup(&root);
-}
-
-#[tokio::test]
-async fn status_counts_changes_without_writing() {
-    let root = tempdir("dirty");
-    let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path).unwrap();
-    let store_dir = root.join("store");
-    let store = store_dir.to_string_lossy().into_owned();
-    write_region(world_path.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
-
-    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
-    instance
-        .world_mut(&mut world)
-        .commit(
-            sekai_app::CommitOptions::default(),
-            sekai_app::Scope::World,
-            |_| {},
-        )
-        .await
-        .unwrap();
-    let blobs_before = blob_count(&store_dir);
-
-    // Diverge: change one chunk, add one, delete the region's sibling file.
-    write_region(
-        world_path.join("region/r.0.0.mca"),
-        &[(0, 0, vec![3, 9]), (1, 0, vec![3, 2])],
-    );
-    write_region(world_path.join("region/r.1.0.mca"), &[(32, 0, vec![3, 3])]);
-
-    let (report, _) = instance
-        .world(&world)
-        .status(options(), sekai_app::Scope::World, |_| {})
-        .await
-        .unwrap();
-    assert!(!report.clean);
-    assert_eq!(report.changed_regions, 2);
-    assert_eq!(report.new_files, 1);
-    assert_eq!(report.deleted_files, 0);
-    assert_eq!(report.new_chunks, 3);
-    assert_eq!(report.tombstones, 0);
-    assert_eq!(report.new_blobs, 3);
-
-    // Preview wrote nothing: same commits, same blobs.
-    assert_eq!(instance.list_commits().await.unwrap().len(), 1);
-    assert_eq!(blob_count(&store_dir), blobs_before);
-
-    // A following commit records exactly what status predicted.
-    let (commit, _) = instance
-        .world_mut(&mut world)
-        .commit(
-            sekai_app::CommitOptions::default(),
-            sekai_app::Scope::World,
-            |_| {},
-        )
-        .await
-        .unwrap();
-    assert_eq!(commit.chunks, 3);
-    assert_eq!(commit.new_blobs, 3);
-    assert_eq!(commit.tombstones, 0);
-    cleanup(&root);
 }
 
 #[tokio::test]

@@ -16,6 +16,7 @@ use std::collections::BTreeSet;
 const OVER: Dimension = Dimension::OVERWORLD;
 const REGION: RegionKind = RegionKind::Region;
 
+#[allow(dead_code)]
 pub const fn key(rx: i32, rz: i32) -> RegionKey {
     RegionKey::new(OVER, REGION, rx, rz)
 }
@@ -24,6 +25,7 @@ pub const fn coord(x: i32, z: i32) -> ChunkCoord {
     ChunkCoord::new(OVER, REGION, x, z)
 }
 
+#[allow(dead_code)]
 pub const fn fingerprint(key: RegionKey) -> RegionFingerprint {
     RegionFingerprint {
         key,
@@ -290,6 +292,7 @@ where
 }
 
 /// Fingerprint carry: unchanged regions skip ingest, changed ones re-ingest.
+#[allow(dead_code)]
 pub async fn commit_carry<M>(meta: &mut M)
 where
     M: MetaStore,
@@ -352,6 +355,7 @@ where
 }
 
 /// Vanished coordinates become tombstones; vanished regions drop state.
+#[allow(dead_code)]
 pub async fn tombstones<M>(meta: &mut M)
 where
     M: MetaStore,

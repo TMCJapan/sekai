@@ -23,7 +23,7 @@ use sekai_storage::{
 };
 
 /// Managed schema version (`PRAGMA user_version`).
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 13;
 
 const SCHEMA: &str = include_str!("../schema/sqlite.sql");
 
@@ -370,33 +370,6 @@ fn decode_history(row: &sqlx::sqlite::SqliteRow) -> Result<ChunkHistoryEntry, St
     let commit_raw: Vec<u8> = row.try_get("commit_id").map_err(db_err)?;
     let commit = commit_id_from_blob(commit_raw)?;
     Ok(ChunkHistoryEntry::new(coord, commit, blob, diff))
-}
-
-/// Decode one `region_state` row.
-fn decode_state(row: &sqlx::sqlite::SqliteRow) -> Result<RegionStateEntry, StorageError> {
-    let key = RegionKey::new(
-        Dimension::new(i32_col(row, "dim")?),
-        kind_col(row, "kind")?,
-        i32_col(row, "rx")?,
-        i32_col(row, "rz")?,
-    );
-    let mtime_ms: Option<i64> = row.try_get("mtime_ms").map_err(db_err)?;
-    let mtime_ms = mtime_ms.map(|v| i64_to_u64(v, "mtime_ms")).transpose()?;
-    let size_raw: i64 = row.try_get("size").map_err(db_err)?;
-    let size = i64_to_u64(size_raw, "size")?;
-    let content: Vec<u8> = row.try_get("content_hash").map_err(db_err)?;
-    let content_hash = hash32(content)?;
-    let commit_raw: Vec<u8> = row.try_get("commit_id").map_err(db_err)?;
-    let commit_id = commit_id_from_blob(commit_raw)?;
-    Ok(RegionStateEntry {
-        fingerprint: RegionFingerprint {
-            key,
-            mtime_ms,
-            size,
-            content_hash,
-        },
-        commit_id,
-    })
 }
 
 /// Decode one `refs` row. Stored names always re-validate: anything
@@ -772,25 +745,13 @@ impl sekai_core::MetaStore for SqliteMeta {
         Ok(())
     }
 
-    async fn load_region_states(
+    fn load_region_states(
         &self,
-        within: Option<CommitId>,
-    ) -> Result<Vec<RegionStateEntry>, StorageError> {
-        // Only fingerprints confirmed inside the given history may be
-        // carried over: one confirmed elsewhere describes another state
-        // of the file. An unborn history has no confirmed file.
-        let Some(within) = within else {
-            return Ok(Vec::new());
-        };
-        let mut qb = sqlx::QueryBuilder::new(ancestor_cte!(head));
-        qb.push_bind(commit_param(within));
-        qb.push(ancestor_cte!(tail));
-        qb.push(
-            " SELECT dim, kind, rx, rz, mtime_ms, size, content_hash, commit_id
-               FROM region_state WHERE commit_id IN (SELECT id FROM ancestors)",
-        );
-        let rows = qb.build().fetch_all(&self.pool).await.map_err(db_err)?;
-        rows.iter().map(decode_state).collect()
+        _within: Option<CommitId>,
+    ) -> impl Future<Output = Result<Vec<RegionStateEntry>, StorageError>> + Send {
+        // `region_state` was removed: derived fingerprints are no longer
+        // persisted, so there are no stored states to carry.
+        std::future::ready(Ok(Vec::new()))
     }
 
     async fn visit_fresh_rows<F>(&self, commit: CommitId, mut visit: F) -> Result<(), StorageError>
@@ -875,12 +836,6 @@ impl sekai_core::MetaStore for SqliteMeta {
                 .await
                 .map_err(db_err)?
                 .rows_affected();
-        sqlx::query("UPDATE region_state SET commit_id = ?2 WHERE commit_id = ?1")
-            .bind(&from_blob[..])
-            .bind(&into_blob[..])
-            .execute(&mut *tx)
-            .await
-            .map_err(db_err)?;
         // A ref naming the retired commit follows the fold: the
         // successor continues the retired history, so the ref keeps
         // naming it. The update runs before the commit row goes away -
@@ -927,7 +882,7 @@ impl sekai_core::MetaStore for SqliteMeta {
         parents: &[CommitId],
         entries: &[CommitEntry],
         carry_from: Option<(CommitId, &[RegionKey])>,
-        fingerprints: &[RegionFingerprint],
+        _fingerprints: &[RegionFingerprint],
         removed: &[RegionKey],
     ) -> Result<ApplyOutcome, StorageError> {
         let commit = commit_hash(parents, created_at_ms, entries, removed);
@@ -1014,56 +969,6 @@ impl sekai_core::MetaStore for SqliteMeta {
                     .map_err(db_err)?;
                 carried_chunks = usize::try_from(carried).unwrap_or(usize::MAX);
             }
-            for key in keys {
-                sqlx::query(
-                    "UPDATE region_state SET commit_id = ?
-                     WHERE dim = ? AND kind = ? AND rx = ? AND rz = ?",
-                )
-                .bind(&id_param[..])
-                .bind(i64::from(key.dim.raw()))
-                .bind(i64::from(key.kind.raw()))
-                .bind(i64::from(key.rx))
-                .bind(i64::from(key.rz))
-                .execute(&mut *tx)
-                .await
-                .map_err(db_err)?;
-            }
-        }
-        for fp in fingerprints {
-            let mtime_ms: Option<i64> = fp
-                .mtime_ms
-                .map(|ms| i64::try_from(ms).map_err(|_| StorageError::InvalidTimestamp(ms)))
-                .transpose()?;
-            let size = i64::try_from(fp.size).map_err(|_| StorageError::InvalidSize(fp.size))?;
-            sqlx::query(
-                "INSERT INTO region_state (dim, kind, rx, rz, mtime_ms, size, content_hash, commit_id)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                 ON CONFLICT(dim, kind, rx, rz) DO UPDATE SET
-                   mtime_ms = excluded.mtime_ms, size = excluded.size,
-                   content_hash = excluded.content_hash, commit_id = excluded.commit_id",
-            )
-            .bind(i64::from(fp.key.dim.raw()))
-            .bind(i64::from(fp.key.kind.raw()))
-            .bind(i64::from(fp.key.rx))
-            .bind(i64::from(fp.key.rz))
-            .bind(mtime_ms)
-            .bind(size)
-            .bind(&fp.content_hash[..])
-            .bind(&id_param[..])
-            .execute(&mut *tx)
-            .await.map_err(db_err)?;
-        }
-        for key in removed {
-            sqlx::query(
-                "DELETE FROM region_state WHERE dim = ? AND kind = ? AND rx = ? AND rz = ?",
-            )
-            .bind(i64::from(key.dim.raw()))
-            .bind(i64::from(key.kind.raw()))
-            .bind(i64::from(key.rx))
-            .bind(i64::from(key.rz))
-            .execute(&mut *tx)
-            .await
-            .map_err(db_err)?;
         }
         // The active ref moves onto the new commit, in the same
         // transaction: a ref lagging behind its history would fork the
@@ -1263,15 +1168,9 @@ impl sekai_core::MetaStore for SqliteMeta {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sekai_core::{
-        RegionKind, Scope,
-        usecase::commit::{
-            Ingested, Observation, assemble, plan_commit, record_commit, stage_present,
-        },
-    };
+    use sekai_core::{RegionKind, usecase::commit::stage_present};
     use sqlx::ConnectOptions as _;
     use sqlx::Connection as _;
-    use std::collections::BTreeSet;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -1663,49 +1562,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fingerprints_are_read_within_one_history_only() {
-        let mut meta = memory_meta().await;
-        let fingerprint = RegionFingerprint {
-            key: RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0),
-            mtime_ms: Some(1),
-            size: 8192,
-            content_hash: [7; 32],
-        };
-        let root = meta
-            .apply_commit_incremental(1_000, &[], &[], None, &[fingerprint], &[])
-            .await
-            .unwrap()
-            .id;
-        // The fingerprint was confirmed at the root: the root's history
-        // may carry it.
-        assert_eq!(meta.load_region_states(Some(root)).await.unwrap().len(), 1);
-
-        let branch = meta
-            .apply_commit_incremental(2_000, &[root], &[], None, &[fingerprint], &[])
-            .await
-            .unwrap()
-            .id;
-        // The branch confirmed it again, so only the branch history (and
-        // the histories continuing it) may carry it.
-        assert!(
-            meta.load_region_states(Some(root))
-                .await
-                .unwrap()
-                .is_empty(),
-            "a fingerprint confirmed outside the history is not carried"
-        );
-        assert_eq!(
-            meta.load_region_states(Some(branch)).await.unwrap().len(),
-            1
-        );
-        // An unborn history knows no file at all.
-        assert_eq!(
-            meta.load_region_states(None).await.unwrap(),
-            [] as [sekai_core::RegionStateEntry; 0]
-        );
-    }
-
-    #[tokio::test]
     async fn a_commit_cannot_name_a_missing_commit_as_parent() {
         let mut meta = memory_meta().await;
         let missing = CommitId([9; 32]);
@@ -1814,146 +1670,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wiped_derived_state_degrades_to_full_ingest() {
-        let mut meta = memory_meta().await;
-        let key = RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
-        let fp = RegionFingerprint {
-            key,
-            mtime_ms: Some(1),
-            size: 8192,
-            content_hash: [7; 32],
-        };
-        let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
-        meta.apply_commit_incremental(
-            1_000,
-            &[],
-            &[stage_present(coord, BlobHash([1; 32]))],
-            None,
-            &[fp],
-            &[],
-        )
-        .await
-        .unwrap();
-        sqlx::query("DELETE FROM region_state")
-            .execute(&meta.pool)
-            .await
-            .unwrap();
-        let (previous, plan) = plan_commit(
-            &meta,
-            &[Observation {
-                key,
-                fingerprint: fp,
-            }],
-            &Scope::World,
-        )
-        .await
-        .unwrap();
-        assert_eq!(plan.carries, [] as [sekai_core::RegionKey; 0]);
-        assert_eq!(plan.ingest, vec![key]);
-        let staged = assemble(
-            plan,
-            &previous,
-            Ingested {
-                entries: vec![stage_present(coord, BlobHash([1; 32]))],
-                present: BTreeSet::from([coord]),
-                new_blobs: 0,
-                fingerprints: vec![fp],
-            },
-            &Scope::World,
-        );
-        let report = record_commit(&mut meta, &previous, &staged, 2_000)
-            .await
-            .unwrap();
-        assert_eq!(report.carried_chunks, 0);
-        assert_eq!(report.skipped_regions, 0);
-    }
-
-    #[tokio::test]
-    async fn carry_writes_no_chunk_rows() {
-        use sekai_core::MetaStore as _;
-        let mut meta = memory_meta().await;
-        let key0 = RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
-        let key1 = RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, 1, 0);
-        let fp = |key| RegionFingerprint {
-            key,
-            mtime_ms: Some(1),
-            size: 8192,
-            content_hash: [7; 32],
-        };
-        let c0 = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
-        let c1 = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 32, 0);
-        // The commit belongs to the store's active ref, so the next
-        // commit continues it.
-        let first = meta
-            .apply_commit_incremental(
-                1_000,
-                &[],
-                &[
-                    stage_present(c0, BlobHash([1; 32])),
-                    stage_present(c1, BlobHash([2; 32])),
-                ],
-                None,
-                &[fp(key0), fp(key1)],
-                &[],
-            )
-            .await
-            .unwrap()
-            .id;
-
-        // Second commit: region 0 changes, region 1 carries.
-        let mut changed = fp(key0);
-        changed.size += 1;
-        let (previous, plan) = plan_commit(
-            &meta,
-            &[
-                Observation {
-                    key: key0,
-                    fingerprint: changed,
-                },
-                Observation {
-                    key: key1,
-                    fingerprint: fp(key1),
-                },
-            ],
-            &Scope::World,
-        )
-        .await
-        .unwrap();
-        let staged = assemble(
-            plan,
-            &previous,
-            Ingested {
-                entries: vec![stage_present(c0, BlobHash([9; 32]))],
-                present: BTreeSet::from([c0]),
-                new_blobs: 1,
-                fingerprints: vec![changed],
-            },
-            &Scope::World,
-        );
-        let report = record_commit(&mut meta, &previous, &staged, 2_000)
-            .await
-            .unwrap();
-        assert_eq!(report.carried_chunks, 1);
-
-        // Physical rows at the new commit: the fresh entry only. The
-        // carried chunk stays readable through fallback.
-        let physical: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM chunk_history WHERE commit_id = ?")
-                .bind(commit_param(report.commit))
-                .fetch_one(&meta.pool)
-                .await
-                .unwrap();
-        assert_eq!(physical, 1);
-        let kept = meta
-            .lookup_chunk(report.commit, &c1)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(kept.blob, Some(BlobHash([2; 32])));
-        assert_eq!(kept.commit, first);
-    }
-
-    #[tokio::test]
     async fn unknown_stored_kind_fails_loudly() {
         use sekai_core::MetaStore as _;
         let mut meta = memory_meta().await;
@@ -1968,32 +1684,6 @@ mod tests {
             .unwrap();
         assert!(matches!(
             meta.visit_fresh_rows(commit, |_| true).await,
-            Err(StorageError::UnknownRegionKind { kind: 9 })
-        ));
-    }
-
-    #[tokio::test]
-    async fn unknown_region_state_kind_fails_loudly() {
-        use sekai_core::MetaStore as _;
-        let mut meta = memory_meta().await;
-        let fingerprint = RegionFingerprint {
-            key: RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0),
-            mtime_ms: Some(1),
-            size: 8192,
-            content_hash: [7; 32],
-        };
-        let commit = meta
-            .apply_commit_incremental(1_000, &[], &[], None, &[fingerprint], &[])
-            .await
-            .unwrap()
-            .id;
-        sqlx::query("UPDATE region_state SET kind = 9")
-            .execute(&meta.pool)
-            .await
-            .unwrap();
-        // The fingerprint is read within the history that confirmed it.
-        assert!(matches!(
-            meta.load_region_states(Some(commit)).await,
             Err(StorageError::UnknownRegionKind { kind: 9 })
         ));
     }
