@@ -235,6 +235,80 @@ async fn scoped_commit_records_no_spurious_tombstones() {
     cleanup(&root);
 }
 
+/// A partial scope reads only part of a region; the next full commit must
+/// reread the whole file and record the chunks the scoped commit skipped
+/// (the #90 regression guard).
+#[tokio::test]
+async fn partial_scope_then_full_commit_reingests_unread_chunks() {
+    use sekai_app::{Area, Dimension, Rect};
+    let root = tempdir("partial-scope");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    let region = world_path.join("region/r.0.0.mca");
+    write_region(
+        &region,
+        &[(0, 0, build_status_nbt("a")), (1, 0, build_status_nbt("b"))],
+    );
+
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    instance
+        .world_mut(&mut world)
+        .commit(options(), Scope::World, |_| {})
+        .await
+        .unwrap();
+
+    // Both chunks change, but the scoped commit reads only (0,0).
+    write_region(
+        &region,
+        &[(0, 0, build_status_nbt("c")), (1, 0, build_status_nbt("d"))],
+    );
+    let partial = Scope::Select {
+        kinds: vec![RegionKind::Region],
+        areas: vec![(Dimension::OVERWORLD, Area::Rect(Rect::new(0, 0, 0, 0)))],
+    };
+    let (scoped, _) = instance
+        .world_mut(&mut world)
+        .commit(options(), partial, |_| {})
+        .await
+        .unwrap();
+    assert_eq!(scoped.chunks, 1);
+    assert_eq!(scoped.new_blobs, 1);
+
+    // The full commit rereads the file: only the previously unread chunk
+    // needs a new blob, and its content reaches history.
+    let (full, _) = instance
+        .world_mut(&mut world)
+        .commit(options(), Scope::World, |_| {})
+        .await
+        .unwrap();
+    assert_eq!(full.chunks, 2);
+    assert_eq!(full.new_blobs, 1);
+    assert_eq!(full.tombstones, 0);
+
+    let commits = instance.list_commits().await.unwrap();
+    assert_eq!(commits.len(), 3);
+    let coord =
+        sekai_core::ChunkCoord::new(sekai_core::Dimension::OVERWORLD, RegionKind::Region, 1, 0);
+    let diffs = instance
+        .diff_chunk(commits[1].id, commits[2].id, &coord, None)
+        .await
+        .unwrap();
+    assert_eq!(diffs.len(), 1);
+    assert_eq!(diffs[0].path, "Status");
+
+    // A repeated full commit has nothing left to write.
+    let (quiet, _) = instance
+        .world_mut(&mut world)
+        .commit(options(), Scope::World, |_| {})
+        .await
+        .unwrap();
+    assert_eq!(quiet.chunks, 2);
+    assert_eq!(quiet.new_blobs, 0);
+    assert_eq!(quiet.tombstones, 0);
+    cleanup(&root);
+}
+
 /// A world that exists when the tree is opened is classified rather than
 /// treated as the missing-world fallback, and its trio keeps the constants
 /// scoped operations address by name.
@@ -1590,7 +1664,7 @@ async fn randomized_commit_checkout_round_trip() {
                 _ => {}
             }
             // Only rewrite files whose bytes actually change, so unchanged
-            // regions keep their mtime and exercise the carry path.
+            // regions exercise the no-fresh-row path.
             materialize(&world_path, &model, &FILES);
 
             std::thread::sleep(std::time::Duration::from_millis(5));
