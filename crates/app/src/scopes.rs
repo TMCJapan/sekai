@@ -32,6 +32,8 @@ impl<S: SekaiStore> SekaiInstance<S> {
         areas: Vec<(Dimension, Rect)>,
         force: bool,
     ) -> Result<NamedScope, AppError> {
+        // Validated before the lock; the placeholder time is set below,
+        // once the lookup tells creation from replacement.
         let mut record = NamedScope::new(name.clone(), kinds, areas, 0)?;
         let _lock = self.lock_store(StoreLockMode::Writer)?;
         record.created_at_ms = match self.store.meta().lookup_scope(name).await? {

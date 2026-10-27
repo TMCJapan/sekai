@@ -591,6 +591,7 @@ impl MetaStore for MemMeta {
     where
         F: FnMut(&NamedScope) -> bool + Send,
     {
+        // BTreeMap iteration is name order, matching the backend query.
         for scope in self.scopes.values() {
             if !visit(scope) {
                 break;
