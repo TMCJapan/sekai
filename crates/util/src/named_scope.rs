@@ -66,8 +66,8 @@ impl FromStr for ScopeName {
 /// A store-saved selection: chunk rectangles plus the region families they
 /// cover.
 ///
-/// The fields are private so every record holds exactly one spelling of
-/// its selection, matching the store's: areas sorted by
+/// The selection fields are private so every record holds exactly one
+/// spelling of its selection, matching the store's: areas sorted by
 /// `(dim, x0, z0, x1, z1)` with duplicates collapsed, and kinds either
 /// `None` (every family) or a sorted, deduplicated proper subset.
 /// Overlapping areas are kept apart; the scope is their union either way.
@@ -111,11 +111,11 @@ impl NamedScope {
             Some(mut kinds) => {
                 kinds.sort_unstable();
                 kinds.dedup();
-                match kinds.len() {
-                    0 => return Err(NamedScopeError::NoKinds),
-                    n if n == RegionKind::ALL.len() => None,
-                    _ => Some(kinds),
+                if kinds.is_empty() {
+                    return Err(NamedScopeError::NoKinds);
                 }
+                // `ALL` is sorted and duplicate-free, so this compares sets.
+                (kinds != RegionKind::ALL).then_some(kinds)
             }
         };
         Ok(Self {
