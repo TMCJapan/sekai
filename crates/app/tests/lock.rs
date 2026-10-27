@@ -8,8 +8,9 @@
 #![cfg(feature = "backend-sqlite")]
 
 use sekai_app::{
-    BlobHash, CheckoutOptions, CloneOptions, CommitId, CommitOptions, HostWorldTree, RefName,
-    Scope, SekaiInstance, StatusOptions, WorldError, WorldLockMode, WorldTree,
+    BlobHash, CheckoutOptions, CloneOptions, CommitId, CommitOptions, Dimension, HostWorldTree,
+    Rect, RefName, Scope, ScopeName, SekaiInstance, StatusOptions, WorldError, WorldLockMode,
+    WorldTree,
 };
 use sekai_core::MetaStore as _;
 use sekai_storage::{StorageError, StoreLockMode};
@@ -52,6 +53,12 @@ struct Fixture {
     commit: CommitId,
     /// A blob that the fixture commit references, for blob-level operations.
     blob: BlobHash,
+    /// A scope no row deletes, so resolving it always succeeds.
+    scope: ScopeName,
+}
+
+fn lock_matrix_areas() -> Vec<(Dimension, Rect)> {
+    vec![(Dimension::OVERWORLD, Rect::region(0, 0))]
 }
 
 impl Fixture {
@@ -80,6 +87,11 @@ impl Fixture {
             .unwrap()
             .and_then(|entry| entry.blob)
             .expect("a present chunk references a blob");
+        let scope = ScopeName::parse("fixture").unwrap();
+        instance
+            .create_scope(&scope, None, lock_matrix_areas(), false)
+            .await
+            .unwrap();
         Self {
             root,
             world_path,
@@ -87,6 +99,7 @@ impl Fixture {
             instance,
             commit,
             blob,
+            scope,
         }
     }
 
@@ -122,6 +135,10 @@ enum Op {
     ResolveRef,
     CreateRef,
     DeleteRef,
+    CreateScope,
+    DeleteScope,
+    ListScopes,
+    ResolveScope,
     CommitStats,
     CommitCoords,
     DiffBlobs,
@@ -141,12 +158,16 @@ enum Op {
 }
 
 impl Op {
-    const ALL: [Self; 21] = [
+    const ALL: [Self; 25] = [
         Self::ListCommits,
         Self::LatestCommit,
         Self::ResolveRef,
         Self::CreateRef,
         Self::DeleteRef,
+        Self::CreateScope,
+        Self::DeleteScope,
+        Self::ListScopes,
+        Self::ResolveScope,
         Self::CommitStats,
         Self::CommitCoords,
         Self::DiffBlobs,
@@ -172,12 +193,16 @@ impl Op {
             | Self::Gc
             | Self::Commit
             | Self::CreateRef
-            | Self::DeleteRef => Some(Writer),
+            | Self::DeleteRef
+            | Self::CreateScope
+            | Self::DeleteScope => Some(Writer),
             Self::PruneApply | Self::Prune => Some(Exclusive),
             Self::WorldChunkCoords => None,
             Self::ListCommits
             | Self::LatestCommit
             | Self::ResolveRef
+            | Self::ListScopes
+            | Self::ResolveScope
             | Self::CommitStats
             | Self::CommitCoords
             | Self::DiffBlobs
@@ -201,6 +226,10 @@ impl Op {
             | Self::ResolveRef
             | Self::CreateRef
             | Self::DeleteRef
+            | Self::CreateScope
+            | Self::DeleteScope
+            | Self::ListScopes
+            | Self::ResolveScope
             | Self::CommitStats
             | Self::CommitCoords
             | Self::DiffBlobs
@@ -237,6 +266,19 @@ impl Op {
                 let name = RefName::parse("lock-matrix").unwrap();
                 instance.delete_ref(&name).await.map(drop)
             }
+            Self::CreateScope => {
+                let name = ScopeName::parse("lock-matrix").unwrap();
+                instance
+                    .create_scope(&name, None, lock_matrix_areas(), true)
+                    .await
+                    .map(drop)
+            }
+            Self::DeleteScope => {
+                let name = ScopeName::parse("lock-matrix").unwrap();
+                instance.delete_scope(&name).await.map(drop)
+            }
+            Self::ListScopes => instance.list_scopes().await.map(drop),
+            Self::ResolveScope => instance.resolve_scope(&fx.scope).await.map(drop),
             Self::CommitStats => instance.commit_stats(id).await.map(drop),
             Self::CommitCoords => instance.commit_chunk_coords(id).await.map(drop),
             Self::DiffBlobs => instance
