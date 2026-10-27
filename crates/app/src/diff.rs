@@ -230,9 +230,11 @@ fn decompress_or_empty(compressed: Option<Vec<u8>>) -> Result<Vec<u8>, AppError>
                 inhabited_time: 0,
                 last_update: 0,
                 sections: vec![],
-                heightmaps: sekai_nbt::Heightmaps {},
+                heightmaps: sekai_nbt::Heightmaps::default(),
                 status: &Cesu8Buf::new(),
                 block_entities: vec![],
+                block_ticks: vec![],
+                fluid_ticks: vec![],
             };
             sekai_nbt::nanonbt::to_bytes(&chunk).map_err(AppError::Nbt)
         },

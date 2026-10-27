@@ -1,10 +1,12 @@
 mod block_entity;
 mod hightmap;
 mod section;
+mod tick;
 
 pub use block_entity::BlockEntity;
 pub use hightmap::Heightmaps;
 pub use section::Section;
+pub use tick::{BlockTick, FluidTick};
 
 use alloc::vec::Vec;
 use nanonbt::{Cesu8, DeserializeNbt, SerializeNbt};
@@ -32,15 +34,15 @@ pub struct ChunkPayload<'de> {
     pub sections: Vec<Section<'de>>,
 
     #[nbt(rename = "Heightmaps")]
-    pub heightmaps: Heightmaps,
+    pub heightmaps: Heightmaps<'de>,
 
     #[nbt(rename = "Status")]
     pub status: &'de Cesu8,
 
     pub block_entities: Vec<BlockEntity<'de>>,
-    // TODO:
-    // pub block_ticks: Vec<Any>,
-    // pub fluid_ticks: Vec<Any>,
+
+    pub block_ticks: Vec<BlockTick<'de>>,
+    pub fluid_ticks: Vec<FluidTick<'de>>,
 }
 
 impl ChunkPayload<'_> {
@@ -54,6 +56,8 @@ impl ChunkPayload<'_> {
             heightmaps: &self.heightmaps,
             status: self.status,
             block_entities: &self.block_entities,
+            block_ticks: &self.block_ticks,
+            fluid_ticks: &self.fluid_ticks,
         };
         let bytes = nanonbt::to_bytes(&normalized)?;
         let mut hasher = blake3::Hasher::new();
@@ -77,13 +81,13 @@ struct NormalizedChunkPayload<'a, 'de> {
     pub sections: &'a [Section<'de>],
 
     #[nbt(rename = "Heightmaps")]
-    pub heightmaps: &'a Heightmaps,
+    pub heightmaps: &'a Heightmaps<'de>,
 
     #[nbt(rename = "Status")]
     pub status: &'a Cesu8,
 
     pub block_entities: &'a [BlockEntity<'de>],
-    // TODO:
-    // pub block_ticks: Vec<Any>,
-    // pub fluid_ticks: Vec<Any>,
+
+    pub block_ticks: &'a [BlockTick<'de>],
+    pub fluid_ticks: &'a [FluidTick<'de>],
 }

@@ -1217,9 +1217,11 @@ fn build_status_nbt(status: &str) -> Vec<u8> {
         inhabited_time: 0,
         last_update: 0,
         sections: vec![],
-        heightmaps: sekai_nbt::Heightmaps {},
+        heightmaps: sekai_nbt::Heightmaps::default(),
         status: &Cesu8::from_str(status),
         block_entities: vec![],
+        block_ticks: vec![],
+        fluid_ticks: vec![],
     })
     .unwrap();
     let mut payload = vec![3]; // Uncompressed header byte

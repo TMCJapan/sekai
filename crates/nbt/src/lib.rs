@@ -45,12 +45,57 @@ mod tests {
             inhabited_time: 7,
             last_update: 9,
             sections: alloc::vec![],
-            heightmaps: Heightmaps {},
+            heightmaps: Heightmaps::default(),
             status: &Cesu8::from_str("minecraft:full"),
             block_entities: alloc::vec![],
+            block_ticks: alloc::vec![],
+            fluid_ticks: alloc::vec![],
         };
         let bytes = nanonbt::to_bytes(&payload).unwrap();
         let parsed = nanonbt::from_slice::<ChunkPayload>(&bytes).unwrap();
         assert_eq!(payload, parsed);
+    }
+
+    #[test]
+    fn normalized_hash_covers_both_tick_lists() {
+        use crate::chunk::BlockTick;
+
+        let id = Cesu8::try_from_str("minecraft:water").unwrap();
+        let status = Cesu8::try_from_str("minecraft:full").unwrap();
+        let tick = BlockTick {
+            x: 1,
+            y: 2,
+            z: 3,
+            tick: 4,
+            priority: 5,
+            id,
+        };
+        let payload = |block_ticks, fluid_ticks| ChunkPayload {
+            data_version: 1,
+            x_pos: 3,
+            y_pos: 0,
+            z_pos: -1,
+            inhabited_time: 7,
+            last_update: 9,
+            sections: alloc::vec![],
+            heightmaps: Heightmaps::default(),
+            status,
+            block_entities: alloc::vec![],
+            block_ticks,
+            fluid_ticks,
+        };
+
+        let empty = payload(alloc::vec![], alloc::vec![]);
+        let block = payload(alloc::vec![tick.clone()], alloc::vec![]);
+        let fluid = payload(alloc::vec![], alloc::vec![tick]);
+
+        assert_ne!(
+            empty.normalize_hash().unwrap(),
+            block.normalize_hash().unwrap()
+        );
+        assert_ne!(
+            empty.normalize_hash().unwrap(),
+            fluid.normalize_hash().unwrap()
+        );
     }
 }

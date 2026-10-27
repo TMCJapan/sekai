@@ -98,9 +98,11 @@ mod tests {
             inhabited_time: 0,
             last_update,
             sections: alloc::vec![],
-            heightmaps: sekai_nbt::Heightmaps {},
+            heightmaps: sekai_nbt::Heightmaps::default(),
             status: &Cesu8::from_str(status),
             block_entities: alloc::vec![],
+            block_ticks: alloc::vec![],
+            fluid_ticks: alloc::vec![],
         };
         sekai_nbt::nanonbt::to_bytes(&value).unwrap()
     }

@@ -72,9 +72,11 @@ impl Fixture {
             inhabited_time: 0,
             last_update: 0,
             sections: vec![],
-            heightmaps: sekai_nbt::Heightmaps {},
+            heightmaps: sekai_nbt::Heightmaps::default(),
             status: &Cesu8::from_str("minecraft:full"),
             block_entities: vec![],
+            block_ticks: vec![],
+            fluid_ticks: vec![],
         })
         .unwrap();
         let mut payload = vec![3u8];
