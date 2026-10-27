@@ -37,26 +37,6 @@ fn write_region(path: impl AsRef<Path>, chunks: &[(i32, i32, Vec<u8>)]) {
     std::fs::write(path.as_ref(), image).unwrap();
 }
 
-#[allow(dead_code)]
-fn blob_count(store: impl AsRef<Path>) -> usize {
-    let mut count = 0usize;
-    let mut dirs = vec![store.as_ref().join("blobs")];
-    while let Some(dir) = dirs.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                dirs.push(path);
-            } else {
-                count += 1;
-            }
-        }
-    }
-    count
-}
-
 const fn options() -> sekai_app::StatusOptions {
     sekai_app::StatusOptions { concurrency: 2 }
 }
