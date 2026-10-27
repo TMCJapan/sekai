@@ -14,6 +14,7 @@ use core::{fmt, str::FromStr};
 
 use crate::commit::CommitId;
 use crate::error::RefNameError;
+use crate::name::{self, NameRule};
 
 /// Name of the ref a fresh store starts with: the active one, unborn,
 /// waiting for the first commit.
@@ -36,7 +37,7 @@ pub struct RefName(String);
 
 impl RefName {
     /// Longest accepted name, in bytes (names are ASCII-only).
-    pub const MAX_LEN: usize = 64;
+    pub const MAX_LEN: usize = name::MAX_LEN;
 
     /// Name the store keeps for itself: no ref may carry it.
     pub const RESERVED: &str = "HEAD";
@@ -48,33 +49,13 @@ impl RefName {
     /// over-long name reports [`RefNameError::TooLong`] even when it also
     /// holds a non-ASCII character.
     pub fn parse(raw: &str) -> Result<Self, RefNameError> {
-        if raw.is_empty() {
-            return Err(RefNameError::Empty);
-        }
-        if raw.len() > Self::MAX_LEN {
-            return Err(RefNameError::TooLong(Self::MAX_LEN));
-        }
-        let mut all_digits = true;
-        // Walk characters, not bytes: `BadChar` must name the rejected
-        // character itself, not the first byte of its UTF-8 encoding.
-        for c in raw.chars() {
-            let valid = c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/');
-            if !valid {
-                return Err(RefNameError::BadChar(c));
-            }
-            all_digits &= c.is_ascii_digit();
-        }
-        if all_digits {
-            return Err(RefNameError::Numeric);
-        }
-        // Path-like names: no empty component, no leading or trailing
-        // separator, and no current- or parent-directory segment.
-        if raw.starts_with('/') || raw.ends_with('/') || raw.contains("//") {
-            return Err(RefNameError::BadPath("empty path component"));
-        }
-        if raw.split('/').any(|segment| matches!(segment, "." | "..")) {
-            return Err(RefNameError::BadPath("'.' or '..' segment"));
-        }
+        name::check(raw).map_err(|rule| match rule {
+            NameRule::Empty => RefNameError::Empty,
+            NameRule::TooLong => RefNameError::TooLong(Self::MAX_LEN),
+            NameRule::BadChar(c) => RefNameError::BadChar(c),
+            NameRule::BadPath(reason) => RefNameError::BadPath(reason),
+            NameRule::Numeric => RefNameError::Numeric,
+        })?;
         if raw.eq_ignore_ascii_case(Self::RESERVED) {
             return Err(RefNameError::Reserved(Self::RESERVED));
         }
