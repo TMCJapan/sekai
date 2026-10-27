@@ -41,8 +41,28 @@ const fn options() -> sekai_app::StatusOptions {
     sekai_app::StatusOptions { concurrency: 2 }
 }
 
+/// Stored blob files under one CAS root, including shard directories.
+fn blob_count(store: impl AsRef<Path>) -> usize {
+    let mut count = 0usize;
+    let mut dirs = vec![store.as_ref().join("blobs")];
+    while let Some(dir) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
 #[tokio::test]
-async fn status_counts_tombstones() {
+async fn status_counts_tombstones_without_writing() {
     let root = tempdir("tomb");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -51,7 +71,7 @@ async fn status_counts_tombstones() {
     write_region(&region, &[(0, 0, vec![3, 1]), (1, 0, vec![3, 2])]);
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
-    instance
+    let (committed, _) = instance
         .world_mut(&mut world)
         .commit(
             sekai_app::CommitOptions::default(),
@@ -62,16 +82,67 @@ async fn status_counts_tombstones() {
         .unwrap();
     write_region(&region, &[(0, 0, vec![3, 1])]);
 
-    let (report, _) = instance
+    let commits_before = instance.list_commits().await.unwrap().len();
+    let blobs_before = blob_count(&store);
+    let (report, timings) = instance
         .world(&world)
         .status(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
     assert!(!report.clean);
-    // The rewritten region re-ingests its chunk (same blob, fresh row)
-    // while the vanished chunk becomes a tombstone.
-    assert_eq!(report.new_chunks, 1);
+    // The rewritten region's surviving chunk keeps its blob, so no fresh
+    // chunk row is staged; the vanished chunk becomes a tombstone.
+    assert_eq!(report.new_chunks, 0);
     assert_eq!(report.tombstones, 1);
     assert_eq!(report.new_blobs, 0);
+    assert_eq!(report.latest, Some(committed.commit));
+    assert!(
+        timings.total >= timings.discover + timings.fingerprint,
+        "total timing must cover its phases"
+    );
+    // A preview is pure: no commit rows and no blob files appear.
+    assert_eq!(instance.list_commits().await.unwrap().len(), commits_before);
+    assert_eq!(blob_count(&store), blobs_before);
+    cleanup(&root);
+}
+
+#[tokio::test]
+async fn status_reports_a_clean_world_after_commit() {
+    let root = tempdir("clean");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    write_region(
+        world_path.join("region/r.0.0.mca"),
+        &[(0, 0, vec![3, 1]), (1, 0, vec![3, 2])],
+    );
+
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let (committed, _) = instance
+        .world_mut(&mut world)
+        .commit(
+            sekai_app::CommitOptions::default(),
+            sekai_app::Scope::World,
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+    let (report, timings) = instance
+        .world(&world)
+        .status(options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+    assert!(report.clean);
+    assert_eq!(report.latest, Some(committed.commit));
+    assert_eq!(report.changed_regions, 0);
+    assert_eq!(report.new_files, 0);
+    assert_eq!(report.deleted_files, 0);
+    assert_eq!(report.new_chunks, 0);
+    assert_eq!(report.tombstones, 0);
+    assert!(
+        timings.total >= timings.discover + timings.fingerprint,
+        "total timing must cover its phases"
+    );
     cleanup(&root);
 }
