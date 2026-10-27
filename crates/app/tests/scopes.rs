@@ -5,7 +5,8 @@
 #![cfg(feature = "backend-sqlite")]
 
 use sekai_app::{
-    AppError, Area, Dimension, HostWorldTree, NamedScopeError, Rect, RegionKind, Scope, ScopeName,
+    AppError, Area, ChunkCoord, Dimension, HostWorldTree, NamedScopeError, Rect, RegionKind, Scope,
+    ScopeName,
 };
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -84,15 +85,16 @@ async fn a_scope_is_created_listed_and_deleted() {
         &[(OVER, Rect::new(0, 0, 3, 3))],
         "identical areas collapse"
     );
-    instance
+    let hub = instance
         .create_scope(&name("hub"), None, vec![(OVER, Rect::region(0, 0))], false)
         .await
         .unwrap();
 
-    let listed = instance.list_scopes().await.unwrap();
-    let names: Vec<&str> = listed.iter().map(|scope| scope.name.as_str()).collect();
-    assert_eq!(names, ["hub", "spawn"]);
-    assert_eq!(listed[1], created);
+    assert_eq!(
+        instance.list_scopes().await.unwrap(),
+        vec![hub, created],
+        "listed whole, in name order"
+    );
 
     assert!(instance.delete_scope(&spawn).await.unwrap());
     assert!(!instance.delete_scope(&spawn).await.unwrap());
@@ -214,5 +216,14 @@ async fn a_resolved_scope_limits_a_commit() {
         .commit(sekai_app::CommitOptions::default(), scope, |_| {})
         .await
         .unwrap();
-    assert_eq!(report.chunks, 2, "only the scope's two chunks are read");
+    let mut coords = instance.commit_chunk_coords(report.commit).await.unwrap();
+    coords.sort_unstable();
+    assert_eq!(
+        coords,
+        [
+            ChunkCoord::new(OVER, RegionKind::Region, 0, 0),
+            ChunkCoord::new(OVER, RegionKind::Region, 5, 5),
+        ],
+        "only the scope's two chunks are committed"
+    );
 }
