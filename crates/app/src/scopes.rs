@@ -1,4 +1,4 @@
-//! Named scopes: store-saved world areas selected by name (ADR-0021).
+//! Named scopes: store-saved world areas selected by name.
 //!
 //! A scope names no commit: `prune` and `gc` never read it, and deleting
 //! one changes no history. It is resolved when a command runs, not when a

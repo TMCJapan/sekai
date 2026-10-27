@@ -401,11 +401,20 @@ fn decode_ref(row: &sqlx::sqlite::SqliteRow) -> Result<CommitRef, StorageError> 
 
 /// `scopes.kind` mask with every region family set; the column stores
 /// that selection as NULL, never as this value.
-const ALL_KINDS_MASK: i64 = 0b111;
+const ALL_KINDS_MASK: i64 = kind_mask(&RegionKind::ALL);
 
 /// `scopes.kind` mask: bit `1 << RegionKind::raw()` per selected family.
-fn kind_mask(kinds: &[RegionKind]) -> i64 {
-    kinds.iter().fold(0, |mask, kind| mask | 1 << kind.raw())
+///
+/// A loop rather than an iterator fold so [`ALL_KINDS_MASK`] derives from
+/// `RegionKind::ALL` at compile time.
+const fn kind_mask(kinds: &[RegionKind]) -> i64 {
+    let mut mask = 0;
+    let mut i = 0;
+    while i < kinds.len() {
+        mask |= 1 << kinds[i].raw();
+        i += 1;
+    }
+    mask
 }
 
 /// Decode a non-NULL `scopes.kind` mask. Only proper, non-empty subsets

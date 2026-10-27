@@ -74,8 +74,8 @@ CREATE TABLE refs(
 CREATE UNIQUE INDEX idx_refs_active
     ON refs(active) WHERE active = 1;
 
--- Named scopes (ADR-0021): store-saved world areas selected by name. A
--- scope names no commit, so history operations never touch these rows.
+-- Named scopes: store-saved world areas selected by name. A scope
+-- names no commit, so history operations never touch these rows.
 -- `kind` is a bitmask of `1 << RegionKind::raw()`; NULL selects every
 -- region family and the full set is always spelled NULL, so the CHECK
 -- admits proper subsets only. Names order byte-wise, as refs do.
@@ -86,8 +86,9 @@ CREATE TABLE scopes(
 );
 
 -- One inclusive, normalized chunk rectangle per row; the scope is the
--- union of its rows. The primary key collapses identical areas and
--- yields the stored order. A scope without rows is corruption.
+-- union of its rows. The primary key collapses identical areas; readers
+-- order them by `(dim, x0, z0, x1, z1)` when decoding, so queries need
+-- no ORDER BY. A scope without rows is corruption.
 CREATE TABLE scope_areas(
     scope TEXT NOT NULL REFERENCES scopes(name) ON DELETE CASCADE,
     dim INTEGER NOT NULL,
