@@ -88,7 +88,8 @@ pub struct Assembled {
     pub new_blobs: usize,
     /// Tombstone rows recorded for vanished chunks.
     pub tombstones: usize,
-    /// In-scope files with no present chunk at the base commit.
+    /// In-scope files that contributed a chunk with no row at the base
+    /// commit.
     pub new_files: usize,
     /// Stored regions gone from disk.
     pub removed: Vec<RegionKey>,
@@ -200,16 +201,6 @@ pub fn assemble(plan: Plan, previous: &Previous, ingested: Ingested, scope: &Sco
         present,
         new_blobs,
     } = ingested;
-    let new_files = plan
-        .ingest
-        .iter()
-        .filter(|key| {
-            !previous
-                .state
-                .keys()
-                .any(|coord| RegionKey::of(*coord) == **key)
-        })
-        .count();
     let mut fresh: Vec<CommitEntry> = entries
         .into_iter()
         .filter(|entry| {
@@ -219,6 +210,14 @@ pub fn assemble(plan: Plan, previous: &Previous, ingested: Ingested, scope: &Sco
                 .is_none_or(|base| base.blob != entry.blob)
         })
         .collect();
+    // An empty file contributes no rows and is not part of the logical
+    // world state, so it must not keep the preview permanently dirty.
+    let new_files: BTreeSet<RegionKey> = fresh
+        .iter()
+        .filter(|entry| entry.blob.is_some() && !previous.state.contains_key(&entry.coord))
+        .map(|entry| RegionKey::of(entry.coord))
+        .collect();
+    let new_files = new_files.len();
     // Present before, absent from this scan: the coordinate just vanished.
     let mut tombstones = 0usize;
     for coord in previous.state.keys() {
@@ -486,6 +485,21 @@ mod tests {
                 .commit,
             Some(second)
         );
+    }
+
+    #[test]
+    fn an_empty_region_is_not_a_new_file() {
+        let meta = store_with_ref();
+        let observed = [Observation {
+            key: key(0, 0),
+            fingerprint: fingerprint(key(0, 0)),
+        }];
+        let (previous, plan) =
+            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
+        let staged = assemble(plan, &previous, Ingested::default(), &Scope::World);
+        assert_eq!(staged.entries, [] as [CommitEntry; 0]);
+        assert_eq!(staged.new_files, 0);
+        assert_eq!(staged.chunks, 0);
     }
 
     #[test]
