@@ -36,5 +36,4 @@ cargo machete
 
 ## Schema change (when applicable)
 
-<!-- Old version rejected or migrated? How was `region_state`-style derived
-     state handled? Which test pins the version gate? -->
+<!-- Old version rejected or migrated? Which test pins the version gate? -->
