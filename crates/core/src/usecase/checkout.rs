@@ -115,9 +115,6 @@ mod tests {
                 CommitEntry::new(b, Some(BlobHash([2; 32])), None),
                 CommitEntry::new(gone, None, None),
             ],
-            None,
-            &[],
-            &[],
         ))
         .unwrap()
         .id;

@@ -181,9 +181,6 @@ where
             1_000,
             &[],
             &[CommitEntry::new(coord(0, 0), Some(BlobHash([1; 32])), None)],
-            None,
-            &[],
-            &[],
         )
         .await
         .unwrap()
@@ -193,9 +190,6 @@ where
             2_000,
             &[first],
             &[CommitEntry::new(coord(1, 0), Some(BlobHash([2; 32])), None)],
-            None,
-            &[],
-            &[],
         )
         .await
         .unwrap()
@@ -205,9 +199,6 @@ where
             3_000,
             &[second],
             &[CommitEntry::new(coord(2, 0), Some(BlobHash([3; 32])), None)],
-            None,
-            &[],
-            &[],
         )
         .await
         .unwrap()
@@ -433,9 +424,6 @@ where
             1_000,
             &[],
             &[CommitEntry::new(coord(0, 0), Some(live), None)],
-            None,
-            &[],
-            &[],
         )
         .await
         .unwrap();

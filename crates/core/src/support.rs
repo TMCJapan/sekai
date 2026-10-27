@@ -9,7 +9,7 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use crate::port::{BlobStore, MetaStore};
 use sekai_util::{
     ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitId, CommitRef, DiffHash,
-    FoldOutcome, RefName, RegionFingerprint, RegionKey, RegionStateEntry,
+    FoldOutcome, RefName,
 };
 
 /// Fake backend failure.
@@ -147,8 +147,6 @@ pub struct MemMeta {
     pub commits: Vec<Commit>,
     /// Every recorded row.
     pub rows: Vec<ChunkHistoryEntry>,
-    /// Derived region states.
-    pub states: Vec<RegionStateEntry>,
     /// Refs by name.
     pub refs: BTreeMap<RefName, CommitRef>,
     /// Stable local sequence per commit hash. Retirement never renumbers
@@ -209,7 +207,7 @@ impl MetaStore for MemMeta {
             unique.insert(*parent);
         }
         let canonical: Vec<CommitId> = unique.into_iter().collect();
-        let id = crate::commit::commit_hash(&canonical, created_at_ms, &[], &[]);
+        let id = crate::commit::commit_hash(&canonical, created_at_ms, &[]);
         self.insert_commit(id, created_at_ms, canonical);
         core::future::ready(Ok(id))
     }
@@ -339,35 +337,11 @@ impl MetaStore for MemMeta {
         core::future::ready(Ok(()))
     }
 
-    fn load_region_states(
-        &self,
-        within: Option<CommitId>,
-    ) -> impl Future<Output = Result<Vec<RegionStateEntry>, MemError>> + Send {
-        // Only fingerprints confirmed inside the given history may be
-        // carried: one confirmed elsewhere describes another state of the
-        // file. An unborn history (`None`) knows no file at all.
-        let ancestors = within.map_or_else(BTreeSet::new, |commit| {
-            let mut set = ancestor_ids(&self.commits, commit);
-            set.insert(commit);
-            set
-        });
-        let states = self
-            .states
-            .iter()
-            .filter(|state| ancestors.contains(&state.commit_id))
-            .copied()
-            .collect();
-        core::future::ready(Ok(states))
-    }
-
     fn apply_commit_incremental(
         &mut self,
         created_at_ms: u64,
         parents: &[CommitId],
         entries: &[sekai_util::CommitEntry],
-        carry_from: Option<(CommitId, &[RegionKey])>,
-        fingerprints: &[RegionFingerprint],
-        removed: &[RegionKey],
     ) -> impl Future<Output = Result<ApplyOutcome, MemError>> + Send {
         // The active ref decides where the commit lands: bind it before
         // any write, so a store without one changes nothing (the backend
@@ -406,7 +380,7 @@ impl MetaStore for MemMeta {
             unique.insert(*parent);
         }
         let canonical: Vec<CommitId> = unique.into_iter().collect();
-        let id = crate::commit::commit_hash(&canonical, created_at_ms, entries, removed);
+        let id = crate::commit::commit_hash(&canonical, created_at_ms, entries);
         if self.insert_commit(id, created_at_ms, canonical) {
             for entry in entries {
                 self.rows.push(ChunkHistoryEntry::new(
@@ -417,44 +391,13 @@ impl MetaStore for MemMeta {
                 ));
             }
         }
-        // Delta storage: carried regions contribute no rows. Their
-        // effective chunks are counted from the previous commit for the
-        // report; only derived state advances.
-        let mut carried_chunks = 0usize;
-        if let Some((prev, keys)) = carry_from {
-            for row in effective_at(&self.rows, &self.commits, &self.seqs, prev) {
-                if row.blob.is_some() && keys.contains(&RegionKey::of(row.coord)) {
-                    carried_chunks += 1;
-                }
-            }
-            for key in keys {
-                for state in &mut self.states {
-                    if state.fingerprint.key == *key {
-                        state.commit_id = id;
-                    }
-                }
-            }
-        }
-        for fp in fingerprints {
-            let entry = RegionStateEntry {
-                fingerprint: *fp,
-                commit_id: id,
-            };
-            if let Some(state) = self.states.iter_mut().find(|s| s.fingerprint.key == fp.key) {
-                *state = entry;
-            } else {
-                self.states.push(entry);
-            }
-        }
-        self.states
-            .retain(|state| !removed.contains(&state.fingerprint.key));
         // The active ref moves onto the new commit, in the same step: a
         // ref that lags behind its history would fork the next commit.
         // No fallible step follows the write phase; the bound record is
         // re-inserted here, so the active ref cannot lag.
         record.commit = Some(id);
         self.refs.insert(active, record);
-        core::future::ready(Ok(ApplyOutcome { id, carried_chunks }))
+        core::future::ready(Ok(ApplyOutcome { id }))
     }
 
     fn retire_commit(
@@ -499,11 +442,6 @@ impl MetaStore for MemMeta {
             }
         }
         self.rows = kept;
-        for state in &mut self.states {
-            if state.commit_id == from {
-                state.commit_id = into;
-            }
-        }
         // The retired commit leaves the graph: its children continue the
         // history of its own parents.
         let from_parents = self

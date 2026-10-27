@@ -136,9 +136,6 @@ mod tests {
             1_000,
             &[],
             &[CommitEntry::new(coord(0, 0), Some(live), None)],
-            None,
-            &[],
-            &[],
         ))
         .unwrap();
 

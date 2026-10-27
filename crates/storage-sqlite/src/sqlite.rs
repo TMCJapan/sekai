@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use sekai_core::{
     ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitEntry, CommitId,
-    CommitRef, DEFAULT_REF_NAME, DiffHash, Dimension, FoldOutcome, MetaStore, RefName,
-    RegionFingerprint, RegionKey, RegionKind, RegionStateEntry, commit_hash,
+    CommitRef, DEFAULT_REF_NAME, DiffHash, Dimension, FoldOutcome, MetaStore, RefName, RegionKind,
+    commit_hash,
 };
 use sqlx::Row as _;
 use sqlx::sqlite::{
@@ -276,7 +276,7 @@ impl SqliteMeta {
         entries: &[CommitEntry],
     ) -> Result<CommitId, StorageError> {
         Ok(self
-            .apply_commit_incremental(created_at_ms, parents, entries, None, &[], &[])
+            .apply_commit_incremental(created_at_ms, parents, entries)
             .await?
             .id)
     }
@@ -593,7 +593,7 @@ impl sekai_core::MetaStore for SqliteMeta {
         created_at_ms: u64,
         parents: &[CommitId],
     ) -> Result<CommitId, StorageError> {
-        let id = commit_hash(parents, created_at_ms, &[], &[]);
+        let id = commit_hash(parents, created_at_ms, &[]);
         let mut tx = self.pool.begin().await.map_err(db_err)?;
         insert_commit(&mut tx, id, created_at_ms, parents).await?;
         tx.commit().await.map_err(db_err)?;
@@ -745,15 +745,6 @@ impl sekai_core::MetaStore for SqliteMeta {
         Ok(())
     }
 
-    fn load_region_states(
-        &self,
-        _within: Option<CommitId>,
-    ) -> impl Future<Output = Result<Vec<RegionStateEntry>, StorageError>> + Send {
-        // `region_state` was removed: derived fingerprints are no longer
-        // persisted, so there are no stored states to carry.
-        std::future::ready(Ok(Vec::new()))
-    }
-
     async fn visit_fresh_rows<F>(&self, commit: CommitId, mut visit: F) -> Result<(), StorageError>
     where
         F: FnMut(&ChunkHistoryEntry) -> bool + Send,
@@ -881,11 +872,8 @@ impl sekai_core::MetaStore for SqliteMeta {
         created_at_ms: u64,
         parents: &[CommitId],
         entries: &[CommitEntry],
-        carry_from: Option<(CommitId, &[RegionKey])>,
-        _fingerprints: &[RegionFingerprint],
-        removed: &[RegionKey],
     ) -> Result<ApplyOutcome, StorageError> {
-        let commit = commit_hash(parents, created_at_ms, entries, removed);
+        let commit = commit_hash(parents, created_at_ms, entries);
         let mut tx = self.pool.begin().await.map_err(db_err)?;
         // The new commit must continue the active ref's target: moving the
         // ref onto an unrelated history would fork it. Read the target
@@ -924,52 +912,6 @@ impl sekai_core::MetaStore for SqliteMeta {
                     .map_err(db_err)?;
             }
         }
-        let mut carried_chunks = 0usize;
-        if let Some((prev, keys)) = carry_from {
-            // Delta storage: carried regions contribute no rows. Their
-            // effective present chunks are counted for the report with the
-            // same ancestor semantics as reads; only derived state advances
-            // below.
-            if !keys.is_empty() {
-                // Region predicates are structural (fixed shape per region);
-                // all values stay bound parameters.
-                let mut qb = sqlx::QueryBuilder::new(ancestor_cte!(head));
-                qb.push_bind(commit_param(prev));
-                qb.push(ancestor_cte!(tail));
-                qb.push(
-                    " SELECT COUNT(*) FROM (
-                       SELECT ROW_NUMBER() OVER (
-                         PARTITION BY dim, kind, cx, cz ORDER BY seq DESC
-                       ) AS rn, blob
-                       FROM chunk_history WHERE commit_id IN (SELECT id FROM ancestors) AND (",
-                );
-                for (i, key) in keys.iter().enumerate() {
-                    if i > 0 {
-                        qb.push(" OR ");
-                    }
-                    qb.push("(dim = ");
-                    qb.push_bind(i64::from(key.dim.raw()));
-                    qb.push(" AND kind = ");
-                    qb.push_bind(i64::from(key.kind.raw()));
-                    qb.push(" AND cx BETWEEN ");
-                    qb.push_bind(i64::from(key.rx) * 32);
-                    qb.push(" AND ");
-                    qb.push_bind(i64::from(key.rx) * 32 + 31);
-                    qb.push(" AND cz BETWEEN ");
-                    qb.push_bind(i64::from(key.rz) * 32);
-                    qb.push(" AND ");
-                    qb.push_bind(i64::from(key.rz) * 32 + 31);
-                    qb.push(")");
-                }
-                qb.push(")) WHERE rn = 1 AND blob IS NOT NULL");
-                let carried: i64 = qb
-                    .build_query_scalar()
-                    .fetch_one(&mut *tx)
-                    .await
-                    .map_err(db_err)?;
-                carried_chunks = usize::try_from(carried).unwrap_or(usize::MAX);
-            }
-        }
         // The active ref moves onto the new commit, in the same
         // transaction: a ref lagging behind its history would fork the
         // next commit.
@@ -984,10 +926,7 @@ impl sekai_core::MetaStore for SqliteMeta {
             return Err(StorageError::NoActiveRef);
         }
         tx.commit().await.map_err(db_err)?;
-        Ok(ApplyOutcome {
-            id: commit,
-            carried_chunks,
-        })
+        Ok(ApplyOutcome { id: commit })
     }
 
     async fn set_ref(
@@ -1252,7 +1191,7 @@ mod tests {
         let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
         let feature = RefName::parse("feature").unwrap();
         let root = meta
-            .apply_commit_incremental(1_000, &[], &[], None, &[], &[])
+            .apply_commit_incremental(1_000, &[], &[])
             .await
             .unwrap()
             .id;
@@ -1285,7 +1224,7 @@ mod tests {
         let mut meta = memory_meta().await;
         let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
         let first = meta
-            .apply_commit_incremental(1_000, &[], &[], None, &[], &[])
+            .apply_commit_incremental(1_000, &[], &[])
             .await
             .unwrap()
             .id;
@@ -1294,7 +1233,7 @@ mod tests {
         // constraint: the next commit is a fresh root.
         meta.set_ref(&main, None, 2_000).await.unwrap();
         let second = meta
-            .apply_commit_incremental(3_000, &[], &[], None, &[], &[])
+            .apply_commit_incremental(3_000, &[], &[])
             .await
             .unwrap()
             .id;
@@ -1327,7 +1266,7 @@ mod tests {
         let mut meta = memory_meta().await;
         let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
         let first = meta
-            .apply_commit_incremental(1_000, &[], &[], None, &[], &[])
+            .apply_commit_incremental(1_000, &[], &[])
             .await
             .unwrap()
             .id;
@@ -1374,13 +1313,13 @@ mod tests {
     async fn a_commit_must_continue_the_active_ref() {
         let mut meta = memory_meta().await;
         let root = meta
-            .apply_commit_incremental(1_000, &[], &[], None, &[], &[])
+            .apply_commit_incremental(1_000, &[], &[])
             .await
             .unwrap()
             .id;
 
         let err = meta
-            .apply_commit_incremental(2_000, &[], &[], None, &[], &[])
+            .apply_commit_incremental(2_000, &[], &[])
             .await
             .unwrap_err();
         assert!(matches!(err, StorageError::NotContinuing { base } if base == root));
@@ -1390,7 +1329,7 @@ mod tests {
         assert_eq!(meta.active_ref().await.unwrap().unwrap().commit, Some(root));
 
         let next = meta
-            .apply_commit_incremental(3_000, &[root], &[], None, &[], &[])
+            .apply_commit_incremental(3_000, &[root], &[])
             .await
             .unwrap()
             .id;
@@ -1402,12 +1341,12 @@ mod tests {
         let mut meta = memory_meta().await;
         let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
         let root = meta
-            .apply_commit_incremental(1_000, &[], &[], None, &[], &[])
+            .apply_commit_incremental(1_000, &[], &[])
             .await
             .unwrap()
             .id;
         let second = meta
-            .apply_commit_incremental(2_000, &[root], &[], None, &[], &[])
+            .apply_commit_incremental(2_000, &[root], &[])
             .await
             .unwrap()
             .id;
@@ -1478,7 +1417,7 @@ mod tests {
         let mut meta = memory_meta().await;
         // A first commit gives the store a history.
         let first = meta
-            .apply_commit_incremental(1_000, &[], &[], None, &[], &[])
+            .apply_commit_incremental(1_000, &[], &[])
             .await
             .unwrap()
             .id;
@@ -1490,7 +1429,7 @@ mod tests {
             .unwrap();
 
         let err = meta
-            .apply_commit_incremental(2_000, &[], &[], None, &[], &[])
+            .apply_commit_incremental(2_000, &[], &[])
             .await
             .unwrap_err();
         assert!(matches!(err, StorageError::NoActiveRef));
@@ -1528,12 +1467,12 @@ mod tests {
         let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
         let feature = RefName::parse("feature").unwrap();
         let root = meta
-            .apply_commit_incremental(1_000, &[], &[], None, &[], &[])
+            .apply_commit_incremental(1_000, &[], &[])
             .await
             .unwrap()
             .id;
         let second = meta
-            .apply_commit_incremental(2_000, &[root], &[], None, &[], &[])
+            .apply_commit_incremental(2_000, &[root], &[])
             .await
             .unwrap()
             .id;
@@ -1640,12 +1579,12 @@ mod tests {
     }
 
     /// The version gate rejects any store whose `user_version` is not
-    /// `SCHEMA_VERSION` (13) before any table is touched. A store stamped
-    /// 11 is therefore refused with `UnsupportedSchema { found: 11,
-    /// supported: SCHEMA_VERSION }`.
+    /// `SCHEMA_VERSION` (13) before any table is touched. The immediately
+    /// previous store version, 12, is refused with `UnsupportedSchema
+    /// { found: 12, supported: SCHEMA_VERSION }`.
     #[tokio::test]
     async fn a_store_from_the_previous_schema_version_is_refused() {
-        let dir = tempdir("version-11");
+        let dir = tempdir("version-12");
         let path = dir.join("meta.sqlite");
         let mut seed = SqliteConnectOptions::new()
             .filename(&path)
@@ -1654,7 +1593,7 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(SCHEMA).execute(&mut seed).await.unwrap();
-        sqlx::query("PRAGMA user_version=11")
+        sqlx::query("PRAGMA user_version=12")
             .execute(&mut seed)
             .await
             .unwrap();
@@ -1662,7 +1601,7 @@ mod tests {
         assert!(matches!(
             SqliteMeta::open(&path).await,
             Err(StorageError::UnsupportedSchema {
-                found: 11,
+                found: 12,
                 supported: SCHEMA_VERSION,
             })
         ));

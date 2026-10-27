@@ -432,13 +432,13 @@ mod tests {
         ];
         let s2 = [CommitEntry::new(coord(0, 0), Some(BlobHash([3; 32])), None)];
         let s3 = [CommitEntry::new(coord(2, 0), Some(BlobHash([4; 32])), None)];
-        let first = block_on(meta.apply_commit_incremental(1_000, &[], &s1, None, &[], &[]))
+        let first = block_on(meta.apply_commit_incremental(1_000, &[], &s1))
             .unwrap()
             .id;
-        let second = block_on(meta.apply_commit_incremental(2_000, &[first], &s2, None, &[], &[]))
+        let second = block_on(meta.apply_commit_incremental(2_000, &[first], &s2))
             .unwrap()
             .id;
-        let third = block_on(meta.apply_commit_incremental(3_000, &[second], &s3, None, &[], &[]))
+        let third = block_on(meta.apply_commit_incremental(3_000, &[second], &s3))
             .unwrap()
             .id;
         let before = effective_present(&meta, &[first, second, third]);
@@ -474,18 +474,15 @@ mod tests {
                 None,
             )]
         };
-        let first =
-            block_on(meta.apply_commit_incremental(1_000, &[], &rows(0, 1), None, &[], &[]))
-                .unwrap()
-                .id;
-        let second =
-            block_on(meta.apply_commit_incremental(2_000, &[first], &rows(1, 2), None, &[], &[]))
-                .unwrap()
-                .id;
-        let third =
-            block_on(meta.apply_commit_incremental(3_000, &[second], &rows(2, 3), None, &[], &[]))
-                .unwrap()
-                .id;
+        let first = block_on(meta.apply_commit_incremental(1_000, &[], &rows(0, 1)))
+            .unwrap()
+            .id;
+        let second = block_on(meta.apply_commit_incremental(2_000, &[first], &rows(1, 2)))
+            .unwrap()
+            .id;
+        let third = block_on(meta.apply_commit_incremental(3_000, &[second], &rows(2, 3)))
+            .unwrap()
+            .id;
         let before = effective_present(&meta, &[third]);
 
         // Keep only the last commit: the two below it retire in one run,
@@ -513,41 +510,20 @@ mod tests {
         let mut meta = MemMeta::default();
         meta.with_active_ref(&main_ref());
         let row = |c: ChunkCoord, byte: u8| [CommitEntry::new(c, Some(BlobHash([byte; 32])), None)];
-        let first = block_on(meta.apply_commit_incremental(
-            1_000,
-            &[],
-            &row(coord(0, 0), 1),
-            None,
-            &[],
-            &[],
-        ))
-        .unwrap()
-        .id;
+        let first = block_on(meta.apply_commit_incremental(1_000, &[], &row(coord(0, 0), 1)))
+            .unwrap()
+            .id;
         // Two retained branches continue the same root: retiring it would
         // have to fold its rows into both.
-        let second = block_on(meta.apply_commit_incremental(
-            2_000,
-            &[first],
-            &row(coord(1, 0), 2),
-            None,
-            &[],
-            &[],
-        ))
-        .unwrap()
-        .id;
+        let second = block_on(meta.apply_commit_incremental(2_000, &[first], &row(coord(1, 0), 2)))
+            .unwrap()
+            .id;
         // Point the active ref back at the root: the third commit is a
         // deliberate fork.
         block_on(meta.set_ref(&main_ref(), Some(first), 2_500)).unwrap();
-        let third = block_on(meta.apply_commit_incremental(
-            3_000,
-            &[first],
-            &row(coord(2, 0), 3),
-            None,
-            &[],
-            &[],
-        ))
-        .unwrap()
-        .id;
+        let third = block_on(meta.apply_commit_incremental(3_000, &[first], &row(coord(2, 0), 3)))
+            .unwrap()
+            .id;
 
         let retained = BTreeSet::from([second, third]);
         let err = block_on(prune_plan(&meta, &retained)).unwrap_err();
@@ -564,36 +540,16 @@ mod tests {
         let row = |c: ChunkCoord, byte: u8| [CommitEntry::new(c, Some(BlobHash([byte; 32])), None)];
         // first <- second, and third merges both: retiring first and
         // second fold into third.
-        let first = block_on(meta.apply_commit_incremental(
-            1_000,
-            &[],
-            &row(coord(0, 0), 1),
-            None,
-            &[],
-            &[],
-        ))
-        .unwrap()
-        .id;
-        let second = block_on(meta.apply_commit_incremental(
-            2_000,
-            &[first],
-            &row(coord(1, 0), 2),
-            None,
-            &[],
-            &[],
-        ))
-        .unwrap()
-        .id;
-        let third = block_on(meta.apply_commit_incremental(
-            3_000,
-            &[first, second],
-            &row(coord(2, 0), 3),
-            None,
-            &[],
-            &[],
-        ))
-        .unwrap()
-        .id;
+        let first = block_on(meta.apply_commit_incremental(1_000, &[], &row(coord(0, 0), 1)))
+            .unwrap()
+            .id;
+        let second = block_on(meta.apply_commit_incremental(2_000, &[first], &row(coord(1, 0), 2)))
+            .unwrap()
+            .id;
+        let third =
+            block_on(meta.apply_commit_incremental(3_000, &[first, second], &row(coord(2, 0), 3)))
+                .unwrap()
+                .id;
 
         let before = effective_present(&meta, &[third]);
         let retained = BTreeSet::from([third]);
