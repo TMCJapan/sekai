@@ -69,8 +69,8 @@ impl FromStr for ScopeName {
 /// The fields are private so every record holds exactly one spelling of
 /// its selection, matching the store's: areas sorted by
 /// `(dim, x0, z0, x1, z1)` with duplicates collapsed, and kinds either
-/// `None` (every family) or a sorted, deduplicated proper subset. Overlapping
-/// areas are kept apart; the scope is their union either way.
+/// `None` (every family) or a sorted, deduplicated proper subset.
+/// Overlapping areas are kept apart; the scope is their union either way.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NamedScope {
     /// Scope name.
@@ -87,15 +87,23 @@ impl NamedScope {
     /// `kinds = None` selects every region family, and so does a set
     /// naming all of them. A record that would select nothing - no area,
     /// or an empty kind set - is refused.
+    ///
+    /// Areas are re-normalized through [`Rect::new`]: `Rect`'s fields are
+    /// public, so a struct literal can put a maximum before its minimum,
+    /// which a store would refuse or keep depending on its backend.
     pub fn new(
         name: ScopeName,
         kinds: Option<Vec<RegionKind>>,
-        mut areas: Vec<(Dimension, Rect)>,
+        areas: Vec<(Dimension, Rect)>,
         created_at_ms: u64,
     ) -> Result<Self, NamedScopeError> {
         if areas.is_empty() {
             return Err(NamedScopeError::NoAreas);
         }
+        let mut areas: Vec<(Dimension, Rect)> = areas
+            .into_iter()
+            .map(|(dim, rect)| (dim, Rect::new(rect.x0, rect.z0, rect.x1, rect.z1)))
+            .collect();
         areas.sort_unstable();
         areas.dedup();
         let kinds = match kinds {
@@ -216,6 +224,18 @@ mod tests {
             every_kind,
             NamedScope::new(name("spawn"), None, vec![(OVER, a)], 1).unwrap()
         );
+    }
+
+    #[test]
+    fn inverted_rectangles_are_renormalized() {
+        let inverted = Rect {
+            x0: 3,
+            z0: 5,
+            x1: -1,
+            z1: 2,
+        };
+        let record = NamedScope::new(name("spawn"), None, vec![(OVER, inverted)], 1).unwrap();
+        assert_eq!(record.areas(), &[(OVER, Rect::new(-1, 2, 3, 5))]);
     }
 
     #[test]
