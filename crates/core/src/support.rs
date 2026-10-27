@@ -9,7 +9,7 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use crate::port::{BlobStore, MetaStore};
 use sekai_util::{
     ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitId, CommitRef, DiffHash,
-    FoldOutcome, RefName,
+    FoldOutcome, NamedScope, RefName, ScopeName,
 };
 
 /// Fake backend failure.
@@ -149,6 +149,8 @@ pub struct MemMeta {
     pub rows: Vec<ChunkHistoryEntry>,
     /// Refs by name.
     pub refs: BTreeMap<RefName, CommitRef>,
+    /// Named scopes by name.
+    pub scopes: BTreeMap<ScopeName, NamedScope>,
     /// Stable local sequence per commit hash. Retirement never renumbers
     /// surviving commits.
     pub seqs: BTreeMap<CommitId, u64>,
@@ -563,6 +565,45 @@ impl MetaStore for MemMeta {
             record.active = record.name == *name;
         }
         core::future::ready(Ok(()))
+    }
+
+    fn set_scope(
+        &mut self,
+        scope: &NamedScope,
+    ) -> impl Future<Output = Result<(), MemError>> + Send {
+        // Replacing a scope keeps its creation time, as the backend does.
+        let mut record = scope.clone();
+        if let Some(existing) = self.scopes.get(&scope.name) {
+            record.created_at_ms = existing.created_at_ms;
+        }
+        self.scopes.insert(scope.name.clone(), record);
+        core::future::ready(Ok(()))
+    }
+
+    fn lookup_scope(
+        &self,
+        name: &ScopeName,
+    ) -> impl Future<Output = Result<Option<NamedScope>, MemError>> + Send {
+        core::future::ready(Ok(self.scopes.get(name).cloned()))
+    }
+
+    fn visit_scopes<F>(&self, mut visit: F) -> impl Future<Output = Result<(), MemError>> + Send
+    where
+        F: FnMut(&NamedScope) -> bool + Send,
+    {
+        for scope in self.scopes.values() {
+            if !visit(scope) {
+                break;
+            }
+        }
+        core::future::ready(Ok(()))
+    }
+
+    fn delete_scope(
+        &mut self,
+        name: &ScopeName,
+    ) -> impl Future<Output = Result<bool, MemError>> + Send {
+        core::future::ready(Ok(self.scopes.remove(name).is_some()))
     }
 }
 

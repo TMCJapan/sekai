@@ -3,8 +3,8 @@
 //! The flows target `sekai-core` traits; backend-specific setup stays in each runner.
 
 use sekai_core::{
-    BlobHash, BlobStore, ChunkCoord, CommitEntry, CommitId, Dimension, MetaStore, RefName,
-    RegionKind,
+    BlobHash, BlobStore, ChunkCoord, CommitEntry, CommitId, Dimension, MetaStore, NamedScope, Rect,
+    RefName, RegionKind, ScopeName,
     usecase::gc::{gc_apply, gc_plan},
 };
 
@@ -13,6 +13,82 @@ const REGION: RegionKind = RegionKind::Region;
 
 pub const fn coord(x: i32, z: i32) -> ChunkCoord {
     ChunkCoord::new(OVER, REGION, x, z)
+}
+
+/// Named scope CRUD: create, replace, list in name order, delete.
+pub async fn scope_flow<M>(meta: &mut M)
+where
+    M: MetaStore,
+    M::Error: core::fmt::Debug,
+{
+    let spawn = ScopeName::parse("spawn").unwrap();
+    let hub = ScopeName::parse("hub/nether").unwrap();
+    assert!(meta.lookup_scope(&spawn).await.unwrap().is_none());
+
+    let first = NamedScope::new(
+        spawn.clone(),
+        Some(vec![RegionKind::Region, RegionKind::Poi]),
+        vec![
+            (OVER, Rect::new(0, 0, 3, 3)),
+            (Dimension::NETHER, Rect::region(-1, 0)),
+            (OVER, Rect::new(-5, 2, -5, 2)),
+        ],
+        1_000,
+    )
+    .unwrap();
+    meta.set_scope(&first).await.unwrap();
+    assert_eq!(meta.lookup_scope(&spawn).await.unwrap(), Some(first));
+
+    // A replacement swaps kinds and every area but keeps the creation time.
+    let replaced =
+        NamedScope::new(spawn.clone(), None, vec![(OVER, Rect::region(0, 0))], 2_000).unwrap();
+    meta.set_scope(&replaced).await.unwrap();
+    let stored = meta.lookup_scope(&spawn).await.unwrap().unwrap();
+    assert_eq!(stored.kinds(), None);
+    assert_eq!(stored.areas(), replaced.areas());
+    assert_eq!(stored.created_at_ms, 1_000);
+
+    let other = NamedScope::new(
+        hub.clone(),
+        Some(vec![RegionKind::Entities]),
+        vec![(Dimension::NETHER, Rect::new(0, 0, 0, 0))],
+        3_000,
+    )
+    .unwrap();
+    meta.set_scope(&other).await.unwrap();
+    let mut names = Vec::new();
+    meta.visit_scopes(|scope| {
+        names.push(scope.name.clone());
+        true
+    })
+    .await
+    .unwrap();
+    assert_eq!(names, vec![hub.clone(), spawn.clone()], "name order");
+
+    let mut visited = 0;
+    meta.visit_scopes(|_| {
+        visited += 1;
+        false
+    })
+    .await
+    .unwrap();
+    assert_eq!(visited, 1, "the visitor stops early");
+
+    assert!(meta.delete_scope(&spawn).await.unwrap());
+    assert!(!meta.delete_scope(&spawn).await.unwrap());
+    assert!(meta.lookup_scope(&spawn).await.unwrap().is_none());
+    assert_eq!(meta.lookup_scope(&hub).await.unwrap(), Some(other));
+
+    // A deleted name starts over: its creation time is the new one.
+    meta.set_scope(&replaced).await.unwrap();
+    assert_eq!(
+        meta.lookup_scope(&spawn)
+            .await
+            .unwrap()
+            .unwrap()
+            .created_at_ms,
+        2_000
+    );
 }
 
 /// Commit CRUD plus point lookups.

@@ -389,8 +389,9 @@ cancelled future cannot release the store while those tasks still run.
 ## Schema
 
 Owned by the backend crate (`crates/storage-sqlite/schema/sqlite.sql` for
-SQLite; `commits`, `commit_parents`, `chunk_history`, `refs`;
-`SCHEMA_VERSION` gate; pre-release policy = recreate, don't migrate).
+SQLite; `commits`, `commit_parents`, `chunk_history`, `refs`, `scopes`,
+`scope_areas`; `SCHEMA_VERSION` gate; pre-release policy = recreate, don't
+migrate).
 The `cas` module stays independent of DB backend crates so future
 object-store CAS swaps don't touch metadata code.
 

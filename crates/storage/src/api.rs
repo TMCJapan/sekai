@@ -68,6 +68,19 @@ pub enum StorageError {
         /// Ref name that failed validation.
         name: String,
     },
+    /// Stored scope name fails validation.
+    #[error("stored scope name is invalid: {name}")]
+    InvalidScopeName {
+        /// Scope name that failed validation.
+        name: String,
+    },
+    /// Stored scope has no area: `create` refuses one, so a scope
+    /// without area rows is corruption.
+    #[error("stored scope has no area: {name}")]
+    EmptyScope {
+        /// Scope that has no area.
+        name: String,
+    },
     /// The named ref does not exist.
     ///
     /// Emitted by operations that require the ref to exist

@@ -3,14 +3,14 @@
 //! Recording a commit uses one transaction; CAS durability is established
 //! before the metadata commit by the caller. The pool has one connection.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 use sekai_core::{
     ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitEntry, CommitId,
-    CommitRef, DEFAULT_REF_NAME, DiffHash, Dimension, FoldOutcome, MetaStore, RefName, RegionKind,
-    commit_hash,
+    CommitRef, DEFAULT_REF_NAME, DiffHash, Dimension, FoldOutcome, MetaStore, NamedScope,
+    NamedScopeError, Rect, RefName, RegionKind, ScopeName, commit_hash,
 };
 use sqlx::Row as _;
 use sqlx::sqlite::{
@@ -23,7 +23,7 @@ use sekai_storage::{
 };
 
 /// Managed schema version (`PRAGMA user_version`).
-pub const SCHEMA_VERSION: i64 = 13;
+pub const SCHEMA_VERSION: i64 = 14;
 
 const SCHEMA: &str = include_str!("../schema/sqlite.sql");
 
@@ -398,6 +398,94 @@ fn decode_ref(row: &sqlx::sqlite::SqliteRow) -> Result<CommitRef, StorageError> 
         millis_col(row, "created_at_ms")?,
     ))
 }
+
+/// `scopes.kind` mask with every region family set; the column stores
+/// that selection as NULL, never as this value.
+const ALL_KINDS_MASK: i64 = 0b111;
+
+/// `scopes.kind` mask: bit `1 << RegionKind::raw()` per selected family.
+fn kind_mask(kinds: &[RegionKind]) -> i64 {
+    kinds.iter().fold(0, |mask, kind| mask | 1 << kind.raw())
+}
+
+/// Decode a non-NULL `scopes.kind` mask. Only proper, non-empty subsets
+/// are stored; anything else is corruption.
+fn kinds_from_mask(mask: i64) -> Result<Vec<RegionKind>, StorageError> {
+    if !(1..ALL_KINDS_MASK).contains(&mask) {
+        return Err(StorageError::InvalidHistoryValue {
+            column: "scopes.kind",
+            value: mask,
+        });
+    }
+    Ok(RegionKind::ALL
+        .into_iter()
+        .filter(|kind| mask & 1 << kind.raw() != 0)
+        .collect())
+}
+
+/// One scope's columns, gathered from its joined area rows.
+struct ScopeColumns {
+    kind: Option<i64>,
+    created_at_ms: u64,
+    areas: Vec<(Dimension, Rect)>,
+}
+
+/// Group rows of [`SCOPE_QUERY`] by scope name. The map iterates in
+/// byte-wise name order, the order `ScopeName` compares by.
+fn group_scope_rows(
+    rows: &[sqlx::sqlite::SqliteRow],
+) -> Result<BTreeMap<String, ScopeColumns>, StorageError> {
+    let mut grouped = BTreeMap::new();
+    for row in rows {
+        let name: String = row.try_get("name").map_err(db_err)?;
+        let columns = match grouped.entry(name) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => entry.insert(ScopeColumns {
+                kind: row.try_get("kind").map_err(db_err)?,
+                created_at_ms: millis_col(row, "created_at_ms")?,
+                areas: Vec::new(),
+            }),
+        };
+        // The LEFT JOIN yields one all-NULL area for a scope without rows.
+        let dim: Option<i64> = row.try_get("dim").map_err(db_err)?;
+        if let Some(dim) = dim {
+            columns.areas.push((
+                Dimension::new(i64_to_i32(dim, "dim")?),
+                Rect::new(
+                    i32_col(row, "x0")?,
+                    i32_col(row, "z0")?,
+                    i32_col(row, "x1")?,
+                    i32_col(row, "z1")?,
+                ),
+            ));
+        }
+    }
+    Ok(grouped)
+}
+
+/// Decode one grouped scope. Stored names re-validate and a scope must
+/// hold an area: anything else is corruption, never silent
+/// reinterpretation.
+fn decode_scope(name: String, columns: ScopeColumns) -> Result<NamedScope, StorageError> {
+    let Ok(parsed) = ScopeName::parse(&name) else {
+        return Err(StorageError::InvalidScopeName { name });
+    };
+    let kinds = columns.kind.map(kinds_from_mask).transpose()?;
+    NamedScope::new(parsed, kinds, columns.areas, columns.created_at_ms).map_err(|err| match err {
+        NamedScopeError::NoAreas => StorageError::EmptyScope { name },
+        // `kinds_from_mask` never yields an empty set.
+        NamedScopeError::NoKinds => StorageError::InvalidHistoryValue {
+            column: "scopes.kind",
+            value: 0,
+        },
+    })
+}
+
+/// Every scope with its areas, one row per area. A single statement reads
+/// one snapshot, so a concurrent replacement is seen whole or not at all.
+const SCOPE_QUERY: &str = "SELECT scopes.name, scopes.kind, scopes.created_at_ms,
+            scope_areas.dim, scope_areas.x0, scope_areas.z0, scope_areas.x1, scope_areas.z1
+     FROM scopes LEFT JOIN scope_areas ON scope_areas.scope = scopes.name";
 
 /// `CommitId` as a BLOB bind parameter.
 fn commit_param(id: CommitId) -> Vec<u8> {
@@ -1102,6 +1190,87 @@ impl sekai_core::MetaStore for SqliteMeta {
         tx.commit().await.map_err(db_err)?;
         Ok(())
     }
+
+    async fn set_scope(&mut self, scope: &NamedScope) -> Result<(), StorageError> {
+        let created_at_ms = millis_param(scope.created_at_ms)?;
+        let name = scope.name.as_str();
+        let mut tx = self.pool.begin().await.map_err(db_err)?;
+        // A replacement keeps the scope row, and with it the creation
+        // time; only the kinds and the whole area set are swapped.
+        sqlx::query(
+            "INSERT INTO scopes (name, kind, created_at_ms) VALUES (?, ?, ?)
+             ON CONFLICT(name) DO UPDATE SET kind = excluded.kind",
+        )
+        .bind(name)
+        // NULL selects every family.
+        .bind(scope.kinds().map(kind_mask))
+        .bind(created_at_ms)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+        sqlx::query("DELETE FROM scope_areas WHERE scope = ?")
+            .bind(name)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?;
+        for (dim, rect) in scope.areas() {
+            sqlx::query(
+                "INSERT INTO scope_areas (scope, dim, x0, z0, x1, z1) VALUES (?, ?, ?, ?, ?, ?)",
+            )
+            .bind(name)
+            .bind(i64::from(dim.raw()))
+            .bind(i64::from(rect.x0))
+            .bind(i64::from(rect.z0))
+            .bind(i64::from(rect.x1))
+            .bind(i64::from(rect.z1))
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?;
+        }
+        tx.commit().await.map_err(db_err)?;
+        Ok(())
+    }
+
+    async fn lookup_scope(&self, name: &ScopeName) -> Result<Option<NamedScope>, StorageError> {
+        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "{SCOPE_QUERY} WHERE scopes.name = ?"
+        )))
+        .bind(name.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        group_scope_rows(&rows)?
+            .into_iter()
+            .next()
+            .map(|(name, columns)| decode_scope(name, columns))
+            .transpose()
+    }
+
+    async fn visit_scopes<F>(&self, mut visit: F) -> Result<(), StorageError>
+    where
+        F: FnMut(&NamedScope) -> bool + Send,
+    {
+        let rows = sqlx::query(SCOPE_QUERY)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_err)?;
+        for (name, columns) in group_scope_rows(&rows)? {
+            if !visit(&decode_scope(name, columns)?) {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    async fn delete_scope(&mut self, name: &ScopeName) -> Result<bool, StorageError> {
+        // The foreign key cascades the delete onto the scope's areas.
+        let deleted = sqlx::query("DELETE FROM scopes WHERE name = ?")
+            .bind(name.as_str())
+            .execute(&self.pool)
+            .await
+            .map_err(db_err)?;
+        Ok(deleted.rows_affected() > 0)
+    }
 }
 
 #[cfg(test)]
@@ -1579,12 +1748,12 @@ mod tests {
     }
 
     /// The version gate rejects any store whose `user_version` is not
-    /// `SCHEMA_VERSION` (13) before any table is touched. The immediately
-    /// previous store version, 12, is refused with `UnsupportedSchema
-    /// { found: 12, supported: SCHEMA_VERSION }`.
+    /// `SCHEMA_VERSION` (14) before any table is touched. The immediately
+    /// previous store version, 13, is refused with `UnsupportedSchema
+    /// { found: 13, supported: SCHEMA_VERSION }`.
     #[tokio::test]
     async fn a_store_from_the_previous_schema_version_is_refused() {
-        let dir = tempdir("version-12");
+        let dir = tempdir("version-13");
         let path = dir.join("meta.sqlite");
         let mut seed = SqliteConnectOptions::new()
             .filename(&path)
@@ -1593,7 +1762,7 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(SCHEMA).execute(&mut seed).await.unwrap();
-        sqlx::query("PRAGMA user_version=12")
+        sqlx::query("PRAGMA user_version=13")
             .execute(&mut seed)
             .await
             .unwrap();
@@ -1601,7 +1770,7 @@ mod tests {
         assert!(matches!(
             SqliteMeta::open(&path).await,
             Err(StorageError::UnsupportedSchema {
-                found: 12,
+                found: 13,
                 supported: SCHEMA_VERSION,
             })
         ));
@@ -1625,5 +1794,117 @@ mod tests {
             meta.visit_fresh_rows(commit, |_| true).await,
             Err(StorageError::UnknownRegionKind { kind: 9 })
         ));
+    }
+
+    fn scope(name: &str, kinds: Option<Vec<RegionKind>>) -> NamedScope {
+        NamedScope::new(
+            ScopeName::parse(name).unwrap(),
+            kinds,
+            vec![(Dimension::OVERWORLD, Rect::new(0, 0, 1, 1))],
+            1_000,
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn scope_kinds_are_stored_as_a_mask() {
+        let mut meta = memory_meta().await;
+        meta.set_scope(&scope(
+            "some",
+            Some(vec![RegionKind::Region, RegionKind::Poi]),
+        ))
+        .await
+        .unwrap();
+        meta.set_scope(&scope("all", None)).await.unwrap();
+        let stored: Vec<(String, Option<i64>)> =
+            sqlx::query_as("SELECT name, kind FROM scopes ORDER BY name")
+                .fetch_all(&meta.pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            stored,
+            vec![("all".to_owned(), None), ("some".to_owned(), Some(0b101))]
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_a_scope_drops_its_areas() {
+        let mut meta = memory_meta().await;
+        let record = scope("spawn", None);
+        meta.set_scope(&record).await.unwrap();
+        assert!(meta.delete_scope(&record.name).await.unwrap());
+        let areas: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM scope_areas")
+            .fetch_one(&meta.pool)
+            .await
+            .unwrap();
+        assert_eq!(areas, 0);
+    }
+
+    #[tokio::test]
+    async fn a_corrupt_scope_fails_loudly() {
+        let dir = tempdir("corrupt-scope");
+        let path = dir.join("meta.sqlite");
+        let meta = SqliteMeta::open(&path).await.unwrap();
+
+        // Names re-validate on decode.
+        sqlx::query("INSERT INTO scopes (name, kind, created_at_ms) VALUES ('bad name', NULL, 0)")
+            .execute(&meta.pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO scope_areas (scope, dim, x0, z0, x1, z1) \
+             VALUES ('bad name', 0, 0, 0, 0, 0)",
+        )
+        .execute(&meta.pool)
+        .await
+        .unwrap();
+        let err = meta.visit_scopes(|_| true).await.unwrap_err();
+        assert!(matches!(err, StorageError::InvalidScopeName { name } if name == "bad name"));
+        sqlx::query("DELETE FROM scopes")
+            .execute(&meta.pool)
+            .await
+            .unwrap();
+
+        // A scope without areas would select nothing: `create` refuses
+        // one, so a stored one is corruption.
+        sqlx::query("INSERT INTO scopes (name, kind, created_at_ms) VALUES ('empty', NULL, 0)")
+            .execute(&meta.pool)
+            .await
+            .unwrap();
+        let empty = ScopeName::parse("empty").unwrap();
+        let err = meta.lookup_scope(&empty).await.unwrap_err();
+        assert!(matches!(err, StorageError::EmptyScope { name } if name == "empty"));
+
+        // The full kind set is always spelled NULL; the CHECK refuses the
+        // mask, so bypass it on a dedicated connection.
+        let mut raw = SqliteConnectOptions::new()
+            .filename(&path)
+            .connect()
+            .await
+            .unwrap();
+        sqlx::query("PRAGMA ignore_check_constraints = ON")
+            .execute(&mut raw)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO scope_areas (scope, dim, x0, z0, x1, z1) VALUES ('empty', 0, 0, 0, 0, 0)",
+        )
+        .execute(&mut raw)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE scopes SET kind = 7 WHERE name = 'empty'")
+            .execute(&mut raw)
+            .await
+            .unwrap();
+        raw.close().await.unwrap();
+        let err = meta.lookup_scope(&empty).await.unwrap_err();
+        assert!(matches!(
+            err,
+            StorageError::InvalidHistoryValue {
+                column: "scopes.kind",
+                value: 7
+            }
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

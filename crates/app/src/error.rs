@@ -73,6 +73,21 @@ pub enum AppError {
         /// Ref that was asked for.
         name: String,
     },
+    /// Scope name is already taken.
+    #[error("scope already exists: {name} (use --force to replace it)")]
+    ScopeExists {
+        /// Conflicting scope name.
+        name: String,
+    },
+    /// The named scope does not exist.
+    #[error("unknown scope: {name}")]
+    UnknownScope {
+        /// Scope that was asked for.
+        name: String,
+    },
+    /// Scope would select nothing.
+    #[error(transparent)]
+    InvalidScope(#[from] sekai_core::NamedScopeError),
     /// No commit is available for the operation: the store is empty or
     /// the active ref is unborn.
     #[error("no commit selected: the store is empty or the active ref is unborn")]
