@@ -1889,7 +1889,8 @@ mod tests {
         assert!(matches!(err, StorageError::EmptyScope { name } if name == "empty"));
 
         // The full kind set is always spelled NULL; the CHECK refuses the
-        // mask, so bypass it on a dedicated connection.
+        // mask, so disable it on a dedicated connection. The pragma is per
+        // connection, so `meta`'s pooled one keeps enforcing it.
         let mut raw = SqliteConnectOptions::new()
             .filename(&path)
             .connect()
@@ -1906,6 +1907,10 @@ mod tests {
         .await
         .unwrap();
         sqlx::query("UPDATE scopes SET kind = 7 WHERE name = 'empty'")
+            .execute(&mut raw)
+            .await
+            .unwrap();
+        sqlx::query("PRAGMA ignore_check_constraints = OFF")
             .execute(&mut raw)
             .await
             .unwrap();
