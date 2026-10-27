@@ -1640,7 +1640,7 @@ mod tests {
     }
 
     /// The version gate rejects any store whose `user_version` is not
-    /// `SCHEMA_VERSION` (12) before any table is touched. A store stamped
+    /// `SCHEMA_VERSION` (13) before any table is touched. A store stamped
     /// 11 is therefore refused with `UnsupportedSchema { found: 11,
     /// supported: SCHEMA_VERSION }`.
     #[tokio::test]
