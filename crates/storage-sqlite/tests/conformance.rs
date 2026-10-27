@@ -2,7 +2,10 @@
 
 mod common;
 
-use sekai_core::{BlobHash, BlobStore as _};
+use sekai_core::{
+    BlobHash, BlobStore as _, ChunkCoord, ChunkHistoryEntry, CommitEntry, Dimension,
+    MetaStore as _, RegionKind, usecase::checkout::plan_checkout,
+};
 use sekai_storage_sqlite::{init_sqlite, open_sqlite};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -41,6 +44,55 @@ async fn sqlite_fresh_stats() {
     let dir = tempdir("fresh");
     let mut store = init(&dir).await;
     common::fresh_stats(store.meta_mut()).await;
+    cleanup(&dir);
+}
+
+/// A vanished coordinate keeps resolving as a tombstone: the effective row
+/// is present at the new commit, the only fresh row is the tombstone, and a
+/// checkout plan drops the coordinate instead of asking for a blob.
+#[tokio::test]
+async fn sqlite_tombstones_shape_and_checkout_drop() {
+    let dir = tempdir("tombstones");
+    let mut store = init(&dir).await;
+    let meta = store.meta_mut();
+    let present = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
+    let gone = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 1, 0);
+    let first = meta
+        .apply_commit_incremental(
+            1_000,
+            &[],
+            &[
+                CommitEntry::new(present, Some(BlobHash([1; 32])), None),
+                CommitEntry::new(gone, Some(BlobHash([2; 32])), None),
+            ],
+        )
+        .await
+        .unwrap()
+        .id;
+    let second = meta
+        .apply_commit_incremental(2_000, &[first], &[CommitEntry::new(gone, None, None)])
+        .await
+        .unwrap()
+        .id;
+
+    let row = meta.lookup_chunk(second, &gone).await.unwrap().unwrap();
+    assert!(row.is_tombstone());
+    let mut fresh = Vec::new();
+    meta.visit_fresh_rows(second, |row| {
+        fresh.push(*row);
+        true
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        fresh,
+        vec![ChunkHistoryEntry::new(gone, second, None, None)]
+    );
+
+    let plan = plan_checkout(&*meta, second).await.unwrap();
+    let region = sekai_core::RegionKey::of(present);
+    assert_eq!(plan.groups[&region], vec![(present, BlobHash([1; 32]))]);
+    assert_eq!(plan.tombstones[&region], vec![gone]);
     cleanup(&dir);
 }
 
