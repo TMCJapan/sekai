@@ -43,10 +43,9 @@ where
     let replaced =
         NamedScope::new(spawn.clone(), None, vec![(OVER, Rect::region(0, 0))], 2_000).unwrap();
     meta.set_scope(&replaced).await.unwrap();
-    let stored = meta.lookup_scope(&spawn).await.unwrap().unwrap();
-    assert_eq!(stored.kinds(), None);
-    assert_eq!(stored.areas(), replaced.areas());
-    assert_eq!(stored.created_at_ms, 1_000);
+    let mut expected = replaced.clone();
+    expected.created_at_ms = 1_000;
+    assert_eq!(meta.lookup_scope(&spawn).await.unwrap(), Some(expected));
 
     let other = NamedScope::new(
         hub.clone(),

@@ -403,6 +403,10 @@ fn decode_ref(row: &sqlx::sqlite::SqliteRow) -> Result<CommitRef, StorageError> 
 /// that selection as NULL, never as this value.
 const ALL_KINDS_MASK: i64 = kind_mask(&RegionKind::ALL);
 
+// The `scopes.kind` CHECK hardcodes the proper subsets as `1..=6`; a new
+// region family must widen it in a schema migration.
+const _: () = assert!(ALL_KINDS_MASK == 7);
+
 /// `scopes.kind` mask: bit `1 << RegionKind::raw()` per selected family.
 ///
 /// A loop rather than an iterator fold so [`ALL_KINDS_MASK`] derives from
