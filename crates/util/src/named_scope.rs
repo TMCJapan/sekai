@@ -14,10 +14,11 @@ use crate::{Area, Dimension, Rect, RegionKind, Scope};
 
 /// Validated scope name.
 ///
-/// Scope names follow [`RefName`](crate::RefName)'s grammar (1-64 bytes of
-/// ASCII alphanumerics plus `.`, `_`, `-`, and `/`, not all digits, no
-/// empty or traversing path component) but reserve no name. The separate
-/// type keeps scope and ref names from being swapped.
+/// Scope names follow [`RefName`](crate::RefName)'s path grammar (1-64
+/// bytes of ASCII alphanumerics plus `.`, `_`, `-`, and `/`, no empty or
+/// traversing path component) but reserve no name and may be all digits:
+/// no command reads a scope name where a commit ID could stand. The
+/// separate type keeps scope and ref names from being swapped.
 ///
 /// Ordering and uniqueness are byte-wise and case-sensitive.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -38,7 +39,6 @@ impl ScopeName {
             NameRule::TooLong => ScopeNameError::TooLong(Self::MAX_LEN),
             NameRule::BadChar(c) => ScopeNameError::BadChar(c),
             NameRule::BadPath(reason) => ScopeNameError::BadPath(reason),
-            NameRule::Numeric => ScopeNameError::Numeric,
         })?;
         Ok(Self(String::from(raw)))
     }
@@ -165,12 +165,11 @@ mod tests {
 
     #[test]
     fn scope_names_follow_the_ref_grammar_without_reservations() {
-        for raw in ["spawn", "hub/nether", "x-y.z_w", "1/2", "HEAD"] {
+        for raw in ["spawn", "hub/nether", "x-y.z_w", "1/2", "HEAD", "42"] {
             assert_eq!(ScopeName::parse(raw).unwrap().as_str(), raw);
         }
         assert_eq!(ScopeName::from_str("spawn").unwrap().to_string(), "spawn");
         assert_eq!(ScopeName::parse(""), Err(ScopeNameError::Empty));
-        assert_eq!(ScopeName::parse("42"), Err(ScopeNameError::Numeric));
         assert_eq!(ScopeName::parse("a b"), Err(ScopeNameError::BadChar(' ')));
         assert_eq!(
             ScopeName::parse("a//b"),

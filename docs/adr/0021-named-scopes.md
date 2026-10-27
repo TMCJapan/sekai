@@ -59,9 +59,11 @@ CREATE TABLE scope_areas(
   rules. Kinds stay per scope because `Scope::Select` applies its kinds
   uniformly to every area; per-area kinds would need a different
   `Scope`.
-- **`ScopeName`** is its own type with `RefName`'s grammar (ASCII
-  alphanumerics plus `.`, `_`, `-`, `/`, 1-64 bytes, not all digits, no
-  empty or traversing path component) and no reserved name. A separate
+- **`ScopeName`** is its own type with `RefName`'s path grammar (ASCII
+  alphanumerics plus `.`, `_`, `-`, `/`, 1-64 bytes, no empty or
+  traversing path component), no reserved name, and no all-digits rule:
+  refs refuse digit-only names so they cannot shadow a commit ID, but no
+  command reads a scope name where a commit ID could stand. A separate
   type keeps scope and ref names from being swapped and lets errors say
   "scope name". Stored names re-validate on read; anything else is
   corruption.

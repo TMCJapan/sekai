@@ -12,12 +12,11 @@ pub(crate) enum NameRule {
     TooLong,
     BadChar(char),
     BadPath(&'static str),
-    Numeric,
 }
 
 /// Check `raw` against the path-like grammar: 1-[`MAX_LEN`] bytes of
-/// ASCII alphanumerics plus `.`, `_`, `-`, and `/`, not all digits, with
-/// no empty component and no `.` or `..` segment.
+/// ASCII alphanumerics plus `.`, `_`, `-`, and `/`, with no empty
+/// component and no `.` or `..` segment.
 ///
 /// The byte-length check runs before the character walk, so an over-long
 /// name reports `TooLong` even when it also holds a non-ASCII character.
@@ -28,18 +27,13 @@ pub(crate) fn check(raw: &str) -> Result<(), NameRule> {
     if raw.len() > MAX_LEN {
         return Err(NameRule::TooLong);
     }
-    let mut all_digits = true;
     // Walk characters, not bytes: `BadChar` must name the rejected
     // character itself, not the first byte of its UTF-8 encoding.
-    for c in raw.chars() {
-        let valid = c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/');
-        if !valid {
-            return Err(NameRule::BadChar(c));
-        }
-        all_digits &= c.is_ascii_digit();
-    }
-    if all_digits {
-        return Err(NameRule::Numeric);
+    if let Some(c) = raw
+        .chars()
+        .find(|&c| !(c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/')))
+    {
+        return Err(NameRule::BadChar(c));
     }
     if raw.starts_with('/') || raw.ends_with('/') || raw.contains("//") {
         return Err(NameRule::BadPath("empty path component"));

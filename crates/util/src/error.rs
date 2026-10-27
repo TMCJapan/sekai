@@ -73,7 +73,7 @@ impl fmt::Display for RefNameError {
 impl core::error::Error for RefNameError {}
 
 /// Scope name validation failure: [`RefNameError`]'s rules without the
-/// reserved name.
+/// reserved name and the all-digits rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScopeNameError {
     /// Name was empty.
@@ -87,8 +87,6 @@ pub enum ScopeNameError {
     /// Name has an invalid path shape; the payload is the violated rule
     /// (an empty component, or a `.`/`..` segment).
     BadPath(&'static str),
-    /// Name consisted of digits alone.
-    Numeric,
 }
 
 impl fmt::Display for ScopeNameError {
@@ -100,7 +98,6 @@ impl fmt::Display for ScopeNameError {
             Self::BadPath(reason) => {
                 write!(f, "scope name has an invalid path shape: {reason}")
             }
-            Self::Numeric => write!(f, "scope name must not be all digits"),
         }
     }
 }

@@ -54,8 +54,12 @@ impl RefName {
             NameRule::TooLong => RefNameError::TooLong(Self::MAX_LEN),
             NameRule::BadChar(c) => RefNameError::BadChar(c),
             NameRule::BadPath(reason) => RefNameError::BadPath(reason),
-            NameRule::Numeric => RefNameError::Numeric,
         })?;
+        // A digit-only token is a commit ID on the CLI, so no ref may
+        // shadow one.
+        if raw.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(RefNameError::Numeric);
+        }
         if raw.eq_ignore_ascii_case(Self::RESERVED) {
             return Err(RefNameError::Reserved(Self::RESERVED));
         }
