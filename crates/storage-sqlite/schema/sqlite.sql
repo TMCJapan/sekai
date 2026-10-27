@@ -1,9 +1,16 @@
--- Schema version 13: `commit_tags` (snapshot tag references) and `region_state` were removed
--- in favour of refs; there is no migration path, old stores are rejected
--- via `UnsupportedSchema`. Content-addressed commits below. `id` is the public commit hash; `seq` is a
--- local ordering key used by MVCC queries. The sequence is never part of
--- the commit identity and may differ across replicas. Reads order by
--- it, so it must increase monotonically with record order inside a store.
+-- Schema version 13: `region_state` (persisted region fingerprints) was
+-- removed. Commit and checkout decisions now compare per-chunk history
+-- directly, so no derived table remains. There is no migration path from
+-- version 12: old stores are rejected via `UnsupportedSchema`.
+--
+-- Schema version 12: `commit_tags` (snapshot tag references) was removed in
+-- favour of refs. That step also had no migration path.
+--
+-- Content-addressed commits live below. `id` is the public commit hash;
+-- `seq` is a local ordering key used by MVCC queries. The sequence is never
+-- part of the commit identity and may differ across replicas. Reads order
+-- by it, so it must increase monotonically with record order inside a
+-- store.
 CREATE TABLE commits(
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     id BLOB NOT NULL UNIQUE,
