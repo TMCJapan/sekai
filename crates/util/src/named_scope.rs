@@ -21,7 +21,7 @@ use crate::{Area, Dimension, Rect, RegionKind, Scope};
 /// separate type keeps scope and ref names from being swapped.
 ///
 /// Ordering and uniqueness are byte-wise and case-sensitive.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ScopeName(String);
 
 impl ScopeName {
