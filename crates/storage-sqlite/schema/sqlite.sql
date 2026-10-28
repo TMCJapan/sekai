@@ -78,8 +78,9 @@ CREATE UNIQUE INDEX idx_refs_active
 -- names no commit, so history operations never touch these rows.
 -- `kind` is a bitmask of `1 << RegionKind::raw()`; NULL selects every
 -- region family and the full set is always spelled NULL, so the CHECK
--- admits proper subsets only; `ALL_KINDS_MASK` in sqlite.rs asserts that
--- bound at compile time. Names order byte-wise, as refs do.
+-- admits proper subsets only. The bound is coupled to `ALL_KINDS_MASK` in
+-- sqlite.rs by a unit test, and a compile-time assert there fails once a
+-- new region kind changes the mask. Names order byte-wise, as refs do.
 CREATE TABLE scopes(
     name TEXT NOT NULL COLLATE BINARY PRIMARY KEY,
     kind INTEGER NULL CHECK (kind BETWEEN 1 AND 6),

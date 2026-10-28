@@ -403,7 +403,9 @@ fn decode_ref(row: &sqlx::sqlite::SqliteRow) -> Result<CommitRef, StorageError> 
 /// that selection as NULL, never as this value.
 const ALL_KINDS_MASK: i64 = kind_mask(&RegionKind::ALL);
 
-// The `scopes.kind` CHECK hardcodes the proper subsets as `1..=6`.
+// The `scopes.kind` CHECK in `schema/sqlite.sql` hardcodes the proper
+// subsets as `1..=6`; `the_kind_check_admits_proper_subsets_only` pins it
+// to this mask.
 const _: () = assert!(
     ALL_KINDS_MASK == 7,
     "a new region kind must widen the `scopes.kind` CHECK in a schema migration"
@@ -1840,6 +1842,27 @@ mod tests {
             stored,
             vec![("all".to_owned(), None), ("some".to_owned(), Some(0b101))]
         );
+    }
+
+    #[tokio::test]
+    async fn the_kind_check_admits_proper_subsets_only() {
+        let meta = memory_meta().await;
+        let insert = |mask: i64| {
+            sqlx::query("INSERT INTO scopes (name, kind, created_at_ms) VALUES (?, ?, 0)")
+                .bind(format!("mask-{mask}"))
+                .bind(mask)
+                .execute(&meta.pool)
+        };
+        for mask in 1..ALL_KINDS_MASK {
+            insert(mask).await.unwrap();
+        }
+        for mask in [0, ALL_KINDS_MASK] {
+            let err = insert(mask).await.unwrap_err();
+            assert!(
+                err.to_string().contains("CHECK constraint failed"),
+                "mask {mask}: {err}"
+            );
+        }
     }
 
     #[tokio::test]
