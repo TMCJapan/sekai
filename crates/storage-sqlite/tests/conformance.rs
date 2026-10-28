@@ -40,6 +40,14 @@ async fn sqlite_commit_lifecycle() {
 }
 
 #[tokio::test]
+async fn sqlite_scope_flow() {
+    let dir = tempdir("scopes");
+    let mut store = init(&dir).await;
+    common::scope_flow(store.meta_mut()).await;
+    cleanup(&dir);
+}
+
+#[tokio::test]
 async fn sqlite_fresh_stats() {
     let dir = tempdir("fresh");
     let mut store = init(&dir).await;

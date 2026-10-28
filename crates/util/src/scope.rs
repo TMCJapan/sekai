@@ -9,7 +9,9 @@ use alloc::vec::Vec;
 use super::{ChunkCoord, Dimension, RegionKey, RegionKind};
 
 /// Inclusive chunk-coordinate rectangle, normalized so minima come first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Ordering compares `(x0, z0, x1, z1)` lexicographically, the field order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Rect {
     /// Minimum chunk X.
     pub x0: i32,

@@ -11,7 +11,7 @@ use alloc::vec::Vec;
 use core::future::Future;
 use sekai_util::{
     ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitEntry, CommitId,
-    CommitRef, DiffHash, FoldOutcome, RefName,
+    CommitRef, DiffHash, FoldOutcome, NamedScope, RefName, ScopeName,
 };
 
 /// Commit metadata and per-chunk history storage.
@@ -226,4 +226,38 @@ pub trait MetaStore {
         &mut self,
         name: &RefName,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// Store `scope`, replacing every area of an existing scope of the
+    /// same name in one atomic step.
+    ///
+    /// `created_at_ms` is stored only when the scope is first created; a
+    /// replacement keeps the original timestamp, as [`Self::set_ref`]
+    /// does. Refusing an existing name is the caller's policy.
+    fn set_scope(
+        &mut self,
+        scope: &NamedScope,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// The scope with this name, or `None` when it does not exist.
+    ///
+    /// A stored scope that fails [`NamedScope`]'s rules (an invalid name,
+    /// or no area) is corruption and fails with a backend error.
+    fn lookup_scope(
+        &self,
+        name: &ScopeName,
+    ) -> impl Future<Output = Result<Option<NamedScope>, Self::Error>> + Send;
+
+    /// Visit scopes in name order - the order [`ScopeName`]'s `Ord`
+    /// yields. Return `false` to stop early; as with
+    /// [`Self::visit_refs`], early stopping is not signalled.
+    fn visit_scopes<F>(&self, visit: F) -> impl Future<Output = Result<(), Self::Error>> + Send
+    where
+        F: FnMut(&NamedScope) -> bool + Send;
+
+    /// Remove `name` with all its areas. Returns whether a scope was
+    /// removed: `false` means no scope of that name exists.
+    fn delete_scope(
+        &mut self,
+        name: &ScopeName,
+    ) -> impl Future<Output = Result<bool, Self::Error>> + Send;
 }

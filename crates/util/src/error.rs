@@ -72,6 +72,55 @@ impl fmt::Display for RefNameError {
 
 impl core::error::Error for RefNameError {}
 
+/// Scope name validation failure: [`RefNameError`]'s rules without the
+/// reserved name and the all-digits rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScopeNameError {
+    /// Name was empty.
+    Empty,
+    /// Name exceeded the limit; the payload is that limit in bytes
+    /// (`ScopeName::MAX_LEN`).
+    TooLong(usize),
+    /// Name held a character outside ASCII alphanumerics, `.`, `_`, `-`,
+    /// or `/`.
+    BadChar(char),
+    /// Name has an invalid path shape; the payload is the violated rule
+    /// (an empty component, or a `.`/`..` segment).
+    BadPath(&'static str),
+}
+
+impl fmt::Display for ScopeNameError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "scope name is empty"),
+            Self::TooLong(limit) => write!(f, "scope name exceeds {limit} bytes"),
+            Self::BadChar(c) => write!(f, "scope name holds invalid character: {c:?}"),
+            Self::BadPath(reason) => {
+                write!(f, "scope name has an invalid path shape: {reason}")
+            }
+        }
+    }
+}
+
+impl core::error::Error for ScopeNameError {}
+
+/// A named scope record that would select nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NamedScopeError {
+    /// The scope names no area.
+    NoAreas,
+}
+
+impl fmt::Display for NamedScopeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoAreas => write!(f, "scope selects no area"),
+        }
+    }
+}
+
+impl core::error::Error for NamedScopeError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;

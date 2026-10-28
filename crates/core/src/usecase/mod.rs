@@ -1,5 +1,5 @@
 //! Application use cases: commit, checkout, GC, commit-graph reads, refs,
-//! and diffs.
+//! named scopes, and diffs.
 //!
 //! Use cases coordinate storage ports and enforce application-level policy.
 //! They own ordering and decisions such as delta filtering, tombstoning,
@@ -14,6 +14,7 @@ pub mod gc;
 pub mod graph;
 pub mod prune;
 pub mod refs;
+pub mod scopes;
 
 pub use checkout::{CheckoutError, CheckoutPlan, CheckoutReport};
 pub use commit::{Assembled, CommitReport, Observation, Plan, Previous};
@@ -25,3 +26,4 @@ pub use graph::{
 };
 pub use prune::{PruneError, PrunePlan, PruneReport, prune_apply, prune_plan, select_retained};
 pub use refs::{active_ref, list_refs};
+pub use scopes::list_scopes;

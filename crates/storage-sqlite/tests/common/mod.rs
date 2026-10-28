@@ -3,8 +3,8 @@
 //! The flows target `sekai-core` traits; backend-specific setup stays in each runner.
 
 use sekai_core::{
-    BlobHash, BlobStore, ChunkCoord, CommitEntry, CommitId, Dimension, MetaStore, RefName,
-    RegionKind,
+    BlobHash, BlobStore, ChunkCoord, CommitEntry, CommitId, Dimension, MetaStore, NamedScope, Rect,
+    RefName, RegionKind, ScopeName,
     usecase::gc::{gc_apply, gc_plan},
 };
 
@@ -13,6 +13,101 @@ const REGION: RegionKind = RegionKind::Region;
 
 pub const fn coord(x: i32, z: i32) -> ChunkCoord {
     ChunkCoord::new(OVER, REGION, x, z)
+}
+
+/// Named scope CRUD: create, replace, list in name order, delete.
+pub async fn scope_flow<M>(meta: &mut M)
+where
+    M: MetaStore,
+    M::Error: core::fmt::Debug,
+{
+    let spawn = ScopeName::parse("spawn").unwrap();
+    let hub = ScopeName::parse("hub/nether").unwrap();
+    // `S` (0x53) sorts before `h` (0x68) byte-wise but after it
+    // case-insensitively, and `Spawn` must not collide with `spawn`.
+    let upper = ScopeName::parse("Spawn").unwrap();
+    assert!(meta.lookup_scope(&spawn).await.unwrap().is_none());
+
+    let first = NamedScope::new(
+        spawn.clone(),
+        vec![
+            (OVER, Rect::new(0, 0, 3, 3)),
+            (OVER, Rect::new(2, 2, 5, 5)),
+            (Dimension::NETHER, Rect::region(-1, 0)),
+            (OVER, Rect::new(-5, 2, -5, 2)),
+        ],
+        1_000,
+    )
+    .unwrap();
+    meta.set_scope(&first).await.unwrap();
+    let stored = meta.lookup_scope(&spawn).await.unwrap();
+    // Overlapping areas stay apart: the scope is their union either way.
+    assert_eq!(stored.as_ref().map(|scope| scope.areas().len()), Some(4));
+    assert_eq!(stored, Some(first));
+
+    // A replacement swaps every area but keeps the creation time.
+    let replaced = NamedScope::new(spawn.clone(), vec![(OVER, Rect::region(0, 0))], 2_000).unwrap();
+    meta.set_scope(&replaced).await.unwrap();
+    let mut expected = replaced.clone();
+    expected.created_at_ms = 1_000;
+    assert_eq!(
+        meta.lookup_scope(&spawn).await.unwrap(),
+        Some(expected.clone())
+    );
+
+    let other = NamedScope::new(
+        hub.clone(),
+        vec![(Dimension::NETHER, Rect::new(0, 0, 0, 0))],
+        3_000,
+    )
+    .unwrap();
+    meta.set_scope(&other).await.unwrap();
+    let shouted =
+        NamedScope::new(upper.clone(), vec![(OVER, Rect::new(9, 9, 9, 9))], 4_000).unwrap();
+    meta.set_scope(&shouted).await.unwrap();
+    assert_eq!(
+        meta.lookup_scope(&spawn).await.unwrap(),
+        Some(expected),
+        "names are case-sensitive"
+    );
+    let mut names = Vec::new();
+    meta.visit_scopes(|scope| {
+        names.push(scope.name.clone());
+        true
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        names,
+        vec![upper.clone(), hub.clone(), spawn.clone()],
+        "byte-wise name order"
+    );
+
+    let mut visited = 0;
+    meta.visit_scopes(|_| {
+        visited += 1;
+        false
+    })
+    .await
+    .unwrap();
+    assert_eq!(visited, 1, "the visitor stops early");
+
+    assert!(meta.delete_scope(&spawn).await.unwrap());
+    assert!(!meta.delete_scope(&spawn).await.unwrap());
+    assert!(meta.lookup_scope(&spawn).await.unwrap().is_none());
+    assert_eq!(meta.lookup_scope(&hub).await.unwrap(), Some(other));
+    assert_eq!(meta.lookup_scope(&upper).await.unwrap(), Some(shouted));
+
+    // A deleted name starts over: nothing of the old record survives,
+    // its creation time included.
+    let reborn = NamedScope::new(
+        spawn.clone(),
+        vec![(Dimension::END, Rect::new(1, 2, 3, 4))],
+        5_000,
+    )
+    .unwrap();
+    meta.set_scope(&reborn).await.unwrap();
+    assert_eq!(meta.lookup_scope(&spawn).await.unwrap(), Some(reborn));
 }
 
 /// Commit CRUD plus point lookups.

@@ -1,3 +1,7 @@
+-- Schema version 14: named scopes (`scopes`, `scope_areas`) were added.
+-- There is no migration path from version 13: old stores are rejected via
+-- `UnsupportedSchema`.
+--
 -- Schema version 13: `region_state` (persisted region fingerprints) was
 -- removed. Commit and checkout decisions now compare per-chunk history
 -- directly, so no derived table remains. There is no migration path from
@@ -69,3 +73,34 @@ CREATE TABLE refs(
 -- At most one active ref: the partial index covers the active rows only.
 CREATE UNIQUE INDEX idx_refs_active
     ON refs(active) WHERE active = 1;
+
+-- Named scopes: store-saved world areas selected by name. A scope
+-- names no commit, so history operations never touch these rows. It
+-- always covers every region family, so no kind is stored. Names order
+-- byte-wise, as refs do. `AUTOINCREMENT` keeps a deleted scope's `id`
+-- from being handed to a later one.
+CREATE TABLE scopes(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL COLLATE BINARY UNIQUE,
+    created_at_ms INTEGER NOT NULL
+);
+
+-- One inclusive, normalized chunk rectangle per row; the scope is the
+-- union of its rows. Writers store each area once and readers order
+-- them by `(dim, x0, z0, x1, z1)` when decoding, so queries need no
+-- ORDER BY. A scope without rows is corruption.
+CREATE TABLE scope_areas(
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope INTEGER NOT NULL REFERENCES scopes(id) ON DELETE CASCADE,
+    dim INTEGER NOT NULL,
+    x0 INTEGER NOT NULL,
+    z0 INTEGER NOT NULL,
+    x1 INTEGER NOT NULL,
+    z1 INTEGER NOT NULL,
+    CHECK (x0 <= x1 AND z0 <= z1)
+);
+
+-- Serves reading a scope's areas, swapping them on replacement, and the
+-- cascade on delete; without it each is a scan of every scope's areas.
+CREATE INDEX idx_scope_areas_scope
+    ON scope_areas(scope);
