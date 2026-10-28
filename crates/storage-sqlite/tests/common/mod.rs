@@ -23,6 +23,9 @@ where
 {
     let spawn = ScopeName::parse("spawn").unwrap();
     let hub = ScopeName::parse("hub/nether").unwrap();
+    // `S` (0x53) sorts before `h` (0x68) byte-wise but after it
+    // case-insensitively, and `Spawn` must not collide with `spawn`.
+    let upper = ScopeName::parse("Spawn").unwrap();
     assert!(meta.lookup_scope(&spawn).await.unwrap().is_none());
 
     let first = NamedScope::new(
@@ -45,7 +48,10 @@ where
     meta.set_scope(&replaced).await.unwrap();
     let mut expected = replaced.clone();
     expected.created_at_ms = 1_000;
-    assert_eq!(meta.lookup_scope(&spawn).await.unwrap(), Some(expected));
+    assert_eq!(
+        meta.lookup_scope(&spawn).await.unwrap(),
+        Some(expected.clone())
+    );
 
     let other = NamedScope::new(
         hub.clone(),
@@ -55,6 +61,19 @@ where
     )
     .unwrap();
     meta.set_scope(&other).await.unwrap();
+    let shouted = NamedScope::new(
+        upper.clone(),
+        None,
+        vec![(OVER, Rect::new(9, 9, 9, 9))],
+        4_000,
+    )
+    .unwrap();
+    meta.set_scope(&shouted).await.unwrap();
+    assert_eq!(
+        meta.lookup_scope(&spawn).await.unwrap(),
+        Some(expected),
+        "names are case-sensitive"
+    );
     let mut names = Vec::new();
     meta.visit_scopes(|scope| {
         names.push(scope.name.clone());
@@ -62,7 +81,11 @@ where
     })
     .await
     .unwrap();
-    assert_eq!(names, vec![hub.clone(), spawn.clone()], "name order");
+    assert_eq!(
+        names,
+        vec![upper.clone(), hub.clone(), spawn.clone()],
+        "byte-wise name order"
+    );
 
     let mut visited = 0;
     meta.visit_scopes(|_| {
@@ -77,17 +100,19 @@ where
     assert!(!meta.delete_scope(&spawn).await.unwrap());
     assert!(meta.lookup_scope(&spawn).await.unwrap().is_none());
     assert_eq!(meta.lookup_scope(&hub).await.unwrap(), Some(other));
+    assert_eq!(meta.lookup_scope(&upper).await.unwrap(), Some(shouted));
 
-    // A deleted name starts over: its creation time is the new one.
-    meta.set_scope(&replaced).await.unwrap();
-    assert_eq!(
-        meta.lookup_scope(&spawn)
-            .await
-            .unwrap()
-            .unwrap()
-            .created_at_ms,
-        2_000
-    );
+    // A deleted name starts over: nothing of the old record survives,
+    // its creation time included.
+    let reborn = NamedScope::new(
+        spawn.clone(),
+        Some(vec![RegionKind::Poi]),
+        vec![(Dimension::END, Rect::new(1, 2, 3, 4))],
+        5_000,
+    )
+    .unwrap();
+    meta.set_scope(&reborn).await.unwrap();
+    assert_eq!(meta.lookup_scope(&spawn).await.unwrap(), Some(reborn));
 }
 
 /// Commit CRUD plus point lookups.
