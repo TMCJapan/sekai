@@ -1880,8 +1880,8 @@ mod tests {
             .await
             .unwrap();
 
-        // A scope without areas would select nothing: `create` refuses
-        // one, so a stored one is corruption.
+        // A scope without areas would select nothing: `NamedScope::new`
+        // refuses one, so a stored one is corruption.
         sqlx::query("INSERT INTO scopes (name, kind, created_at_ms) VALUES ('empty', NULL, 0)")
             .execute(&meta.pool)
             .await

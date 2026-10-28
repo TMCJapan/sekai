@@ -74,8 +74,9 @@ pub enum StorageError {
         /// Scope name that failed validation.
         name: String,
     },
-    /// Stored scope has no area: `create` refuses one, so a scope
-    /// without area rows is corruption.
+    /// Stored scope has no area: `NamedScope::new` refuses an empty area
+    /// set, so `set_scope` never writes one and a scope without area rows
+    /// is corruption.
     #[error("stored scope has no area: {name}")]
     EmptyScope {
         /// Scope that has no area.
