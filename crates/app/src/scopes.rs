@@ -6,7 +6,7 @@
 //! and never what earlier commits hold. The mutations run under the writer
 //! lock and the reads under a shared lock, as the ref operations do.
 
-use sekai_core::{Dimension, MetaStore as _, NamedScope, Rect, RegionKind, Scope, ScopeName};
+use sekai_core::{Dimension, MetaStore as _, NamedScope, Rect, Scope, ScopeName};
 use sekai_storage::{SekaiStore, StoreLockMode};
 
 use crate::error::AppError;
@@ -14,11 +14,10 @@ use crate::instance::SekaiInstance;
 use crate::time::now_ms;
 
 impl<S: SekaiStore> SekaiInstance<S> {
-    /// Save the areas and region kinds as the scope `name`.
+    /// Save the areas as the scope `name`, covering every region family.
     ///
-    /// `kinds = None` selects every region family. A selection that would
-    /// select nothing (no area, or an empty kind set) fails with
-    /// [`AppError::InvalidScope`] before the store is touched. An existing
+    /// A selection without an area fails with [`AppError::InvalidScope`]
+    /// before the store is touched. An existing
     /// name fails with [`AppError::ScopeExists`] unless `force` replaces
     /// it; a replacement keeps the original creation time and swaps every
     /// area at once. Returns the record as stored.
@@ -28,13 +27,12 @@ impl<S: SekaiStore> SekaiInstance<S> {
     pub async fn create_scope(
         &mut self,
         name: &ScopeName,
-        kinds: Option<Vec<RegionKind>>,
         areas: Vec<(Dimension, Rect)>,
         force: bool,
     ) -> Result<NamedScope, AppError> {
         // Validated before the lock; the placeholder time is set below,
         // once the lookup tells creation from replacement.
-        let mut record = NamedScope::new(name.clone(), kinds, areas, 0)?;
+        let mut record = NamedScope::new(name.clone(), areas, 0)?;
         let _lock = self.lock_store(StoreLockMode::Writer)?;
         record.created_at_ms = match self.store.meta().lookup_scope(name).await? {
             Some(_) if !force => {

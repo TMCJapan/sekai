@@ -74,7 +74,6 @@ async fn a_scope_is_created_listed_and_deleted() {
     let created = instance
         .create_scope(
             &spawn,
-            Some(vec![RegionKind::Region]),
             vec![(OVER, Rect::new(3, 3, 0, 0)), (OVER, Rect::new(0, 0, 3, 3))],
             false,
         )
@@ -86,7 +85,7 @@ async fn a_scope_is_created_listed_and_deleted() {
         "identical areas collapse"
     );
     let hub = instance
-        .create_scope(&name("hub"), None, vec![(OVER, Rect::region(0, 0))], false)
+        .create_scope(&name("hub"), vec![(OVER, Rect::region(0, 0))], false)
         .await
         .unwrap();
 
@@ -107,28 +106,22 @@ async fn an_existing_scope_is_replaced_only_with_force() {
     let mut instance = sekai_app::SekaiInstance::init(&root.store()).await.unwrap();
     let spawn = name("spawn");
     let first = instance
-        .create_scope(&spawn, None, vec![(OVER, Rect::new(0, 0, 0, 0))], false)
+        .create_scope(&spawn, vec![(OVER, Rect::new(0, 0, 0, 0))], false)
         .await
         .unwrap();
 
     let err = instance
-        .create_scope(&spawn, None, vec![(OVER, Rect::new(1, 1, 1, 1))], false)
+        .create_scope(&spawn, vec![(OVER, Rect::new(1, 1, 1, 1))], false)
         .await
         .unwrap_err();
     assert!(matches!(err, AppError::ScopeExists { name } if name == "spawn"));
     assert_eq!(instance.list_scopes().await.unwrap(), vec![first.clone()]);
 
     let replaced = instance
-        .create_scope(
-            &spawn,
-            Some(vec![RegionKind::Poi]),
-            vec![(OVER, Rect::new(1, 1, 1, 1))],
-            true,
-        )
+        .create_scope(&spawn, vec![(OVER, Rect::new(1, 1, 1, 1))], true)
         .await
         .unwrap();
     assert_eq!(replaced.created_at_ms, first.created_at_ms);
-    assert_eq!(replaced.kinds(), Some(&[RegionKind::Poi][..]));
     assert_eq!(replaced.areas(), [(OVER, Rect::new(1, 1, 1, 1))]);
     assert_eq!(instance.list_scopes().await.unwrap(), vec![replaced]);
 }
@@ -138,25 +131,12 @@ async fn a_selection_of_nothing_is_refused() {
     let root = TempDir::new("nothing");
     let mut instance = sekai_app::SekaiInstance::init(&root.store()).await.unwrap();
     let err = instance
-        .create_scope(&name("spawn"), None, Vec::new(), false)
+        .create_scope(&name("spawn"), Vec::new(), false)
         .await
         .unwrap_err();
     assert!(matches!(
         err,
         AppError::InvalidScope(NamedScopeError::NoAreas)
-    ));
-    let err = instance
-        .create_scope(
-            &name("spawn"),
-            Some(Vec::new()),
-            vec![(OVER, Rect::new(0, 0, 0, 0))],
-            false,
-        )
-        .await
-        .unwrap_err();
-    assert!(matches!(
-        err,
-        AppError::InvalidScope(NamedScopeError::NoKinds)
     ));
     assert_eq!(instance.list_scopes().await.unwrap(), Vec::new());
 }
@@ -171,7 +151,6 @@ async fn a_scope_resolves_to_its_rectangles() {
     instance
         .create_scope(
             &name("spawn"),
-            Some(vec![RegionKind::Entities, RegionKind::Region]),
             vec![
                 (OVER, Rect::region(0, 0)),
                 (Dimension::NETHER, Rect::new(0, 0, 0, 0)),
@@ -183,7 +162,7 @@ async fn a_scope_resolves_to_its_rectangles() {
     assert_eq!(
         instance.resolve_scope(&name("spawn")).await.unwrap(),
         Scope::Select {
-            kinds: vec![RegionKind::Region, RegionKind::Entities],
+            kinds: Scope::all_kinds(),
             areas: vec![
                 (OVER, Area::Rect(Rect::region(0, 0))),
                 (Dimension::NETHER, Area::Rect(Rect::new(0, 0, 0, 0))),
@@ -205,7 +184,6 @@ async fn a_resolved_scope_limits_a_commit() {
     instance
         .create_scope(
             &name("spawn"),
-            None,
             vec![(OVER, Rect::new(0, 0, 0, 0)), (OVER, Rect::new(5, 5, 5, 5))],
             false,
         )

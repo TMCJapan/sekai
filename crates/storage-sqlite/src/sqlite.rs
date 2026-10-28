@@ -399,50 +399,8 @@ fn decode_ref(row: &sqlx::sqlite::SqliteRow) -> Result<CommitRef, StorageError> 
     ))
 }
 
-/// `scopes.kind` mask with every region family set; the column stores
-/// that selection as NULL, never as this value.
-const ALL_KINDS_MASK: i64 = kind_mask(&RegionKind::ALL);
-
-// The `scopes.kind` CHECK in `schema/sqlite.sql` hardcodes the proper
-// subsets as `1..=6`; `the_kind_check_admits_proper_subsets_only` pins it
-// to this mask.
-const _: () = assert!(
-    ALL_KINDS_MASK == 7,
-    "a new region kind must widen the `scopes.kind` CHECK in a schema migration"
-);
-
-/// `scopes.kind` mask: bit `1 << RegionKind::raw()` per selected family.
-///
-/// A loop rather than an iterator fold so [`ALL_KINDS_MASK`] derives from
-/// `RegionKind::ALL` at compile time.
-const fn kind_mask(kinds: &[RegionKind]) -> i64 {
-    let mut mask = 0;
-    let mut i = 0;
-    while i < kinds.len() {
-        mask |= 1 << kinds[i].raw();
-        i += 1;
-    }
-    mask
-}
-
-/// Decode a non-NULL `scopes.kind` mask. Only proper, non-empty subsets
-/// are stored; anything else is corruption.
-fn kinds_from_mask(mask: i64) -> Result<Vec<RegionKind>, StorageError> {
-    if !(1..ALL_KINDS_MASK).contains(&mask) {
-        return Err(StorageError::InvalidHistoryValue {
-            column: "scopes.kind",
-            value: mask,
-        });
-    }
-    Ok(RegionKind::ALL
-        .into_iter()
-        .filter(|kind| mask & 1 << kind.raw() != 0)
-        .collect())
-}
-
 /// One scope's columns, gathered from its joined area rows.
 struct ScopeColumns {
-    kind: Option<i64>,
     created_at_ms: u64,
     areas: Vec<(Dimension, Rect)>,
 }
@@ -458,7 +416,6 @@ fn group_scope_rows(
         let columns = match grouped.entry(name) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => entry.insert(ScopeColumns {
-                kind: row.try_get("kind").map_err(db_err)?,
                 created_at_ms: millis_col(row, "created_at_ms")?,
                 areas: Vec::new(),
             }),
@@ -487,20 +444,13 @@ fn decode_scope(name: String, columns: ScopeColumns) -> Result<NamedScope, Stora
     let Ok(parsed) = ScopeName::parse(&name) else {
         return Err(StorageError::InvalidScopeName { name });
     };
-    let kinds = columns.kind.map(kinds_from_mask).transpose()?;
-    NamedScope::new(parsed, kinds, columns.areas, columns.created_at_ms).map_err(|err| match err {
-        NamedScopeError::NoAreas => StorageError::EmptyScope { name },
-        // `kinds_from_mask` never yields an empty set.
-        NamedScopeError::NoKinds => StorageError::InvalidHistoryValue {
-            column: "scopes.kind",
-            value: 0,
-        },
-    })
+    NamedScope::new(parsed, columns.areas, columns.created_at_ms)
+        .map_err(|NamedScopeError::NoAreas| StorageError::EmptyScope { name })
 }
 
 /// Every scope with its areas, one row per area. A single statement reads
 /// one snapshot, so a concurrent replacement is seen whole or not at all.
-const SCOPE_QUERY: &str = "SELECT scopes.name, scopes.kind, scopes.created_at_ms,
+const SCOPE_QUERY: &str = "SELECT scopes.name, scopes.created_at_ms,
             scope_areas.dim, scope_areas.x0, scope_areas.z0, scope_areas.x1, scope_areas.z1
      FROM scopes LEFT JOIN scope_areas ON scope_areas.scope = scopes.name";
 
@@ -1213,14 +1163,12 @@ impl sekai_core::MetaStore for SqliteMeta {
         let name = scope.name.as_str();
         let mut tx = self.pool.begin().await.map_err(db_err)?;
         // A replacement keeps the scope row, and with it the creation
-        // time; only the kinds and the whole area set are swapped.
+        // time; only the whole area set is swapped.
         sqlx::query(
-            "INSERT INTO scopes (name, kind, created_at_ms) VALUES (?, ?, ?)
-             ON CONFLICT(name) DO UPDATE SET kind = excluded.kind",
+            "INSERT INTO scopes (name, created_at_ms) VALUES (?, ?)
+             ON CONFLICT(name) DO NOTHING",
         )
         .bind(name)
-        // NULL selects every family.
-        .bind(scope.kinds().map(kind_mask))
         .bind(created_at_ms)
         .execute(&mut *tx)
         .await
@@ -1813,10 +1761,9 @@ mod tests {
         ));
     }
 
-    fn scope(name: &str, kinds: Option<Vec<RegionKind>>) -> NamedScope {
+    fn scope(name: &str) -> NamedScope {
         NamedScope::new(
             ScopeName::parse(name).unwrap(),
-            kinds,
             vec![(Dimension::OVERWORLD, Rect::new(0, 0, 1, 1))],
             1_000,
         )
@@ -1824,51 +1771,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn scope_kinds_are_stored_as_a_mask() {
-        let mut meta = memory_meta().await;
-        meta.set_scope(&scope(
-            "some",
-            Some(vec![RegionKind::Region, RegionKind::Poi]),
-        ))
-        .await
-        .unwrap();
-        meta.set_scope(&scope("all", None)).await.unwrap();
-        let stored: Vec<(String, Option<i64>)> =
-            sqlx::query_as("SELECT name, kind FROM scopes ORDER BY name")
-                .fetch_all(&meta.pool)
-                .await
-                .unwrap();
-        assert_eq!(
-            stored,
-            vec![("all".to_owned(), None), ("some".to_owned(), Some(0b101))]
-        );
-    }
-
-    #[tokio::test]
-    async fn the_kind_check_admits_proper_subsets_only() {
-        let meta = memory_meta().await;
-        let insert = |mask: i64| {
-            sqlx::query("INSERT INTO scopes (name, kind, created_at_ms) VALUES (?, ?, 0)")
-                .bind(format!("mask-{mask}"))
-                .bind(mask)
-                .execute(&meta.pool)
-        };
-        for mask in 1..ALL_KINDS_MASK {
-            insert(mask).await.unwrap();
-        }
-        for mask in [0, ALL_KINDS_MASK] {
-            let err = insert(mask).await.unwrap_err();
-            assert!(
-                err.to_string().contains("CHECK constraint failed"),
-                "mask {mask}: {err}"
-            );
-        }
-    }
-
-    #[tokio::test]
     async fn deleting_a_scope_drops_its_areas() {
         let mut meta = memory_meta().await;
-        let record = scope("spawn", None);
+        let record = scope("spawn");
         meta.set_scope(&record).await.unwrap();
         assert!(meta.delete_scope(&record.name).await.unwrap());
         let areas: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM scope_areas")
@@ -1880,12 +1785,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_corrupt_scope_fails_loudly() {
-        let dir = tempdir("corrupt-scope");
-        let path = dir.join("meta.sqlite");
-        let meta = SqliteMeta::open(&path).await.unwrap();
+        let meta = memory_meta().await;
 
         // Names re-validate on decode.
-        sqlx::query("INSERT INTO scopes (name, kind, created_at_ms) VALUES ('bad name', NULL, 0)")
+        sqlx::query("INSERT INTO scopes (name, created_at_ms) VALUES ('bad name', 0)")
             .execute(&meta.pool)
             .await
             .unwrap();
@@ -1905,49 +1808,12 @@ mod tests {
 
         // A scope without areas would select nothing: `NamedScope::new`
         // refuses one, so a stored one is corruption.
-        sqlx::query("INSERT INTO scopes (name, kind, created_at_ms) VALUES ('empty', NULL, 0)")
+        sqlx::query("INSERT INTO scopes (name, created_at_ms) VALUES ('empty', 0)")
             .execute(&meta.pool)
             .await
             .unwrap();
         let empty = ScopeName::parse("empty").unwrap();
         let err = meta.lookup_scope(&empty).await.unwrap_err();
         assert!(matches!(err, StorageError::EmptyScope { name } if name == "empty"));
-
-        // The full kind set is always spelled NULL; the CHECK refuses the
-        // mask, so disable it on a dedicated connection. The pragma is per
-        // connection, so `meta`'s pooled one keeps enforcing it.
-        let mut raw = SqliteConnectOptions::new()
-            .filename(&path)
-            .connect()
-            .await
-            .unwrap();
-        sqlx::query("PRAGMA ignore_check_constraints = ON")
-            .execute(&mut raw)
-            .await
-            .unwrap();
-        sqlx::query(
-            "INSERT INTO scope_areas (scope, dim, x0, z0, x1, z1) VALUES ('empty', 0, 0, 0, 0, 0)",
-        )
-        .execute(&mut raw)
-        .await
-        .unwrap();
-        sqlx::query("UPDATE scopes SET kind = 7 WHERE name = 'empty'")
-            .execute(&mut raw)
-            .await
-            .unwrap();
-        sqlx::query("PRAGMA ignore_check_constraints = OFF")
-            .execute(&mut raw)
-            .await
-            .unwrap();
-        raw.close().await.unwrap();
-        let err = meta.lookup_scope(&empty).await.unwrap_err();
-        assert!(matches!(
-            err,
-            StorageError::InvalidHistoryValue {
-                column: "scopes.kind",
-                value: 7
-            }
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

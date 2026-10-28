@@ -30,7 +30,6 @@ where
 
     let first = NamedScope::new(
         spawn.clone(),
-        Some(vec![RegionKind::Region, RegionKind::Poi]),
         vec![
             (OVER, Rect::new(0, 0, 3, 3)),
             (OVER, Rect::new(2, 2, 5, 5)),
@@ -46,9 +45,8 @@ where
     assert_eq!(stored.as_ref().map(|scope| scope.areas().len()), Some(4));
     assert_eq!(stored, Some(first));
 
-    // A replacement swaps kinds and every area but keeps the creation time.
-    let replaced =
-        NamedScope::new(spawn.clone(), None, vec![(OVER, Rect::region(0, 0))], 2_000).unwrap();
+    // A replacement swaps every area but keeps the creation time.
+    let replaced = NamedScope::new(spawn.clone(), vec![(OVER, Rect::region(0, 0))], 2_000).unwrap();
     meta.set_scope(&replaced).await.unwrap();
     let mut expected = replaced.clone();
     expected.created_at_ms = 1_000;
@@ -59,19 +57,13 @@ where
 
     let other = NamedScope::new(
         hub.clone(),
-        Some(vec![RegionKind::Entities]),
         vec![(Dimension::NETHER, Rect::new(0, 0, 0, 0))],
         3_000,
     )
     .unwrap();
     meta.set_scope(&other).await.unwrap();
-    let shouted = NamedScope::new(
-        upper.clone(),
-        None,
-        vec![(OVER, Rect::new(9, 9, 9, 9))],
-        4_000,
-    )
-    .unwrap();
+    let shouted =
+        NamedScope::new(upper.clone(), vec![(OVER, Rect::new(9, 9, 9, 9))], 4_000).unwrap();
     meta.set_scope(&shouted).await.unwrap();
     assert_eq!(
         meta.lookup_scope(&spawn).await.unwrap(),
@@ -110,7 +102,6 @@ where
     // its creation time included.
     let reborn = NamedScope::new(
         spawn.clone(),
-        Some(vec![RegionKind::Poi]),
         vec![(Dimension::END, Rect::new(1, 2, 3, 4))],
         5_000,
     )

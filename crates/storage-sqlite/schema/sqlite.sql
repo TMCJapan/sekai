@@ -75,15 +75,11 @@ CREATE UNIQUE INDEX idx_refs_active
     ON refs(active) WHERE active = 1;
 
 -- Named scopes: store-saved world areas selected by name. A scope
--- names no commit, so history operations never touch these rows.
--- `kind` is a bitmask of `1 << RegionKind::raw()`; NULL selects every
--- region family and the full set is always spelled NULL, so the CHECK
--- admits proper subsets only. The bound is coupled to `ALL_KINDS_MASK` in
--- sqlite.rs by a unit test, and a compile-time assert there fails once a
--- new region kind changes the mask. Names order byte-wise, as refs do.
+-- names no commit, so history operations never touch these rows. It
+-- always covers every region family, so no kind is stored. Names order
+-- byte-wise, as refs do.
 CREATE TABLE scopes(
     name TEXT NOT NULL COLLATE BINARY PRIMARY KEY,
-    kind INTEGER NULL CHECK (kind BETWEEN 1 AND 6),
     created_at_ms INTEGER NOT NULL
 );
 

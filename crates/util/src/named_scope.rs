@@ -10,7 +10,7 @@ use core::{fmt, str::FromStr};
 
 use crate::error::{NamedScopeError, ScopeNameError};
 use crate::name::{self, NameRule};
-use crate::{Area, Dimension, Rect, RegionKind, Scope};
+use crate::{Area, Dimension, Rect, Scope};
 
 /// Validated scope name.
 ///
@@ -63,37 +63,33 @@ impl FromStr for ScopeName {
     }
 }
 
-/// A store-saved selection: chunk rectangles plus the region families they
-/// cover.
+/// A store-saved selection: chunk rectangles over every region family.
 ///
-/// The selection fields are private so every record holds exactly one
-/// spelling of its selection, matching the store's: areas sorted by
-/// `(dim, x0, z0, x1, z1)` with duplicates collapsed, and kinds either
-/// `None` (every family) or a sorted, deduplicated proper subset.
-/// Overlapping areas are kept apart; the scope is their union either way.
+/// A scope is purely geographic: it always covers every region family, so
+/// it stores no kind subset (ADR-0021).
+///
+/// The areas are private so every record holds exactly one spelling of
+/// its selection, matching the store's: sorted by `(dim, x0, z0, x1, z1)`
+/// with duplicates collapsed. Overlapping areas are kept apart; the scope
+/// is their union either way.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NamedScope {
     /// Scope name.
     pub name: ScopeName,
-    kinds: Option<Vec<RegionKind>>,
     areas: Vec<(Dimension, Rect)>,
     /// Creation time as Unix millis (informational only).
     pub created_at_ms: u64,
 }
 
 impl NamedScope {
-    /// Build a record, normalizing its spelling.
-    ///
-    /// `kinds = None` selects every region family, and so does a set
-    /// naming all of them. A record that would select nothing - no area,
-    /// or an empty kind set - is refused.
+    /// Build a record, normalizing its spelling. A record without an area
+    /// would select nothing and is refused.
     ///
     /// Areas are re-normalized through [`Rect::new`]: `Rect`'s fields are
     /// public, so a struct literal can put a maximum before its minimum,
     /// which a store would refuse or keep depending on its backend.
     pub fn new(
         name: ScopeName,
-        kinds: Option<Vec<RegionKind>>,
         areas: Vec<(Dimension, Rect)>,
         created_at_ms: u64,
     ) -> Result<Self, NamedScopeError> {
@@ -106,29 +102,11 @@ impl NamedScope {
             .collect();
         areas.sort_unstable();
         areas.dedup();
-        let kinds = match kinds {
-            None => None,
-            Some(mut kinds) => {
-                kinds.sort_unstable();
-                kinds.dedup();
-                if kinds.is_empty() {
-                    return Err(NamedScopeError::NoKinds);
-                }
-                // `ALL` is sorted and duplicate-free, so this compares sets.
-                (kinds != RegionKind::ALL).then_some(kinds)
-            }
-        };
         Ok(Self {
             name,
-            kinds,
             areas,
             created_at_ms,
         })
-    }
-
-    /// Selected region families, or `None` for all of them.
-    pub fn kinds(&self) -> Option<&[RegionKind]> {
-        self.kinds.as_deref()
     }
 
     /// Selected areas in `(dim, x0, z0, x1, z1)` order.
@@ -136,10 +114,11 @@ impl NamedScope {
         &self.areas
     }
 
-    /// The selection this record names, one rectangle per area.
+    /// The selection this record names: every region family, one
+    /// rectangle per area.
     pub fn to_scope(&self) -> Scope {
         Scope::Select {
-            kinds: self.kinds.clone().unwrap_or_else(Scope::all_kinds),
+            kinds: Scope::all_kinds(),
             areas: self
                 .areas
                 .iter()
@@ -152,7 +131,7 @@ impl NamedScope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ChunkCoord, RegionKey};
+    use crate::{ChunkCoord, RegionKey, RegionKind};
     use alloc::string::ToString;
     use alloc::vec;
 
@@ -201,33 +180,11 @@ mod tests {
         let b = Rect::new(-8, 0, -1, 3);
         let record = NamedScope::new(
             name("spawn"),
-            Some(vec![RegionKind::Poi, RegionKind::Region, RegionKind::Poi]),
             vec![(NETHER, a), (OVER, a), (OVER, b), (OVER, a)],
             1,
         )
         .unwrap();
         assert_eq!(record.areas(), &[(OVER, b), (OVER, a), (NETHER, a)]);
-        assert_eq!(
-            record.kinds(),
-            Some(&[RegionKind::Region, RegionKind::Poi][..])
-        );
-
-        let every_kind = NamedScope::new(
-            name("spawn"),
-            Some(vec![
-                RegionKind::Poi,
-                RegionKind::Entities,
-                RegionKind::Region,
-            ]),
-            vec![(OVER, a)],
-            1,
-        )
-        .unwrap();
-        assert_eq!(every_kind.kinds(), None, "the full set is spelled None");
-        assert_eq!(
-            every_kind,
-            NamedScope::new(name("spawn"), None, vec![(OVER, a)], 1).unwrap()
-        );
     }
 
     #[test]
@@ -238,32 +195,22 @@ mod tests {
             x1: -1,
             z1: 2,
         };
-        let record = NamedScope::new(name("spawn"), None, vec![(OVER, inverted)], 1).unwrap();
+        let record = NamedScope::new(name("spawn"), vec![(OVER, inverted)], 1).unwrap();
         assert_eq!(record.areas(), &[(OVER, Rect::new(-1, 2, 3, 5))]);
     }
 
     #[test]
-    fn records_that_select_nothing_are_refused() {
+    fn records_without_areas_are_refused() {
         assert_eq!(
-            NamedScope::new(name("spawn"), None, Vec::new(), 1),
+            NamedScope::new(name("spawn"), Vec::new(), 1),
             Err(NamedScopeError::NoAreas)
-        );
-        assert_eq!(
-            NamedScope::new(
-                name("spawn"),
-                Some(Vec::new()),
-                vec![(OVER, Rect::new(0, 0, 0, 0))],
-                1
-            ),
-            Err(NamedScopeError::NoKinds)
         );
     }
 
     #[test]
-    fn records_resolve_to_the_union_of_their_areas() {
+    fn records_resolve_to_the_union_of_their_areas_in_every_family() {
         let record = NamedScope::new(
             name("spawn"),
-            Some(vec![RegionKind::Entities]),
             vec![
                 (OVER, Rect::new(0, 0, 0, 0)),
                 (NETHER, Rect::region(-1, -1)),
@@ -272,16 +219,10 @@ mod tests {
         )
         .unwrap();
         let scope = record.to_scope();
-        assert!(scope.contains(ChunkCoord::new(OVER, RegionKind::Entities, 0, 0)));
-        assert!(!scope.contains(ChunkCoord::new(OVER, RegionKind::Region, 0, 0)));
-        assert!(!scope.contains(ChunkCoord::new(OVER, RegionKind::Entities, 1, 0)));
-        assert!(scope.covers_region(RegionKey::new(NETHER, RegionKind::Entities, -1, -1)));
-
-        let all = NamedScope::new(name("spawn"), None, vec![(OVER, Rect::new(0, 0, 0, 0))], 1)
-            .unwrap()
-            .to_scope();
         for kind in RegionKind::ALL {
-            assert!(all.contains(ChunkCoord::new(OVER, kind, 0, 0)));
+            assert!(scope.contains(ChunkCoord::new(OVER, kind, 0, 0)));
+            assert!(!scope.contains(ChunkCoord::new(OVER, kind, 1, 0)));
+            assert!(scope.covers_region(RegionKey::new(NETHER, kind, -1, -1)));
         }
     }
 }

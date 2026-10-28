@@ -109,15 +109,12 @@ impl core::error::Error for ScopeNameError {}
 pub enum NamedScopeError {
     /// The scope names no area.
     NoAreas,
-    /// The scope names an empty set of region kinds.
-    NoKinds,
 }
 
 impl fmt::Display for NamedScopeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoAreas => write!(f, "scope selects no area"),
-            Self::NoKinds => write!(f, "scope selects no region kind"),
         }
     }
 }

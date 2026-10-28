@@ -89,7 +89,7 @@ impl Fixture {
             .expect("a present chunk references a blob");
         let scope = ScopeName::parse("fixture").unwrap();
         instance
-            .create_scope(&scope, None, lock_matrix_areas(), false)
+            .create_scope(&scope, lock_matrix_areas(), false)
             .await
             .unwrap();
         Self {
@@ -269,7 +269,7 @@ impl Op {
             Self::CreateScope => {
                 let name = ScopeName::parse("lock-matrix").unwrap();
                 instance
-                    .create_scope(&name, None, lock_matrix_areas(), true)
+                    .create_scope(&name, lock_matrix_areas(), true)
                     .await
                     .map(drop)
             }

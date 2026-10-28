@@ -241,8 +241,7 @@ pub trait MetaStore {
     /// The scope with this name, or `None` when it does not exist.
     ///
     /// A stored scope that fails [`NamedScope`]'s rules (an invalid name,
-    /// no area, or an empty kind set) is corruption and fails with a
-    /// backend error.
+    /// or no area) is corruption and fails with a backend error.
     fn lookup_scope(
         &self,
         name: &ScopeName,
