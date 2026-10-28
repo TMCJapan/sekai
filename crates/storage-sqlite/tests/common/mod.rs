@@ -33,6 +33,7 @@ where
         Some(vec![RegionKind::Region, RegionKind::Poi]),
         vec![
             (OVER, Rect::new(0, 0, 3, 3)),
+            (OVER, Rect::new(2, 2, 5, 5)),
             (Dimension::NETHER, Rect::region(-1, 0)),
             (OVER, Rect::new(-5, 2, -5, 2)),
         ],
@@ -40,7 +41,10 @@ where
     )
     .unwrap();
     meta.set_scope(&first).await.unwrap();
-    assert_eq!(meta.lookup_scope(&spawn).await.unwrap(), Some(first));
+    let stored = meta.lookup_scope(&spawn).await.unwrap();
+    // Overlapping areas stay apart: the scope is their union either way.
+    assert_eq!(stored.as_ref().map(|scope| scope.areas().len()), Some(4));
+    assert_eq!(stored, Some(first));
 
     // A replacement swaps kinds and every area but keeps the creation time.
     let replaced =
