@@ -9,17 +9,18 @@ use alloc::vec::Vec;
 use crate::port::meta::MetaStore;
 use sekai_util::NamedScope;
 
-use super::graph::CommitError;
-
 /// List all scopes in name order (byte-wise, the order `ScopeName`
 /// compares by).
-pub async fn list_scopes<M: MetaStore>(meta: &M) -> Result<Vec<NamedScope>, CommitError<M::Error>> {
+///
+/// Only the backend can fail here, so its error passes through as is:
+/// wrapping it in `CommitError` would report a scope listing as a commit
+/// failure.
+pub async fn list_scopes<M: MetaStore>(meta: &M) -> Result<Vec<NamedScope>, M::Error> {
     let mut out = Vec::new();
     meta.visit_scopes(|scope| {
         out.push(scope.clone());
         true
     })
-    .await
-    .map_err(CommitError::Meta)?;
+    .await?;
     Ok(out)
 }

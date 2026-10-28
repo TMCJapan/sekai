@@ -59,9 +59,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// List scopes in name order.
     pub async fn list_scopes(&self) -> Result<Vec<NamedScope>, AppError> {
         let _lock = self.lock_store(StoreLockMode::Shared)?;
-        sekai_core::usecase::scopes::list_scopes(self.store.meta())
-            .await
-            .map_err(AppError::Commit)
+        Ok(sekai_core::usecase::scopes::list_scopes(self.store.meta()).await?)
     }
 
     /// The selection the scope `name` stands for, for a `--scope` run.
