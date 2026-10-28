@@ -110,7 +110,7 @@ The `MetaStore` port carries `set_scope`, `lookup_scope`,
 areas included. Like the ref mutations, `create` and `delete` run under
 the writer lock and `list` under a shared lock.
 
-The schema version goes to 13 (after #145 takes 12); the pre-release
+The schema version goes to 14 (after #151 takes 13); the pre-release
 policy applies: old stores are recreated, never migrated.
 
 ## Consequences
