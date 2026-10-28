@@ -128,6 +128,8 @@ async fn an_existing_scope_is_replaced_only_with_force() {
         .await
         .unwrap();
     assert_eq!(replaced.created_at_ms, first.created_at_ms);
+    assert_eq!(replaced.kinds(), Some(&[RegionKind::Poi][..]));
+    assert_eq!(replaced.areas(), [(OVER, Rect::new(1, 1, 1, 1))]);
     assert_eq!(instance.list_scopes().await.unwrap(), vec![replaced]);
 }
 
