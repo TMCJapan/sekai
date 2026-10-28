@@ -184,6 +184,11 @@ mod tests {
             Err(ScopeNameError::TooLong(ScopeName::MAX_LEN))
         );
         assert_eq!(
+            ScopeName::parse(&"é".repeat(ScopeName::MAX_LEN)),
+            Err(ScopeNameError::TooLong(ScopeName::MAX_LEN)),
+            "the length check runs before the character walk"
+        );
+        assert_eq!(
             ScopeNameError::Empty.to_string(),
             "scope name is empty",
             "errors name the scope, not a ref"
