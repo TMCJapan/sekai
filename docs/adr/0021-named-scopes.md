@@ -24,21 +24,34 @@ children:
 
 ```sql
 CREATE TABLE scopes(
-    name TEXT NOT NULL COLLATE BINARY PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL COLLATE BINARY UNIQUE,
     created_at_ms INTEGER NOT NULL
 );
 
 CREATE TABLE scope_areas(
-    scope TEXT NOT NULL REFERENCES scopes(name) ON DELETE CASCADE,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope INTEGER NOT NULL REFERENCES scopes(id) ON DELETE CASCADE,
     dim INTEGER NOT NULL,
     x0 INTEGER NOT NULL,
     z0 INTEGER NOT NULL,
     x1 INTEGER NOT NULL,
     z1 INTEGER NOT NULL,
-    CHECK (x0 <= x1 AND z0 <= z1),
-    PRIMARY KEY (scope, dim, x0, z0, x1, z1)
-) WITHOUT ROWID;
+    CHECK (x0 <= x1 AND z0 <= z1)
+);
+
+CREATE INDEX idx_scope_areas_scope
+    ON scope_areas(scope);
 ```
+
+- **Rows carry integer ids.** Areas reference their scope by
+  `scopes.id`, so the name is stored once and a replacement keeps the
+  scope's id along with its creation time. `AUTOINCREMENT` never hands
+  a deleted scope's id to a later one. With the primary key on `id`,
+  nothing else orders `scope_areas` by scope, so
+  `idx_scope_areas_scope` serves reading a scope's areas, swapping them
+  on replacement, and the delete cascade, each of which would otherwise
+  scan every scope's areas.
 
 - **One or more areas per scope, each a chunk rectangle.** A row of
   `scope_areas` holds the dimension code and the inclusive, normalized
@@ -48,7 +61,9 @@ CREATE TABLE scope_areas(
   `covers_region` agree), so the spelling the operator used is not
   kept. Areas may overlap and are not merged: the scope is their union,
   and a filter selects the same coordinates either way. Identical areas
-  collapse to one row. A scope with no area would select nothing, so
+  collapse to one row: `NamedScope` deduplicates them before writing,
+  and the reader deduplicates again, so the table needs no uniqueness
+  constraint over the area columns. A scope with no area would select nothing, so
   `create` refuses it, and a stored scope without rows is corruption.
 - **A scope covers every region family and stores no kind.** The
   `--kind` narrowing is slated for removal (#152), after which every
@@ -76,10 +91,9 @@ column. A JSON column would work if the store canonicalized the array
 before writing and validated it after reading, since a scope is only
 ever read and written whole. The child table is preferred because it
 keeps the per-area `CHECK` (SQLite forbids subqueries in `CHECK`, so a
-constraint cannot reach into the array), its primary key replaces the
-ordering and deduplication rules a JSON spelling would need, it follows
-the existing `commit_parents` parent/child shape, and the SQLite crate
-gains no `serde_json` dependency.
+constraint cannot reach into the array), it follows the existing
+`commit_parents` parent/child shape, and the SQLite crate gains no
+`serde_json` dependency.
 
 The CLI surface:
 

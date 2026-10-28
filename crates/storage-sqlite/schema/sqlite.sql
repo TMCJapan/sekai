@@ -77,23 +77,30 @@ CREATE UNIQUE INDEX idx_refs_active
 -- Named scopes: store-saved world areas selected by name. A scope
 -- names no commit, so history operations never touch these rows. It
 -- always covers every region family, so no kind is stored. Names order
--- byte-wise, as refs do.
+-- byte-wise, as refs do. `AUTOINCREMENT` keeps a deleted scope's `id`
+-- from being handed to a later one.
 CREATE TABLE scopes(
-    name TEXT NOT NULL COLLATE BINARY PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL COLLATE BINARY UNIQUE,
     created_at_ms INTEGER NOT NULL
 );
 
 -- One inclusive, normalized chunk rectangle per row; the scope is the
--- union of its rows. The primary key collapses identical areas; readers
--- order them by `(dim, x0, z0, x1, z1)` when decoding, so queries need
--- no ORDER BY. A scope without rows is corruption.
+-- union of its rows. Writers store each area once and readers order
+-- them by `(dim, x0, z0, x1, z1)` when decoding, so queries need no
+-- ORDER BY. A scope without rows is corruption.
 CREATE TABLE scope_areas(
-    scope TEXT NOT NULL REFERENCES scopes(name) ON DELETE CASCADE,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    scope INTEGER NOT NULL REFERENCES scopes(id) ON DELETE CASCADE,
     dim INTEGER NOT NULL,
     x0 INTEGER NOT NULL,
     z0 INTEGER NOT NULL,
     x1 INTEGER NOT NULL,
     z1 INTEGER NOT NULL,
-    CHECK (x0 <= x1 AND z0 <= z1),
-    PRIMARY KEY (scope, dim, x0, z0, x1, z1)
-) WITHOUT ROWID;
+    CHECK (x0 <= x1 AND z0 <= z1)
+);
+
+-- Serves reading a scope's areas, swapping them on replacement, and the
+-- cascade on delete; without it each is a scan of every scope's areas.
+CREATE INDEX idx_scope_areas_scope
+    ON scope_areas(scope);

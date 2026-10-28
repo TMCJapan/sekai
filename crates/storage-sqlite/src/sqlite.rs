@@ -452,7 +452,7 @@ fn decode_scope(name: String, columns: ScopeColumns) -> Result<NamedScope, Stora
 /// one snapshot, so a concurrent replacement is seen whole or not at all.
 const SCOPE_QUERY: &str = "SELECT scopes.name, scopes.created_at_ms,
             scope_areas.dim, scope_areas.x0, scope_areas.z0, scope_areas.x1, scope_areas.z1
-     FROM scopes LEFT JOIN scope_areas ON scope_areas.scope = scopes.name";
+     FROM scopes LEFT JOIN scope_areas ON scope_areas.scope = scopes.id";
 
 /// `CommitId` as a BLOB bind parameter.
 fn commit_param(id: CommitId) -> Vec<u8> {
@@ -1162,8 +1162,8 @@ impl sekai_core::MetaStore for SqliteMeta {
         let created_at_ms = millis_param(scope.created_at_ms)?;
         let name = scope.name.as_str();
         let mut tx = self.pool.begin().await.map_err(db_err)?;
-        // A replacement keeps the scope row, and with it the creation
-        // time; only the whole area set is swapped.
+        // A replacement keeps the scope row, and with it the id and the
+        // creation time; only the whole area set is swapped.
         sqlx::query(
             "INSERT INTO scopes (name, created_at_ms) VALUES (?, ?)
              ON CONFLICT(name) DO NOTHING",
@@ -1173,8 +1173,13 @@ impl sekai_core::MetaStore for SqliteMeta {
         .execute(&mut *tx)
         .await
         .map_err(db_err)?;
-        sqlx::query("DELETE FROM scope_areas WHERE scope = ?")
+        let scope_id: i64 = sqlx::query_scalar("SELECT id FROM scopes WHERE name = ?")
             .bind(name)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db_err)?;
+        sqlx::query("DELETE FROM scope_areas WHERE scope = ?")
+            .bind(scope_id)
             .execute(&mut *tx)
             .await
             .map_err(db_err)?;
@@ -1182,7 +1187,7 @@ impl sekai_core::MetaStore for SqliteMeta {
             sqlx::query(
                 "INSERT INTO scope_areas (scope, dim, x0, z0, x1, z1) VALUES (?, ?, ?, ?, ?, ?)",
             )
-            .bind(name)
+            .bind(scope_id)
             .bind(i64::from(dim.raw()))
             .bind(i64::from(rect.x0))
             .bind(i64::from(rect.z0))
@@ -1794,7 +1799,7 @@ mod tests {
             .unwrap();
         sqlx::query(
             "INSERT INTO scope_areas (scope, dim, x0, z0, x1, z1) \
-             VALUES ('bad name', 0, 0, 0, 0, 0)",
+             SELECT id, 0, 0, 0, 0, 0 FROM scopes WHERE name = 'bad name'",
         )
         .execute(&meta.pool)
         .await
