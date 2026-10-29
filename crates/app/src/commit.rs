@@ -40,8 +40,6 @@ pub struct CommitOptions {
     /// to "not computed" (`None`): the blob itself is intact, and the diff
     /// column is only a cache.
     pub with_diff: bool,
-    /// Tag names ignored by diff views. `None` selects the default set.
-    pub ignore_tags: Option<Vec<String>>,
 }
 
 /// Preview behavior knobs.
