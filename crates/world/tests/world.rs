@@ -1373,3 +1373,35 @@ fn atomic_swap_preserves_target_permissions() {
     let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o444);
 }
+
+/// A read takes the region coordinates from the caller's key, so a key that
+/// disagrees with the handle's own file name must fail rather than shift
+/// every chunk into another region.
+#[test]
+fn read_refuses_a_key_that_names_another_region() {
+    use sekai_world::{Region, RegionFile};
+
+    let (world, _guard) = tempdir("read-key");
+    let path = world.join("region/r.0.0.mca");
+    write(&path, &one_chunk_image());
+    let region = HostRegion::from_path(&path);
+
+    let own = RegionKey {
+        dim: Dimension::OVERWORLD,
+        kind: RegionKind::Region,
+        rx: 0,
+        rz: 0,
+    };
+    let image = region.read(own).unwrap();
+    assert!(image.chunk_payload(0, 0).unwrap().is_some());
+
+    let foreign = RegionKey { rx: 1, ..own };
+    assert!(matches!(
+        region.read(foreign),
+        Err(sekai_world::WorldError::UnknownRegionPath {
+            region_x: 1,
+            region_z: 0,
+            ..
+        })
+    ));
+}

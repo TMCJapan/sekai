@@ -49,6 +49,6 @@ pub use sekai_core::{
 };
 pub use sekai_storage::{BlockingBlobStore, SekaiStore, SekaiStoreOpener};
 pub use sekai_world::{
-    HostRegion, HostWorldLock, HostWorldLockError, HostWorldTree, RegionFile, UnguardedReason,
-    WorldError, WorldLock, WorldLockMode, WorldLockState, WorldTree,
+    HostRegion, HostWorldLock, HostWorldLockError, HostWorldTree, Region, RegionFile,
+    UnguardedReason, WorldError, WorldLock, WorldLockMode, WorldLockState, WorldTree,
 };

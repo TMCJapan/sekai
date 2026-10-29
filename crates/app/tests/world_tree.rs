@@ -7,7 +7,7 @@
 //! operation on them fails on purpose - the fake serves no bytes.
 
 use sekai_app::{
-    AppError, Dimension, RegionFile, RegionKey, RegionKind, UnguardedReason, WorldLock,
+    AppError, Dimension, Region, RegionFile, RegionKey, RegionKind, UnguardedReason, WorldLock,
     WorldLockMode, WorldLockState, WorldTree, world_chunk_coords,
 };
 
@@ -46,6 +46,27 @@ impl FakeWorld {
     }
 }
 
+/// Image of [`FakeRegion`]. [`FakeRegion::read`] always fails, so no
+/// method below is reachable; the type exists only because `RegionFile`
+/// names one.
+#[derive(Clone, Debug)]
+struct FakeRegionImage;
+
+impl Region for FakeRegionImage {
+    type Error = FakeError;
+
+    fn visit_chunks<F>(&self, _visit: F) -> Result<(), Self::Error>
+    where
+        F: FnMut(sekai_anvil::Chunk<'_>) -> bool,
+    {
+        unreachable!("fake image serves no chunks")
+    }
+
+    fn chunk_payload(&self, _x: i32, _z: i32) -> Result<Option<&[u8]>, Self::Error> {
+        unreachable!("fake image serves no chunks")
+    }
+}
+
 /// One region file of the fake tree: the name it was asked for, nothing
 /// else.
 #[derive(Clone, Debug)]
@@ -62,8 +83,9 @@ impl std::fmt::Display for FakeRegion {
 impl RegionFile for FakeRegion {
     type Error = FakeError;
 
-    fn read(&self) -> Result<Vec<u8>, Self::Error> {
-        // Not supported: the fake serves no bytes.
+    type RegionImage = FakeRegionImage;
+
+    fn read(&self, _key: RegionKey) -> Result<Self::RegionImage, Self::Error> {
         Err(FakeError { reason: "no bytes" })
     }
 

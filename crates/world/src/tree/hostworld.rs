@@ -24,10 +24,11 @@ mod vanilla;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use sekai_anvil::RegionImage;
 use sekai_core::{Dimension, RegionFingerprint, RegionKey, RegionKind};
 
 use super::WorldTree;
-use crate::region::RegionFile;
+use crate::region::{Region, RegionFile};
 use crate::{WorldError, WorldLockMode, WorldLockState};
 
 pub use lock::{HostWorldLock, HostWorldLockError};
@@ -41,6 +42,38 @@ const fn kind_dir(kind: RegionKind) -> &'static str {
     }
 }
 
+/// One region file read into [`sekai_anvil::RegionImage`].
+///
+/// The parsed image answers in global chunk coordinates; the path it came
+/// from rides along so a failure while visiting or looking up a chunk names
+/// the file. Downstream code reaches it through
+/// [`RegionFile::RegionImage`] and never names it: it is the host tree's
+/// choice of image, not part of the boundary.
+#[derive(Debug)]
+pub struct McaFile {
+    image: RegionImage,
+    path: PathBuf,
+}
+
+impl Region for McaFile {
+    type Error = WorldError;
+
+    fn visit_chunks<F>(&self, visit: F) -> Result<(), Self::Error>
+    where
+        F: FnMut(sekai_anvil::Chunk<'_>) -> bool,
+    {
+        self.image
+            .visit_chunks(visit)
+            .map_err(|source| WorldError::region_file(&self.path, source))
+    }
+
+    fn chunk_payload(&self, x: i32, z: i32) -> Result<Option<&[u8]>, Self::Error> {
+        self.image
+            .chunk_payload(x, z)
+            .map_err(|source| WorldError::region_file(&self.path, source))
+    }
+}
+
 /// One region file of a host world: the path it lives at.
 ///
 /// The operations never see a path - they work on the handle. A
@@ -50,6 +83,15 @@ const fn kind_dir(kind: RegionKind) -> &'static str {
 pub struct HostRegion(PathBuf);
 
 impl HostRegion {
+    /// A handle for the region file at `path`.
+    ///
+    /// Mirrors [`HostWorldTree::derive_region`]: the file name must spell
+    /// `r.<x>.<z>.mca`, since reading takes the region coordinates from
+    /// the caller's key and refuses a handle that spells another one.
+    pub fn from_path(path: impl Into<PathBuf>) -> Self {
+        Self(path.into())
+    }
+
     /// The file's path on disk.
     pub fn as_path(&self) -> &Path {
         &self.0
@@ -65,8 +107,34 @@ impl std::fmt::Display for HostRegion {
 impl RegionFile for HostRegion {
     type Error = WorldError;
 
-    fn read(&self) -> Result<Vec<u8>, WorldError> {
-        crate::swap::open_image(&self.0)
+    type RegionImage = McaFile;
+
+    fn read(&self, key: RegionKey) -> Result<Self::RegionImage, WorldError> {
+        // The image takes its coordinates from the caller's key, so a key
+        // naming another region would answer for that region instead: refuse
+        // a handle whose file name disagrees with the key. A path the same
+        // dimension resolves to is the mismatch, so the error carries no
+        // second location.
+        let spelled = self
+            .0
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .and_then(|name| sekai_anvil::parse_region_name(name).ok());
+        if spelled != Some((key.rx, key.rz)) {
+            return Err(WorldError::UnknownRegionPath {
+                dim: key.dim,
+                kind: key.kind,
+                region_x: key.rx,
+                region_z: key.rz,
+            });
+        }
+        let bytes = crate::swap::open_image(&self.0)?;
+        let image = RegionImage::from_bytes(bytes, key.rx, key.rz)
+            .map_err(|source| WorldError::region_file(&self.0, source))?;
+        Ok(McaFile {
+            image,
+            path: self.0.clone(),
+        })
     }
 
     fn fingerprint(&self, key: RegionKey) -> Result<RegionFingerprint, WorldError> {

@@ -19,6 +19,15 @@ pub enum WorldError {
     /// Region image failed to parse or build.
     #[error("region image error: {0}")]
     Anvil(#[from] sekai_anvil::AnvilError),
+    /// Region file failed to parse, with its location attached for diagnosis.
+    #[error("failed to process region file {path}: {source}", path = path.display())]
+    RegionFile {
+        /// The file that failed to parse.
+        path: PathBuf,
+        /// Underlying parse failure.
+        #[source]
+        source: sekai_anvil::AnvilError,
+    },
     /// Another operation holds a conflicting lock on the world.
     #[error(
         "world is in use by another sekai operation (lock {path}): wait for it to finish, or stop the operation holding it, then retry",
@@ -64,6 +73,15 @@ pub enum WorldError {
 impl WorldError {
     pub(crate) fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
         Self::Io {
+            path: path.into(),
+            source,
+        }
+    }
+
+    /// Attach a region file's location to a parse failure, so every call
+    /// site spells the error the same way.
+    pub(crate) fn region_file(path: impl Into<PathBuf>, source: sekai_anvil::AnvilError) -> Self {
+        Self::RegionFile {
             path: path.into(),
             source,
         }
