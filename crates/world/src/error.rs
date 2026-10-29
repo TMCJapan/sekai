@@ -77,4 +77,13 @@ impl WorldError {
             source,
         }
     }
+
+    /// Attach a region file's location to a parse failure, so every call
+    /// site spells the error the same way.
+    pub(crate) fn region_file(path: impl Into<PathBuf>, source: sekai_anvil::AnvilError) -> Self {
+        Self::RegionFile {
+            path: path.into(),
+            source,
+        }
+    }
 }
