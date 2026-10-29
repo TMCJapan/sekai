@@ -17,17 +17,13 @@ use sekai_storage::{StorageError, StoreLockMode};
 use sekai_storage_sqlite::SqliteStore;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-
-static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 use StoreLockMode::{Exclusive, Shared, Writer};
 
-fn tempdir(_name: &str) -> tempfile::TempDir {
-    tempfile::tempdir().unwrap()
-}
+/// Distinguishes the clone targets one test creates inside a single root.
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn write_region(path: impl AsRef<Path>, payload: &[u8]) {
     let name = path.as_ref().file_name().unwrap().to_str().unwrap();
@@ -57,7 +53,11 @@ fn lock_matrix_areas() -> Vec<(Dimension, Rect)> {
 
 impl Fixture {
     async fn new(name: &str) -> Self {
-        let root = tempdir(name).keep();
+        let root = tempfile::Builder::new()
+            .prefix(&format!("sekai-app-lock-{name}-"))
+            .tempdir()
+            .unwrap()
+            .keep();
         let world_path = root.join("world");
         // Uncompressed (3) empty root compounds: valid chunks that decode.
         write_region(world_path.join("region/r.0.0.mca"), &[3, 10, 0, 0, 0]);
