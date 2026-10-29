@@ -46,9 +46,9 @@ harness = false
 required-features = ["backend-sqlite"]
 
 [dev-dependencies]
-tempfile.workspace = true
 criterion.workspace = true
 miniz_oxide.workspace = true
+tempfile.workspace = true
 
 [package.metadata.cargo-machete]
 ignored = ["sekai-core", "sekai-storage", "sekai-world"]
