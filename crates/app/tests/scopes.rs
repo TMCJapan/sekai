@@ -9,6 +9,15 @@ use sekai_app::{
     ScopeName,
 };
 use std::path::Path;
+
+/// A private temp dir, removed on drop. Nothing is kept, so a panicking
+/// test leaves nothing behind either.
+fn tempdir() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("sekai-scope-")
+        .tempdir()
+        .unwrap()
+}
 const OVER: Dimension = Dimension::OVERWORLD;
 
 fn write_region(path: impl AsRef<Path>, chunks: &[(i32, i32, Vec<u8>)]) {
@@ -29,8 +38,8 @@ fn name(raw: &str) -> ScopeName {
 
 #[tokio::test]
 async fn a_scope_is_created_listed_and_deleted() {
-    let root = tempfile::tempdir().unwrap().keep();
-    let mut instance = sekai_app::SekaiInstance::init(&root.join("store").to_string_lossy())
+    let root = tempdir();
+    let mut instance = sekai_app::SekaiInstance::init(&root.path().join("store").to_string_lossy())
         .await
         .unwrap();
     assert_eq!(instance.list_scopes().await.unwrap(), Vec::new());
@@ -67,8 +76,8 @@ async fn a_scope_is_created_listed_and_deleted() {
 
 #[tokio::test]
 async fn an_existing_scope_is_replaced_only_with_force() {
-    let root = tempfile::tempdir().unwrap().keep();
-    let mut instance = sekai_app::SekaiInstance::init(&root.join("store").to_string_lossy())
+    let root = tempdir();
+    let mut instance = sekai_app::SekaiInstance::init(&root.path().join("store").to_string_lossy())
         .await
         .unwrap();
     let spawn = name("spawn");
@@ -95,8 +104,8 @@ async fn an_existing_scope_is_replaced_only_with_force() {
 
 #[tokio::test]
 async fn a_selection_of_nothing_is_refused() {
-    let root = tempfile::tempdir().unwrap().keep();
-    let mut instance = sekai_app::SekaiInstance::init(&root.join("store").to_string_lossy())
+    let root = tempdir();
+    let mut instance = sekai_app::SekaiInstance::init(&root.path().join("store").to_string_lossy())
         .await
         .unwrap();
     let err = instance
@@ -112,8 +121,8 @@ async fn a_selection_of_nothing_is_refused() {
 
 #[tokio::test]
 async fn a_scope_resolves_to_its_rectangles() {
-    let root = tempfile::tempdir().unwrap().keep();
-    let mut instance = sekai_app::SekaiInstance::init(&root.join("store").to_string_lossy())
+    let root = tempdir();
+    let mut instance = sekai_app::SekaiInstance::init(&root.path().join("store").to_string_lossy())
         .await
         .unwrap();
     let err = instance.resolve_scope(&name("spawn")).await.unwrap_err();
@@ -144,14 +153,14 @@ async fn a_scope_resolves_to_its_rectangles() {
 
 #[tokio::test]
 async fn a_resolved_scope_limits_a_commit() {
-    let root = tempfile::tempdir().unwrap().keep();
-    let world_path = root.join("world");
+    let root = tempdir();
+    let world_path = root.path().join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     write_region(
         world_path.join("region/r.0.0.mca"),
         &[(0, 0, vec![1]), (1, 0, vec![2]), (5, 5, vec![3])],
     );
-    let mut instance = sekai_app::SekaiInstance::init(&root.join("store").to_string_lossy())
+    let mut instance = sekai_app::SekaiInstance::init(&root.path().join("store").to_string_lossy())
         .await
         .unwrap();
     instance
