@@ -4,27 +4,32 @@ extern crate alloc;
 mod chunk;
 mod diff;
 
-pub use chunk::ChunkPayload;
-pub use chunk::Heightmaps;
+pub use chunk::{BlockEntity, BlockTick, ChunkPayload, FluidTick, Heightmaps, Section};
 pub use diff::ChunkPayloadDiff;
 pub use nanonbt;
 pub use nanonbt::Error as NbtError;
 use sekai_util::DiffHash;
 
-/// Parses a complete NBT document with a compound root.
+/// Deserializes a level-chunk NBT root into [`ChunkPayload`].
 pub fn parse(bytes: &[u8]) -> Result<ChunkPayload<'_>, NbtError> {
     nanonbt::from_slice(bytes)
 }
 
-/// Hashes NBT after excluding the specified tag names at every depth.
+/// Hashes a level-chunk NBT root through its normalized view.
 ///
-/// The resulting hash is intended for change detection, not storage identity.
+/// The normalized view excludes the volatile tags `InhabitedTime` and
+/// `LastUpdate`; the resulting hash is intended for change detection, not
+/// storage identity.
 pub fn diff_hash(raw_nbt: &[u8]) -> Result<DiffHash, NbtError> {
     let value = parse(raw_nbt)?;
     value.normalize_hash()
 }
 
-/// Hashes NBT using the default volatile-tag ignore set.
+/// Hashes a level-chunk NBT root through its normalized view using the V1
+/// rules.
+///
+/// Retained for API compatibility: identical to [`diff_hash`], which keeps
+/// the V1 volatile-tag exclusions.
 pub fn diff_hash_v1(raw_nbt: &[u8]) -> Result<DiffHash, NbtError> {
     diff_hash(raw_nbt)
 }
