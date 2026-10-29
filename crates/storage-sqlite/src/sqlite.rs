@@ -1249,8 +1249,14 @@ mod tests {
     use sekai_core::{RegionKind, usecase::commit::stage_present};
     use sqlx::ConnectOptions as _;
     use sqlx::Connection as _;
-    fn tempdir(_name: &str) -> std::path::PathBuf {
-        tempfile::tempdir().unwrap().keep()
+    /// A temp dir named after the calling test; the caller runs
+    /// `remove_dir_all` so the path can outlive any `TempDir` guard.
+    fn tempdir(name: &str) -> std::path::PathBuf {
+        tempfile::Builder::new()
+            .prefix(&format!("sekai-{name}-"))
+            .tempdir()
+            .unwrap()
+            .keep()
     }
 
     async fn memory_meta() -> SqliteMeta {
@@ -1662,7 +1668,6 @@ mod tests {
     async fn concurrent_first_inits_all_succeed() {
         for round in 0..20 {
             let dir = tempdir(&format!("init-race-{round}"));
-            std::fs::remove_dir_all(&dir).unwrap();
             let inits: Vec<_> = (0..4)
                 .map(|_| tokio::spawn(init_sqlite(dir.clone())))
                 .collect();
