@@ -1381,7 +1381,7 @@ fn atomic_swap_preserves_target_permissions() {
 fn read_refuses_a_key_that_names_another_region() {
     use sekai_world::{Region, RegionFile};
 
-    let world = tempdir("read-key");
+    let (world, _guard) = tempdir("read-key");
     let path = world.join("region/r.0.0.mca");
     write(&path, &one_chunk_image());
     let region = HostRegion::from_path(&path);
@@ -1404,5 +1404,4 @@ fn read_refuses_a_key_that_names_another_region() {
             ..
         })
     ));
-    cleanup(&world);
 }

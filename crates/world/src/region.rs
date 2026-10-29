@@ -17,9 +17,12 @@ pub trait RegionFile: Clone + std::fmt::Debug + std::fmt::Display + Send + Sync 
     /// Failure type for every operation on this file.
     type Error: std::error::Error;
 
+    /// The parsed image [`RegionFile::read`] returns.
     type RegionImage: Region<Error = Self::Error>;
 
-    /// Read the whole file.
+    /// Read the whole file and parse it into an image.
+    ///
+    /// `key` names the region the file holds, like [`RegionFile::fingerprint`].
     fn read(&self, key: RegionKey) -> Result<Self::RegionImage, Self::Error>;
 
     /// Observe the file's fingerprint as of now.
@@ -46,7 +49,17 @@ pub trait RegionFile: Clone + std::fmt::Debug + std::fmt::Display + Send + Sync 
     fn remove(&self) -> Result<(), Self::Error>;
 }
 
+/// A region file parsed in memory.
+///
+/// Callers ask it questions in global chunk coordinates and never rebuild a
+/// parser image from raw bytes themselves: the handle that read the file
+/// owns the conversion and attaches its location to parse failures.
+///
+/// The signatures mirror [`sekai_anvil::RegionImage`]. The error type is not
+/// tied to the backing parser, so a tree that is not the host tree (an
+/// in-memory fake, another backend) can serve images of its own.
 pub trait Region {
+    /// Failure type for every query on this image.
     type Error;
 
     /// Visits all present chunks in table order.
@@ -59,6 +72,7 @@ pub trait Region {
     /// Returns the stored raw payload for a single chunk at global coordinates `(x, z)`.
     ///
     /// Returns `Ok(None)` if the chunk coordinate is outside this region or if the
-    /// chunk has not been generated (is empty).
+    /// chunk has not been generated (is empty). Callers need no finer answer:
+    /// both mean the region holds no payload for that coordinate.
     fn chunk_payload(&self, x: i32, z: i32) -> Result<Option<&[u8]>, Self::Error>;
 }
