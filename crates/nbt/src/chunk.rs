@@ -44,6 +44,10 @@ pub struct ChunkPayload<'de> {
 }
 
 impl ChunkPayload<'_> {
+    /// Hashes the payload through its normalized view.
+    ///
+    /// Everything except the volatile `InhabitedTime`/`LastUpdate` tags is
+    /// encoded; the view is defined next to this impl.
     pub fn normalize_hash(&self) -> Result<DiffHash, nanonbt::Error> {
         let normalized = NormalizedChunkPayload {
             data_version: self.data_version,
@@ -64,6 +68,12 @@ impl ChunkPayload<'_> {
     }
 }
 
+/// The hash input of [`ChunkPayload::normalize_hash`].
+///
+/// `InhabitedTime` and `LastUpdate` are deliberately absent: the server
+/// rewrites them on its own, so they must not register as changes. New
+/// payload fields participate in change detection only once they are added
+/// here as well.
 #[derive(SerializeNbt, Debug)]
 struct NormalizedChunkPayload<'a, 'de> {
     #[nbt(rename = "DataVersion")]

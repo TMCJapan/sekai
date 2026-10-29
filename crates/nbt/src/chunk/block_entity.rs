@@ -7,6 +7,10 @@ pub struct BlockEntity<'de> {
     pub y: i32,
     pub z: i32,
 
+    /// Raw remainder of the compound captured after the typed header.
+    ///
+    /// Holds the verbatim body minus `id`/`x`/`y`/`z`; serialization writes
+    /// it back unchanged, so it hashes identically to the captured bytes.
     #[nbt(self)]
     pub payload: &'de [u8],
 }

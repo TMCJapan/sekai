@@ -16,6 +16,10 @@ pub struct BlockState<'de> {
     pub properties: BlockProperties<'de>,
 }
 
+/// Raw remainder of a block state compound after `Name`.
+///
+/// Holds the verbatim `Properties` body; serialization writes it back
+/// unchanged, so it hashes identically to the captured bytes.
 #[derive(DeserializeNbt, Debug, Clone, Eq, PartialEq)]
 pub struct BlockProperties<'de> {
     #[nbt(self)]
