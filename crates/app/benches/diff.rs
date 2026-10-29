@@ -12,10 +12,10 @@ fn benches(c: &mut Criterion) {
 
     c.bench_function("diff/small-all", |b| {
         let root = tempdir("diff-small");
-        let world_path = root.join("world");
+        let world_path = root.path().join("world");
         let mut world = HostWorldTree::new(&world_path).expect("world resolves");
         generate(&world_path, &SMALL);
-        let store = root.join("store").to_string_lossy().into_owned();
+        let store = root.path().join("store").to_string_lossy().into_owned();
         let mut instance = rt
             .block_on(sekai_app::SekaiInstance::init(&store))
             .expect("open works");
@@ -33,14 +33,18 @@ fn benches(c: &mut Criterion) {
             rt.block_on(instance.diff_chunks(commits[0].id, commits[0].id, &coords, None, |_| {}))
                 .expect("diff works");
         });
-        std::fs::remove_dir_all(&root).ok();
     });
 
     c.bench_function("diff/corpus-all", |b| {
-        let world_path = corpus_world();
+        let corpus = corpus_world();
+        let world_path = corpus.path().join("world");
         let mut world = HostWorldTree::new(&world_path).expect("world resolves");
-        let root = world_path.parent().unwrap().to_path_buf();
-        let store = root.join("store").to_string_lossy().into_owned();
+        let store = world_path
+            .parent()
+            .unwrap()
+            .join("store")
+            .to_string_lossy()
+            .into_owned();
         let mut instance = rt
             .block_on(sekai_app::SekaiInstance::init(&store))
             .expect("open works");
@@ -58,7 +62,6 @@ fn benches(c: &mut Criterion) {
             rt.block_on(instance.diff_chunks(commits[0].id, commits[0].id, &coords, None, |_| {}))
                 .expect("diff works");
         });
-        std::fs::remove_dir_all(&root).ok();
     });
 }
 

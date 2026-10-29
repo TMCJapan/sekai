@@ -126,13 +126,13 @@ pub fn generate(world: impl AsRef<Path>, spec: &WorldSpec) {
 }
 
 /// Fresh temp dir for one benchmark setup, named after the benchmark so
-/// a leaked directory stays traceable.
-pub fn tempdir(name: &str) -> std::path::PathBuf {
+/// a leaked directory stays traceable. The guard removes it on drop, which
+/// also covers panics.
+pub fn tempdir(name: &str) -> tempfile::TempDir {
     tempfile::Builder::new()
         .prefix(&format!("sekai-bench-{name}-"))
         .tempdir()
         .expect("tempdir")
-        .keep()
 }
 
 /// Default bench options (workers follow CPU count).
@@ -158,7 +158,7 @@ pub fn runtime() -> tokio::runtime::Runtime {
 /// binary, so the others see it as unused and the dead-code lint stays
 /// off.
 #[allow(dead_code)]
-pub fn corpus_world() -> std::path::PathBuf {
+pub fn corpus_world() -> tempfile::TempDir {
     fn copy_dir(src: impl AsRef<Path>, dst: impl AsRef<Path>) {
         std::fs::create_dir_all(dst.as_ref()).expect("mkdir works");
         for entry in std::fs::read_dir(src.as_ref()).expect("read works") {
@@ -175,7 +175,7 @@ pub fn corpus_world() -> std::path::PathBuf {
     let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     copy_dir(
         manifest.join("..").join("..").join("test-world"),
-        root.join("world"),
+        root.path().join("world"),
     );
-    root.join("world")
+    root
 }

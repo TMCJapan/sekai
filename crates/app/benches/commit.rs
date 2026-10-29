@@ -13,10 +13,10 @@ fn benches(c: &mut Criterion) {
     c.bench_function("commit/small-full", |b| {
         b.iter(|| {
             let root = tempdir("small");
-            let world_path = root.join("world");
+            let world_path = root.path().join("world");
             let mut world = HostWorldTree::new(&world_path).expect("world resolves");
             generate(&world_path, &SMALL);
-            let store = root.join("store").to_string_lossy().into_owned();
+            let store = root.path().join("store").to_string_lossy().into_owned();
             let mut instance = rt
                 .block_on(sekai_app::SekaiInstance::init(&store))
                 .expect("open works");
@@ -26,16 +26,15 @@ fn benches(c: &mut Criterion) {
                     .commit(options(), Scope::World, |_| {}),
             )
             .expect("commit works");
-            std::fs::remove_dir_all(&root).ok();
         });
     });
 
     c.bench_function("commit/small-incremental", |b| {
         let root = tempdir("incr");
-        let world_path = root.join("world");
+        let world_path = root.path().join("world");
         let mut world = HostWorldTree::new(&world_path).expect("world resolves");
         generate(&world_path, &SMALL);
-        let store = root.join("store").to_string_lossy().into_owned();
+        let store = root.path().join("store").to_string_lossy().into_owned();
         let mut instance = rt
             .block_on(sekai_app::SekaiInstance::init(&store))
             .expect("open works");
@@ -53,16 +52,15 @@ fn benches(c: &mut Criterion) {
             )
             .expect("commit works");
         });
-        std::fs::remove_dir_all(&root).ok();
     });
 
     c.bench_function("commit/medium-full", |b| {
         b.iter(|| {
             let root = tempdir("medium");
-            let world_path = root.join("world");
+            let world_path = root.path().join("world");
             let mut world = HostWorldTree::new(&world_path).expect("world resolves");
             generate(&world_path, &MEDIUM);
-            let store = root.join("store").to_string_lossy().into_owned();
+            let store = root.path().join("store").to_string_lossy().into_owned();
             let mut instance = rt
                 .block_on(sekai_app::SekaiInstance::init(&store))
                 .expect("open works");
@@ -72,7 +70,6 @@ fn benches(c: &mut Criterion) {
                     .commit(options(), Scope::World, |_| {}),
             )
             .expect("commit works");
-            std::fs::remove_dir_all(&root).ok();
         });
     });
 }

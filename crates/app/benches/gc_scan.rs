@@ -12,10 +12,10 @@ fn benches(c: &mut Criterion) {
 
     c.bench_function("gc-plan/small", |b| {
         let root = tempdir("gc-small");
-        let world_path = root.join("world");
+        let world_path = root.path().join("world");
         let mut world = HostWorldTree::new(&world_path).expect("world resolves");
         generate(&world_path, &SMALL);
-        let store = root.join("store").to_string_lossy().into_owned();
+        let store = root.path().join("store").to_string_lossy().into_owned();
         let mut instance = rt
             .block_on(sekai_app::SekaiInstance::init(&store))
             .expect("open works");
@@ -30,7 +30,6 @@ fn benches(c: &mut Criterion) {
         b.iter(|| {
             rt.block_on(instance.gc_plan()).expect("gc plan works");
         });
-        std::fs::remove_dir_all(&root).ok();
     });
 }
 
