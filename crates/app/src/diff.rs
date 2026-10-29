@@ -111,12 +111,13 @@ impl<S: SekaiStore> SekaiInstance<S> {
     }
 }
 
-/// One chunk's AST diff entries between two sources.
+/// One chunk's AST diff between two sources.
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct ChunkDiff {
-    /// Chunk the entries belong to.
+    /// Chunk the diff belongs to.
     pub coord: ChunkCoord,
-    /// AST differences; empty when both sides decode identically.
+    /// Normalized change detection: `Nothing` when both sides normalize
+    /// identically, `Full` with both hash pairs otherwise.
     pub entries: ChunkPayloadDiff,
 }
 
@@ -124,9 +125,10 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// Compute AST diffs for explicit chunk coordinates.
     ///
     /// Compares two commits in the store, additionally returning
-    /// per-phase timings. A chunk absent (or tombstoned) on a side diffs as an
-    /// empty compound there: absent on both sides yields no entries, present on
-    /// one side reports whole-value Added/Removed entries.
+    /// per-phase timings. A chunk absent (or tombstoned) on a side diffs as a
+    /// synthesized zeroed payload there: absent on both sides yields
+    /// [`ChunkPayloadDiff::Nothing`], present on one side reports
+    /// [`ChunkPayloadDiff::Full`].
     pub async fn diff_chunks(
         &self,
         old_commit: CommitId,
@@ -216,9 +218,10 @@ async fn commit_chunk_compressed<S: SekaiStore>(
     Ok(Some(compressed))
 }
 
-/// Empty root compound: the NBT a missing chunk diffs as. Absent on both
-/// sides yields no entries; present on one side reports whole-value
-/// Added/Removed entries for every leaf.
+/// The NBT a missing chunk diffs as: a synthesized zeroed [`ChunkPayload`]
+/// (data version 0, empty status). Absent on both sides yields
+/// [`ChunkPayloadDiff::Nothing`]; present on one side reports a
+/// [`ChunkPayloadDiff::Full`] against those zeroed bytes.
 fn decompress_or_empty(compressed: Option<Vec<u8>>) -> Result<Vec<u8>, AppError> {
     compressed.map_or_else(
         || {
@@ -380,8 +383,9 @@ where
 
 /// Diff every coordinate of `old` against `new`, accumulating phase timings.
 ///
-/// A payload of `None` decompresses as [`EMPTY_COMPOUND`], so an absent chunk
-/// on one side reports whole-value Added/Removed entries.
+/// A payload of `None` decompresses as a synthesized zeroed chunk (see
+/// [`decompress_or_empty`]), so an absent chunk on one side reports
+/// [`ChunkPayloadDiff::Full`] against those bytes.
 async fn diff_coords(
     coords: &[ChunkCoord],
     old: impl DiffSource,
