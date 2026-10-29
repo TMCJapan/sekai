@@ -265,7 +265,9 @@ impl Drop for HostWorldLock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::fs;
+    #[cfg(unix)]
     use std::path::PathBuf;
 
     /// The I/O error behind a failed acquisition.
