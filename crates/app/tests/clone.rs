@@ -6,24 +6,17 @@
 
 use sekai_app::HostWorldTree;
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::Path;
 
-static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-fn tempdir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "sekai-clone-{name}-{}-{}",
-        std::process::id(),
-        TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn cleanup(dir: impl AsRef<Path>) {
-    let _ = std::fs::remove_dir_all(dir);
+/// A temp dir whose name starts with the calling test's name (tempfile
+/// appends a random suffix), removed when its guard is dropped at the end
+/// of the test, panics included.
+fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
+    let guard = tempfile::Builder::new()
+        .prefix(&format!("sekai-clone-{name}-"))
+        .tempdir()
+        .unwrap();
+    (guard.path().to_path_buf(), guard)
 }
 
 /// Write a region image through the real builder, deriving the region
@@ -65,7 +58,7 @@ fn commit_options() -> sekai_app::CommitOptions {
 
 #[tokio::test]
 async fn clone_rebuilds_commit_into_fresh_directory() {
-    let root = tempdir("roundtrip");
+    let (root, _guard) = tempdir("roundtrip");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -111,13 +104,12 @@ async fn clone_rebuilds_commit_into_fresh_directory() {
         chunk_map(out_path.join("DIM-1/region/r.0.0.mca")),
         expected_nether
     );
-    cleanup(&root);
 }
 
 #[tokio::test]
 async fn clone_honors_layout_and_scope() {
     use sekai_app::{Dimension, Scope};
-    let root = tempdir("layout-scope");
+    let (root, _guard) = tempdir("layout-scope");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -182,12 +174,11 @@ async fn clone_honors_layout_and_scope() {
             .join("myworld_nether/DIM-1/region/r.0.0.mca")
             .is_file()
     );
-    cleanup(&root);
 }
 
 #[tokio::test]
 async fn clone_refuses_non_empty_directory() {
-    let root = tempdir("nonempty");
+    let (root, _guard) = tempdir("nonempty");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -230,12 +221,11 @@ async fn clone_refuses_non_empty_directory() {
         .await
         .unwrap();
     assert_eq!(report.files_written, 1);
-    cleanup(&root);
 }
 
 #[tokio::test]
 async fn clone_omits_tombstoned_regions() {
-    let root = tempdir("tombstones");
+    let (root, _guard) = tempdir("tombstones");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -272,5 +262,4 @@ async fn clone_omits_tombstoned_regions() {
     assert_eq!(report.files_written, 0);
     assert_eq!(report.chunks_restored, 0);
     assert!(!out_path.join("region/r.0.0.mca").exists());
-    cleanup(&root);
 }

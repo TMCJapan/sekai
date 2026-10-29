@@ -18,4 +18,5 @@ sqlx = { workspace = true, features = ["sqlite"] }
 tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]
+tempfile.workspace = true
 tokio.workspace = true

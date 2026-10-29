@@ -1,30 +1,25 @@
 //! Commands other than `commit` must never create or initialize the store:
 //! a missing store fails loudly and leaves nothing behind (issue #80).
 
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use clap::Parser as _;
 use sekai_cli::cli::Cli;
 
-static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
 const HASH: &str = "0101010101010101010101010101010101010101010101010101010101010101";
 
-fn tempdir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "sekai-cli-{name}-{}-{}",
-        std::process::id(),
-        TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+/// A temp dir whose name starts with the calling test's name (tempfile
+/// appends a random suffix), removed when its guard is dropped at the end
+/// of the test, panics included.
+fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
+    let guard = tempfile::Builder::new()
+        .prefix(&format!("sekai-cli-{name}-"))
+        .tempdir()
+        .unwrap();
+    (guard.path().to_path_buf(), guard)
 }
 
 #[tokio::test]
 async fn commands_on_a_missing_store_fail_without_creating_it() {
-    let root = tempdir("missing-store");
+    let (root, _guard) = tempdir("missing-store");
     let store = root.join("store");
     let world = root.join("world");
     std::fs::create_dir_all(&world).unwrap();
@@ -54,10 +49,4 @@ async fn commands_on_a_missing_store_fail_without_creating_it() {
             "{args:?} must not create the store"
         );
     }
-
-    cleanup(&root);
-}
-
-fn cleanup(dir: impl AsRef<Path>) {
-    let _ = std::fs::remove_dir_all(dir);
 }

@@ -265,46 +265,18 @@ impl Drop for HostWorldLock {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::fs;
+    #[cfg(unix)]
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    /// A private directory under the system temp dir, removed on drop.
-    ///
-    /// The system temp dir is shared, so a name another run already owns
-    /// is stepped over rather than removed: the suite must not delete
-    /// what it did not create.
-    struct TempRoot(PathBuf);
-
-    impl TempRoot {
-        fn new(name: &str) -> Self {
-            for _ in 0..16 {
-                let dir = std::env::temp_dir().join(format!(
-                    "sekai-world-lock-{name}-{}-{}",
-                    std::process::id(),
-                    COUNTER.fetch_add(1, Ordering::Relaxed)
-                ));
-                match fs::create_dir(&dir) {
-                    Ok(()) => return Self(dir),
-                    // Another run owns the name: step over it.
-                    Err(source) if source.kind() == io::ErrorKind::AlreadyExists => {}
-                    Err(source) => panic!("cannot create {}: {source}", dir.display()),
-                }
-            }
-            panic!("no free temp directory for {name}");
-        }
-
-        fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    impl Drop for TempRoot {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
+    /// A temp dir whose name starts with the calling test's name
+    /// (tempfile appends a random suffix), removed on drop.
+    fn tempdir(name: &str) -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix(&format!("sekai-world-lock-{name}-"))
+            .tempdir()
+            .unwrap()
     }
 
     /// The I/O error behind a failed acquisition.
@@ -332,7 +304,7 @@ mod tests {
 
     #[test]
     fn readers_share_and_a_writer_excludes() {
-        let root = TempRoot::new("modes");
+        let root = tempdir("readers-share-and-a-writer-excludes");
         let path = root.path().join(HostWorldLock::FILE_NAME);
         let first = HostWorldLock::acquire(&path, WorldLockMode::Shared)
             .unwrap()
@@ -375,7 +347,7 @@ mod tests {
 
     #[test]
     fn a_missing_world_is_an_error_not_a_read_only_one() {
-        let root = TempRoot::new("missing");
+        let root = tempdir("a-missing-world-is-an-error-not-a-read-only-one");
         let path = root.path().join("absent").join(HostWorldLock::FILE_NAME);
         for mode in [WorldLockMode::Shared, WorldLockMode::Exclusive] {
             let err = io_error(HostWorldLock::acquire(&path, mode).unwrap_err());
@@ -386,7 +358,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_symlinked_lock_file_is_refused() {
-        let root = TempRoot::new("symlink");
+        let root = tempdir("a-symlinked-lock-file-is-refused");
         let target = root.path().join("target");
         fs::write(&target, "").unwrap();
         let path = root.path().join(HostWorldLock::FILE_NAME);
@@ -402,7 +374,7 @@ mod tests {
     fn the_open_itself_refuses_a_symlink() {
         // The pre-check only catches a link that is already there; the
         // open is what refuses a link swapped in afterwards.
-        let root = TempRoot::new("symlink-open");
+        let root = tempdir("the-open-itself-refuses-a-symlink");
         let target = root.path().join("target");
         fs::write(&target, "").unwrap();
         let path = root.path().join(HostWorldLock::FILE_NAME);
@@ -416,7 +388,7 @@ mod tests {
     fn the_read_only_fallback_refuses_a_symlink() {
         // The fallback must not follow a link either: a link swapped in
         // between the two opens would move the lock onto its target.
-        let root = TempRoot::new("symlink-read-only");
+        let root = tempdir("the-read-only-fallback-refuses-a-symlink");
         let target = root.path().join("target");
         fs::write(&target, "").unwrap();
         let path = root.path().join(HostWorldLock::FILE_NAME);
@@ -433,7 +405,7 @@ mod tests {
         // A directory this user cannot search refuses the create and the
         // read alike, so the lock file's absence cannot be told: the lock
         // has to fail rather than degrade to an unguarded run.
-        let root = TempRoot::new("unsearchable");
+        let root = tempdir("an-unsearchable-world-is-an-error-not-a-read-only-one");
         let dir = root.path().join("unsearchable");
         let probe = root.path().join("probe");
         fs::create_dir_all(&dir).unwrap();
@@ -466,7 +438,7 @@ mod tests {
     fn a_dangling_symlinked_lock_file_is_refused() {
         // A link whose target is gone is still a link: the pre-check
         // reports it, and the open refuses it as well.
-        let root = TempRoot::new("symlink-dangling");
+        let root = tempdir("a-dangling-symlinked-lock-file-is-refused");
         let target = root.path().join("missing");
         let path = root.path().join(HostWorldLock::FILE_NAME);
         std::os::unix::fs::symlink(&target, &path).unwrap();
@@ -482,7 +454,7 @@ mod tests {
     fn a_lock_file_another_user_created_still_locks_exclusively() {
         use std::os::unix::fs::PermissionsExt as _;
 
-        let root = TempRoot::new("foreign");
+        let root = tempdir("a-lock-file-another-user-created-still-locks-exclusively");
         let path = root.path().join(HostWorldLock::FILE_NAME);
         fs::write(&path, "").unwrap();
         // What another user's umask-022 file looks like to this one.
@@ -506,7 +478,7 @@ mod tests {
     fn read_only_worlds_stay_readable_and_still_exclude() {
         use std::os::unix::fs::PermissionsExt as _;
 
-        let root = TempRoot::new("read-only");
+        let root = tempdir("read-only-worlds-stay-readable-and-still-exclude");
         let existing = root.path().join("existing");
         let fresh = root.path().join("fresh");
         let unreadable = root.path().join("unreadable");

@@ -5,24 +5,17 @@
 #![cfg(feature = "backend-sqlite")]
 
 use sekai_app::HostWorldTree;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::Path;
 
-static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-fn tempdir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "sekai-prune-{name}-{}-{}",
-        std::process::id(),
-        TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn cleanup(dir: impl AsRef<Path>) {
-    let _ = std::fs::remove_dir_all(dir);
+/// A temp dir whose name starts with the calling test's name (tempfile
+/// appends a random suffix), removed when its guard is dropped at the end
+/// of the test, panics included.
+fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
+    let guard = tempfile::Builder::new()
+        .prefix(&format!("sekai-prune-{name}-"))
+        .tempdir()
+        .unwrap();
+    (guard.path().to_path_buf(), guard)
 }
 
 fn write_region(path: impl AsRef<Path>, chunks: &[(i32, i32, Vec<u8>)]) {
@@ -65,7 +58,7 @@ fn blob_count(store: impl AsRef<Path>) -> usize {
 
 #[tokio::test]
 async fn prune_folds_and_gc_reclaims() {
-    let root = tempdir("lifecycle");
+    let (root, _guard) = tempdir("lifecycle");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store_dir = root.join("store");
@@ -146,13 +139,12 @@ async fn prune_folds_and_gc_reclaims() {
     let (gc_report, _) = instance.gc(|_| {}).await.unwrap();
     assert_eq!(gc_report.removed, 1);
     assert_eq!(blob_count(&store_dir), 2);
-    cleanup(&root);
 }
 
 #[tokio::test]
 async fn prune_before_ref_and_empty_guards() {
     use sekai_app::CommitId;
-    let root = tempdir("guards");
+    let (root, _guard) = tempdir("guards");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -189,5 +181,4 @@ async fn prune_before_ref_and_empty_guards() {
             .is_err()
     );
     assert_eq!(instance.list_commits().await.unwrap().len(), 2);
-    cleanup(&root);
 }

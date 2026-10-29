@@ -8,45 +8,17 @@ use sekai_app::{
     AppError, Area, ChunkCoord, Dimension, HostWorldTree, NamedScopeError, Rect, RegionKind, Scope,
     ScopeName,
 };
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::Path;
 
-static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
+/// A private temp dir, removed on drop. Nothing is kept, so a panicking
+/// test leaves nothing behind either.
+fn tempdir() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("sekai-scope-")
+        .tempdir()
+        .unwrap()
+}
 const OVER: Dimension = Dimension::OVERWORLD;
-
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!(
-            "sekai-scope-{name}-{}-{}",
-            std::process::id(),
-            TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        Self(dir)
-    }
-
-    fn store(&self) -> String {
-        self.0.join("store").to_string_lossy().into_owned()
-    }
-}
-
-impl std::ops::Deref for TempDir {
-    type Target = Path;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
 
 fn write_region(path: impl AsRef<Path>, chunks: &[(i32, i32, Vec<u8>)]) {
     let name = path.as_ref().file_name().unwrap().to_str().unwrap();
@@ -66,8 +38,10 @@ fn name(raw: &str) -> ScopeName {
 
 #[tokio::test]
 async fn a_scope_is_created_listed_and_deleted() {
-    let root = TempDir::new("crud");
-    let mut instance = sekai_app::SekaiInstance::init(&root.store()).await.unwrap();
+    let root = tempdir();
+    let mut instance = sekai_app::SekaiInstance::init(&root.path().join("store").to_string_lossy())
+        .await
+        .unwrap();
     assert_eq!(instance.list_scopes().await.unwrap(), Vec::new());
 
     let spawn = name("spawn");
@@ -102,8 +76,10 @@ async fn a_scope_is_created_listed_and_deleted() {
 
 #[tokio::test]
 async fn an_existing_scope_is_replaced_only_with_force() {
-    let root = TempDir::new("force");
-    let mut instance = sekai_app::SekaiInstance::init(&root.store()).await.unwrap();
+    let root = tempdir();
+    let mut instance = sekai_app::SekaiInstance::init(&root.path().join("store").to_string_lossy())
+        .await
+        .unwrap();
     let spawn = name("spawn");
     let first = instance
         .create_scope(&spawn, vec![(OVER, Rect::new(0, 0, 0, 0))], false)
@@ -128,8 +104,10 @@ async fn an_existing_scope_is_replaced_only_with_force() {
 
 #[tokio::test]
 async fn a_selection_of_nothing_is_refused() {
-    let root = TempDir::new("nothing");
-    let mut instance = sekai_app::SekaiInstance::init(&root.store()).await.unwrap();
+    let root = tempdir();
+    let mut instance = sekai_app::SekaiInstance::init(&root.path().join("store").to_string_lossy())
+        .await
+        .unwrap();
     let err = instance
         .create_scope(&name("spawn"), Vec::new(), false)
         .await
@@ -143,8 +121,10 @@ async fn a_selection_of_nothing_is_refused() {
 
 #[tokio::test]
 async fn a_scope_resolves_to_its_rectangles() {
-    let root = TempDir::new("resolve");
-    let mut instance = sekai_app::SekaiInstance::init(&root.store()).await.unwrap();
+    let root = tempdir();
+    let mut instance = sekai_app::SekaiInstance::init(&root.path().join("store").to_string_lossy())
+        .await
+        .unwrap();
     let err = instance.resolve_scope(&name("spawn")).await.unwrap_err();
     assert!(matches!(err, AppError::UnknownScope { name } if name == "spawn"));
 
@@ -173,14 +153,16 @@ async fn a_scope_resolves_to_its_rectangles() {
 
 #[tokio::test]
 async fn a_resolved_scope_limits_a_commit() {
-    let root = TempDir::new("commit");
-    let world_path = root.join("world");
+    let root = tempdir();
+    let world_path = root.path().join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     write_region(
         world_path.join("region/r.0.0.mca"),
         &[(0, 0, vec![1]), (1, 0, vec![2]), (5, 5, vec![3])],
     );
-    let mut instance = sekai_app::SekaiInstance::init(&root.store()).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&root.path().join("store").to_string_lossy())
+        .await
+        .unwrap();
     instance
         .create_scope(
             &name("spawn"),

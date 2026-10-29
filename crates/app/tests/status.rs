@@ -5,24 +5,17 @@
 #![cfg(feature = "backend-sqlite")]
 
 use sekai_app::HostWorldTree;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::Path;
 
-static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-fn tempdir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "sekai-status-{name}-{}-{}",
-        std::process::id(),
-        TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn cleanup(dir: impl AsRef<Path>) {
-    let _ = std::fs::remove_dir_all(dir);
+/// A temp dir whose name starts with the calling test's name (tempfile
+/// appends a random suffix), removed when its guard is dropped at the end
+/// of the test, panics included.
+fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
+    let guard = tempfile::Builder::new()
+        .prefix(&format!("sekai-status-{name}-"))
+        .tempdir()
+        .unwrap();
+    (guard.path().to_path_buf(), guard)
 }
 
 fn write_region(path: impl AsRef<Path>, chunks: &[(i32, i32, Vec<u8>)]) {
@@ -63,7 +56,7 @@ fn blob_count(store: impl AsRef<Path>) -> usize {
 
 #[tokio::test]
 async fn status_counts_tombstones_without_writing() {
-    let root = tempdir("tomb");
+    let (root, _guard) = tempdir("tomb");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -103,12 +96,11 @@ async fn status_counts_tombstones_without_writing() {
     // A preview is pure: no commit rows and no blob files appear.
     assert_eq!(instance.list_commits().await.unwrap().len(), commits_before);
     assert_eq!(blob_count(&store), blobs_before);
-    cleanup(&root);
 }
 
 #[tokio::test]
 async fn status_reports_a_clean_world_after_commit() {
-    let root = tempdir("clean");
+    let (root, _guard) = tempdir("clean");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -144,5 +136,4 @@ async fn status_reports_a_clean_world_after_commit() {
         timings.total >= timings.discover + timings.fingerprint,
         "total timing must cover its phases"
     );
-    cleanup(&root);
 }

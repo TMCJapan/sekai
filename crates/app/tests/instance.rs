@@ -5,29 +5,20 @@
 
 #![cfg(feature = "backend-sqlite")]
 
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-fn tempdir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "sekai-app-{name}-{}-{}",
-        std::process::id(),
-        TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn cleanup(dir: impl AsRef<Path>) {
-    let _ = std::fs::remove_dir_all(dir);
+/// A temp dir whose name starts with the calling test's name (tempfile
+/// appends a random suffix), removed when its guard is dropped at the end
+/// of the test, panics included.
+fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
+    let guard = tempfile::Builder::new()
+        .prefix(&format!("sekai-app-{name}-"))
+        .tempdir()
+        .unwrap();
+    (guard.path().to_path_buf(), guard)
 }
 
 #[tokio::test]
 async fn open_of_a_missing_store_fails_and_creates_nothing() {
-    let root = tempdir("open-missing");
+    let (root, _guard) = tempdir("open-missing");
     let store = root.join("store");
     let url = store.to_string_lossy().into_owned();
 
@@ -44,17 +35,15 @@ async fn open_of_a_missing_store_fails_and_creates_nothing() {
     assert!(store.join("meta.sqlite").is_file());
     assert!(store.join("blobs").is_dir());
     sekai_app::SekaiInstance::open(&url).await.unwrap();
-    cleanup(&root);
 }
 
 #[tokio::test]
 async fn init_is_idempotent_on_an_existing_store() {
-    let root = tempdir("init-twice");
+    let (root, _guard) = tempdir("init-twice");
     let store = root.join("store");
     let url = store.to_string_lossy().into_owned();
 
     sekai_app::SekaiInstance::init(&url).await.unwrap();
     sekai_app::SekaiInstance::init(&url).await.unwrap();
     assert!(store.join("meta.sqlite").is_file());
-    cleanup(&root);
 }
