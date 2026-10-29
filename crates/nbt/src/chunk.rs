@@ -1,10 +1,10 @@
 mod block_entity;
-mod hightmap;
+mod heightmap;
 mod section;
 mod tick;
 
 pub use block_entity::BlockEntity;
-pub use hightmap::Heightmaps;
+pub use heightmap::Heightmaps;
 pub use section::Section;
 pub use tick::{BlockTick, FluidTick};
 
