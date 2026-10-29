@@ -1,4 +1,5 @@
 mod block_entity;
+mod decode;
 mod heightmap;
 mod section;
 mod tick;

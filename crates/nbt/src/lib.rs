@@ -86,6 +86,37 @@ mod tests {
     }
 
     #[test]
+    fn section_reads_vanilla_light_keys_and_defaults_missing_fields() {
+        use nanonbt::SerializeNbt;
+
+        #[derive(SerializeNbt)]
+        struct MinimalSection {
+            #[nbt(rename = "Y")]
+            y: i8,
+        }
+
+        let bytes = nanonbt::to_bytes(&MinimalSection { y: 3 }).unwrap();
+        let section: Section = nanonbt::from_slice(&bytes).unwrap();
+        assert_eq!(section.y, 3);
+        assert_eq!(section.block_lights, []);
+        assert_eq!(section.sky_lights, []);
+
+        let section = Section {
+            y: -2,
+            block_lights: &[1, 2, 3],
+            sky_lights: &[4, 5],
+            ..Section::default()
+        };
+        let bytes = nanonbt::to_bytes(&section).unwrap();
+        assert!(bytes.windows(10).any(|window| window == b"BlockLight"));
+        assert!(bytes.windows(8).any(|window| window == b"SkyLight"));
+        assert!(!bytes.windows(11).any(|window| window == b"BlockLights"));
+
+        let parsed: Section = nanonbt::from_slice(&bytes).unwrap();
+        assert_eq!(parsed, section);
+    }
+
+    #[test]
     fn normalized_hash_covers_both_tick_lists() {
         let id = Cesu8::try_from_str("minecraft:water").unwrap();
         let status = Cesu8::try_from_str("minecraft:full").unwrap();
