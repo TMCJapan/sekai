@@ -18,12 +18,14 @@ impl ChunkPayloadDiff {
         old: &ChunkPayload<'de>,
         new: &ChunkPayload<'de>,
     ) -> Result<Self, nanonbt::Error> {
-        if old == new {
+        let old_hash = old.normalize_hash()?;
+        let new_hash = new.normalize_hash()?;
+        if old_hash == new_hash {
             Ok(Self::Nothing)
         } else {
             Ok(Self::Full {
-                old: old.normalize_hash()?,
-                new: new.normalize_hash()?,
+                old: old_hash,
+                new: new_hash,
             })
         }
     }

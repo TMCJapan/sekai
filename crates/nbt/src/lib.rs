@@ -65,6 +65,32 @@ mod tests {
     }
 
     #[test]
+    fn volatile_only_change_reports_nothing() {
+        let status = Cesu8::try_from_str("minecraft:full").unwrap();
+        let payload = |inhabited_time, last_update| ChunkPayload {
+            data_version: 1,
+            x_pos: 3,
+            y_pos: 0,
+            z_pos: -1,
+            inhabited_time,
+            last_update,
+            sections: alloc::vec![],
+            heightmaps: Heightmaps::default(),
+            status,
+            block_entities: alloc::vec![],
+            block_ticks: alloc::vec![],
+            fluid_ticks: alloc::vec![],
+        };
+
+        let old = payload(7, 9);
+        let new = payload(999, 1_234);
+        assert_eq!(
+            ChunkPayloadDiff::new(&old, &new).unwrap(),
+            ChunkPayloadDiff::Nothing
+        );
+    }
+
+    #[test]
     fn payload_round_trips() {
         let payload = ChunkPayload {
             data_version: 1,
