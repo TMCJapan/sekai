@@ -30,7 +30,7 @@ impl<B: fmt::Debug> fmt::Display for DiffError<B> {
     }
 }
 
-/// Compute AST diff between two stored blob hashes.
+/// Compute a chunk diff between two stored blob hashes.
 pub async fn diff_blobs<B: BlobStore>(
     blobs: &B,
     old_hash: &BlobHash,
@@ -58,7 +58,10 @@ pub async fn diff_blobs<B: BlobStore>(
     ChunkPayloadDiff::new(&old_val, &new_val).map_err(DiffError::Nbt)
 }
 
-/// Compute AST diff between two stored blob hashes using default ignored tags.
+/// Compute a chunk diff between two stored blob hashes using the V1
+/// normalization rules.
+///
+/// Retained for API compatibility: identical to [`diff_blobs`].
 pub async fn diff_blobs_v1<B: BlobStore>(
     blobs: &B,
     old_hash: &BlobHash,

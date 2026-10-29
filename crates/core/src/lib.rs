@@ -11,7 +11,6 @@ pub(crate) mod support;
 pub mod usecase;
 
 pub use port::{BlobStore, MetaStore};
-use sekai_nbt::ChunkPayloadDiff;
 pub use sekai_util::{
     ApplyOutcome, Area, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitEntry, CommitId,
     CommitRef, DEFAULT_REF_NAME, DiffHash, Dimension, FoldOutcome, GcPlan, HexError, NamedScope,
@@ -26,10 +25,14 @@ pub use usecase::{
     diff_blobs_v1, list_refs, list_scopes,
 };
 
+pub use sekai_nbt::ChunkPayloadDiff;
+
 /// Compute a volatile diff hash for decompressed chunk NBT.
 pub use sekai_nbt::diff_hash;
 
-/// Compute a diff hash using the default ignore set.
+/// Compute a diff hash with the V1 normalization rules. Identical to
+/// [`diff_hash`]: the normalized view always excludes the V1 volatile tags
+/// (`InhabitedTime`, `LastUpdate`).
 pub use sekai_nbt::diff_hash_v1;
 
 pub use commit::commit_hash;
@@ -39,7 +42,10 @@ pub fn hash_blob(payload: &[u8]) -> BlobHash {
     BlobHash(*blake3::hash(payload).as_bytes())
 }
 
-/// Compute structural diff entries between two raw decompressed NBT payloads.
+/// Compute a diff between two raw decompressed chunk payloads.
+///
+/// The result is a [`ChunkPayloadDiff`]: `Nothing` when the normalized
+/// views match, `Full` with both normalized hashes otherwise.
 pub fn diff_nbt(
     old_raw_nbt: &[u8],
     new_raw_nbt: &[u8],
@@ -50,7 +56,10 @@ pub fn diff_nbt(
     ChunkPayloadDiff::new(&old_val, &new_val)
 }
 
-/// Compute structural diff entries using the default ignore set.
+/// Compute a diff between two raw decompressed chunk payloads using the V1
+/// normalization rules.
+///
+/// Retained for API compatibility: identical to [`diff_nbt`].
 pub fn diff_nbt_v1(
     old_raw_nbt: &[u8],
     new_raw_nbt: &[u8],
