@@ -1249,14 +1249,14 @@ mod tests {
     use sekai_core::{RegionKind, usecase::commit::stage_present};
     use sqlx::ConnectOptions as _;
     use sqlx::Connection as _;
-    /// A temp dir named after the calling test; the caller runs
-    /// `remove_dir_all` so the path can outlive any `TempDir` guard.
-    fn tempdir(name: &str) -> std::path::PathBuf {
-        tempfile::Builder::new()
+    /// A temp dir named after the calling test, removed when its guard
+    /// is dropped at the end of the test, panics included.
+    fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
+        let guard = tempfile::Builder::new()
             .prefix(&format!("sekai-{name}-"))
             .tempdir()
-            .unwrap()
-            .keep()
+            .unwrap();
+        (guard.path().to_path_buf(), guard)
     }
 
     async fn memory_meta() -> SqliteMeta {
@@ -1318,7 +1318,7 @@ mod tests {
 
     #[tokio::test]
     async fn activating_a_ref_refuses_a_dangling_target() {
-        let dir = tempdir("dangling-target");
+        let (dir, _guard) = tempdir("dangling-target");
         let path = dir.join("meta.sqlite");
         let mut meta = SqliteMeta::open(&path).await.unwrap();
         let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
@@ -1349,7 +1349,6 @@ mod tests {
         let err = meta.activate_ref(&feature).await.unwrap_err();
         assert!(matches!(err, StorageError::UnknownCommit { id } if id == missing));
         assert_eq!(meta.active_ref().await.unwrap().unwrap().name, main);
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -1496,7 +1495,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_corrupt_ref_row_fails_loudly() {
-        let dir = tempdir("corrupt-ref");
+        let (dir, _guard) = tempdir("corrupt-ref");
         let path = dir.join("meta.sqlite");
         let meta = SqliteMeta::open(&path).await.unwrap();
         // Names are re-validated on decode: a row the schema no longer
@@ -1542,7 +1541,6 @@ mod tests {
                 value: 2
             })
         ));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]
@@ -1667,7 +1665,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_first_inits_all_succeed() {
         for round in 0..20 {
-            let dir = tempdir(&format!("init-race-{round}"));
+            let (dir, _guard) = tempdir(&format!("init-race-{round}"));
             let inits: Vec<_> = (0..4)
                 .map(|_| tokio::spawn(init_sqlite(dir.clone())))
                 .collect();
@@ -1680,13 +1678,12 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(version, SCHEMA_VERSION);
-            let _ = std::fs::remove_dir_all(&dir);
         }
     }
 
     #[tokio::test]
     async fn version_gate_rejects_foreign_schema() {
-        let dir = tempdir("version");
+        let (dir, _guard) = tempdir("version");
         let path = dir.join("meta.sqlite");
         let mut seed = SqliteConnectOptions::new()
             .filename(&path)
@@ -1707,7 +1704,6 @@ mod tests {
                 supported: SCHEMA_VERSION,
             })
         ));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The version gate rejects any store whose `user_version` is not
@@ -1716,7 +1712,7 @@ mod tests {
     /// { found: 13, supported: SCHEMA_VERSION }`.
     #[tokio::test]
     async fn a_store_from_the_previous_schema_version_is_refused() {
-        let dir = tempdir("version-13");
+        let (dir, _guard) = tempdir("version-13");
         let path = dir.join("meta.sqlite");
         let mut seed = SqliteConnectOptions::new()
             .filename(&path)
@@ -1737,7 +1733,6 @@ mod tests {
                 supported: SCHEMA_VERSION,
             })
         ));
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test]

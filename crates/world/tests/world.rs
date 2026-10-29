@@ -8,19 +8,14 @@ use sekai_world::{
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// A temp dir and its guard, both bound for the test body. The guard is
-/// not leaked, so panics clean up too; `cleanup` only removes the files
-/// early, before handles still referencing them are dropped.
+/// A temp dir named after the calling test, removed when its guard is
+/// dropped at the end of the test, panics included.
 fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
     let guard = tempfile::Builder::new()
         .prefix(&format!("sekai-world-{name}-"))
         .tempdir()
         .unwrap();
     (guard.path().to_path_buf(), guard)
-}
-
-fn cleanup(dir: impl AsRef<Path>) {
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Minimal one-chunk region image bytes.
@@ -157,7 +152,6 @@ fn observes_a_single_layout_per_root() {
 
     assert_derives_back(&world, &found);
     assert_stable_ids(&world_path, &found);
-    cleanup(&world_path);
 }
 
 #[test]
@@ -191,7 +185,6 @@ fn get_dims_lists_every_layout_dimension() {
             .unwrap(),
         [] as [(RegionKey, HostRegion); 0]
     );
-    cleanup(&world_path);
 }
 
 #[cfg(unix)]
@@ -218,7 +211,6 @@ fn non_utf8_dimension_names_stay_discovered() {
     // fixture only exists where the file system admits raw bytes; the
     // byte-keying itself stays unit-tested in `sekai-anvil`.
     if std::fs::create_dir_all(&namespace_region).is_err() {
-        cleanup(&world_path);
         return;
     }
     write(namespace_region.join("r.0.0.mca"), &image);
@@ -239,7 +231,6 @@ fn non_utf8_dimension_names_stay_discovered() {
     assert_eq!(discovered_dims(&world_path).len(), 3);
     assert_derives_back(&world, &found);
     assert_stable_ids(&world_path, &found);
-    cleanup(&world_path);
 }
 
 #[test]
@@ -268,7 +259,6 @@ fn discovers_a_legacy_single_folder_world() {
     assert_eq!(nether.dim, Dimension::NETHER);
     assert_derives_back(&world, &found);
     assert_stable_ids(&world_path, &found);
-    cleanup(&world_path);
 }
 
 #[test]
@@ -289,7 +279,6 @@ fn locking_a_missing_world_reports_the_missing_world() {
         !root.join("typo").exists(),
         "locking must not create the world"
     );
-    cleanup(&root);
 }
 
 #[test]
@@ -327,7 +316,6 @@ fn the_world_lock_lives_in_the_root_and_stays_out_of_discovery() {
             .guard()
             .is_ok()
     );
-    cleanup(&world_path);
 }
 
 #[test]
@@ -358,7 +346,6 @@ fn world_locks_stay_out_of_bukkit_layout_detection() {
     let reopened = HostWorldTree::new(&root_path).unwrap();
     assert_eq!(paths_of(&discover(&reopened)), paths_of(&before));
     drop(held);
-    cleanup(&root_path);
 }
 
 #[test]
@@ -391,7 +378,6 @@ fn an_exclusive_world_lock_excludes_another_writer() {
             .guard()
             .is_ok()
     );
-    cleanup(&world_path);
 }
 
 #[test]
@@ -426,7 +412,6 @@ fn discovers_a_bukkit_level_name_world() {
     );
     assert_derives_back(&root, &found);
     assert_stable_ids(&root_path, &found);
-    cleanup(&root_path);
 }
 
 #[test]
@@ -472,7 +457,6 @@ fn discovers_a_custom_level_name_world() {
     );
     assert_ne!(custom.dim, over.dim);
     assert_derives_back(&root, &found);
-    cleanup(&root_path);
 }
 
 #[test]
@@ -502,7 +486,6 @@ fn other_world_folders_are_not_observed() {
             root_path.join("world/dimensions/minecraft/the_nether/region/r.0.0.mca"),
         ]
     );
-    cleanup(&root_path);
 }
 
 #[test]
@@ -546,7 +529,6 @@ fn discovers_a_legacy_bukkit_world() {
     assert_ne!(custom.dim, over.dim);
     assert_derives_back(&root, &found);
     assert_stable_ids(&root_path, &found);
-    cleanup(&root_path);
 }
 
 #[test]
@@ -577,7 +559,6 @@ fn vanilla_dimensions_stay_out_of_a_legacy_bukkit_world() {
         ]
     );
     assert_derives_back(&root, &found);
-    cleanup(&root_path);
 }
 
 #[test]
@@ -643,8 +624,6 @@ fn legacy_bukkit_keeps_vanilla_legacy_dimension_ids() {
             ),
         ])
     );
-    cleanup(&root_path);
-    cleanup(&legacy_path);
 }
 
 #[test]
@@ -653,8 +632,8 @@ fn modern_tree_keeps_legacy_dimension_ids() {
     // same dimensions (`minecraft:overworld`, `minecraft:the_nether`,
     // `minecraft:the_end`) plus every `<namespace>:<path>` key, so a world
     // keeps one history across a migration in either direction.
-    let (modern_path, _guard) = tempdir("vanilla-26.1-ids");
-    let (legacy_path, _guard) = tempdir("vanilla-legacy-ids-modern");
+    let (modern_path, _modern_guard) = tempdir("vanilla-26.1-ids");
+    let (legacy_path, _legacy_guard) = tempdir("vanilla-legacy-ids-modern");
     let image = one_chunk_image();
     for dir in [
         "dimensions/minecraft/overworld/region",
@@ -710,8 +689,6 @@ fn modern_tree_keeps_legacy_dimension_ids() {
             ),
         ])
     );
-    cleanup(&modern_path);
-    cleanup(&legacy_path);
 }
 
 #[test]
@@ -742,7 +719,6 @@ fn legacy_leftovers_stay_out_of_a_bukkit_layout() {
         ]
     );
     assert_derives_back(&root, &found);
-    cleanup(&root_path);
 }
 
 #[test]
@@ -779,7 +755,6 @@ fn empty_dimension_directories_stay_collected() {
     );
     assert_derives_back(&root, &found);
     assert_stable_ids(&root_path, &found);
-    cleanup(&root_path);
 }
 
 #[test]
@@ -819,7 +794,6 @@ fn level_name_wins_over_a_leftover_world_folder() {
         ]
     );
     assert_derives_back(&root, &found);
-    cleanup(&root_path);
 }
 
 #[test]
@@ -847,7 +821,6 @@ fn an_escaping_level_name_stays_out_of_the_layout() {
         vec![root_path.join("dimensions/minecraft/overworld/region/r.0.0.mca")]
     );
     assert_derives_back(&root, &found);
-    cleanup(&base_path);
 }
 
 #[test]
@@ -862,7 +835,6 @@ fn an_unlistable_kind_directory_is_an_error() {
         HostWorldTree::new(&world_path),
         Err(sekai_world::WorldError::Io { .. })
     ));
-    cleanup(&world_path);
 }
 
 #[cfg(unix)]
@@ -883,7 +855,6 @@ fn a_permission_denied_kind_directory_is_an_error() {
     if denied {
         assert!(matches!(result, Err(sekai_world::WorldError::Io { .. })));
     }
-    cleanup(&world_path);
 }
 
 #[cfg(unix)]
@@ -910,7 +881,6 @@ fn a_broken_entry_does_not_hide_a_bukkit_trio() {
         vec![root_path.join("world/entities/r.0.0.mca")]
     );
     assert_derives_back(&root, &found);
-    cleanup(&root_path);
 }
 
 #[test]
@@ -941,7 +911,6 @@ fn a_bukkit_trio_without_server_properties_is_still_elected() {
     );
     assert_derives_back(&root, &found);
     assert_stable_ids(&root_path, &found);
-    cleanup(&root_path);
 }
 
 #[test]
@@ -970,7 +939,6 @@ fn a_26_1_bukkit_tree_without_server_properties_is_still_elected() {
     );
     assert_derives_back(&root, &found);
     assert_stable_ids(&root_path, &found);
-    cleanup(&root_path);
 }
 
 #[test]
@@ -1002,7 +970,6 @@ fn stray_dimensions_dir_does_not_hijack_a_bukkit_root() {
             root_path.join("world/dimensions/minecraft/the_nether/region/r.0.0.mca"),
         ]
     );
-    cleanup(&root_path);
 }
 
 #[test]
@@ -1019,7 +986,6 @@ fn nested_world_folders_are_not_observed() {
     let found = discover(&root);
     assert_eq!(paths_of(&found), vec![root_path.join("region/r.0.0.mca")]);
     assert_derives_back(&root, &found);
-    cleanup(&root_path);
 }
 
 #[test]
@@ -1042,7 +1008,6 @@ fn duplicate_coordinate_names_are_rejected() {
             "the error must name both files: {message}"
         );
     }
-    cleanup(&root_path);
 }
 
 #[test]
@@ -1066,7 +1031,6 @@ fn non_canonical_region_name_keeps_its_discovered_path() {
         world.derive_region(*key).unwrap().as_path(),
         world_path.join("region/r.0.0.mca")
     );
-    cleanup(&world_path);
 }
 
 /// A sibling keeps the directory the region was observed in and only
@@ -1101,7 +1065,6 @@ fn a_sibling_keeps_the_observed_directory() {
         world.derive_region(*key).unwrap().as_path(),
         world_path.join("region").join("r.0.0.mca")
     );
-    cleanup(&world_path);
 }
 
 #[cfg(unix)]
@@ -1120,7 +1083,6 @@ fn unresolvable_entries_are_skipped_not_fatal() {
     let world = HostWorldTree::new(&world_path).unwrap();
     let found = discover(&world);
     assert_eq!(paths_of(&found), vec![world_path.join("region/r.0.0.mca")]);
-    cleanup(&world_path);
 }
 
 #[test]
@@ -1161,14 +1123,13 @@ fn regions_are_ordered_by_kind_and_coordinates() {
             RegionKind::Poi,
         ]
     );
-    cleanup(&world_path);
 }
 
 #[test]
 fn missing_world_is_an_error() {
     let (world_path, _guard) = tempdir("gone");
     let world = HostWorldTree::new(&world_path).unwrap();
-    cleanup(&world_path);
+    std::fs::remove_dir_all(&world_path).unwrap();
     // Dimension enumeration fails loudly: a vanished world must not read
     // as empty.
     assert!(matches!(
@@ -1203,7 +1164,6 @@ fn output_trees_serve_no_regions_before_creation() {
             [] as [(RegionKey, HostRegion); 0]
         );
     }
-    cleanup(&root);
 }
 
 #[test]
@@ -1270,13 +1230,13 @@ fn output_trees_share_discovered_ids() {
     write(legacy_path.join("DIM-1/region/r.-1.2.mca"), &image);
     write(legacy_path.join("DIM1/poi/r.1.0.mca"), &image);
 
-    let (modern_path, _guard) = tempdir("output-ids-26.1");
+    let (modern_path, _modern_guard) = tempdir("output-ids-26.1");
     write(
         modern_path.join("dimensions/minecraft/the_nether/region/r.2.0.mca"),
         &image,
     );
 
-    let (bukkit_path, _guard) = tempdir("output-ids-bukkit");
+    let (bukkit_path, _bukkit_guard) = tempdir("output-ids-bukkit");
     write(bukkit_path.join("server.properties"), b"level-name=srv\n");
     write(bukkit_path.join("srv/region/r.0.0.mca"), &image);
     write(
@@ -1293,10 +1253,6 @@ fn output_trees_share_discovered_ids() {
         assert_ne!(found, [] as [(RegionKey, PathBuf); 0]);
         assert_derives_back(&out, &found);
     }
-
-    cleanup(legacy_path);
-    cleanup(modern_path);
-    cleanup(bukkit_path);
 }
 
 #[test]
@@ -1317,8 +1273,8 @@ fn fingerprints_are_stable_and_change_sensitive() {
         a.content_hash,
         fingerprint_file(&path, key).unwrap().content_hash
     );
+    std::fs::remove_file(&path).unwrap();
     // Missing file is an I/O error, not a fingerprint.
-    cleanup(&world);
     assert!(matches!(
         fingerprint_file(&path, key),
         Err(sekai_world::WorldError::Io { .. })
@@ -1360,7 +1316,6 @@ fn fingerprint_sees_a_payload_edit_with_preserved_size_and_mtime() {
         after.content_hash, before.content_hash,
         "a same-size payload edit under a preserved mtime must be detected"
     );
-    cleanup(&world);
 }
 
 fn set_mtime(path: impl AsRef<Path>, time: std::time::SystemTime) {
@@ -1393,13 +1348,14 @@ fn atomic_swap_replaces_and_cleans_up() {
     let nested = world.join("DIM-1/region/r.5.5.mca");
     atomic_swap(&nested, b"data").unwrap();
     assert_eq!(open_image(&nested).unwrap(), b"data");
+    std::fs::remove_file(&target).unwrap();
     // Missing source is an I/O error.
-    cleanup(&world);
     assert!(matches!(
         open_image(&target),
         Err(sekai_world::WorldError::Io { .. })
     ));
 }
+
 #[cfg(unix)]
 #[test]
 fn atomic_swap_preserves_target_permissions() {
@@ -1415,5 +1371,4 @@ fn atomic_swap_preserves_target_permissions() {
     // hardened file silently becomes writable again.
     let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o444);
-    cleanup(&world);
 }
