@@ -12,8 +12,6 @@ use alloc::vec::Vec;
 use nanonbt::{Cesu8, DeserializeNbt, SerializeNbt};
 use sekai_util::DiffHash;
 
-extern crate alloc;
-
 #[derive(SerializeNbt, DeserializeNbt, Debug, Clone, Eq, PartialEq)]
 pub struct ChunkPayload<'de> {
     #[nbt(rename = "DataVersion")]
