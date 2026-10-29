@@ -1028,17 +1028,13 @@ async fn checkout_progress_completes_for_tombstone_only_region() {
 
 #[tokio::test]
 async fn diff_chunk_between_commits() {
-    fn build_nbt(status: &str) -> Vec<u8> {
-        build_status_nbt(status)
-    }
-
     let (root, _guard) = tempdir("diff_chunk");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world_path.join("region/r.0.0.mca");
 
-    write_region(&region, &[(0, 0, build_nbt("minecraft:full"))]);
+    write_region(&region, &[(0, 0, build_status_nbt("minecraft:full"))]);
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
@@ -1049,7 +1045,7 @@ async fn diff_chunk_between_commits() {
     // Same millisecond-tick hazard as below: separate ticks so the
     // same-size rewrite is observed instead of carried.
     std::thread::sleep(std::time::Duration::from_millis(5));
-    write_region(&region, &[(0, 0, build_nbt("minecraft:empty"))]);
+    write_region(&region, &[(0, 0, build_status_nbt("minecraft:empty"))]);
     instance
         .world_mut(&mut world)
         .commit(options(), sekai_app::Scope::World, |_| {})
@@ -1071,22 +1067,21 @@ async fn diff_chunk_between_commits() {
         .await
         .unwrap();
 
-    assert!(!diffs.is_empty());
+    assert!(
+        matches!(diffs, ChunkPayloadDiff::Full { old, new } if old != new),
+        "status change must report a full diff with distinct hashes: {diffs:?}"
+    );
 }
 
 #[tokio::test]
 async fn diff_world_chunk_with_commit() {
-    fn build_nbt(status: &str) -> Vec<u8> {
-        build_status_nbt(status)
-    }
-
     let (root, _guard) = tempdir("diff_world_chunk");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world_path.join("region/r.0.0.mca");
 
-    write_region(&region, &[(0, 0, build_nbt("minecraft:full"))]);
+    write_region(&region, &[(0, 0, build_status_nbt("minecraft:full"))]);
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
@@ -1094,7 +1089,7 @@ async fn diff_world_chunk_with_commit() {
         .await
         .unwrap();
 
-    write_region(&region, &[(0, 0, build_nbt("minecraft:empty"))]);
+    write_region(&region, &[(0, 0, build_status_nbt("minecraft:empty"))]);
 
     let coord = sekai_core::ChunkCoord::new(
         sekai_core::Dimension::OVERWORLD,
@@ -1109,7 +1104,10 @@ async fn diff_world_chunk_with_commit() {
         .await
         .unwrap();
 
-    assert!(!diffs.is_empty());
+    assert!(
+        matches!(diffs, ChunkPayloadDiff::Full { old, new } if old != new),
+        "status change must report a full diff with distinct hashes: {diffs:?}"
+    );
 }
 
 /// Diff must read the discovered `r.00.00.mca`, not the canonical
