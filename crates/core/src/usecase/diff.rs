@@ -77,15 +77,27 @@ mod tests {
     use crate::hash_blob;
     use crate::support::{MemCas, block_on};
 
-    // Uncompressed (Type 3) sector payload framing + NBT bytes
+    // Uncompressed (Type 3) sector payload framing + a level-chunk NBT root.
     fn framed_nbt_bytes(status: &str) -> Vec<u8> {
+        use sekai_nbt::nanonbt::Cesu8;
+
+        let chunk = sekai_nbt::nanonbt::to_bytes(&sekai_nbt::ChunkPayload {
+            data_version: 1,
+            x_pos: 0,
+            y_pos: 0,
+            z_pos: 0,
+            inhabited_time: 0,
+            last_update: 0,
+            sections: Vec::new(),
+            heightmaps: sekai_nbt::Heightmaps::default(),
+            status: &Cesu8::from_str(status),
+            block_entities: Vec::new(),
+            block_ticks: Vec::new(),
+            fluid_ticks: Vec::new(),
+        })
+        .unwrap();
         let mut out = alloc::vec![3]; // Type 3: Uncompressed
-        out.extend_from_slice(&[10, 0, 0, 8, 0, 6]);
-        out.extend_from_slice(b"Status");
-        let status_len = u16::try_from(status.len()).unwrap();
-        out.extend_from_slice(&status_len.to_be_bytes());
-        out.extend_from_slice(status.as_bytes());
-        out.push(0);
+        out.extend_from_slice(&chunk);
         out
     }
 
@@ -125,6 +137,34 @@ mod tests {
 
         let err = block_on(diff_blobs_v1(&cas, &hash_corrupt, &hash_good)).unwrap_err();
         assert!(matches!(err, DiffError::Nbt(_)));
+    }
+
+    #[test]
+    fn diff_blobs_reports_full_for_different_payloads() {
+        let mut cas = MemCas::default();
+        let old = framed_nbt_bytes("minecraft:full");
+        let new = framed_nbt_bytes("minecraft:empty");
+        let hash_old = hash_blob(&old);
+        let hash_new = hash_blob(&new);
+        block_on(cas.put(&hash_old, &old)).unwrap();
+        block_on(cas.put(&hash_new, &new)).unwrap();
+
+        let diff = block_on(diff_blobs(&cas, &hash_old, &hash_new)).unwrap();
+        assert!(
+            matches!(diff, ChunkPayloadDiff::Full { old, new } if old != new),
+            "different payloads must report a full diff with distinct hashes: {diff:?}"
+        );
+    }
+
+    #[test]
+    fn diff_blobs_reports_nothing_for_identical_payloads() {
+        let mut cas = MemCas::default();
+        let payload = framed_nbt_bytes("minecraft:full");
+        let hash = hash_blob(&payload);
+        block_on(cas.put(&hash, &payload)).unwrap();
+
+        let diff = block_on(diff_blobs(&cas, &hash, &hash)).unwrap();
+        assert_eq!(diff, ChunkPayloadDiff::Nothing);
     }
 
     #[test]

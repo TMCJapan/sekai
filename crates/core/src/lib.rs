@@ -75,20 +75,34 @@ mod tests {
 
     #[test]
     fn diff_wiring_ignores_volatile_tags() {
-        let varied = nbt_bytes(100, "minecraft:full");
-        let same = nbt_bytes(999_999, "minecraft:full");
-        let other = nbt_bytes(100, "minecraft:empty");
+        let varied = nbt_bytes(100, 0, "minecraft:full");
+        let same = nbt_bytes(999_999, 0, "minecraft:full");
+        let other = nbt_bytes(100, 0, "minecraft:empty");
         assert_eq!(diff_hash_v1(&varied), diff_hash_v1(&same));
         assert_ne!(diff_hash_v1(&varied), diff_hash_v1(&other));
+
+        let inhabited = nbt_bytes(100, 4_242, "minecraft:full");
+        assert_eq!(diff_hash_v1(&varied), diff_hash_v1(&inhabited));
     }
 
     #[test]
-    fn diff_nbt_wiring_computes_ast_diff() {
-        let old_raw = nbt_bytes(100, "minecraft:full");
-        let new_raw = nbt_bytes(100, "minecraft:empty");
+    fn diff_nbt_wiring_reports_full_with_distinct_hashes() {
+        let old_raw = nbt_bytes(100, 0, "minecraft:full");
+        let new_raw = nbt_bytes(100, 0, "minecraft:empty");
 
         let diffs = diff_nbt_v1(&old_raw, &new_raw).unwrap();
-        assert!(!diffs.is_empty());
+        assert!(
+            matches!(diffs, ChunkPayloadDiff::Full { old, new } if old != new),
+            "status change must report a full diff with distinct hashes: {diffs:?}"
+        );
+    }
+
+    #[test]
+    fn diff_nbt_wiring_reports_nothing_for_identical_payloads() {
+        let raw = nbt_bytes(100, 0, "minecraft:full");
+
+        let diffs = diff_nbt(&raw, &raw).unwrap();
+        assert_eq!(diffs, ChunkPayloadDiff::Nothing);
     }
 
     #[test]
@@ -97,14 +111,14 @@ mod tests {
         assert_ne!(hash_blob(b"payload"), hash_blob(b"other"));
     }
 
-    /// Hand-built NBT: serialised chunk payload.
-    fn nbt_bytes(last_update: i64, status: &str) -> alloc::vec::Vec<u8> {
+    /// Serialised chunk payload with the given volatile fields.
+    fn nbt_bytes(last_update: i64, inhabited_time: i64, status: &str) -> alloc::vec::Vec<u8> {
         let value = sekai_nbt::ChunkPayload {
             data_version: 1,
             x_pos: 0,
             y_pos: 0,
             z_pos: 0,
-            inhabited_time: 0,
+            inhabited_time,
             last_update,
             sections: alloc::vec![],
             heightmaps: sekai_nbt::Heightmaps::default(),
