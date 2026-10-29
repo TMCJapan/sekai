@@ -17,8 +17,10 @@ pub trait RegionFile: Clone + std::fmt::Debug + std::fmt::Display + Send + Sync 
     /// Failure type for every operation on this file.
     type Error: std::error::Error;
 
+    type RegionImage: Region<Error = Self::Error>;
+
     /// Read the whole file.
-    fn read(&self) -> Result<Vec<u8>, Self::Error>;
+    fn read(&self, key: RegionKey) -> Result<Self::RegionImage, Self::Error>;
 
     /// Observe the file's fingerprint as of now.
     ///
@@ -42,4 +44,21 @@ pub trait RegionFile: Clone + std::fmt::Debug + std::fmt::Display + Send + Sync 
     /// that case apart from a real I/O error takes the tree's concrete
     /// error type: the trait promises no distinguishable failure.
     fn remove(&self) -> Result<(), Self::Error>;
+}
+
+pub trait Region {
+    type Error;
+
+    /// Visits all present chunks in table order.
+    ///
+    /// Returning `false` stops iteration.
+    fn visit_chunks<F>(&self, visit: F) -> Result<(), Self::Error>
+    where
+        F: FnMut(sekai_anvil::Chunk<'_>) -> bool;
+
+    /// Returns the stored raw payload for a single chunk at global coordinates `(x, z)`.
+    ///
+    /// Returns `Ok(None)` if the chunk coordinate is outside this region or if the
+    /// chunk has not been generated (is empty).
+    fn chunk_payload(&self, x: i32, z: i32) -> Result<Option<&[u8]>, Self::Error>;
 }

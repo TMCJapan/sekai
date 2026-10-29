@@ -120,7 +120,6 @@ struct CommitPhases {
 #[derive(Serialize)]
 struct RegionTimingJson {
     path: String,
-    bytes: u64,
     chunks: usize,
     open_ms: u128,
     ingest_ms: u128,
@@ -156,7 +155,6 @@ fn commit_payload(report: &CommitReport, timings: &CommitTimings, timing: bool) 
                 .iter()
                 .map(|region| RegionTimingJson {
                     path: region.location.clone(),
-                    bytes: region.bytes,
                     chunks: region.chunks,
                     open_ms: region.open.as_millis(),
                     ingest_ms: region.ingest.as_millis(),
@@ -193,10 +191,9 @@ fn print_timing_table(timings: &CommitTimings, style: Styler) {
         println!(
             "{}",
             style.dim(&format!(
-                "  {} chunks={} bytes={} open={}ms ingest={}ms (hash={}ms cas={}ms)",
+                "  {} chunks={} open={}ms ingest={}ms (hash={}ms cas={}ms)",
                 region.location,
                 region.chunks,
-                region.bytes,
                 region.open.as_millis(),
                 region.ingest.as_millis(),
                 region.hash.as_millis(),
@@ -235,7 +232,6 @@ mod tests {
             carried_chunks: 8,
             regions: vec![sekai_app::RegionTiming {
                 location: "region/r.0.0.mca".to_owned(),
-                bytes: 100,
                 chunks: 32,
                 open: Duration::from_millis(4),
                 ingest: Duration::from_millis(5),
@@ -255,7 +251,7 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&payload_timed).unwrap(),
             format!(
-                r#"{{"commit":"{id}","chunks":40,"new_blobs":2,"tombstones":0,"skipped_regions":1,"carried_chunks":8,"total_ms":100,"phases":{{"discover_ms":1,"universe_load_ms":2,"fingerprint_ms":3,"region_open_ms":4,"ingest_ms":50,"hash_ms":6,"cas_put_ms":7,"db_apply_ms":8}},"regions":[{{"path":"region/r.0.0.mca","bytes":100,"chunks":32,"open_ms":4,"ingest_ms":5,"hash_ms":6,"cas_ms":7}}]}}"#
+                r#"{{"commit":"{id}","chunks":40,"new_blobs":2,"tombstones":0,"skipped_regions":1,"carried_chunks":8,"total_ms":100,"phases":{{"discover_ms":1,"universe_load_ms":2,"fingerprint_ms":3,"region_open_ms":4,"ingest_ms":50,"hash_ms":6,"cas_put_ms":7,"db_apply_ms":8}},"regions":[{{"path":"region/r.0.0.mca","chunks":32,"open_ms":4,"ingest_ms":5,"hash_ms":6,"cas_ms":7}}]}}"#
             )
         );
     }

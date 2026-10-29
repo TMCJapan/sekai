@@ -22,6 +22,6 @@ mod tree;
 pub use error::WorldError;
 pub use fingerprint::{file_mtime_ms, fingerprint_file};
 pub use lock::{UnguardedReason, WorldLock, WorldLockMode, WorldLockState};
-pub use region::RegionFile;
+pub use region::{Region, RegionFile};
 pub use swap::{atomic_swap, open_image};
 pub use tree::{HostRegion, HostWorldLock, HostWorldLockError, HostWorldTree, WorldTree};

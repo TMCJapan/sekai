@@ -24,7 +24,7 @@ use sekai_core::{
     RegionFingerprint, RegionKey, Scope,
 };
 use sekai_storage::{BlockingBlobStore, SekaiStore, StoreLockMode};
-use sekai_world::{RegionFile, WorldLock, WorldLockMode, WorldTree};
+use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
 
 use crate::error::AppError;
 use crate::instance::{OperationLocks, WorldHandle, WorldHandleMut};
@@ -142,8 +142,6 @@ pub struct CommitTimings {
 pub struct RegionTiming {
     /// Where the region file lives.
     pub location: String,
-    /// File size in bytes.
-    pub bytes: u64,
     /// Chunks ingested from the file.
     pub chunks: usize,
     /// File open time.
@@ -714,15 +712,8 @@ where
 {
     let key = observed.key;
     let opened = Instant::now();
-    let bytes = region.read()?;
+    let image = region.read(key)?;
     let open_elapsed = opened.elapsed();
-    let file_bytes = bytes.len() as u64;
-    let image = sekai_anvil::RegionImage::from_bytes(bytes, key.rx, key.rz).map_err(|source| {
-        AppError::RegionFailed {
-            location: region.to_string(),
-            source,
-        }
-    })?;
 
     let mut ignore_vec = Vec::new();
     let ignore: &[&str] = ignore_tags.map_or(sekai_nbt::DEFAULT_IGNORED, |tags| {
@@ -739,40 +730,36 @@ where
     let mut hash_elapsed = Duration::ZERO;
     let mut cas_elapsed = Duration::ZERO;
     let ingested = Instant::now();
-    image
-        .visit_chunks(|chunk| {
-            if failure.is_some() {
+    image.visit_chunks(|chunk| {
+        if failure.is_some() {
+            return false;
+        }
+        let mut ctx = ChunkIngestCtx {
+            key,
+            scope,
+            cas,
+            scratch: &mut scratch,
+            with_diff,
+            dry_run,
+            ignore,
+
+            entries: &mut entries,
+            present: &mut present,
+            new_blobs: &mut new_blobs,
+        };
+        match ingest_timed(chunk, &mut ctx) {
+            Ok((hash_dt, cas_dt)) => {
+                hash_elapsed += hash_dt;
+                cas_elapsed += cas_dt;
+                chunks += 1;
+            }
+            Err(err) => {
+                failure = Some(err);
                 return false;
             }
-            let mut ctx = ChunkIngestCtx {
-                key,
-                scope,
-                cas,
-                scratch: &mut scratch,
-                with_diff,
-                dry_run,
-                ignore,
-                entries: &mut entries,
-                present: &mut present,
-                new_blobs: &mut new_blobs,
-            };
-            match ingest_timed(chunk, &mut ctx) {
-                Ok((hash_dt, cas_dt)) => {
-                    hash_elapsed += hash_dt;
-                    cas_elapsed += cas_dt;
-                    chunks += 1;
-                }
-                Err(err) => {
-                    failure = Some(err);
-                    return false;
-                }
-            }
-            true
-        })
-        .map_err(|source| AppError::RegionFailed {
-            location: region.to_string(),
-            source,
-        })?;
+        }
+        true
+    })?;
     let ingest_elapsed = ingested.elapsed();
     if let Some(err) = failure {
         return Err(err);
@@ -784,7 +771,6 @@ where
         new_blobs,
         timing: RegionTiming {
             location: region.to_string(),
-            bytes: file_bytes,
             chunks,
             open: open_elapsed,
             ingest: ingest_elapsed,

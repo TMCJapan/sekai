@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 
 use sekai_core::{BlobHash, CheckoutReport, ChunkCoord, CommitId, RegionKey, Scope};
 use sekai_storage::{BlockingBlobStore, SekaiStore, StoreLockMode};
-use sekai_world::{RegionFile, WorldLockMode, WorldTree};
+use sekai_world::{Region, RegionFile, WorldLockMode, WorldTree};
 
 use crate::error::AppError;
 use crate::instance::{OperationLocks, WorldHandleMut};
@@ -276,7 +276,7 @@ where
         if options.keep_post_commit_chunks || options.keep_tombstoned_chunks {
             merge_live_chunks(
                 &region,
-                &key,
+                key,
                 &restored,
                 tombs.map(Vec::as_slice),
                 options,
@@ -317,7 +317,7 @@ pub(super) fn fetch_or_skip<C: BlockingBlobStore>(
 /// files contribute nothing; corrupt ones fail loudly.
 fn merge_live_chunks<R: RegionFile>(
     region: &R,
-    key: &RegionKey,
+    key: RegionKey,
     restored: &BTreeSet<(i32, i32)>,
     tombs: Option<&[ChunkCoord]>,
     options: CheckoutOptions,
@@ -329,37 +329,26 @@ where
     if !region.exists() {
         return Ok(());
     }
-    let bytes = region.read()?;
-    let image = sekai_anvil::RegionImage::from_bytes(bytes, key.rx, key.rz).map_err(|source| {
-        AppError::RegionFailed {
-            location: region.to_string(),
-            source,
-        }
-    })?;
+    let image = region.read(key)?;
     let tombed: BTreeSet<(i32, i32)> = tombs
         .map(|coords| coords.iter().map(|c| (c.x, c.z)).collect())
         .unwrap_or_default();
     let mut failed = None;
-    image
-        .visit_chunks(|chunk| {
-            if restored.contains(&(chunk.x, chunk.z)) {
-                return true;
-            }
-            let keep = if tombed.contains(&(chunk.x, chunk.z)) {
-                options.keep_tombstoned_chunks
-            } else {
-                options.keep_post_commit_chunks
-            };
-            if keep && let Err(source) = writer.stage_chunk(chunk.x, chunk.z, chunk.payload) {
-                failed = Some(source);
-                return false;
-            }
-            true
-        })
-        .map_err(|source| AppError::RegionFailed {
-            location: region.to_string(),
-            source,
-        })?;
+    image.visit_chunks(|chunk| {
+        if restored.contains(&(chunk.x, chunk.z)) {
+            return true;
+        }
+        let keep = if tombed.contains(&(chunk.x, chunk.z)) {
+            options.keep_tombstoned_chunks
+        } else {
+            options.keep_post_commit_chunks
+        };
+        if keep && let Err(source) = writer.stage_chunk(chunk.x, chunk.z, chunk.payload) {
+            failed = Some(source);
+            return false;
+        }
+        true
+    })?;
     if let Some(source) = failed {
         return Err(AppError::Anvil(source));
     }

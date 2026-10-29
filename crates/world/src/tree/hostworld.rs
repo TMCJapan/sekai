@@ -24,10 +24,11 @@ mod vanilla;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use sekai_anvil::RegionImage;
 use sekai_core::{Dimension, RegionFingerprint, RegionKey, RegionKind};
 
 use super::WorldTree;
-use crate::region::RegionFile;
+use crate::region::{Region, RegionFile};
 use crate::{WorldError, WorldLockMode, WorldLockState};
 
 pub use lock::{HostWorldLock, HostWorldLockError};
@@ -38,6 +39,36 @@ const fn kind_dir(kind: RegionKind) -> &'static str {
         RegionKind::Region => "region",
         RegionKind::Entities => "entities",
         RegionKind::Poi => "poi",
+    }
+}
+
+pub struct McaFile {
+    image: RegionImage,
+    path: PathBuf,
+}
+
+impl Region for McaFile {
+    type Error = WorldError;
+
+    fn visit_chunks<F>(&self, visit: F) -> Result<(), Self::Error>
+    where
+        F: FnMut(sekai_anvil::Chunk<'_>) -> bool,
+    {
+        self.image
+            .visit_chunks(visit)
+            .map_err(|source| WorldError::RegionFile {
+                path: self.path.clone(),
+                source,
+            })
+    }
+
+    fn chunk_payload(&self, x: i32, z: i32) -> Result<Option<&[u8]>, Self::Error> {
+        self.image
+            .chunk_payload(x, z)
+            .map_err(|source| WorldError::RegionFile {
+                path: self.path.clone(),
+                source,
+            })
     }
 }
 
@@ -65,8 +96,23 @@ impl std::fmt::Display for HostRegion {
 impl RegionFile for HostRegion {
     type Error = WorldError;
 
-    fn read(&self) -> Result<Vec<u8>, WorldError> {
-        crate::swap::open_image(&self.0)
+    type RegionImage = McaFile;
+
+    fn read(&self, key: RegionKey) -> Result<Self::RegionImage, WorldError> {
+        let bytes = crate::swap::open_image(&self.0)?;
+        let image = match RegionImage::from_bytes(bytes, key.rx, key.rz) {
+            Ok(image) => image,
+            Err(source) => {
+                return Err(WorldError::RegionFile {
+                    path: self.0.clone(),
+                    source,
+                });
+            }
+        };
+        Ok(McaFile {
+            image,
+            path: self.0.clone(),
+        })
     }
 
     fn fingerprint(&self, key: RegionKey) -> Result<RegionFingerprint, WorldError> {

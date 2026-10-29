@@ -88,7 +88,7 @@ With `--timing` the `total_ms`/`phases`/`regions` block is appended:
     "db_apply_ms": 20
   },
   "regions": [
-    {"path": "/w/region/r.0.0.mca", "bytes": 12345, "chunks": 60,
+    {"path": "/w/region/r.0.0.mca", "chunks": 60,
      "open_ms": 1, "ingest_ms": 20, "hash_ms": 2, "cas_ms": 15}
   ]
 }

@@ -8,7 +8,7 @@ use sekai_core::{
     RegionKey, diff_nbt,
 };
 use sekai_storage::{BlockingBlobStore, SekaiStore, StoreLockMode};
-use sekai_world::{RegionFile, WorldLockMode, WorldTree};
+use sekai_world::{Region, RegionFile, WorldLockMode, WorldTree};
 
 use crate::error::AppError;
 use crate::instance::{OperationLocks, SekaiInstance, WorldHandle, WorldHandleMut};
@@ -73,14 +73,9 @@ where
         return Ok(None);
     };
 
-    let bytes = region.read()?;
-    let failed = |source| AppError::RegionFailed {
-        location: region.to_string(),
-        source,
-    };
-    let image = sekai_anvil::RegionImage::from_bytes(bytes, key.rx, key.rz).map_err(failed)?;
+    let image = region.read(key)?;
 
-    let payload = image.chunk_payload(coord.x, coord.z).map_err(failed)?;
+    let payload = image.chunk_payload(coord.x, coord.z)?;
     Ok(payload.map(<[u8]>::to_vec))
 }
 
@@ -196,18 +191,11 @@ where
     let _lock = world.lock(WorldLockMode::Shared)?;
     let mut coords = Vec::new();
     for (key, region) in discover_regions(world)? {
-        let bytes = region.read()?;
-        let failed = |source| AppError::RegionFailed {
-            location: region.to_string(),
-            source,
-        };
-        let image = sekai_anvil::RegionImage::from_bytes(bytes, key.rx, key.rz).map_err(failed)?;
-        image
-            .visit_chunks(|chunk| {
-                coords.push(ChunkCoord::new(key.dim, key.kind, chunk.x, chunk.z));
-                true
-            })
-            .map_err(failed)?;
+        let image = region.read(key)?;
+        image.visit_chunks(|chunk| {
+            coords.push(ChunkCoord::new(key.dim, key.kind, chunk.x, chunk.z));
+            true
+        })?;
     }
     coords.sort();
     coords.dedup();
