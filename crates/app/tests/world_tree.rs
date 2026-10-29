@@ -7,10 +7,9 @@
 //! operation on them fails on purpose - the fake serves no bytes.
 
 use sekai_app::{
-    AppError, Dimension, RegionFile, RegionKey, RegionKind, UnguardedReason, WorldLock,
+    AppError, Dimension, Region, RegionFile, RegionKey, RegionKind, UnguardedReason, WorldLock,
     WorldLockMode, WorldLockState, WorldTree, world_chunk_coords,
 };
-use sekai_world::Region;
 
 /// Failure type of [`FakeWorld`], deliberately unrelated to `WorldError`.
 #[derive(Debug, thiserror::Error)]
@@ -47,17 +46,24 @@ impl FakeWorld {
     }
 }
 
+/// Image of [`FakeRegion`]. [`FakeRegion::read`] always fails, so no
+/// method below is reachable; the type exists only because `RegionFile`
+/// names one.
+#[derive(Clone, Debug)]
 struct FakeRegionImage;
+
 impl Region for FakeRegionImage {
     type Error = FakeError;
+
     fn visit_chunks<F>(&self, _visit: F) -> Result<(), Self::Error>
     where
         F: FnMut(sekai_anvil::Chunk<'_>) -> bool,
     {
-        panic!()
+        unreachable!("fake image serves no chunks")
     }
+
     fn chunk_payload(&self, _x: i32, _z: i32) -> Result<Option<&[u8]>, Self::Error> {
-        panic!()
+        unreachable!("fake image serves no chunks")
     }
 }
 
