@@ -8,8 +8,14 @@ use sekai_app::{CommitId, CommitOptions, RegionKind, Scope};
 use sekai_app::{HostWorldTree, WorldTree};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+/// A temp dir named after the calling test; the caller runs `cleanup`
+/// so the path can outlive any `TempDir` guard.
 fn tempdir(_name: &str) -> std::path::PathBuf {
-    tempfile::tempdir().unwrap().keep()
+    tempfile::Builder::new()
+        .prefix("sekai-app-")
+        .tempdir()
+        .unwrap()
+        .keep()
 }
 
 fn cleanup(dir: impl AsRef<Path>) {

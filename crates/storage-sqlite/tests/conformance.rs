@@ -8,8 +8,14 @@ use sekai_core::{
 };
 use sekai_storage_sqlite::{init_sqlite, open_sqlite};
 use std::path::Path;
+/// A temp dir named after the calling test; the caller runs `cleanup`
+/// so the path can outlive any `TempDir` guard.
 fn tempdir(_name: &str) -> std::path::PathBuf {
-    tempfile::tempdir().unwrap().keep()
+    tempfile::Builder::new()
+        .prefix("sekai-")
+        .tempdir()
+        .unwrap()
+        .keep()
 }
 
 async fn init(dir: impl AsRef<Path>) -> sekai_storage_sqlite::SqliteStore {

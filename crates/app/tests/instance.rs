@@ -7,8 +7,14 @@
 
 use std::path::Path;
 
+/// A temp dir named after the calling test; the caller runs `cleanup`
+/// so the path can outlive any `TempDir` guard.
 fn tempdir(_name: &str) -> std::path::PathBuf {
-    tempfile::tempdir().unwrap().keep()
+    tempfile::Builder::new()
+        .prefix("sekai-app-")
+        .tempdir()
+        .unwrap()
+        .keep()
 }
 
 fn cleanup(dir: impl AsRef<Path>) {

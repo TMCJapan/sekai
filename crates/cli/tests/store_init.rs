@@ -8,8 +8,14 @@ use sekai_cli::cli::Cli;
 
 const HASH: &str = "0101010101010101010101010101010101010101010101010101010101010101";
 
+/// A temp dir named after the calling test; the caller runs `cleanup`
+/// so the path can outlive any `TempDir` guard.
 fn tempdir(_name: &str) -> std::path::PathBuf {
-    tempfile::tempdir().unwrap().keep()
+    tempfile::Builder::new()
+        .prefix("sekai-cli-")
+        .tempdir()
+        .unwrap()
+        .keep()
 }
 
 #[tokio::test]
