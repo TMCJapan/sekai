@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 use sekai_core::{
     BlobHash, BlobStore as _, ChunkCoord, CommitId, DiffHash, MetaStore, RegionKey, diff_nbt,
 };
-use sekai_nbt::ChunkPayloadDiff;
 use sekai_nbt::nanonbt::Cesu8Buf;
+use sekai_nbt::{ChunkPayload, ChunkPayloadDiff, Heightmaps};
 use sekai_storage::{BlockingBlobStore, SekaiStore, StoreLockMode};
 use sekai_world::{Region, RegionFile, WorldLockMode, WorldTree};
 
@@ -225,7 +225,7 @@ async fn commit_chunk_compressed<S: SekaiStore>(
 fn decompress_or_empty(compressed: Option<Vec<u8>>) -> Result<Vec<u8>, AppError> {
     compressed.map_or_else(
         || {
-            let chunk = sekai_nbt::ChunkPayload {
+            let chunk = ChunkPayload {
                 data_version: 0,
                 x_pos: 0,
                 y_pos: 0,
@@ -233,7 +233,7 @@ fn decompress_or_empty(compressed: Option<Vec<u8>>) -> Result<Vec<u8>, AppError>
                 inhabited_time: 0,
                 last_update: 0,
                 sections: vec![],
-                heightmaps: sekai_nbt::Heightmaps::default(),
+                heightmaps: Heightmaps::default(),
                 status: &Cesu8Buf::new(),
                 block_entities: vec![],
                 block_ticks: vec![],
