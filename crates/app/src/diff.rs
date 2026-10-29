@@ -4,7 +4,8 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use sekai_core::{
-    BlobHash, BlobStore as _, ChunkCoord, CommitId, DiffHash, MetaStore, RegionKey, diff_nbt,
+    BlobHash, BlobStore as _, ChunkCoord, CommitId, DiffHash, MetaStore, RegionKey, RegionKind,
+    diff_nbt,
 };
 use sekai_nbt::nanonbt::Cesu8Buf;
 use sekai_nbt::{ChunkPayload, ChunkPayloadDiff, Heightmaps};
@@ -245,6 +246,19 @@ fn decompress_or_empty(compressed: Option<Vec<u8>>) -> Result<Vec<u8>, AppError>
     )
 }
 
+/// Diff for non-level-chunk kinds (`entities`/`poi`), whose payload schema is
+/// not [`ChunkPayload`]. Raw NBT bytes are hashed independently so a `Full`
+/// result never carries identical hashes.
+fn raw_nbt_diff(old: &[u8], new: &[u8]) -> ChunkPayloadDiff {
+    if old == new {
+        return ChunkPayloadDiff::Nothing;
+    }
+    ChunkPayloadDiff::Full {
+        old: DiffHash(*blake3::hash(old).as_bytes()),
+        new: DiffHash(*blake3::hash(new).as_bytes()),
+    }
+}
+
 impl<W: WorldTree, S: SekaiStore> WorldHandle<'_, W, S>
 where
     AppError: From<W::Error>,
@@ -406,15 +420,11 @@ async fn diff_coords(
         let started = Instant::now();
         let entries = match diff_nbt(&old_nbt, &new_nbt) {
             Ok(diff) => diff,
-            Err(sekai_nbt::NbtError::MissingField(_)) => {
-                if old_nbt == new_nbt {
-                    ChunkPayloadDiff::Nothing
-                } else {
-                    ChunkPayloadDiff::Full {
-                        old: DiffHash([0; 32]),
-                        new: DiffHash([0; 32]),
-                    }
-                }
+            // `entities`/`poi` payloads use their own schemas; compare their
+            // raw bytes. A level chunk with missing fields is corruption and
+            // must fail loudly.
+            Err(sekai_nbt::NbtError::MissingField(_)) if coord.kind != RegionKind::Region => {
+                raw_nbt_diff(&old_nbt, &new_nbt)
             }
             Err(e) => return Err(AppError::Nbt(e)),
         };
@@ -429,4 +439,19 @@ async fn diff_coords(
         });
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raw_nbt_diff_hashes_both_sides() {
+        let changed = raw_nbt_diff(b"old", b"new");
+        assert!(
+            matches!(changed, ChunkPayloadDiff::Full { old, new } if old != new),
+            "different payloads need distinct hashes: {changed:?}"
+        );
+        assert_eq!(raw_nbt_diff(b"same", b"same"), ChunkPayloadDiff::Nothing);
+    }
 }

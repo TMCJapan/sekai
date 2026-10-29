@@ -1074,6 +1074,48 @@ async fn diff_chunk_between_commits() {
 }
 
 #[tokio::test]
+async fn diff_chunk_propagates_malformed_region_nbt() {
+    let (root, _guard) = tempdir("diff-malformed");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    let region = world_path.join("region/r.0.0.mca");
+    let coord = sekai_core::ChunkCoord::new(
+        sekai_core::Dimension::OVERWORLD,
+        sekai_core::RegionKind::Region,
+        0,
+        0,
+    );
+
+    write_region(&region, &[(0, 0, build_status_nbt("minecraft:full"))]);
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    instance
+        .world_mut(&mut world)
+        .commit(options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+
+    // Valid NBT (an empty compound), but not a level-chunk payload.
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    write_region(&region, &[(0, 0, vec![3, 0x0a, 0, 0, 0])]);
+    instance
+        .world_mut(&mut world)
+        .commit(options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+
+    let commits = instance.list_commits().await.unwrap();
+    let err = instance
+        .diff_chunk(commits[0].id, commits[1].id, &coord)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, sekai_app::AppError::Nbt(_)),
+        "malformed region payload must fail loudly: {err:?}"
+    );
+}
+
+#[tokio::test]
 async fn diff_world_chunk_with_commit() {
     let (root, _guard) = tempdir("diff_world_chunk");
     let world_path = root.join("world");

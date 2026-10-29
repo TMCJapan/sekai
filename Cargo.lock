@@ -1173,6 +1173,7 @@ dependencies = [
 name = "sekai-app"
 version = "0.1.0"
 dependencies = [
+ "blake3",
  "criterion",
  "miniz_oxide",
  "sekai-anvil",
