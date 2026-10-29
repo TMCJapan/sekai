@@ -9,6 +9,11 @@ pub enum ChunkPayloadDiff {
 }
 
 impl ChunkPayloadDiff {
+    /// Compares two payloads through their normalized view.
+    ///
+    /// # Errors
+    ///
+    /// Propagates failures from re-serializing the normalized view.
     pub fn new<'de>(
         old: &ChunkPayload<'de>,
         new: &ChunkPayload<'de>,
@@ -22,6 +27,8 @@ impl ChunkPayloadDiff {
             })
         }
     }
+
+    /// Whether both sides normalize identically: this chunk has no changes.
     pub const fn is_empty(&self) -> bool {
         matches!(self, Self::Nothing)
     }
