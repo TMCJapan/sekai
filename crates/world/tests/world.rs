@@ -8,8 +8,9 @@ use sekai_world::{
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// A temp dir named after the calling test, removed when its guard is
-/// dropped at the end of the test, panics included.
+/// A temp dir whose name starts with the calling test's name (tempfile
+/// appends a random suffix), removed when its guard is dropped at the end
+/// of the test, panics included.
 fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
     let guard = tempfile::Builder::new()
         .prefix(&format!("sekai-world-{name}-"))
@@ -567,7 +568,7 @@ fn legacy_bukkit_keeps_vanilla_legacy_dimension_ids() {
     // trio and every `<namespace>:<path>` key), so a world keeps one
     // history when it moves between vanilla and Bukkit trees.
     let (root_path, _guard) = tempdir("bukkit-legacy-ids");
-    let (legacy_path, _guard) = tempdir("vanilla-legacy-ids");
+    let (legacy_path, _legacy_guard) = tempdir("vanilla-legacy-ids");
     let image = one_chunk_image();
     write(root_path.join("server.properties"), b"level-name=world\n");
     for dir in [
@@ -1129,7 +1130,7 @@ fn regions_are_ordered_by_kind_and_coordinates() {
 fn missing_world_is_an_error() {
     let (world_path, _guard) = tempdir("gone");
     let world = HostWorldTree::new(&world_path).unwrap();
-    std::fs::remove_dir_all(&world_path).unwrap();
+    std::fs::remove_dir_all(&world_path).expect("the world root is gone for the assertions below");
     // Dimension enumeration fails loudly: a vanished world must not read
     // as empty.
     assert!(matches!(
@@ -1273,7 +1274,7 @@ fn fingerprints_are_stable_and_change_sensitive() {
         a.content_hash,
         fingerprint_file(&path, key).unwrap().content_hash
     );
-    std::fs::remove_file(&path).unwrap();
+    std::fs::remove_file(&path).expect("the region is gone so the next lookup is an I/O error");
     // Missing file is an I/O error, not a fingerprint.
     assert!(matches!(
         fingerprint_file(&path, key),
@@ -1348,7 +1349,7 @@ fn atomic_swap_replaces_and_cleans_up() {
     let nested = world.join("DIM-1/region/r.5.5.mca");
     atomic_swap(&nested, b"data").unwrap();
     assert_eq!(open_image(&nested).unwrap(), b"data");
-    std::fs::remove_file(&target).unwrap();
+    std::fs::remove_file(&target).expect("the image is gone so the next open is an I/O error");
     // Missing source is an I/O error.
     assert!(matches!(
         open_image(&target),
