@@ -8,14 +8,16 @@ use sekai_app::{CommitId, CommitOptions, RegionKind, Scope};
 use sekai_app::{HostWorldTree, WorldTree};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-/// A temp dir named after the calling test; the caller runs `cleanup`
-/// so the path can outlive any `TempDir` guard.
-fn tempdir(_name: &str) -> std::path::PathBuf {
-    tempfile::Builder::new()
-        .prefix("sekai-app-")
+
+/// A temp dir and its guard, both bound for the test body. The guard is
+/// not leaked, so panics clean up too; `cleanup` only removes the files
+/// early, before handles still referencing them are dropped.
+fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
+    let guard = tempfile::Builder::new()
+        .prefix(&format!("sekai-app-{name}-"))
         .tempdir()
-        .unwrap()
-        .keep()
+        .unwrap();
+    (guard.path().to_path_buf(), guard)
 }
 
 fn cleanup(dir: impl AsRef<Path>) {
@@ -82,7 +84,7 @@ fn options() -> CommitOptions {
 /// from the path discovery found, not from the canonical `r.0.0.mca`.
 #[tokio::test]
 async fn commits_a_non_canonical_region_name() {
-    let root = tempdir("non-canonical-name");
+    let (root, _guard) = tempdir("non-canonical-name");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -121,7 +123,7 @@ async fn commits_a_non_canonical_region_name() {
 /// region 2 comes before region 10 as an identity.
 #[tokio::test]
 async fn timing_rows_are_ordered_by_region_identity() {
-    let root = tempdir("timing-order");
+    let (root, _guard) = tempdir("timing-order");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -160,7 +162,7 @@ async fn timing_rows_are_ordered_by_region_identity() {
 #[tokio::test]
 async fn scoped_commit_records_no_spurious_tombstones() {
     use sekai_app::{ChunkCoord, Dimension, Scope};
-    let root = tempdir("scoped");
+    let (root, _guard) = tempdir("scoped");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -236,7 +238,7 @@ async fn scoped_commit_records_no_spurious_tombstones() {
 #[tokio::test]
 async fn partial_scope_then_full_commit_reingests_unread_chunks() {
     use sekai_app::{Area, Dimension, Rect};
-    let root = tempdir("partial-scope");
+    let (root, _guard) = tempdir("partial-scope");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -310,7 +312,7 @@ async fn partial_scope_then_full_commit_reingests_unread_chunks() {
 #[tokio::test]
 async fn scoped_commit_addresses_a_detected_trio_world() {
     use sekai_app::{Dimension, Scope};
-    let root = tempdir("scoped-detected");
+    let (root, _guard) = tempdir("scoped-detected");
     let world_path = root.join("world");
     let store = root.join("store").to_string_lossy().into_owned();
     // 26.1 layout, written before the tree is opened so `new` classifies it
@@ -341,7 +343,7 @@ async fn scoped_commit_addresses_a_detected_trio_world() {
 #[tokio::test]
 async fn scoped_checkout_leaves_other_dimensions_untouched() {
     use sekai_app::{Dimension, Scope};
-    let root = tempdir("scoped-checkout");
+    let (root, _guard) = tempdir("scoped-checkout");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -418,7 +420,7 @@ async fn scoped_checkout_leaves_other_dimensions_untouched() {
 
 #[tokio::test]
 async fn strict_checkout_removes_post_commit_files() {
-    let root = tempdir("strict");
+    let (root, _guard) = tempdir("strict");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -482,7 +484,7 @@ async fn strict_checkout_removes_post_commit_files() {
 #[tokio::test]
 async fn keep_options_preserve_post_commit_data() {
     use sekai_app::CheckoutOptions;
-    let root = tempdir("keep-post");
+    let (root, _guard) = tempdir("keep-post");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -525,7 +527,7 @@ async fn keep_options_preserve_post_commit_data() {
 #[tokio::test]
 async fn keep_tombstoned_chunks_preserves_live_bytes() {
     use sekai_app::CheckoutOptions;
-    let root = tempdir("keep-tomb");
+    let (root, _guard) = tempdir("keep-tomb");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -587,7 +589,7 @@ async fn keep_tombstoned_chunks_preserves_live_bytes() {
 #[tokio::test]
 async fn keep_tombstoned_chunks_leaves_fully_tombstoned_files() {
     use sekai_app::CheckoutOptions;
-    let root = tempdir("keep-tomb-file");
+    let (root, _guard) = tempdir("keep-tomb-file");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -643,7 +645,7 @@ async fn keep_tombstoned_chunks_leaves_fully_tombstoned_files() {
 #[tokio::test]
 async fn missing_blob_abort_is_default_and_skip_recovers() {
     use sekai_app::{CheckoutOptions, MissingBlobPolicy};
-    let root = tempdir("missing-blob");
+    let (root, _guard) = tempdir("missing-blob");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store_dir = root.join("store");
@@ -711,7 +713,7 @@ async fn missing_blob_abort_is_default_and_skip_recovers() {
 #[tokio::test]
 async fn missing_file_error_policy_refuses_to_guess() {
     use sekai_app::{CheckoutOptions, MissingFilePolicy};
-    let root = tempdir("missing-file");
+    let (root, _guard) = tempdir("missing-file");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -773,7 +775,7 @@ async fn missing_file_error_policy_refuses_to_guess() {
 #[tokio::test]
 async fn with_diff_records_diff_hashes() {
     use sekai_core::MetaStore as _;
-    let root = tempdir("diff");
+    let (root, _guard) = tempdir("diff");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store_dir = root.join("store");
@@ -821,7 +823,7 @@ async fn with_diff_records_diff_hashes() {
 #[tokio::test]
 async fn progress_fires_per_changed_file() {
     use std::sync::{Arc, Mutex};
-    let root = tempdir("progress");
+    let (root, _guard) = tempdir("progress");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -847,7 +849,7 @@ async fn progress_fires_per_changed_file() {
 
 #[tokio::test]
 async fn errors_surface_loudly() {
-    let root = tempdir("errors");
+    let (root, _guard) = tempdir("errors");
     let store = root.join("store").to_string_lossy().into_owned();
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     // Missing world.
@@ -878,7 +880,7 @@ async fn errors_surface_loudly() {
 
 #[tokio::test]
 async fn gc_runs_and_returns_timings() {
-    let root = tempdir("gc");
+    let (root, _guard) = tempdir("gc");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -906,7 +908,7 @@ async fn gc_runs_and_returns_timings() {
 async fn progress_events_cover_checkout_diff_and_gc() {
     use sekai_app::{CheckoutProgress, DiffProgress, GcProgress};
     use std::sync::{Arc, Mutex};
-    let root = tempdir("progress-events");
+    let (root, _guard) = tempdir("progress-events");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -993,7 +995,7 @@ async fn progress_events_cover_checkout_diff_and_gc() {
 #[tokio::test]
 async fn checkout_progress_completes_for_tombstone_only_region() {
     use std::sync::{Arc, Mutex};
-    let root = tempdir("progress-tombstone-only");
+    let (root, _guard) = tempdir("progress-tombstone-only");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -1065,7 +1067,7 @@ async fn diff_chunk_between_commits() {
         payload
     }
 
-    let root = tempdir("diff_chunk");
+    let (root, _guard) = tempdir("diff_chunk");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -1125,7 +1127,7 @@ async fn diff_world_chunk_with_commit() {
         payload
     }
 
-    let root = tempdir("diff_world_chunk");
+    let (root, _guard) = tempdir("diff_world_chunk");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -1164,7 +1166,7 @@ async fn diff_world_chunk_with_commit() {
 /// `r.0.0.mca` that does not exist on disk.
 #[tokio::test]
 async fn diffs_a_non_canonical_region_name() {
-    let root = tempdir("diff-non-canonical");
+    let (root, _guard) = tempdir("diff-non-canonical");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -1209,7 +1211,7 @@ async fn commits_region_with_trailing_partial_sector() {
     // Real files can carry a torn tail (e.g. 1034 sectors + 188 bytes)
     // that vanilla opens fine; commit must accept it as long as every
     // referenced run is intact.
-    let root = tempdir("partial-tail");
+    let (root, _guard) = tempdir("partial-tail");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -1236,7 +1238,7 @@ async fn commits_region_with_trailing_partial_sector() {
 #[tokio::test]
 async fn corrupt_region_names_its_file() {
     // Genuine corruption still fails loudly, now naming the file.
-    let root = tempdir("corrupt-names-file");
+    let (root, _guard) = tempdir("corrupt-names-file");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -1286,7 +1288,7 @@ const fn kind_dir(kind: sekai_app::RegionKind) -> &'static str {
 #[tokio::test]
 async fn sparse_entities_chunk_diffs_empty_without_error() {
     use sekai_app::{ChunkCoord, Dimension};
-    let root = tempdir("sparse-entities");
+    let (root, _guard) = tempdir("sparse-entities");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -1325,7 +1327,7 @@ async fn sparse_entities_chunk_diffs_empty_without_error() {
 #[tokio::test]
 async fn created_and_deleted_chunks_diff_as_added_removed() {
     use sekai_app::{ChunkCoord, Dimension};
-    let root = tempdir("created-deleted");
+    let (root, _guard) = tempdir("created-deleted");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -1389,7 +1391,7 @@ async fn created_and_deleted_chunks_diff_as_added_removed() {
 async fn all_kinds_round_trip() {
     use sekai_app::{ChunkCoord, Dimension};
     for kind in RegionKind::ALL {
-        let root = tempdir(&format!("kind-{}", kind_dir(kind)));
+        let (root, _guard) = tempdir(&format!("kind-{}", kind_dir(kind)));
         let world_path = root.join("world");
         let mut world = HostWorldTree::new(&world_path).unwrap();
         let store = root.join("store").to_string_lossy().into_owned();
@@ -1441,7 +1443,7 @@ async fn all_kinds_round_trip() {
 #[tokio::test]
 async fn rect_and_kind_scopes_limit_ingest() {
     use sekai_app::{Area, Dimension, Rect, Scope};
-    let root = tempdir("rect-kind");
+    let (root, _guard) = tempdir("rect-kind");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -1527,7 +1529,7 @@ fn copy_dir(src: impl AsRef<Path>, dst: impl AsRef<Path>) {
 async fn real_world_corpus_round_trip() {
     const REAL_WORLD_CHUNKS_COUNT: usize = 1024 + 151 + 14;
 
-    let root = tempdir("corpus");
+    let (root, _guard) = tempdir("corpus");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     copy_dir(corpus_path(), &world_path);
@@ -1607,7 +1609,7 @@ async fn randomized_commit_checkout_round_trip() {
     const STEPS: usize = 8;
 
     for seed in 1..=SEEDS {
-        let root = tempdir(&format!("model{seed}"));
+        let (root, _guard) = tempdir(&format!("model{seed}"));
         let world_path = root.join("world");
         let mut world = HostWorldTree::new(&world_path).unwrap();
         std::fs::create_dir_all(&world_path).unwrap();

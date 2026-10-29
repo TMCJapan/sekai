@@ -8,19 +8,20 @@ use sekai_cli::cli::Cli;
 
 const HASH: &str = "0101010101010101010101010101010101010101010101010101010101010101";
 
-/// A temp dir named after the calling test; the caller runs `cleanup`
-/// so the path can outlive any `TempDir` guard.
-fn tempdir(_name: &str) -> std::path::PathBuf {
-    tempfile::Builder::new()
-        .prefix("sekai-cli-")
+/// A temp dir and its guard, both bound for the test body. The guard is
+/// not leaked, so panics clean up too; `cleanup` only removes the files
+/// early, before handles still referencing them are dropped.
+fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
+    let guard = tempfile::Builder::new()
+        .prefix(&format!("sekai-cli-{name}-"))
         .tempdir()
-        .unwrap()
-        .keep()
+        .unwrap();
+    (guard.path().to_path_buf(), guard)
 }
 
 #[tokio::test]
 async fn commands_on_a_missing_store_fail_without_creating_it() {
-    let root = tempdir("missing-store");
+    let (root, _guard) = tempdir("missing-store");
     let store = root.join("store");
     let world = root.join("world");
     std::fs::create_dir_all(&world).unwrap();

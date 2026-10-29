@@ -7,14 +7,15 @@
 
 use std::path::Path;
 
-/// A temp dir named after the calling test; the caller runs `cleanup`
-/// so the path can outlive any `TempDir` guard.
-fn tempdir(_name: &str) -> std::path::PathBuf {
-    tempfile::Builder::new()
-        .prefix("sekai-app-")
+/// A temp dir and its guard, both bound for the test body. The guard is
+/// not leaked, so panics clean up too; `cleanup` only removes the files
+/// early, before handles still referencing them are dropped.
+fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
+    let guard = tempfile::Builder::new()
+        .prefix(&format!("sekai-app-{name}-"))
         .tempdir()
-        .unwrap()
-        .keep()
+        .unwrap();
+    (guard.path().to_path_buf(), guard)
 }
 
 fn cleanup(dir: impl AsRef<Path>) {
@@ -23,7 +24,7 @@ fn cleanup(dir: impl AsRef<Path>) {
 
 #[tokio::test]
 async fn open_of_a_missing_store_fails_and_creates_nothing() {
-    let root = tempdir("open-missing");
+    let (root, _guard) = tempdir("open-missing");
     let store = root.join("store");
     let url = store.to_string_lossy().into_owned();
 
@@ -45,7 +46,7 @@ async fn open_of_a_missing_store_fails_and_creates_nothing() {
 
 #[tokio::test]
 async fn init_is_idempotent_on_an_existing_store() {
-    let root = tempdir("init-twice");
+    let (root, _guard) = tempdir("init-twice");
     let store = root.join("store");
     let url = store.to_string_lossy().into_owned();
 

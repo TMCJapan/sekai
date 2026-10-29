@@ -7,14 +7,15 @@
 use sekai_app::HostWorldTree;
 use std::path::Path;
 
-/// A temp dir named after the calling test; the caller runs `cleanup`
-/// so the path can outlive any `TempDir` guard.
-fn tempdir(_name: &str) -> std::path::PathBuf {
-    tempfile::Builder::new()
-        .prefix("sekai-prune-")
+/// A temp dir and its guard, both bound for the test body. The guard is
+/// not leaked, so panics clean up too; `cleanup` only removes the files
+/// early, before handles still referencing them are dropped.
+fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
+    let guard = tempfile::Builder::new()
+        .prefix(&format!("sekai-prune-{name}-"))
         .tempdir()
-        .unwrap()
-        .keep()
+        .unwrap();
+    (guard.path().to_path_buf(), guard)
 }
 
 fn cleanup(dir: impl AsRef<Path>) {
@@ -61,7 +62,7 @@ fn blob_count(store: impl AsRef<Path>) -> usize {
 
 #[tokio::test]
 async fn prune_folds_and_gc_reclaims() {
-    let root = tempdir("lifecycle");
+    let (root, _guard) = tempdir("lifecycle");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store_dir = root.join("store");
@@ -148,7 +149,7 @@ async fn prune_folds_and_gc_reclaims() {
 #[tokio::test]
 async fn prune_before_ref_and_empty_guards() {
     use sekai_app::CommitId;
-    let root = tempdir("guards");
+    let (root, _guard) = tempdir("guards");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();

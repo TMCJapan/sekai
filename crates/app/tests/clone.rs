@@ -8,14 +8,15 @@ use sekai_app::HostWorldTree;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// A temp dir named after the calling test; the caller runs `cleanup`
-/// so the path can outlive any `TempDir` guard.
-fn tempdir(_name: &str) -> std::path::PathBuf {
-    tempfile::Builder::new()
-        .prefix("sekai-clone-")
+/// A temp dir and its guard, both bound for the test body. The guard is
+/// not leaked, so panics clean up too; `cleanup` only removes the files
+/// early, before handles still referencing them are dropped.
+fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
+    let guard = tempfile::Builder::new()
+        .prefix(&format!("sekai-clone-{name}-"))
         .tempdir()
-        .unwrap()
-        .keep()
+        .unwrap();
+    (guard.path().to_path_buf(), guard)
 }
 
 fn cleanup(dir: impl AsRef<Path>) {
@@ -61,7 +62,7 @@ fn commit_options() -> sekai_app::CommitOptions {
 
 #[tokio::test]
 async fn clone_rebuilds_commit_into_fresh_directory() {
-    let root = tempdir("roundtrip");
+    let (root, _guard) = tempdir("roundtrip");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -113,7 +114,7 @@ async fn clone_rebuilds_commit_into_fresh_directory() {
 #[tokio::test]
 async fn clone_honors_layout_and_scope() {
     use sekai_app::{Dimension, Scope};
-    let root = tempdir("layout-scope");
+    let (root, _guard) = tempdir("layout-scope");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -183,7 +184,7 @@ async fn clone_honors_layout_and_scope() {
 
 #[tokio::test]
 async fn clone_refuses_non_empty_directory() {
-    let root = tempdir("nonempty");
+    let (root, _guard) = tempdir("nonempty");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -231,7 +232,7 @@ async fn clone_refuses_non_empty_directory() {
 
 #[tokio::test]
 async fn clone_omits_tombstoned_regions() {
-    let root = tempdir("tombstones");
+    let (root, _guard) = tempdir("tombstones");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();

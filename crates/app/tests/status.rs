@@ -7,14 +7,15 @@
 use sekai_app::HostWorldTree;
 use std::path::Path;
 
-/// A temp dir named after the calling test; the caller runs `cleanup`
-/// so the path can outlive any `TempDir` guard.
-fn tempdir(_name: &str) -> std::path::PathBuf {
-    tempfile::Builder::new()
-        .prefix("sekai-status-")
+/// A temp dir and its guard, both bound for the test body. The guard is
+/// not leaked, so panics clean up too; `cleanup` only removes the files
+/// early, before handles still referencing them are dropped.
+fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
+    let guard = tempfile::Builder::new()
+        .prefix(&format!("sekai-status-{name}-"))
         .tempdir()
-        .unwrap()
-        .keep()
+        .unwrap();
+    (guard.path().to_path_buf(), guard)
 }
 
 fn cleanup(dir: impl AsRef<Path>) {
@@ -59,7 +60,7 @@ fn blob_count(store: impl AsRef<Path>) -> usize {
 
 #[tokio::test]
 async fn status_counts_tombstones_without_writing() {
-    let root = tempdir("tomb");
+    let (root, _guard) = tempdir("tomb");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -104,7 +105,7 @@ async fn status_counts_tombstones_without_writing() {
 
 #[tokio::test]
 async fn status_reports_a_clean_world_after_commit() {
-    let root = tempdir("clean");
+    let (root, _guard) = tempdir("clean");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();

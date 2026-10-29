@@ -8,14 +8,16 @@ use sekai_core::{
 };
 use sekai_storage_sqlite::{init_sqlite, open_sqlite};
 use std::path::Path;
-/// A temp dir named after the calling test; the caller runs `cleanup`
-/// so the path can outlive any `TempDir` guard.
-fn tempdir(_name: &str) -> std::path::PathBuf {
-    tempfile::Builder::new()
-        .prefix("sekai-")
+
+/// A temp dir and its guard, both bound for the test body. The guard is
+/// not leaked, so panics clean up too; `cleanup` only removes the files
+/// early, before handles still referencing them are dropped.
+fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
+    let guard = tempfile::Builder::new()
+        .prefix(&format!("sekai-{name}-"))
         .tempdir()
-        .unwrap()
-        .keep()
+        .unwrap();
+    (guard.path().to_path_buf(), guard)
 }
 
 async fn init(dir: impl AsRef<Path>) -> sekai_storage_sqlite::SqliteStore {
@@ -28,7 +30,7 @@ fn cleanup(dir: impl AsRef<Path>) {
 
 #[tokio::test]
 async fn sqlite_commit_lifecycle() {
-    let dir = tempdir("lifecycle");
+    let (dir, _guard) = tempdir("lifecycle");
     let mut store = init(&dir).await;
     common::commit_lifecycle(store.meta_mut()).await;
     cleanup(&dir);
@@ -36,7 +38,7 @@ async fn sqlite_commit_lifecycle() {
 
 #[tokio::test]
 async fn sqlite_scope_flow() {
-    let dir = tempdir("scopes");
+    let (dir, _guard) = tempdir("scopes");
     let mut store = init(&dir).await;
     common::scope_flow(store.meta_mut()).await;
     cleanup(&dir);
@@ -44,7 +46,7 @@ async fn sqlite_scope_flow() {
 
 #[tokio::test]
 async fn sqlite_fresh_stats() {
-    let dir = tempdir("fresh");
+    let (dir, _guard) = tempdir("fresh");
     let mut store = init(&dir).await;
     common::fresh_stats(store.meta_mut()).await;
     cleanup(&dir);
@@ -55,7 +57,7 @@ async fn sqlite_fresh_stats() {
 /// checkout plan drops the coordinate instead of asking for a blob.
 #[tokio::test]
 async fn sqlite_tombstones_shape_and_checkout_drop() {
-    let dir = tempdir("tombstones");
+    let (dir, _guard) = tempdir("tombstones");
     let mut store = init(&dir).await;
     let meta = store.meta_mut();
     let present = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
@@ -101,7 +103,7 @@ async fn sqlite_tombstones_shape_and_checkout_drop() {
 
 #[tokio::test]
 async fn sqlite_prune_flow() {
-    let dir = tempdir("prune");
+    let (dir, _guard) = tempdir("prune");
     let mut store = init(&dir).await;
     common::prune_flow(store.meta_mut()).await;
     cleanup(&dir);
@@ -109,7 +111,7 @@ async fn sqlite_prune_flow() {
 
 #[tokio::test]
 async fn sqlite_prune_chain_flow() {
-    let dir = tempdir("prune-chain");
+    let (dir, _guard) = tempdir("prune-chain");
     let mut store = init(&dir).await;
     common::prune_chain_flow(store.meta_mut()).await;
     cleanup(&dir);
@@ -117,7 +119,7 @@ async fn sqlite_prune_chain_flow() {
 
 #[tokio::test]
 async fn sqlite_history_graph() {
-    let dir = tempdir("graph");
+    let (dir, _guard) = tempdir("graph");
     let mut store = init(&dir).await;
     common::history_graph(store.meta_mut()).await;
     cleanup(&dir);
@@ -125,7 +127,7 @@ async fn sqlite_history_graph() {
 
 #[tokio::test]
 async fn sqlite_cas_roundtrip() {
-    let dir = tempdir("cas");
+    let (dir, _guard) = tempdir("cas");
     let mut store = init(&dir).await;
     common::cas_roundtrip(store.cas_mut()).await;
     cleanup(&dir);
@@ -133,7 +135,7 @@ async fn sqlite_cas_roundtrip() {
 
 #[tokio::test]
 async fn sqlite_torn_orphan_gc() {
-    let dir = tempdir("gc");
+    let (dir, _guard) = tempdir("gc");
     let mut store = init(&dir).await;
     common::torn_orphan_gc(&mut store).await;
     cleanup(&dir);
@@ -141,7 +143,7 @@ async fn sqlite_torn_orphan_gc() {
 
 #[tokio::test]
 async fn cas_skips_foreign_and_temp_names() {
-    let dir = tempdir("names");
+    let (dir, _guard) = tempdir("names");
     let mut store = init(&dir).await;
     let cas = store.cas_mut();
     let hash = sekai_core::hash_blob(b"real");
@@ -168,7 +170,7 @@ async fn cas_skips_foreign_and_temp_names() {
 /// a root that was never initialized and leave nothing behind (issue #80).
 #[tokio::test]
 async fn open_of_a_missing_store_fails_without_creating_it() {
-    let base = tempdir("missing");
+    let (base, _guard) = tempdir("missing");
     let dir = base.join("store");
     let err = open_sqlite(&dir).await.unwrap_err();
     assert!(

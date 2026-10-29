@@ -7,14 +7,16 @@ use sekai_world::{
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-/// A temp dir named after the calling test; the caller runs `cleanup`
-/// so the path can outlive any `TempDir` guard.
-fn tempdir(_name: &str) -> std::path::PathBuf {
-    tempfile::Builder::new()
-        .prefix("sekai-world-")
+
+/// A temp dir and its guard, both bound for the test body. The guard is
+/// not leaked, so panics clean up too; `cleanup` only removes the files
+/// early, before handles still referencing them are dropped.
+fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
+    let guard = tempfile::Builder::new()
+        .prefix(&format!("sekai-world-{name}-"))
         .tempdir()
-        .unwrap()
-        .keep()
+        .unwrap();
+    (guard.path().to_path_buf(), guard)
 }
 
 fn cleanup(dir: impl AsRef<Path>) {
@@ -129,7 +131,7 @@ fn observes_a_single_layout_per_root() {
     // A root holding both a 26.1 `dimensions/` tree and legacy folders is
     // resolved once: the dimensions tree is the observed layout and the
     // legacy files stay out of discovery.
-    let world_path = tempdir("layouts");
+    let (world_path, _guard) = tempdir("layouts");
     let image = one_chunk_image();
     write(world_path.join("region/r.0.0.mca"), &image);
     write(world_path.join("DIM-1/region/r.0.0.mca"), &image);
@@ -160,7 +162,7 @@ fn observes_a_single_layout_per_root() {
 
 #[test]
 fn get_dims_lists_every_layout_dimension() {
-    let world_path = tempdir("get-dims");
+    let (world_path, _guard) = tempdir("get-dims");
     let image = one_chunk_image();
     write(world_path.join("region/r.0.0.mca"), &image);
     write(world_path.join("DIM1/region/r.1.0.mca"), &image);
@@ -200,7 +202,7 @@ fn non_utf8_dimension_names_stay_discovered() {
 
     // Unix directory names are raw bytes: neither a non-UTF-8 namespace nor
     // a non-UTF-8 dimension folder may be dropped from the tree.
-    let world_path = tempdir("non-utf8");
+    let (world_path, _guard) = tempdir("non-utf8");
     let image = one_chunk_image();
     let overworld = world_path.join("dimensions/minecraft/overworld/region/r.9.9.mca");
     let namespace = world_path
@@ -242,7 +244,7 @@ fn non_utf8_dimension_names_stay_discovered() {
 
 #[test]
 fn discovers_a_legacy_single_folder_world() {
-    let world_path = tempdir("legacy");
+    let (world_path, _guard) = tempdir("legacy");
     let image = one_chunk_image();
     write(world_path.join("region/r.0.0.mca"), &image);
     write(world_path.join("DIM-1/region/r.0.0.mca"), &image);
@@ -271,7 +273,7 @@ fn discovers_a_legacy_single_folder_world() {
 
 #[test]
 fn locking_a_missing_world_reports_the_missing_world() {
-    let root = tempdir("lock-missing");
+    let (root, _guard) = tempdir("lock-missing");
     let world = HostWorldTree::new(root.join("typo")).unwrap();
     for mode in [WorldLockMode::Shared, WorldLockMode::Exclusive] {
         let err = world.lock(mode).unwrap_err();
@@ -292,7 +294,7 @@ fn locking_a_missing_world_reports_the_missing_world() {
 
 #[test]
 fn the_world_lock_lives_in_the_root_and_stays_out_of_discovery() {
-    let world_path = tempdir("lock");
+    let (world_path, _guard) = tempdir("lock");
     write(world_path.join("region/r.0.0.mca"), &one_chunk_image());
     let world = HostWorldTree::new(&world_path).unwrap();
     let before = discover(&world);
@@ -332,7 +334,7 @@ fn the_world_lock_lives_in_the_root_and_stays_out_of_discovery() {
 fn world_locks_stay_out_of_bukkit_layout_detection() {
     // A server root is scanned for its level-name folder and datapack
     // siblings; lock files at either root must not join that scan.
-    let root_path = tempdir("lock-bukkit");
+    let (root_path, _guard) = tempdir("lock-bukkit");
     write(root_path.join("server.properties"), b"level-name=world\n");
     write(
         root_path.join("world/dimensions/minecraft/overworld/region/r.0.0.mca"),
@@ -362,7 +364,7 @@ fn world_locks_stay_out_of_bukkit_layout_detection() {
 #[test]
 fn an_exclusive_world_lock_excludes_another_writer() {
     // Checkouts write the world, so two of them must not overlap.
-    let world_path = tempdir("lock-exclusive");
+    let (world_path, _guard) = tempdir("lock-exclusive");
     write(world_path.join("region/r.0.0.mca"), &one_chunk_image());
     let world = HostWorldTree::new(&world_path).unwrap();
 
@@ -396,7 +398,7 @@ fn an_exclusive_world_lock_excludes_another_writer() {
 fn discovers_a_bukkit_level_name_world() {
     // `level-name=world`: the observed layout is the 26.1 tree nested
     // under the level-name folder.
-    let root_path = tempdir("bukkit");
+    let (root_path, _guard) = tempdir("bukkit");
     let image = one_chunk_image();
     write(root_path.join("server.properties"), b"level-name=world\n");
     write(
@@ -431,7 +433,7 @@ fn discovers_a_bukkit_level_name_world() {
 fn discovers_a_custom_level_name_world() {
     // `level-name=srv`: the observed layout follows the configured base,
     // including its custom dimensions.
-    let root_path = tempdir("levelname");
+    let (root_path, _guard) = tempdir("levelname");
     let image = one_chunk_image();
     write(
         root_path.join("server.properties"),
@@ -477,7 +479,7 @@ fn discovers_a_custom_level_name_world() {
 fn other_world_folders_are_not_observed() {
     // A Multiverse-style sibling world is a separate tree; only the
     // level-name world belongs to this one.
-    let root_path = tempdir("multiverse");
+    let (root_path, _guard) = tempdir("multiverse");
     let image = one_chunk_image();
     write(root_path.join("server.properties"), b"level-name=world\n");
     write(
@@ -509,7 +511,7 @@ fn discovers_a_legacy_bukkit_world() {
     // dimension in its own sibling world folder, with the data one level
     // deeper in `dimensions/kingdoms/spawn`. A sibling folder without a
     // `dimensions/` tree is a plugin world, not a dimension.
-    let root_path = tempdir("bukkit-legacy");
+    let (root_path, _guard) = tempdir("bukkit-legacy");
     let image = one_chunk_image();
     write(root_path.join("server.properties"), b"level-name=world\n");
     write(root_path.join("world/region/r.0.0.mca"), &image);
@@ -552,7 +554,7 @@ fn vanilla_dimensions_stay_out_of_a_legacy_bukkit_world() {
     // A `world/dimensions/` tree is the pre-migration vanilla location:
     // the server moves it into a sibling world folder on startup and reads
     // only the moved location, so the residue stays out of discovery.
-    let root_path = tempdir("bukkit-legacy-residue");
+    let (root_path, _guard) = tempdir("bukkit-legacy-residue");
     let image = one_chunk_image();
     write(root_path.join("server.properties"), b"level-name=world\n");
     write(root_path.join("world/region/r.0.0.mca"), &image);
@@ -583,8 +585,8 @@ fn legacy_bukkit_keeps_vanilla_legacy_dimension_ids() {
     // The split layout shares the single-folder layout's identities (the
     // trio and every `<namespace>:<path>` key), so a world keeps one
     // history when it moves between vanilla and Bukkit trees.
-    let root_path = tempdir("bukkit-legacy-ids");
-    let legacy_path = tempdir("vanilla-legacy-ids");
+    let (root_path, _guard) = tempdir("bukkit-legacy-ids");
+    let (legacy_path, _guard) = tempdir("vanilla-legacy-ids");
     let image = one_chunk_image();
     write(root_path.join("server.properties"), b"level-name=world\n");
     for dir in [
@@ -651,8 +653,8 @@ fn modern_tree_keeps_legacy_dimension_ids() {
     // same dimensions (`minecraft:overworld`, `minecraft:the_nether`,
     // `minecraft:the_end`) plus every `<namespace>:<path>` key, so a world
     // keeps one history across a migration in either direction.
-    let modern_path = tempdir("vanilla-26.1-ids");
-    let legacy_path = tempdir("vanilla-legacy-ids-modern");
+    let (modern_path, _guard) = tempdir("vanilla-26.1-ids");
+    let (legacy_path, _guard) = tempdir("vanilla-legacy-ids-modern");
     let image = one_chunk_image();
     for dir in [
         "dimensions/minecraft/overworld/region",
@@ -716,7 +718,7 @@ fn modern_tree_keeps_legacy_dimension_ids() {
 fn legacy_leftovers_stay_out_of_a_bukkit_layout() {
     // Conversion residue at the server root or inside the level-name
     // folder is not part of the observed 26.1 layout.
-    let root_path = tempdir("bukkit-leftovers");
+    let (root_path, _guard) = tempdir("bukkit-leftovers");
     let image = one_chunk_image();
     write(root_path.join("server.properties"), b"level-name=world\n");
     write(
@@ -748,7 +750,7 @@ fn empty_dimension_directories_stay_collected() {
     // Dimension directories are resolved at construction, so an empty
     // (freshly created or briefly emptied) overworld still belongs to the
     // layout and picks up files written later.
-    let root_path = tempdir("empty-dim");
+    let (root_path, _guard) = tempdir("empty-dim");
     let image = one_chunk_image();
     std::fs::create_dir_all(root_path.join("dimensions/minecraft/overworld/region")).unwrap();
     write(
@@ -784,7 +786,7 @@ fn empty_dimension_directories_stay_collected() {
 fn level_name_wins_over_a_leftover_world_folder() {
     // `level-name=survival` with a stale `world/` tree still on disk: the
     // server loads survival, so only its layout is observed.
-    let root_path = tempdir("levelname-leftover");
+    let (root_path, _guard) = tempdir("levelname-leftover");
     let image = one_chunk_image();
     write(
         root_path.join("server.properties"),
@@ -825,7 +827,7 @@ fn an_escaping_level_name_stays_out_of_the_layout() {
     // `server.properties` is untrusted: a value like `../escape` must not
     // point the layout outside the observed root, even when the target
     // happens to exist on disk.
-    let base_path = tempdir("levelname-escape");
+    let (base_path, _guard) = tempdir("levelname-escape");
     let root_path = base_path.join("root");
     let image = one_chunk_image();
     write(
@@ -853,7 +855,7 @@ fn an_unlistable_kind_directory_is_an_error() {
     // A kind directory that cannot be listed must not silently downgrade
     // the layout: the world would open as a different tree - or an empty
     // one - and later commits would miss its data.
-    let world_path = tempdir("kinds-unlistable");
+    let (world_path, _guard) = tempdir("kinds-unlistable");
     write(world_path.join("region"), b"not a directory");
 
     assert!(matches!(
@@ -867,7 +869,7 @@ fn an_unlistable_kind_directory_is_an_error() {
 #[test]
 fn a_permission_denied_kind_directory_is_an_error() {
     use std::os::unix::fs::PermissionsExt;
-    let world_path = tempdir("kinds-denied");
+    let (world_path, _guard) = tempdir("kinds-denied");
     let region = world_path.join("region");
     write(region.join("r.0.0.mca"), &one_chunk_image());
     std::fs::set_permissions(&region, std::fs::Permissions::from_mode(0o000)).unwrap();
@@ -890,7 +892,7 @@ fn a_broken_entry_does_not_hide_a_bukkit_trio() {
     // The overworld's `region/` holds a dangling link and its `entities/`
     // holds a real file: the broken entry is skipped exactly as discovery
     // skips it, so the trio is still recognized and nothing is lost.
-    let root_path = tempdir("bukkit-broken-entry");
+    let (root_path, _guard) = tempdir("bukkit-broken-entry");
     let image = one_chunk_image();
     write(root_path.join("server.properties"), b"level-name=world\n");
     std::fs::create_dir_all(root_path.join("world/region")).unwrap();
@@ -915,7 +917,7 @@ fn a_broken_entry_does_not_hide_a_bukkit_trio() {
 fn a_bukkit_trio_without_server_properties_is_still_elected() {
     // No `server.properties` (deleted, or the server never wrote one):
     // the split trio is elected from structure alone.
-    let root_path = tempdir("bukkit-no-props");
+    let (root_path, _guard) = tempdir("bukkit-no-props");
     let image = one_chunk_image();
     write(root_path.join("world/region/r.0.0.mca"), &image);
     write(
@@ -946,7 +948,7 @@ fn a_bukkit_trio_without_server_properties_is_still_elected() {
 fn a_26_1_bukkit_tree_without_server_properties_is_still_elected() {
     // A migrated 26.1 tree without `server.properties`: the base is
     // elected by its nested `dimensions/` folder.
-    let root_path = tempdir("bukkit-26.1-no-props");
+    let (root_path, _guard) = tempdir("bukkit-26.1-no-props");
     let image = one_chunk_image();
     write(
         root_path.join("world/dimensions/minecraft/overworld/region/r.0.0.mca"),
@@ -975,7 +977,7 @@ fn a_26_1_bukkit_tree_without_server_properties_is_still_elected() {
 fn stray_dimensions_dir_does_not_hijack_a_bukkit_root() {
     // A `dimensions/` tree left at the server root (migration residue, a
     // plugin) must not displace the level-name world's own layout.
-    let root_path = tempdir("stray-dimensions");
+    let (root_path, _guard) = tempdir("stray-dimensions");
     let image = one_chunk_image();
     write(root_path.join("server.properties"), b"level-name=world\n");
     write(
@@ -1007,7 +1009,7 @@ fn stray_dimensions_dir_does_not_hijack_a_bukkit_root() {
 fn nested_world_folders_are_not_observed() {
     // A full vanilla world copied under the observed one stays out:
     // single-layout observation never walks into nested folders.
-    let root_path = tempdir("nested");
+    let (root_path, _guard) = tempdir("nested");
     let image = one_chunk_image();
     write(root_path.join("region/r.0.0.mca"), &image);
     write(root_path.join("old/region/r.0.0.mca"), &image);
@@ -1025,7 +1027,7 @@ fn duplicate_coordinate_names_are_rejected() {
     // `r.0.0.mca` and `r.00.00.mca` both parse as region (0,0). Which one
     // the game reads is not decidable from the name alone, so discovery
     // fails loudly instead of picking one and dropping the other.
-    let root_path = tempdir("dup-coords");
+    let (root_path, _guard) = tempdir("dup-coords");
     let root = HostWorldTree::new(&root_path).unwrap();
     write(root_path.join("region/r.0.0.mca"), &one_chunk_image());
     write(root_path.join("region/r.00.00.mca"), &one_chunk_image_at(1));
@@ -1048,7 +1050,7 @@ fn non_canonical_region_name_keeps_its_discovered_path() {
     // `r.00.00.mca` parses as region (0,0). Discovery must report the file
     // that exists, while `derive_region` keeps naming the canonical
     // spelling used for output targets.
-    let world_path = tempdir("non-canonical");
+    let (world_path, _guard) = tempdir("non-canonical");
     let path = world_path.join("region/r.00.00.mca");
     write(&path, &one_chunk_image());
 
@@ -1076,7 +1078,7 @@ fn non_canonical_region_name_keeps_its_discovered_path() {
 /// directory.
 #[test]
 fn a_sibling_keeps_the_observed_directory() {
-    let world_path = tempdir("sibling");
+    let (world_path, _guard) = tempdir("sibling");
     write(world_path.join("region/r.00.00.mca"), &one_chunk_image());
 
     let world = HostWorldTree::new(&world_path).unwrap();
@@ -1107,7 +1109,7 @@ fn a_sibling_keeps_the_observed_directory() {
 fn unresolvable_entries_are_skipped_not_fatal() {
     // A dangling symlink inside a kind directory must not abort the whole
     // discovery: one unreadable entry must not block committing the world.
-    let world_path = tempdir("dangling");
+    let (world_path, _guard) = tempdir("dangling");
     write(world_path.join("region/r.0.0.mca"), &one_chunk_image());
     std::os::unix::fs::symlink(
         world_path.join("missing-target"),
@@ -1126,7 +1128,7 @@ fn regions_are_ordered_by_kind_and_coordinates() {
     // Region enumeration reports keys in ascending coordinates within a
     // kind, not file-name order (`r.10.0.mca` sorts before `r.2.0.mca`
     // lexicographically), and the kind walk follows `RegionKind::ALL`.
-    let world_path = tempdir("region-order");
+    let (world_path, _guard) = tempdir("region-order");
     let image = one_chunk_image();
     for name in ["r.10.0.mca", "r.2.0.mca", "r.-1.0.mca"] {
         write(world_path.join("region").join(name), &image);
@@ -1164,7 +1166,7 @@ fn regions_are_ordered_by_kind_and_coordinates() {
 
 #[test]
 fn missing_world_is_an_error() {
-    let world_path = tempdir("gone");
+    let (world_path, _guard) = tempdir("gone");
     let world = HostWorldTree::new(&world_path).unwrap();
     cleanup(&world_path);
     // Dimension enumeration fails loudly: a vanished world must not read
@@ -1188,7 +1190,7 @@ fn missing_world_is_an_error() {
 /// instead of failing while the root is still missing.
 #[test]
 fn output_trees_serve_no_regions_before_creation() {
-    let root = tempdir("output-missing");
+    let (root, _guard) = tempdir("output-missing");
     let missing = root.join("not-yet");
     for tree in [
         HostWorldTree::new_legacy(&missing),
@@ -1263,18 +1265,18 @@ fn derives_all_layouts() {
 fn output_trees_share_discovered_ids() {
     let image = one_chunk_image();
 
-    let legacy_path = tempdir("output-ids-legacy");
+    let (legacy_path, _guard) = tempdir("output-ids-legacy");
     write(legacy_path.join("region/r.0.0.mca"), &image);
     write(legacy_path.join("DIM-1/region/r.-1.2.mca"), &image);
     write(legacy_path.join("DIM1/poi/r.1.0.mca"), &image);
 
-    let modern_path = tempdir("output-ids-26.1");
+    let (modern_path, _guard) = tempdir("output-ids-26.1");
     write(
         modern_path.join("dimensions/minecraft/the_nether/region/r.2.0.mca"),
         &image,
     );
 
-    let bukkit_path = tempdir("output-ids-bukkit");
+    let (bukkit_path, _guard) = tempdir("output-ids-bukkit");
     write(bukkit_path.join("server.properties"), b"level-name=srv\n");
     write(bukkit_path.join("srv/region/r.0.0.mca"), &image);
     write(
@@ -1299,7 +1301,7 @@ fn output_trees_share_discovered_ids() {
 
 #[test]
 fn fingerprints_are_stable_and_change_sensitive() {
-    let world = tempdir("fp");
+    let (world, _guard) = tempdir("fp");
     let path = world.join("region/r.0.0.mca");
     write(&path, &one_chunk_image());
     let key = RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
@@ -1329,7 +1331,7 @@ fn fingerprints_are_stable_and_change_sensitive() {
 /// coarse-mtime filesystem produce exactly this file.
 #[test]
 fn fingerprint_sees_a_payload_edit_with_preserved_size_and_mtime() {
-    let world = tempdir("fp-payload");
+    let (world, _guard) = tempdir("fp-payload");
     let path = world.join("region/r.0.0.mca");
     let key = RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
     // A fixed timestamp both writes are stamped with, so mtime cannot be the
@@ -1372,7 +1374,7 @@ fn set_mtime(path: impl AsRef<Path>, time: std::time::SystemTime) {
 
 #[test]
 fn atomic_swap_replaces_and_cleans_up() {
-    let world = tempdir("swap");
+    let (world, _guard) = tempdir("swap");
     let target = world.join("region/r.0.0.mca");
     write(&target, b"old");
     atomic_swap(&target, &one_chunk_image()).unwrap();
@@ -1402,7 +1404,7 @@ fn atomic_swap_replaces_and_cleans_up() {
 #[test]
 fn atomic_swap_preserves_target_permissions() {
     use std::os::unix::fs::PermissionsExt;
-    let world = tempdir("swap-mode");
+    let (world, _guard) = tempdir("swap-mode");
     let target = world.join("region/r.0.0.mca");
     write(&target, b"old");
     std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o444)).unwrap();
