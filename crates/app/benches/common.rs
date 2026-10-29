@@ -125,9 +125,14 @@ pub fn generate(world: impl AsRef<Path>, spec: &WorldSpec) {
     }
 }
 
-/// Fresh temp dir for one benchmark setup.
-pub fn tempdir(_name: &str) -> std::path::PathBuf {
-    tempfile::tempdir().expect("tempdir").keep()
+/// Fresh temp dir for one benchmark setup, named after the benchmark so
+/// a leaked directory stays traceable.
+pub fn tempdir(name: &str) -> std::path::PathBuf {
+    tempfile::Builder::new()
+        .prefix(&format!("sekai-bench-{name}-"))
+        .tempdir()
+        .expect("tempdir")
+        .keep()
 }
 
 /// Default bench options (workers follow CPU count).
