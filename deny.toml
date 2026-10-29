@@ -1,5 +1,7 @@
 [advisories]
 version = 2
+# `paste` (unmaintained, not vulnerable) comes transitively via
+# pulp <- nanocesu8 <- nanonbt. Revisit once upstream drops it.
 ignore = ["RUSTSEC-2024-0436"]
 
 [licenses]
