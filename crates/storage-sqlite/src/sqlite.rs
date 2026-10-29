@@ -1249,20 +1249,8 @@ mod tests {
     use sekai_core::{RegionKind, usecase::commit::stage_present};
     use sqlx::ConnectOptions as _;
     use sqlx::Connection as _;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    fn tempdir(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "sekai-{}-{}-{}",
-            name,
-            std::process::id(),
-            TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn tempdir(_name: &str) -> std::path::PathBuf {
+        tempfile::tempdir().unwrap().keep()
     }
 
     async fn memory_meta() -> SqliteMeta {

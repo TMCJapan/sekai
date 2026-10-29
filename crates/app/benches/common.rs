@@ -126,11 +126,8 @@ pub fn generate(world: impl AsRef<Path>, spec: &WorldSpec) {
 }
 
 /// Fresh temp dir for one benchmark setup.
-pub fn tempdir(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("sekai-bench-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("mkdir works");
-    dir
+pub fn tempdir(_name: &str) -> std::path::PathBuf {
+    tempfile::tempdir().expect("tempdir").keep()
 }
 
 /// Default bench options (workers follow CPU count).

@@ -5,39 +5,7 @@
 #![cfg(feature = "backend-sqlite")]
 
 use sekai_app::{DEFAULT_REF_NAME, HostWorldTree, RefName};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir().join(format!(
-            "sekai-ref-{name}-{}-{}",
-            std::process::id(),
-            TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        Self(dir)
-    }
-}
-
-impl std::ops::Deref for TempDir {
-    type Target = Path;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
+use std::path::Path;
 
 fn write_region(path: impl AsRef<Path>, chunks: &[(i32, i32, Vec<u8>)]) {
     let name = path.as_ref().file_name().unwrap().to_str().unwrap();
@@ -69,7 +37,7 @@ async fn commit<S: sekai_app::SekaiStore>(
 
 #[tokio::test]
 async fn a_fresh_store_starts_with_one_active_ref() {
-    let root = TempDir::new("fresh");
+    let root = tempfile::tempdir().unwrap().keep();
     let store = root.join("store").to_string_lossy().into_owned();
     let instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
 
@@ -83,7 +51,7 @@ async fn a_fresh_store_starts_with_one_active_ref() {
 
 #[tokio::test]
 async fn a_commit_hangs_from_the_active_ref() {
-    let root = TempDir::new("hang");
+    let root = tempfile::tempdir().unwrap().keep();
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -115,7 +83,7 @@ async fn a_commit_hangs_from_the_active_ref() {
 
 #[tokio::test]
 async fn switching_refs_forks_the_history() {
-    let root = TempDir::new("fork");
+    let root = tempfile::tempdir().unwrap().keep();
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -170,7 +138,7 @@ async fn switching_refs_forks_the_history() {
 
 #[tokio::test]
 async fn the_active_ref_is_protected() {
-    let root = TempDir::new("protect");
+    let root = tempfile::tempdir().unwrap().keep();
     let store = root.join("store").to_string_lossy().into_owned();
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
@@ -187,7 +155,7 @@ async fn the_active_ref_is_protected() {
 
 #[tokio::test]
 async fn forcing_a_move_keeps_the_active_flag() {
-    let root = TempDir::new("force");
+    let root = tempfile::tempdir().unwrap().keep();
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
@@ -225,7 +193,7 @@ async fn forcing_a_move_keeps_the_active_flag() {
 
 #[tokio::test]
 async fn ref_writes_report_a_missing_target() {
-    let root = TempDir::new("missing");
+    let root = tempfile::tempdir().unwrap().keep();
     let store = root.join("store").to_string_lossy().into_owned();
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let feature = RefName::parse("feature").unwrap();

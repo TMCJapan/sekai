@@ -46,6 +46,7 @@ harness = false
 required-features = ["backend-sqlite"]
 
 [dev-dependencies]
+tempfile.workspace = true
 criterion.workspace = true
 miniz_oxide.workspace = true
 

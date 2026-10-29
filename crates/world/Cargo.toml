@@ -19,3 +19,6 @@ thiserror.workspace = true
 # `O_NOFOLLOW`, so the world lock never lands on a symlink's target.
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

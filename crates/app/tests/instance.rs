@@ -5,20 +5,10 @@
 
 #![cfg(feature = "backend-sqlite")]
 
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::Path;
 
-static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-fn tempdir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "sekai-app-{name}-{}-{}",
-        std::process::id(),
-        TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn tempdir(_name: &str) -> std::path::PathBuf {
+    tempfile::tempdir().unwrap().keep()
 }
 
 fn cleanup(dir: impl AsRef<Path>) {

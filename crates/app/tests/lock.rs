@@ -17,22 +17,16 @@ use sekai_storage::{StorageError, StoreLockMode};
 use sekai_storage_sqlite::SqliteStore;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-
-use StoreLockMode::{Exclusive, Shared, Writer};
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn tempdir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "sekai-app-lock-{name}-{}-{}",
-        std::process::id(),
-        TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+use StoreLockMode::{Exclusive, Shared, Writer};
+
+fn tempdir(_name: &str) -> tempfile::TempDir {
+    tempfile::tempdir().unwrap()
 }
 
 fn write_region(path: impl AsRef<Path>, payload: &[u8]) {
@@ -63,7 +57,7 @@ fn lock_matrix_areas() -> Vec<(Dimension, Rect)> {
 
 impl Fixture {
     async fn new(name: &str) -> Self {
-        let root = tempdir(name);
+        let root = tempdir(name).keep();
         let world_path = root.join("world");
         // Uncompressed (3) empty root compounds: valid chunks that decode.
         write_region(world_path.join("region/r.0.0.mca"), &[3, 10, 0, 0, 0]);

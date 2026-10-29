@@ -7,20 +7,9 @@ use sekai_core::{
     MetaStore as _, RegionKind, usecase::checkout::plan_checkout,
 };
 use sekai_storage_sqlite::{init_sqlite, open_sqlite};
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-
-fn tempdir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "sekai-{}-{}-{}",
-        name,
-        std::process::id(),
-        TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    dir
+use std::path::Path;
+fn tempdir(_name: &str) -> std::path::PathBuf {
+    tempfile::tempdir().unwrap().keep()
 }
 
 async fn init(dir: impl AsRef<Path>) -> sekai_storage_sqlite::SqliteStore {
@@ -173,7 +162,8 @@ async fn cas_skips_foreign_and_temp_names() {
 /// a root that was never initialized and leave nothing behind (issue #80).
 #[tokio::test]
 async fn open_of_a_missing_store_fails_without_creating_it() {
-    let dir = tempdir("missing");
+    let base = tempdir("missing");
+    let dir = base.join("store");
     let err = open_sqlite(&dir).await.unwrap_err();
     assert!(
         matches!(&err, sekai_storage::StorageError::StoreMissing { path } if path == &dir),
@@ -185,5 +175,5 @@ async fn open_of_a_missing_store_fails_without_creating_it() {
     assert!(dir.join("meta.sqlite").is_file());
     assert!(dir.join("blobs").is_dir());
     let _store = open_sqlite(&dir).await.unwrap();
-    cleanup(&dir);
+    cleanup(&base);
 }
