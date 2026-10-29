@@ -41,6 +41,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn normalized_hash_is_deterministic_and_skips_volatile_tags() {
+        let status = Cesu8::try_from_str("minecraft:full").unwrap();
+        let payload = |inhabited_time, last_update| ChunkPayload {
+            data_version: 1,
+            x_pos: 3,
+            y_pos: 0,
+            z_pos: -1,
+            inhabited_time,
+            last_update,
+            sections: alloc::vec![],
+            heightmaps: Heightmaps::default(),
+            status,
+            block_entities: alloc::vec![],
+            block_ticks: alloc::vec![],
+            fluid_ticks: alloc::vec![],
+        };
+
+        let base = payload(7, 9);
+        let base_hash = base.normalize_hash().unwrap();
+        assert_eq!(base_hash, payload(7, 9).normalize_hash().unwrap());
+        assert_eq!(base_hash, payload(999, 1_234).normalize_hash().unwrap());
+    }
+
+    #[test]
     fn payload_round_trips() {
         let payload = ChunkPayload {
             data_version: 1,
@@ -63,8 +87,6 @@ mod tests {
 
     #[test]
     fn normalized_hash_covers_both_tick_lists() {
-        use crate::chunk::BlockTick;
-
         let id = Cesu8::try_from_str("minecraft:water").unwrap();
         let status = Cesu8::try_from_str("minecraft:full").unwrap();
         let tick = BlockTick {
