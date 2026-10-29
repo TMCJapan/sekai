@@ -117,6 +117,12 @@ struct CommitPhases {
     db_apply_ms: u128,
 }
 
+/// One region row of the `--timing` JSON (`docs/json.md`).
+///
+/// Field names and types are the machine-readable contract: a consumer such
+/// as a benchmark script reads them, so changing or dropping one is an
+/// output-contract change that updates `docs/json.md` and the golden test
+/// in this module together.
 #[derive(Serialize)]
 struct RegionTimingJson {
     path: String,
