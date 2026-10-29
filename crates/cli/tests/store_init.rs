@@ -6,8 +6,9 @@ use sekai_cli::cli::Cli;
 
 const HASH: &str = "0101010101010101010101010101010101010101010101010101010101010101";
 
-/// A temp dir named after the calling test, removed when its guard is
-/// dropped at the end of the test, panics included.
+/// A temp dir whose name starts with the calling test's name (tempfile
+/// appends a random suffix), removed when its guard is dropped at the end
+/// of the test, panics included.
 fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
     let guard = tempfile::Builder::new()
         .prefix(&format!("sekai-cli-{name}-"))
