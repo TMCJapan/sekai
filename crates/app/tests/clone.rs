@@ -8,19 +8,14 @@ use sekai_app::HostWorldTree;
 use std::collections::BTreeMap;
 use std::path::Path;
 
-/// A temp dir and its guard, both bound for the test body. The guard is
-/// not leaked, so panics clean up too; `cleanup` only removes the files
-/// early, before handles still referencing them are dropped.
+/// A temp dir named after the calling test, removed when its guard is
+/// dropped at the end of the test, panics included.
 fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
     let guard = tempfile::Builder::new()
         .prefix(&format!("sekai-clone-{name}-"))
         .tempdir()
         .unwrap();
     (guard.path().to_path_buf(), guard)
-}
-
-fn cleanup(dir: impl AsRef<Path>) {
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Write a region image through the real builder, deriving the region
@@ -108,7 +103,6 @@ async fn clone_rebuilds_commit_into_fresh_directory() {
         chunk_map(out_path.join("DIM-1/region/r.0.0.mca")),
         expected_nether
     );
-    cleanup(&root);
 }
 
 #[tokio::test]
@@ -179,7 +173,6 @@ async fn clone_honors_layout_and_scope() {
             .join("myworld_nether/DIM-1/region/r.0.0.mca")
             .is_file()
     );
-    cleanup(&root);
 }
 
 #[tokio::test]
@@ -227,7 +220,6 @@ async fn clone_refuses_non_empty_directory() {
         .await
         .unwrap();
     assert_eq!(report.files_written, 1);
-    cleanup(&root);
 }
 
 #[tokio::test]
@@ -269,5 +261,4 @@ async fn clone_omits_tombstoned_regions() {
     assert_eq!(report.files_written, 0);
     assert_eq!(report.chunks_restored, 0);
     assert!(!out_path.join("region/r.0.0.mca").exists());
-    cleanup(&root);
 }

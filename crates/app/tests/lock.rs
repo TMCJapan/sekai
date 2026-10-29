@@ -35,6 +35,9 @@ fn write_region(path: impl AsRef<Path>, payload: &[u8]) {
 }
 
 struct Fixture {
+    /// Held so the root outlives the handles that point into it, and is
+    /// removed on drop or when `new` unwinds.
+    _guard: tempfile::TempDir,
     root: PathBuf,
     world_path: PathBuf,
     world: HostWorldTree,
@@ -53,11 +56,11 @@ fn lock_matrix_areas() -> Vec<(Dimension, Rect)> {
 
 impl Fixture {
     async fn new(name: &str) -> Self {
-        let root = tempfile::Builder::new()
+        let guard = tempfile::Builder::new()
             .prefix(&format!("sekai-app-lock-{name}-"))
             .tempdir()
-            .unwrap()
-            .keep();
+            .unwrap();
+        let root = guard.path().to_path_buf();
         let world_path = root.join("world");
         // Uncompressed (3) empty root compounds: valid chunks that decode.
         write_region(world_path.join("region/r.0.0.mca"), &[3, 10, 0, 0, 0]);
@@ -87,6 +90,7 @@ impl Fixture {
             .await
             .unwrap();
         Self {
+            _guard: guard,
             root,
             world_path,
             world,
@@ -104,12 +108,6 @@ impl Fixture {
     /// A second tree over the same folder, standing in for another process.
     fn other_world(&self) -> HostWorldTree {
         HostWorldTree::new(&self.world_path).unwrap()
-    }
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 

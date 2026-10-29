@@ -9,19 +9,14 @@ use sekai_app::{HostWorldTree, WorldTree};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// A temp dir and its guard, both bound for the test body. The guard is
-/// not leaked, so panics clean up too; `cleanup` only removes the files
-/// early, before handles still referencing them are dropped.
+/// A temp dir named after the calling test, removed when its guard is
+/// dropped at the end of the test, panics included.
 fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
     let guard = tempfile::Builder::new()
         .prefix(&format!("sekai-app-{name}-"))
         .tempdir()
         .unwrap();
     (guard.path().to_path_buf(), guard)
-}
-
-fn cleanup(dir: impl AsRef<Path>) {
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 /// Write a region image through the real builder, deriving the region
@@ -111,7 +106,6 @@ async fn commits_a_non_canonical_region_name() {
             .to_string_lossy()
             .into_owned()
     );
-    cleanup(&root);
 }
 
 /// The timing rows keep the world's own order.
@@ -156,7 +150,6 @@ async fn timing_rows_are_ordered_by_region_identity() {
     for (location, name) in locations.iter().zip(expected) {
         assert!(location.ends_with(name), "unexpected order: {locations:?}");
     }
-    cleanup(&root);
 }
 
 #[tokio::test]
@@ -229,7 +222,6 @@ async fn scoped_commit_records_no_spurious_tombstones() {
         .await
         .unwrap();
     assert_eq!(diffs, [] as [sekai_app::NbtDiffEntry; 0]);
-    cleanup(&root);
 }
 
 /// A partial scope reads only part of a region; the next full commit must
@@ -303,7 +295,6 @@ async fn partial_scope_then_full_commit_reingests_unread_chunks() {
     assert_eq!(quiet.chunks, 2);
     assert_eq!(quiet.new_blobs, 0);
     assert_eq!(quiet.tombstones, 0);
-    cleanup(&root);
 }
 
 /// A world that exists when the tree is opened is classified rather than
@@ -337,7 +328,6 @@ async fn scoped_commit_addresses_a_detected_trio_world() {
     // overworld, not silently match nothing (or the nether).
     assert_eq!(report.chunks, 2);
     assert_eq!(report.tombstones, 0);
-    cleanup(&root);
 }
 
 #[tokio::test]
@@ -415,7 +405,6 @@ async fn scoped_checkout_leaves_other_dimensions_untouched() {
         .await
         .unwrap();
     assert_eq!(std::fs::read(&nether).unwrap(), before);
-    cleanup(&root);
 }
 
 #[tokio::test]
@@ -478,7 +467,6 @@ async fn strict_checkout_removes_post_commit_files() {
     assert_eq!(checked_out.files_deleted, 1);
     assert_eq!(read_coords(&kept), vec![(0, 0)]);
     assert!(!added.exists());
-    cleanup(&root);
 }
 
 #[tokio::test]
@@ -521,7 +509,6 @@ async fn keep_options_preserve_post_commit_data() {
     assert_eq!(map.get(&(0, 0)), Some(&vec![3, 1]));
     assert_eq!(map.get(&(1, 0)), Some(&vec![3, 2]));
     assert_eq!(read_coords(&added), vec![(32, 0)]);
-    cleanup(&root);
 }
 
 #[tokio::test]
@@ -583,7 +570,6 @@ async fn keep_tombstoned_chunks_preserves_live_bytes() {
     let map = chunk_map(&region);
     assert_eq!(map[&(0, 0)], vec![3, 1]);
     assert_eq!(map[&(1, 0)], vec![3, 8]);
-    cleanup(&root);
 }
 
 #[tokio::test]
@@ -639,7 +625,6 @@ async fn keep_tombstoned_chunks_leaves_fully_tombstoned_files() {
         .unwrap();
     assert_eq!(checked_out.files_deleted, 1);
     assert!(!region.exists());
-    cleanup(&root);
 }
 
 #[tokio::test]
@@ -707,7 +692,6 @@ async fn missing_blob_abort_is_default_and_skip_recovers() {
     assert_eq!(checked_out.files_written, 1);
     assert_eq!(checked_out.chunks_restored, 0);
     assert_eq!(read_coords(&region), [] as [(i32, i32); 0]);
-    cleanup(&root);
 }
 
 #[tokio::test]
@@ -769,7 +753,6 @@ async fn missing_file_error_policy_refuses_to_guess() {
         .unwrap();
     assert_eq!(checked_out.files_written, 1);
     assert_eq!(read_coords(&region), vec![(0, 0)]);
-    cleanup(&root);
 }
 
 #[tokio::test]
@@ -817,7 +800,6 @@ async fn with_diff_records_diff_hashes() {
         .unwrap();
     assert!(row.blob.is_some());
     assert!(row.diff.is_some());
-    cleanup(&root);
 }
 
 #[tokio::test]
@@ -844,7 +826,6 @@ async fn progress_fires_per_changed_file() {
     assert_eq!(events.len(), 2);
     assert!(events.iter().all(|&(_, total)| total == 2));
     assert_eq!(events.last().unwrap().0, 2);
-    cleanup(&root);
 }
 
 #[tokio::test]
@@ -875,7 +856,6 @@ async fn errors_surface_loudly() {
             .await
             .is_err()
     );
-    cleanup(&root);
 }
 
 #[tokio::test]
@@ -901,7 +881,6 @@ async fn gc_runs_and_returns_timings() {
     assert_eq!(report.candidates, 0);
     assert_eq!(report.removed, 0);
     assert!(timings.total >= timings.plan + timings.apply);
-    cleanup(&root);
 }
 
 #[tokio::test]
@@ -989,7 +968,6 @@ async fn progress_events_cover_checkout_diff_and_gc() {
         .unwrap();
     assert_eq!(report.candidates, 0);
     assert!(seen_gc.lock().unwrap().is_empty());
-    cleanup(&root);
 }
 
 #[tokio::test]
@@ -1049,7 +1027,6 @@ async fn checkout_progress_completes_for_tombstone_only_region() {
 
     let events = events.lock().unwrap();
     assert_eq!(*events, [(1, 2), (2, 2)]);
-    cleanup(&root);
 }
 
 #[tokio::test]
@@ -1108,8 +1085,6 @@ async fn diff_chunk_between_commits() {
 
     assert_eq!(diffs.len(), 1);
     assert_eq!(diffs[0].path, "Status");
-
-    cleanup(&root);
 }
 
 #[tokio::test]
@@ -1158,8 +1133,6 @@ async fn diff_world_chunk_with_commit() {
 
     assert_eq!(diffs.len(), 1);
     assert_eq!(diffs[0].path, "Status");
-
-    cleanup(&root);
 }
 
 /// Diff must read the discovered `r.00.00.mca`, not the canonical
@@ -1202,8 +1175,6 @@ async fn diffs_a_non_canonical_region_name() {
         ),
         "diff must read the discovered file, got: {err}"
     );
-
-    cleanup(&root);
 }
 
 #[tokio::test]
@@ -1232,7 +1203,6 @@ async fn commits_region_with_trailing_partial_sector() {
     assert_eq!(report.chunks, 1);
     assert_eq!(report.new_blobs, 1);
     assert_eq!(read_coords(&region), vec![(0, 0)]);
-    cleanup(&root);
 }
 
 #[tokio::test]
@@ -1261,7 +1231,6 @@ async fn corrupt_region_names_its_file() {
         message.contains("r.0.0.mca"),
         "error names the file: {message}"
     );
-    cleanup(&root);
 }
 
 fn build_status_nbt(status: &str) -> Vec<u8> {
@@ -1321,7 +1290,6 @@ async fn sparse_entities_chunk_diffs_empty_without_error() {
             .unwrap();
         assert_eq!(world_diffs, [] as [sekai_app::NbtDiffEntry; 0]);
     }
-    cleanup(&root);
 }
 
 #[tokio::test]
@@ -1384,7 +1352,6 @@ async fn created_and_deleted_chunks_diff_as_added_removed() {
             .iter()
             .all(|entry| matches!(entry.change, sekai_core::NbtChange::Removed(_)))
     );
-    cleanup(&root);
 }
 
 #[tokio::test]
@@ -1436,7 +1403,6 @@ async fn all_kinds_round_trip() {
             .await
             .unwrap();
         assert_eq!(checked_out.chunks_restored, 1);
-        cleanup(&root);
     }
 }
 
@@ -1502,7 +1468,6 @@ async fn rect_and_kind_scopes_limit_ingest() {
         .unwrap();
     assert_eq!(full.tombstones, 0);
     assert_eq!(full.new_blobs, 0);
-    cleanup(&root);
 }
 
 fn corpus_path() -> PathBuf {
@@ -1585,7 +1550,6 @@ async fn real_world_corpus_round_trip() {
     for (path, chunks) in &before {
         assert_eq!(&chunk_map(path), chunks, "{path:?} restored");
     }
-    cleanup(&root);
 }
 
 /// Model-based round trip over pseudo-random mutation sequences: commit
@@ -1711,7 +1675,6 @@ async fn randomized_commit_checkout_round_trip() {
                 commit.id
             );
         }
-        cleanup(&root);
     }
 }
 

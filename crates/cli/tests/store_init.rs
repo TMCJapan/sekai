@@ -1,16 +1,13 @@
 //! Commands other than `commit` must never create or initialize the store:
 //! a missing store fails loudly and leaves nothing behind (issue #80).
 
-use std::path::Path;
-
 use clap::Parser as _;
 use sekai_cli::cli::Cli;
 
 const HASH: &str = "0101010101010101010101010101010101010101010101010101010101010101";
 
-/// A temp dir and its guard, both bound for the test body. The guard is
-/// not leaked, so panics clean up too; `cleanup` only removes the files
-/// early, before handles still referencing them are dropped.
+/// A temp dir named after the calling test, removed when its guard is
+/// dropped at the end of the test, panics included.
 fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
     let guard = tempfile::Builder::new()
         .prefix(&format!("sekai-cli-{name}-"))
@@ -51,10 +48,4 @@ async fn commands_on_a_missing_store_fail_without_creating_it() {
             "{args:?} must not create the store"
         );
     }
-
-    cleanup(&root);
-}
-
-fn cleanup(dir: impl AsRef<Path>) {
-    let _ = std::fs::remove_dir_all(dir);
 }

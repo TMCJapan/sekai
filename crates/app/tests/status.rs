@@ -7,19 +7,14 @@
 use sekai_app::HostWorldTree;
 use std::path::Path;
 
-/// A temp dir and its guard, both bound for the test body. The guard is
-/// not leaked, so panics clean up too; `cleanup` only removes the files
-/// early, before handles still referencing them are dropped.
+/// A temp dir named after the calling test, removed when its guard is
+/// dropped at the end of the test, panics included.
 fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
     let guard = tempfile::Builder::new()
         .prefix(&format!("sekai-status-{name}-"))
         .tempdir()
         .unwrap();
     (guard.path().to_path_buf(), guard)
-}
-
-fn cleanup(dir: impl AsRef<Path>) {
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 fn write_region(path: impl AsRef<Path>, chunks: &[(i32, i32, Vec<u8>)]) {
@@ -100,7 +95,6 @@ async fn status_counts_tombstones_without_writing() {
     // A preview is pure: no commit rows and no blob files appear.
     assert_eq!(instance.list_commits().await.unwrap().len(), commits_before);
     assert_eq!(blob_count(&store), blobs_before);
-    cleanup(&root);
 }
 
 #[tokio::test]
@@ -141,5 +135,4 @@ async fn status_reports_a_clean_world_after_commit() {
         timings.total >= timings.discover + timings.fingerprint,
         "total timing must cover its phases"
     );
-    cleanup(&root);
 }

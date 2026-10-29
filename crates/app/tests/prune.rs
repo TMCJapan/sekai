@@ -7,19 +7,14 @@
 use sekai_app::HostWorldTree;
 use std::path::Path;
 
-/// A temp dir and its guard, both bound for the test body. The guard is
-/// not leaked, so panics clean up too; `cleanup` only removes the files
-/// early, before handles still referencing them are dropped.
+/// A temp dir named after the calling test, removed when its guard is
+/// dropped at the end of the test, panics included.
 fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
     let guard = tempfile::Builder::new()
         .prefix(&format!("sekai-prune-{name}-"))
         .tempdir()
         .unwrap();
     (guard.path().to_path_buf(), guard)
-}
-
-fn cleanup(dir: impl AsRef<Path>) {
-    let _ = std::fs::remove_dir_all(dir);
 }
 
 fn write_region(path: impl AsRef<Path>, chunks: &[(i32, i32, Vec<u8>)]) {
@@ -143,7 +138,6 @@ async fn prune_folds_and_gc_reclaims() {
     let (gc_report, _) = instance.gc(|_| {}).await.unwrap();
     assert_eq!(gc_report.removed, 1);
     assert_eq!(blob_count(&store_dir), 2);
-    cleanup(&root);
 }
 
 #[tokio::test]
@@ -186,5 +180,4 @@ async fn prune_before_ref_and_empty_guards() {
             .is_err()
     );
     assert_eq!(instance.list_commits().await.unwrap().len(), 2);
-    cleanup(&root);
 }
