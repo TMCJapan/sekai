@@ -3,7 +3,9 @@
 use anyhow::Context as _;
 use sekai_app::{AppError, ChunkCoord, ChunkDiff, CommitId, HostWorldTree, Scope, SekaiStore};
 
-use super::diff_render::{TimedDiffs, diff_group_payload, print_diff_timing_table};
+use super::diff_render::{
+    TimedDiffs, diff_group_payload, print_diff_timing_table, render_diff_coords,
+};
 use super::progress::{finish_progress, progress_bar, report_progress};
 use crate::cli::{CommitRef, DiffArgs, DiffTarget};
 use crate::envelope::envelope_ok;
@@ -99,6 +101,7 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
         println!("No differences found.");
         return Ok(());
     }
+    println!("{}", render_diff_coords(&nonempty, style));
     if args.output.timing {
         print_diff_timing_table(&timings, diffs.len(), style);
     }

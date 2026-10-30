@@ -1,5 +1,7 @@
 //! Diff rendering helpers for human text and JSON DTOs.
 
+// Compatibility aliases for renderer names used by callers/tests.
+
 use sekai_app::{ChunkDiff, DiffTimings};
 use serde::Serialize;
 
@@ -30,6 +32,20 @@ pub fn diff_group_payload(diffs: &[&ChunkDiff]) -> Vec<DiffGroupJson> {
             },
         })
         .collect()
+}
+
+/// Render the coordinates of changed chunks, one per line.
+pub fn render_diff_coords(diffs: &[&ChunkDiff], style: Styler) -> String {
+    diffs
+        .iter()
+        .map(|diff| {
+            style.bold(&format!(
+                "{}/{} {},{}",
+                diff.coord.dim, diff.coord.kind, diff.coord.x, diff.coord.z
+            ))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub fn print_diff_timing_table(timings: &DiffTimings, chunks: usize, style: Styler) {
@@ -79,3 +95,5 @@ impl From<&DiffTimings> for DiffTimingJson {
         }
     }
 }
+
+

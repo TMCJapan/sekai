@@ -3,6 +3,8 @@
 use crate::dimension::Dimension;
 use crate::region_kind::RegionKind;
 
+use core::fmt;
+
 /// Global chunk identity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ChunkCoord {
@@ -30,6 +32,12 @@ impl ChunkCoord {
     /// Owning region Z.
     pub const fn region_z(self) -> i32 {
         self.z.div_euclid(32)
+    }
+}
+
+impl fmt::Display for ChunkCoord {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{} {},{}", self.dim, self.kind, self.x, self.z)
     }
 }
 
