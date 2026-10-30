@@ -1,6 +1,6 @@
 //! Backend selection, shared errors, and the store handle.
 //!
-//! URL schemes select compiled-in backends; `Store` keeps metadata and CAS together.
+//! URL schemes select compiled-in backends; `Store` keeps metadata and blobs together.
 
 use std::path::{Path, PathBuf};
 
@@ -33,19 +33,8 @@ pub enum StorageError {
         path = path.display()
     )]
     StoreMissing {
-        /// Store root that was expected to hold `meta.sqlite`.
+        /// Store root that was expected to hold `meta.sqlite` and `blob.sqlite`.
         path: PathBuf,
-    },
-    /// A writing run holds the store; `gc` must not run alongside it.
-    #[error(
-        "store is in use by a running commit (marker {path}{holder}): a commit writes blobs before it commits the rows that reference them, so collecting now would unlink blobs the next commit still needs. Wait for it to finish, or remove the marker if no commit is running.",
-        path = path.display()
-    )]
-    StoreBusy {
-        /// Marker file that was found.
-        path: PathBuf,
-        /// Contents recorded by the run holding it.
-        holder: String,
     },
     /// Another operation holds a conflicting lock on the store.
     #[error(
@@ -172,7 +161,7 @@ pub enum StorageError {
         backend: &'static str,
         /// Underlying backend failure.
         #[source]
-        source: Box<dyn std::error::Error + Send + Sync>,
+        source: Box<dyn core::error::Error + Send + Sync>,
     },
 }
 
@@ -181,7 +170,7 @@ impl StorageError {
     /// backend's error type.
     pub fn backend(
         backend: &'static str,
-        source: impl std::error::Error + Send + Sync + 'static,
+        source: impl core::error::Error + Send + Sync + 'static,
     ) -> Self {
         Self::Backend {
             backend,
@@ -195,7 +184,7 @@ impl StorageError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendKind {
     /// `sqlite://<dir>` (or a bare `<dir>`): metadata lives in
-    /// `<dir>/meta.sqlite`, blobs in `<dir>/blobs/`.
+    /// `<dir>/meta.sqlite`, blobs in `<dir>/blob.sqlite`.
     Sqlite,
     /// Reserved stub.
     Mysql,
@@ -226,17 +215,17 @@ pub fn parse_backend_url(url: &str) -> Result<(BackendKind, &str), StorageError>
     }
 }
 
-/// Metadata and CAS adapters owned by one store handle.
+/// Metadata and blob adapters owned by one store handle.
 #[derive(Debug, Clone)]
 pub struct Store<M, C> {
     meta: M,
-    cas: C,
+    blob: C,
 }
 
 impl<M, C> Store<M, C> {
     /// Compose an opened store from its adapters.
-    pub const fn new(meta: M, cas: C) -> Self {
-        Self { meta, cas }
+    pub const fn new(meta: M, blob: C) -> Self {
+        Self { meta, blob }
     }
 
     /// Metadata adapter.
@@ -250,18 +239,18 @@ impl<M, C> Store<M, C> {
     }
 
     /// Blob adapter.
-    pub const fn cas(&self) -> &C {
-        &self.cas
+    pub const fn blob(&self) -> &C {
+        &self.blob
     }
 
     /// Mutable blob adapter.
-    pub const fn cas_mut(&mut self) -> &mut C {
-        &mut self.cas
+    pub const fn blob_mut(&mut self) -> &mut C {
+        &mut self.blob
     }
 
     /// Borrow both adapters for operations such as GC that need simultaneous access.
-    pub const fn cas_and_meta(&mut self) -> (&mut C, &M) {
-        (&mut self.cas, &self.meta)
+    pub const fn blob_and_meta(&mut self) -> (&mut C, &M) {
+        (&mut self.blob, &self.meta)
     }
 }
 

@@ -210,14 +210,13 @@ where
         } = prepare(store, self.world, &options, &scope, progress, false, &locks).await?;
 
         let created_at_ms = now_ms()?;
-        // Persist batched shard-directory renames before the metadata commit:
-        // file data is already synced per blob, and this single barrier (at
-        // most one fsync per touched shard) is what makes every referenced blob
-        // crash-durable. Timed under `cas`, the durability bucket. Explicit
-        // here even though workers already synced their own handles: the
+        // Persist blob writes before the metadata commit: every row already
+        // committed when its `put` returned, and this single checkpoint folds
+        // the WAL back into `blob.sqlite`. Timed under `cas`, the durability
+        // bucket. Explicit here even though workers already synced: the
         // barrier belongs at the call site, never hidden inside adapters.
         let sync_started = Instant::now();
-        store.cas_mut().sync_dirs()?;
+        store.blob_mut().sync_dirs()?;
         let dir_sync = sync_started.elapsed();
         let db_started = Instant::now();
         let report = sekai_core::usecase::commit::record_commit(
@@ -308,7 +307,7 @@ where
 
     let (ingested, walk) = ingest_changed(
         changed,
-        store.cas().clone(),
+        store.blob().clone(),
         options,
         scope.clone(),
         progress,
@@ -527,11 +526,11 @@ struct IngestTimings {
 ///
 /// One file never justifies task overhead, so it stays in a single blocking
 /// task with identical counts. Larger sets split into size-balanced groups;
-/// each worker owns a private blob handle over the same store (disjoint blob
-/// files, unique temp names) and syncs its own shards before returning, so
-/// joining orders every durability barrier ahead of the metadata commit. The
-/// commit itself stays a single transaction; row merge order across workers
-/// is completion-order (DB-irrelevant, one txn).
+/// each worker owns a private blob handle over the same store (one thread at a
+/// time through its blocking connection) and syncs its own writes before
+/// returning, so joining orders every durability barrier ahead of the metadata
+/// commit. The commit itself stays a single transaction; row merge order across
+/// workers is completion-order (DB-irrelevant, one txn).
 /// Each worker keeps `locks` alive until it returns, so a cancelled commit
 /// cannot hand the store to `gc` while blobs are still being written.
 async fn ingest_changed<R: RegionFile, S: SekaiStore, L: WorldLock>(
@@ -618,9 +617,9 @@ fn partition_groups<R>(mut changed: Vec<Changed<R>>, workers: usize) -> Vec<Vec<
     groups
 }
 
-/// Ingest one worker's group with a private blob handle, then sync its shards.
+/// Ingest one worker's group with a private blob handle, then sync its writes.
 ///
-/// Returns the per-file outcomes plus the shard-sync time so the caller can
+/// Returns the per-file outcomes plus the blob-sync time so the caller can
 /// account it under `cas` (the durability bucket).
 fn ingest_group<R: RegionFile, C: BlockingBlobStore>(
     group: Vec<Changed<R>>,
@@ -638,10 +637,10 @@ where
         outcomes.push(outcome);
     }
     if dry_run {
-        // Nothing was written: no shards to sync.
+        // Nothing was written: nothing to sync.
         return Ok((outcomes, Duration::ZERO));
     }
-    // Barrier for this worker's shards; the join orders all barriers
+    // Barrier for this worker's writes; the join orders all barriers
     // before the metadata commit.
     let sync_started = Instant::now();
     cas.sync_dirs()?;

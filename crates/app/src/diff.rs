@@ -42,11 +42,11 @@ impl<S: SekaiStore> SekaiInstance<S> {
         let mut new_compressed = Vec::new();
 
         self.store
-            .cas()
+            .blob()
             .fetch_into(old_hash, &mut old_compressed)
             .await?;
         self.store
-            .cas()
+            .blob()
             .fetch_into(new_hash, &mut new_compressed)
             .await?;
 
@@ -215,7 +215,7 @@ async fn commit_chunk_compressed<S: SekaiStore>(
     };
 
     let mut compressed = Vec::new();
-    store.cas().fetch_blob(&hash, &mut compressed)?;
+    store.blob().fetch_blob(&hash, &mut compressed)?;
     Ok(Some(compressed))
 }
 

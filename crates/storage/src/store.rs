@@ -11,7 +11,7 @@ use crate::lock::StoreLockMode;
 /// One opened store: metadata, blobs, and the control operations around them.
 ///
 /// A backend implements this through [`Store`] (metadata + blob adapters), so a
-/// consumer such as `SekaiInstance` never names a concrete database or CAS.
+/// consumer such as `SekaiInstance` never names a concrete database or blob store.
 pub trait SekaiStore: Send + Sync + Sized + 'static {
     /// Metadata adapter.
     type Meta: MetaStore<Error = StorageError> + Send + Sync;
@@ -33,13 +33,13 @@ pub trait SekaiStore: Send + Sync + Sized + 'static {
     fn meta_mut(&mut self) -> &mut Self::Meta;
 
     /// Blob adapter.
-    fn cas(&self) -> &Self::Blobs;
+    fn blob(&self) -> &Self::Blobs;
 
     /// Mutable blob adapter.
-    fn cas_mut(&mut self) -> &mut Self::Blobs;
+    fn blob_mut(&mut self) -> &mut Self::Blobs;
 
     /// Borrow both adapters for operations that need simultaneous access.
-    fn cas_and_meta(&mut self) -> (&mut Self::Blobs, &Self::Meta);
+    fn blob_and_meta(&mut self) -> (&mut Self::Blobs, &Self::Meta);
 
     /// Lock the store for the duration of an operation.
     ///
@@ -110,19 +110,19 @@ where
         Self::meta_mut(self)
     }
 
-    fn cas(&self) -> &Self::Blobs {
-        Self::cas(self)
+    fn blob(&self) -> &Self::Blobs {
+        Self::blob(self)
     }
 
-    fn cas_mut(&mut self) -> &mut Self::Blobs {
-        Self::cas_mut(self)
+    fn blob_mut(&mut self) -> &mut Self::Blobs {
+        Self::blob_mut(self)
     }
 
-    fn cas_and_meta(&mut self) -> (&mut Self::Blobs, &Self::Meta) {
-        Self::cas_and_meta(self)
+    fn blob_and_meta(&mut self) -> (&mut Self::Blobs, &Self::Meta) {
+        Self::blob_and_meta(self)
     }
 
     fn lock(&self, mode: StoreLockMode) -> Result<Self::LockGuard, StorageError> {
-        self.cas().lock(mode)
+        self.blob().lock(mode)
     }
 }

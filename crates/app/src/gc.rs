@@ -95,7 +95,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
 /// Build the orphan plan against an open store.
 async fn plan_within<S: SekaiStore>(store: &S) -> Result<(GcPlan, Duration), AppError> {
     let started = Instant::now();
-    let plan = sekai_core::usecase::gc::gc_plan(store.cas(), store.meta())
+    let plan = sekai_core::usecase::gc::gc_plan(store.blob(), store.meta())
         .await
         .map_err(AppError::Gc)?;
     Ok((plan, started.elapsed()))
@@ -108,7 +108,7 @@ async fn apply_within<S: SekaiStore>(
     mut progress: impl FnMut(GcProgress) + Send,
 ) -> Result<(GcReport, Duration), AppError> {
     let started = Instant::now();
-    let (cas, meta) = store.cas_and_meta();
+    let (cas, meta) = store.blob_and_meta();
     let report = sekai_core::usecase::gc::gc_apply(cas, meta, plan, |done, total| {
         progress(GcProgress {
             blobs_done: done,

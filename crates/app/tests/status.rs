@@ -4,7 +4,7 @@
 
 #![cfg(feature = "backend-sqlite")]
 
-use sekai_app::HostWorldTree;
+use sekai_app::{HostWorldTree, SekaiStore};
 use std::path::Path;
 
 /// A temp dir whose name starts with the calling test's name (tempfile
@@ -34,23 +34,16 @@ const fn options() -> sekai_app::StatusOptions {
     sekai_app::StatusOptions { concurrency: 2 }
 }
 
-/// Stored blob files under one CAS root, including shard directories.
-fn blob_count(store: impl AsRef<Path>) -> usize {
+/// Stored blob count, read through a second handle on the same store.
+async fn blob_count(store: impl AsRef<Path>) -> usize {
+    let opened = sekai_storage_sqlite::open_sqlite(store).await.unwrap();
     let mut count = 0usize;
-    let mut dirs = vec![store.as_ref().join("blobs")];
-    while let Some(dir) = dirs.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                dirs.push(path);
-            } else {
-                count += 1;
-            }
-        }
-    }
+    sekai_core::BlobStore::visit_blobs(opened.blob(), |_| {
+        count += 1;
+        true
+    })
+    .await
+    .unwrap();
     count
 }
 
@@ -76,7 +69,7 @@ async fn status_counts_tombstones_without_writing() {
     write_region(&region, &[(0, 0, vec![3, 1])]);
 
     let commits_before = instance.list_commits().await.unwrap().len();
-    let blobs_before = blob_count(&store);
+    let blobs_before = blob_count(&store).await;
     let (report, timings) = instance
         .world(&world)
         .status(options(), sekai_app::Scope::World, |_| {})
@@ -95,7 +88,7 @@ async fn status_counts_tombstones_without_writing() {
     );
     // A preview is pure: no commit rows and no blob files appear.
     assert_eq!(instance.list_commits().await.unwrap().len(), commits_before);
-    assert_eq!(blob_count(&store), blobs_before);
+    assert_eq!(blob_count(&store).await, blobs_before);
 }
 
 #[tokio::test]

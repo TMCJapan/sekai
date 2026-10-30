@@ -4,7 +4,7 @@
 
 #![cfg(feature = "backend-sqlite")]
 
-use sekai_app::{CommitId, CommitOptions, RegionKind, Scope};
+use sekai_app::{CommitId, CommitOptions, RegionKind, Scope, SekaiStore};
 use sekai_app::{HostWorldTree, WorldTree};
 use sekai_nbt::ChunkPayloadDiff;
 use sekai_nbt::nanonbt::Cesu8;
@@ -648,22 +648,21 @@ async fn missing_blob_abort_is_default_and_skip_recovers() {
         .unwrap();
     let commits = instance.list_commits().await.unwrap();
 
-    // Corrupt the CAS by unlinking every stored blob.
+    // Corrupt the CAS by removing every stored blob.
     let mut blobs = Vec::new();
-    let mut dirs = vec![store_dir.join("blobs")];
-    while let Some(dir) = dirs.pop() {
-        for entry in std::fs::read_dir(&dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                dirs.push(path);
-            } else {
-                blobs.push(path);
-            }
-        }
-    }
-    assert_ne!(blobs, [] as [std::path::PathBuf; 0]);
-    for blob in &blobs {
-        std::fs::remove_file(blob).unwrap();
+    sekai_core::BlobStore::visit_blobs(instance.store().blob(), |hash| {
+        blobs.push(*hash);
+        true
+    })
+    .await
+    .unwrap();
+    assert_eq!(blobs.len(), 1, "one chunk was committed");
+    for hash in &blobs {
+        assert!(
+            sekai_core::BlobStore::remove(instance.store_mut().blob_mut(), hash)
+                .await
+                .unwrap()
+        );
     }
 
     // Default policy aborts loudly, leaving the live file alone.
