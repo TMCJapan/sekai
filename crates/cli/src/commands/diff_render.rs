@@ -38,12 +38,7 @@ pub fn diff_group_payload(diffs: &[&ChunkDiff]) -> Vec<DiffGroupJson> {
 pub fn render_diff_coords(diffs: &[&ChunkDiff], style: Styler) -> String {
     diffs
         .iter()
-        .map(|diff| {
-            style.bold(&format!(
-                "{}/{} {},{}",
-                diff.coord.dim, diff.coord.kind, diff.coord.x, diff.coord.z
-            ))
-        })
+        .map(|diff| style.bold(&diff.coord.to_string()))
         .collect::<Vec<_>>()
         .join("\n")
 }
