@@ -95,5 +95,3 @@ impl From<&DiffTimings> for DiffTimingJson {
         }
     }
 }
-
-
