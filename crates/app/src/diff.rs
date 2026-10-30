@@ -246,6 +246,29 @@ fn decompress_or_empty(compressed: Option<Vec<u8>>) -> Result<Vec<u8>, AppError>
     )
 }
 
+/// Parse a decompressed payload for diffing.
+///
+/// A parse failure is attributed to `coord`: knowing which chunk (and so
+/// which region file) is malformed is what makes the report actionable.
+/// `entities`/`poi` payloads use their own schemas, so a missing level-chunk
+/// field there is not corruption and yields `None`: their raw bytes are
+/// compared instead. A level chunk with missing fields fails loudly.
+fn parse_for_diff(
+    coord: ChunkCoord,
+    nbt: &[u8],
+) -> Result<Option<sekai_nbt::ChunkPayload<'_>>, AppError> {
+    match sekai_nbt::parse(nbt) {
+        Ok(payload) => Ok(Some(payload)),
+        Err(sekai_nbt::NbtError::MissingField(_)) if coord.kind != RegionKind::Region => Ok(None),
+        Err(source) => Err(AppError::ChunkNbt {
+            coord,
+            rx: coord.region_x(),
+            rz: coord.region_z(),
+            source,
+        }),
+    }
+}
+
 /// Diff for non-level-chunk kinds (`entities`/`poi`), whose payload schema is
 /// not [`ChunkPayload`]. Raw NBT bytes are hashed independently so a `Full`
 /// result never carries identical hashes.
@@ -418,15 +441,19 @@ async fn diff_coords(
         let new_nbt = decompress_or_empty(new_compressed)?;
         timings.decompress += started.elapsed();
         let started = Instant::now();
-        let entries = match diff_nbt(&old_nbt, &new_nbt) {
-            Ok(diff) => diff,
-            // `entities`/`poi` payloads use their own schemas; compare their
-            // raw bytes. A level chunk with missing fields is corruption and
-            // must fail loudly.
-            Err(sekai_nbt::NbtError::MissingField(_)) if coord.kind != RegionKind::Region => {
-                raw_nbt_diff(&old_nbt, &new_nbt)
+        let entries = match (
+            parse_for_diff(*coord, &old_nbt)?,
+            parse_for_diff(*coord, &new_nbt)?,
+        ) {
+            (Some(old_val), Some(new_val)) => {
+                ChunkPayloadDiff::new(&old_val, &new_val).map_err(|source| AppError::ChunkNbt {
+                    coord: *coord,
+                    rx: coord.region_x(),
+                    rz: coord.region_z(),
+                    source,
+                })?
             }
-            Err(e) => return Err(AppError::Nbt(e)),
+            _ => raw_nbt_diff(&old_nbt, &new_nbt),
         };
         timings.diff_compute += started.elapsed();
         progress(DiffProgress {

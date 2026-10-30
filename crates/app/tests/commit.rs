@@ -1110,7 +1110,7 @@ async fn diff_chunk_propagates_malformed_region_nbt() {
         .await
         .unwrap_err();
     assert!(
-        matches!(err, sekai_app::AppError::Nbt(_)),
+        matches!(err, sekai_app::AppError::ChunkNbt { .. }),
         "malformed region payload must fail loudly: {err:?}"
     );
 }
@@ -1186,7 +1186,7 @@ async fn diffs_a_non_canonical_region_name() {
         .await
         .expect_err("raw payload is not valid NBT");
     assert!(
-        matches!(err, sekai_app::AppError::Nbt(_)),
+        matches!(err, sekai_app::AppError::ChunkNbt { .. }),
         "diff must read the discovered file, got: {err}"
     );
 }
@@ -1312,6 +1312,64 @@ async fn sparse_entities_chunk_diffs_empty_without_error() {
             .unwrap();
         assert!(world_diffs.is_empty());
     }
+}
+
+/// A level chunk whose NBT lacks the loaded-chunk schema (legacy format,
+/// `xPos` absent) fails the diff with the chunk and region file named, so
+/// the offending part of the world can be located.
+#[tokio::test]
+async fn malformed_level_chunk_diff_names_its_coord() {
+    use sekai_app::{ChunkCoord, Dimension};
+    let (root, _guard) = tempdir("malformed-level");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    // Chunk (33, 1) lives in r.1.0.mca: the region must come from the
+    // coord, not from the file name of whatever failed to parse.
+    write_region(
+        world_path.join("region/r.1.0.mca"),
+        &[(33, 1, build_status_nbt("minecraft:full"))],
+    );
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    instance
+        .world_mut(&mut world)
+        .commit(options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+
+    // Rewrite the same cell with a payload missing the level-chunk fields.
+    let mut payload = vec![3];
+    payload.extend(legacy_chunk_nbt());
+    write_region(world_path.join("region/r.1.0.mca"), &[(33, 1, payload)]);
+
+    let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 33, 1);
+    let err = instance
+        .world(&world)
+        .diff_world_chunk(None, &coord)
+        .await
+        .unwrap_err();
+    let message = format!("{err}");
+    assert!(
+        message.contains("region 33,1") && message.contains("r.1.0.mca"),
+        "error names the chunk and region file: {message}"
+    );
+    assert!(message.contains("xPos"), "keeps the NBT cause: {message}");
+}
+
+/// NBT of a pre-1.13 chunk: `xPos` is absent, so it cannot parse as a
+/// [`sekai_nbt::ChunkPayload`].
+fn legacy_chunk_nbt() -> Vec<u8> {
+    const FIELDS: [(&[u8], i32); 2] = [(b"DataVersion", 0), (b"zPos", 0)];
+    let mut out = vec![10, 0, 0]; // Compound root, empty name
+    for (name, value) in FIELDS {
+        let len = u16::try_from(name.len()).unwrap();
+        out.push(3); // TAG_Int
+        out.extend(len.to_be_bytes());
+        out.extend(name);
+        out.extend(value.to_be_bytes());
+    }
+    out.push(0); // TAG_End
+    out
 }
 
 #[tokio::test]
