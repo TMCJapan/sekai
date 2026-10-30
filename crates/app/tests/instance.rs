@@ -33,7 +33,7 @@ async fn open_of_a_missing_store_fails_and_creates_nothing() {
 
     sekai_app::SekaiInstance::init(&url).await.unwrap();
     assert!(store.join("meta.sqlite").is_file());
-    assert!(store.join("blobs").is_dir());
+    assert!(store.join("blob.sqlite").is_file());
     sekai_app::SekaiInstance::open(&url).await.unwrap();
 }
 

@@ -8,8 +8,8 @@ This project is organized as a Cargo workspace under `crates/`:
     ├── util            # Shared value types: coordinates, hashes, history records (no_std, zero dependencies)
     ├── anvil           # Pure Anvil sector codec, decompression, and normalized chunk hashing (no_std + alloc, ex-mca)
     ├── core            # Use-case policy API over shared types (no_std + alloc, depends on util/anvil)
-    ├── storage         # Backend-neutral store traits, file CAS, locks (std + tokio)
-    ├── storage-sqlite  # SQLite metadata backend over sqlx (std + tokio)
+    ├── storage         # Backend-neutral store traits and locks (std + tokio)
+    ├── storage-sqlite  # SQLite metadata + blob backend over sqlx (std + tokio)
     ├── world           # World access boundary (std): WorldTree trait, RegionFile
     │                   # handle, and the host tree (filesystem)
     ├── app             # Composition/orchestration library for third parties (std + tokio)
@@ -46,7 +46,7 @@ Rules:
 - `async`/tokio lives in `storage`, `storage-sqlite`, `world`, `app`, and the
   binary only. `anvil` is sync-only; `core` policy is sync except for
   `async fn` in traits (RPITIT, see below).
-- `storage` owns backend-neutral boundaries (`api` / `store` / `cas`);
+- `storage` owns backend-neutral boundaries (`api` / `store`);
   concrete database backends live in sibling crates such as
   `storage-sqlite` and only communicate through the exported traits.
   Backend crates must not reach into each other.
@@ -139,8 +139,8 @@ any exception in the PR body.
   the binary executable.
 - **Storage backends**: this project ships SQLite only, in the
   `sekai-storage-sqlite` crate (via sqlx, app feature `backend-sqlite`,
-  default-on). `sekai-storage` stays backend-neutral and owns the traits,
-  file CAS, and locks; it holds no backend modules, so a mysql or postgres
+  default-on). `sekai-storage` stays backend-neutral and owns the traits
+  and locks; it holds no backend modules, so a mysql or postgres
   backend arrives as a sibling crate rather than as a stub.
   Backend selection is URL-selected at runtime (`sqlite://...`,
   `mysql://...`, `postgres://...`); requesting a backend this build does not

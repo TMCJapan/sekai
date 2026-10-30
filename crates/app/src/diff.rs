@@ -43,11 +43,11 @@ impl<S: SekaiStore> SekaiInstance<S> {
         let mut new_compressed = Vec::new();
 
         self.store
-            .cas()
+            .blob()
             .fetch_into(old_hash, &mut old_compressed)
             .await?;
         self.store
-            .cas()
+            .blob()
             .fetch_into(new_hash, &mut new_compressed)
             .await?;
 

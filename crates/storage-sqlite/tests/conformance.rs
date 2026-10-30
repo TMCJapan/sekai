@@ -6,6 +6,7 @@ use sekai_core::{
     BlobStore as _, ChunkCoord, ChunkHash, ChunkHistoryEntry, CommitEntry, Dimension,
     MetaStore as _, RegionKind, usecase::checkout::plan_checkout,
 };
+use sekai_storage::SekaiStore;
 use sekai_storage_sqlite::{init_sqlite, open_sqlite};
 use std::path::Path;
 
@@ -118,7 +119,7 @@ async fn sqlite_history_graph() {
 async fn sqlite_cas_roundtrip() {
     let (dir, _guard) = tempdir("cas");
     let mut store = init(&dir).await;
-    common::cas_roundtrip(store.cas_mut()).await;
+    common::cas_roundtrip(store.blob_mut()).await;
 }
 
 #[tokio::test]
@@ -129,31 +130,83 @@ async fn sqlite_torn_orphan_gc() {
 }
 
 #[tokio::test]
-async fn cas_skips_foreign_and_temp_names() {
-    let (dir, _guard) = tempdir("names");
+async fn visit_lists_stored_hashes_and_missing_fetch_clears() {
+    let (dir, _guard) = tempdir("visit");
     let mut store = init(&dir).await;
-    let cas = store.cas_mut();
+    let blobs = store.blob_mut();
     let hash = ChunkHash::new(sekai_core::hash_bytes(b"real"));
-    assert!(cas.put(&hash, b"real").await.unwrap());
-    let hex = hash.hex_string();
-    let shard = cas.root().as_ref().join("blobs").join(&hex[..2]);
-    std::fs::write(shard.join("foreign.bin"), b"x").unwrap();
-    std::fs::write(shard.join(format!("{}-tmp", &hex[2..])), b"y").unwrap();
+    assert!(blobs.put(&hash, b"real").await.unwrap());
+    // A table has no file names to skip, so visiting every row is the whole
+    // story; a missing hash is a read error, not an ignorable name.
     let mut seen = Vec::new();
-    cas.visit_blobs(|h| {
-        seen.push(*h);
-        true
-    })
+    blobs
+        .visit_blobs(|h| {
+            seen.push(*h);
+            true
+        })
+        .await
+        .unwrap();
+    assert_eq!(seen, vec![hash]);
+    let mut out = vec![1u8, 2, 3];
+    let err = blobs
+        .fetch_into(&ChunkHash::new([9; 32]), &mut out)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        sekai_storage::StorageError::BlobMissing { .. }
+    ));
+    assert!(out.is_empty(), "a failed fetch clears the buffer");
+}
+
+/// The blob database is its own versioned file beside `meta.sqlite`.
+#[tokio::test]
+async fn blob_database_is_created_and_version_gated() {
+    let (dir, _guard) = tempdir("blob-schema");
+    let mut store = init(&dir).await;
+    let hash = ChunkHash::new(sekai_core::hash_bytes(b"payload"));
+    assert!(store.blob_mut().put(&hash, b"payload").await.unwrap());
+    store.blob_mut().sync().await.unwrap();
+    drop(store);
+
+    let blob_path = dir.join("blob.sqlite");
+    assert!(blob_path.is_file());
+    let version: i64 = {
+        let pool = sqlx::SqlitePool::connect_with(
+            sqlx::sqlite::SqliteConnectOptions::new().filename(&blob_path),
+        )
+        .await
+        .unwrap();
+        let version = sqlx::query_scalar("PRAGMA user_version")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        version
+    };
+    assert_eq!(version, 1);
+
+    // A future version is refused loudly instead of reinterpreted.
+    let foreign = sqlx::SqlitePool::connect_with(
+        sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&blob_path)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal),
+    )
     .await
     .unwrap();
-    assert_eq!(seen, vec![hash]);
-    let mut out = Vec::new();
-    assert!(
-        cas.fetch_into(&ChunkHash::new([9; 32]), &mut out)
-            .await
-            .is_err()
-    );
-    assert_eq!(out, [] as [u8; 0]);
+    sqlx::query("PRAGMA user_version = 99")
+        .execute(&foreign)
+        .await
+        .unwrap();
+    foreign.close().await;
+    let err = open_sqlite(&dir).await.unwrap_err();
+    assert!(matches!(
+        err,
+        sekai_storage::StorageError::UnsupportedSchema {
+            found: 99,
+            supported: 1
+        }
+    ));
 }
 
 /// Only `init_sqlite` materializes a store; `open_sqlite` must fail loudly on
@@ -171,6 +224,6 @@ async fn open_of_a_missing_store_fails_without_creating_it() {
 
     let _store = init_sqlite(&dir).await.unwrap();
     assert!(dir.join("meta.sqlite").is_file());
-    assert!(dir.join("blobs").is_dir());
+    assert!(dir.join("blob.sqlite").is_file());
     let _store = open_sqlite(&dir).await.unwrap();
 }

@@ -8,7 +8,7 @@ mod fixtures;
 
 use fixtures::chunk_nbt;
 
-use sekai_app::HostWorldTree;
+use sekai_app::{HostWorldTree, SekaiStore};
 use std::path::Path;
 
 /// A temp dir whose name starts with the calling test's name (tempfile
@@ -38,22 +38,16 @@ const fn commit_options() -> sekai_app::CommitOptions {
     sekai_app::CommitOptions { concurrency: 2 }
 }
 
-fn blob_count(store: impl AsRef<Path>) -> usize {
+/// Stored blob count, read through a second handle on the same store.
+async fn blob_count(store: impl AsRef<Path>) -> usize {
+    let opened = sekai_storage_sqlite::open_sqlite(store).await.unwrap();
     let mut count = 0usize;
-    let mut dirs = vec![store.as_ref().join("blobs")];
-    while let Some(dir) = dirs.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                dirs.push(path);
-            } else {
-                count += 1;
-            }
-        }
-    }
+    sekai_core::BlobStore::visit_blobs(opened.blob(), |_| {
+        count += 1;
+        true
+    })
+    .await
+    .unwrap();
     count
 }
 
@@ -89,7 +83,7 @@ async fn prune_folds_and_gc_reclaims() {
         .unwrap();
     let commits = instance.list_commits().await.unwrap();
     assert_eq!(commits.len(), 3);
-    assert_eq!(blob_count(&store_dir), 3);
+    assert_eq!(blob_count(&store_dir).await, 3);
 
     let doomed_name = sekai_app::RefName::parse("doomed").unwrap();
     instance
@@ -136,10 +130,10 @@ async fn prune_folds_and_gc_reclaims() {
     assert_eq!(checked_out.chunks_restored, 1);
 
     // Pruning dereferences but never unlinks: GC reclaims exactly one blob.
-    assert_eq!(blob_count(&store_dir), 3);
+    assert_eq!(blob_count(&store_dir).await, 3);
     let (gc_report, _) = instance.gc(|_| {}).await.unwrap();
     assert_eq!(gc_report.removed, 1);
-    assert_eq!(blob_count(&store_dir), 2);
+    assert_eq!(blob_count(&store_dir).await, 2);
 }
 
 #[tokio::test]

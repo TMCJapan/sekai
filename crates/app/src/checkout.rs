@@ -154,7 +154,7 @@ where
             groups,
             tombstones,
             options,
-            cas: store.cas().clone(),
+            cas: store.blob().clone(),
             world: world.clone(),
             discovered,
             guard,

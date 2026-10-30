@@ -4,6 +4,10 @@
 //! append-only by nature: keys are content hashes and a stored blob never
 //! changes, so concurrent readers and writers need no lock - only `remove`
 //! (GC) takes blobs away, and GC keeps to its own exclusion.
+//!
+//! Backends that perform blocking work (filesystem or database calls) must
+//! run it on the runtime's blocking pool at the app layer, never inline on
+//! an async worker.
 use alloc::vec::Vec;
 use core::future::Future;
 use sekai_util::ChunkHash;
@@ -18,13 +22,15 @@ pub trait BlobStore {
 
     /// Store `payload` under `hash`. Returns `true` when newly inserted.
     ///
-    /// Implementations must write atomically (temp file + rename) and sync
-    /// file data before returning. Directory durability may be deferred to
+    /// Each write must be atomic: a reader sees the whole payload or no
+    /// blob. The write must be durable before any metadata that references
+    /// it commits. A backend may batch that barrier into
     /// [`sync`](BlobStore::sync); callers must invoke it before committing
     /// any metadata that references the new blobs.
     ///
-    /// Storing an existing blob is an idempotent no-op; concurrent puts of
-    /// the same hash are expected and never need coordination.
+    /// Storing an existing blob is an idempotent, deduplicated `false`:
+    /// never an error and never a rewrite. Concurrent puts of the same hash
+    /// are expected and never need coordination.
     fn put(
         &mut self,
         hash: &ChunkHash,
@@ -32,13 +38,16 @@ pub trait BlobStore {
     ) -> impl Future<Output = Result<bool, Self::Error>> + Send;
 
     /// Make stored blobs crash-durable before metadata commit.
+    ///
+    /// Backends that already sync every [`put`](BlobStore::put) may treat
+    /// this as a no-op; batching backends use it as their write barrier.
     fn sync(&mut self) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// Load the blob into `out`, clearing it first.
     ///
     /// Errors when the blob is missing; callers treat a missing blob as
     /// database corruption, never as a tombstone (tombstones are `None`
-    /// history rows, not absent files).
+    /// history rows, not absent blobs).
     fn fetch_into(
         &self,
         hash: &ChunkHash,
@@ -51,10 +60,8 @@ pub trait BlobStore {
         hash: &ChunkHash,
     ) -> impl Future<Output = Result<bool, Self::Error>> + Send;
 
-    /// Visit every stored blob hash. Return `false` to stop early.
-    ///
-    /// Names that do not decode as blob hashes (temp leftovers, foreign
-    /// files) are skipped: never visited and never removed by GC.
+    /// Visit every stored blob hash in an implementation-defined order.
+    /// Return `false` to stop early.
     fn visit_blobs<F>(&self, visit: F) -> impl Future<Output = Result<(), Self::Error>> + Send
     where
         F: FnMut(&ChunkHash) -> bool + Send;

@@ -507,21 +507,21 @@ where
 {
     let live = ChunkHash::new(sekai_core::hash_bytes(b"live"));
     let orphan = ChunkHash::new(sekai_core::hash_bytes(b"orphan"));
-    assert!(store.cas_mut().put(&live, b"live").await.unwrap());
-    assert!(store.cas_mut().put(&orphan, b"orphan").await.unwrap());
+    assert!(store.blob_mut().put(&live, b"live").await.unwrap());
+    assert!(store.blob_mut().put(&orphan, b"orphan").await.unwrap());
     // Sync-then-commit order: blobs are durable before metadata names them.
-    store.cas_mut().sync().await.unwrap();
+    store.blob_mut().sync().await.unwrap();
     store
         .meta_mut()
         .apply_commit_incremental(1_000, &[], &[CommitEntry::new(coord(0, 0), Some(live))])
         .await
         .unwrap();
 
-    let plan = gc_plan(store.cas(), store.meta()).await.unwrap();
+    let plan = gc_plan(store.blob(), store.meta()).await.unwrap();
     assert_eq!(plan.orphans, vec![orphan]);
-    let (cas, meta) = store.cas_and_meta();
+    let (cas, meta) = store.blob_and_meta();
     let report = gc_apply(cas, meta, &plan, |_, _| {}).await.unwrap();
     assert_eq!(report.removed, 1);
-    assert!(store.cas().contains(&live).await.unwrap());
-    assert!(!store.cas().contains(&orphan).await.unwrap());
+    assert!(store.blob().contains(&live).await.unwrap());
+    assert!(!store.blob().contains(&orphan).await.unwrap());
 }

@@ -102,9 +102,9 @@ pub struct Assembled {
 /// history that ref names, not the newest commit in the store. A store
 /// without an active ref (or with an unborn one) starts a new history.
 ///
-/// The caller must hold the store's writer lock from this call through
-/// [`record_commit`]: a commit that moves the active ref in between
-/// would make the plan's base and the recorded parent disagree.
+/// The caller must hold the world's lock (shared or exclusive) from this
+/// call through [`record_commit`]: a commit that moves the active ref in
+/// between would make the plan's base and the recorded parent disagree.
 ///
 /// Regions outside `scope` are ignored entirely: they are neither ingested
 /// nor reported as removed. Callers must quiesce the source while reading;

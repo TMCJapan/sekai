@@ -30,7 +30,7 @@ sekai (bin, thin: clap parse + print + exit code)
       -> sekai-anvil (no_std + alloc: pure sector codec, decompress, NBT normalization)
     -> sekai-world (std: filesystem owner - discover/fingerprint/swap)
       -> sekai-anvil + sekai-core (types only)
-    -> sekai-storage (std + tokio: store traits, file CAS, and locks)
+    -> sekai-storage (std + tokio: store traits and locks)
       -> sekai-core
     -> sekai-storage-sqlite (std + tokio: sqlx SQLite implementation)
       -> sekai-storage
@@ -44,8 +44,8 @@ sekai-util (no_std, no tokio dependency: coordinates, chunk hashes,
 | `sekai-util` | `no_std`, no `std`/tokio dependencies | no | Shared value types: coordinates, the chunk digest (`ChunkHash`, `hash_bytes`, `BytesHasher`), region/history/commit/gc records, hex errors. Pure data plus total validation only. |
 | `sekai-anvil` | `no_std` + `alloc` | no | Pure Anvil sector codec including decompression and chunk NBT normalization. A stored sector payload becomes a `Chunk` whose `normalized_hash()` is the only public NBT-derived digest; the parser and normalized views stay internal. Also builds `Vec<u8>` images. Compression framing is MCA spec knowledge, so it lives here. No `Path`, no `fs`. Names custom dimensions with util `Dimension`. |
 | `sekai-core` | `no_std` + `alloc` | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_checkout`, `gc plan`/`apply`) plus storage ports. Composes `anvil` over util types and re-exports every util type at its root, so downstream paths stay stable. |
-| `sekai-storage` | `std` + tokio | yes (RPITIT) | Backend-neutral boundaries: async `BlobStore`/`MetaStore` traits (owned by `core::port`, re-exported from the `api` module), high-level `SekaiStore`/`SekaiStoreOpener` traits, file CAS (`cas` module, `blobs/ab/cdef...` retained by design), and URL-based backend selection. Depends on `core`. |
-| `sekai-storage-sqlite` | `std` + tokio | yes | Concrete SQLite implementation over sqlx: `SqliteMeta` plus the SQLite-backed `SqliteStore`, schema/version gate, and opener. Implements the traits from `sekai-storage` (and `core::port`). Other backends become sibling crates without touching `core`/`app`. |
+| `sekai-storage` | `std` + tokio | yes (RPITIT) | Backend-neutral boundaries: async `BlobStore`/`MetaStore` traits (owned by `core::port`, re-exported from the `api` module), high-level `SekaiStore`/`SekaiStoreOpener` traits, and URL-based backend selection. Depends on `core`. |
+| `sekai-storage-sqlite` | `std` + tokio | yes | Concrete SQLite implementation over sqlx: `SqliteMeta`/`SqliteBlob` plus the SQLite-backed `SqliteStore`, both schema/version gates, and the opener. Implements the traits from `sekai-storage` (and `core::port`). Other backends become sibling crates without touching `core`/`app`. |
 | `sekai-world` | `std` | yes (I/O) / sync pure helpers where trivial | World access boundary: the `WorldTree` trait, the `RegionFile` handle, and the filesystem tree (`HostWorldTree`). |
 | `sekai-app` | `std` + tokio | yes | Composition/orchestration library for third parties: parallel ingest, clocks, timing, progress callbacks. |
 | `sekai` bin (`sekai-cli` package) | `std` + tokio | yes | Thin clap wrapper over `sekai-app`. No logic. Binary name stays `sekai`; package name stays `sekai-cli` so existing CI/artifact names keep working. |
@@ -250,9 +250,12 @@ surfaces as a diagnostic naming the chunk and region file.
 
 ## CAS Consistency
 
-File CAS layout (`blobs/ab/cdef...`) is retained by design. Normalization
-rule updates affect only change detection - zero data migration or blob
-re-indexing.
+Blobs live in their own SQLite database (`blob.sqlite`, one `WITHOUT ROWID`
+table keyed by the 32-byte hash) beside `meta.sqlite`, so a store is a single
+directory of database files and a blob write is durable before any metadata
+names it. Normalization rule updates affect only change detection - zero data
+migration or blob re-indexing. See
+[ADR-0022](docs/adr/0022-sqlite-blob-store.md).
 
 # History, State, and GC Model
 
@@ -375,11 +378,13 @@ produced them. The scope is a filter, not a partition:
   global CAS dedup.
 - **Two-phase safety**: `gc plan` (read-only candidates) then `gc apply`
   (re-verified unlink). No metadata writes in the orphan-only scope.
-- **Exclusivity**: a run that writes blobs holds `commit.inflight` in the
-  store root for its duration; `gc` refuses at plan and apply time while it
-  is held, because a commit's blobs are in the CAS before the rows that
-  reference them. Readers (`checkout`, `clone`, `diff`) never take it. See
-  [ADR-0011](docs/adr/0011-backup-run-marker.md).
+- **Exclusivity**: `gc` keeps to its own run marker (ADR-0011): a run
+  that writes blobs holds `commit.inflight` in the store root for its
+  duration, and `gc` refuses at plan and apply time while it is held,
+  because a commit's blobs are in the CAS before the rows that reference
+  them. Readers (`checkout`, `clone`, `diff`) never take it. Operations
+  otherwise never lock the store; exclusion is per world, through
+  `WorldTree::lock` (ADR-0022).
 - **Commit pruning** (`prune`): oldest-first fold into the retained
   commit that continues the retired one, then delete. A commit that
   several branches continue cannot be retired, so `prune` refuses and
@@ -398,17 +403,17 @@ produced them. The scope is a filter, not a partition:
   `Clone`: the CAS is append-only, so ingest workers share it without
   exclusion and a cancelled future cannot strand a blob lock.
 - `sekai-storage-sqlite` is the concrete sqlx backend. It owns `SqliteMeta`,
-  `SqliteStore`, the schema, and the version gate, and implements the
-  storage/core traits. Removing sqlx from `sekai-storage` keeps the
-  abstraction crate free of a native database dependency.
+  `SqliteBlob`, `SqliteStore`, both schemas, and both version gates, and
+  implements the storage/core traits. Removing sqlx from `sekai-storage`
+  keeps the abstraction crate free of a native database dependency.
 - New backends (mysql, postgres, embedded, in-memory, wasm) become sibling
   crates implementing the same traits. `app` is generic over
   `SekaiInstance<T: SekaiStore>`, so adding a backend does not touch use-case
   policy. No generic `Any`-driver abstraction.
 - SQLite is the only backend shipped. `sekai-storage` holds no backend
-  modules at all: it owns the traits, the file CAS, and the locks, and stays
-  free of a native database dependency. A mysql or postgres backend arrives
-  as a sibling crate, never as a stub inside `sekai-storage`.
+  modules at all: it owns the traits and the locks, and stays free of a
+  native database dependency. A mysql or postgres backend arrives as a
+  sibling crate, never as a stub inside `sekai-storage`.
 
 ## Backend Selection
 
@@ -444,9 +449,10 @@ still writes files.
 Owned by the backend crate (`crates/storage-sqlite/schema/sqlite.sql` for
 SQLite; `commits`, `commit_parents`, `chunk_history`, `refs`, `scopes`,
 `scope_areas`; `SCHEMA_VERSION` gate; pre-release policy = recreate, don't
-migrate).
-The `cas` module stays independent of DB backend crates so future
-object-store CAS swaps don't touch metadata code.
+migrate). The blob database (`blob.sqlite`, one `blobs` table) carries its own
+`user_version` gate; blob rows are opaque payloads, so it has no derived state
+to reinterpret. CAS stays behind the backend-neutral port, so an object-store
+backend swaps the adapter without touching metadata code.
 
 ## Async Policy
 
@@ -471,7 +477,9 @@ object-store CAS swaps don't touch metadata code.
   corrupt runs still fail loudly with the file path attached. `world` never
   patches bytes.
 - **Crash consistency order**:
-  - **Write path**: CAS blobs flushed + synced *before* DB metadata commit.
+  - **Write path**: CAS blob rows committed (WAL fsynced) *before* DB
+    metadata commit; the checkpoint afterwards manages WAL space, not
+    durability.
   - **GC delete path**: DB metadata commit *before* blob unlink.
   - **Prune path**: each commit's fold (row restamp/drop and commit
     delete) commits atomically; blobs unlink only in a later `gc`.
