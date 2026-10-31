@@ -1315,7 +1315,7 @@ async fn sparse_entities_chunk_diffs_empty_without_error() {
 }
 
 /// Pre-1.13 chunks (`Level`-wrapped, `TerrainPopulated`, `HeightMap`) diff
-/// like any other level chunk instead of failing as unparseable.
+/// like any other level chunk instead of failing as unparsable.
 #[tokio::test]
 async fn legacy_level_chunks_diff_by_content() {
     use sekai_app::{ChunkCoord, Dimension};
