@@ -50,8 +50,17 @@ impl RegionImage {
 
     /// Iterates the present chunks in table order.
     ///
-    /// Each item is `Result<Chunk, AnvilError>`. Rust requires this inherent
-    /// method next to the [`IntoIterator`] impl; prefer `for chunk in &image`.
+    /// Each item is `Result<Chunk, AnvilError>`: a corrupt entry surfaces as
+    /// an `Err`. Drive the walk with `?`, e.g.:
+    ///
+    /// ```text
+    /// for item in &image {
+    ///     let chunk = item?;
+    ///     // use chunk ...
+    /// }
+    /// ```
+    ///
+    /// Rust requires this inherent method next to the [`IntoIterator`] impl.
     pub fn iter(&self) -> RegionImageIter<'_> {
         self.into_iter()
     }
@@ -59,11 +68,15 @@ impl RegionImage {
     /// Visits all present chunks in table order.
     ///
     /// Returning `false` stops iteration.
+    ///
+    /// Unlike [`Self::iter`], which yields `Result` items, this visitor stops
+    /// on the first `false` and aborts on the first corrupt entry.
     pub fn visit_chunks<F>(&self, mut visit: F) -> Result<(), AnvilError>
     where
         F: FnMut(Chunk<'_>) -> bool,
     {
-        for item in self {
+        let iter = self.iter();
+        for item in iter {
             // The error is terminal: stop at the first corrupt entry instead
             // of walking the rest of the table.
             if !visit(item?) {
@@ -79,6 +92,13 @@ impl RegionImage {
     /// An empty slot yields `Ok(None)`; a corrupt one yields the error the
     /// location-table walk reports.
     fn chunk_at(&self, index: u32) -> Result<Option<Chunk<'_>>, AnvilError> {
+        // A zero-length image is the empty region, not a corrupt table; keep
+        // this guard so the helper stays correct if reused outside the
+        // iterator.
+        if self.bytes.is_empty() {
+            return Ok(None);
+        }
+
         let (offset, count) = self.entry(index)?;
 
         if offset == 0 && count == 0 {
