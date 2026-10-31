@@ -4,7 +4,7 @@
 
 #![cfg(feature = "backend-sqlite")]
 
-use sekai_app::{HostWorldTree, SekaiStore};
+use sekai_app::HostWorldTree;
 use std::path::Path;
 
 /// A temp dir whose name starts with the calling test's name (tempfile

@@ -151,7 +151,7 @@ impl SekaiInstance<sekai_storage_sqlite::SqliteStore> {
     /// [`Self::init`] materializes a store.
     pub async fn open(store_url: &str) -> Result<Self, AppError> {
         Ok(Self {
-            store: sekai_storage_sqlite::SqliteStore::open(store_url).await?,
+            store: sekai_storage_sqlite::open_sqlite(store_url).await?,
         })
     }
 
@@ -162,7 +162,7 @@ impl SekaiInstance<sekai_storage_sqlite::SqliteStore> {
     /// of leaving an empty store behind.
     pub async fn init(store_url: &str) -> Result<Self, AppError> {
         Ok(Self {
-            store: sekai_storage_sqlite::SqliteStore::init(store_url).await?,
+            store: sekai_storage_sqlite::init_sqlite(store_url).await?,
         })
     }
 }

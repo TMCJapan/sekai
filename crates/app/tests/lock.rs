@@ -9,8 +9,8 @@
 
 use sekai_app::{
     BlobHash, CheckoutOptions, CloneOptions, CommitId, CommitOptions, Dimension, HostWorldTree,
-    Rect, RefName, Scope, ScopeName, SekaiInstance, SekaiStore, StatusOptions, WorldError,
-    WorldLockMode, WorldTree,
+    Rect, RefName, Scope, ScopeName, SekaiInstance, StatusOptions, WorldError, WorldLockMode,
+    WorldTree,
 };
 use sekai_core::MetaStore as _;
 use sekai_nbt::nanonbt::Cesu8;
