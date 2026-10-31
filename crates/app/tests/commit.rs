@@ -1314,22 +1314,81 @@ async fn sparse_entities_chunk_diffs_empty_without_error() {
     }
 }
 
-/// A level chunk whose NBT lacks the loaded-chunk schema (legacy format,
-/// `xPos` absent) fails the diff with the chunk and region file named, so
-/// the offending part of the world can be located.
+/// Pre-1.13 chunks (`Level`-wrapped, `TerrainPopulated`, `HeightMap`) diff
+/// like any other level chunk instead of failing as unparseable.
 #[tokio::test]
-async fn malformed_level_chunk_diff_names_its_coord() {
+async fn legacy_level_chunks_diff_by_content() {
     use sekai_app::{ChunkCoord, Dimension};
-    let (root, _guard) = tempdir("malformed-level");
+    let (root, _guard) = tempdir("legacy-level");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
-    // Chunk (33, 1) lives in r.1.0.mca: the region must come from the
-    // coord, not from the file name of whatever failed to parse.
+    let region = world_path.join("region/r.1.0.mca");
+    let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 33, 1);
+
+    write_region(&region, &[(33, 1, legacy_chunk_nbt(&[0; 8], 11))]);
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    instance
+        .world_mut(&mut world)
+        .commit(options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+    let commits = instance.list_commits().await.unwrap();
+
+    // A volatile-only rewrite (`LastUpdate`) normalizes identically.
+    write_region(&region, &[(33, 1, legacy_chunk_nbt(&[0; 8], 999))]);
+    let diffs = instance
+        .world(&world)
+        .diff_world_chunk(None, &coord)
+        .await
+        .unwrap();
+    assert_eq!(diffs, ChunkPayloadDiff::Nothing);
+
+    // Changed block content reports a full diff.
     write_region(
-        world_path.join("region/r.1.0.mca"),
-        &[(33, 1, build_status_nbt("minecraft:full"))],
+        &region,
+        &[(33, 1, legacy_chunk_nbt(&[0, 1, 0, 0, 0, 0, 0, 0], 11))],
     );
+    let diffs = instance
+        .world(&world)
+        .diff_world_chunk(None, &coord)
+        .await
+        .unwrap();
+    assert!(
+        matches!(diffs, ChunkPayloadDiff::Full { old, new } if old != new),
+        "changed legacy blocks must report a diff: {diffs:?}"
+    );
+
+    // Commit-to-commit diff reads the stored legacy blob the same way.
+    instance
+        .world_mut(&mut world)
+        .commit(options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+    let commits_after = instance.list_commits().await.unwrap();
+    assert_eq!(commits_after.len(), 2);
+    let stored = instance
+        .diff_chunk(commits[0].id, commits_after[1].id, &coord)
+        .await
+        .unwrap();
+    assert!(
+        matches!(stored, ChunkPayloadDiff::Full { .. }),
+        "stored legacy blobs diff by content: {stored:?}"
+    );
+}
+
+/// A legacy chunk cut short mid-`Level` fails the diff with the chunk and
+/// region file named, so the damaged part of the world can be located.
+#[tokio::test]
+async fn truncated_legacy_chunk_diff_names_its_coord() {
+    use sekai_app::{ChunkCoord, Dimension};
+    let (root, _guard) = tempdir("truncated-legacy");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    let region = world_path.join("region/r.1.0.mca");
+
+    write_region(&region, &[(33, 1, legacy_chunk_nbt(&[0; 8], 11))]);
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
@@ -1337,10 +1396,10 @@ async fn malformed_level_chunk_diff_names_its_coord() {
         .await
         .unwrap();
 
-    // Rewrite the same cell with a payload missing the level-chunk fields.
-    let mut payload = vec![3];
-    payload.extend(legacy_chunk_nbt());
-    write_region(world_path.join("region/r.1.0.mca"), &[(33, 1, payload)]);
+    // Drop the trailing `HeightMap` payload: the `Level` body ends early.
+    let mut payload = legacy_chunk_nbt(&[0; 8], 11);
+    payload.truncate(payload.len() / 2);
+    write_region(&region, &[(33, 1, payload)]);
 
     let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 33, 1);
     let err = instance
@@ -1353,23 +1412,86 @@ async fn malformed_level_chunk_diff_names_its_coord() {
         message.contains("region 33,1") && message.contains("r.1.0.mca"),
         "error names the chunk and region file: {message}"
     );
-    assert!(message.contains("xPos"), "keeps the NBT cause: {message}");
+    assert!(
+        message.contains("unexpected end of NBT input"),
+        "error names the cause: {message}"
+    );
 }
 
-/// NBT of a pre-1.13 chunk: `xPos` is absent, so it cannot parse as a
-/// [`sekai_nbt::ChunkPayload`].
-fn legacy_chunk_nbt() -> Vec<u8> {
-    const FIELDS: [(&[u8], i32); 2] = [(b"DataVersion", 0), (b"zPos", 0)];
-    let mut out = vec![10, 0, 0]; // Compound root, empty name
-    for (name, value) in FIELDS {
-        let len = u16::try_from(name.len()).unwrap();
-        out.push(3); // TAG_Int
-        out.extend(len.to_be_bytes());
-        out.extend(name);
-        out.extend(value.to_be_bytes());
+/// A minimal pre-1.13 chunk payload (uncompressed framing): `Level` with
+/// coordinates, a height map, `TerrainPopulated`, one section carrying
+/// `blocks`, and the root-level `DataVersion` 1.9+ writes.
+fn legacy_chunk_nbt(blocks: &[u8], last_update: i64) -> Vec<u8> {
+    fn name(key: &str) -> Vec<u8> {
+        let mut out = u16::try_from(key.len()).unwrap().to_be_bytes().to_vec();
+        out.extend(key.as_bytes());
+        out
     }
-    out.push(0); // TAG_End
-    out
+    fn int(key: &str, value: i32) -> Vec<u8> {
+        let mut out = vec![3];
+        out.extend(name(key));
+        out.extend(value.to_be_bytes());
+        out
+    }
+    fn long(key: &str, value: i64) -> Vec<u8> {
+        let mut out = vec![4];
+        out.extend(name(key));
+        out.extend(value.to_be_bytes());
+        out
+    }
+    fn byte(key: &str, value: u8) -> Vec<u8> {
+        let mut out = vec![1];
+        out.extend(name(key));
+        out.push(value);
+        out
+    }
+    fn byte_array(key: &str, values: &[u8]) -> Vec<u8> {
+        let mut out = vec![7];
+        out.extend(name(key));
+        out.extend(i32::try_from(values.len()).unwrap().to_be_bytes());
+        out.extend(values);
+        out
+    }
+    fn int_array(key: &str, values: &[i32]) -> Vec<u8> {
+        let mut out = vec![11];
+        out.extend(name(key));
+        out.extend(i32::try_from(values.len()).unwrap().to_be_bytes());
+        for value in values {
+            out.extend(value.to_be_bytes());
+        }
+        out
+    }
+
+    let mut entries = vec![
+        int("xPos", 33),
+        int("zPos", 1),
+        long("LastUpdate", last_update),
+        int_array("HeightMap", &[1, 2, 3]),
+        byte("TerrainPopulated", 1),
+    ];
+    let mut section_body = byte("Y", 0);
+    section_body.extend(byte_array("Blocks", blocks));
+    section_body.push(0);
+    let mut sections = vec![9];
+    sections.extend(name("Sections"));
+    sections.push(10); // element type: compound
+    sections.extend(1i32.to_be_bytes());
+    sections.extend(section_body);
+    entries.push(sections);
+
+    let mut out = vec![10, 0, 0]; // Compound root, empty name
+    out.push(10);
+    out.extend(name("Level"));
+    for entry in entries {
+        out.extend(entry);
+    }
+    out.push(0); // Level
+    out.extend(int("DataVersion", 1500)); // root-level version (1.9+)
+    out.push(0); // root
+
+    let mut framed = vec![3]; // Uncompressed header byte
+    framed.extend(out);
+    framed
 }
 
 #[tokio::test]

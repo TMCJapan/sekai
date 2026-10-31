@@ -63,6 +63,19 @@ pub enum AppError {
         #[source]
         source: sekai_nbt::NbtError,
     },
+    /// A legacy (`Level`-wrapped) chunk ended before its compound closed,
+    /// with its coordinates attached for diagnosis.
+    #[error(
+        "chunk {coord} in region r.{rx}.{rz}.mca is truncated: its legacy `Level` compound ends early (the payload is incomplete, not a format mismatch)"
+    )]
+    TruncatedLegacyChunk {
+        /// Chunk whose payload is cut short.
+        coord: ChunkCoord,
+        /// Region X of the owning region file.
+        rx: i32,
+        /// Region Z of the owning region file.
+        rz: i32,
+    },
     /// Commit-graph operation failed.
     #[error("{0}")]
     Commit(sekai_core::CommitError<sekai_storage::StorageError>),

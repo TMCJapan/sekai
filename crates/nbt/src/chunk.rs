@@ -1,17 +1,43 @@
 mod block_entity;
 mod decode;
 mod heightmap;
+pub mod legacy;
 mod section;
 mod tick;
 
 pub use block_entity::BlockEntity;
 pub use heightmap::Heightmaps;
+pub use legacy::{LegacyChunkPayload, LegacySection, RawCompound};
 pub use section::Section;
 pub use tick::{BlockTick, FluidTick};
 
 use alloc::vec::Vec;
 use nanonbt::{Cesu8, DeserializeNbt, SerializeNbt};
 use sekai_util::DiffHash;
+
+/// A parsed level chunk in either on-disk format.
+///
+/// Pre-1.13 worlds wrap their fields in `Level` and store sections as byte
+/// arrays. Each format hashes through its own normalized view; the legacy
+/// view writes keys the modern one never does, so a conversion is never
+/// mistaken for "no change".
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub enum Chunk<'de> {
+    /// 1.13+ shape: fields at the root, palette sections.
+    Modern(ChunkPayload<'de>),
+    /// Pre-1.13 `Level` shape: byte-array sections.
+    Legacy(LegacyChunkPayload<'de>),
+}
+
+impl Chunk<'_> {
+    /// Hashes the chunk through the normalized view of its format.
+    pub fn normalize_hash(&self) -> Result<DiffHash, nanonbt::Error> {
+        match self {
+            Self::Modern(payload) => payload.normalize_hash(),
+            Self::Legacy(payload) => payload.normalize_hash(),
+        }
+    }
+}
 
 #[derive(SerializeNbt, DeserializeNbt, Debug, Clone, Eq, PartialEq)]
 pub struct ChunkPayload<'de> {

@@ -8,7 +8,7 @@ use sekai_core::{
     diff_nbt,
 };
 use sekai_nbt::nanonbt::Cesu8Buf;
-use sekai_nbt::{ChunkPayload, ChunkPayloadDiff, Heightmaps};
+use sekai_nbt::{Chunk, ChunkPayload, ChunkPayloadDiff, Heightmaps};
 use sekai_storage::{BlockingBlobStore, SekaiStore, StoreLockMode};
 use sekai_world::{Region, RegionFile, WorldLockMode, WorldTree};
 
@@ -253,17 +253,15 @@ fn decompress_or_empty(compressed: Option<Vec<u8>>) -> Result<Vec<u8>, AppError>
 /// `entities`/`poi` payloads use their own schemas, so a missing level-chunk
 /// field there is not corruption and yields `None`: their raw bytes are
 /// compared instead. A level chunk with missing fields fails loudly.
-fn parse_for_diff(
-    coord: ChunkCoord,
-    nbt: &[u8],
-) -> Result<Option<sekai_nbt::ChunkPayload<'_>>, AppError> {
+fn parse_for_diff(coord: ChunkCoord, nbt: &[u8]) -> Result<Option<Chunk<'_>>, AppError> {
+    let (rx, rz) = (coord.region_x(), coord.region_z());
     match sekai_nbt::parse(nbt) {
         Ok(payload) => Ok(Some(payload)),
         Err(sekai_nbt::NbtError::MissingField(_)) if coord.kind != RegionKind::Region => Ok(None),
         Err(source) => Err(AppError::ChunkNbt {
             coord,
-            rx: coord.region_x(),
-            rz: coord.region_z(),
+            rx,
+            rz,
             source,
         }),
     }

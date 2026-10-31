@@ -1,6 +1,6 @@
 use sekai_util::DiffHash;
 
-use crate::ChunkPayload;
+use crate::Chunk;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ChunkPayloadDiff {
@@ -9,15 +9,16 @@ pub enum ChunkPayloadDiff {
 }
 
 impl ChunkPayloadDiff {
-    /// Compares two payloads through their normalized view.
+    /// Compares two chunks through the normalized view of their format.
+    ///
+    /// A legacy chunk and a modern chunk never normalize equal: the legacy
+    /// view writes keys the modern one never does, so a real conversion
+    /// stays visible as a change.
     ///
     /// # Errors
     ///
     /// Propagates failures from re-serializing the normalized view.
-    pub fn new<'de>(
-        old: &ChunkPayload<'de>,
-        new: &ChunkPayload<'de>,
-    ) -> Result<Self, nanonbt::Error> {
+    pub fn new(old: &Chunk<'_>, new: &Chunk<'_>) -> Result<Self, nanonbt::Error> {
         let old_hash = old.normalize_hash()?;
         let new_hash = new.normalize_hash()?;
         if old_hash == new_hash {

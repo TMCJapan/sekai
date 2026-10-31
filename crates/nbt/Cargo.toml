@@ -14,4 +14,4 @@ workspace = true
 [dependencies]
 blake3.workspace = true
 sekai-util.workspace = true
-nanonbt = { git = "https://github.com/TMCJapan/nanonbt.git", rev = "cc2236af9b106cfd22446eac79d9810826711b17" }
+nanonbt = { git = "https://github.com/TMCJapan/nanonbt.git", rev = "d92836c870f3571181cfbbe818b07ef0632691b8" }

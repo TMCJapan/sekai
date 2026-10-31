@@ -4,15 +4,31 @@ extern crate alloc;
 mod chunk;
 mod diff;
 
-pub use chunk::{BlockEntity, BlockTick, ChunkPayload, FluidTick, Heightmaps, Section};
+pub use chunk::legacy;
+pub use chunk::{
+    BlockEntity, BlockTick, Chunk, ChunkPayload, FluidTick, Heightmaps, LegacyChunkPayload,
+    LegacySection, RawCompound, Section,
+};
 pub use diff::ChunkPayloadDiff;
 pub use nanonbt;
 pub use nanonbt::Error as NbtError;
 use sekai_util::DiffHash;
 
-/// Deserializes a level-chunk NBT root into [`ChunkPayload`].
-pub fn parse(bytes: &[u8]) -> Result<ChunkPayload<'_>, NbtError> {
-    nanonbt::from_slice(bytes)
+/// Deserializes a level-chunk NBT root, either format.
+///
+/// The 1.13+ shape is tried first: it is the common case, and trying it
+/// costs nothing extra there. A legacy chunk is exactly the case where that
+/// read fails and the pre-1.13 `Level` wrapper decodes instead. Errors are
+/// reported from whichever schema matched, so a malformed chunk still fails
+/// loudly.
+pub fn parse(bytes: &[u8]) -> Result<Chunk<'_>, NbtError> {
+    match nanonbt::from_slice(bytes) {
+        Ok(modern) => Ok(Chunk::Modern(modern)),
+        Err(_modern_error) => match nanonbt::from_slice(bytes) {
+            Ok(legacy) => Ok(Chunk::Legacy(legacy)),
+            Err(legacy_error) => Err(legacy_error),
+        },
+    }
 }
 
 /// Hashes a level-chunk NBT root through its normalized view.
@@ -82,8 +98,8 @@ mod tests {
             fluid_ticks: alloc::vec![],
         };
 
-        let old = payload(7, 9);
-        let new = payload(999, 1_234);
+        let old = Chunk::Modern(payload(7, 9));
+        let new = Chunk::Modern(payload(999, 1_234));
         assert_eq!(
             ChunkPayloadDiff::new(&old, &new).unwrap(),
             ChunkPayloadDiff::Nothing

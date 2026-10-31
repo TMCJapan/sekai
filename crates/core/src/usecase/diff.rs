@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 use core::fmt;
-use sekai_nbt::{ChunkPayloadDiff, NbtError};
+use sekai_nbt::{Chunk, ChunkPayloadDiff, NbtError};
 
 use sekai_anvil::AnvilError;
 
@@ -52,8 +52,8 @@ pub async fn diff_blobs<B: BlobStore>(
     sekai_anvil::decompress_into(&old_payload, &mut old_nbt).map_err(DiffError::Anvil)?;
     sekai_anvil::decompress_into(&new_payload, &mut new_nbt).map_err(DiffError::Anvil)?;
 
-    let old_val = sekai_nbt::parse(&old_nbt).map_err(DiffError::Nbt)?;
-    let new_val = sekai_nbt::parse(&new_nbt).map_err(DiffError::Nbt)?;
+    let old_val: Chunk<'_> = sekai_nbt::parse(&old_nbt).map_err(DiffError::Nbt)?;
+    let new_val: Chunk<'_> = sekai_nbt::parse(&new_nbt).map_err(DiffError::Nbt)?;
 
     ChunkPayloadDiff::new(&old_val, &new_val).map_err(DiffError::Nbt)
 }

@@ -44,8 +44,9 @@ pub fn hash_blob(payload: &[u8]) -> BlobHash {
 
 /// Compute a diff between two raw decompressed chunk payloads.
 ///
-/// The result is a [`ChunkPayloadDiff`]: `Nothing` when the normalized
-/// views match, `Full` with both normalized hashes otherwise.
+/// Either format (1.13+ or pre-1.13 `Level`) is accepted; the result is a
+/// [`ChunkPayloadDiff`]: `Nothing` when the normalized views match, `Full`
+/// with both normalized hashes otherwise.
 pub fn diff_nbt(
     old_raw_nbt: &[u8],
     new_raw_nbt: &[u8],
