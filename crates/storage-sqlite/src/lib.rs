@@ -1,5 +1,9 @@
-//! SQLite metadata backend (sqlx) for Sekai.
+//! SQLite storage backend (metadata + blobs, via sqlx) for Sekai.
 
+mod blob;
+mod meta;
 mod sqlite;
 
-pub use sqlite::{SCHEMA_VERSION, SqliteMeta, SqliteStore, init_sqlite, open_sqlite};
+pub use blob::SqliteBlob;
+pub use meta::{SCHEMA_VERSION, SqliteMeta};
+pub use sqlite::{SqliteStore, init_sqlite, open_sqlite};

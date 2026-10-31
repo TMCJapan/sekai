@@ -120,7 +120,7 @@ impl Fixture {
     }
 
     fn hold_store(&self, mode: StoreLockMode) -> sekai_storage::StoreLock {
-        self.instance.store().cas().lock(mode).unwrap()
+        self.instance.store().blob().lock(mode).unwrap()
     }
 
     /// A second tree over the same folder, standing in for another process.
@@ -511,7 +511,7 @@ async fn a_cancelled_clone_keeps_the_store_locked_until_its_files_finish() {
     }
     // The future is gone; its file pass is parked in `progress`, still
     // holding the store lock.
-    let probe = fx.instance.store().cas().lock(Exclusive);
+    let probe = fx.instance.store().blob().lock(Exclusive);
     assert!(
         matches!(&probe, Err(StorageError::StoreLocked { .. })),
         "the store must stay locked while the clone file pass runs: {probe:?}"
@@ -533,7 +533,7 @@ async fn a_cancelled_clone_keeps_the_store_locked_until_its_files_finish() {
         std::thread::sleep(Duration::from_millis(20));
     }
     loop {
-        match fx.instance.store().cas().lock(Exclusive) {
+        match fx.instance.store().blob().lock(Exclusive) {
             Ok(lock) => {
                 drop(lock);
                 break;
