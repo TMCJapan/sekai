@@ -15,7 +15,6 @@ const fn options(with_diff: bool, jobs: usize) -> CommitOptions {
     CommitOptions {
         concurrency: jobs,
         with_diff,
-        ignore_tags: None,
     }
 }
 

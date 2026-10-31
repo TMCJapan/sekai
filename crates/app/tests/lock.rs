@@ -13,6 +13,7 @@ use sekai_app::{
     WorldTree,
 };
 use sekai_core::MetaStore as _;
+use sekai_nbt::nanonbt::Cesu8;
 use sekai_storage::{StorageError, StoreLockMode};
 use sekai_storage_sqlite::SqliteStore;
 use std::path::{Path, PathBuf};
@@ -62,9 +63,26 @@ impl Fixture {
             .unwrap();
         let root = guard.path().to_path_buf();
         let world_path = root.join("world");
-        // Uncompressed (3) empty root compounds: valid chunks that decode.
-        write_region(world_path.join("region/r.0.0.mca"), &[3, 10, 0, 0, 0]);
-        write_region(world_path.join("region/r.1.0.mca"), &[3, 10, 0, 0, 0]);
+        // Uncompressed (3) minimal valid chunk payloads.
+        let chunk = sekai_nbt::nanonbt::to_bytes(&sekai_nbt::ChunkPayload {
+            data_version: 1,
+            x_pos: 0,
+            y_pos: 0,
+            z_pos: 0,
+            inhabited_time: 0,
+            last_update: 0,
+            sections: vec![],
+            heightmaps: sekai_nbt::Heightmaps::default(),
+            status: &Cesu8::from_str("minecraft:full"),
+            block_entities: vec![],
+            block_ticks: vec![],
+            fluid_ticks: vec![],
+        })
+        .unwrap();
+        let mut payload = vec![3u8];
+        payload.extend_from_slice(&chunk);
+        write_region(world_path.join("region/r.0.0.mca"), &payload);
+        write_region(world_path.join("region/r.1.0.mca"), &payload);
         let mut world = HostWorldTree::new(&world_path).unwrap();
         let store = root.join("store").to_string_lossy().into_owned();
         let mut instance = SekaiInstance::init(&store).await.unwrap();
@@ -273,14 +291,8 @@ impl Op {
             Self::ResolveScope => instance.resolve_scope(&fx.scope).await.map(drop),
             Self::CommitStats => instance.commit_stats(id).await.map(drop),
             Self::CommitCoords => instance.commit_chunk_coords(id).await.map(drop),
-            Self::DiffBlobs => instance
-                .diff_blobs(&fx.blob, &fx.blob, None)
-                .await
-                .map(drop),
-            Self::DiffChunks => instance
-                .diff_chunks(id, id, &[], None, |_| {})
-                .await
-                .map(drop),
+            Self::DiffBlobs => instance.diff_blobs(&fx.blob, &fx.blob).await.map(drop),
+            Self::DiffChunks => instance.diff_chunks(id, id, &[], |_| {}).await.map(drop),
             Self::Clone => {
                 let clone_dir = fx.root.join(format!(
                     "clone-{}",
@@ -319,7 +331,7 @@ impl Op {
                 .map(drop),
             Self::DiffWorld => instance
                 .world(&fx.world)
-                .diff_world_chunks(None, &[], None, |_| {})
+                .diff_world_chunks(None, &[], |_| {})
                 .await
                 .map(drop),
             Self::Checkout => instance

@@ -14,10 +14,4 @@ workspace = true
 [dependencies]
 blake3.workspace = true
 sekai-util.workspace = true
-
-[[bench]]
-name = "nbt"
-harness = false
-
-[dev-dependencies]
-criterion.workspace = true
+nanonbt = { git = "https://github.com/TMCJapan/nanonbt.git", rev = "d92836c870f3571181cfbbe818b07ef0632691b8" }

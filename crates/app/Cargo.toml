@@ -16,6 +16,7 @@ default = ["backend-sqlite"]
 backend-sqlite = ["dep:sekai-storage-sqlite"]
 
 [dependencies]
+blake3.workspace = true
 sekai-anvil.workspace = true
 sekai-core.workspace = true
 sekai-nbt.workspace = true

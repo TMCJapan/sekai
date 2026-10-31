@@ -6,6 +6,8 @@
 
 use sekai_app::{CommitId, CommitOptions, RegionKind, Scope};
 use sekai_app::{HostWorldTree, WorldTree};
+use sekai_nbt::ChunkPayloadDiff;
+use sekai_nbt::nanonbt::Cesu8;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -162,8 +164,8 @@ async fn scoped_commit_records_no_spurious_tombstones() {
     let store = root.join("store").to_string_lossy().into_owned();
     let over = world_path.join("region/r.0.0.mca");
     let nether = world_path.join("DIM-1/region/r.0.0.mca");
-    // Minimal valid NBT (uncompressed empty compound) so chunk diffs parse.
-    let payload = vec![3, 10, 0, 0, 0];
+    // Minimal valid chunk payload so chunk diffs parse.
+    let payload = build_status_nbt("minecraft:full");
     write_region(&over, &[(0, 0, payload.clone()), (1, 0, payload.clone())]);
     write_region(&nether, &[(0, 0, payload.clone())]);
 
@@ -191,10 +193,10 @@ async fn scoped_commit_records_no_spurious_tombstones() {
     assert_eq!(commits.len(), 2);
     let nether_coord = ChunkCoord::new(Dimension::NETHER, RegionKind::Region, 0, 0);
     let diffs = instance
-        .diff_chunk(commits[0].id, commits[1].id, &nether_coord, None)
+        .diff_chunk(commits[0].id, commits[1].id, &nether_coord)
         .await
         .unwrap();
-    assert_eq!(diffs, [] as [sekai_app::NbtDiffEntry; 0]);
+    assert_eq!(diffs, ChunkPayloadDiff::Nothing);
 
     // Vanish one in-scope chunk: exactly that tombstone is recorded.
     write_region(&over, &[(0, 0, payload)]);
@@ -219,10 +221,10 @@ async fn scoped_commit_records_no_spurious_tombstones() {
     let commits = instance.list_commits().await.unwrap();
     assert_eq!(commits.len(), 4);
     let diffs = instance
-        .diff_chunk(commits[0].id, commits[3].id, &nether_coord, None)
+        .diff_chunk(commits[0].id, commits[3].id, &nether_coord)
         .await
         .unwrap();
-    assert_eq!(diffs, [] as [sekai_app::NbtDiffEntry; 0]);
+    assert_eq!(diffs, ChunkPayloadDiff::Nothing);
 }
 
 /// A partial scope reads only part of a region; the next full commit must
@@ -281,11 +283,10 @@ async fn partial_scope_then_full_commit_reingests_unread_chunks() {
     let coord =
         sekai_core::ChunkCoord::new(sekai_core::Dimension::OVERWORLD, RegionKind::Region, 1, 0);
     let diffs = instance
-        .diff_chunk(commits[1].id, commits[2].id, &coord, None)
+        .diff_chunk(commits[1].id, commits[2].id, &coord)
         .await
         .unwrap();
-    assert_eq!(diffs.len(), 1);
-    assert_eq!(diffs[0].path, "Status");
+    assert!(!diffs.is_empty());
 
     // A repeated full commit has nothing left to write.
     let (quiet, _) = instance
@@ -764,11 +765,7 @@ async fn with_diff_records_diff_hashes() {
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store_dir = root.join("store");
     let store_url = store_dir.to_string_lossy().into_owned();
-    // Minimal zlib NBT: type byte 2 + zlib("<nbt>") is not valid NBT, so
-    // build a real one: uncompressed empty compound root.
-    let nbt = vec![10, 0, 0, 0];
-    let mut payload = vec![3];
-    payload.extend_from_slice(&nbt);
+    let payload = build_status_nbt("minecraft:full");
     write_region(world_path.join("region/r.0.0.mca"), &[(0, 0, payload)]);
 
     let options = CommitOptions {
@@ -943,7 +940,6 @@ async fn progress_events_cover_checkout_diff_and_gc() {
             commits[0].id,
             commits[0].id,
             &[coord],
-            None,
             move |p: DiffProgress| {
                 seen_clone
                     .lock()
@@ -1032,26 +1028,13 @@ async fn checkout_progress_completes_for_tombstone_only_region() {
 
 #[tokio::test]
 async fn diff_chunk_between_commits() {
-    fn build_nbt(status: &str) -> Vec<u8> {
-        let mut nbt = vec![10, 0, 0, 8, 0, 6]; // TAG_Compound(""), TAG_String("Status")
-        nbt.extend_from_slice(b"Status");
-        let len = u16::try_from(status.len()).unwrap();
-        nbt.extend_from_slice(&len.to_be_bytes());
-        nbt.extend_from_slice(status.as_bytes());
-        nbt.push(0); // TAG_End
-
-        let mut payload = vec![3]; // Uncompressed header byte
-        payload.extend(nbt);
-        payload
-    }
-
     let (root, _guard) = tempdir("diff_chunk");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world_path.join("region/r.0.0.mca");
 
-    write_region(&region, &[(0, 0, build_nbt("minecraft:full"))]);
+    write_region(&region, &[(0, 0, build_status_nbt("minecraft:full"))]);
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
@@ -1062,7 +1045,7 @@ async fn diff_chunk_between_commits() {
     // Same millisecond-tick hazard as below: separate ticks so the
     // same-size rewrite is observed instead of carried.
     std::thread::sleep(std::time::Duration::from_millis(5));
-    write_region(&region, &[(0, 0, build_nbt("minecraft:empty"))]);
+    write_region(&region, &[(0, 0, build_status_nbt("minecraft:empty"))]);
     instance
         .world_mut(&mut world)
         .commit(options(), sekai_app::Scope::World, |_| {})
@@ -1080,36 +1063,31 @@ async fn diff_chunk_between_commits() {
     );
 
     let diffs = instance
-        .diff_chunk(commits[0].id, commits[1].id, &coord, None)
+        .diff_chunk(commits[0].id, commits[1].id, &coord)
         .await
         .unwrap();
 
-    assert_eq!(diffs.len(), 1);
-    assert_eq!(diffs[0].path, "Status");
+    assert!(
+        matches!(diffs, ChunkPayloadDiff::Full { old, new } if old != new),
+        "status change must report a full diff with distinct hashes: {diffs:?}"
+    );
 }
 
 #[tokio::test]
-async fn diff_world_chunk_with_commit() {
-    fn build_nbt(status: &str) -> Vec<u8> {
-        let mut nbt = vec![10, 0, 0, 8, 0, 6]; // TAG_Compound(""), TAG_String("Status")
-        nbt.extend_from_slice(b"Status");
-        let len = u16::try_from(status.len()).unwrap();
-        nbt.extend_from_slice(&len.to_be_bytes());
-        nbt.extend_from_slice(status.as_bytes());
-        nbt.push(0); // TAG_End
-
-        let mut payload = vec![3]; // Uncompressed header byte
-        payload.extend(nbt);
-        payload
-    }
-
-    let (root, _guard) = tempdir("diff_world_chunk");
+async fn diff_chunk_propagates_malformed_region_nbt() {
+    let (root, _guard) = tempdir("diff-malformed");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world_path.join("region/r.0.0.mca");
+    let coord = sekai_core::ChunkCoord::new(
+        sekai_core::Dimension::OVERWORLD,
+        sekai_core::RegionKind::Region,
+        0,
+        0,
+    );
 
-    write_region(&region, &[(0, 0, build_nbt("minecraft:full"))]);
+    write_region(&region, &[(0, 0, build_status_nbt("minecraft:full"))]);
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
@@ -1117,7 +1095,43 @@ async fn diff_world_chunk_with_commit() {
         .await
         .unwrap();
 
-    write_region(&region, &[(0, 0, build_nbt("minecraft:empty"))]);
+    // Valid NBT (an empty compound), but not a level-chunk payload.
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    write_region(&region, &[(0, 0, vec![3, 0x0a, 0, 0, 0])]);
+    instance
+        .world_mut(&mut world)
+        .commit(options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+
+    let commits = instance.list_commits().await.unwrap();
+    let err = instance
+        .diff_chunk(commits[0].id, commits[1].id, &coord)
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(err, sekai_app::AppError::ChunkNbt { .. }),
+        "malformed region payload must fail loudly: {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn diff_world_chunk_with_commit() {
+    let (root, _guard) = tempdir("diff_world_chunk");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    let region = world_path.join("region/r.0.0.mca");
+
+    write_region(&region, &[(0, 0, build_status_nbt("minecraft:full"))]);
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    instance
+        .world_mut(&mut world)
+        .commit(options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+
+    write_region(&region, &[(0, 0, build_status_nbt("minecraft:empty"))]);
 
     let coord = sekai_core::ChunkCoord::new(
         sekai_core::Dimension::OVERWORLD,
@@ -1128,12 +1142,14 @@ async fn diff_world_chunk_with_commit() {
 
     let diffs = instance
         .world(&world)
-        .diff_world_chunk(None, &coord, None)
+        .diff_world_chunk(None, &coord)
         .await
         .unwrap();
 
-    assert_eq!(diffs.len(), 1);
-    assert_eq!(diffs[0].path, "Status");
+    assert!(
+        matches!(diffs, ChunkPayloadDiff::Full { old, new } if old != new),
+        "status change must report a full diff with distinct hashes: {diffs:?}"
+    );
 }
 
 /// Diff must read the discovered `r.00.00.mca`, not the canonical
@@ -1146,7 +1162,7 @@ async fn diffs_a_non_canonical_region_name() {
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world_path.join("region/r.00.00.mca");
 
-    write_region(&region, &[(0, 0, vec![3, 10, 0, 0, 0])]);
+    write_region(&region, &[(0, 0, build_status_nbt("minecraft:full"))]);
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
@@ -1166,14 +1182,11 @@ async fn diffs_a_non_canonical_region_name() {
     // come from the world side: it proves the discovered file was read.
     let err = instance
         .world(&world)
-        .diff_world_chunk(None, &coord, None)
+        .diff_world_chunk(None, &coord)
         .await
         .expect_err("raw payload is not valid NBT");
     assert!(
-        matches!(
-            err,
-            sekai_app::AppError::Nbt(sekai_nbt::NbtError::UnexpectedRoot(4))
-        ),
+        matches!(err, sekai_app::AppError::ChunkNbt { .. }),
         "diff must read the discovered file, got: {err}"
     );
 }
@@ -1235,15 +1248,23 @@ async fn corrupt_region_names_its_file() {
 }
 
 fn build_status_nbt(status: &str) -> Vec<u8> {
-    let mut nbt = vec![10, 0, 0, 8, 0, 6]; // TAG_Compound(""), TAG_String("Status")
-    nbt.extend_from_slice(b"Status");
-    let len = u16::try_from(status.len()).unwrap();
-    nbt.extend_from_slice(&len.to_be_bytes());
-    nbt.extend_from_slice(status.as_bytes());
-    nbt.push(0); // TAG_End
-
+    let chunk = sekai_nbt::nanonbt::to_bytes(&sekai_nbt::ChunkPayload {
+        data_version: 1,
+        x_pos: 0,
+        y_pos: 0,
+        z_pos: 0,
+        inhabited_time: 0,
+        last_update: 0,
+        sections: vec![],
+        heightmaps: sekai_nbt::Heightmaps::default(),
+        status: &Cesu8::from_str(status),
+        block_entities: vec![],
+        block_ticks: vec![],
+        fluid_ticks: vec![],
+    })
+    .unwrap();
     let mut payload = vec![3]; // Uncompressed header byte
-    payload.extend(nbt);
+    payload.extend(chunk);
     payload
 }
 
@@ -1280,17 +1301,197 @@ async fn sparse_entities_chunk_diffs_empty_without_error() {
     for kind in [RegionKind::Entities, RegionKind::Poi] {
         let coord = ChunkCoord::new(Dimension::OVERWORLD, kind, 0, 0);
         let diffs = instance
-            .diff_chunk(commits[0].id, commits[0].id, &coord, None)
+            .diff_chunk(commits[0].id, commits[0].id, &coord)
             .await
             .unwrap();
-        assert_eq!(diffs, [] as [sekai_app::NbtDiffEntry; 0]);
+        assert!(diffs.is_empty());
         let world_diffs = instance
             .world(&world)
-            .diff_world_chunk(None, &coord, None)
+            .diff_world_chunk(None, &coord)
             .await
             .unwrap();
-        assert_eq!(world_diffs, [] as [sekai_app::NbtDiffEntry; 0]);
+        assert!(world_diffs.is_empty());
     }
+}
+
+/// Pre-1.13 chunks (`Level`-wrapped, `TerrainPopulated`, `HeightMap`) diff
+/// like any other level chunk instead of failing as unparsable.
+#[tokio::test]
+async fn legacy_level_chunks_diff_by_content() {
+    use sekai_app::{ChunkCoord, Dimension};
+    let (root, _guard) = tempdir("legacy-level");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    let region = world_path.join("region/r.1.0.mca");
+    let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 33, 1);
+
+    write_region(&region, &[(33, 1, legacy_chunk_nbt(&[0; 8], 11))]);
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    instance
+        .world_mut(&mut world)
+        .commit(options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+    let commits = instance.list_commits().await.unwrap();
+
+    // A volatile-only rewrite (`LastUpdate`) normalizes identically.
+    write_region(&region, &[(33, 1, legacy_chunk_nbt(&[0; 8], 999))]);
+    let diffs = instance
+        .world(&world)
+        .diff_world_chunk(None, &coord)
+        .await
+        .unwrap();
+    assert_eq!(diffs, ChunkPayloadDiff::Nothing);
+
+    // Changed block content reports a full diff.
+    write_region(
+        &region,
+        &[(33, 1, legacy_chunk_nbt(&[0, 1, 0, 0, 0, 0, 0, 0], 11))],
+    );
+    let diffs = instance
+        .world(&world)
+        .diff_world_chunk(None, &coord)
+        .await
+        .unwrap();
+    assert!(
+        matches!(diffs, ChunkPayloadDiff::Full { old, new } if old != new),
+        "changed legacy blocks must report a diff: {diffs:?}"
+    );
+
+    // Commit-to-commit diff reads the stored legacy blob the same way.
+    instance
+        .world_mut(&mut world)
+        .commit(options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+    let commits_after = instance.list_commits().await.unwrap();
+    assert_eq!(commits_after.len(), 2);
+    let stored = instance
+        .diff_chunk(commits[0].id, commits_after[1].id, &coord)
+        .await
+        .unwrap();
+    assert!(
+        matches!(stored, ChunkPayloadDiff::Full { .. }),
+        "stored legacy blobs diff by content: {stored:?}"
+    );
+}
+
+/// A legacy chunk cut short mid-`Level` fails the diff with the chunk and
+/// region file named, so the damaged part of the world can be located.
+#[tokio::test]
+async fn truncated_legacy_chunk_diff_names_its_coord() {
+    use sekai_app::{ChunkCoord, Dimension};
+    let (root, _guard) = tempdir("truncated-legacy");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    let region = world_path.join("region/r.1.0.mca");
+
+    write_region(&region, &[(33, 1, legacy_chunk_nbt(&[0; 8], 11))]);
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    instance
+        .world_mut(&mut world)
+        .commit(options(), sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap();
+
+    // Drop the trailing `HeightMap` payload: the `Level` body ends early.
+    let mut payload = legacy_chunk_nbt(&[0; 8], 11);
+    payload.truncate(payload.len() / 2);
+    write_region(&region, &[(33, 1, payload)]);
+
+    let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 33, 1);
+    let err = instance
+        .world(&world)
+        .diff_world_chunk(None, &coord)
+        .await
+        .unwrap_err();
+    let message = format!("{err}");
+    assert!(
+        message.contains("region 33,1") && message.contains("r.1.0.mca"),
+        "error names the chunk and region file: {message}"
+    );
+    assert!(
+        message.contains("unexpected end of NBT input"),
+        "error names the cause: {message}"
+    );
+}
+
+/// A minimal pre-1.13 chunk payload (uncompressed framing): `Level` with
+/// coordinates, a height map, `TerrainPopulated`, one section carrying
+/// `blocks`, and the root-level `DataVersion` 1.9+ writes.
+fn legacy_chunk_nbt(blocks: &[u8], last_update: i64) -> Vec<u8> {
+    fn name(key: &str) -> Vec<u8> {
+        let mut out = u16::try_from(key.len()).unwrap().to_be_bytes().to_vec();
+        out.extend(key.as_bytes());
+        out
+    }
+    fn int(key: &str, value: i32) -> Vec<u8> {
+        let mut out = vec![3];
+        out.extend(name(key));
+        out.extend(value.to_be_bytes());
+        out
+    }
+    fn long(key: &str, value: i64) -> Vec<u8> {
+        let mut out = vec![4];
+        out.extend(name(key));
+        out.extend(value.to_be_bytes());
+        out
+    }
+    fn byte(key: &str, value: u8) -> Vec<u8> {
+        let mut out = vec![1];
+        out.extend(name(key));
+        out.push(value);
+        out
+    }
+    fn byte_array(key: &str, values: &[u8]) -> Vec<u8> {
+        let mut out = vec![7];
+        out.extend(name(key));
+        out.extend(i32::try_from(values.len()).unwrap().to_be_bytes());
+        out.extend(values);
+        out
+    }
+    fn int_array(key: &str, values: &[i32]) -> Vec<u8> {
+        let mut out = vec![11];
+        out.extend(name(key));
+        out.extend(i32::try_from(values.len()).unwrap().to_be_bytes());
+        for value in values {
+            out.extend(value.to_be_bytes());
+        }
+        out
+    }
+
+    let mut entries = vec![
+        int("xPos", 33),
+        int("zPos", 1),
+        long("LastUpdate", last_update),
+        int_array("HeightMap", &[1, 2, 3]),
+        byte("TerrainPopulated", 1),
+    ];
+    let mut section_body = byte("Y", 0);
+    section_body.extend(byte_array("Blocks", blocks));
+    section_body.push(0);
+    let mut sections = vec![9];
+    sections.extend(name("Sections"));
+    sections.push(10); // element type: compound
+    sections.extend(1i32.to_be_bytes());
+    sections.extend(section_body);
+    entries.push(sections);
+
+    let mut out = vec![10, 0, 0]; // Compound root, empty name
+    out.push(10);
+    out.extend(name("Level"));
+    for entry in entries {
+        out.extend(entry);
+    }
+    out.push(0); // Level
+    out.extend(int("DataVersion", 1500)); // root-level version (1.9+)
+    out.push(0); // root
+
+    let mut framed = vec![3]; // Uncompressed header byte
+    framed.extend(out);
+    framed
 }
 
 #[tokio::test]
@@ -1325,15 +1526,10 @@ async fn created_and_deleted_chunks_diff_as_added_removed() {
     let commits = instance.list_commits().await.unwrap();
 
     let diffs = instance
-        .diff_chunk(commits[0].id, commits[1].id, &coord, None)
+        .diff_chunk(commits[0].id, commits[1].id, &coord)
         .await
         .unwrap();
-    assert_ne!(diffs, [] as [sekai_app::NbtDiffEntry; 0]);
-    assert!(
-        diffs
-            .iter()
-            .all(|entry| matches!(entry.change, sekai_core::NbtChange::Added(_)))
-    );
+    assert!(!diffs.is_empty());
 
     // S3: entities chunk vanishes again.
     std::fs::remove_file(&entities).unwrap();
@@ -1344,15 +1540,10 @@ async fn created_and_deleted_chunks_diff_as_added_removed() {
         .unwrap();
     let commits = instance.list_commits().await.unwrap();
     let diffs = instance
-        .diff_chunk(commits[1].id, commits[2].id, &coord, None)
+        .diff_chunk(commits[1].id, commits[2].id, &coord)
         .await
         .unwrap();
-    assert_ne!(diffs, [] as [sekai_app::NbtDiffEntry; 0]);
-    assert!(
-        diffs
-            .iter()
-            .all(|entry| matches!(entry.change, sekai_core::NbtChange::Removed(_)))
-    );
+    assert!(!diffs.is_empty());
 }
 
 #[tokio::test]
@@ -1387,11 +1578,10 @@ async fn all_kinds_round_trip() {
         let commits = instance.list_commits().await.unwrap();
 
         let diffs = instance
-            .diff_chunk(commits[0].id, commits[1].id, &coord, None)
+            .diff_chunk(commits[0].id, commits[1].id, &coord)
             .await
             .unwrap();
-        assert_eq!(diffs.len(), 1, "kind {}", kind_dir(kind));
-        assert_eq!(diffs[0].path, "Status");
+        assert!(!diffs.is_empty(), "kind {}", kind_dir(kind));
 
         let (checked_out, _) = instance
             .world_mut(&mut world)
@@ -1520,7 +1710,7 @@ async fn real_world_corpus_round_trip() {
             .collect::<Vec<_>>();
         assert!(!coords.is_empty(), "kind {kind:?} has chunks");
         let (diffs, _) = instance
-            .diff_chunks(commits[0].id, commits[0].id, &coords, None, |_| {})
+            .diff_chunks(commits[0].id, commits[0].id, &coords, |_| {})
             .await
             .unwrap();
         assert!(diffs.iter().all(|diff| diff.entries.is_empty()));

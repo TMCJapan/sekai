@@ -2,7 +2,7 @@
 
 use std::fmt::Display;
 
-use sekai_core::RegionKey;
+use sekai_core::{ChunkCoord, RegionKey};
 
 /// Failure for a world tree that reports one region identity twice.
 pub(crate) fn duplicate_region(
@@ -49,6 +49,33 @@ pub enum AppError {
     /// NBT parsing or diff operation failed.
     #[error(transparent)]
     Nbt(#[from] sekai_nbt::NbtError),
+    /// Chunk NBT failed to parse, with its coordinates attached for
+    /// diagnosis.
+    #[error("failed to parse chunk {coord} (region r.{rx}.{rz}.mca): {source}")]
+    ChunkNbt {
+        /// Chunk whose payload could not be parsed.
+        coord: ChunkCoord,
+        /// Region X of the owning region file.
+        rx: i32,
+        /// Region Z of the owning region file.
+        rz: i32,
+        /// Underlying parse failure.
+        #[source]
+        source: sekai_nbt::NbtError,
+    },
+    /// A legacy (`Level`-wrapped) chunk ended before its compound closed,
+    /// with its coordinates attached for diagnosis.
+    #[error(
+        "chunk {coord} in region r.{rx}.{rz}.mca is truncated: its legacy `Level` compound ends early (the payload is incomplete, not a format mismatch)"
+    )]
+    TruncatedLegacyChunk {
+        /// Chunk whose payload is cut short.
+        coord: ChunkCoord,
+        /// Region X of the owning region file.
+        rx: i32,
+        /// Region Z of the owning region file.
+        rz: i32,
+    },
     /// Commit-graph operation failed.
     #[error("{0}")]
     Commit(sekai_core::CommitError<sekai_storage::StorageError>),

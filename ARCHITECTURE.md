@@ -183,6 +183,31 @@ raw NBT bytes and parses them with a hand-rolled `no_std` parser (no
 unsupported codecs surface only when the raw NBT view is derived for
 diffing, never as ingest failures.
 
+### Chunk NBT formats
+
+`sekai-nbt::parse` accepts both on-disk shapes and returns a `Chunk`:
+
+- **Modern** (1.13+): fields at the root, palette `sections`,
+  `Heightmaps`, `Status`.
+- **Legacy** (pre-1.13): fields inside a `Level` compound,
+  per-section `Blocks`/`Add`/`Data`/`Data2` byte arrays (kept verbatim as
+  owned copies, not expanded into a palette), a 16-bit `HeightMap`, and
+  `TerrainPopulated` mapped onto the modern `Status` vocabulary
+  (`minecraft:full` / `legacy:empty` / `legacy:missing`). `DataVersion`
+  is read from the root when `Level` lacks it (1.9+ writes it there).
+  Decoding uses the `nanonbt` derives with `#[nbt(default)]`, because
+  pre-1.9 files omit most keys; fields that own their data are required
+  for that attribute, which is why the arrays are owned rather than
+  borrowed.
+
+The 1.13+ schema is decoded first; the legacy `Level` wrapper is tried
+only when that read fails, so the common path pays nothing and the rare
+case pays one failed pass. Each format hashes through its own normalized
+view; the legacy view writes keys the modern one never does, so converting
+a chunk is reported as a change rather than silently comparing equal. A
+`Level` body that ends early reports `TRUNCATED_LEVEL`, which `sekai-app`
+surfaces as a diagnostic naming the chunk and region file.
+
 ### Decompression plan (`anvil::decompress_into`)
 
 - Type `3` (raw): copy body after the type byte.

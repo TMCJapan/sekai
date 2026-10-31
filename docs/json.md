@@ -189,13 +189,12 @@ resolved numeric ID.
 
 ### `diff`
 
-Single chunk (one `--in DIM:x,z` selection):
+Single chunk (one `--in DIM:x,z` selection), or any selection with
+changes, emits the chunk coordinates that differ (no per-tag entries):
 
 ```jsonc
 [
-  {"path": "Status", "type": "modified", "old": "\"full\"", "new": "\"empty\""},
-  {"path": "xPos", "type": "added", "val": "3"},
-  {"path": "old_tag", "type": "removed", "val": "1b"}
+  {"coord": {"dim": 0, "kind": 0, "x": 1, "z": 2}}
 ]
 ```
 
@@ -212,15 +211,9 @@ size cap: a huge rectangle enumerates every chunk inside it.
 ]
 ```
 
-`type` is `added` (`val`), `removed` (`val`), or `modified`
-(`old`+`new`). Values are SNBT strings, always complete (human
-`--show-values` truncation does not apply here). `coord` uses raw
-integer `dim`/`kind` codes.
-
-A chunk absent (or tombstoned) on a side diffs as an empty compound
-there: absent on both sides yields no entries, present on one side
-reports whole-value `added`/`removed` entries for every leaf. Missing
-coordinates are never errors (sparse `entities`/`poi` diff empty);
+`coord` uses raw integer `dim`/`kind` codes. The list contains
+only chunks with differences: absent on both sides yields nothing, so
+missing coordinates never error (sparse `entities`/`poi` diff empty);
 only corrupt payloads and missing blobs fail loudly.
 
 With `--timing` the array moves under `diffs` and the timing block is
@@ -228,7 +221,7 @@ appended (single and grouped alike):
 
 ```jsonc
 {
-  "diffs": [{"path": "xPos", "type": "added", "val": "3"}],
+  "diffs": [{"coord": {"dim": 0, "kind": 0, "x": 1, "z": 2}}],
   "total_ms": 12,
   "phases": {"blob_fetch_ms": 5, "decompress_ms": 4, "diff_compute_ms": 2}
 }

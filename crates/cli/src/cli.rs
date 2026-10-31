@@ -385,8 +385,8 @@ pub struct DiffArgs {
     /// defaults to the active ref's target). Commit-vs-commit only.
     #[arg(conflicts_with = "world")]
     pub new_commit: Option<CommitRef>,
-    /// Chunks to compare (default: whole world). One chunk keeps the
-    /// legacy single-chunk output; several switch to grouped output.
+    /// Chunks to compare (default: whole world). Only chunks with
+    /// differences are reported.
     #[command(flatten)]
     pub selection: Selection,
     /// Human or JSON rendering plus optional phase timings.
@@ -396,7 +396,8 @@ pub struct DiffArgs {
     /// silent without a stderr TTY.
     #[arg(long, conflicts_with = "json")]
     pub progress: bool,
-    /// Show concrete old/new values in human output (SNBT format).
+    /// Accepted for compatibility; the chunk diff carries normalized
+    /// hashes, not per-tag values, so this flag has no effect.
     #[arg(long)]
     pub show_values: bool,
 }

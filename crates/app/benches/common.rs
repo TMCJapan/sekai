@@ -83,21 +83,27 @@ pub const MEDIUM: WorldSpec = WorldSpec {
 };
 
 fn chunk_nbt(rng: &mut Rng, spec: &WorldSpec, x: i32, z: i32) -> Vec<u8> {
-    let mut body = vec![0u8; spec.payload_bytes];
-    rng.fill(&mut body, spec.compressible_permille);
-    let mut nbt = vec![10, 0, 0];
-    nbt.extend_from_slice(b"\x08\x00\x06Status");
-    let status = b"minecraft:full";
-    nbt.extend_from_slice(&u16::try_from(status.len()).unwrap().to_be_bytes());
-    nbt.extend_from_slice(status);
-    nbt.extend_from_slice(b"\x04\x00\x04Data");
-    nbt.extend_from_slice(&(x).to_be_bytes());
-    nbt.extend_from_slice(&(z).to_be_bytes());
-    nbt.extend_from_slice(b"\x07\x00\x07Payload");
-    nbt.extend_from_slice(&i32::try_from(body.len()).unwrap().to_be_bytes());
-    nbt.extend_from_slice(&body);
-    nbt.push(0);
-    nbt
+    let mut block_lights = vec![0u8; spec.payload_bytes];
+    rng.fill(&mut block_lights, spec.compressible_permille);
+    let chunk = sekai_nbt::ChunkPayload {
+        data_version: 3_465,
+        x_pos: x,
+        y_pos: 0,
+        z_pos: z,
+        inhabited_time: 0,
+        last_update: 0,
+        sections: vec![sekai_nbt::Section {
+            y: 0,
+            block_lights: &block_lights,
+            ..sekai_nbt::Section::default()
+        }],
+        heightmaps: sekai_nbt::Heightmaps::default(),
+        status: &sekai_nbt::nanonbt::Cesu8::from_str("minecraft:full"),
+        block_entities: vec![],
+        block_ticks: vec![],
+        fluid_ticks: vec![],
+    };
+    sekai_nbt::nanonbt::to_bytes(&chunk).expect("chunk serializes")
 }
 
 /// Generate `spec` into `world/region/` (overworld only).
