@@ -6,7 +6,6 @@ use sekai_core::{
     BlobStore as _, ChunkCoord, ChunkHash, ChunkHistoryEntry, CommitEntry, Dimension,
     MetaStore as _, RegionKind, usecase::checkout::plan_checkout,
 };
-use sekai_storage::SekaiStore;
 use sekai_storage_sqlite::{init_sqlite, open_sqlite};
 use std::path::Path;
 

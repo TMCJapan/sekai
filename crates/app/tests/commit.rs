@@ -8,7 +8,7 @@ mod fixtures;
 
 use fixtures::chunk_nbt;
 
-use sekai_app::{CommitId, CommitOptions, RegionKind, Scope, SekaiStore};
+use sekai_app::{CommitId, CommitOptions, RegionKind, Scope};
 use sekai_app::{HostWorldTree, WorldTree};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

@@ -14,8 +14,8 @@ use fixtures::chunk_nbt;
 
 use sekai_app::{
     CheckoutOptions, ChunkHash, CloneOptions, CommitId, CommitOptions, Dimension, HostWorldTree,
-    Rect, RefName, Scope, ScopeName, SekaiInstance, SekaiStore, StatusOptions, WorldError,
-    WorldLockMode, WorldTree,
+    Rect, RefName, Scope, ScopeName, SekaiInstance, StatusOptions, WorldError, WorldLockMode,
+    WorldTree,
 };
 use sekai_core::MetaStore as _;
 use sekai_storage_sqlite::SqliteStore;
