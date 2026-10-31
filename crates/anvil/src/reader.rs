@@ -48,6 +48,14 @@ impl RegionImage {
         &self.bytes
     }
 
+    /// Iterates the present chunks in table order.
+    ///
+    /// Each item is `Result<Chunk, AnvilError>`. Rust requires this inherent
+    /// method next to the [`IntoIterator`] impl; prefer `for chunk in &image`.
+    pub fn iter(&self) -> RegionImageIter<'_> {
+        self.into_iter()
+    }
+
     /// Visits all present chunks in table order.
     ///
     /// Returning `false` stops iteration.
@@ -55,39 +63,10 @@ impl RegionImage {
     where
         F: FnMut(Chunk<'_>) -> bool,
     {
-        if self.bytes.is_empty() {
-            return Ok(());
-        }
-
-        let file_len = self.bytes.len() as u64;
-
-        for index in 0..TABLE_ENTRIES {
-            let (offset, count) = self.entry(index)?;
-
-            if offset == 0 && count == 0 {
-                continue;
-            }
-
-            if offset < FIRST_DATA_SECTOR || count == 0 {
-                return Err(Self::corrupt_entry(index, offset, count));
-            }
-
-            // The run must at least start inside the file. Trailing partial
-            // sectors are tolerated (vanilla opens such files); exact byte
-            // bounds are validated when slicing the payload below.
-            let start = offset
-                .checked_mul(SECTOR_LEN)
-                .ok_or_else(|| Self::corrupt_entry(index, offset, count))?;
-
-            if start >= file_len {
-                return Err(Self::corrupt_entry(index, offset, count));
-            }
-
-            let payload = self.sector_payload(index, offset, count)?;
-
-            let (x, z) = self.loc.coord_at(index);
-
-            if !visit(Chunk { x, z, payload }) {
+        for item in self {
+            // The error is terminal: stop at the first corrupt entry instead
+            // of walking the rest of the table.
+            if !visit(item?) {
                 break;
             }
         }
@@ -95,12 +74,45 @@ impl RegionImage {
         Ok(())
     }
 
+    /// Returns the stored payload of the chunk in table slot `index`.
+    ///
+    /// An empty slot yields `Ok(None)`; a corrupt one yields the error the
+    /// location-table walk reports.
+    fn chunk_at(&self, index: u32) -> Result<Option<Chunk<'_>>, AnvilError> {
+        let (offset, count) = self.entry(index)?;
+
+        if offset == 0 && count == 0 {
+            return Ok(None);
+        }
+
+        if offset < FIRST_DATA_SECTOR || count == 0 {
+            return Err(Self::corrupt_entry(index, offset, count));
+        }
+
+        // The run must at least start inside the file. Trailing partial
+        // sectors are tolerated (vanilla opens such files); exact byte
+        // bounds are validated when slicing the payload below.
+        let start = offset
+            .checked_mul(SECTOR_LEN)
+            .ok_or_else(|| Self::corrupt_entry(index, offset, count))?;
+
+        if start >= self.bytes.len() as u64 {
+            return Err(Self::corrupt_entry(index, offset, count));
+        }
+
+        let payload = self.sector_payload(index, offset, count)?;
+
+        let (x, z) = self.loc.coord_at(index);
+
+        Ok(Some(Chunk { x, z, payload }))
+    }
+
     /// Returns the stored raw payload for a single chunk at global coordinates `(x, z)`.
     ///
     /// Returns `Ok(None)` if the chunk coordinate is outside this region or if the
     /// chunk has not been generated (is empty).
     pub fn chunk_payload(&self, x: i32, z: i32) -> Result<Option<&[u8]>, AnvilError> {
-        // A zero-length image is the empty region `visit_chunks` reports, not
+        // A zero-length image is the empty region the iterator reports, not
         // a corrupt location table.
         if self.bytes.is_empty() {
             return Ok(None);
@@ -184,6 +196,78 @@ impl RegionImage {
         self.bytes
             .get(start..end)
             .ok_or(AnvilError::CorruptChunk { index, len })
+    }
+}
+
+/// Yields the present chunks of a [`RegionImage`] in table order.
+///
+/// Yields `Result<Chunk, AnvilError>`: a corrupt location-table entry ends
+/// the iteration by yielding its error, then the iterator is fused and
+/// yields `None` from then on.
+///
+/// [`core::iter::FusedIterator`] holds because `next` never consults the
+/// image again once the table is walked or an error surfaced.
+#[derive(Debug, Clone)]
+pub struct RegionImageIter<'this> {
+    inner: &'this RegionImage,
+    next_index: u32,
+    done: bool,
+}
+
+impl<'this> Iterator for RegionImageIter<'this> {
+    type Item = Result<Chunk<'this>, AnvilError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+
+        // A zero-length image is the empty region, not a truncated table.
+        if self.inner.bytes.is_empty() {
+            self.done = true;
+            return None;
+        }
+
+        while self.next_index < TABLE_ENTRIES {
+            let index = self.next_index;
+            self.next_index += 1;
+
+            match self.inner.chunk_at(index) {
+                Ok(None) => {}
+                Ok(Some(chunk)) => return Some(Ok(chunk)),
+                Err(err) => {
+                    self.done = true;
+                    return Some(Err(err));
+                }
+            }
+        }
+
+        self.done = true;
+        None
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = if self.done || self.inner.bytes.is_empty() {
+            0
+        } else {
+            usize::try_from(TABLE_ENTRIES.saturating_sub(self.next_index)).unwrap_or(usize::MAX)
+        };
+        (0, Some(remaining))
+    }
+}
+
+impl core::iter::FusedIterator for RegionImageIter<'_> {}
+
+impl<'this> IntoIterator for &'this RegionImage {
+    type IntoIter = RegionImageIter<'this>;
+    type Item = Result<Chunk<'this>, AnvilError>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        RegionImageIter {
+            inner: self,
+            next_index: 0,
+            done: false,
+        }
     }
 }
 
@@ -275,6 +359,70 @@ mod tests {
         assert_eq!(seen[0].0, -29);
         assert_eq!(seen[0].1, 5);
         assert_eq!(seen[0].2, [&[2u8] as &[_], b"nbt!"].concat());
+    }
+
+    /// Two present chunks in slots 0 and 1, payloads `a` and `b`.
+    fn two_chunk_image() -> Vec<u8> {
+        let mut image = header_only();
+
+        image.extend_from_slice(&[0; 8192]);
+
+        image[0..4].copy_from_slice(&entry_of(2, 1));
+        image[4..8].copy_from_slice(&entry_of(3, 1));
+
+        for (sector, payload) in [(8192, b"a"), (12288, b"b")] {
+            image[sector..sector + 4].copy_from_slice(&2u32.to_be_bytes());
+            image[sector + 4] = 3;
+            image[sector + 5] = payload[0];
+        }
+
+        image
+    }
+
+    #[test]
+    fn iterator_yields_chunks_in_table_order() {
+        let image = RegionImage::from_bytes(two_chunk_image(), 0, 0).unwrap();
+
+        let seen: Vec<_> = image
+            .into_iter()
+            .map(|chunk| {
+                let chunk = chunk.unwrap();
+                (chunk.x, chunk.z, chunk.payload[1])
+            })
+            .collect();
+
+        assert_eq!(seen, [(0, 0, b'a'), (1, 0, b'b')]);
+    }
+
+    #[test]
+    fn iterator_matches_visitor_for_empty_images() {
+        for bytes in [header_only(), Vec::new()] {
+            let image = RegionImage::from_bytes(bytes, 0, 0).unwrap();
+
+            assert_eq!((&image).into_iter().count(), 0);
+        }
+    }
+
+    #[test]
+    fn iterator_is_fused_after_error() {
+        let mut image = header_only();
+
+        image.extend_from_slice(&[0; 4096]);
+        image[0..4].copy_from_slice(&entry_of(2, 1));
+        image[8192..8196].copy_from_slice(&5000u32.to_be_bytes());
+
+        let image = RegionImage::from_bytes(image, 0, 0).unwrap();
+
+        let mut iter = (&image).into_iter();
+
+        assert!(matches!(
+            iter.next(),
+            Some(Err(AnvilError::CorruptChunk { .. }))
+        ));
+
+        // The error is terminal, not skipped over.
+        assert!(iter.next().is_none());
+        assert!(iter.next().is_none());
     }
 
     #[test]
