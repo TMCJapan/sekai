@@ -18,8 +18,7 @@ use sqlx::sqlite::{
 };
 
 use sekai_storage::{
-    BackendKind, FileCas, SekaiStoreOpener, StorageError, Store, StoreLockMode, io_error,
-    parse_backend_url,
+    BackendKind, FileCas, SekaiStoreOpener, StorageError, Store, io_error, parse_backend_url,
 };
 
 /// Managed schema version (`PRAGMA user_version`).
@@ -81,7 +80,6 @@ impl SqliteStore {
 impl sekai_storage::SekaiStore for SqliteStore {
     type Meta = SqliteMeta;
     type Blobs = FileCas;
-    type LockGuard = sekai_storage::StoreLock;
 
     fn meta(&self) -> &Self::Meta {
         Self::meta(self)
@@ -102,19 +100,14 @@ impl sekai_storage::SekaiStore for SqliteStore {
     fn cas_and_meta(&mut self) -> (&mut Self::Blobs, &Self::Meta) {
         Self::cas_and_meta(self)
     }
-
-    fn lock(&self, mode: StoreLockMode) -> Result<Self::LockGuard, StorageError> {
-        self.inner.lock(mode)
-    }
 }
 
 /// Initialize the store rooted at `root`, creating it when missing.
 ///
 /// The layout is `<root>/meta.sqlite` plus `<root>/blobs/`; initializing an
 /// existing store again is idempotent. This is the only path that
-/// materializes a store, reserved for first-time store creation. It takes no
-/// store lock:
-/// schema creation serializes inside SQLite (see [`SqliteMeta::open`]), so
+/// materializes a store, reserved for first-time store creation. Schema
+/// creation serializes inside SQLite (see [`SqliteMeta::open`]), so
 /// concurrent first initializations all succeed.
 pub async fn init_sqlite(root: impl AsRef<Path>) -> Result<SqliteStore, StorageError> {
     std::fs::create_dir_all(root.as_ref()).map_err(|source| io_error(root.as_ref(), source))?;

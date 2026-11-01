@@ -17,11 +17,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use sekai_core::{BlobHash, CheckoutReport, ChunkCoord, CommitId, RegionKey, Scope};
-use sekai_storage::{BlockingBlobStore, SekaiStore, StoreLockMode};
-use sekai_world::{Region, RegionFile, WorldLockMode, WorldTree};
+use sekai_storage::{SekaiStore, StorageError};
+use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
 
 use crate::error::AppError;
-use crate::instance::{OperationLocks, WorldHandleMut};
+use crate::instance::{ExclusiveWorldGuard, WorldHandleMut};
 use crate::regions::discover_regions;
 
 /// Per-phase timings for checkout execution.
@@ -101,8 +101,8 @@ where
     ///
     /// Only `scope` is rebuilt: region files outside the scope are never
     /// written, deleted, or otherwise touched. `progress` fires as files
-    /// complete; it must be `'static` because the file pass runs on a
-    /// blocking pool (pass a `move` closure owning its state).
+    /// complete, always on the async side: a callback that works straight
+    /// on the future's own state must be safe to run there.
     ///
     /// Rebuilding writes (and may delete) region files, so it goes through
     /// `&mut self`: only one write session per world can exist at a time.
@@ -111,14 +111,12 @@ where
         commit: CommitId,
         options: CheckoutOptions,
         scope: Scope,
-        progress: impl Fn(CheckoutProgress) + Send + 'static,
+        progress: impl FnMut(CheckoutProgress),
     ) -> Result<(CheckoutReport, CheckoutTimings), AppError> {
-        let locks = OperationLocks::acquire(
-            self.instance,
-            StoreLockMode::Shared,
+        let guard = Arc::new(ExclusiveWorldGuard::acquire(
             self.world,
             WorldLockMode::Exclusive,
-        )?;
+        )?);
         let store = &self.instance.store;
         let world = &*self.world;
         let total_started = Instant::now();
@@ -132,40 +130,39 @@ where
 
         let timestamp = u32::try_from(plan.created_at_ms / 1000).unwrap_or(u32::MAX);
 
-        // Scope before the blocking pass: out-of-scope regions are dropped
-        // from both sides, so the file pass below cannot tell they exist.
+        // Scope before the file passes: out-of-scope regions are dropped
+        // from both sides, so the passes below cannot tell they exist.
         let mut groups = plan.groups;
         groups.retain(|key, _| scope.matches_region(*key));
         let mut tombstones = plan.tombstones;
         tombstones.retain(|key, _| scope.matches_region(*key));
 
         // Discovery walks the filesystem: clone the handle and run it on
-        // the blocking pool, owning a share of the locks like every
-        // blocking pass.
+        // the blocking pool, owning a share of the world lock like every
+        // file pass.
         let discover_started = Instant::now();
         let world_handle = world.clone();
-        let discovery_locks = Arc::clone(&locks);
+        let discovery_guard = Arc::clone(&guard);
         let mut discovered = tokio::task::spawn_blocking(move || {
-            let _locks = discovery_locks;
+            let _guard = discovery_guard;
             discover_regions(&world_handle)
         })
         .await??;
         let discover_dt = discover_started.elapsed();
         discovered.retain(|key, _| scope.matches_region(*key));
 
-        let job = CheckoutJob {
+        let job: CheckoutJob<S, W> = CheckoutJob {
             groups,
             tombstones,
             options,
             cas: store.cas().clone(),
             world: world.clone(),
             discovered,
-            _locks: locks,
+            guard,
         };
 
         let files_started = Instant::now();
-        let report =
-            tokio::task::spawn_blocking(move || checkout_files(job, timestamp, progress)).await??;
+        let report = checkout_file_pass(job, timestamp, progress).await?;
         let files_dt = files_started.elapsed();
 
         let timings = CheckoutTimings {
@@ -179,7 +176,7 @@ where
     }
 }
 
-/// Everything one checkout file pass needs, owned for the blocking task.
+/// Everything one checkout file pass needs.
 struct CheckoutJob<S: SekaiStore, T: WorldTree> {
     groups: BTreeMap<RegionKey, Vec<(ChunkCoord, BlobHash)>>,
     tombstones: BTreeMap<RegionKey, Vec<ChunkCoord>>,
@@ -187,19 +184,22 @@ struct CheckoutJob<S: SekaiStore, T: WorldTree> {
     cas: S::Blobs,
     world: T,
     discovered: BTreeMap<RegionKey, T::Region>,
-    /// Owned by the file pass: it keeps writing after a cancelled future
-    /// is dropped, and must keep the world locked until it stops.
-    _locks: Arc<OperationLocks<S, T::Lock>>,
+    /// Travels into every blocking step: the world stays locked for as long
+    /// as *any* of them still runs, even after the future is cancelled.
+    guard: Arc<ExclusiveWorldGuard<T::Lock>>,
 }
 
 /// Rebuild every region file: present rows from CAS blobs, tombstones and
 /// post-commit files deleted unless kept by [`CheckoutOptions`].
-/// Blocking: file reads, writes, and swaps belong on a blocking pool,
-/// never on an async worker.
-fn checkout_files<S: SekaiStore, T: WorldTree>(
+///
+/// Blob fetches are async; `progress` fires between files on the async side.
+/// Each file's build and write runs on the blocking pool, never on an async
+/// worker, and reports completion through [`Completion`] so a parked
+/// `progress` callback does not also hold a blocking thread.
+async fn checkout_file_pass<S: SekaiStore, T: WorldTree>(
     job: CheckoutJob<S, T>,
     timestamp: u32,
-    progress: impl Fn(CheckoutProgress),
+    mut progress: impl FnMut(CheckoutProgress),
 ) -> Result<CheckoutReport, AppError>
 where
     AppError: From<T::Error>,
@@ -211,11 +211,12 @@ where
         cas,
         world,
         discovered,
-        _locks,
+        guard,
     } = job;
-    let mut keys: BTreeSet<RegionKey> = discovered.keys().copied().collect();
-    keys.extend(groups.keys().copied());
-    keys.extend(tombstones.keys().copied());
+    let mut key_set: BTreeSet<RegionKey> = discovered.keys().copied().collect();
+    key_set.extend(groups.keys().copied());
+    key_set.extend(tombstones.keys().copied());
+    let keys: Vec<RegionKey> = key_set.into_iter().collect();
 
     let mut report = CheckoutReport {
         files_written: 0,
@@ -223,25 +224,26 @@ where
         chunks_restored: 0,
     };
     let files_total = keys.len();
+    // Counts files as they finish: `done` reads it, so each report carries
+    // the file it concludes rather than a running total.
     let mut files_done = 0usize;
-    let mut progressed = |report: &CheckoutReport| {
+    let mut blob_buf = Vec::new();
+    #[allow(clippy::explicit_counter_loop)]
+    for key in keys {
         files_done += 1;
-        progress(CheckoutProgress {
+        let done = |chunks_done| CheckoutProgress {
             files_done,
             files_total,
-            chunks_done: report.chunks_restored,
-        });
-    };
-    let mut blob_buf = Vec::new();
-    for key in keys {
+            chunks_done,
+        };
         let rows = groups.get(&key);
         let tombs = tombstones.get(&key);
         let region = match discovered.get(&key) {
             Some(region) => region.clone(),
             None => match rows {
+                // No rows and no file: nothing to do.
                 None => {
-                    // No rows and no file: nothing to do.
-                    progressed(&report);
+                    progress(done(report.chunks_restored));
                     continue;
                 }
                 Some(_) => resolve_target(&discovered, &world, &key, options.on_missing_file)?,
@@ -256,55 +258,108 @@ where
             } else {
                 options.keep_post_commit_files
             };
-            if !keep && region.exists() {
-                region.remove()?;
-                report.files_deleted += 1;
-            }
-            progressed(&report);
+            let step = Step::start(Arc::clone(&guard), move |reported| {
+                let deleted = !keep && region.exists();
+                if deleted {
+                    region.remove()?;
+                }
+                let _ = reported.send(deleted);
+                Ok::<_, AppError>(())
+            });
+            report.files_deleted += usize::from(step.outcome().await?);
+            progress(done(report.chunks_restored));
             continue;
         };
         let mut writer = sekai_anvil::RegionBuilder::new(key.rx, key.rz, timestamp)?;
         let mut restored: BTreeSet<(i32, i32)> = BTreeSet::new();
         for (coord, hash) in rows {
-            if !fetch_or_skip(&cas, hash, options.on_missing_blob, &mut blob_buf)? {
+            if !fetch_or_skip(&cas, hash, options.on_missing_blob, &mut blob_buf).await? {
                 continue;
             }
             writer.stage_chunk(coord.x, coord.z, &blob_buf)?;
             restored.insert((coord.x, coord.z));
             report.chunks_restored += 1;
         }
-        if options.keep_post_commit_chunks || options.keep_tombstoned_chunks {
-            merge_live_chunks(
-                &region,
-                key,
-                &restored,
-                tombs.map(Vec::as_slice),
-                options,
-                &mut writer,
-            )?;
-        }
-        region.write(&writer.image()?)?;
+        let keep_live = options.keep_post_commit_chunks || options.keep_tombstoned_chunks;
+        let to_merge = tombs.cloned();
+        let step = Step::start(Arc::clone(&guard), move |reported| {
+            if keep_live {
+                merge_live_chunks(
+                    &region,
+                    key,
+                    &restored,
+                    to_merge.as_deref(),
+                    options,
+                    &mut writer,
+                )?;
+            }
+            region.write(&writer.image()?)?;
+            let _ = reported.send(());
+            Ok::<_, AppError>(())
+        });
+        step.outcome().await?;
         report.files_written += 1;
-        progressed(&report);
+        progress(done(report.chunks_restored));
     }
     Ok(report)
+}
+
+/// One blocking file step and the result it reports.
+///
+/// The step owns a share of the world lock, so the lock outlives the future
+/// that started it. Completion travels over a oneshot instead of the join
+/// handle: a `progress` callback parked on the async side would otherwise
+/// keep a blocking thread busy while the step is already done, and a
+/// cancelled future must still see the lock released.
+struct Step<R, T> {
+    finished: tokio::task::JoinHandle<Result<T, AppError>>,
+    reported: tokio::sync::oneshot::Receiver<R>,
+}
+
+impl<R: Send + 'static, T: Send + 'static> Step<R, T> {
+    /// Run `work` on the blocking pool, holding the world for its duration.
+    ///
+    /// `work` sends its result through the oneshot, then returns.
+    fn start<L>(
+        guard: Arc<ExclusiveWorldGuard<L>>,
+        work: impl FnOnce(tokio::sync::oneshot::Sender<R>) -> Result<T, AppError> + Send + 'static,
+    ) -> Self
+    where
+        L: WorldLock + Send + 'static,
+    {
+        let (sender, reported) = tokio::sync::oneshot::channel();
+        let finished = tokio::task::spawn_blocking(move || {
+            let _guard = guard;
+            work(sender)
+        });
+        Self { finished, reported }
+    }
+
+    /// Wait for the step to end, then take its result.
+    async fn outcome(self) -> Result<R, AppError> {
+        self.finished.await??;
+        self.reported.await.map_err(|_| {
+            AppError::Storage(StorageError::backend(
+                "checkout worker",
+                std::io::Error::other("the file step stopped before reporting"),
+            ))
+        })
+    }
 }
 
 /// Fetch one blob into `out`, honoring `policy` when CAS has no such blob.
 ///
 /// `false` means the chunk must be skipped; under
 /// [`MissingBlobPolicy::Abort`] a missing blob is corruption and propagates.
-pub(super) fn fetch_or_skip<C: BlockingBlobStore>(
+pub(super) async fn fetch_or_skip<C: sekai_core::BlobStore<Error = StorageError>>(
     cas: &C,
     hash: &BlobHash,
     policy: MissingBlobPolicy,
     out: &mut Vec<u8>,
 ) -> Result<bool, AppError> {
-    match cas.fetch_blob(hash, out) {
+    match sekai_core::BlobStore::fetch_into(cas, hash, out).await {
         Ok(()) => Ok(true),
-        Err(sekai_storage::StorageError::BlobMissing { .. })
-            if policy == MissingBlobPolicy::SkipChunk =>
-        {
+        Err(StorageError::BlobMissing { .. }) if policy == MissingBlobPolicy::SkipChunk => {
             Ok(false)
         }
         Err(source) => Err(source.into()),

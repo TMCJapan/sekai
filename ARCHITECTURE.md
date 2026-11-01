@@ -46,7 +46,7 @@ sekai-util (no_std, zero-dependency: coordinates, hashes, history value
 | `sekai-anvil` | `no_std` + `alloc` | no | Pure Anvil sector codec including decompression. `&[u8]` sector payload in, raw NBT bytes out; also builds `Vec<u8>` images. Compression framing is MCA spec knowledge, so it lives here. No `Path`, no `fs`. Names custom dimensions with util `Dimension`. |
 | `sekai-nbt` | `no_std` + `alloc` | no | Pure `raw NBT bytes -> diff view`. Hand-rolled NBT parser (no `Serialize` by design; output uses SNBT), tag filtering, canonical digest returning util `DiffHash`. Never sees compression. |
 | `sekai-core` | `no_std` + `alloc` | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_checkout`, `gc plan`/`apply`) plus composition helpers (`hash_blob`, storage ports). Composes `anvil`/`nbt` over util types and re-exports them, so downstream paths stay stable. |
-| `sekai-storage` | `std` + tokio | yes (RPITIT) | Backend-neutral boundaries: async `BlobStore`/`MetaStore` traits (owned by `core::port`, re-exported from the `api` module), high-level `SekaiStore`/`SekaiStoreOpener`/`BlockingBlobStore` traits, file CAS (`cas` module, `blobs/ab/cdef...` retained by design), store locks, and URL-based backend selection. Depends on `core`. |
+| `sekai-storage` | `std` + tokio | yes (RPITIT) | Backend-neutral boundaries: async `BlobStore`/`MetaStore` traits (owned by `core::port`, re-exported from the `api` module), high-level `SekaiStore`/`SekaiStoreOpener` traits, file CAS (`cas` module, `blobs/ab/cdef...` retained by design), and URL-based backend selection. Depends on `core`. |
 | `sekai-storage-sqlite` | `std` + tokio | yes | Concrete SQLite implementation over sqlx: `SqliteMeta` plus the SQLite-backed `SqliteStore`, schema/version gate, and opener. Implements the traits from `sekai-storage` (and `core::port`). Other backends become sibling crates without touching `core`/`app`. |
 | `sekai-world` | `std` | yes (I/O) / sync pure helpers where trivial | World access boundary: the `WorldTree` trait, the `RegionFile` handle, and the filesystem tree (`HostWorldTree`). |
 | `sekai-app` | `std` + tokio | yes | Composition/orchestration library for third parties: parallel ingest, clocks, timing, progress callbacks. |
@@ -370,9 +370,10 @@ The scope is a filter, not a partition:
 - `sekai-storage` owns the backend-neutral boundaries. The async
   `BlobStore`/`MetaStore` traits (RPITIT, `Send` bounds for tokio) still
   come from `core::port` and are re-exported from storage's `api` module.
-  Storage adds the high-level `SekaiStore` (metadata + blobs + the store
-  lock), `SekaiStoreOpener` (URL selection), and `BlockingBlobStore` (the
-  synchronous blob operations used by commit ingest workers).
+  Storage adds the high-level `SekaiStore` (metadata + blobs) and
+  `SekaiStoreOpener` (URL selection). Blob adapters are async only and
+  `Clone`: the CAS is append-only, so ingest workers share it without
+  exclusion and a cancelled future cannot strand a blob lock.
 - `sekai-storage-sqlite` is the concrete sqlx backend. It owns `SqliteMeta`,
   `SqliteStore`, the schema, and the version gate, and implements the
   storage/core traits. Removing sqlx from `sekai-storage` keeps the
@@ -404,12 +405,16 @@ cannot open one and says so at compile time.
 
 ## Store Exclusion
 
-`SekaiStore::lock` hands out the store-wide exclusion lock that ADR-0014
-assigns per operation. The lock lives in the store root, so it excludes
-operations against the same store on the same host; a remote backend needs
-its own mechanism (ADR-0014). The guard is `Send + Sync` because an
-operation shares it into the blocking tasks that touch files, so a
-cancelled future cannot release the store while those tasks still run.
+Operations never lock the store. Blobs are content-addressed and
+immutable, so a `put` of an existing hash is a no-op and no interleaving
+of writes needs exclusion; `gc` keeps to its own run marker (ADR-0011).
+Metadata conflicts resolve transactionally at commit time, and content-
+addressed commit IDs keep concurrent backups from colliding.
+
+Only the world excludes, through `WorldTree::lock` (ADR-0014). A
+blocking file pass owns its share of that lock *inside* the blocking
+task, so a cancelled future cannot release the world while the pass
+still writes files.
 
 ## Schema
 

@@ -1,7 +1,8 @@
-//! Cross-process exclusion: every operation locks the store (and its world)
+//! Cross-process exclusion: every operation that touches a world locks it
 //! for its own duration. A second handle in the same process conflicts
 //! exactly like another process would, so held locks stand in for
-//! concurrent runs here.
+//! concurrent runs here. The store itself never locks: its blobs are
+//! append-only and its metadata resolves conflicts at commit time.
 //!
 //! Requires the `backend-sqlite` feature.
 
@@ -14,14 +15,11 @@ use sekai_app::{
 };
 use sekai_core::MetaStore as _;
 use sekai_nbt::nanonbt::Cesu8;
-use sekai_storage::{StorageError, StoreLockMode};
 use sekai_storage_sqlite::SqliteStore;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-
-use StoreLockMode::{Exclusive, Shared, Writer};
 
 /// Distinguishes the clone targets one test creates inside a single root.
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -119,10 +117,6 @@ impl Fixture {
         }
     }
 
-    fn hold_store(&self, mode: StoreLockMode) -> sekai_storage::StoreLock {
-        self.instance.store().cas().lock(mode).unwrap()
-    }
-
     /// A second tree over the same folder, standing in for another process.
     fn other_world(&self) -> HostWorldTree {
         HostWorldTree::new(&self.world_path).unwrap()
@@ -132,8 +126,7 @@ impl Fixture {
 const fn is_lock_error(err: &sekai_app::AppError) -> bool {
     matches!(
         err,
-        sekai_app::AppError::Storage(StorageError::StoreLocked { .. })
-            | sekai_app::AppError::World(WorldError::WorldLocked { .. })
+        sekai_app::AppError::World(WorldError::WorldLocked { .. })
     )
 }
 
@@ -195,35 +188,6 @@ impl Op {
         Self::Checkout,
         Self::WorldChunkCoords,
     ];
-
-    const fn store_mode(self) -> Option<StoreLockMode> {
-        match self {
-            Self::GcPlan
-            | Self::GcApply
-            | Self::Gc
-            | Self::Commit
-            | Self::CreateRef
-            | Self::DeleteRef
-            | Self::CreateScope
-            | Self::DeleteScope => Some(Writer),
-            Self::PruneApply | Self::Prune => Some(Exclusive),
-            Self::WorldChunkCoords => None,
-            Self::ListCommits
-            | Self::LatestCommit
-            | Self::ResolveRef
-            | Self::ListScopes
-            | Self::ResolveScope
-            | Self::CommitStats
-            | Self::CommitCoords
-            | Self::DiffBlobs
-            | Self::DiffChunks
-            | Self::Clone
-            | Self::PrunePlan
-            | Self::Status
-            | Self::DiffWorld
-            | Self::Checkout => Some(Shared),
-        }
-    }
 
     const fn world_mode(self) -> Option<WorldLockMode> {
         match self {
@@ -357,10 +321,6 @@ fn assert_locked_out(blocked: bool, outcome: &Result<(), sekai_app::AppError>, c
     }
 }
 
-const fn store_compatible(held: StoreLockMode, wanted: StoreLockMode) -> bool {
-    matches!((held, wanted), (Shared, Shared | Writer) | (Writer, Shared))
-}
-
 #[tokio::test]
 async fn every_operation_succeeds_with_nothing_held() {
     // The baseline for both matrices: a failure there is a lock decision,
@@ -369,26 +329,6 @@ async fn every_operation_succeeds_with_nothing_held() {
     for op in Op::ALL {
         let outcome = op.run(&mut fx).await;
         assert_locked_out(false, &outcome, &format!("{op:?} with nothing held"));
-    }
-}
-
-#[tokio::test]
-async fn every_operation_takes_its_store_mode() {
-    let mut fx = Fixture::new("store-matrix").await;
-    for held in [Shared, Writer, Exclusive] {
-        let lock = fx.hold_store(held);
-        for op in Op::ALL {
-            let blocked = op
-                .store_mode()
-                .is_some_and(|wanted| !store_compatible(held, wanted));
-            let outcome = op.run(&mut fx).await;
-            assert_locked_out(
-                blocked,
-                &outcome,
-                &format!("{op:?} with the store held {held:?}"),
-            );
-        }
-        drop(lock);
     }
 }
 
@@ -476,10 +416,11 @@ async fn a_cancelled_checkout_keeps_the_world_locked_until_its_files_finish() {
 }
 
 /// A cancelled clone future cannot stop its blocking file pass, so the
-/// pass itself must keep the store locked until it finishes: `prune`
-/// (exclusive) may not delete rows the pass is still reading.
+/// pass itself must finish the files it promised to write: cancellation
+/// abandons the handle, never half-written output. Nothing about the store
+/// is held, so readers keep working while the pass finishes.
 #[tokio::test]
-async fn a_cancelled_clone_keeps_the_store_locked_until_its_files_finish() {
+async fn a_cancelled_clone_still_finishes_its_files() {
     let fx = Fixture::new("cancel-clone").await;
     let (started, files_running) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel::<()>();
@@ -490,36 +431,34 @@ async fn a_cancelled_clone_keeps_the_store_locked_until_its_files_finish() {
         "cloned-{}",
         TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
     )));
-    let clone = fx
-        .instance
-        .clone_to(&out, fx.commit, CloneOptions::default(), Scope::World, {
-            let done = Arc::clone(&files_done);
-            let total = Arc::clone(&files_total);
-            move |update| {
-                done.store(update.files_done, Ordering::Relaxed);
-                total.store(update.files_total, Ordering::Relaxed);
-                let _ = started.send(());
-                // Parks the file pass until the test lets go (the sender drops).
-                let _ = released.recv();
-            }
-        });
+    let mut clone =
+        Box::pin(
+            fx.instance
+                .clone_to(&out, fx.commit, CloneOptions::default(), Scope::World, {
+                    let done = Arc::clone(&files_done);
+                    let total = Arc::clone(&files_total);
+                    move |update| {
+                        done.store(update.files_done, Ordering::Relaxed);
+                        total.store(update.files_total, Ordering::Relaxed);
+                        let _ = started.send(());
+                        // Parks the async half until the test lets go (the sender drops).
+                        let _ = released.recv();
+                    }
+                }),
+        );
     tokio::select! {
-        outcome = clone => panic!("the clone must still be running: {outcome:?}"),
+        outcome = &mut clone => panic!("the clone must still be running: {outcome:?}"),
         started = tokio::task::spawn_blocking(move || files_running.recv()) => {
             assert!(matches!(started, Ok(Ok(()))), "the file pass never started: {started:?}");
         }
     }
-    // The future is gone; its file pass is parked in `progress`, still
-    // holding the store lock.
-    let probe = fx.instance.store().cas().lock(Exclusive);
-    assert!(
-        matches!(&probe, Err(StorageError::StoreLocked { .. })),
-        "the store must stay locked while the clone file pass runs: {probe:?}"
-    );
+    // The future is gone; its blocking passes may still be running.
+    drop(clone);
+    fx.instance.list_commits().await.unwrap();
 
     drop(release);
     // The pass reports the files it writes; the last one means the file
-    // work is done, and the lock goes with it.
+    // work is done.
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let (done, total) = (
@@ -532,27 +471,10 @@ async fn a_cancelled_clone_keeps_the_store_locked_until_its_files_finish() {
         assert!(Instant::now() < deadline, "the file pass never finished");
         std::thread::sleep(Duration::from_millis(20));
     }
-    loop {
-        match fx.instance.store().cas().lock(Exclusive) {
-            Ok(lock) => {
-                drop(lock);
-                break;
-            }
-            Err(err) => {
-                assert!(
-                    matches!(err, StorageError::StoreLocked { .. }),
-                    "the file pass still holds the store: {err}"
-                );
-                assert!(Instant::now() < deadline, "the file pass never released");
-                std::thread::sleep(Duration::from_millis(20));
-            }
-        }
-    }
 }
 
 /// A crashed run - or a pre-lock binary - leaves `commit.inflight` behind.
-/// The store locks carry the exclusion now, so the marker means nothing and
-/// must not block collection.
+/// Nothing reads the marker anymore, so it must not block collection.
 #[tokio::test]
 async fn a_leftover_run_marker_is_ignored() {
     let mut fx = Fixture::new("marker").await;
