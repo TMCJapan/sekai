@@ -12,61 +12,22 @@ pub mod usecase;
 
 pub use port::{BlobStore, MetaStore};
 pub use sekai_util::{
-    ApplyOutcome, Area, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitEntry, CommitId,
-    CommitRef, DEFAULT_REF_NAME, DiffHash, Dimension, FoldOutcome, GcPlan, HexError, NamedScope,
-    NamedScopeError, Rect, RefName, RefNameError, RegionFingerprint, RegionKey, RegionKind, Scope,
-    ScopeName, ScopeNameError, UnknownRegionKind,
+    ApplyOutcome, Area, BlobHash, BytesHasher, ChunkCoord, ChunkHash, ChunkHistoryEntry, Commit,
+    CommitEntry, CommitId, CommitRef, DEFAULT_REF_NAME, Dimension, FoldOutcome, GcPlan, HexError,
+    NamedScope, NamedScopeError, Rect, RefName, RefNameError, RegionFingerprint, RegionKey,
+    RegionKind, Scope, ScopeName, ScopeNameError, UnknownRegionKind, hash_bytes,
 };
 
 pub use usecase::{
     Assembled, CheckoutError, CheckoutPlan, CheckoutReport, CommitError, CommitReport, CommitStats,
     DiffError, GcError, GcReport, Observation, Plan, Previous, PruneError, PrunePlan, PruneReport,
     ResolveError, active_ref, commit_ancestors, commit_history, commit_parents, diff_blobs,
-    diff_blobs_v1, list_refs, list_scopes,
+    list_refs, list_scopes,
 };
 
-pub use sekai_nbt::ChunkPayloadDiff;
-
-/// Compute a volatile diff hash for decompressed chunk NBT.
-pub use sekai_nbt::diff_hash;
-
-/// Compute a diff hash with the V1 normalization rules. Identical to
-/// [`diff_hash`]: the normalized view always excludes the V1 volatile tags
-/// (`InhabitedTime`, `LastUpdate`).
-pub use sekai_nbt::diff_hash_v1;
+pub use sekai_nbt::{ChunkPayloadDiff, chunk_blob_hash, raw_hash};
 
 pub use commit::commit_hash;
-
-/// Hash the exact raw chunk payload into its CAS key.
-pub fn hash_blob(payload: &[u8]) -> BlobHash {
-    BlobHash(*blake3::hash(payload).as_bytes())
-}
-
-/// Compute a diff between two raw decompressed chunk payloads.
-///
-/// Either format (1.13+ or pre-1.13 `Level`) is accepted; the result is a
-/// [`ChunkPayloadDiff`]: `Nothing` when the normalized views match, `Full`
-/// with both normalized hashes otherwise.
-pub fn diff_nbt(
-    old_raw_nbt: &[u8],
-    new_raw_nbt: &[u8],
-) -> Result<ChunkPayloadDiff, sekai_nbt::NbtError> {
-    let old_val = sekai_nbt::parse(old_raw_nbt)?;
-    let new_val = sekai_nbt::parse(new_raw_nbt)?;
-
-    ChunkPayloadDiff::new(&old_val, &new_val)
-}
-
-/// Compute a diff between two raw decompressed chunk payloads using the V1
-/// normalization rules.
-///
-/// Retained for API compatibility: identical to [`diff_nbt`].
-pub fn diff_nbt_v1(
-    old_raw_nbt: &[u8],
-    new_raw_nbt: &[u8],
-) -> Result<ChunkPayloadDiff, sekai_nbt::NbtError> {
-    diff_nbt(old_raw_nbt, new_raw_nbt)
-}
 
 #[cfg(test)]
 mod tests {
@@ -75,23 +36,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn diff_wiring_ignores_volatile_tags() {
+    fn volatile_tags_never_reach_the_chunk_hash() {
         let varied = nbt_bytes(100, 0, "minecraft:full");
         let same = nbt_bytes(999_999, 0, "minecraft:full");
-        let other = nbt_bytes(100, 0, "minecraft:empty");
-        assert_eq!(diff_hash_v1(&varied), diff_hash_v1(&same));
-        assert_ne!(diff_hash_v1(&varied), diff_hash_v1(&other));
-
         let inhabited = nbt_bytes(100, 4_242, "minecraft:full");
-        assert_eq!(diff_hash_v1(&varied), diff_hash_v1(&inhabited));
+        let other = nbt_bytes(100, 0, "minecraft:empty");
+
+        let hash = |raw: &[u8]| sekai_nbt::parse(raw).unwrap().normalize_hash().unwrap();
+        assert_eq!(hash(&varied), hash(&same));
+        assert_eq!(hash(&varied), hash(&inhabited));
+        assert_ne!(hash(&varied), hash(&other));
     }
 
     #[test]
-    fn diff_nbt_wiring_reports_full_with_distinct_hashes() {
+    fn chunk_blob_hash_is_the_cas_key_for_normalized_content() {
+        let varied = nbt_bytes(100, 0, "minecraft:full");
+        let same = nbt_bytes(999_999, 0, "minecraft:full");
+        let other = nbt_bytes(100, 0, "minecraft:empty");
+
+        assert_eq!(chunk_blob_hash(&varied), chunk_blob_hash(&same));
+        assert_ne!(chunk_blob_hash(&varied), chunk_blob_hash(&other));
+        // The key is the normalized digest, not a hash of the raw bytes.
+        assert_ne!(chunk_blob_hash(&varied), raw_hash(&varied));
+    }
+
+    #[test]
+    fn chunk_diff_reports_full_with_distinct_hashes() {
         let old_raw = nbt_bytes(100, 0, "minecraft:full");
         let new_raw = nbt_bytes(100, 0, "minecraft:empty");
 
-        let diffs = diff_nbt_v1(&old_raw, &new_raw).unwrap();
+        let old = sekai_nbt::parse(&old_raw).unwrap();
+        let new = sekai_nbt::parse(&new_raw).unwrap();
+        let diffs = ChunkPayloadDiff::new(&old, &new).unwrap();
         assert!(
             matches!(diffs, ChunkPayloadDiff::Full { old, new } if old != new),
             "status change must report a full diff with distinct hashes: {diffs:?}"
@@ -99,17 +75,14 @@ mod tests {
     }
 
     #[test]
-    fn diff_nbt_wiring_reports_nothing_for_identical_payloads() {
+    fn chunk_diff_reports_nothing_for_identical_payloads() {
         let raw = nbt_bytes(100, 0, "minecraft:full");
 
-        let diffs = diff_nbt(&raw, &raw).unwrap();
-        assert_eq!(diffs, ChunkPayloadDiff::Nothing);
-    }
-
-    #[test]
-    fn hash_blob_is_stable() {
-        assert_eq!(hash_blob(b"payload"), hash_blob(b"payload"));
-        assert_ne!(hash_blob(b"payload"), hash_blob(b"other"));
+        let chunk = sekai_nbt::parse(&raw).unwrap();
+        assert_eq!(
+            ChunkPayloadDiff::new(&chunk, &chunk).unwrap(),
+            ChunkPayloadDiff::Nothing
+        );
     }
 
     /// Serialised chunk payload with the given volatile fields.

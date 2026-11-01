@@ -4,8 +4,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use sekai_core::{
-    BlobHash, BlobStore as _, ChunkCoord, CommitId, DiffHash, MetaStore, RegionKey, RegionKind,
-    diff_nbt,
+    BlobHash, BlobStore as _, ChunkCoord, CommitId, MetaStore, RegionKey, RegionKind,
 };
 use sekai_nbt::nanonbt::Cesu8Buf;
 use sekai_nbt::{Chunk, ChunkPayload, ChunkPayloadDiff, Heightmaps};
@@ -52,7 +51,9 @@ impl<S: SekaiStore> SekaiInstance<S> {
         let old_nbt = decompress_chunk(&old_compressed)?;
         let new_nbt = decompress_chunk(&new_compressed)?;
 
-        Ok(diff_nbt(&old_nbt, &new_nbt)?)
+        let old_val = sekai_nbt::parse(&old_nbt)?;
+        let new_val = sekai_nbt::parse(&new_nbt)?;
+        ChunkPayloadDiff::new(&old_val, &new_val).map_err(AppError::Nbt)
     }
 }
 
@@ -265,15 +266,15 @@ fn parse_for_diff(coord: ChunkCoord, nbt: &[u8]) -> Result<Option<Chunk<'_>>, Ap
 }
 
 /// Diff for non-level-chunk kinds (`entities`/`poi`), whose payload schema is
-/// not [`ChunkPayload`]. Raw NBT bytes are hashed independently so a `Full`
-/// result never carries identical hashes.
+/// not [`ChunkPayload`]. The normalized view cannot describe them, so exact
+/// bytes are compared; distinct bytes never report identical hashes.
 fn raw_nbt_diff(old: &[u8], new: &[u8]) -> ChunkPayloadDiff {
     if old == new {
         return ChunkPayloadDiff::Nothing;
     }
     ChunkPayloadDiff::Full {
-        old: DiffHash(*blake3::hash(old).as_bytes()),
-        new: DiffHash(*blake3::hash(new).as_bytes()),
+        old: sekai_core::raw_hash(old).as_bytes(),
+        new: sekai_core::raw_hash(new).as_bytes(),
     }
 }
 

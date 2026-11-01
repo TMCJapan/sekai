@@ -22,8 +22,8 @@ pub(crate) fn mtime_ms_from_metadata(meta: &Metadata) -> Option<u64> {
 /// The hash is what makes "unchanged" mean unchanged: a location-table
 /// prefix cannot see a payload edit, and mtime is not trustworthy when a
 /// copy, an archive extraction, or a filesystem snapshot preserves it.
-pub(crate) fn content_hash_of(reader: &mut impl Read) -> std::io::Result<[u8; 32]> {
-    let mut hasher = sekai_anvil::ContentHasher::new();
+pub(crate) fn content_hash_of(reader: &mut impl Read) -> std::io::Result<sekai_core::ChunkHash> {
+    let mut hasher = sekai_core::BytesHasher::new();
     let mut buf = vec![0u8; HASH_CHUNK];
     loop {
         let read = reader.read(&mut buf)?;

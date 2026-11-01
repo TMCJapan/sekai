@@ -36,9 +36,6 @@ pub enum Command {
         /// Human or JSON rendering plus optional phase timings.
         #[command(flatten)]
         output: TimingArgs,
-        /// Derive volatile diff views alongside blobs.
-        #[arg(long)]
-        with_diff: bool,
         /// Ingest worker count. `0` means one per CPU.
         #[arg(long, default_value = "0")]
         jobs: usize,

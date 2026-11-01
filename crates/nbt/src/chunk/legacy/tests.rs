@@ -206,7 +206,8 @@ fn volatile_tags_do_not_change_the_hash() {
         compound_list("Sections", &[section(0, &[1; 8])]),
         byte("TerrainPopulated", 1),
     ];
-    // Reorder, too: the view must not depend on field order.
+    // Duplicated keys decode as the first occurrence and reordering is
+    // harmless: neither may change the decoded value the view hashes.
     entries.reverse();
     let varied_bytes = legacy_doc(&entries);
     let varied = legacy(&varied_bytes);
@@ -330,16 +331,16 @@ fn tile_entities_are_captured_verbatim() {
 /// key and an explicitly empty one hash alike.
 #[test]
 fn empty_collections_normalize_alike() {
-    // let without = legacy(&legacy_doc(&[int("xPos", 0), int("zPos", 0)]));
-    // let with_empty = legacy(&legacy_doc(&[
-    //     int("xPos", 0),
-    //     int("zPos", 0),
-    //     int_array("HeightMap", &[]),
-    //     compound_list("Sections", &[]),
-    //     compound_list("TileEntities", &[]),
-    // ]));
-    // assert_eq!(
-    //     without.normalize_hash().unwrap(),
-    //     with_empty.normalize_hash().unwrap()
-    // );
+    let without_bytes = legacy_doc(&[int("xPos", 0), int("zPos", 0)]);
+    let with_empty_bytes = legacy_doc(&[
+        int("xPos", 0),
+        int("zPos", 0),
+        int_array("HeightMap", &[]),
+        compound_list("Sections", &[]),
+        compound_list("TileEntities", &[]),
+    ]);
+    assert_eq!(
+        legacy(&without_bytes).normalize_hash().unwrap(),
+        legacy(&with_empty_bytes).normalize_hash().unwrap()
+    );
 }

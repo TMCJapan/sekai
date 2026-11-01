@@ -60,15 +60,15 @@ async fn sqlite_tombstones_shape_and_checkout_drop() {
             1_000,
             &[],
             &[
-                CommitEntry::new(present, Some(BlobHash([1; 32])), None),
-                CommitEntry::new(gone, Some(BlobHash([2; 32])), None),
+                CommitEntry::new(present, Some(BlobHash([1; 32]))),
+                CommitEntry::new(gone, Some(BlobHash([2; 32]))),
             ],
         )
         .await
         .unwrap()
         .id;
     let second = meta
-        .apply_commit_incremental(2_000, &[first], &[CommitEntry::new(gone, None, None)])
+        .apply_commit_incremental(2_000, &[first], &[CommitEntry::new(gone, None)])
         .await
         .unwrap()
         .id;
@@ -82,10 +82,7 @@ async fn sqlite_tombstones_shape_and_checkout_drop() {
     })
     .await
     .unwrap();
-    assert_eq!(
-        fresh,
-        vec![ChunkHistoryEntry::new(gone, second, None, None)]
-    );
+    assert_eq!(fresh, vec![ChunkHistoryEntry::new(gone, second, None)]);
 
     let plan = plan_checkout(&*meta, second).await.unwrap();
     let region = sekai_core::RegionKey::of(present);
@@ -133,7 +130,7 @@ async fn cas_skips_foreign_and_temp_names() {
     let (dir, _guard) = tempdir("names");
     let mut store = init(&dir).await;
     let cas = store.cas_mut();
-    let hash = sekai_core::hash_blob(b"real");
+    let hash = sekai_core::raw_hash(b"real");
     assert!(cas.put(&hash, b"real").await.unwrap());
     let hex = hash.hex_string();
     let shard = cas.root().as_ref().join("blobs").join(&hex[..2]);

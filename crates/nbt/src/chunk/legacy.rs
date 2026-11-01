@@ -143,7 +143,7 @@ impl LegacyChunkPayload<'_> {
     /// (`HeightMap`, the legacy section encoding), so legacy and modern
     /// content can never normalize equal: a format conversion is a real
     /// change, not a silent no-op.
-    pub fn normalize_hash(&self) -> Result<sekai_util::DiffHash, nanonbt::Error> {
+    pub fn normalize_hash(&self) -> Result<sekai_util::ChunkHash, nanonbt::Error> {
         let normalized = NormalizedLegacyChunkPayload {
             data_version: self.data_version,
             x_pos: self.level.x_pos,
@@ -157,9 +157,7 @@ impl LegacyChunkPayload<'_> {
             fluid_ticks: &self.level.fluid_ticks,
         };
         let bytes = nanonbt::to_bytes(&normalized)?;
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(&bytes);
-        Ok(sekai_util::DiffHash(*hasher.finalize().as_bytes()))
+        Ok(sekai_util::hash_bytes(&bytes))
     }
 }
 

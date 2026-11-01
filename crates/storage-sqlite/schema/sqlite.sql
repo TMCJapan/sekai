@@ -1,3 +1,8 @@
+-- Schema version 15: the `diff` column of `chunk_history` (cached volatile
+-- diff hashes) was removed. Change detection compares per-chunk history
+-- directly, so no derived column remains. There is no migration path from
+-- version 14: old stores are rejected via `UnsupportedSchema`.
+--
 -- Schema version 14: named scopes (`scopes`, `scope_areas`) were added.
 -- There is no migration path from version 13: old stores are rejected via
 -- `UnsupportedSchema`.
@@ -46,7 +51,6 @@ CREATE TABLE chunk_history(
     cx INTEGER NOT NULL,
     cz INTEGER NOT NULL,
     blob BLOB NULL,
-    diff BLOB NULL,
     PRIMARY KEY(commit_id, dim, kind, cx, cz)
 );
 

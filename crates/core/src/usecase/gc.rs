@@ -135,7 +135,7 @@ mod tests {
         block_on(meta.apply_commit_incremental(
             1_000,
             &[],
-            &[CommitEntry::new(coord(0, 0), Some(live), None)],
+            &[CommitEntry::new(coord(0, 0), Some(live))],
         ))
         .unwrap();
 

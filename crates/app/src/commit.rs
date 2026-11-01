@@ -41,10 +41,6 @@ use crate::time::now_ms;
 pub struct CommitOptions {
     /// Ingest worker count. `0` means one per CPU, `1` stays sequential.
     pub concurrency: usize,
-    /// Derive volatile diff views alongside blobs. Decode failures degrade
-    /// to "not computed" (`None`): the blob itself is intact, and the diff
-    /// column is only a cache.
-    pub with_diff: bool,
 }
 
 /// Preview behavior knobs.
@@ -388,10 +384,9 @@ where
 {
     let total = Instant::now();
 
-    // Diff views are preview-irrelevant: always skip the decode work.
+    // The preview shares the ingest plan but records nothing.
     let preview = CommitOptions {
         concurrency: options.concurrency,
-        ..CommitOptions::default()
     };
     let Prepared {
         previous,
@@ -561,7 +556,6 @@ where
     let mut set = tokio::task::JoinSet::new();
     for group in groups {
         let cas = cas.clone();
-        let with_diff = options.with_diff;
         let scope = scope.clone();
         let guard = Arc::clone(guard);
         set.spawn(async move {
@@ -570,7 +564,7 @@ where
             let mut cas = cas;
             for (region, observed) in group {
                 let outcome: FileOutcome =
-                    ingest_file(region, observed, &mut cas, with_diff, &scope, dry_run).await?;
+                    ingest_file(region, observed, &mut cas, &scope, dry_run).await?;
                 outcomes.push(outcome);
             }
             let sync_elapsed = if dry_run {
@@ -657,7 +651,6 @@ async fn ingest_file<R: RegionFile, C: BlobStore<Error = StorageError>>(
     region: R,
     observed: RegionFingerprint,
     cas: &mut C,
-    with_diff: bool,
     scope: &Scope,
     dry_run: bool,
 ) -> Result<FileOutcome, AppError>
@@ -667,7 +660,7 @@ where
     let key = observed.key;
     let location = region.to_string();
     let scope = scope.clone();
-    let staged = tokio::task::spawn_blocking(move || stage_file(&region, key, &scope, with_diff))
+    let staged = tokio::task::spawn_blocking(move || stage_file(&region, key, &scope))
         .await
         .map_err(|source| AppError::Storage(StorageError::backend("ingest worker", source)))??;
 
@@ -720,12 +713,7 @@ struct ChunkWrite {
 }
 
 /// Open the region file, then hash and stage every in-scope chunk.
-fn stage_file<R: RegionFile>(
-    region: &R,
-    key: RegionKey,
-    scope: &Scope,
-    with_diff: bool,
-) -> Result<Staged, AppError>
+fn stage_file<R: RegionFile>(region: &R, key: RegionKey, scope: &Scope) -> Result<Staged, AppError>
 where
     AppError: From<R::Error>,
 {
@@ -735,17 +723,19 @@ where
         open: opened.elapsed(),
         ..Default::default()
     };
-    image.visit_chunks(|chunk| stage_chunk(chunk, key, scope, with_diff, &mut staged))?;
+    image.visit_chunks(|chunk| stage_chunk(chunk, key, scope, &mut staged))?;
     Ok(staged)
 }
 
 /// Hash one raw chunk and stage its history row; `false` never stops the
 /// visit, since a chunk only fails when its process is unwinding.
+///
+/// The key is the chunk's normalized digest, so a server rewriting a
+/// volatile tag does not produce a new blob or history row.
 fn stage_chunk(
     chunk: sekai_anvil::Chunk<'_>,
     key: RegionKey,
     scope: &Scope,
-    with_diff: bool,
     staged: &mut Staged,
 ) -> bool {
     let coord = ChunkCoord::new(key.dim, key.kind, chunk.x, chunk.z);
@@ -753,21 +743,16 @@ fn stage_chunk(
         return true;
     }
     let hash_started = Instant::now();
-    let hash = sekai_core::hash_blob(chunk.payload);
-    // Diff failures degrade to "not computed": the blob itself is intact
-    // and the diff column is only a cache.
-    let diff = with_diff
-        .then(|| {
-            let mut decoded = Vec::new();
-            sekai_anvil::decompress_into(chunk.payload, &mut decoded)
-                .ok()
-                .and_then(|_| sekai_core::diff_hash(&decoded).ok())
-        })
-        .flatten();
+    let mut raw_nbt = Vec::new();
+    let hash = match sekai_anvil::decompress_into(chunk.payload, &mut raw_nbt) {
+        Ok(_) => sekai_core::chunk_blob_hash(&raw_nbt),
+        // A codec `anvil` does not know cannot be normalized; byte identity
+        // still yields a stable, deduplicated key, and the payload restores
+        // verbatim either way.
+        Err(_) => sekai_core::raw_hash(chunk.payload),
+    };
     staged.hash += hash_started.elapsed();
-    staged
-        .entries
-        .push(CommitEntry::new(coord, Some(hash), diff));
+    staged.entries.push(CommitEntry::new(coord, Some(hash)));
     staged.present.insert(coord);
     staged.writes.push(ChunkWrite {
         hash,

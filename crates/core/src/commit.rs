@@ -9,7 +9,7 @@
 
 use alloc::vec::Vec;
 
-use sekai_util::{CommitEntry, CommitId};
+use sekai_util::{BlobHash, ChunkHash, CommitEntry, CommitId, hash_bytes};
 
 const DOMAIN: &[u8] = b"sekai-commit-v1\0";
 
@@ -19,33 +19,33 @@ const DOMAIN: &[u8] = b"sekai-commit-v1\0";
 /// result does not depend on input order or duplicate values. `parents` is
 /// empty for the root of a history.
 pub fn commit_hash(parents: &[CommitId], created_at_ms: u64, entries: &[CommitEntry]) -> CommitId {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(DOMAIN);
-
     let mut sorted_parents: Vec<CommitId> = parents.to_vec();
     sorted_parents.sort();
     sorted_parents.dedup();
-    hasher.update(&count_bytes(sorted_parents.len()));
-    for parent in &sorted_parents {
-        hasher.update(&parent.0);
-    }
-    hasher.update(&created_at_ms.to_be_bytes());
-
     let mut sorted_entries: Vec<CommitEntry> = entries.to_vec();
     sorted_entries.sort();
     sorted_entries.dedup();
-    hasher.update(&count_bytes(sorted_entries.len()));
+
+    let mut input = Vec::with_capacity(
+        DOMAIN.len() + 8 + sorted_parents.len() * 32 + 8 + sorted_entries.len() * 73,
+    );
+    input.extend_from_slice(DOMAIN);
+    input.extend_from_slice(&count_bytes(sorted_parents.len()));
+    for parent in &sorted_parents {
+        input.extend_from_slice(&parent.0);
+    }
+    input.extend_from_slice(&created_at_ms.to_be_bytes());
+    input.extend_from_slice(&count_bytes(sorted_entries.len()));
     for entry in &sorted_entries {
         let coord = entry.coord;
-        hasher.update(&coord.dim.raw().to_be_bytes());
-        hasher.update(&coord.kind.raw().to_be_bytes());
-        hasher.update(&coord.x.to_be_bytes());
-        hasher.update(&coord.z.to_be_bytes());
-        update_optional_hash(&mut hasher, entry.blob.map(|hash| hash.0));
-        update_optional_hash(&mut hasher, entry.diff.map(|hash| hash.0));
+        input.extend_from_slice(&coord.dim.raw().to_be_bytes());
+        input.extend_from_slice(&coord.kind.raw().to_be_bytes());
+        input.extend_from_slice(&coord.x.to_be_bytes());
+        input.extend_from_slice(&coord.z.to_be_bytes());
+        push_optional_blob(&mut input, entry.blob.map(BlobHash::as_bytes));
     }
 
-    CommitId(*hasher.finalize().as_bytes())
+    CommitId(hash_bytes(&input))
 }
 
 fn count_bytes(count: usize) -> [u8; 8] {
@@ -56,15 +56,14 @@ fn count_bytes(count: usize) -> [u8; 8] {
     u64::try_from(count).unwrap_or(u64::MAX).to_be_bytes()
 }
 
-fn update_optional_hash(hasher: &mut blake3::Hasher, hash: Option<[u8; 32]>) {
+/// Presence-tag the optional blob key so a tombstone and a zero hash differ.
+fn push_optional_blob(input: &mut Vec<u8>, hash: Option<ChunkHash>) {
     match hash {
         Some(bytes) => {
-            hasher.update(&[1]);
-            hasher.update(&bytes);
+            input.push(1);
+            input.extend_from_slice(&bytes);
         }
-        None => {
-            hasher.update(&[0]);
-        }
+        None => input.push(0),
     }
 }
 
@@ -78,7 +77,7 @@ mod tests {
     }
 
     fn entry(x: i32, blob: u8) -> CommitEntry {
-        CommitEntry::new(coord(x, 0), Some(BlobHash([blob; 32])), None)
+        CommitEntry::new(coord(x, 0), Some(BlobHash([blob; 32])))
     }
 
     #[test]

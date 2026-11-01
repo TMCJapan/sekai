@@ -4,6 +4,8 @@ extern crate alloc;
 mod chunk;
 mod diff;
 
+use sekai_util::BlobHash;
+
 pub use chunk::legacy;
 pub use chunk::{
     BlockEntity, BlockTick, Chunk, ChunkPayload, FluidTick, Heightmaps, LegacyChunkPayload,
@@ -12,7 +14,6 @@ pub use chunk::{
 pub use diff::ChunkPayloadDiff;
 pub use nanonbt;
 pub use nanonbt::Error as NbtError;
-use sekai_util::DiffHash;
 
 /// Deserializes a level-chunk NBT root, either format.
 ///
@@ -22,32 +23,39 @@ use sekai_util::DiffHash;
 /// reported from whichever schema matched, so a malformed chunk still fails
 /// loudly.
 pub fn parse(bytes: &[u8]) -> Result<Chunk<'_>, NbtError> {
-    match nanonbt::from_slice(bytes) {
-        Ok(modern) => Ok(Chunk::Modern(modern)),
-        Err(_modern_error) => match nanonbt::from_slice(bytes) {
-            Ok(legacy) => Ok(Chunk::Legacy(legacy)),
-            Err(legacy_error) => Err(legacy_error),
+    nanonbt::from_slice(bytes).map_or_else(
+        |_| nanonbt::from_slice(bytes).map(Chunk::Legacy),
+        |modern| Ok(Chunk::Modern(modern)),
+    )
+}
+
+/// The CAS key of an already-decompressed chunk payload.
+///
+/// The key is the [`Chunk::normalize_hash`] digest: volatile tags
+/// (`InhabitedTime`, `LastUpdate`) never reach it, so a server rewrite of
+/// those tags does not store the chunk again.
+///
+/// A payload without a level-chunk schema (`entities`/`poi` regions, or a
+/// chunk whose root carries no [`ChunkPayload`] fields) has nothing to
+/// normalize and keys on its exact bytes instead. That keeps the ingest path
+/// total: it never fails on content a server wrote.
+pub fn chunk_blob_hash(raw_nbt: &[u8]) -> BlobHash {
+    let digest = parse(raw_nbt).map_or_else(
+        |_| sekai_util::hash_bytes(raw_nbt),
+        |chunk| {
+            chunk
+                .normalize_hash()
+                .unwrap_or_else(|_| sekai_util::hash_bytes(raw_nbt))
         },
-    }
+    );
+    BlobHash::new(digest)
 }
 
-/// Hashes a level-chunk NBT root through its normalized view.
+/// Hashes an arbitrary payload that has no chunk schema.
 ///
-/// The normalized view excludes the volatile tags `InhabitedTime` and
-/// `LastUpdate`; the resulting hash is intended for change detection, not
-/// storage identity.
-pub fn diff_hash(raw_nbt: &[u8]) -> Result<DiffHash, NbtError> {
-    let value = parse(raw_nbt)?;
-    value.normalize_hash()
-}
-
-/// Hashes a level-chunk NBT root through its normalized view using the V1
-/// rules.
-///
-/// Retained for API compatibility: identical to [`diff_hash`], which keeps
-/// the V1 volatile-tag exclusions.
-pub fn diff_hash_v1(raw_nbt: &[u8]) -> Result<DiffHash, NbtError> {
-    diff_hash(raw_nbt)
+/// Only a fallback for data [`Chunk::normalize_hash`] cannot describe.
+pub fn raw_hash(bytes: &[u8]) -> BlobHash {
+    BlobHash::new(sekai_util::hash_bytes(bytes))
 }
 
 #[cfg(test)]
@@ -125,6 +133,49 @@ mod tests {
         let bytes = nanonbt::to_bytes(&payload).unwrap();
         let parsed = nanonbt::from_slice::<ChunkPayload>(&bytes).unwrap();
         assert_eq!(payload, parsed);
+    }
+
+    #[test]
+    fn blob_hash_ignores_volatile_tags_and_tracks_content() {
+        let status = Cesu8::try_from_str("minecraft:full").unwrap();
+        let bytes = |inhabited_time, last_update, status| {
+            nanonbt::to_bytes(&ChunkPayload {
+                data_version: 1,
+                x_pos: 3,
+                y_pos: 0,
+                z_pos: -1,
+                inhabited_time,
+                last_update,
+                sections: alloc::vec![],
+                heightmaps: Heightmaps::default(),
+                status,
+                block_entities: alloc::vec![],
+                block_ticks: alloc::vec![],
+                fluid_ticks: alloc::vec![],
+            })
+            .unwrap()
+        };
+
+        let empty = Cesu8::from_str("minecraft:empty");
+        let base = bytes(7, 9, status);
+        let other = bytes(7, 9, &empty);
+        assert_eq!(
+            chunk_blob_hash(&base),
+            chunk_blob_hash(&bytes(999, 1_234, status))
+        );
+        assert_ne!(chunk_blob_hash(&base), chunk_blob_hash(&other));
+    }
+
+    #[test]
+    fn blob_hash_falls_back_to_exact_bytes_without_a_chunk_schema() {
+        assert_eq!(
+            chunk_blob_hash(b"entities-payload"),
+            raw_hash(b"entities-payload")
+        );
+        assert_ne!(
+            chunk_blob_hash(b"entities-payload"),
+            chunk_blob_hash(b"entities-payloac")
+        );
     }
 
     #[test]

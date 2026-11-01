@@ -49,11 +49,8 @@ fn chunk_map(path: impl AsRef<Path>) -> BTreeMap<(i32, i32), Vec<u8>> {
     map
 }
 
-fn commit_options() -> sekai_app::CommitOptions {
-    sekai_app::CommitOptions {
-        concurrency: 2,
-        ..sekai_app::CommitOptions::default()
-    }
+const fn commit_options() -> sekai_app::CommitOptions {
+    sekai_app::CommitOptions { concurrency: 2 }
 }
 
 #[tokio::test]

@@ -167,9 +167,9 @@ pub async fn plan_commit<M: MetaStore>(
     Ok((previous, plan))
 }
 
-/// Stage an ingested chunk without computing its volatile diff hash.
+/// Stage an ingested chunk as a fresh history row.
 pub const fn stage_present(coord: ChunkCoord, hash: BlobHash) -> CommitEntry {
-    CommitEntry::new(coord, Some(hash), None)
+    CommitEntry::new(coord, Some(hash))
 }
 
 /// What the adapter's ingest pass produced for the in-scope files.
@@ -193,8 +193,7 @@ pub struct Ingested {
 ///
 /// Rows whose blob matches the base commit are dropped: the file was
 /// reread, but its content did not change, so writing the row again would
-/// bloat history without changing the effective state. The diff column is a
-/// volatile cache and does not participate in the comparison.
+/// bloat history without changing the effective state.
 pub fn assemble(plan: Plan, previous: &Previous, ingested: Ingested, scope: &Scope) -> Assembled {
     let Ingested {
         entries,
@@ -222,7 +221,7 @@ pub fn assemble(plan: Plan, previous: &Previous, ingested: Ingested, scope: &Sco
     let mut tombstones = 0usize;
     for coord in previous.state.keys() {
         if scope.contains(*coord) && !present.contains(coord) {
-            fresh.push(CommitEntry::new(*coord, None, None));
+            fresh.push(CommitEntry::new(*coord, None));
             tombstones += 1;
         }
     }
@@ -878,19 +877,14 @@ mod tests {
     fn mem_meta_satisfies_lookup_contract() {
         let mut meta = store_with_ref();
         let id = crate::support::block_on(meta.create_commit(5, &[])).unwrap();
-        crate::support::block_on(meta.record_chunk(
-            id,
-            &coord(0, 0),
-            Some(&BlobHash([3; 32])),
-            None,
-        ))
-        .unwrap();
+        crate::support::block_on(meta.record_chunk(id, &coord(0, 0), Some(&BlobHash([3; 32]))))
+            .unwrap();
         let row = crate::support::block_on(meta.lookup_chunk(id, &coord(0, 0)))
             .unwrap()
             .unwrap();
         assert_eq!(
             row,
-            ChunkHistoryEntry::new(coord(0, 0), id, Some(BlobHash([3; 32])), None)
+            ChunkHistoryEntry::new(coord(0, 0), id, Some(BlobHash([3; 32])))
         );
         assert!(
             crate::support::block_on(meta.lookup_commit(CommitId([0xFF; 32])))

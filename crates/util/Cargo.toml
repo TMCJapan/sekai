@@ -9,6 +9,7 @@ description = "Shared value types for Sekai, a deduplicated Minecraft world vers
 keywords = ["minecraft", "version-control"]
 
 [dependencies]
+blake3.workspace = true
 
 [lints]
 workspace = true

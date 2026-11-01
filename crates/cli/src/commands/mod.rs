@@ -69,7 +69,6 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
         Command::Commit {
             world,
             output,
-            with_diff,
             jobs,
             progress,
             selection,
@@ -77,7 +76,6 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
             commit::run(
                 &cli.store,
                 world,
-                *with_diff,
                 *jobs,
                 *progress,
                 selection,

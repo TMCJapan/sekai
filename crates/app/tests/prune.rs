@@ -30,11 +30,8 @@ fn write_region(path: impl AsRef<Path>, chunks: &[(i32, i32, Vec<u8>)]) {
     std::fs::write(path, image).unwrap();
 }
 
-fn commit_options() -> sekai_app::CommitOptions {
-    sekai_app::CommitOptions {
-        concurrency: 2,
-        ..sekai_app::CommitOptions::default()
-    }
+const fn commit_options() -> sekai_app::CommitOptions {
+    sekai_app::CommitOptions { concurrency: 2 }
 }
 
 fn blob_count(store: impl AsRef<Path>) -> usize {

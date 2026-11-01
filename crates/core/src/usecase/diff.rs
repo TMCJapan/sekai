@@ -58,23 +58,10 @@ pub async fn diff_blobs<B: BlobStore>(
     ChunkPayloadDiff::new(&old_val, &new_val).map_err(DiffError::Nbt)
 }
 
-/// Compute a chunk diff between two stored blob hashes using the V1
-/// normalization rules.
-///
-/// Retained for API compatibility: identical to [`diff_blobs`].
-pub async fn diff_blobs_v1<B: BlobStore>(
-    blobs: &B,
-    old_hash: &BlobHash,
-    new_hash: &BlobHash,
-) -> Result<ChunkPayloadDiff, DiffError<B::Error>> {
-    diff_blobs(blobs, old_hash, new_hash).await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use crate::hash_blob;
     use crate::support::{MemCas, block_on};
 
     // Uncompressed (Type 3) sector payload framing + a level-chunk NBT root.
@@ -101,11 +88,18 @@ mod tests {
         out
     }
 
+    /// CAS key of a framed payload, through the same normalization ingest uses.
+    fn chunk_key(framed: &[u8]) -> BlobHash {
+        let mut nbt = Vec::new();
+        sekai_anvil::decompress_into(framed, &mut nbt).unwrap();
+        sekai_nbt::chunk_blob_hash(&nbt)
+    }
+
     #[test]
     fn missing_blob_is_a_backend_error() {
         let cas = MemCas::default();
-        let missing = hash_blob(b"never-stored");
-        let err = block_on(diff_blobs_v1(&cas, &missing, &missing)).unwrap_err();
+        let missing = sekai_nbt::raw_hash(b"never-stored");
+        let err = block_on(diff_blobs(&cas, &missing, &missing)).unwrap_err();
         assert!(matches!(err, DiffError::Blob(_)));
     }
 
@@ -114,13 +108,13 @@ mod tests {
         let mut cas = MemCas::default();
         // Unknown compression type byte: anvil rejects before NBT sees it.
         let bad_codec = alloc::vec![9u8, 0, 0];
-        let hash_bad = hash_blob(&bad_codec);
+        let hash_bad = sekai_nbt::raw_hash(&bad_codec);
         block_on(cas.put(&hash_bad, &bad_codec)).unwrap();
         let good = framed_nbt_bytes("minecraft:full");
-        let hash_good = hash_blob(&good);
+        let hash_good = chunk_key(&good);
         block_on(cas.put(&hash_good, &good)).unwrap();
 
-        let err = block_on(diff_blobs_v1(&cas, &hash_bad, &hash_good)).unwrap_err();
+        let err = block_on(diff_blobs(&cas, &hash_bad, &hash_good)).unwrap_err();
         assert!(matches!(err, DiffError::Anvil(_)));
     }
 
@@ -129,13 +123,13 @@ mod tests {
         let mut cas = MemCas::default();
         // Type 3 framing with truncated NBT body.
         let corrupt = alloc::vec![3u8, 10, 0];
-        let hash_corrupt = hash_blob(&corrupt);
+        let hash_corrupt = sekai_nbt::raw_hash(&corrupt);
         block_on(cas.put(&hash_corrupt, &corrupt)).unwrap();
         let good = framed_nbt_bytes("minecraft:full");
-        let hash_good = hash_blob(&good);
+        let hash_good = chunk_key(&good);
         block_on(cas.put(&hash_good, &good)).unwrap();
 
-        let err = block_on(diff_blobs_v1(&cas, &hash_corrupt, &hash_good)).unwrap_err();
+        let err = block_on(diff_blobs(&cas, &hash_corrupt, &hash_good)).unwrap_err();
         assert!(matches!(err, DiffError::Nbt(_)));
     }
 
@@ -144,8 +138,8 @@ mod tests {
         let mut cas = MemCas::default();
         let old = framed_nbt_bytes("minecraft:full");
         let new = framed_nbt_bytes("minecraft:empty");
-        let hash_old = hash_blob(&old);
-        let hash_new = hash_blob(&new);
+        let hash_old = chunk_key(&old);
+        let hash_new = chunk_key(&new);
         block_on(cas.put(&hash_old, &old)).unwrap();
         block_on(cas.put(&hash_new, &new)).unwrap();
 
@@ -160,7 +154,7 @@ mod tests {
     fn diff_blobs_reports_nothing_for_identical_payloads() {
         let mut cas = MemCas::default();
         let payload = framed_nbt_bytes("minecraft:full");
-        let hash = hash_blob(&payload);
+        let hash = chunk_key(&payload);
         block_on(cas.put(&hash, &payload)).unwrap();
 
         let diff = block_on(diff_blobs(&cas, &hash, &hash)).unwrap();

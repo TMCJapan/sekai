@@ -111,9 +111,9 @@ mod tests {
             1_000,
             &[],
             &[
-                CommitEntry::new(a, Some(BlobHash([1; 32])), None),
-                CommitEntry::new(b, Some(BlobHash([2; 32])), None),
-                CommitEntry::new(gone, None, None),
+                CommitEntry::new(a, Some(BlobHash([1; 32]))),
+                CommitEntry::new(b, Some(BlobHash([2; 32]))),
+                CommitEntry::new(gone, None),
             ],
         ))
         .unwrap()

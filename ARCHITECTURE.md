@@ -35,17 +35,17 @@ sekai (bin, thin: clap parse + print + exit code)
       -> sekai-core
     -> sekai-storage-sqlite (std + tokio: sqlx SQLite implementation)
       -> sekai-storage
-sekai-util (no_std, zero-dependency: coordinates, hashes, history value
-  types) <- anvil, nbt, core (world/storage/app reach them through
-  `core` re-exports)
+sekai-util (no_std, no tokio dependency: coordinates, chunk hashes,
+  history value types) <- anvil, nbt, core (world/storage/app reach them
+  through `core` re-exports)
 ```
 
 | Crate | `std` | `async` | Role |
 |---|---|---|---|
-| `sekai-util` | `no_std`, zero external dependencies | no | Shared value types: coordinates, hashes, region/history/commit/gc records, hex errors. Pure data plus total validation only. |
+| `sekai-util` | `no_std`, no `std`/tokio dependencies | no | Shared value types: coordinates, the chunk digest (`BlobHash`/`ChunkHash`, `hash_bytes`, `BytesHasher`), region/history/commit/gc records, hex errors. Pure data plus total validation only. |
 | `sekai-anvil` | `no_std` + `alloc` | no | Pure Anvil sector codec including decompression. `&[u8]` sector payload in, raw NBT bytes out; also builds `Vec<u8>` images. Compression framing is MCA spec knowledge, so it lives here. No `Path`, no `fs`. Names custom dimensions with util `Dimension`. |
-| `sekai-nbt` | `no_std` + `alloc` | no | Pure `raw NBT bytes -> diff view`. Hand-rolled NBT parser (no `Serialize` by design; output uses SNBT), tag filtering, canonical digest returning util `DiffHash`. Never sees compression. |
-| `sekai-core` | `no_std` + `alloc` | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_checkout`, `gc plan`/`apply`) plus composition helpers (`hash_blob`, storage ports). Composes `anvil`/`nbt` over util types and re-exports them, so downstream paths stay stable. |
+| `sekai-nbt` | `no_std` + `alloc` | no | Pure `raw NBT bytes -> normalized view`. Hand-rolled NBT parser (no `Serialize` by design; output uses SNBT), tag filtering, the canonical 32-byte digest and the CAS key derived from it. Never sees compression. |
+| `sekai-core` | `no_std` + `alloc` | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_checkout`, `gc plan`/`apply`) plus storage ports. Composes `anvil`/`nbt` over util types and re-exports them, so downstream paths stay stable. |
 | `sekai-storage` | `std` + tokio | yes (RPITIT) | Backend-neutral boundaries: async `BlobStore`/`MetaStore` traits (owned by `core::port`, re-exported from the `api` module), high-level `SekaiStore`/`SekaiStoreOpener` traits, file CAS (`cas` module, `blobs/ab/cdef...` retained by design), and URL-based backend selection. Depends on `core`. |
 | `sekai-storage-sqlite` | `std` + tokio | yes | Concrete SQLite implementation over sqlx: `SqliteMeta` plus the SQLite-backed `SqliteStore`, schema/version gate, and opener. Implements the traits from `sekai-storage` (and `core::port`). Other backends become sibling crates without touching `core`/`app`. |
 | `sekai-world` | `std` | yes (I/O) / sync pure helpers where trivial | World access boundary: the `WorldTree` trait, the `RegionFile` handle, and the filesystem tree (`HostWorldTree`). |
@@ -82,11 +82,12 @@ Coordinates, hashes, and history records live in a zero-dependency leaf so
 cycle (`core -> anvil/nbt -> core` is forbidden by Cargo). The boundary
 rules:
 
-- `util` holds pure data plus total validation only: no hashing backends,
-  no codecs, no ports, no orchestration. It depends on nothing.
-- `anvil`/`nbt` implement over util types (`Dimension` custom ids,
-  `DiffHash` digests); `core` composes them (`hash_blob`, storage ports,
-  use cases).
+- `util` holds pure data plus total validation only: no codecs, no ports,
+  no orchestration. It owns the one Blake3 primitive (`hash_bytes`,
+  `BytesHasher`) so every digest in the system comes from the same
+  function; `nbt` and `anvil` build on it instead of linking their own.
+- `anvil`/`nbt` implement over util types (`Dimension` custom ids);
+  `core` composes them (storage ports, use cases).
 - `core` re-exports every util type at its root, so downstream paths
   (`sekai_core::ChunkCoord`, ...) keep working; `world`/`storage`/`app`
   continue to import through `core`.
@@ -100,26 +101,27 @@ rules:
 ```text
 commit:
   world: region handle -> Vec<u8> image
-    -> anvil: image -> sector payloads -> decompress -> raw NBT bytes
-    -> core::hash_blob(sector payload) -> BlobHash -> storage CAS put
-    -> nbt (opt-in only): diff_hash(raw NBT bytes) -> diff cache column
+    -> anvil: image -> sector payloads (stored opaquely)
+    -> anvil::decompress_into -> raw NBT
+    -> nbt: parse -> Chunk::normalize_hash -> BlobHash -> storage CAS put
 
 checkout:
   core::plan_checkout -> groups of (coord, BlobHash)
     -> storage CAS fetch -> anvil builder -> Vec<u8> image
     -> world: region handle <- atomic swap(target, image)
+
+diff:
+  CAS blob or world payload -> anvil decompress -> raw NBT bytes
+    -> nbt: parse -> normalized view -> in-memory digest
 ```
 
-`blob_hash` runs over the opaque sector payload (compression framing
-included); `diff_hash` runs over the decompressed raw NBT bytes. The two
-inputs diverge at the `anvil` decompression step, which is why decompression
-belongs to `anvil`: it is the only crate that understands the sector
-framing.
-
-`nbt` is an opt-in path (`with_diff` flag); `anvil` never calls `nbt`
-directly (no `anvil -> nbt` edge); `core`/`app` drives `anvil`'s
-decompressed raw NBT bytes into `nbt` so the layering stays acyclic and
-the hot path stays decode-free.
+A chunk has exactly one hash: the `Chunk::normalize_hash` digest of its
+normalized view (see
+[Two-Layer Hashing Architecture](#two-layer-hashing-architecture)). That
+digest is the CAS key and the restore path, and the diff path compares the
+very same digests instead of computing a second one. `anvil` never calls
+`nbt` directly (no `anvil -> nbt` edge); `core`/`app` drives `anvil`'s
+decompressed raw NBT bytes into `nbt`, so the layering stays acyclic.
 
 ## World Layouts
 
@@ -157,16 +159,32 @@ handles when folders moved since the commit.
 
 ## Two-Layer Hashing Architecture
 
-- `blob_hash` (CAS key): hash over the exact raw byte payload as read from
-  the sector (compression framing included). Immutable, persistent, restore
-  path. Checkout reproduces captured bytes verbatim, rewinding volatile tags
-  (e.g. `LastUpdate`) to capture time.
-- `diff_hash` (volatile diff view): hash over uncompressed NBT with
-  non-essential tags excluded (treated as absent), over a canonical encoding
-  (compound keys sorted, big-endian scalars, UTF-8 strings) - never over
-  re-serialized NBT bytes, so it is independent of on-disk order and codec.
-  V1 rules exclude `LastUpdate` and `InhabitedTime`. Used only in-memory or as a cache column;
-  never alters stored blobs.
+There is one chunk hash and no free function for it. `Chunk::normalize_hash`
+(and its per-format payload forms) is the only way to hash a chunk;
+everything else is that digest under a different name.
+
+- **Normalized view** (in-memory): the chunk encoded canonically - compound
+  keys sorted, big-endian scalars, UTF-8 strings, empty collections omitted -
+  with the volatile `LastUpdate` and `InhabitedTime` tags excluded (treated
+  as absent). It never hashes re-serialized on-disk NBT bytes, so it is
+  independent of key order and of the compression codec. Each format (1.13+
+  and legacy `Level`) has its own view, so converting a chunk is a real
+  change, never a silent no-op.
+- **Chunk digest -> CAS key**: `normalize_hash` through `hash_bytes` is the
+  `BlobHash` (`nbt::chunk_blob_hash`). The very same digest drives `diff`
+  output. Because volatile tags never enter it, a server rewriting them
+  neither adds a blob nor records a history row; checkout still writes the
+  captured bytes back verbatim.
+
+Two payloads have no chunk schema to normalize: `entities`/`poi` region
+data, and a chunk whose root does not decode into the level-chunk schema.
+Those key on their exact bytes (`raw_hash` over the `hash_bytes` primitive),
+which keeps ingest total; `diff` reports them as raw-byte comparisons. A
+blob whose compression codec `anvil` does not know takes the same fallback.
+
+Commit IDs hash a canonical byte encoding of the logical delta
+([ADR-0020](docs/adr/0020-content-addressed-commit-ids.md)) with the same
+`hash_bytes` primitive: a different preimage, not a second hashing layer.
 
 ## Chunk Codec Support
 

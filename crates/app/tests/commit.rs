@@ -71,11 +71,8 @@ fn chunk_map(path: impl AsRef<Path>) -> ChunkMap {
     map
 }
 
-fn options() -> CommitOptions {
-    CommitOptions {
-        concurrency: 2,
-        ..CommitOptions::default()
-    }
+const fn options() -> CommitOptions {
+    CommitOptions { concurrency: 2 }
 }
 
 /// A parseable but non-canonical file name (`r.00.00.mca`) must be read
@@ -758,7 +755,7 @@ async fn missing_file_error_policy_refuses_to_guess() {
 }
 
 #[tokio::test]
-async fn with_diff_records_diff_hashes() {
+async fn commit_records_no_diff_metadata() {
     use sekai_core::MetaStore as _;
     let (root, _guard) = tempdir("diff");
     let world_path = root.join("world");
@@ -768,14 +765,10 @@ async fn with_diff_records_diff_hashes() {
     let payload = build_status_nbt("minecraft:full");
     write_region(world_path.join("region/r.0.0.mca"), &[(0, 0, payload)]);
 
-    let options = CommitOptions {
-        with_diff: true,
-        ..options()
-    };
     let mut instance = sekai_app::SekaiInstance::init(&store_url).await.unwrap();
     let (report, _) = instance
         .world_mut(&mut world)
-        .commit(options, sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
     assert_eq!(report.chunks, 1);
@@ -797,7 +790,6 @@ async fn with_diff_records_diff_hashes() {
         .unwrap()
         .unwrap();
     assert!(row.blob.is_some());
-    assert!(row.diff.is_some());
 }
 
 #[tokio::test]

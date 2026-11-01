@@ -125,7 +125,7 @@ where
             .unwrap()
             .is_none()
     );
-    meta.record_chunk(id, &coord(0, 0), Some(&BlobHash([1; 32])), None)
+    meta.record_chunk(id, &coord(0, 0), Some(&BlobHash([1; 32])))
         .await
         .unwrap();
     let row = meta.lookup_chunk(id, &coord(0, 0)).await.unwrap().unwrap();
@@ -145,19 +145,17 @@ where
 {
     use sekai_core::usecase::graph::{CommitStats, commit_stats};
     let first = meta.create_commit(1_000, &[]).await.unwrap();
-    meta.record_chunk(first, &coord(0, 0), Some(&BlobHash([1; 32])), None)
+    meta.record_chunk(first, &coord(0, 0), Some(&BlobHash([1; 32])))
         .await
         .unwrap();
-    meta.record_chunk(first, &coord(1, 0), Some(&BlobHash([1; 32])), None)
+    meta.record_chunk(first, &coord(1, 0), Some(&BlobHash([1; 32])))
         .await
         .unwrap();
     let second = meta.create_commit(2_000, &[first]).await.unwrap();
-    meta.record_chunk(second, &coord(0, 0), Some(&BlobHash([2; 32])), None)
+    meta.record_chunk(second, &coord(0, 0), Some(&BlobHash([2; 32])))
         .await
         .unwrap();
-    meta.record_chunk(second, &coord(1, 0), None, None)
-        .await
-        .unwrap();
+    meta.record_chunk(second, &coord(1, 0), None).await.unwrap();
 
     let mut fresh = 0usize;
     meta.visit_fresh_rows(second, |_| {
@@ -196,18 +194,18 @@ where
     use sekai_core::usecase::prune::{PruneReport, prune_apply, prune_plan, select_retained};
     // S1: A@0,0 B@1,0 / S2: C@0,0 (B carried) / S3: D@2,0.
     let first = meta.create_commit(1_000, &[]).await.unwrap();
-    meta.record_chunk(first, &coord(0, 0), Some(&BlobHash([1; 32])), None)
+    meta.record_chunk(first, &coord(0, 0), Some(&BlobHash([1; 32])))
         .await
         .unwrap();
-    meta.record_chunk(first, &coord(1, 0), Some(&BlobHash([2; 32])), None)
+    meta.record_chunk(first, &coord(1, 0), Some(&BlobHash([2; 32])))
         .await
         .unwrap();
     let second = meta.create_commit(2_000, &[first]).await.unwrap();
-    meta.record_chunk(second, &coord(0, 0), Some(&BlobHash([3; 32])), None)
+    meta.record_chunk(second, &coord(0, 0), Some(&BlobHash([3; 32])))
         .await
         .unwrap();
     let third = meta.create_commit(3_000, &[second]).await.unwrap();
-    meta.record_chunk(third, &coord(2, 0), Some(&BlobHash([4; 32])), None)
+    meta.record_chunk(third, &coord(2, 0), Some(&BlobHash([4; 32])))
         .await
         .unwrap();
     let before: Vec<Vec<(ChunkCoord, Option<BlobHash>)>> =
@@ -275,7 +273,7 @@ where
         .apply_commit_incremental(
             1_000,
             &[],
-            &[CommitEntry::new(coord(0, 0), Some(BlobHash([1; 32])), None)],
+            &[CommitEntry::new(coord(0, 0), Some(BlobHash([1; 32])))],
         )
         .await
         .unwrap()
@@ -284,7 +282,7 @@ where
         .apply_commit_incremental(
             2_000,
             &[first],
-            &[CommitEntry::new(coord(1, 0), Some(BlobHash([2; 32])), None)],
+            &[CommitEntry::new(coord(1, 0), Some(BlobHash([2; 32])))],
         )
         .await
         .unwrap()
@@ -293,7 +291,7 @@ where
         .apply_commit_incremental(
             3_000,
             &[second],
-            &[CommitEntry::new(coord(2, 0), Some(BlobHash([3; 32])), None)],
+            &[CommitEntry::new(coord(2, 0), Some(BlobHash([3; 32])))],
         )
         .await
         .unwrap()
@@ -370,7 +368,7 @@ where
     // Two independent histories: the second root shares no ancestor with
     // the first.
     let first = meta.create_commit(1_000, &[]).await.unwrap();
-    meta.record_chunk(first, &coord(0, 0), Some(&BlobHash([1; 32])), None)
+    meta.record_chunk(first, &coord(0, 0), Some(&BlobHash([1; 32])))
         .await
         .unwrap();
     let second = meta.create_commit(2_000, &[first]).await.unwrap();
@@ -477,7 +475,7 @@ where
     C: BlobStore,
     C::Error: core::fmt::Debug,
 {
-    let hash = sekai_core::hash_blob(b"payload");
+    let hash = sekai_core::raw_hash(b"payload");
     assert!(!cas.contains(&hash).await.unwrap());
     assert!(cas.put(&hash, b"payload").await.unwrap());
     assert!(!cas.put(&hash, b"payload").await.unwrap());
@@ -507,19 +505,15 @@ pub async fn torn_orphan_gc<S>(store: &mut S)
 where
     S: sekai_storage::SekaiStore,
 {
-    let live = sekai_core::hash_blob(b"live");
-    let orphan = sekai_core::hash_blob(b"orphan");
+    let live = sekai_core::raw_hash(b"live");
+    let orphan = sekai_core::raw_hash(b"orphan");
     assert!(store.cas_mut().put(&live, b"live").await.unwrap());
     assert!(store.cas_mut().put(&orphan, b"orphan").await.unwrap());
     // Sync-then-commit order: blobs are durable before metadata names them.
     store.cas_mut().sync().await.unwrap();
     store
         .meta_mut()
-        .apply_commit_incremental(
-            1_000,
-            &[],
-            &[CommitEntry::new(coord(0, 0), Some(live), None)],
-        )
+        .apply_commit_incremental(1_000, &[], &[CommitEntry::new(coord(0, 0), Some(live))])
         .await
         .unwrap();
 

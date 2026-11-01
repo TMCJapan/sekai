@@ -180,11 +180,8 @@ fn write_region(path: impl AsRef<Path>, image: &[u8]) {
 }
 
 /// Default bench options (workers follow CPU count).
-pub fn options() -> sekai_app::CommitOptions {
-    sekai_app::CommitOptions {
-        concurrency: 0,
-        ..sekai_app::CommitOptions::default()
-    }
+pub const fn options() -> sekai_app::CommitOptions {
+    sekai_app::CommitOptions { concurrency: 0 }
 }
 
 /// Multi-threaded runtime shared by async benches.

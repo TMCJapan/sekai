@@ -7,7 +7,7 @@ This project is organized as a Cargo workspace under `crates/`:
 └── crates
     ├── util            # Shared value types: coordinates, hashes, history records (no_std, zero dependencies)
     ├── anvil           # Pure Anvil sector codec + decompression (no_std + alloc, ex-mca)
-    ├── nbt             # Pure NBT parse/diff views over raw NBT bytes (no_std + alloc, hand-rolled parser)
+    ├── nbt             # Pure NBT parse/normalized views over raw NBT bytes (no_std + alloc, hand-rolled parser)
     ├── core            # Use-case policy API over shared types (no_std + alloc, depends on util/anvil/nbt)
     ├── storage         # Backend-neutral store traits, file CAS, locks (std + tokio)
     ├── storage-sqlite  # SQLite metadata backend over sqlx (std + tokio)
@@ -38,8 +38,8 @@ Rules:
 - `util` is a dependency leaf: zero external dependencies, pure data plus
   total validation only (no hashing backends, no codecs, no ports, no
   orchestration). `anvil`/`nbt` name util types directly (`Dimension`
-  custom ids, `DiffHash` digests); `core` composes them and re-exports
-  every util type at its root so downstream paths stay stable.
+  custom ids); `core` composes them and re-exports every util type at its
+  root so downstream paths stay stable.
 - `anvil` never calls `nbt`. `core`/`app` drives `anvil`'s decompressed raw
   NBT bytes into `nbt` (opt-in diff path), keeping the pure DAG acyclic and
   the commit hot path decode-free. Compression framing is MCA spec and lives
@@ -77,11 +77,12 @@ any exception in the PR body.
 - **Atomic file I/O**: never overwrite `.mca` files in place. `anvil` builds
   the `Vec<u8>` image; `world::atomic_swap` writes it to a temporary file
   in the same directory as the target and swaps via atomic `rename`.
-- **Captured-payload checkout**: store raw chunk payloads verbatim in CAS;
-  normalization feeds diff views only, never stored blobs. Checkout
-  reproduces the exact bytes captured for the commit, including volatile
-  tags (e.g. `LastUpdate`) as of capture time - it rewinds them to the
-  commit, it does not preserve their live values.
+- **Captured-payload checkout**: store raw chunk payloads verbatim in CAS.
+  A chunk's CAS key is its `Chunk::normalize_hash` digest, which is also
+  what `diff` compares; nothing else hashes a chunk. Checkout reproduces
+  the exact bytes captured for the commit, including volatile tags (e.g.
+  `LastUpdate`) as of capture time - it rewinds them to the commit, it does
+  not preserve their live values.
 - **No server orchestration in libraries**: `save-off`/`save-all`, process
   control, and scheduling belong to the caller, never to library crates.
 - **No persisted derived state**: commit decisions compare per-chunk
@@ -107,7 +108,7 @@ any exception in the PR body.
     `lz4_flex` block API (lz4-java stream bodies), `twox-hash` (lz4-java
     block checksums), `blake3` (header/dimension digests, all with
     `default-features = false`).
-  - `nbt`: `sekai-util` (shared `DiffHash`) plus `blake3` with
+  - `nbt`: `blake3` with
     `default-features = false` for the canonical digest. No `serde`:
     the `Value` data model has deliberately no `Serialize` impl
     (derived output would be externally tagged, competing with the
@@ -162,8 +163,8 @@ any exception in the PR body.
 - **Performance Considerations**:
 - Enforce zero-allocation on critical hot paths (reuse buffers, prefer stack allocations).
 - Prefer static dispatch (generics) over dynamic dispatch (`dyn Trait`) in core performance paths.
-- Keep the commit hot path decode-free: `nbt` runs only on the opt-in
-  (`with_diff`) path, never per-chunk by default.
+- Keep the commit hot path decode-free: commit never decompresses or parses
+  payloads; `nbt` runs only on the read-only `diff` path.
 
 # Pull Request Checklist
 

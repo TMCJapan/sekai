@@ -366,14 +366,12 @@ mod tests {
             first,
             &ChunkCoord::new(over, region, 0, 0),
             Some(&BlobHash([1; 32])),
-            None,
         ))
         .unwrap();
         block_on(meta.record_chunk(
             first,
             &ChunkCoord::new(over, region, 1, 0),
             Some(&BlobHash([1; 32])),
-            None,
         ))
         .unwrap();
         let second = block_on(meta.create_commit(200, &[first])).unwrap();
@@ -381,11 +379,9 @@ mod tests {
             second,
             &ChunkCoord::new(over, region, 0, 0),
             Some(&BlobHash([2; 32])),
-            None,
         ))
         .unwrap();
-        block_on(meta.record_chunk(second, &ChunkCoord::new(over, region, 1, 0), None, None))
-            .unwrap();
+        block_on(meta.record_chunk(second, &ChunkCoord::new(over, region, 1, 0), None)).unwrap();
 
         assert_eq!(
             block_on(commit_stats(&meta, first)).unwrap(),
@@ -438,7 +434,7 @@ mod tests {
         let mut meta = MemMeta::default();
         let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
         let first = block_on(meta.create_commit(100, &[])).unwrap();
-        block_on(meta.record_chunk(first, &coord, Some(&BlobHash([1; 32])), None)).unwrap();
+        block_on(meta.record_chunk(first, &coord, Some(&BlobHash([1; 32])))).unwrap();
         // A second history: its root shares no ancestor with `first`.
         let other = block_on(meta.create_commit(200, &[])).unwrap();
         let child = block_on(meta.create_commit(300, &[other])).unwrap();

@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use sekai_core::{
     ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitEntry, CommitId,
-    CommitRef, DEFAULT_REF_NAME, DiffHash, Dimension, FoldOutcome, MetaStore, NamedScope,
-    NamedScopeError, Rect, RefName, RegionKind, ScopeName, commit_hash,
+    CommitRef, DEFAULT_REF_NAME, Dimension, FoldOutcome, MetaStore, NamedScope, NamedScopeError,
+    Rect, RefName, RegionKind, ScopeName, commit_hash,
 };
 use sqlx::Row as _;
 use sqlx::sqlite::{
@@ -22,7 +22,7 @@ use sekai_storage::{
 };
 
 /// Managed schema version (`PRAGMA user_version`).
-pub const SCHEMA_VERSION: i64 = 14;
+pub const SCHEMA_VERSION: i64 = 15;
 
 const SCHEMA: &str = include_str!("../schema/sqlite.sql");
 
@@ -356,13 +356,9 @@ fn decode_history(row: &sqlx::sqlite::SqliteRow) -> Result<ChunkHistoryEntry, St
         i32_col(row, "cz")?,
     );
     let blob = hash_col(row, "blob")?;
-    let diff_bytes: Option<Vec<u8>> = row.try_get("diff").map_err(db_err)?;
-    let diff = diff_bytes
-        .map(|bytes| hash32(bytes).map(DiffHash))
-        .transpose()?;
     let commit_raw: Vec<u8> = row.try_get("commit_id").map_err(db_err)?;
     let commit = commit_id_from_blob(commit_raw)?;
-    Ok(ChunkHistoryEntry::new(coord, commit, blob, diff))
+    Ok(ChunkHistoryEntry::new(coord, commit, blob))
 }
 
 /// Decode one `refs` row. Stored names always re-validate: anything
@@ -478,9 +474,8 @@ fn now_ms() -> Result<i64, StorageError> {
 }
 
 /// Shared `chunk_history` insert used by single-row and batch commits.
-const INSERT_CHUNK_SQL: &str =
-    "INSERT INTO chunk_history (commit_id, seq, dim, kind, cx, cz, blob, diff)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+const INSERT_CHUNK_SQL: &str = "INSERT INTO chunk_history (commit_id, seq, dim, kind, cx, cz, blob)
+             VALUES (?, ?, ?, ?, ?, ?, ?)";
 
 /// Ancestors of a commit: the commit itself plus every commit
 /// reachable through parent links.
@@ -513,7 +508,7 @@ macro_rules! ancestor_cte {
 const LOOKUP_CHUNK_SQL: &str = concat!(
     ancestor_cte!("?"),
     "
-SELECT commit_id, dim, kind, cx, cz, blob, diff FROM chunk_history
+SELECT commit_id, dim, kind, cx, cz, blob FROM chunk_history
 WHERE dim = ? AND kind = ? AND cx = ? AND cz = ?
   AND commit_id IN (SELECT id FROM ancestors)
 ORDER BY seq DESC LIMIT 1"
@@ -523,8 +518,8 @@ ORDER BY seq DESC LIMIT 1"
 const VISIT_CHUNKS_SQL: &str = concat!(
     ancestor_cte!("?"),
     "
-SELECT dim, kind, cx, cz, blob, diff, commit_id FROM (
-   SELECT dim, kind, cx, cz, blob, diff, commit_id,
+SELECT dim, kind, cx, cz, blob, commit_id FROM (
+   SELECT dim, kind, cx, cz, blob, commit_id,
      ROW_NUMBER() OVER (
        PARTITION BY dim, kind, cx, cz ORDER BY seq DESC
      ) AS rn
@@ -666,7 +661,6 @@ impl sekai_core::MetaStore for SqliteMeta {
         commit: CommitId,
         coord: &ChunkCoord,
         blob: Option<&BlobHash>,
-        diff: Option<&DiffHash>,
     ) -> Result<(), StorageError> {
         let mut tx = self.pool.begin().await.map_err(db_err)?;
         let seq: i64 = sqlx::query_scalar("SELECT seq FROM commits WHERE id = ?")
@@ -683,7 +677,6 @@ impl sekai_core::MetaStore for SqliteMeta {
             .bind(i64::from(coord.x))
             .bind(i64::from(coord.z))
             .bind(blob.map(|h| &h.0[..]))
-            .bind(diff.map(|h| &h.0[..]))
             .execute(&mut *tx)
             .await
             .map_err(db_err)?;
@@ -798,7 +791,7 @@ impl sekai_core::MetaStore for SqliteMeta {
         F: FnMut(&ChunkHistoryEntry) -> bool + Send,
     {
         let rows = sqlx::query(
-            "SELECT commit_id, dim, kind, cx, cz, blob, diff FROM chunk_history
+            "SELECT commit_id, dim, kind, cx, cz, blob FROM chunk_history
              WHERE commit_id = ?",
         )
         .bind(commit_param(commit))
@@ -954,7 +947,6 @@ impl sekai_core::MetaStore for SqliteMeta {
                     .bind(i64::from(entry.coord.x))
                     .bind(i64::from(entry.coord.z))
                     .bind(entry.blob.as_ref().map(|h| &h.0[..]))
-                    .bind(entry.diff.as_ref().map(|h| &h.0[..]))
                     .execute(&mut *tx)
                     .await
                     .map_err(db_err)?;
@@ -1701,12 +1693,12 @@ mod tests {
     }
 
     /// The version gate rejects any store whose `user_version` is not
-    /// `SCHEMA_VERSION` (14) before any table is touched. The immediately
-    /// previous store version, 13, is refused with `UnsupportedSchema
-    /// { found: 13, supported: SCHEMA_VERSION }`.
+    /// `SCHEMA_VERSION` (15) before any table is touched. The immediately
+    /// previous store version, 14, is refused with `UnsupportedSchema
+    /// { found: 14, supported: SCHEMA_VERSION }`.
     #[tokio::test]
     async fn a_store_from_the_previous_schema_version_is_refused() {
-        let (dir, _guard) = tempdir("version-13");
+        let (dir, _guard) = tempdir("version-14");
         let path = dir.join("meta.sqlite");
         let mut seed = SqliteConnectOptions::new()
             .filename(&path)
@@ -1715,7 +1707,7 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(SCHEMA).execute(&mut seed).await.unwrap();
-        sqlx::query("PRAGMA user_version=13")
+        sqlx::query("PRAGMA user_version=14")
             .execute(&mut seed)
             .await
             .unwrap();
@@ -1723,7 +1715,7 @@ mod tests {
         assert!(matches!(
             SqliteMeta::open(&path).await,
             Err(StorageError::UnsupportedSchema {
-                found: 13,
+                found: 14,
                 supported: SCHEMA_VERSION,
             })
         ));

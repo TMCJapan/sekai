@@ -8,7 +8,7 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use crate::port::{BlobStore, MetaStore};
 use sekai_util::{
-    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitId, CommitRef, DiffHash,
+    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitId, CommitRef,
     FoldOutcome, NamedScope, RefName, ScopeName,
 };
 
@@ -232,14 +232,9 @@ impl MetaStore for MemMeta {
         commit: CommitId,
         coord: &ChunkCoord,
         blob: Option<&BlobHash>,
-        diff: Option<&DiffHash>,
     ) -> impl Future<Output = Result<(), MemError>> + Send {
-        self.rows.push(ChunkHistoryEntry::new(
-            *coord,
-            commit,
-            blob.copied(),
-            diff.copied(),
-        ));
+        self.rows
+            .push(ChunkHistoryEntry::new(*coord, commit, blob.copied()));
         core::future::ready(Ok(()))
     }
 
@@ -385,12 +380,8 @@ impl MetaStore for MemMeta {
         let id = crate::commit::commit_hash(&canonical, created_at_ms, entries);
         if self.insert_commit(id, created_at_ms, canonical) {
             for entry in entries {
-                self.rows.push(ChunkHistoryEntry::new(
-                    entry.coord,
-                    id,
-                    entry.blob,
-                    entry.diff,
-                ));
+                self.rows
+                    .push(ChunkHistoryEntry::new(entry.coord, id, entry.blob));
             }
         }
         // The active ref moves onto the new commit, in the same step: a

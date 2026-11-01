@@ -427,11 +427,11 @@ mod tests {
         meta.with_active_ref(&main_ref());
         // S1: A@0,0 B@1,0 / S2: C@0,0 (B carried) / S3: D@2,0.
         let s1 = [
-            CommitEntry::new(coord(0, 0), Some(BlobHash([1; 32])), None),
-            CommitEntry::new(coord(1, 0), Some(BlobHash([2; 32])), None),
+            CommitEntry::new(coord(0, 0), Some(BlobHash([1; 32]))),
+            CommitEntry::new(coord(1, 0), Some(BlobHash([2; 32]))),
         ];
-        let s2 = [CommitEntry::new(coord(0, 0), Some(BlobHash([3; 32])), None)];
-        let s3 = [CommitEntry::new(coord(2, 0), Some(BlobHash([4; 32])), None)];
+        let s2 = [CommitEntry::new(coord(0, 0), Some(BlobHash([3; 32])))];
+        let s3 = [CommitEntry::new(coord(2, 0), Some(BlobHash([4; 32])))];
         let first = block_on(meta.apply_commit_incremental(1_000, &[], &s1))
             .unwrap()
             .id;
@@ -467,13 +467,7 @@ mod tests {
         let mut meta = MemMeta::default();
         meta.with_active_ref(&main_ref());
         // S1: A@0,0 / S2: B@1,0 / S3: C@2,0.
-        let rows = |x: i32, byte: u8| {
-            [CommitEntry::new(
-                coord(x, 0),
-                Some(BlobHash([byte; 32])),
-                None,
-            )]
-        };
+        let rows = |x: i32, byte: u8| [CommitEntry::new(coord(x, 0), Some(BlobHash([byte; 32])))];
         let first = block_on(meta.apply_commit_incremental(1_000, &[], &rows(0, 1)))
             .unwrap()
             .id;
@@ -509,7 +503,7 @@ mod tests {
     fn prune_refuses_a_forking_fold() {
         let mut meta = MemMeta::default();
         meta.with_active_ref(&main_ref());
-        let row = |c: ChunkCoord, byte: u8| [CommitEntry::new(c, Some(BlobHash([byte; 32])), None)];
+        let row = |c: ChunkCoord, byte: u8| [CommitEntry::new(c, Some(BlobHash([byte; 32])))];
         let first = block_on(meta.apply_commit_incremental(1_000, &[], &row(coord(0, 0), 1)))
             .unwrap()
             .id;
@@ -537,7 +531,7 @@ mod tests {
     fn prune_folds_a_forked_parent_graph_into_one_target() {
         let mut meta = MemMeta::default();
         meta.with_active_ref(&main_ref());
-        let row = |c: ChunkCoord, byte: u8| [CommitEntry::new(c, Some(BlobHash([byte; 32])), None)];
+        let row = |c: ChunkCoord, byte: u8| [CommitEntry::new(c, Some(BlobHash([byte; 32])))];
         // first <- second, and third merges both: retiring first and
         // second fold into third.
         let first = block_on(meta.apply_commit_incremental(1_000, &[], &row(coord(0, 0), 1)))

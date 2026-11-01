@@ -1,18 +1,52 @@
-//! Content hashes for the two-layer hashing model.
-//!
-//! Persistent blob hashes and volatile diff hashes.
+//! Content hashes: the normalized chunk digest and its CAS key.
 
 use alloc::string::String;
 
 use super::error::HexError;
 
-/// Blake3 key for exact raw chunk payloads.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct BlobHash(pub [u8; 32]);
+/// Blake3 of a chunk's normalized view.
+///
+/// This is the single chunk hash in the system. It keys the CAS and drives
+/// change detection, so identical content always produces the identical
+/// digest regardless of volatile tags or on-disk codec/ordering.
+pub type ChunkHash = [u8; 32];
 
-/// Blake3 hash of normalized NBT used for change detection.
+/// Digest of an arbitrary byte slice.
+///
+/// Only for payloads with no chunk schema to normalize (region file
+/// fingerprints, non-level-chunk data); chunks hash through
+/// `Chunk::normalize_hash`.
+pub fn hash_bytes(bytes: &[u8]) -> ChunkHash {
+    *blake3::hash(bytes).as_bytes()
+}
+
+/// Incremental Blake3 over a stream of byte slices.
+///
+/// Region files are fingerprinted while being read, so the whole file never
+/// has to sit in memory.
+#[derive(Debug, Default, Clone)]
+pub struct BytesHasher(blake3::Hasher);
+
+impl BytesHasher {
+    /// Fresh hasher.
+    pub fn new() -> Self {
+        Self(blake3::Hasher::new())
+    }
+
+    /// Feed the next slice of content.
+    pub fn update(&mut self, bytes: &[u8]) {
+        self.0.update(bytes);
+    }
+
+    /// Consume the hasher and return the digest.
+    pub fn finalize(self) -> ChunkHash {
+        *self.0.finalize().as_bytes()
+    }
+}
+
+/// Blake3 key for normalized chunk content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DiffHash(pub [u8; 32]);
+pub struct BlobHash(pub ChunkHash);
 
 /// Lowercase alphabet for CAS paths.
 const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -28,7 +62,7 @@ const fn decode_nibble(byte: u8) -> Result<u8, HexError> {
 }
 
 /// Encode a 32-byte value as lowercase hex without allocation.
-pub(crate) const fn hex32_into(bytes: [u8; 32]) -> [u8; 64] {
+pub(crate) const fn hex32_into(bytes: ChunkHash) -> [u8; 64] {
     let mut out = [0u8; 64];
     let mut i = 0;
     while i < 32 {
@@ -40,7 +74,7 @@ pub(crate) const fn hex32_into(bytes: [u8; 32]) -> [u8; 64] {
 }
 
 /// Parse a 64-byte hexadecimal value into raw bytes.
-pub(crate) fn hex32_from(input: &[u8]) -> Result<[u8; 32], HexError> {
+pub(crate) fn hex32_from(input: &[u8]) -> Result<ChunkHash, HexError> {
     if input.len() != 64 {
         return Err(HexError::BadHexLength(input.len()));
     }
@@ -56,9 +90,15 @@ pub(crate) fn hex32_from(input: &[u8]) -> Result<[u8; 32], HexError> {
 }
 
 impl BlobHash {
+    /// Wrap a chunk digest.
+    #[inline]
+    pub const fn new(hash: ChunkHash) -> Self {
+        Self(hash)
+    }
+
     /// Raw 32 bytes (e.g. for binary DB columns).
     #[inline]
-    pub const fn as_bytes(self) -> [u8; 32] {
+    pub const fn as_bytes(self) -> ChunkHash {
         self.0
     }
 
@@ -76,14 +116,6 @@ impl BlobHash {
     /// Parse a 64-byte hexadecimal value.
     pub fn from_hex(input: &[u8]) -> Result<Self, HexError> {
         hex32_from(input).map(Self)
-    }
-}
-
-impl DiffHash {
-    /// Raw 32 bytes.
-    #[inline]
-    pub const fn as_bytes(self) -> [u8; 32] {
-        self.0
     }
 }
 
@@ -110,5 +142,16 @@ mod tests {
         let mut bad = [b'0'; 64];
         bad[0] = b'z';
         assert_eq!(BlobHash::from_hex(&bad), Err(HexError::BadHexChar(b'z')));
+    }
+
+    #[test]
+    fn bytes_hasher_matches_a_single_shot_digest() {
+        let data: alloc::vec::Vec<u8> = (0..300u32).map(|i| (i % 251) as u8).collect();
+        let mut hasher = BytesHasher::new();
+        for part in data.chunks(7) {
+            hasher.update(part);
+        }
+        assert_eq!(hasher.finalize(), hash_bytes(&data));
+        assert_eq!(BytesHasher::new().finalize(), hash_bytes(b""));
     }
 }
