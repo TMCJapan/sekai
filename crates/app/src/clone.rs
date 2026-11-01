@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use sekai_core::{BlobHash, ChunkCoord, CommitId, RegionKey, Scope};
-use sekai_storage::SekaiStore;
+use sekai_storage::{SekaiStore, StorageError};
 use sekai_world::{RegionFile, WorldTree};
 
 use crate::checkout::{MissingBlobPolicy, fetch_or_skip};
@@ -115,8 +115,9 @@ impl<S: SekaiStore> SekaiInstance<S> {
         };
 
         let files_started = Instant::now();
-        let report = clone_files(job, timestamp, progress).await?;
+        let report = clone_files(job, timestamp, progress).await;
         let files_dt = files_started.elapsed();
+        let report = report?;
 
         let timings = CloneTimings {
             total: total_started.elapsed(),
@@ -162,6 +163,7 @@ where
     let files_total = groups.len();
     let mut files_done = 0usize;
     let mut blob_buf = Vec::new();
+    let mut steps = Vec::new();
     for (key, rows) in &groups {
         let region = out.derive_region(*key)?;
         let mut writer = sekai_anvil::RegionBuilder::new(key.rx, key.rz, timestamp)?;
@@ -172,11 +174,22 @@ where
             writer.stage_chunk(coord.x, coord.z, &blob_buf)?;
             report.chunks_restored += 1;
         }
-        tokio::task::spawn_blocking(move || -> Result<(), AppError> {
-            region.write(&writer.image()?)?;
-            Ok(())
-        })
-        .await??;
+        // Queued as soon as its input is ready: a cancelled future must not
+        // take a file it has already promised to write with it.
+        let image = writer.image()?;
+        steps.push((
+            tokio::task::spawn_blocking(move || region.write(&image).map_err(AppError::from)),
+            key,
+        ));
+    }
+    // Collect in plan order, so a failure names the file it came from.
+    for (step, key) in steps {
+        step.await.map_err(|err| {
+            AppError::Storage(StorageError::backend(
+                "clone worker",
+                std::io::Error::other(format!("the file step for {key:?} stopped: {err}")),
+            ))
+        })??;
         report.files_written += 1;
         files_done += 1;
         progress(CloneProgress {

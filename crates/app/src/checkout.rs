@@ -14,6 +14,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use sekai_core::{BlobHash, CheckoutReport, ChunkCoord, CommitId, RegionKey, Scope};
@@ -21,7 +22,7 @@ use sekai_storage::{SekaiStore, StorageError};
 use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
 
 use crate::error::AppError;
-use crate::instance::{ExclusiveWorldGuard, WorldHandleMut};
+use crate::instance::{ExclusiveWorldGuard, WorldGuard, WorldHandleMut};
 use crate::regions::discover_regions;
 
 /// Per-phase timings for checkout execution.
@@ -113,10 +114,8 @@ where
         scope: Scope,
         progress: impl FnMut(CheckoutProgress),
     ) -> Result<(CheckoutReport, CheckoutTimings), AppError> {
-        let guard = Arc::new(ExclusiveWorldGuard::acquire(
-            self.world,
-            WorldLockMode::Exclusive,
-        )?);
+        let guard =
+            ExclusiveWorldGuard::acquire(self.world, WorldLockMode::Exclusive)?.into_shared();
         let store = &self.instance.store;
         let world = &*self.world;
         let total_started = Instant::now();
@@ -184,9 +183,9 @@ struct CheckoutJob<S: SekaiStore, T: WorldTree> {
     cas: S::Blobs,
     world: T,
     discovered: BTreeMap<RegionKey, T::Region>,
-    /// Travels into every blocking step: the world stays locked for as long
-    /// as *any* of them still runs, even after the future is cancelled.
-    guard: Arc<ExclusiveWorldGuard<T::Lock>>,
+    /// One share per blocking step: the world stays locked for as long as
+    /// *any* of them still runs, even after the future is cancelled.
+    guard: Arc<WorldGuard<T::Lock>>,
 }
 
 /// Rebuild every region file: present rows from CAS blobs, tombstones and
@@ -223,6 +222,8 @@ where
         files_deleted: 0,
         chunks_restored: 0,
     };
+    // Tracks the steps still queued: the last one out releases the world.
+    let pending = Arc::new(AtomicUsize::new(0));
     let files_total = keys.len();
     // Counts files as they finish: `done` reads it, so each report carries
     // the file it concludes rather than a running total.
@@ -258,14 +259,20 @@ where
             } else {
                 options.keep_post_commit_files
             };
-            let step = Step::start(Arc::clone(&guard), move |reported| {
-                let deleted = !keep && region.exists();
-                if deleted {
-                    region.remove()?;
-                }
-                let _ = reported.send(deleted);
-                Ok::<_, AppError>(())
-            });
+            let step = Step::start(
+                Arc::clone(&guard),
+                queued(
+                    Arc::clone(&pending),
+                    move |reported| -> Result<(), AppError> {
+                        let deleted = !keep && region.exists();
+                        if deleted {
+                            region.remove()?;
+                        }
+                        let _ = reported.send(deleted);
+                        Ok(())
+                    },
+                ),
+            );
             report.files_deleted += usize::from(step.outcome().await?);
             progress(done(report.chunks_restored));
             continue;
@@ -282,26 +289,64 @@ where
         }
         let keep_live = options.keep_post_commit_chunks || options.keep_tombstoned_chunks;
         let to_merge = tombs.cloned();
-        let step = Step::start(Arc::clone(&guard), move |reported| {
-            if keep_live {
-                merge_live_chunks(
-                    &region,
-                    key,
-                    &restored,
-                    to_merge.as_deref(),
-                    options,
-                    &mut writer,
-                )?;
-            }
-            region.write(&writer.image()?)?;
-            let _ = reported.send(());
-            Ok::<_, AppError>(())
-        });
+        let step = Step::start(
+            Arc::clone(&guard),
+            queued(
+                Arc::clone(&pending),
+                move |reported| -> Result<(), AppError> {
+                    if keep_live {
+                        merge_live_chunks(
+                            &region,
+                            key,
+                            &restored,
+                            to_merge.as_deref(),
+                            options,
+                            &mut writer,
+                        )?;
+                    }
+                    region.write(&writer.image()?)?;
+                    let _ = reported.send(());
+                    Ok(())
+                },
+            ),
+        );
         step.outcome().await?;
         report.files_written += 1;
         progress(done(report.chunks_restored));
     }
+    // Every step has been awaited, so nothing can start after this: release
+    // the world rather than waiting for the guard to drop with the future.
+    release_if_idle(&guard, &pending);
     Ok(report)
+}
+
+/// Counts a step in as queued and closes over the exit that counts it out.
+///
+/// The counter lets a cancelled future - which never reaches its own
+/// release - still free the world once the last step is done. Counting
+/// inside the closure means a step torn down without running cannot leave
+/// the counter stuck.
+fn queued<R, F>(
+    pending: Arc<AtomicUsize>,
+    work: F,
+) -> impl FnOnce(tokio::sync::oneshot::Sender<R>) -> Result<(), AppError> + Send + 'static
+where
+    R: Send + 'static,
+    F: FnOnce(tokio::sync::oneshot::Sender<R>) -> Result<(), AppError> + Send + 'static,
+{
+    pending.fetch_add(1, Ordering::SeqCst);
+    move |reported| {
+        let out = work(reported);
+        let _ = pending.fetch_sub(1, Ordering::SeqCst);
+        out
+    }
+}
+
+/// Release the world when no step is queued any more.
+fn release_if_idle<L>(guard: &Arc<WorldGuard<L>>, pending: &AtomicUsize) {
+    if pending.load(Ordering::SeqCst) == 0 {
+        guard.release();
+    }
 }
 
 /// One blocking file step and the result it reports.
@@ -317,11 +362,13 @@ struct Step<R, T> {
 }
 
 impl<R: Send + 'static, T: Send + 'static> Step<R, T> {
-    /// Run `work` on the blocking pool, holding the world for its duration.
+    /// Run `work` on the blocking pool, holding a share of the world for its
+    /// duration.
     ///
-    /// `work` sends its result through the oneshot, then returns.
+    /// `work` sends its result through the oneshot, then returns. The share
+    /// keeps the lock alive if the future is dropped before this step ends.
     fn start<L>(
-        guard: Arc<ExclusiveWorldGuard<L>>,
+        guard: Arc<WorldGuard<L>>,
         work: impl FnOnce(tokio::sync::oneshot::Sender<R>) -> Result<T, AppError> + Send + 'static,
     ) -> Self
     where

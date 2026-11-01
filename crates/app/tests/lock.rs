@@ -366,111 +366,140 @@ async fn collection_and_pruning_do_not_trip_over_their_own_phases() {
 }
 
 /// A cancelled checkout future cannot stop its blocking file pass, so the
-/// pass itself must keep the world locked until it finishes.
-#[tokio::test]
+/// pass itself must keep the world locked until it finishes - and every file
+/// it has queued must still land.
+///
+/// The future is dropped as soon as the pass reports anything, which is where
+/// it is still working: `progress` only ticks a counter, because parking it
+/// would park the async half this test drives by hand. The world must stay
+/// shut until the queued writes are done - an exclusive lock only succeeds
+/// once no step is left - and both regions must be on disk by then.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_cancelled_checkout_keeps_the_world_locked_until_its_files_finish() {
     let mut fx = Fixture::new("cancel").await;
     let other = fx.other_world();
-    let (started, files_running) = std::sync::mpsc::channel();
-    let (release, released) = std::sync::mpsc::channel::<()>();
+    let reported = Arc::new(AtomicUsize::new(0));
 
-    let Fixture {
-        instance,
-        world,
-        commit,
-        ..
-    } = &mut fx;
-    let mut handle = instance.world_mut(world);
-    let checkout = handle.checkout(
-        *commit,
-        CheckoutOptions::default(),
-        Scope::World,
+    // A second tree over the same folder: the first one is busy being run.
+    let mut world = fx.other_world();
+    let mut handle = fx.instance.world_mut(&mut world);
+    let checkout = handle.checkout(fx.commit, CheckoutOptions::default(), Scope::World, {
+        let reported = Arc::clone(&reported);
         move |_| {
-            let _ = started.send(());
-            // Parks the file pass until the test lets go (the sender drops).
-            let _ = released.recv();
-        },
-    );
-    tokio::select! {
-        outcome = checkout => panic!("the checkout must still be running: {outcome:?}"),
-        started = tokio::task::spawn_blocking(move || files_running.recv()) => {
-            assert!(matches!(started, Ok(Ok(()))), "the file pass never started: {started:?}");
+            reported.fetch_add(1, Ordering::SeqCst);
         }
-    }
-    // The future is gone; its file pass is parked in `progress`.
-    assert!(matches!(
-        other.lock(WorldLockMode::Exclusive),
-        Err(WorldError::WorldLocked { .. })
-    ));
+    });
+    let observed = Arc::clone(&reported);
+    let mut checkout = Box::pin(checkout);
+    poll_until(&mut checkout, || observed.load(Ordering::SeqCst) > 0).await;
+    drop(checkout);
 
-    drop(release);
+    // The future is gone; the pass it queued is not. The world stays shut
+    // until every file queued behind the report has been written.
     let deadline = Instant::now() + Duration::from_secs(10);
-    while let Err(err) = other.lock(WorldLockMode::Exclusive) {
+    loop {
+        match other.lock(WorldLockMode::Exclusive) {
+            Ok(held) => drop(held),
+            Err(WorldError::WorldLocked { .. }) => {
+                assert!(Instant::now() < deadline, "the file pass never released");
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+            Err(err) => panic!("the world lock failed: {err}"),
+        }
+        break;
+    }
+    assert_eq!(
+        read_regions(&fx.world_path),
+        vec!["r.0.0.mca", "r.1.0.mca"],
+        "a queued file was abandoned with the future"
+    );
+}
+
+/// A cancelled clone cannot stop its blocking passes either: the files it
+/// promised to write land anyway, even after the future is long gone.
+///
+/// The future is dropped as soon as a file is reported. A pass that stopped
+/// with it leaves the target short of the file it had queued, which on this
+/// host is `r.1.0.mca`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancelled_clone_still_finishes_its_files() {
+    let fx = Fixture::new("cancel-clone").await;
+    let target = fx.root.join(format!(
+        "cloned-{}",
+        TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    // Not `HostWorldTree::new`: it creates its folder up front, and clone
+    // only accepts an empty target.
+    let out = HostWorldTree::new_legacy(&target);
+    let reported = Arc::new(AtomicUsize::new(0));
+
+    let clone = fx
+        .instance
+        .clone_to(&out, fx.commit, CloneOptions::default(), Scope::World, {
+            let reported = Arc::clone(&reported);
+            move |_| {
+                reported.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+    let observed = Arc::clone(&reported);
+    let mut clone = Box::pin(clone);
+    poll_until(&mut clone, || observed.load(Ordering::SeqCst) >= 1).await;
+    drop(clone);
+
+    // Nothing about the store is held, so readers keep working while the
+    // cancelled pass finishes.
+    fx.instance.list_commits().await.unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while read_regions(&target) != vec!["r.0.0.mca", "r.1.0.mca"] {
         assert!(
-            matches!(err, WorldError::WorldLocked { .. }),
-            "the file pass still holds the world: {err}"
+            Instant::now() < deadline,
+            "the clone output was abandoned halfway"
         );
-        assert!(Instant::now() < deadline, "the file pass never released");
-        std::thread::sleep(Duration::from_millis(20));
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
 }
 
-/// A cancelled clone future cannot stop its blocking file pass, so the
-/// pass itself must finish the files it promised to write: cancellation
-/// abandons the handle, never half-written output. Nothing about the store
-/// is held, so readers keep working while the pass finishes.
-#[tokio::test]
-async fn a_cancelled_clone_still_finishes_its_files() {
-    let fx = Fixture::new("cancel-clone").await;
-    let (started, files_running) = std::sync::mpsc::channel();
-    let (release, released) = std::sync::mpsc::channel::<()>();
-    let files_done = Arc::new(AtomicUsize::new(0));
-    let files_total = Arc::new(AtomicUsize::new(0));
-
-    let out = HostWorldTree::new_legacy(fx.root.join(format!(
-        "cloned-{}",
-        TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-    )));
-    let mut clone =
-        Box::pin(
-            fx.instance
-                .clone_to(&out, fx.commit, CloneOptions::default(), Scope::World, {
-                    let done = Arc::clone(&files_done);
-                    let total = Arc::clone(&files_total);
-                    move |update| {
-                        done.store(update.files_done, Ordering::Relaxed);
-                        total.store(update.files_total, Ordering::Relaxed);
-                        let _ = started.send(());
-                        // Parks the async half until the test lets go (the sender drops).
-                        let _ = released.recv();
-                    }
-                }),
-        );
-    tokio::select! {
-        outcome = &mut clone => panic!("the clone must still be running: {outcome:?}"),
-        started = tokio::task::spawn_blocking(move || files_running.recv()) => {
-            assert!(matches!(started, Ok(Ok(()))), "the file pass never started: {started:?}");
-        }
-    }
-    // The future is gone; its blocking passes may still be running.
-    drop(clone);
-    fx.instance.list_commits().await.unwrap();
-
-    drop(release);
-    // The pass reports the files it writes; the last one means the file
-    // work is done.
+/// Poll `fut` until `ready` holds, keeping the future alive.
+///
+/// The future is driven by hand so the caller decides when to drop it: that
+/// drop is the cancellation. Each poll yields, so the steps it queued get a
+/// chance to run. A regression trips the deadline instead of hanging. A pass
+/// that finishes before reporting is not cancelled mid-run, so `ready` checks
+/// always include the outcome: a truncated world or output still fails.
+async fn poll_until<F>(fut: &mut std::pin::Pin<Box<F>>, ready: impl Fn() -> bool)
+where
+    F: std::future::Future,
+{
     let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        let (done, total) = (
-            files_done.load(Ordering::Relaxed),
-            files_total.load(Ordering::Relaxed),
-        );
-        if total > 0 && done >= total {
-            break;
+    while !ready() {
+        let done = std::future::poll_fn::<_, _>(|cx| {
+            std::task::Poll::Ready(fut.as_mut().poll(cx).is_ready())
+        })
+        .await;
+        if done {
+            // Past the cancel point either way; the outcome checks below
+            // decide whether a truncated result slipped through.
+            return;
         }
-        assert!(Instant::now() < deadline, "the file pass never finished");
-        std::thread::sleep(Duration::from_millis(20));
+        assert!(Instant::now() < deadline, "the file pass never reported");
+        tokio::time::sleep(Duration::from_millis(1)).await;
     }
+}
+
+/// Region file names present under `root/region`, sorted.
+///
+/// Only the fixture's own world is a folder the test created: a clone target
+/// is whatever directory the tree derived, so callers pass that directory.
+fn read_regions(root: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(root.join("region"))
+        .expect("the region folder exists")
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.to_ascii_lowercase().ends_with(".mca"))
+        .collect();
+    names.sort();
+    names
 }
 
 /// A crashed run - or a pre-lock binary - leaves `commit.inflight` behind.
