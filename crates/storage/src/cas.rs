@@ -180,7 +180,8 @@ impl FileCas {
 }
 
 /// Write `payload` to `dest` through a fsynced temp file and a rename.
-fn write_blob(dest: &Path, payload: &[u8]) -> Result<bool, StorageError> {
+fn write_blob(dest: impl AsRef<Path>, payload: &[u8]) -> Result<bool, StorageError> {
+    let dest = dest.as_ref();
     let io = |path: PathBuf| move |source: std::io::Error| io_error(&path, source);
     // `create_new`: a name left behind by a crashed process (or by a
     // second process that happens to reuse this pid) must never be
@@ -222,7 +223,8 @@ fn write_blob(dest: &Path, payload: &[u8]) -> Result<bool, StorageError> {
 }
 
 /// Hash every file stored under `blobs/`, in shard then name order.
-fn scan_blobs(blobs: &Path) -> Result<Vec<BlobHash>, StorageError> {
+fn scan_blobs(blobs: impl AsRef<Path>) -> Result<Vec<BlobHash>, StorageError> {
+    let blobs = blobs.as_ref();
     let mut hashes = Vec::new();
     let shards = std::fs::read_dir(blobs).map_err(|source| io_error(blobs, source))?;
     for shard in shards {
@@ -308,7 +310,8 @@ impl sekai_core::BlobStore for FileCas {
 }
 
 /// Read one blob file, reporting absence as CAS corruption.
-fn read_blob(path: &Path, hex: String) -> Result<Vec<u8>, StorageError> {
+fn read_blob(path: impl AsRef<Path>, hex: String) -> Result<Vec<u8>, StorageError> {
+    let path = path.as_ref();
     let mut out = Vec::new();
     let mut file = match std::fs::File::open(path) {
         Ok(file) => file,
@@ -323,7 +326,8 @@ fn read_blob(path: &Path, hex: String) -> Result<Vec<u8>, StorageError> {
 }
 
 /// Remove one blob file; `false` when it was already absent.
-fn remove_blob(path: &Path) -> Result<bool, StorageError> {
+fn remove_blob(path: impl AsRef<Path>) -> Result<bool, StorageError> {
+    let path = path.as_ref();
     match std::fs::remove_file(path) {
         Ok(()) => Ok(true),
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(false),

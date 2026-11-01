@@ -491,7 +491,8 @@ where
 ///
 /// Only the fixture's own world is a folder the test created: a clone target
 /// is whatever directory the tree derived, so callers pass that directory.
-fn read_regions(root: &Path) -> Vec<String> {
+fn read_regions(root: impl AsRef<Path>) -> Vec<String> {
+    let root = root.as_ref();
     let mut names: Vec<String> = std::fs::read_dir(root.join("region"))
         .expect("the region folder exists")
         .filter_map(Result::ok)

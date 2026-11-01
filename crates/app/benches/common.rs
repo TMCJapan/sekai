@@ -127,7 +127,7 @@ pub fn generate(world: impl AsRef<Path>, spec: &WorldSpec) {
         let dir = world.as_ref().join("region");
         std::fs::create_dir_all(&dir).expect("mkdir works");
         let image = builder.image().expect("image assembles");
-        write_region(&dir.join(format!("r.{r}.0.mca")), &image);
+        write_region(dir.join(format!("r.{r}.0.mca")), &image);
     }
 }
 
@@ -167,7 +167,8 @@ fn temp_root() -> std::path::PathBuf {
 ///
 /// Out of space fails every subsequent write too, so a bare `write works`
 /// panic would only name the symptom: send the reader to the knob instead.
-fn write_region(path: &Path, image: &[u8]) {
+fn write_region(path: impl AsRef<Path>, image: &[u8]) {
+    let path = path.as_ref();
     std::fs::write(path, image).unwrap_or_else(|err| {
         panic!(
             "writing {} failed: {err}\n\
