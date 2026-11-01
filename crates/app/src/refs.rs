@@ -5,11 +5,11 @@
 //! `delete_ref` refuses to remove. Refs carry no content of their own -
 //! they pin no commit and change nothing a checkout sees - and a retired
 //! commit hands its ref to the commit that folded it (pruning). Changing
-//! the active ref decides where the next commit lands, so it runs under
-//! the writer lock.
+//! the active ref decides where the next commit lands, so each mutation
+//! reads and writes inside one metadata transaction.
 
 use sekai_core::{CommitId, CommitRef, MetaStore as _, RefName};
-use sekai_storage::{SekaiStore, StorageError, StoreLockMode};
+use sekai_storage::{SekaiStore, StorageError};
 
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
@@ -25,20 +25,12 @@ impl<S: SekaiStore> SekaiInstance<S> {
     ///
     /// `force` is a policy of this layer: the port's `set_ref` always
     /// moves the ref.
-    ///
-    /// Every read runs under the writer lock, which excludes the app
-    /// operations that change commits or refs (`commit`, `prune`, and the
-    /// other ref mutations): a conflicting operation fails fast with
-    /// `StoreLocked` instead of running concurrently. A staged target
-    /// cannot vanish between the check and the write. Handles using the
-    /// backend directly are outside this protocol.
     pub async fn create_ref(
         &mut self,
         name: &RefName,
         commit: Option<CommitId>,
         force: bool,
     ) -> Result<CommitRef, AppError> {
-        let _lock = self.lock_store(StoreLockMode::Writer)?;
         if let Some(commit) = commit
             && self.store.meta().lookup_commit(commit).await?.is_none()
         {
@@ -79,7 +71,6 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// the protected name, so the app can say which ref to activate
     /// instead.
     pub async fn delete_ref(&mut self, name: &RefName) -> Result<bool, AppError> {
-        let _lock = self.lock_store(StoreLockMode::Writer)?;
         self.store
             .meta_mut()
             .delete_ref(name)
@@ -92,7 +83,6 @@ impl<S: SekaiStore> SekaiInstance<S> {
 
     /// List refs in name order.
     pub async fn list_refs(&self) -> Result<Vec<CommitRef>, AppError> {
-        let _lock = self.lock_store(StoreLockMode::Shared)?;
         sekai_core::usecase::refs::list_refs(self.store.meta())
             .await
             .map_err(AppError::Commit)
@@ -104,7 +94,6 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// flag. The record is read back after activation so the caller sees
     /// what the store actually holds, not a copy staged before the write.
     pub async fn activate_ref(&mut self, name: &RefName) -> Result<CommitRef, AppError> {
-        let _lock = self.lock_store(StoreLockMode::Writer)?;
         self.store
             .meta_mut()
             .activate_ref(name)
@@ -127,7 +116,6 @@ impl<S: SekaiStore> SekaiInstance<S> {
 
     /// The active ref, or `None` when the store has none.
     pub async fn active_ref(&self) -> Result<Option<CommitRef>, AppError> {
-        let _lock = self.lock_store(StoreLockMode::Shared)?;
         sekai_core::usecase::refs::active_ref(self.store.meta())
             .await
             .map_err(AppError::Commit)
@@ -143,11 +131,8 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// newest stored commit: activating an older ref changes the target
     /// here without changing the newest commit.
     ///
-    /// Takes a shared store lock. A caller already holding a shared lock
-    /// (such as `diff_world_chunks`) may call this; a writer-locked caller
-    /// must not nest another acquisition.
+    /// Any caller may run it, including one holding a world lock.
     pub async fn current_commit_id(&self) -> Result<Option<CommitId>, AppError> {
-        let _lock = self.lock_store(StoreLockMode::Shared)?;
         Ok(sekai_core::usecase::refs::active_ref(self.store.meta())
             .await
             .map_err(AppError::Commit)?

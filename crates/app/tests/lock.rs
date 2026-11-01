@@ -1,7 +1,8 @@
-//! Cross-process exclusion: every operation locks the store (and its world)
+//! Cross-process exclusion: every operation that touches a world locks it
 //! for its own duration. A second handle in the same process conflicts
 //! exactly like another process would, so held locks stand in for
-//! concurrent runs here.
+//! concurrent runs here. The store itself never locks: its blobs are
+//! append-only and its metadata resolves conflicts at commit time.
 //!
 //! Requires the `backend-sqlite` feature.
 
@@ -14,14 +15,11 @@ use sekai_app::{
 };
 use sekai_core::MetaStore as _;
 use sekai_nbt::nanonbt::Cesu8;
-use sekai_storage::{StorageError, StoreLockMode};
 use sekai_storage_sqlite::SqliteStore;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-
-use StoreLockMode::{Exclusive, Shared, Writer};
 
 /// Distinguishes the clone targets one test creates inside a single root.
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -119,10 +117,6 @@ impl Fixture {
         }
     }
 
-    fn hold_store(&self, mode: StoreLockMode) -> sekai_storage::StoreLock {
-        self.instance.store().cas().lock(mode).unwrap()
-    }
-
     /// A second tree over the same folder, standing in for another process.
     fn other_world(&self) -> HostWorldTree {
         HostWorldTree::new(&self.world_path).unwrap()
@@ -132,8 +126,7 @@ impl Fixture {
 const fn is_lock_error(err: &sekai_app::AppError) -> bool {
     matches!(
         err,
-        sekai_app::AppError::Storage(StorageError::StoreLocked { .. })
-            | sekai_app::AppError::World(WorldError::WorldLocked { .. })
+        sekai_app::AppError::World(WorldError::WorldLocked { .. })
     )
 }
 
@@ -195,35 +188,6 @@ impl Op {
         Self::Checkout,
         Self::WorldChunkCoords,
     ];
-
-    const fn store_mode(self) -> Option<StoreLockMode> {
-        match self {
-            Self::GcPlan
-            | Self::GcApply
-            | Self::Gc
-            | Self::Commit
-            | Self::CreateRef
-            | Self::DeleteRef
-            | Self::CreateScope
-            | Self::DeleteScope => Some(Writer),
-            Self::PruneApply | Self::Prune => Some(Exclusive),
-            Self::WorldChunkCoords => None,
-            Self::ListCommits
-            | Self::LatestCommit
-            | Self::ResolveRef
-            | Self::ListScopes
-            | Self::ResolveScope
-            | Self::CommitStats
-            | Self::CommitCoords
-            | Self::DiffBlobs
-            | Self::DiffChunks
-            | Self::Clone
-            | Self::PrunePlan
-            | Self::Status
-            | Self::DiffWorld
-            | Self::Checkout => Some(Shared),
-        }
-    }
 
     const fn world_mode(self) -> Option<WorldLockMode> {
         match self {
@@ -357,10 +321,6 @@ fn assert_locked_out(blocked: bool, outcome: &Result<(), sekai_app::AppError>, c
     }
 }
 
-const fn store_compatible(held: StoreLockMode, wanted: StoreLockMode) -> bool {
-    matches!((held, wanted), (Shared, Shared | Writer) | (Writer, Shared))
-}
-
 #[tokio::test]
 async fn every_operation_succeeds_with_nothing_held() {
     // The baseline for both matrices: a failure there is a lock decision,
@@ -369,26 +329,6 @@ async fn every_operation_succeeds_with_nothing_held() {
     for op in Op::ALL {
         let outcome = op.run(&mut fx).await;
         assert_locked_out(false, &outcome, &format!("{op:?} with nothing held"));
-    }
-}
-
-#[tokio::test]
-async fn every_operation_takes_its_store_mode() {
-    let mut fx = Fixture::new("store-matrix").await;
-    for held in [Shared, Writer, Exclusive] {
-        let lock = fx.hold_store(held);
-        for op in Op::ALL {
-            let blocked = op
-                .store_mode()
-                .is_some_and(|wanted| !store_compatible(held, wanted));
-            let outcome = op.run(&mut fx).await;
-            assert_locked_out(
-                blocked,
-                &outcome,
-                &format!("{op:?} with the store held {held:?}"),
-            );
-        }
-        drop(lock);
     }
 }
 
@@ -426,133 +366,145 @@ async fn collection_and_pruning_do_not_trip_over_their_own_phases() {
 }
 
 /// A cancelled checkout future cannot stop its blocking file pass, so the
-/// pass itself must keep the world locked until it finishes.
-#[tokio::test]
+/// pass itself must keep the world locked until it finishes - and every file
+/// it has queued must still land.
+///
+/// The future is dropped as soon as the pass reports anything, which is where
+/// it is still working: `progress` only ticks a counter, because parking it
+/// would park the async half this test drives by hand. The world must stay
+/// shut until the queued writes are done - an exclusive lock only succeeds
+/// once no step is left - and both regions must be on disk by then.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_cancelled_checkout_keeps_the_world_locked_until_its_files_finish() {
     let mut fx = Fixture::new("cancel").await;
     let other = fx.other_world();
-    let (started, files_running) = std::sync::mpsc::channel();
-    let (release, released) = std::sync::mpsc::channel::<()>();
+    let reported = Arc::new(AtomicUsize::new(0));
 
-    let Fixture {
-        instance,
-        world,
-        commit,
-        ..
-    } = &mut fx;
-    let mut handle = instance.world_mut(world);
-    let checkout = handle.checkout(
-        *commit,
-        CheckoutOptions::default(),
-        Scope::World,
+    // A second tree over the same folder: the first one is busy being run.
+    let mut world = fx.other_world();
+    let mut handle = fx.instance.world_mut(&mut world);
+    let checkout = handle.checkout(fx.commit, CheckoutOptions::default(), Scope::World, {
+        let reported = Arc::clone(&reported);
         move |_| {
-            let _ = started.send(());
-            // Parks the file pass until the test lets go (the sender drops).
-            let _ = released.recv();
-        },
-    );
-    tokio::select! {
-        outcome = checkout => panic!("the checkout must still be running: {outcome:?}"),
-        started = tokio::task::spawn_blocking(move || files_running.recv()) => {
-            assert!(matches!(started, Ok(Ok(()))), "the file pass never started: {started:?}");
+            reported.fetch_add(1, Ordering::SeqCst);
         }
-    }
-    // The future is gone; its file pass is parked in `progress`.
-    assert!(matches!(
-        other.lock(WorldLockMode::Exclusive),
-        Err(WorldError::WorldLocked { .. })
-    ));
+    });
+    let observed = Arc::clone(&reported);
+    let mut checkout = Box::pin(checkout);
+    poll_until(&mut checkout, || observed.load(Ordering::SeqCst) > 0).await;
+    drop(checkout);
 
-    drop(release);
+    // The future is gone; the pass it queued is not. The world stays shut
+    // until every file queued behind the report has been written.
     let deadline = Instant::now() + Duration::from_secs(10);
-    while let Err(err) = other.lock(WorldLockMode::Exclusive) {
-        assert!(
-            matches!(err, WorldError::WorldLocked { .. }),
-            "the file pass still holds the world: {err}"
-        );
-        assert!(Instant::now() < deadline, "the file pass never released");
-        std::thread::sleep(Duration::from_millis(20));
+    loop {
+        match other.lock(WorldLockMode::Exclusive) {
+            Ok(held) => drop(held),
+            Err(WorldError::WorldLocked { .. }) => {
+                assert!(Instant::now() < deadline, "the file pass never released");
+                std::thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+            Err(err) => panic!("the world lock failed: {err}"),
+        }
+        break;
     }
+    assert_eq!(
+        read_regions(&fx.world_path),
+        vec!["r.0.0.mca", "r.1.0.mca"],
+        "a queued file was abandoned with the future"
+    );
 }
 
-/// A cancelled clone future cannot stop its blocking file pass, so the
-/// pass itself must keep the store locked until it finishes: `prune`
-/// (exclusive) may not delete rows the pass is still reading.
-#[tokio::test]
-async fn a_cancelled_clone_keeps_the_store_locked_until_its_files_finish() {
+/// A cancelled clone cannot stop its blocking passes either: the files it
+/// promised to write land anyway, even after the future is long gone.
+///
+/// The future is dropped as soon as a file is reported. A pass that stopped
+/// with it leaves the target short of the file it had queued, which on this
+/// host is `r.1.0.mca`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cancelled_clone_still_finishes_its_files() {
     let fx = Fixture::new("cancel-clone").await;
-    let (started, files_running) = std::sync::mpsc::channel();
-    let (release, released) = std::sync::mpsc::channel::<()>();
-    let files_done = Arc::new(AtomicUsize::new(0));
-    let files_total = Arc::new(AtomicUsize::new(0));
-
-    let out = HostWorldTree::new_legacy(fx.root.join(format!(
+    let target = fx.root.join(format!(
         "cloned-{}",
         TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-    )));
+    ));
+    // Not `HostWorldTree::new`: it creates its folder up front, and clone
+    // only accepts an empty target.
+    let out = HostWorldTree::new_legacy(&target);
+    let reported = Arc::new(AtomicUsize::new(0));
+
     let clone = fx
         .instance
         .clone_to(&out, fx.commit, CloneOptions::default(), Scope::World, {
-            let done = Arc::clone(&files_done);
-            let total = Arc::clone(&files_total);
-            move |update| {
-                done.store(update.files_done, Ordering::Relaxed);
-                total.store(update.files_total, Ordering::Relaxed);
-                let _ = started.send(());
-                // Parks the file pass until the test lets go (the sender drops).
-                let _ = released.recv();
+            let reported = Arc::clone(&reported);
+            move |_| {
+                reported.fetch_add(1, Ordering::SeqCst);
             }
         });
-    tokio::select! {
-        outcome = clone => panic!("the clone must still be running: {outcome:?}"),
-        started = tokio::task::spawn_blocking(move || files_running.recv()) => {
-            assert!(matches!(started, Ok(Ok(()))), "the file pass never started: {started:?}");
-        }
-    }
-    // The future is gone; its file pass is parked in `progress`, still
-    // holding the store lock.
-    let probe = fx.instance.store().cas().lock(Exclusive);
-    assert!(
-        matches!(&probe, Err(StorageError::StoreLocked { .. })),
-        "the store must stay locked while the clone file pass runs: {probe:?}"
-    );
+    let observed = Arc::clone(&reported);
+    let mut clone = Box::pin(clone);
+    poll_until(&mut clone, || observed.load(Ordering::SeqCst) >= 1).await;
+    drop(clone);
 
-    drop(release);
-    // The pass reports the files it writes; the last one means the file
-    // work is done, and the lock goes with it.
+    // Nothing about the store is held, so readers keep working while the
+    // cancelled pass finishes.
+    fx.instance.list_commits().await.unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        let (done, total) = (
-            files_done.load(Ordering::Relaxed),
-            files_total.load(Ordering::Relaxed),
+    while read_regions(&target) != vec!["r.0.0.mca", "r.1.0.mca"] {
+        assert!(
+            Instant::now() < deadline,
+            "the clone output was abandoned halfway"
         );
-        if total > 0 && done >= total {
-            break;
-        }
-        assert!(Instant::now() < deadline, "the file pass never finished");
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    loop {
-        match fx.instance.store().cas().lock(Exclusive) {
-            Ok(lock) => {
-                drop(lock);
-                break;
-            }
-            Err(err) => {
-                assert!(
-                    matches!(err, StorageError::StoreLocked { .. }),
-                    "the file pass still holds the store: {err}"
-                );
-                assert!(Instant::now() < deadline, "the file pass never released");
-                std::thread::sleep(Duration::from_millis(20));
-            }
-        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
     }
 }
 
+/// Poll `fut` until `ready` holds, keeping the future alive.
+///
+/// The future is driven by hand so the caller decides when to drop it: that
+/// drop is the cancellation. Each poll yields, so the steps it queued get a
+/// chance to run. A regression trips the deadline instead of hanging. A pass
+/// that finishes before reporting is not cancelled mid-run, so `ready` checks
+/// always include the outcome: a truncated world or output still fails.
+async fn poll_until<F>(fut: &mut std::pin::Pin<Box<F>>, ready: impl Fn() -> bool)
+where
+    F: std::future::Future,
+{
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !ready() {
+        let done = std::future::poll_fn::<_, _>(|cx| {
+            std::task::Poll::Ready(fut.as_mut().poll(cx).is_ready())
+        })
+        .await;
+        if done {
+            // Past the cancel point either way; the outcome checks below
+            // decide whether a truncated result slipped through.
+            return;
+        }
+        assert!(Instant::now() < deadline, "the file pass never reported");
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+/// Region file names present under `root/region`, sorted.
+///
+/// Only the fixture's own world is a folder the test created: a clone target
+/// is whatever directory the tree derived, so callers pass that directory.
+fn read_regions(root: impl AsRef<Path>) -> Vec<String> {
+    let root = root.as_ref();
+    let mut names: Vec<String> = std::fs::read_dir(root.join("region"))
+        .expect("the region folder exists")
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.to_ascii_lowercase().ends_with(".mca"))
+        .collect();
+    names.sort();
+    names
+}
+
 /// A crashed run - or a pre-lock binary - leaves `commit.inflight` behind.
-/// The store locks carry the exclusion now, so the marker means nothing and
-/// must not block collection.
+/// Nothing reads the marker anymore, so it must not block collection.
 #[tokio::test]
 async fn a_leftover_run_marker_is_ignored() {
     let mut fx = Fixture::new("marker").await;

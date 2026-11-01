@@ -3,7 +3,7 @@
 use std::time::{Duration, Instant};
 
 use sekai_core::{GcPlan, GcReport};
-use sekai_storage::{SekaiStore, StoreLockMode};
+use sekai_storage::SekaiStore;
 
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
@@ -36,7 +36,6 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// Refuses while a commit runs: its blobs reach the CAS before the rows
     /// that reference them, so the plan would list them as orphans.
     pub async fn gc_plan(&self) -> Result<(GcPlan, GcTimings), AppError> {
-        let _lock = self.lock_store(StoreLockMode::Writer)?;
         let total_started = Instant::now();
         let (plan, plan_dt) = plan_within(self.store()).await?;
         let timings = GcTimings {
@@ -50,17 +49,15 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// Execute a garbage collection plan, removing orphan blobs.
     /// `progress` fires per examined orphan candidate.
     ///
-    /// Each candidate is re-verified against the store under this call's
-    /// lock, so a plan from an earlier [`Self::gc_plan`] never unlinks a
-    /// blob that a commit has referenced since; blobs orphaned after
-    /// planning wait for the next run. [`Self::gc`] does both under one
-    /// lock.
+    /// Each candidate is re-verified against the store under this call, so
+    /// a plan from an earlier [`Self::gc_plan`] never unlinks a blob that a
+    /// commit has referenced since; blobs orphaned after planning wait for
+    /// the next run. [`Self::gc`] does both in one pass.
     pub async fn gc_apply(
         &mut self,
         plan: &GcPlan,
         progress: impl FnMut(GcProgress) + Send,
     ) -> Result<(GcReport, GcTimings), AppError> {
-        let _lock = self.lock_store(StoreLockMode::Writer)?;
         let total_started = Instant::now();
         let (report, apply_dt) = apply_within(self.store_mut(), plan, progress).await?;
         let timings = GcTimings {
@@ -77,9 +74,6 @@ impl<S: SekaiStore> SekaiInstance<S> {
         &mut self,
         progress: impl FnMut(GcProgress) + Send,
     ) -> Result<(GcReport, GcTimings), AppError> {
-        // One lock across both phases: a commit slipping in between would
-        // put blobs into the CAS that this very plan calls orphaned.
-        let _lock = self.lock_store(StoreLockMode::Writer)?;
         let total_started = Instant::now();
         let (plan, plan_dt) = plan_within(self.store()).await?;
         let (report, apply_dt) = apply_within(self.store_mut(), &plan, progress).await?;

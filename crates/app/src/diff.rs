@@ -9,11 +9,11 @@ use sekai_core::{
 };
 use sekai_nbt::nanonbt::Cesu8Buf;
 use sekai_nbt::{Chunk, ChunkPayload, ChunkPayloadDiff, Heightmaps};
-use sekai_storage::{BlockingBlobStore, SekaiStore, StoreLockMode};
+use sekai_storage::SekaiStore;
 use sekai_world::{Region, RegionFile, WorldLockMode, WorldTree};
 
 use crate::error::AppError;
-use crate::instance::{OperationLocks, SekaiInstance, WorldHandle, WorldHandleMut};
+use crate::instance::{SekaiInstance, SharedWorldGuard, WorldHandle, WorldHandleMut};
 use crate::regions::discover_regions;
 
 /// Per-phase timings for chunk AST diffs. Informational only; never
@@ -37,7 +37,6 @@ impl<S: SekaiStore> SekaiInstance<S> {
         old_hash: &BlobHash,
         new_hash: &BlobHash,
     ) -> Result<ChunkPayloadDiff, AppError> {
-        let _lock = self.lock_store(StoreLockMode::Shared)?;
         let mut old_compressed = Vec::new();
         let mut new_compressed = Vec::new();
 
@@ -137,7 +136,6 @@ impl<S: SekaiStore> SekaiInstance<S> {
         coords: &[ChunkCoord],
         progress: impl FnMut(DiffProgress) + Send,
     ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
-        let _lock = self.lock_store(StoreLockMode::Shared)?;
         let total_started = Instant::now();
         let mut timings = DiffTimings::default();
         let out = diff_coords(
@@ -160,10 +158,9 @@ impl<S: SekaiStore> SekaiInstance<S> {
 
     /// Effective chunk coordinates of one commit (fallback-resolved set).
     ///
-    /// Takes its own shared store lock, so coordinates handed to a later
-    /// [`Self::diff_chunks`] go stale if a prune runs in between (ADR-0014).
+    /// The coordinates are a snapshot: a prune that folds the commit after
+    /// this call hands them to a later [`Self::diff_chunks`] as unknown.
     pub async fn commit_chunk_coords(&self, commit: CommitId) -> Result<Vec<ChunkCoord>, AppError> {
-        let _lock = self.lock_store(StoreLockMode::Shared)?;
         let mut coords = Vec::new();
         self.store
             .meta()
@@ -215,7 +212,7 @@ async fn commit_chunk_compressed<S: SekaiStore>(
     };
 
     let mut compressed = Vec::new();
-    store.cas().fetch_blob(&hash, &mut compressed)?;
+    store.cas().fetch_into(&hash, &mut compressed).await?;
     Ok(Some(compressed))
 }
 
@@ -314,25 +311,17 @@ where
         coords: &[ChunkCoord],
         progress: impl FnMut(DiffProgress) + Send,
     ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
-        // Held across resolution and the reads below: the store and world
-        // snapshots must outlive the operation.
-        let locks = OperationLocks::acquire(
-            self.instance,
-            StoreLockMode::Shared,
-            self.world,
-            WorldLockMode::Shared,
-        )?;
+        // Held across resolution and the reads below: the world snapshot
+        // must outlive the operation.
+        let guard = SharedWorldGuard::acquire(self.world, WorldLockMode::Shared)?;
         let total_started = Instant::now();
         let commit_id = match commit {
             Some(id) => id,
-            None => {
-                // The outer lock is Shared and `current_commit_id` takes
-                // Shared too; Shared + Shared is compatible.
-                self.instance
-                    .current_commit_id()
-                    .await?
-                    .ok_or(AppError::NoCommits)?
-            }
+            None => self
+                .instance
+                .current_commit_id()
+                .await?
+                .ok_or(AppError::NoCommits)?,
         };
 
         let mut timings = DiffTimings::default();
@@ -350,7 +339,7 @@ where
         )
         .await?;
         timings.total = total_started.elapsed();
-        drop(locks);
+        drop(guard);
         Ok((out, timings))
     }
 }

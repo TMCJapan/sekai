@@ -6,8 +6,13 @@
 //! staging, delta filtering, tombstone assembly, and the atomic commit.
 //! What stays here is mechanics `core` cannot own without breaking its
 //! `no_std` boundary: world discovery and fingerprint observation
-//! (filesystem), worker ingest on a blocking pool (threads + fsync), the
-//! wall clock, and timing collection for `--timing` output.
+//! (filesystem), concurrent blob ingest, the wall clock, and timing
+//! collection for `--timing` output.
+//!
+//! Ingest is fully async: region reads run on the blocking pool (the
+//! [`WorldTree`] boundary stays synchronous), and every blob put is an
+//! async CAS call. The CAS is append-only, so concurrent workers need no
+//! lock at all.
 //!
 //! Crash order mirrors the core contract: every blob is flushed to CAS
 //! *before* the single metadata batch commits, so a torn commit leaves at
@@ -20,14 +25,14 @@ use std::time::{Duration, Instant};
 
 use sekai_core::usecase::commit::Ingested;
 use sekai_core::{
-    Assembled, ChunkCoord, CommitEntry, CommitId, CommitReport, Observation, Previous,
+    Assembled, BlobStore, ChunkCoord, CommitEntry, CommitId, CommitReport, Observation, Previous,
     RegionFingerprint, RegionKey, Scope,
 };
-use sekai_storage::{BlockingBlobStore, SekaiStore, StoreLockMode};
+use sekai_storage::{SekaiStore, StorageError};
 use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
 
 use crate::error::AppError;
-use crate::instance::{OperationLocks, WorldHandle, WorldHandleMut};
+use crate::instance::{SharedWorldGuard, WorldHandle, WorldHandleMut};
 use crate::regions::discover_regions;
 use crate::time::now_ms;
 
@@ -190,14 +195,9 @@ where
         progress: impl Fn(CommitProgress) + Send,
     ) -> Result<(CommitReport, CommitTimings), AppError> {
         let total = Instant::now();
-        // Held for the whole run: blobs reach the CAS before the rows that
-        // reference them, so `gc` must not scan in that window.
-        let locks = OperationLocks::acquire(
-            self.instance,
-            StoreLockMode::Writer,
-            self.world,
-            WorldLockMode::Shared,
-        )?;
+        // The world stays stable for the whole read pass; the store needs no
+        // lock - blobs are append-only and the metadata write is atomic.
+        let guard = SharedWorldGuard::acquire(self.world, WorldLockMode::Shared)?;
         let store = &mut self.instance.store;
 
         let Prepared {
@@ -207,7 +207,7 @@ where
             discover,
             fingerprint,
             universe_load,
-        } = prepare(store, self.world, &options, &scope, progress, false, &locks).await?;
+        } = prepare(store, self.world, &options, &scope, progress, false, &guard).await?;
 
         let created_at_ms = now_ms()?;
         // Persist batched shard-directory renames before the metadata commit:
@@ -217,7 +217,7 @@ where
         // here even though workers already synced their own handles: the
         // barrier belongs at the call site, never hidden inside adapters.
         let sync_started = Instant::now();
-        store.cas_mut().sync_dirs()?;
+        store.cas_mut().sync().await?;
         let dir_sync = sync_started.elapsed();
         let db_started = Instant::now();
         let report = sekai_core::usecase::commit::record_commit(
@@ -270,18 +270,18 @@ async fn prepare<W: WorldTree, S: SekaiStore>(
     scope: &Scope,
     progress: impl Fn(CommitProgress) + Send,
     dry_run: bool,
-    locks: &Arc<OperationLocks<S, W::Lock>>,
+    guard: &Arc<SharedWorldGuard<W::Lock>>,
 ) -> Result<Prepared, AppError>
 where
     AppError: From<W::Error>,
 {
     // Whole-world observation walks and opens files: clone the handle and
-    // run it on the blocking pool, owning a share of the locks like every
-    // blocking pass.
+    // run it on the blocking pool, owning a share of the world lock like
+    // every file pass.
     let world_handle = world.clone();
-    let observe_locks = Arc::clone(locks);
+    let observe_guard = Arc::clone(guard);
     let observed = tokio::task::spawn_blocking(move || {
-        let _locks = observe_locks;
+        let _guard = observe_guard;
         observe(&world_handle)
     })
     .await??;
@@ -306,14 +306,14 @@ where
         .filter_map(|key| files.remove(key))
         .collect();
 
-    let (ingested, walk) = ingest_changed(
+    let (ingested, walk) = ingest_changed::<W::Region, S, W::Lock>(
         changed,
         store.cas().clone(),
         options,
         scope.clone(),
         progress,
         dry_run,
-        locks,
+        guard,
     )
     .await?;
     let staged = sekai_core::usecase::commit::assemble(plan, &previous, ingested, scope);
@@ -346,19 +346,14 @@ where
         scope: Scope,
         progress: impl Fn(CommitProgress) + Send,
     ) -> Result<(StatusReport, StatusTimings), AppError> {
-        let locks = OperationLocks::acquire(
-            self.instance,
-            StoreLockMode::Shared,
-            self.world,
-            WorldLockMode::Shared,
-        )?;
+        let guard = SharedWorldGuard::acquire(self.world, WorldLockMode::Shared)?;
         status_impl(
             &self.instance.store,
             self.world,
             options,
             scope,
             progress,
-            &locks,
+            &guard,
         )
         .await
     }
@@ -386,7 +381,7 @@ async fn status_impl<W: WorldTree, S: SekaiStore>(
     options: StatusOptions,
     scope: Scope,
     progress: impl Fn(CommitProgress) + Send,
-    locks: &Arc<OperationLocks<S, W::Lock>>,
+    guard: &Arc<SharedWorldGuard<W::Lock>>,
 ) -> Result<(StatusReport, StatusTimings), AppError>
 where
     AppError: From<W::Error>,
@@ -405,7 +400,7 @@ where
         discover,
         fingerprint,
         universe_load,
-    } = prepare(store, world, &preview, &scope, progress, true, locks).await?;
+    } = prepare(store, world, &preview, &scope, progress, true, guard).await?;
 
     let new_chunks = staged.entries.iter().filter(|e| e.blob.is_some()).count();
     let changed_regions: BTreeSet<RegionKey> = staged
@@ -523,17 +518,16 @@ struct IngestTimings {
     regions: Vec<RegionTiming>,
 }
 
-/// Ingest changed files, sequentially or across worker threads.
+/// Ingest changed files, sequentially or concurrently across workers.
 ///
-/// One file never justifies task overhead, so it stays in a single blocking
-/// task with identical counts. Larger sets split into size-balanced groups;
-/// each worker owns a private blob handle over the same store (disjoint blob
-/// files, unique temp names) and syncs its own shards before returning, so
-/// joining orders every durability barrier ahead of the metadata commit. The
-/// commit itself stays a single transaction; row merge order across workers
-/// is completion-order (DB-irrelevant, one txn).
-/// Each worker keeps `locks` alive until it returns, so a cancelled commit
-/// cannot hand the store to `gc` while blobs are still being written.
+/// One file never justifies task overhead, so it stays inline with
+/// identical counts. Larger sets split into size-balanced groups; each
+/// worker cloned the blob adapter over the same store and syncs its own
+/// shards before returning, so joining orders every durability barrier
+/// ahead of the metadata commit. Workers need no lock: the CAS is
+/// append-only, so concurrent puts never conflict.
+/// Each worker keeps `guard` alive until it returns, so the world stays put
+/// while blobs are still being read out of it.
 async fn ingest_changed<R: RegionFile, S: SekaiStore, L: WorldLock>(
     changed: Vec<Changed<R>>,
     cas: S::Blobs,
@@ -541,7 +535,7 @@ async fn ingest_changed<R: RegionFile, S: SekaiStore, L: WorldLock>(
     scope: Scope,
     progress: impl Fn(CommitProgress) + Send,
     dry_run: bool,
-    locks: &Arc<OperationLocks<S, L>>,
+    guard: &Arc<SharedWorldGuard<L>>,
 ) -> Result<(Ingested, IngestTimings), AppError>
 where
     AppError: From<R::Error>,
@@ -569,14 +563,33 @@ where
         let cas = cas.clone();
         let with_diff = options.with_diff;
         let scope = scope.clone();
-        let locks = Arc::clone(locks);
-        set.spawn_blocking(move || {
-            let _locks = locks;
-            ingest_group(group, cas, with_diff, &scope, dry_run)
+        let guard = Arc::clone(guard);
+        set.spawn(async move {
+            let _guard = guard;
+            let mut outcomes = Vec::with_capacity(group.len());
+            let mut cas = cas;
+            for (region, observed) in group {
+                let outcome: FileOutcome =
+                    ingest_file(region, observed, &mut cas, with_diff, &scope, dry_run).await?;
+                outcomes.push(outcome);
+            }
+            let sync_elapsed = if dry_run {
+                // Nothing was written: no shards to sync.
+                Duration::ZERO
+            } else {
+                // Barrier for this worker's shards; the join orders all
+                // barriers before the metadata commit.
+                let sync_started = Instant::now();
+                cas.sync().await?;
+                sync_started.elapsed()
+            };
+            Ok::<_, AppError>((outcomes, sync_elapsed))
         });
     }
     while let Some(outcome) = set.join_next().await {
-        let (outcomes, sync_elapsed) = outcome??;
+        let (outcomes, sync_elapsed) = outcome.map_err(|source| {
+            AppError::Storage(StorageError::backend("ingest worker", source))
+        })??;
         walk.cas += sync_elapsed;
         for outcome in outcomes {
             files_done += 1;
@@ -618,36 +631,6 @@ fn partition_groups<R>(mut changed: Vec<Changed<R>>, workers: usize) -> Vec<Vec<
     groups
 }
 
-/// Ingest one worker's group with a private blob handle, then sync its shards.
-///
-/// Returns the per-file outcomes plus the shard-sync time so the caller can
-/// account it under `cas` (the durability bucket).
-fn ingest_group<R: RegionFile, C: BlockingBlobStore>(
-    group: Vec<Changed<R>>,
-    mut cas: C,
-    with_diff: bool,
-    scope: &Scope,
-    dry_run: bool,
-) -> Result<(Vec<FileOutcome>, Duration), AppError>
-where
-    AppError: From<R::Error>,
-{
-    let mut outcomes = Vec::with_capacity(group.len());
-    for (region, observed) in group {
-        let outcome = ingest_file(&region, observed, &mut cas, with_diff, scope, dry_run)?;
-        outcomes.push(outcome);
-    }
-    if dry_run {
-        // Nothing was written: no shards to sync.
-        return Ok((outcomes, Duration::ZERO));
-    }
-    // Barrier for this worker's shards; the join orders all barriers
-    // before the metadata commit.
-    let sync_started = Instant::now();
-    cas.sync_dirs()?;
-    Ok((outcomes, sync_started.elapsed()))
-}
-
 fn merge_outcome(walk: &mut RegionWalk, outcome: FileOutcome) {
     walk.entries.extend(outcome.entries);
     walk.present.extend(outcome.present);
@@ -659,18 +642,6 @@ fn merge_outcome(walk: &mut RegionWalk, outcome: FileOutcome) {
     walk.timings.push((outcome.fingerprint.key, outcome.timing));
 }
 
-struct ChunkIngestCtx<'a, C> {
-    key: RegionKey,
-    scope: &'a Scope,
-    cas: &'a mut C,
-    scratch: &'a mut Vec<u8>,
-    with_diff: bool,
-    dry_run: bool,
-    entries: &'a mut Vec<CommitEntry>,
-    present: &'a mut HashSet<ChunkCoord>,
-    new_blobs: &'a mut usize,
-}
-
 /// Read, hash, and store one changed region file, staging its rows.
 /// Chunks outside `scope` are skipped before hashing: their history stays
 /// untouched and fallback keeps resolving them. Under `dry_run` blobs are
@@ -678,8 +649,12 @@ struct ChunkIngestCtx<'a, C> {
 ///
 /// The fingerprint names the file: discovery observed it under that
 /// identity, and the timing row reports the same one.
-fn ingest_file<R: RegionFile, C: BlockingBlobStore>(
-    region: &R,
+///
+/// Reading and hashing touch the world and run on the blocking pool; the
+/// store pass then awaits the CAS for each payload. Splitting the passes
+/// this way keeps chunk bytes from outliving the image that owns them.
+async fn ingest_file<R: RegionFile, C: BlobStore<Error = StorageError>>(
+    region: R,
     observed: RegionFingerprint,
     cas: &mut C,
     with_diff: bool,
@@ -690,101 +665,114 @@ where
     AppError: From<R::Error>,
 {
     let key = observed.key;
-    let opened = Instant::now();
-    let image = region.read(key)?;
-    let open_elapsed = opened.elapsed();
+    let location = region.to_string();
+    let scope = scope.clone();
+    let staged = tokio::task::spawn_blocking(move || stage_file(&region, key, &scope, with_diff))
+        .await
+        .map_err(|source| AppError::Storage(StorageError::backend("ingest worker", source)))??;
 
-    let mut scratch = Vec::new();
-    let mut entries = Vec::new();
-    let mut present = HashSet::new();
     let mut new_blobs = 0usize;
-    let mut failure: Option<AppError> = None;
-    let mut chunks = 0usize;
-    let mut hash_elapsed = Duration::ZERO;
     let mut cas_elapsed = Duration::ZERO;
-    let ingested = Instant::now();
-    image.visit_chunks(|chunk| {
-        if failure.is_some() {
-            return false;
-        }
-        let mut ctx = ChunkIngestCtx {
-            key,
-            scope,
-            cas,
-            scratch: &mut scratch,
-            with_diff,
-            dry_run,
-            entries: &mut entries,
-            present: &mut present,
-            new_blobs: &mut new_blobs,
+    // Store pass: every staged payload reaches the CAS. Stops at the first
+    // failure; the rows it staged are discarded with the error.
+    for write in staged.writes {
+        let started = Instant::now();
+        let stored = if dry_run {
+            cas.contains(&write.hash).await.map(|exists| !exists)
+        } else {
+            cas.put(&write.hash, &write.payload).await
         };
-        match ingest_timed(chunk, &mut ctx) {
-            Ok((hash_dt, cas_dt)) => {
-                hash_elapsed += hash_dt;
-                cas_elapsed += cas_dt;
-                chunks += 1;
-            }
-            Err(err) => {
-                failure = Some(err);
-                return false;
-            }
-        }
-        true
-    })?;
-    let ingest_elapsed = ingested.elapsed();
-    if let Some(err) = failure {
-        return Err(err);
+        cas_elapsed += started.elapsed();
+        new_blobs += usize::from(stored?);
     }
     Ok(FileOutcome {
         fingerprint: observed,
-        entries,
-        present,
+        entries: staged.entries,
+        present: staged.present,
         new_blobs,
         timing: RegionTiming {
-            location: region.to_string(),
-            chunks,
-            open: open_elapsed,
-            ingest: ingest_elapsed,
-            hash: hash_elapsed,
+            location,
+            chunks: staged.chunks,
+            open: staged.open,
+            ingest: staged.open + staged.hash + cas_elapsed,
+            hash: staged.hash,
             cas: cas_elapsed,
         },
     })
 }
 
-/// Hash one raw chunk, flush it to CAS, and stage its history row.
-///
-/// Returns the time spent hashing (plus diffing when enabled) and the time
-/// spent in `CAS put` separately so digest and exists-check/write costs
-/// stay visible in [`CommitTimings`].
-fn ingest_timed<C: BlockingBlobStore>(
+/// Rows staged by the visit pass, plus what it cost. Payloads are owned so
+/// they outlive the image they were read from and can cross to the CAS.
+#[derive(Default)]
+struct Staged {
+    writes: Vec<ChunkWrite>,
+    entries: Vec<CommitEntry>,
+    present: HashSet<ChunkCoord>,
+    chunks: usize,
+    open: Duration,
+    hash: Duration,
+}
+
+/// One chunk payload waiting for its CAS write.
+struct ChunkWrite {
+    hash: sekai_core::BlobHash,
+    payload: Vec<u8>,
+}
+
+/// Open the region file, then hash and stage every in-scope chunk.
+fn stage_file<R: RegionFile>(
+    region: &R,
+    key: RegionKey,
+    scope: &Scope,
+    with_diff: bool,
+) -> Result<Staged, AppError>
+where
+    AppError: From<R::Error>,
+{
+    let opened = Instant::now();
+    let image: R::RegionImage = region.read(key)?;
+    let mut staged = Staged {
+        open: opened.elapsed(),
+        ..Default::default()
+    };
+    image.visit_chunks(|chunk| stage_chunk(chunk, key, scope, with_diff, &mut staged))?;
+    Ok(staged)
+}
+
+/// Hash one raw chunk and stage its history row; `false` never stops the
+/// visit, since a chunk only fails when its process is unwinding.
+fn stage_chunk(
     chunk: sekai_anvil::Chunk<'_>,
-    ctx: &mut ChunkIngestCtx<'_, C>,
-) -> Result<(Duration, Duration), AppError> {
-    let coord = ChunkCoord::new(ctx.key.dim, ctx.key.kind, chunk.x, chunk.z);
-    if !ctx.scope.contains(coord) {
-        return Ok((Duration::ZERO, Duration::ZERO));
+    key: RegionKey,
+    scope: &Scope,
+    with_diff: bool,
+    staged: &mut Staged,
+) -> bool {
+    let coord = ChunkCoord::new(key.dim, key.kind, chunk.x, chunk.z);
+    if !scope.contains(coord) {
+        return true;
     }
     let hash_started = Instant::now();
     let hash = sekai_core::hash_blob(chunk.payload);
     // Diff failures degrade to "not computed": the blob itself is intact
     // and the diff column is only a cache.
-    let diff = ctx.with_diff.then(|| {
-        sekai_anvil::decompress_into(chunk.payload, ctx.scratch)
-            .ok()
-            .and_then(|_| sekai_core::diff_hash(ctx.scratch).ok())
+    let diff = with_diff
+        .then(|| {
+            let mut decoded = Vec::new();
+            sekai_anvil::decompress_into(chunk.payload, &mut decoded)
+                .ok()
+                .and_then(|_| sekai_core::diff_hash(&decoded).ok())
+        })
+        .flatten();
+    staged.hash += hash_started.elapsed();
+    staged
+        .entries
+        .push(CommitEntry::new(coord, Some(hash), diff));
+    staged.present.insert(coord);
+    staged.writes.push(ChunkWrite {
+        hash,
+        payload: chunk.payload.to_vec(),
     });
-    let hash_elapsed = hash_started.elapsed();
-    let cas_started = Instant::now();
-    if ctx.dry_run {
-        if !ctx.cas.contains_blob(&hash)? {
-            *ctx.new_blobs += 1;
-        }
-    } else if ctx.cas.put_blob(&hash, chunk.payload)? {
-        *ctx.new_blobs += 1;
-    }
-    let cas_elapsed = cas_started.elapsed();
-    ctx.entries
-        .push(CommitEntry::new(coord, Some(hash), diff.flatten()));
-    ctx.present.insert(coord);
-    Ok((hash_elapsed, cas_elapsed))
+    staged.chunks += 1;
+    true
 }

@@ -1,6 +1,7 @@
 # ADR-0014: OS file locks exclude concurrent operations
 
-- Status: Accepted
+- Status: Amended by ADR-0022 (the store lock is removed; the world lock
+  stays)
 - Date: 2026-10-18
 
 ## Context
@@ -28,8 +29,10 @@ Unix, `LockFileEx` on Windows). The OS releases these locks when the
 holder dies, so a crash can never wedge anything. Contention fails
 immediately instead of waiting.
 
-The store root holds two lock files, created on first use and never
-deleted:
+The store root held two lock files, created on first use and never
+deleted. **ADR-0022 removed them**: `writer.lock` and `store.lock` are
+gone, and operations never lock the store. The matrix as originally
+decided:
 
 | Mode | `writer.lock` | `store.lock` | Operations |
 |---|---|---|---|
@@ -83,6 +86,7 @@ abort a blocking task that already started.
   entered without exclusion.
 - The store lock never degrades: every lock file opens for writing, so a
   store on a read-only mount fails every operation, reads included.
+  (Moot since ADR-0022: the store has no lock file.)
 - WASI has no std file locks (`try_lock` returns `Unsupported`), so every
   operation fails there. This is deferred: `storage`/`world`/`app` are not
   wasm targets, and porting them also needs SQLite and a threaded runtime

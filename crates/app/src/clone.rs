@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use sekai_core::{BlobHash, ChunkCoord, CommitId, RegionKey, Scope};
-use sekai_storage::{SekaiStore, StoreLockMode};
+use sekai_storage::{SekaiStore, StorageError};
 use sekai_world::{RegionFile, WorldTree};
 
 use crate::checkout::{MissingBlobPolicy, fetch_or_skip};
@@ -81,8 +81,9 @@ impl<S: SekaiStore> SekaiInstance<S> {
         AppError: From<W::Error>,
     {
         // `out` stays unlocked: it is new and empty by contract, so nothing
-        // else has a reason to touch it.
-        let lock = self.lock_store(StoreLockMode::Shared)?;
+        // else has a reason to touch it. The store needs no lock either:
+        // blob reads and the metadata reads that resolved the plan run
+        // side by side with concurrent commits.
         let total_started = Instant::now();
 
         if !out.is_empty()? {
@@ -111,13 +112,12 @@ impl<S: SekaiStore> SekaiInstance<S> {
             options,
             cas: store.cas().clone(),
             out: out.clone(),
-            _lock: lock,
         };
 
         let files_started = Instant::now();
-        let report =
-            tokio::task::spawn_blocking(move || clone_files(job, timestamp, progress)).await??;
+        let report = clone_files(job, timestamp, progress).await;
         let files_dt = files_started.elapsed();
+        let report = report?;
 
         let timings = CloneTimings {
             total: total_started.elapsed(),
@@ -129,20 +129,19 @@ impl<S: SekaiStore> SekaiInstance<S> {
     }
 }
 
-/// Everything one clone file pass needs, owned for the blocking task.
+/// Everything one clone file pass needs.
 struct CloneJob<S: SekaiStore, W: WorldTree> {
     groups: BTreeMap<RegionKey, Vec<(ChunkCoord, BlobHash)>>,
     options: CloneOptions,
     cas: S::Blobs,
     out: W,
-    /// Owned by the file pass, so a cancelled clone keeps `prune` out until
-    /// the pass stops reading blobs.
-    _lock: S::LockGuard,
 }
 
-/// Rebuild every commit region file under `out`. Blocking: file reads,
-/// writes, and swaps belong on a blocking pool, never on an async worker.
-fn clone_files<S: SekaiStore, W: WorldTree>(
+/// Rebuild every commit region file under `out`.
+///
+/// Blob fetches are async; each file's build and write runs on the blocking
+/// pool, never on an async worker.
+async fn clone_files<S: SekaiStore, W: WorldTree>(
     job: CloneJob<S, W>,
     timestamp: u32,
     progress: impl Fn(CloneProgress),
@@ -155,7 +154,6 @@ where
         options,
         cas,
         out,
-        _lock,
     } = job;
 
     let mut report = CloneReport {
@@ -165,17 +163,33 @@ where
     let files_total = groups.len();
     let mut files_done = 0usize;
     let mut blob_buf = Vec::new();
+    let mut steps = Vec::new();
     for (key, rows) in &groups {
         let region = out.derive_region(*key)?;
         let mut writer = sekai_anvil::RegionBuilder::new(key.rx, key.rz, timestamp)?;
         for (coord, hash) in rows {
-            if !fetch_or_skip(&cas, hash, options.on_missing_blob, &mut blob_buf)? {
+            if !fetch_or_skip(&cas, hash, options.on_missing_blob, &mut blob_buf).await? {
                 continue;
             }
             writer.stage_chunk(coord.x, coord.z, &blob_buf)?;
             report.chunks_restored += 1;
         }
-        region.write(&writer.image()?)?;
+        // Queued as soon as its input is ready: a cancelled future must not
+        // take a file it has already promised to write with it.
+        let image = writer.image()?;
+        steps.push((
+            tokio::task::spawn_blocking(move || region.write(&image).map_err(AppError::from)),
+            key,
+        ));
+    }
+    // Collect in plan order, so a failure names the file it came from.
+    for (step, key) in steps {
+        step.await.map_err(|err| {
+            AppError::Storage(StorageError::backend(
+                "clone worker",
+                std::io::Error::other(format!("the file step for {key:?} stopped: {err}")),
+            ))
+        })??;
         report.files_written += 1;
         files_done += 1;
         progress(CloneProgress {

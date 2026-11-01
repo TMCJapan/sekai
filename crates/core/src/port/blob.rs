@@ -1,10 +1,9 @@
 //! Content-addressed blob storage boundary.
 //!
-//! Blobs must be durable before metadata references them.
-//!
-//! File-backed implementations perform short blocking filesystem calls
-//! inline; hot paths must run them under the runtime's blocking pool at
-//! the app layer.
+//! Blobs must be durable before metadata references them. The store is
+//! append-only by nature: keys are content hashes and a stored blob never
+//! changes, so concurrent readers and writers need no lock - only `remove`
+//! (GC) takes blobs away, and GC keeps to its own exclusion.
 use alloc::vec::Vec;
 use core::future::Future;
 use sekai_util::BlobHash;
@@ -23,6 +22,9 @@ pub trait BlobStore {
     /// file data before returning. Directory durability may be deferred to
     /// [`sync`](BlobStore::sync); callers must invoke it before committing
     /// any metadata that references the new blobs.
+    ///
+    /// Storing an existing blob is an idempotent no-op; concurrent puts of
+    /// the same hash are expected and never need coordination.
     fn put(
         &mut self,
         hash: &BlobHash,

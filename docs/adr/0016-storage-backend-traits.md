@@ -15,10 +15,10 @@ layer.
 ## Decision
 
 `sekai-storage` owns the high-level store boundary. `SekaiStore` combines a
-metadata adapter, a blob adapter, and the store-wide exclusion lock;
-`SekaiStoreOpener` maps a backend URL to an opened store; and
-`BlockingBlobStore` carries the synchronous blob operations that backup
-ingest workers need. SQLite moves to the new `sekai-storage-sqlite` crate,
+metadata adapter and a blob adapter (ADR-0022 dropped the store-wide
+exclusion lock and the `BlockingBlobStore` split); `SekaiStoreOpener` maps a
+backend URL to an opened store. SQLite moves to the new
+`sekai-storage-sqlite` crate,
 which implements those traits together with the existing `core::port` traits.
 `SekaiInstance<T: SekaiStore>` is generic over the store, with SQLite as the
 feature-selected default.
@@ -36,7 +36,7 @@ feature-selected default.
 - The store error remains `StorageError`; backend-specific failures are
   wrapped in its `Backend` variant so every implementation shares one app
   error surface.
-- The exclusion lock of ADR-0014 becomes a trait method
-  (`SekaiStore::lock`) instead of a `FileCas` call, so a remote backend can
-  supply its own mechanism. The guard stays `Send + Sync` because
-  operations share it into blocking tasks.
+- The exclusion lock of ADR-0014 was a trait method (`SekaiStore::lock`)
+  instead of a `FileCas` call, so a remote backend could supply its own
+  mechanism. ADR-0022 removed it: exclusion is per world only, and nothing
+  in the store is locked.
