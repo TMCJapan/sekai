@@ -127,18 +127,55 @@ pub fn generate(world: impl AsRef<Path>, spec: &WorldSpec) {
         let dir = world.as_ref().join("region");
         std::fs::create_dir_all(&dir).expect("mkdir works");
         let image = builder.image().expect("image assembles");
-        std::fs::write(dir.join(format!("r.{r}.0.mca")), image).expect("write works");
+        write_region(&dir.join(format!("r.{r}.0.mca")), &image);
     }
 }
 
 /// Fresh temp dir for one benchmark setup, named after the benchmark so
 /// a leaked directory stays traceable. The guard removes it on drop, which
 /// also covers panics.
+///
+/// The parent comes from [`temp_root`]: the medium world and its store run
+/// into hundreds of megabytes, more than a modest `/tmp` tmpfs holds.
 pub fn tempdir(name: &str) -> tempfile::TempDir {
+    let root = temp_root();
     tempfile::Builder::new()
         .prefix(&format!("sekai-bench-{name}-"))
-        .tempdir()
-        .expect("tempdir")
+        .tempdir_in(&root)
+        .unwrap_or_else(|err| {
+            panic!(
+                "no bench temp dir under {}: {err}\n\
+                 point SEKAI_BENCH_TMP (or TMPDIR) at a roomier filesystem",
+                root.display()
+            )
+        })
+}
+
+/// Where benchmark worlds and stores live, in order of preference:
+/// `SEKAI_BENCH_TMP`, then `TMPDIR`, then the system temp directory.
+///
+/// The first one is exported so a failed write can name the filesystem that
+/// ran out instead of leaving the caller to infer it.
+fn temp_root() -> std::path::PathBuf {
+    ["SEKAI_BENCH_TMP", "TMPDIR"]
+        .into_iter()
+        .find_map(|name| std::env::var_os(name).map(std::path::PathBuf::from))
+        .unwrap_or_else(std::env::temp_dir)
+}
+
+/// Write one region image, naming the temp root when the disk refuses it.
+///
+/// Out of space fails every subsequent write too, so a bare `write works`
+/// panic would only name the symptom: send the reader to the knob instead.
+fn write_region(path: &Path, image: &[u8]) {
+    std::fs::write(path, image).unwrap_or_else(|err| {
+        panic!(
+            "writing {} failed: {err}\n\
+             benchmark data lives under {}; SEKAI_BENCH_TMP moves it",
+            path.display(),
+            temp_root().display()
+        )
+    });
 }
 
 /// Default bench options (workers follow CPU count).
