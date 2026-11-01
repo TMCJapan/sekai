@@ -126,12 +126,20 @@ impl FileCas {
         if dest.is_file() {
             return Ok(false);
         }
-        if self.ensured_shards.insert(hash.as_bytes()[0]) {
-            let shard = dest.parent().map(Path::to_path_buf).unwrap_or_default();
-            blocking(move || {
-                std::fs::create_dir_all(&shard).map_err(|source| io_error(&shard, source))
+        // Marked only once it exists: a failed or cancelled create leaves the
+        // shard unmarked, so the next `put` tries again instead of failing in
+        // `write_blob` with a misleading absence.
+        let shard = hash.as_bytes()[0];
+        if self.ensured_shards.insert(shard) {
+            let dir = dest.parent().map(Path::to_path_buf).unwrap_or_default();
+            let created = blocking(move || {
+                std::fs::create_dir_all(&dir).map_err(|source| io_error(&dir, source))
             })
-            .await?;
+            .await;
+            if let Err(err) = created {
+                self.ensured_shards.remove(&shard);
+                return Err(err);
+            }
         }
         let is_new = blocking(move || write_blob(&dest, &payload)).await?;
         if is_new {
@@ -397,6 +405,28 @@ mod tests {
             .unwrap();
             assert_eq!(read_back, payload);
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_failed_shard_create_is_retried() {
+        // A `put` that cannot create its shard must not mark the shard as
+        // ensured: the next `put` has to try again instead of writing into a
+        // directory that was never made.
+        let root = temp_root("shard-retry");
+        let mut cas = FileCas::open(&root).unwrap();
+        // Occupy the shard path with a file, so `create_dir_all` fails.
+        let hash = BlobHash([0x5a; 32]);
+        std::fs::write(root.join("blobs/5a"), b"not a directory").unwrap();
+        run(cas.put(&hash, b"payload")).unwrap_err();
+
+        // Clear the obstruction: the retry must now succeed.
+        std::fs::remove_file(root.join("blobs/5a")).unwrap();
+        assert!(run(cas.put(&hash, b"payload")).unwrap());
+
+        let mut read_back = Vec::new();
+        run(cas.fetch_into(&hash, &mut read_back)).unwrap();
+        assert_eq!(read_back, b"payload");
         let _ = std::fs::remove_dir_all(&root);
     }
 
