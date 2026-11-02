@@ -194,12 +194,12 @@ Create (`scope create <name> (--in ... | --region ...)...`) returns the
 record as stored:
 
 ```jsonc
-{"name": "spawn", "areas": [{"dim": 0, "x0": -8, "z0": -8, "x1": 7, "z1": 7}],
+{"name": "spawn", "areas": [{"dim": -817260936, "x0": -8, "z0": -8, "x1": 7, "z1": 7}],
  "created_at_ms": 1700000000000}
 ```
 
 `areas` holds inclusive chunk rectangles with the raw integer `dim`
-code, sorted by `(dim, x0, z0, x1, z1)` with duplicates removed. A
+code (`-817260936` is the overworld), sorted by `(dim, x0, z0, x1, z1)` with duplicates removed. A
 chunk (`--in DIM:x,z`) is stored as its 1x1 rectangle and a region
 (`--region DIM:RX,RZ`) as its 32x32 one, so the spelling used at
 creation is not kept. A replacement (`--force`) keeps the original

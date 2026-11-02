@@ -87,9 +87,11 @@ pub async fn run(store: &str, action: &ScopeCommand, style: Styler) -> anyhow::R
     Ok(())
 }
 
-/// Every area as the rectangle spelling `--in` accepts
-/// (`overworld:0,0..0,0`), in stored order. A chunk or region given at
-/// creation is stored as its rectangle, so the original spelling is gone.
+/// Every area as a rectangle (`overworld:0,0..0,0`), in stored order. A
+/// chunk or region given at creation is stored as its rectangle, so the
+/// original spelling is gone. The vanilla trio reads back through `--in`;
+/// a custom dimension prints its raw code, and codes 0-2 parse back as
+/// the trio's legacy aliases instead.
 fn spell_areas(record: &NamedScope) -> String {
     record
         .areas()

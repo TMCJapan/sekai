@@ -540,7 +540,8 @@ impl Selection {
     /// One-line human summary of the selected scope for pre-run echoes.
     pub fn describe(&self) -> String {
         if let Some(name) = &self.scope {
-            return format!("scope {name}");
+            // The caller labels it `scope:` already.
+            return name.to_string();
         }
         if self.areas.is_empty() && self.region.is_empty() {
             return if self.kind.is_empty() {
@@ -676,17 +677,24 @@ impl std::str::FromStr for AreaSpec {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse_as(s, "DIM[:X,Z|X0,Z0..X1,Z1]")
+    }
+}
+
+impl AreaSpec {
+    /// Parse `s`, naming `expected` in dimension errors so each caller
+    /// advertises only the forms it accepts.
+    fn parse_as(s: &str, expected: &str) -> Result<Self, String> {
         let (dim, rest) = match s.split_once(':') {
             Some((dim, rest)) => (
                 dim.parse::<Dimension>().map_err(|_| {
-                    format!("invalid dimension {dim:?} in {s:?}, expected DIM[:X,Z|X0,Z0..X1,Z1]")
+                    format!("invalid dimension {dim:?} in {s:?}, expected {expected}")
                 })?,
                 rest,
             ),
             None => (
-                s.parse::<Dimension>().map_err(|_| {
-                    format!("invalid dimension {s:?}, expected DIM[:X,Z|X0,Z0..X1,Z1]")
-                })?,
+                s.parse::<Dimension>()
+                    .map_err(|_| format!("invalid dimension {s:?}, expected {expected}"))?,
                 "",
             ),
         };
@@ -717,13 +725,14 @@ impl std::str::FromStr for ScopeAreaSpec {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let spec: AreaSpec = s.parse()?;
+        const EXPECTED: &str = "DIM:X,Z or DIM:X0,Z0..X1,Z1";
+        let spec = AreaSpec::parse_as(s, EXPECTED)?;
         let rect = match spec.area {
             DimArea::Chunk(xz) => Rect::new(xz.x, xz.z, xz.x, xz.z),
             DimArea::Rect(rect) => rect,
             DimArea::All => {
                 return Err(format!(
-                    "scope area {s:?} names a whole dimension, expected DIM:X,Z or DIM:X0,Z0..X1,Z1"
+                    "scope area {s:?} names a whole dimension, expected {EXPECTED}"
                 ));
             }
         };

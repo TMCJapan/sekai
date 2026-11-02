@@ -19,7 +19,7 @@ sekai clone 3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d ./r
 
 ## 名前付きスコープ
 
-繰り返し使う範囲は、一度 store に保存しておけば `--scope` で名前を指定して選択できます（`status` でも使えます）。
+繰り返し使う範囲は、一度 store に保存しておけば、`commit`、`status`、`checkout`、`clone`、`diff` で `--scope` に名前を指定して選択できます。スコープは store に保存されるため、先に store が必要です。新しい store では、`scope create` の前に一度通常の `commit` を実行してください。
 
 ```sh
 sekai scope create spawn --in overworld:-8,-8..7,7 --region nether:0,0

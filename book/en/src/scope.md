@@ -26,7 +26,9 @@ files outside the scope. See [ADR-0003](https://github.com/tmcjapan/sekai/blob/m
 ## Named scopes
 
 An area you select over and over can be saved in the store once and
-selected by name with `--scope` (also on `status`):
+selected by name with `--scope` on `commit`, `status`, `checkout`,
+`clone`, and `diff`. Scopes live in the store, so it must exist first:
+run one plain `commit` before `scope create` on a new store.
 
 ```sh
 sekai scope create spawn --in overworld:-8,-8..7,7 --region nether:0,0

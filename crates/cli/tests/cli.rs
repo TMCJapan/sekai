@@ -508,7 +508,7 @@ fn selection_describe_summarizes() {
         scope: Some("hub/nether".parse().unwrap()),
         ..base
     };
-    assert_eq!(named.describe(), "scope hub/nether");
+    assert_eq!(named.describe(), "hub/nether");
 }
 
 #[test]
@@ -998,6 +998,17 @@ fn parses_scope_subcommands() {
         assert!(
             Cli::try_parse_from(&args).is_err(),
             "{args:?} must be refused"
+        );
+    }
+
+    // Errors advertise only the forms a scope area accepts.
+    for area in ["bogus:0,0", "nether"] {
+        let err = Cli::try_parse_from(["sekai", "scope", "create", "spawn", "--in", area])
+            .expect_err("invalid scope area")
+            .to_string();
+        assert!(
+            err.contains("expected DIM:X,Z or DIM:X0,Z0..X1,Z1"),
+            "{err}"
         );
     }
 }
