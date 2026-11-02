@@ -47,6 +47,10 @@ sekai diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a
 sekai ref create feature
 sekai ref activate feature
 
+# 範囲を一度保存し、以後は名前で選択する
+sekai scope create spawn --in overworld:-8,-8..7,7
+sekai commit ./world --scope spawn
+
 # 参照されていない Blob をプレビュー後、ガベージコレクション (GC) で回収
 sekai gc --dry-run
 sekai gc
@@ -61,7 +65,7 @@ sekai clone 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a ./r
 
 すべてのコマンドは `--json` オプションに対応しており、単一の機械可読な JSON レポートを出力できます。また、`log` と `ref` を除くすべてのコマンドは `--timing` オプションでフェーズごとの処理時間内訳を表示できます（両方を組み合わせることで、所要時間付きの JSON が得られます）。さらに、`commit`、`status`、`checkout`、`diff`、`clone`、`gc`、`prune` では `--progress` を指定すると標準エラー出力に進捗バーを表示できます（`--json` との併用は不可）。
 
-`commit`、`status`、`checkout`、`diff`、`clone` はスコープ（対象範囲）の絞り込みに対応しています。複数指定可能な `--in DIM[:x,z|x0,z0..x1,z1]`、`--region DIM:RX,RZ`、および複数指定可能な `--kind`（省略時はすべて）が利用可能です。スコープを指定しない場合は、ワールド全体が対象となります。出力フォーマットの仕様については `docs/json.md` を参照してください。
+`commit`、`status`、`checkout`、`diff`、`clone` はスコープ（対象範囲）の絞り込みに対応しています。複数指定可能な `--in DIM[:x,z|x0,z0..x1,z1]`、`--region DIM:RX,RZ`、および複数指定可能な `--kind`（省略時はすべて）が利用可能です。スコープを指定しない場合は、ワールド全体が対象となります。`--scope NAME` を使うと、`scope create` で保存した範囲を名前で選択できます。出力フォーマットの仕様については `docs/json.md` を参照してください。
 
 > [!Note]
 > すべてのコミットとストレージの二次バックアップを作成したい場合は、
