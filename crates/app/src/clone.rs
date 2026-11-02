@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use sekai_core::{BlobHash, ChunkCoord, CommitId, RegionKey, Scope};
+use sekai_core::{ChunkCoord, ChunkHash, CommitId, RegionKey, Scope};
 use sekai_storage::{SekaiStore, StorageError};
 use sekai_world::{RegionFile, WorldTree};
 
@@ -131,7 +131,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
 
 /// Everything one clone file pass needs.
 struct CloneJob<S: SekaiStore, W: WorldTree> {
-    groups: BTreeMap<RegionKey, Vec<(ChunkCoord, BlobHash)>>,
+    groups: BTreeMap<RegionKey, Vec<(ChunkCoord, ChunkHash)>>,
     options: CloneOptions,
     cas: S::Blobs,
     out: W,

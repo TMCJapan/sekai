@@ -12,10 +12,10 @@ pub mod usecase;
 
 pub use port::{BlobStore, MetaStore};
 pub use sekai_util::{
-    ApplyOutcome, Area, BlobHash, BytesHasher, ChunkCoord, ChunkHash, ChunkHistoryEntry, Commit,
-    CommitEntry, CommitId, CommitRef, DEFAULT_REF_NAME, Dimension, FoldOutcome, GcPlan, HexError,
-    NamedScope, NamedScopeError, Rect, RefName, RefNameError, RegionFingerprint, RegionKey,
-    RegionKind, Scope, ScopeName, ScopeNameError, UnknownRegionKind, hash_bytes,
+    ApplyOutcome, Area, BytesHasher, ChunkCoord, ChunkHash, ChunkHistoryEntry, Commit, CommitEntry,
+    CommitId, CommitRef, DEFAULT_REF_NAME, Dimension, FoldOutcome, GcPlan, HexError, NamedScope,
+    NamedScopeError, Rect, RefName, RefNameError, RegionFingerprint, RegionKey, RegionKind, Scope,
+    ScopeName, ScopeNameError, UnknownRegionKind, hash_bytes,
 };
 
 pub use usecase::{

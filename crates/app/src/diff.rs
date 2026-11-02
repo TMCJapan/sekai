@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
 use sekai_core::{
-    BlobHash, BlobStore as _, ChunkCoord, CommitId, MetaStore, RegionKey, RegionKind,
+    BlobStore as _, ChunkCoord, ChunkHash, CommitId, MetaStore, RegionKey, RegionKind,
 };
 use sekai_nbt::nanonbt::Cesu8Buf;
 use sekai_nbt::{Chunk, ChunkPayload, ChunkPayloadDiff, Heightmaps};
@@ -33,8 +33,8 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// Compute AST diff between two stored chunk blob hashes.
     pub async fn diff_blobs(
         &self,
-        old_hash: &BlobHash,
-        new_hash: &BlobHash,
+        old_hash: &ChunkHash,
+        new_hash: &ChunkHash,
     ) -> Result<ChunkPayloadDiff, AppError> {
         let mut old_compressed = Vec::new();
         let mut new_compressed = Vec::new();
@@ -273,8 +273,8 @@ fn raw_nbt_diff(old: &[u8], new: &[u8]) -> ChunkPayloadDiff {
         return ChunkPayloadDiff::Nothing;
     }
     ChunkPayloadDiff::Full {
-        old: sekai_core::raw_hash(old).as_bytes(),
-        new: sekai_core::raw_hash(new).as_bytes(),
+        old: sekai_core::raw_hash(old),
+        new: sekai_core::raw_hash(new),
     }
 }
 

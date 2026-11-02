@@ -864,7 +864,7 @@ async fn gc_runs_and_returns_timings() {
         .unwrap();
 
     let (plan, plan_timings) = instance.gc_plan().await.unwrap();
-    assert_eq!(plan.orphans, [] as [sekai_app::BlobHash; 0]);
+    assert_eq!(plan.orphans, [] as [sekai_app::ChunkHash; 0]);
     assert_eq!(plan_timings.apply, std::time::Duration::ZERO);
 
     let (report, timings) = instance.gc(|_| {}).await.unwrap();

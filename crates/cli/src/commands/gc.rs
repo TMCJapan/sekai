@@ -183,7 +183,7 @@ mod tests {
 
     #[test]
     fn renders_gc_plan_payload() {
-        let plan = GcPlan::new(vec![sekai_app::BlobHash([1; 32])], 10);
+        let plan = GcPlan::new(vec![sekai_app::ChunkHash::new([1; 32])], 10);
         let timings = GcTimings {
             total: Duration::from_millis(20),
             plan: Duration::from_millis(20),

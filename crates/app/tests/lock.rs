@@ -9,7 +9,7 @@
 #![cfg(feature = "backend-sqlite")]
 
 use sekai_app::{
-    BlobHash, CheckoutOptions, CloneOptions, CommitId, CommitOptions, Dimension, HostWorldTree,
+    CheckoutOptions, ChunkHash, CloneOptions, CommitId, CommitOptions, Dimension, HostWorldTree,
     Rect, RefName, Scope, ScopeName, SekaiInstance, StatusOptions, WorldError, WorldLockMode,
     WorldTree,
 };
@@ -44,7 +44,7 @@ struct Fixture {
     /// The fixture's only commit.
     commit: CommitId,
     /// A blob that the fixture commit references, for blob-level operations.
-    blob: BlobHash,
+    blob: ChunkHash,
     /// A scope no row deletes, so resolving it always succeeds.
     scope: ScopeName,
 }

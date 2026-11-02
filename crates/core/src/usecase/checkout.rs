@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::port::meta::MetaStore;
-use sekai_util::{BlobHash, ChunkCoord, CommitId, RegionKey};
+use sekai_util::{ChunkCoord, ChunkHash, CommitId, RegionKey};
 
 /// Outcome of one checkout run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,7 +26,7 @@ pub struct CheckoutPlan {
     /// Commit creation time (unix millis, informational only).
     pub created_at_ms: u64,
     /// Present rows grouped by region.
-    pub groups: BTreeMap<RegionKey, Vec<(ChunkCoord, BlobHash)>>,
+    pub groups: BTreeMap<RegionKey, Vec<(ChunkCoord, ChunkHash)>>,
     /// Tombstoned coordinates grouped by region. Regions absent from both
     /// `groups` and `tombstones` are unknown to the commit (created
     /// afterwards); regions in `tombstones` but not `groups` are fully
@@ -66,7 +66,7 @@ pub async fn plan_checkout<M: MetaStore>(
         .map_err(CheckoutError::Meta)?
         .map(|c| c.created_at_ms)
         .ok_or(CheckoutError::UnknownCommit { id: commit })?;
-    let mut groups: BTreeMap<RegionKey, Vec<(ChunkCoord, BlobHash)>> = BTreeMap::new();
+    let mut groups: BTreeMap<RegionKey, Vec<(ChunkCoord, ChunkHash)>> = BTreeMap::new();
     let mut tombstones: BTreeMap<RegionKey, Vec<ChunkCoord>> = BTreeMap::new();
     meta.visit_commit_chunks(commit, |entry| {
         if let Some(blob) = entry.blob {
@@ -111,8 +111,8 @@ mod tests {
             1_000,
             &[],
             &[
-                CommitEntry::new(a, Some(BlobHash([1; 32]))),
-                CommitEntry::new(b, Some(BlobHash([2; 32]))),
+                CommitEntry::new(a, Some(ChunkHash::new([1; 32]))),
+                CommitEntry::new(b, Some(ChunkHash::new([2; 32]))),
                 CommitEntry::new(gone, None),
             ],
         ))
@@ -124,8 +124,8 @@ mod tests {
         assert_eq!(plan.groups.len(), 1);
         let rows = &plan.groups[&RegionKey::new(OVER, REGION, 0, 0)];
         assert_eq!(rows.len(), 2);
-        assert!(rows.contains(&(a, BlobHash([1; 32]))));
-        assert!(rows.contains(&(b, BlobHash([2; 32]))));
+        assert!(rows.contains(&(a, ChunkHash::new([1; 32]))));
+        assert!(rows.contains(&(b, ChunkHash::new([2; 32]))));
         assert_eq!(
             plan.tombstones[&RegionKey::new(OVER, REGION, 0, 0)],
             alloc::vec![gone]

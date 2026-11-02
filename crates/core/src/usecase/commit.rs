@@ -22,7 +22,7 @@ use alloc::vec::Vec;
 
 use crate::port::meta::MetaStore;
 use sekai_util::{
-    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitEntry, CommitId,
+    ApplyOutcome, ChunkCoord, ChunkHash, ChunkHistoryEntry, Commit, CommitEntry, CommitId,
     RegionFingerprint, RegionKey, Scope,
 };
 
@@ -168,7 +168,7 @@ pub async fn plan_commit<M: MetaStore>(
 }
 
 /// Stage an ingested chunk as a fresh history row.
-pub const fn stage_present(coord: ChunkCoord, hash: BlobHash) -> CommitEntry {
+pub const fn stage_present(coord: ChunkCoord, hash: ChunkHash) -> CommitEntry {
     CommitEntry::new(coord, Some(hash))
 }
 
@@ -349,7 +349,7 @@ mod tests {
             plan,
             &previous,
             Ingested {
-                entries: alloc::vec![stage_present(coord(0, 0), BlobHash([1; 32]))],
+                entries: alloc::vec![stage_present(coord(0, 0), ChunkHash::new([1; 32]))],
                 present: BTreeSet::from([coord(0, 0)]),
                 new_blobs: 1,
             },
@@ -376,7 +376,7 @@ mod tests {
             plan,
             &previous,
             Ingested {
-                entries: alloc::vec![stage_present(coord(0, 0), BlobHash([2; 32]))],
+                entries: alloc::vec![stage_present(coord(0, 0), ChunkHash::new([2; 32]))],
                 present: BTreeSet::from([coord(0, 0)]),
                 new_blobs: 1,
             },
@@ -411,7 +411,7 @@ mod tests {
             plan,
             &previous,
             Ingested {
-                entries: alloc::vec![stage_present(coord(0, 0), BlobHash([1; 32]))],
+                entries: alloc::vec![stage_present(coord(0, 0), ChunkHash::new([1; 32]))],
                 present: BTreeSet::from([coord(0, 0)]),
                 new_blobs: 1,
             },
@@ -433,7 +433,7 @@ mod tests {
             plan,
             &previous,
             Ingested {
-                entries: alloc::vec![stage_present(coord(0, 0), BlobHash([2; 32]))],
+                entries: alloc::vec![stage_present(coord(0, 0), ChunkHash::new([2; 32]))],
                 present: BTreeSet::from([coord(0, 0)]),
                 new_blobs: 1,
             },
@@ -453,7 +453,7 @@ mod tests {
         let first = crate::support::block_on(meta.apply_commit_incremental(
             1_000,
             &[],
-            &[stage_present(coord(0, 0), BlobHash([1; 32]))],
+            &[stage_present(coord(0, 0), ChunkHash::new([1; 32]))],
         ))
         .unwrap()
         .id;
@@ -463,7 +463,7 @@ mod tests {
         let err = crate::support::block_on(meta.apply_commit_incremental(
             2_000,
             &[],
-            &[stage_present(coord(1, 0), BlobHash([2; 32]))],
+            &[stage_present(coord(1, 0), ChunkHash::new([2; 32]))],
         ))
         .unwrap_err();
         assert_eq!(err, MemError::NotContinuing { base: first });
@@ -472,7 +472,7 @@ mod tests {
         let second = crate::support::block_on(meta.apply_commit_incremental(
             3_000,
             &[first],
-            &[stage_present(coord(1, 0), BlobHash([2; 32]))],
+            &[stage_present(coord(1, 0), ChunkHash::new([2; 32]))],
         ))
         .unwrap()
         .id;
@@ -509,8 +509,8 @@ mod tests {
             fingerprint: fingerprint(key(0, 0)),
         }];
         let entries = [
-            stage_present(coord(0, 0), BlobHash([1; 32])),
-            stage_present(coord(1, 0), BlobHash([2; 32])),
+            stage_present(coord(0, 0), ChunkHash::new([1; 32])),
+            stage_present(coord(1, 0), ChunkHash::new([2; 32])),
         ];
         let present = BTreeSet::from([coord(0, 0), coord(1, 0)]);
         let (previous, plan) =
@@ -564,8 +564,8 @@ mod tests {
             &previous,
             Ingested {
                 entries: alloc::vec![
-                    stage_present(coord(0, 0), BlobHash([1; 32])),
-                    stage_present(coord(1, 0), BlobHash([2; 32])),
+                    stage_present(coord(0, 0), ChunkHash::new([1; 32])),
+                    stage_present(coord(1, 0), ChunkHash::new([2; 32])),
                 ],
                 present: BTreeSet::from([coord(0, 0), coord(1, 0)]),
                 new_blobs: 2,
@@ -581,8 +581,8 @@ mod tests {
             &previous,
             Ingested {
                 entries: alloc::vec![
-                    stage_present(coord(0, 0), BlobHash([9; 32])),
-                    stage_present(coord(1, 0), BlobHash([2; 32])),
+                    stage_present(coord(0, 0), ChunkHash::new([9; 32])),
+                    stage_present(coord(1, 0), ChunkHash::new([2; 32])),
                 ],
                 present: BTreeSet::from([coord(0, 0), coord(1, 0)]),
                 new_blobs: 1,
@@ -591,7 +591,7 @@ mod tests {
         );
         assert_eq!(
             staged.entries,
-            alloc::vec![stage_present(coord(0, 0), BlobHash([9; 32]))]
+            alloc::vec![stage_present(coord(0, 0), ChunkHash::new([9; 32]))]
         );
         assert_eq!(staged.chunks, 2);
         let report =
@@ -603,11 +603,11 @@ mod tests {
         let got = crate::support::block_on(meta.lookup_chunk(report.commit, &coord(0, 0)))
             .unwrap()
             .unwrap();
-        assert_eq!(got.blob, Some(BlobHash([9; 32])));
+        assert_eq!(got.blob, Some(ChunkHash::new([9; 32])));
         let kept = crate::support::block_on(meta.lookup_chunk(report.commit, &coord(1, 0)))
             .unwrap()
             .unwrap();
-        assert_eq!(kept.blob, Some(BlobHash([2; 32])));
+        assert_eq!(kept.blob, Some(ChunkHash::new([2; 32])));
     }
 
     #[test]
@@ -617,8 +617,8 @@ mod tests {
             1_000,
             &[],
             &[
-                stage_present(coord(0, 0), BlobHash([1; 32])),
-                stage_present(coord(1, 0), BlobHash([2; 32])),
+                stage_present(coord(0, 0), ChunkHash::new([1; 32])),
+                stage_present(coord(1, 0), ChunkHash::new([2; 32])),
             ],
         ))
         .unwrap();
@@ -645,8 +645,8 @@ mod tests {
             1_000,
             &[],
             &[
-                stage_present(coord(0, 0), BlobHash([1; 32])),
-                stage_present(coord(32, 0), BlobHash([2; 32])),
+                stage_present(coord(0, 0), ChunkHash::new([1; 32])),
+                stage_present(coord(32, 0), ChunkHash::new([2; 32])),
             ],
         ))
         .unwrap();
@@ -663,7 +663,7 @@ mod tests {
             plan,
             &previous,
             Ingested {
-                entries: alloc::vec![stage_present(coord(32, 0), BlobHash([2; 32]))],
+                entries: alloc::vec![stage_present(coord(32, 0), ChunkHash::new([2; 32]))],
                 present: BTreeSet::from([coord(32, 0)]),
                 new_blobs: 0,
             },
@@ -689,7 +689,7 @@ mod tests {
             plan,
             &previous,
             Ingested {
-                entries: alloc::vec![stage_present(coord(32, 0), BlobHash([2; 32]))],
+                entries: alloc::vec![stage_present(coord(32, 0), ChunkHash::new([2; 32]))],
                 present: BTreeSet::from([coord(32, 0)]),
                 new_blobs: 0,
             },
@@ -713,8 +713,8 @@ mod tests {
             1_000,
             &[],
             &[
-                stage_present(coord(0, 0), BlobHash([1; 32])),
-                stage_present(nether_coord(0, 0), BlobHash([2; 32])),
+                stage_present(coord(0, 0), ChunkHash::new([1; 32])),
+                stage_present(nether_coord(0, 0), ChunkHash::new([2; 32])),
             ],
         ))
         .unwrap();
@@ -753,9 +753,9 @@ mod tests {
             1_000,
             &[],
             &[
-                stage_present(coord(0, 0), BlobHash([1; 32])),
-                stage_present(coord(1, 0), BlobHash([2; 32])),
-                stage_present(nether_coord(0, 0), BlobHash([3; 32])),
+                stage_present(coord(0, 0), ChunkHash::new([1; 32])),
+                stage_present(coord(1, 0), ChunkHash::new([2; 32])),
+                stage_present(nether_coord(0, 0), ChunkHash::new([3; 32])),
             ],
         ))
         .unwrap();
@@ -776,7 +776,7 @@ mod tests {
             plan,
             &previous,
             Ingested {
-                entries: alloc::vec![stage_present(coord(0, 0), BlobHash([9; 32]))],
+                entries: alloc::vec![stage_present(coord(0, 0), ChunkHash::new([9; 32]))],
                 present: BTreeSet::from([coord(0, 0)]),
                 new_blobs: 1,
             },
@@ -799,7 +799,7 @@ mod tests {
         let kept = crate::support::block_on(meta.lookup_chunk(report.commit, &nether_coord(0, 0)))
             .unwrap()
             .unwrap();
-        assert_eq!(kept.blob, Some(BlobHash([3; 32])));
+        assert_eq!(kept.blob, Some(ChunkHash::new([3; 32])));
     }
 
     fn over_rect(rect: Rect) -> Scope {
@@ -816,8 +816,8 @@ mod tests {
             1_000,
             &[],
             &[
-                stage_present(coord(0, 0), BlobHash([1; 32])),
-                stage_present(coord(1, 0), BlobHash([2; 32])),
+                stage_present(coord(0, 0), ChunkHash::new([1; 32])),
+                stage_present(coord(1, 0), ChunkHash::new([2; 32])),
             ],
         ))
         .unwrap();
@@ -835,7 +835,7 @@ mod tests {
             plan,
             &previous,
             Ingested {
-                entries: alloc::vec![stage_present(coord(0, 0), BlobHash([9; 32]))],
+                entries: alloc::vec![stage_present(coord(0, 0), ChunkHash::new([9; 32]))],
                 present: BTreeSet::from([coord(0, 0)]),
                 new_blobs: 1,
             },
@@ -853,8 +853,8 @@ mod tests {
             &previous,
             Ingested {
                 entries: alloc::vec![
-                    stage_present(coord(0, 0), BlobHash([9; 32])),
-                    stage_present(coord(1, 0), BlobHash([7; 32])),
+                    stage_present(coord(0, 0), ChunkHash::new([9; 32])),
+                    stage_present(coord(1, 0), ChunkHash::new([7; 32])),
                 ],
                 present: BTreeSet::from([coord(0, 0), coord(1, 0)]),
                 new_blobs: 1,
@@ -863,28 +863,32 @@ mod tests {
         );
         assert_eq!(
             staged.entries,
-            alloc::vec![stage_present(coord(1, 0), BlobHash([7; 32]))]
+            alloc::vec![stage_present(coord(1, 0), ChunkHash::new([7; 32]))]
         );
         let report =
             crate::support::block_on(record_commit(&mut meta, &previous, &staged, 3_000)).unwrap();
         let got = crate::support::block_on(meta.lookup_chunk(report.commit, &coord(1, 0)))
             .unwrap()
             .unwrap();
-        assert_eq!(got.blob, Some(BlobHash([7; 32])));
+        assert_eq!(got.blob, Some(ChunkHash::new([7; 32])));
     }
 
     #[test]
     fn mem_meta_satisfies_lookup_contract() {
         let mut meta = store_with_ref();
         let id = crate::support::block_on(meta.create_commit(5, &[])).unwrap();
-        crate::support::block_on(meta.record_chunk(id, &coord(0, 0), Some(&BlobHash([3; 32]))))
-            .unwrap();
+        crate::support::block_on(meta.record_chunk(
+            id,
+            &coord(0, 0),
+            Some(&ChunkHash::new([3; 32])),
+        ))
+        .unwrap();
         let row = crate::support::block_on(meta.lookup_chunk(id, &coord(0, 0)))
             .unwrap()
             .unwrap();
         assert_eq!(
             row,
-            ChunkHistoryEntry::new(coord(0, 0), id, Some(BlobHash([3; 32])))
+            ChunkHistoryEntry::new(coord(0, 0), id, Some(ChunkHash::new([3; 32])))
         );
         assert!(
             crate::support::block_on(meta.lookup_commit(CommitId([0xFF; 32])))

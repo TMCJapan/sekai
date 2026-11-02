@@ -42,7 +42,7 @@ pub use gc::{GcProgress, GcTimings};
 pub use instance::{SekaiInstance, WorldHandle, WorldHandleMut};
 pub use prune::{PruneProgress, PruneTimings};
 pub use sekai_core::{
-    Area, BlobHash, CheckoutReport, ChunkCoord, Commit, CommitId, CommitRef, CommitReport,
+    Area, CheckoutReport, ChunkCoord, ChunkHash, Commit, CommitId, CommitRef, CommitReport,
     CommitStats, DEFAULT_REF_NAME, Dimension, GcPlan, GcReport, NamedScope, NamedScopeError,
     PrunePlan, PruneReport, Rect, RefName, RefNameError, RegionFingerprint, RegionKey, RegionKind,
     Scope, ScopeName, ScopeNameError,

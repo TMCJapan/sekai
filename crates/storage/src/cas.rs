@@ -16,7 +16,7 @@ use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use sekai_core::BlobHash;
+use sekai_core::ChunkHash;
 
 use crate::api::{StorageError, io_error};
 
@@ -101,7 +101,7 @@ impl FileCas {
     }
 
     /// File path for `hash` (`blobs/<first byte hex>/<remaining hex>`).
-    fn path_of(&self, hash: &BlobHash) -> PathBuf {
+    fn path_of(&self, hash: &ChunkHash) -> PathBuf {
         let hex = hash.hex_string();
         let (dir, file) = hex.split_at(2);
         self.root.join("blobs").join(dir).join(file)
@@ -121,7 +121,7 @@ impl FileCas {
     /// an existing file fails, that loser path is what saves the commit.
     /// (`new_blobs` accounting may overcount racing duplicates on
     /// platforms where every rename succeeds; cosmetic only.)
-    async fn store(&mut self, hash: BlobHash, payload: Vec<u8>) -> Result<bool, StorageError> {
+    async fn store(&mut self, hash: ChunkHash, payload: Vec<u8>) -> Result<bool, StorageError> {
         let dest = self.path_of(&hash);
         if dest.is_file() {
             return Ok(false);
@@ -174,7 +174,7 @@ impl FileCas {
     /// foreign files are skipped, so GC never removes them.
     async fn visit_blobs<F>(&self, mut visit: F) -> Result<(), StorageError>
     where
-        F: FnMut(&BlobHash) -> bool + Send,
+        F: FnMut(&ChunkHash) -> bool + Send,
     {
         let blobs = self.root.join("blobs");
         let hashes = blocking(move || scan_blobs(&blobs)).await?;
@@ -231,7 +231,7 @@ fn write_blob(dest: impl AsRef<Path>, payload: &[u8]) -> Result<bool, StorageErr
 }
 
 /// Hash every file stored under `blobs/`, in shard then name order.
-fn scan_blobs(blobs: impl AsRef<Path>) -> Result<Vec<BlobHash>, StorageError> {
+fn scan_blobs(blobs: impl AsRef<Path>) -> Result<Vec<ChunkHash>, StorageError> {
     let blobs = blobs.as_ref();
     let mut hashes = Vec::new();
     let shards = std::fs::read_dir(blobs).map_err(|source| io_error(blobs, source))?;
@@ -270,7 +270,7 @@ fn scan_blobs(blobs: impl AsRef<Path>) -> Result<Vec<BlobHash>, StorageError> {
             let mut hex = [0u8; 64];
             hex[..2].copy_from_slice(dir.as_bytes());
             hex[2..].copy_from_slice(file.as_bytes());
-            let Ok(hash) = BlobHash::from_hex(&hex) else {
+            let Ok(hash) = ChunkHash::from_hex(&hex) else {
                 continue;
             };
             hashes.push(hash);
@@ -282,14 +282,14 @@ fn scan_blobs(blobs: impl AsRef<Path>) -> Result<Vec<BlobHash>, StorageError> {
 impl sekai_core::BlobStore for FileCas {
     type Error = StorageError;
 
-    async fn contains(&self, hash: &BlobHash) -> Result<bool, Self::Error> {
+    async fn contains(&self, hash: &ChunkHash) -> Result<bool, Self::Error> {
         // `is_file`, matching `put`: a directory squatting on a blob path
         // is not a stored blob.
         let path = self.path_of(hash);
         blocking(move || Ok(path.is_file())).await
     }
 
-    async fn put(&mut self, hash: &BlobHash, payload: &[u8]) -> Result<bool, Self::Error> {
+    async fn put(&mut self, hash: &ChunkHash, payload: &[u8]) -> Result<bool, Self::Error> {
         self.store(*hash, payload.to_vec()).await
     }
 
@@ -297,21 +297,21 @@ impl sekai_core::BlobStore for FileCas {
         self.flush().await
     }
 
-    async fn fetch_into(&self, hash: &BlobHash, out: &mut Vec<u8>) -> Result<(), Self::Error> {
+    async fn fetch_into(&self, hash: &ChunkHash, out: &mut Vec<u8>) -> Result<(), Self::Error> {
         let path = self.path_of(hash);
         let hex = hash.hex_string();
         *out = blocking(move || read_blob(&path, hex)).await?;
         Ok(())
     }
 
-    async fn remove(&mut self, hash: &BlobHash) -> Result<bool, Self::Error> {
+    async fn remove(&mut self, hash: &ChunkHash) -> Result<bool, Self::Error> {
         let path = self.path_of(hash);
         blocking(move || remove_blob(&path)).await
     }
 
     async fn visit_blobs<F>(&self, visit: F) -> Result<(), Self::Error>
     where
-        F: FnMut(&BlobHash) -> bool + Send,
+        F: FnMut(&ChunkHash) -> bool + Send,
     {
         Self::visit_blobs(self, visit).await
     }
@@ -372,7 +372,7 @@ mod tests {
     #[test]
     fn concurrent_same_blob_put_never_errors() {
         let root = temp_root("race");
-        let hash = BlobHash([9; 32]);
+        let hash = ChunkHash::new([9; 32]);
         let payload = vec![7u8; 1024];
         for _ in 0..25 {
             let _ = std::fs::remove_dir_all(root.join("blobs"));
@@ -416,7 +416,7 @@ mod tests {
         let root = temp_root("shard-retry");
         let mut cas = FileCas::open(&root).unwrap();
         // Occupy the shard path with a file, so `create_dir_all` fails.
-        let hash = BlobHash([0x5a; 32]);
+        let hash = ChunkHash::new([0x5a; 32]);
         std::fs::write(root.join("blobs/5a"), b"not a directory").unwrap();
         run(cas.put(&hash, b"payload")).unwrap_err();
 
@@ -435,7 +435,7 @@ mod tests {
         // A temp file left by a crashed process (same pid, same counter)
         // must not be truncated and rewritten: the put draws a fresh name.
         let root = temp_root("stale-tmp");
-        let hash = BlobHash([3; 32]);
+        let hash = ChunkHash::new([3; 32]);
         let stale = root.join("blobs/03").join(format!(
             "{}.tmp-{}-0",
             &hash.hex_string()[2..],
@@ -459,7 +459,7 @@ mod tests {
         // An externally corrupted store may hold a directory where a blob
         // belongs; it must not read as a stored blob.
         let root = temp_root("dir-squat");
-        let hash = BlobHash([5; 32]);
+        let hash = ChunkHash::new([5; 32]);
         let path = root.join("blobs/05").join(&hash.hex_string()[2..]);
         std::fs::create_dir_all(&path).unwrap();
 
@@ -472,7 +472,7 @@ mod tests {
     fn sync_is_idempotent_and_visits_only_blob_names() {
         let root = temp_root("sync-visit");
         let mut cas = FileCas::open(&root).unwrap();
-        let hash = BlobHash([0x2a; 32]);
+        let hash = ChunkHash::new([0x2a; 32]);
         assert!(run(cas.put(&hash, b"payload")).unwrap());
         run(cas.sync()).unwrap();
         run(cas.sync()).unwrap();

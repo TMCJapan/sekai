@@ -708,7 +708,7 @@ struct Staged {
 
 /// One chunk payload waiting for its CAS write.
 struct ChunkWrite {
-    hash: sekai_core::BlobHash,
+    hash: sekai_core::ChunkHash,
     payload: Vec<u8>,
 }
 

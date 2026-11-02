@@ -8,7 +8,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use sekai_core::{
-    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitEntry, CommitId,
+    ApplyOutcome, ChunkCoord, ChunkHash, ChunkHistoryEntry, Commit, CommitEntry, CommitId,
     CommitRef, DEFAULT_REF_NAME, Dimension, FoldOutcome, MetaStore, NamedScope, NamedScopeError,
     Rect, RefName, RegionKind, ScopeName, commit_hash,
 };
@@ -332,13 +332,15 @@ fn hash32(bytes: Vec<u8>) -> Result<[u8; 32], StorageError> {
         .map_err(|bytes: Vec<u8>| StorageError::InvalidHashLength { len: bytes.len() })
 }
 
-/// Read an optional `BlobHash` from a 32-byte hash column.
+/// Read an optional `ChunkHash` from a 32-byte hash column.
 fn hash_col(
     row: &sqlx::sqlite::SqliteRow,
     column: &'static str,
-) -> Result<Option<BlobHash>, StorageError> {
+) -> Result<Option<ChunkHash>, StorageError> {
     let bytes: Option<Vec<u8>> = row.try_get(column).map_err(db_err)?;
-    bytes.map(|bytes| hash32(bytes).map(BlobHash)).transpose()
+    bytes
+        .map(|bytes| hash32(bytes).map(ChunkHash::new))
+        .transpose()
 }
 
 /// Read a millisecond timestamp column.
@@ -660,7 +662,7 @@ impl sekai_core::MetaStore for SqliteMeta {
         &mut self,
         commit: CommitId,
         coord: &ChunkCoord,
-        blob: Option<&BlobHash>,
+        blob: Option<&ChunkHash>,
     ) -> Result<(), StorageError> {
         let mut tx = self.pool.begin().await.map_err(db_err)?;
         let seq: i64 = sqlx::query_scalar("SELECT seq FROM commits WHERE id = ?")
@@ -676,7 +678,7 @@ impl sekai_core::MetaStore for SqliteMeta {
             .bind(i64::from(coord.kind.raw()))
             .bind(i64::from(coord.x))
             .bind(i64::from(coord.z))
-            .bind(blob.map(|h| &h.0[..]))
+            .bind(blob.map(|h| &h.as_bytes()[..]))
             .execute(&mut *tx)
             .await
             .map_err(db_err)?;
@@ -946,7 +948,7 @@ impl sekai_core::MetaStore for SqliteMeta {
                     .bind(i64::from(entry.coord.kind.raw()))
                     .bind(i64::from(entry.coord.x))
                     .bind(i64::from(entry.coord.z))
-                    .bind(entry.blob.as_ref().map(|h| &h.0[..]))
+                    .bind(entry.blob.as_ref().map(|h| &h.as_bytes()[..]))
                     .execute(&mut *tx)
                     .await
                     .map_err(db_err)?;
@@ -1727,7 +1729,7 @@ mod tests {
         let mut meta = memory_meta().await;
         let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
         let commit = meta
-            .apply_commit(1_000, &[], &[stage_present(coord, BlobHash([1; 32]))])
+            .apply_commit(1_000, &[], &[stage_present(coord, ChunkHash::new([1; 32]))])
             .await
             .unwrap();
         sqlx::query("UPDATE chunk_history SET kind = 9")

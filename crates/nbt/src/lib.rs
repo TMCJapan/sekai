@@ -4,7 +4,7 @@ extern crate alloc;
 mod chunk;
 mod diff;
 
-use sekai_util::BlobHash;
+use sekai_util::ChunkHash;
 
 pub use chunk::legacy;
 pub use chunk::{
@@ -39,23 +39,22 @@ pub fn parse(bytes: &[u8]) -> Result<Chunk<'_>, NbtError> {
 /// chunk whose root carries no [`ChunkPayload`] fields) has nothing to
 /// normalize and keys on its exact bytes instead. That keeps the ingest path
 /// total: it never fails on content a server wrote.
-pub fn chunk_blob_hash(raw_nbt: &[u8]) -> BlobHash {
-    let digest = parse(raw_nbt).map_or_else(
-        |_| sekai_util::hash_bytes(raw_nbt),
+pub fn chunk_blob_hash(raw_nbt: &[u8]) -> ChunkHash {
+    parse(raw_nbt).map_or_else(
+        |_| ChunkHash::new(sekai_util::hash_bytes(raw_nbt)),
         |chunk| {
             chunk
                 .normalize_hash()
-                .unwrap_or_else(|_| sekai_util::hash_bytes(raw_nbt))
+                .unwrap_or_else(|_| ChunkHash::new(sekai_util::hash_bytes(raw_nbt)))
         },
-    );
-    BlobHash::new(digest)
+    )
 }
 
 /// Hashes an arbitrary payload that has no chunk schema.
 ///
 /// Only a fallback for data [`Chunk::normalize_hash`] cannot describe.
-pub fn raw_hash(bytes: &[u8]) -> BlobHash {
-    BlobHash::new(sekai_util::hash_bytes(bytes))
+pub fn raw_hash(bytes: &[u8]) -> ChunkHash {
+    ChunkHash::new(sekai_util::hash_bytes(bytes))
 }
 
 #[cfg(test)]

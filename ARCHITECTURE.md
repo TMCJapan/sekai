@@ -42,7 +42,7 @@ sekai-util (no_std, no tokio dependency: coordinates, chunk hashes,
 
 | Crate | `std` | `async` | Role |
 |---|---|---|---|
-| `sekai-util` | `no_std`, no `std`/tokio dependencies | no | Shared value types: coordinates, the chunk digest (`BlobHash`/`ChunkHash`, `hash_bytes`, `BytesHasher`), region/history/commit/gc records, hex errors. Pure data plus total validation only. |
+| `sekai-util` | `no_std`, no `std`/tokio dependencies | no | Shared value types: coordinates, the chunk digest (`ChunkHash`, `hash_bytes`, `BytesHasher`), region/history/commit/gc records, hex errors. Pure data plus total validation only. |
 | `sekai-anvil` | `no_std` + `alloc` | no | Pure Anvil sector codec including decompression. `&[u8]` sector payload in, raw NBT bytes out; also builds `Vec<u8>` images. Compression framing is MCA spec knowledge, so it lives here. No `Path`, no `fs`. Names custom dimensions with util `Dimension`. |
 | `sekai-nbt` | `no_std` + `alloc` | no | Pure `raw NBT bytes -> normalized view`. Hand-rolled NBT parser (no `Serialize` by design; output uses SNBT), tag filtering, the canonical 32-byte digest and the CAS key derived from it. Never sees compression. |
 | `sekai-core` | `no_std` + `alloc` | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_checkout`, `gc plan`/`apply`) plus storage ports. Composes `anvil`/`nbt` over util types and re-exports them, so downstream paths stay stable. |
@@ -103,10 +103,10 @@ commit:
   world: region handle -> Vec<u8> image
     -> anvil: image -> sector payloads (stored opaquely)
     -> anvil::decompress_into -> raw NBT
-    -> nbt: parse -> Chunk::normalize_hash -> BlobHash -> storage CAS put
+    -> nbt: parse -> Chunk::normalize_hash -> ChunkHash -> storage CAS put
 
 checkout:
-  core::plan_checkout -> groups of (coord, BlobHash)
+  core::plan_checkout -> groups of (coord, ChunkHash)
     -> storage CAS fetch -> anvil builder -> Vec<u8> image
     -> world: region handle <- atomic swap(target, image)
 
@@ -171,7 +171,7 @@ everything else is that digest under a different name.
   and legacy `Level`) has its own view, so converting a chunk is a real
   change, never a silent no-op.
 - **Chunk digest -> CAS key**: `normalize_hash` through `hash_bytes` is the
-  `BlobHash` (`nbt::chunk_blob_hash`). The very same digest drives `diff`
+  `ChunkHash` (`nbt::chunk_blob_hash`). The very same digest drives `diff`
   output. Because volatile tags never enter it, a server rewriting them
   neither adds a blob nor records a history row; checkout still writes the
   captured bytes back verbatim.

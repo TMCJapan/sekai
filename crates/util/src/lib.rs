@@ -27,7 +27,7 @@ pub use commit::{Commit, CommitId};
 pub use dimension::Dimension;
 pub use error::{HexError, NamedScopeError, ParseCodeError, RefNameError, ScopeNameError};
 pub use gc::GcPlan;
-pub use hash::{BlobHash, BytesHasher, ChunkHash, hash_bytes};
+pub use hash::{BytesHasher, ChunkHash, hash_bytes};
 pub use history::ChunkHistoryEntry;
 pub use named_scope::{NamedScope, ScopeName};
 pub use refs::{CommitRef, DEFAULT_REF_NAME, RefName};

@@ -17,7 +17,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use sekai_core::{BlobHash, CheckoutReport, ChunkCoord, CommitId, RegionKey, Scope};
+use sekai_core::{CheckoutReport, ChunkCoord, ChunkHash, CommitId, RegionKey, Scope};
 use sekai_storage::{SekaiStore, StorageError};
 use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
 
@@ -177,7 +177,7 @@ where
 
 /// Everything one checkout file pass needs.
 struct CheckoutJob<S: SekaiStore, T: WorldTree> {
-    groups: BTreeMap<RegionKey, Vec<(ChunkCoord, BlobHash)>>,
+    groups: BTreeMap<RegionKey, Vec<(ChunkCoord, ChunkHash)>>,
     tombstones: BTreeMap<RegionKey, Vec<ChunkCoord>>,
     options: CheckoutOptions,
     cas: S::Blobs,
@@ -400,7 +400,7 @@ impl<R: Send + 'static, T: Send + 'static> Step<R, T> {
 /// [`MissingBlobPolicy::Abort`] a missing blob is corruption and propagates.
 pub(super) async fn fetch_or_skip<C: sekai_core::BlobStore<Error = StorageError>>(
     cas: &C,
-    hash: &BlobHash,
+    hash: &ChunkHash,
     policy: MissingBlobPolicy,
     out: &mut Vec<u8>,
 ) -> Result<bool, AppError> {

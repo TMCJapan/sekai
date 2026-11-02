@@ -9,6 +9,7 @@ pub use block_entity::BlockEntity;
 pub use heightmap::Heightmaps;
 pub use legacy::{LegacyChunkPayload, LegacySection, RawCompound};
 pub use section::Section;
+use sekai_util::ChunkHash;
 pub use tick::{BlockTick, FluidTick};
 
 use alloc::vec::Vec;
@@ -88,7 +89,7 @@ impl ChunkPayload<'_> {
             fluid_ticks: &self.fluid_ticks,
         };
         let bytes = nanonbt::to_bytes(&normalized)?;
-        Ok(sekai_util::hash_bytes(&bytes))
+        Ok(ChunkHash::new(sekai_util::hash_bytes(&bytes)))
     }
 }
 

@@ -3,8 +3,8 @@
 //! The flows target `sekai-core` traits; backend-specific setup stays in each runner.
 
 use sekai_core::{
-    BlobHash, BlobStore, ChunkCoord, CommitEntry, CommitId, Dimension, MetaStore, NamedScope, Rect,
-    RefName, RegionKind, ScopeName,
+    BlobStore, ChunkCoord, ChunkHash, CommitEntry, CommitId, Dimension, MetaStore, NamedScope,
+    Rect, RefName, RegionKind, ScopeName,
     usecase::gc::{gc_apply, gc_plan},
 };
 
@@ -125,11 +125,11 @@ where
             .unwrap()
             .is_none()
     );
-    meta.record_chunk(id, &coord(0, 0), Some(&BlobHash([1; 32])))
+    meta.record_chunk(id, &coord(0, 0), Some(&ChunkHash::new([1; 32])))
         .await
         .unwrap();
     let row = meta.lookup_chunk(id, &coord(0, 0)).await.unwrap().unwrap();
-    assert_eq!(row.blob, Some(BlobHash([1; 32])));
+    assert_eq!(row.blob, Some(ChunkHash::new([1; 32])));
     assert!(meta.lookup_chunk(id, &coord(1, 0)).await.unwrap().is_none());
     let listed = sekai_core::usecase::graph::list_commits(&*meta)
         .await
@@ -145,14 +145,14 @@ where
 {
     use sekai_core::usecase::graph::{CommitStats, commit_stats};
     let first = meta.create_commit(1_000, &[]).await.unwrap();
-    meta.record_chunk(first, &coord(0, 0), Some(&BlobHash([1; 32])))
+    meta.record_chunk(first, &coord(0, 0), Some(&ChunkHash::new([1; 32])))
         .await
         .unwrap();
-    meta.record_chunk(first, &coord(1, 0), Some(&BlobHash([1; 32])))
+    meta.record_chunk(first, &coord(1, 0), Some(&ChunkHash::new([1; 32])))
         .await
         .unwrap();
     let second = meta.create_commit(2_000, &[first]).await.unwrap();
-    meta.record_chunk(second, &coord(0, 0), Some(&BlobHash([2; 32])))
+    meta.record_chunk(second, &coord(0, 0), Some(&ChunkHash::new([2; 32])))
         .await
         .unwrap();
     meta.record_chunk(second, &coord(1, 0), None).await.unwrap();
@@ -194,21 +194,21 @@ where
     use sekai_core::usecase::prune::{PruneReport, prune_apply, prune_plan, select_retained};
     // S1: A@0,0 B@1,0 / S2: C@0,0 (B carried) / S3: D@2,0.
     let first = meta.create_commit(1_000, &[]).await.unwrap();
-    meta.record_chunk(first, &coord(0, 0), Some(&BlobHash([1; 32])))
+    meta.record_chunk(first, &coord(0, 0), Some(&ChunkHash::new([1; 32])))
         .await
         .unwrap();
-    meta.record_chunk(first, &coord(1, 0), Some(&BlobHash([2; 32])))
+    meta.record_chunk(first, &coord(1, 0), Some(&ChunkHash::new([2; 32])))
         .await
         .unwrap();
     let second = meta.create_commit(2_000, &[first]).await.unwrap();
-    meta.record_chunk(second, &coord(0, 0), Some(&BlobHash([3; 32])))
+    meta.record_chunk(second, &coord(0, 0), Some(&ChunkHash::new([3; 32])))
         .await
         .unwrap();
     let third = meta.create_commit(3_000, &[second]).await.unwrap();
-    meta.record_chunk(third, &coord(2, 0), Some(&BlobHash([4; 32])))
+    meta.record_chunk(third, &coord(2, 0), Some(&ChunkHash::new([4; 32])))
         .await
         .unwrap();
-    let before: Vec<Vec<(ChunkCoord, Option<BlobHash>)>> =
+    let before: Vec<Vec<(ChunkCoord, Option<ChunkHash>)>> =
         effective_rows(meta, &[first, second, third]).await;
 
     let listed = sekai_core::usecase::graph::list_commits(&*meta)
@@ -228,7 +228,7 @@ where
         }
     );
 
-    let after: Vec<Vec<(ChunkCoord, Option<BlobHash>)>> =
+    let after: Vec<Vec<(ChunkCoord, Option<ChunkHash>)>> =
         effective_rows(meta, &[second, third]).await;
     assert_eq!(after, before[1..]);
     assert!(meta.lookup_commit(first).await.unwrap().is_none());
@@ -249,7 +249,7 @@ where
         );
     }
     // The rejected attempts changed nothing.
-    let after_failures: Vec<Vec<(ChunkCoord, Option<BlobHash>)>> =
+    let after_failures: Vec<Vec<(ChunkCoord, Option<ChunkHash>)>> =
         effective_rows(meta, &[second, third]).await;
     assert_eq!(after_failures, after);
 }
@@ -273,7 +273,7 @@ where
         .apply_commit_incremental(
             1_000,
             &[],
-            &[CommitEntry::new(coord(0, 0), Some(BlobHash([1; 32])))],
+            &[CommitEntry::new(coord(0, 0), Some(ChunkHash::new([1; 32])))],
         )
         .await
         .unwrap()
@@ -282,7 +282,7 @@ where
         .apply_commit_incremental(
             2_000,
             &[first],
-            &[CommitEntry::new(coord(1, 0), Some(BlobHash([2; 32])))],
+            &[CommitEntry::new(coord(1, 0), Some(ChunkHash::new([2; 32])))],
         )
         .await
         .unwrap()
@@ -291,7 +291,7 @@ where
         .apply_commit_incremental(
             3_000,
             &[second],
-            &[CommitEntry::new(coord(2, 0), Some(BlobHash([3; 32])))],
+            &[CommitEntry::new(coord(2, 0), Some(ChunkHash::new([3; 32])))],
         )
         .await
         .unwrap()
@@ -335,7 +335,7 @@ where
     assert_eq!(active.commit, Some(third));
 }
 
-async fn effective_rows<M>(meta: &M, ids: &[CommitId]) -> Vec<Vec<(ChunkCoord, Option<BlobHash>)>>
+async fn effective_rows<M>(meta: &M, ids: &[CommitId]) -> Vec<Vec<(ChunkCoord, Option<ChunkHash>)>>
 where
     M: MetaStore,
     M::Error: core::fmt::Debug,
@@ -368,7 +368,7 @@ where
     // Two independent histories: the second root shares no ancestor with
     // the first.
     let first = meta.create_commit(1_000, &[]).await.unwrap();
-    meta.record_chunk(first, &coord(0, 0), Some(&BlobHash([1; 32])))
+    meta.record_chunk(first, &coord(0, 0), Some(&ChunkHash::new([1; 32])))
         .await
         .unwrap();
     let second = meta.create_commit(2_000, &[first]).await.unwrap();

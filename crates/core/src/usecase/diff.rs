@@ -7,7 +7,7 @@ use sekai_nbt::{Chunk, ChunkPayloadDiff, NbtError};
 use sekai_anvil::AnvilError;
 
 use crate::port::blob::BlobStore;
-use sekai_util::BlobHash;
+use sekai_util::ChunkHash;
 
 /// Failures during chunk diff computation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,8 +33,8 @@ impl<B: fmt::Debug> fmt::Display for DiffError<B> {
 /// Compute a chunk diff between two stored blob hashes.
 pub async fn diff_blobs<B: BlobStore>(
     blobs: &B,
-    old_hash: &BlobHash,
-    new_hash: &BlobHash,
+    old_hash: &ChunkHash,
+    new_hash: &ChunkHash,
 ) -> Result<ChunkPayloadDiff, DiffError<B::Error>> {
     let mut old_payload = Vec::new();
     let mut new_payload = Vec::new();
@@ -89,7 +89,7 @@ mod tests {
     }
 
     /// CAS key of a framed payload, through the same normalization ingest uses.
-    fn chunk_key(framed: &[u8]) -> BlobHash {
+    fn chunk_key(framed: &[u8]) -> ChunkHash {
         let mut nbt = Vec::new();
         sekai_anvil::decompress_into(framed, &mut nbt).unwrap();
         sekai_nbt::chunk_blob_hash(&nbt)

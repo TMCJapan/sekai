@@ -8,7 +8,7 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use crate::port::{BlobStore, MetaStore};
 use sekai_util::{
-    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitId, CommitRef,
+    ApplyOutcome, ChunkCoord, ChunkHash, ChunkHistoryEntry, Commit, CommitId, CommitRef,
     FoldOutcome, NamedScope, RefName, ScopeName,
 };
 
@@ -231,7 +231,7 @@ impl MetaStore for MemMeta {
         &mut self,
         commit: CommitId,
         coord: &ChunkCoord,
-        blob: Option<&BlobHash>,
+        blob: Option<&ChunkHash>,
     ) -> impl Future<Output = Result<(), MemError>> + Send {
         self.rows
             .push(ChunkHistoryEntry::new(*coord, commit, blob.copied()));
@@ -602,19 +602,19 @@ impl MetaStore for MemMeta {
 /// In-memory [`BlobStore`].
 #[derive(Debug, Default)]
 pub struct MemCas {
-    blobs: BTreeMap<BlobHash, Vec<u8>>,
+    blobs: BTreeMap<ChunkHash, Vec<u8>>,
 }
 
 impl BlobStore for MemCas {
     type Error = MemError;
 
-    fn contains(&self, hash: &BlobHash) -> impl Future<Output = Result<bool, Self::Error>> + Send {
+    fn contains(&self, hash: &ChunkHash) -> impl Future<Output = Result<bool, Self::Error>> + Send {
         core::future::ready(Ok(self.blobs.contains_key(hash)))
     }
 
     fn put(
         &mut self,
-        hash: &BlobHash,
+        hash: &ChunkHash,
         payload: &[u8],
     ) -> impl Future<Output = Result<bool, Self::Error>> + Send {
         if self.blobs.contains_key(hash) {
@@ -630,7 +630,7 @@ impl BlobStore for MemCas {
 
     fn fetch_into(
         &self,
-        hash: &BlobHash,
+        hash: &ChunkHash,
         out: &mut Vec<u8>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send {
         out.clear();
@@ -643,14 +643,14 @@ impl BlobStore for MemCas {
 
     fn remove(
         &mut self,
-        hash: &BlobHash,
+        hash: &ChunkHash,
     ) -> impl Future<Output = Result<bool, Self::Error>> + Send {
         core::future::ready(Ok(self.blobs.remove(hash).is_some()))
     }
 
     fn visit_blobs<F>(&self, mut visit: F) -> impl Future<Output = Result<(), Self::Error>> + Send
     where
-        F: FnMut(&BlobHash) -> bool + Send,
+        F: FnMut(&ChunkHash) -> bool + Send,
     {
         for hash in self.blobs.keys() {
             if !visit(hash) {

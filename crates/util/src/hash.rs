@@ -4,19 +4,12 @@ use alloc::string::String;
 
 use super::error::HexError;
 
-/// Blake3 of a chunk's normalized view.
-///
-/// This is the single chunk hash in the system. It keys the CAS and drives
-/// change detection, so identical content always produces the identical
-/// digest regardless of volatile tags or on-disk codec/ordering.
-pub type ChunkHash = [u8; 32];
-
 /// Digest of an arbitrary byte slice.
 ///
 /// Only for payloads with no chunk schema to normalize (region file
 /// fingerprints, non-level-chunk data); chunks hash through
 /// `Chunk::normalize_hash`.
-pub fn hash_bytes(bytes: &[u8]) -> ChunkHash {
+pub fn hash_bytes(bytes: &[u8]) -> [u8; 32] {
     *blake3::hash(bytes).as_bytes()
 }
 
@@ -39,14 +32,14 @@ impl BytesHasher {
     }
 
     /// Consume the hasher and return the digest.
-    pub fn finalize(self) -> ChunkHash {
+    pub fn finalize(self) -> [u8; 32] {
         *self.0.finalize().as_bytes()
     }
 }
 
 /// Blake3 key for normalized chunk content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct BlobHash(pub ChunkHash);
+pub struct ChunkHash([u8; 32]);
 
 /// Lowercase alphabet for CAS paths.
 const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -62,7 +55,7 @@ const fn decode_nibble(byte: u8) -> Result<u8, HexError> {
 }
 
 /// Encode a 32-byte value as lowercase hex without allocation.
-pub(crate) const fn hex32_into(bytes: ChunkHash) -> [u8; 64] {
+pub(crate) const fn hex32_into(bytes: [u8; 32]) -> [u8; 64] {
     let mut out = [0u8; 64];
     let mut i = 0;
     while i < 32 {
@@ -74,7 +67,7 @@ pub(crate) const fn hex32_into(bytes: ChunkHash) -> [u8; 64] {
 }
 
 /// Parse a 64-byte hexadecimal value into raw bytes.
-pub(crate) fn hex32_from(input: &[u8]) -> Result<ChunkHash, HexError> {
+pub(crate) fn hex32_from(input: &[u8]) -> Result<[u8; 32], HexError> {
     if input.len() != 64 {
         return Err(HexError::BadHexLength(input.len()));
     }
@@ -89,17 +82,17 @@ pub(crate) fn hex32_from(input: &[u8]) -> Result<ChunkHash, HexError> {
     Ok(out)
 }
 
-impl BlobHash {
+impl ChunkHash {
     /// Wrap a chunk digest.
     #[inline]
-    pub const fn new(hash: ChunkHash) -> Self {
+    pub const fn new(hash: [u8; 32]) -> Self {
         Self(hash)
     }
 
     /// Raw 32 bytes (e.g. for binary DB columns).
     #[inline]
-    pub const fn as_bytes(self) -> ChunkHash {
-        self.0
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
     }
 
     /// Encode as lowercase hex without allocation.
@@ -125,23 +118,23 @@ mod tests {
 
     #[test]
     fn hex_round_trip() {
-        let h = BlobHash([7; 32]);
+        let h = ChunkHash([7; 32]);
         let hex = h.hex_into();
-        assert_eq!(BlobHash::from_hex(&hex), Ok(h));
+        assert_eq!(ChunkHash::from_hex(&hex), Ok(h));
         let mut upper = hex;
         for b in &mut upper {
             *b = b.to_ascii_uppercase();
         }
-        assert_eq!(BlobHash::from_hex(&upper), Ok(h));
+        assert_eq!(ChunkHash::from_hex(&upper), Ok(h));
         assert_eq!(h.hex_string().as_bytes(), hex);
     }
 
     #[test]
     fn hex_rejects_bad_length_and_chars() {
-        assert_eq!(BlobHash::from_hex(b"abc"), Err(HexError::BadHexLength(3)));
+        assert_eq!(ChunkHash::from_hex(b"abc"), Err(HexError::BadHexLength(3)));
         let mut bad = [b'0'; 64];
         bad[0] = b'z';
-        assert_eq!(BlobHash::from_hex(&bad), Err(HexError::BadHexChar(b'z')));
+        assert_eq!(ChunkHash::from_hex(&bad), Err(HexError::BadHexChar(b'z')));
     }
 
     #[test]

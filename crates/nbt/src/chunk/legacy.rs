@@ -10,6 +10,7 @@
 use alloc::vec::Vec;
 
 use nanonbt::{DeserializeNbt, I32Be, SerializeNbt, Tag, Write};
+use sekai_util::ChunkHash;
 
 /// A compound preserved verbatim as its raw payload bytes.
 ///
@@ -143,7 +144,7 @@ impl LegacyChunkPayload<'_> {
     /// (`HeightMap`, the legacy section encoding), so legacy and modern
     /// content can never normalize equal: a format conversion is a real
     /// change, not a silent no-op.
-    pub fn normalize_hash(&self) -> Result<sekai_util::ChunkHash, nanonbt::Error> {
+    pub fn normalize_hash(&self) -> Result<ChunkHash, nanonbt::Error> {
         let normalized = NormalizedLegacyChunkPayload {
             data_version: self.data_version,
             x_pos: self.level.x_pos,
@@ -157,7 +158,7 @@ impl LegacyChunkPayload<'_> {
             fluid_ticks: &self.level.fluid_ticks,
         };
         let bytes = nanonbt::to_bytes(&normalized)?;
-        Ok(sekai_util::hash_bytes(&bytes))
+        Ok(ChunkHash::new(sekai_util::hash_bytes(&bytes)))
     }
 }
 

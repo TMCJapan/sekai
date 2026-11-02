@@ -1,6 +1,6 @@
 //! Region identities and observed file fingerprints.
 
-use super::{BlobHash, ChunkCoord, CommitId, Dimension, RegionKind};
+use super::{ChunkCoord, ChunkHash, CommitId, Dimension, RegionKind};
 
 /// Identity of one region file within its namespace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -49,12 +49,12 @@ pub struct CommitEntry {
     /// Which chunk this fact describes.
     pub coord: ChunkCoord,
     /// Exact CAS key, or `None` for a tombstone.
-    pub blob: Option<BlobHash>,
+    pub blob: Option<ChunkHash>,
 }
 
 impl CommitEntry {
     /// Construct a chunk fact.
-    pub const fn new(coord: ChunkCoord, blob: Option<BlobHash>) -> Self {
+    pub const fn new(coord: ChunkCoord, blob: Option<ChunkHash>) -> Self {
         Self { coord, blob }
     }
 }

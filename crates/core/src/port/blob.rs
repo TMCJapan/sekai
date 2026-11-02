@@ -6,7 +6,7 @@
 //! (GC) takes blobs away, and GC keeps to its own exclusion.
 use alloc::vec::Vec;
 use core::future::Future;
-use sekai_util::BlobHash;
+use sekai_util::ChunkHash;
 
 /// Content-addressed blob storage.
 pub trait BlobStore {
@@ -14,7 +14,7 @@ pub trait BlobStore {
     type Error;
 
     /// Check whether a blob already exists.
-    fn contains(&self, hash: &BlobHash) -> impl Future<Output = Result<bool, Self::Error>> + Send;
+    fn contains(&self, hash: &ChunkHash) -> impl Future<Output = Result<bool, Self::Error>> + Send;
 
     /// Store `payload` under `hash`. Returns `true` when newly inserted.
     ///
@@ -27,7 +27,7 @@ pub trait BlobStore {
     /// the same hash are expected and never need coordination.
     fn put(
         &mut self,
-        hash: &BlobHash,
+        hash: &ChunkHash,
         payload: &[u8],
     ) -> impl Future<Output = Result<bool, Self::Error>> + Send;
 
@@ -41,13 +41,15 @@ pub trait BlobStore {
     /// history rows, not absent files).
     fn fetch_into(
         &self,
-        hash: &BlobHash,
+        hash: &ChunkHash,
         out: &mut Vec<u8>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// Remove a blob; return `false` when it is already absent.
-    fn remove(&mut self, hash: &BlobHash)
-    -> impl Future<Output = Result<bool, Self::Error>> + Send;
+    fn remove(
+        &mut self,
+        hash: &ChunkHash,
+    ) -> impl Future<Output = Result<bool, Self::Error>> + Send;
 
     /// Visit every stored blob hash. Return `false` to stop early.
     ///
@@ -55,5 +57,5 @@ pub trait BlobStore {
     /// files) are skipped: never visited and never removed by GC.
     fn visit_blobs<F>(&self, visit: F) -> impl Future<Output = Result<(), Self::Error>> + Send
     where
-        F: FnMut(&BlobHash) -> bool + Send;
+        F: FnMut(&ChunkHash) -> bool + Send;
 }

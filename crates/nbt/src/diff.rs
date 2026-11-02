@@ -1,8 +1,10 @@
+use sekai_util::ChunkHash;
+
 use crate::Chunk;
 
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum ChunkPayloadDiff {
-    Full { old: [u8; 32], new: [u8; 32] },
+    Full { old: ChunkHash, new: ChunkHash },
     Nothing,
 }
 

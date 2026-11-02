@@ -3,7 +3,7 @@
 mod common;
 
 use sekai_core::{
-    BlobHash, BlobStore as _, ChunkCoord, ChunkHistoryEntry, CommitEntry, Dimension,
+    BlobStore as _, ChunkCoord, ChunkHash, ChunkHistoryEntry, CommitEntry, Dimension,
     MetaStore as _, RegionKind, usecase::checkout::plan_checkout,
 };
 use sekai_storage_sqlite::{init_sqlite, open_sqlite};
@@ -60,8 +60,8 @@ async fn sqlite_tombstones_shape_and_checkout_drop() {
             1_000,
             &[],
             &[
-                CommitEntry::new(present, Some(BlobHash([1; 32]))),
-                CommitEntry::new(gone, Some(BlobHash([2; 32]))),
+                CommitEntry::new(present, Some(ChunkHash::new([1; 32]))),
+                CommitEntry::new(gone, Some(ChunkHash::new([2; 32]))),
             ],
         )
         .await
@@ -86,7 +86,10 @@ async fn sqlite_tombstones_shape_and_checkout_drop() {
 
     let plan = plan_checkout(&*meta, second).await.unwrap();
     let region = sekai_core::RegionKey::of(present);
-    assert_eq!(plan.groups[&region], vec![(present, BlobHash([1; 32]))]);
+    assert_eq!(
+        plan.groups[&region],
+        vec![(present, ChunkHash::new([1; 32]))]
+    );
     assert_eq!(plan.tombstones[&region], vec![gone]);
 }
 
@@ -145,7 +148,11 @@ async fn cas_skips_foreign_and_temp_names() {
     .unwrap();
     assert_eq!(seen, vec![hash]);
     let mut out = Vec::new();
-    assert!(cas.fetch_into(&BlobHash([9; 32]), &mut out).await.is_err());
+    assert!(
+        cas.fetch_into(&ChunkHash::new([9; 32]), &mut out)
+            .await
+            .is_err()
+    );
     assert_eq!(out, [] as [u8; 0]);
 }
 
