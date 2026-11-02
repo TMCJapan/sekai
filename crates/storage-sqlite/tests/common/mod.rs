@@ -475,7 +475,7 @@ where
     C: BlobStore,
     C::Error: core::fmt::Debug,
 {
-    let hash = sekai_core::raw_hash(b"payload");
+    let hash = ChunkHash::new(sekai_core::hash_bytes(b"payload"));
     assert!(!cas.contains(&hash).await.unwrap());
     assert!(cas.put(&hash, b"payload").await.unwrap());
     assert!(!cas.put(&hash, b"payload").await.unwrap());
@@ -505,8 +505,8 @@ pub async fn torn_orphan_gc<S>(store: &mut S)
 where
     S: sekai_storage::SekaiStore,
 {
-    let live = sekai_core::raw_hash(b"live");
-    let orphan = sekai_core::raw_hash(b"orphan");
+    let live = ChunkHash::new(sekai_core::hash_bytes(b"live"));
+    let orphan = ChunkHash::new(sekai_core::hash_bytes(b"orphan"));
     assert!(store.cas_mut().put(&live, b"live").await.unwrap());
     assert!(store.cas_mut().put(&orphan, b"orphan").await.unwrap());
     // Sync-then-commit order: blobs are durable before metadata names them.

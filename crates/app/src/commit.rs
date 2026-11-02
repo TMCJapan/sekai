@@ -723,34 +723,44 @@ where
         open: opened.elapsed(),
         ..Default::default()
     };
-    image.visit_chunks(|chunk| stage_chunk(chunk, key, scope, &mut staged))?;
-    Ok(staged)
+    let mut failure = None;
+    image.visit_chunks(|chunk| match stage_chunk(chunk, key, scope, &mut staged) {
+        Ok(keep_going) => keep_going,
+        Err(error) => {
+            failure = Some(error);
+            false
+        }
+    })?;
+    failure.map_or(Ok(staged), Err)
 }
 
-/// Hash one raw chunk and stage its history row; `false` never stops the
-/// visit, since a chunk only fails when its process is unwinding.
+/// Hash one raw chunk and stage its history row.
 ///
 /// The key is the chunk's normalized digest, so a server rewriting a
-/// volatile tag does not produce a new blob or history row.
+/// volatile tag does not produce a new blob or history row. A payload with
+/// no normalized view (an unknown codec, a corrupt or non-chunk root) has no
+/// key: it fails the file instead of being stored under its raw bytes.
 fn stage_chunk(
     chunk: sekai_anvil::Chunk<'_>,
     key: RegionKey,
     scope: &Scope,
     staged: &mut Staged,
-) -> bool {
+) -> Result<bool, AppError> {
     let coord = ChunkCoord::new(key.dim, key.kind, chunk.x, chunk.z);
     if !scope.contains(coord) {
-        return true;
+        return Ok(true);
     }
     let hash_started = Instant::now();
     let mut raw_nbt = Vec::new();
-    let hash = match sekai_anvil::decompress_into(chunk.payload, &mut raw_nbt) {
-        Ok(_) => sekai_core::chunk_blob_hash(&raw_nbt),
-        // A codec `anvil` does not know cannot be normalized; byte identity
-        // still yields a stable, deduplicated key, and the payload restores
-        // verbatim either way.
-        Err(_) => sekai_core::raw_hash(chunk.payload),
-    };
+    sekai_anvil::decompress_into(chunk.payload, &mut raw_nbt)?;
+    let hash = sekai_core::chunk_key(coord.kind, &raw_nbt).map_err(|source| {
+        AppError::UnhashableChunk {
+            coord,
+            rx: key.rx,
+            rz: key.rz,
+            source,
+        }
+    })?;
     staged.hash += hash_started.elapsed();
     staged.entries.push(CommitEntry::new(coord, Some(hash)));
     staged.present.insert(coord);
@@ -759,5 +769,5 @@ fn stage_chunk(
         payload: chunk.payload.to_vec(),
     });
     staged.chunks += 1;
-    true
+    Ok(true)
 }

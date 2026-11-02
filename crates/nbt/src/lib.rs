@@ -4,8 +4,8 @@ extern crate alloc;
 mod chunk;
 mod diff;
 
-use nanonbt::{Error, Read, SliceReader, Tag, read_string_into, skip_nbt};
-use sekai_util::ChunkHash;
+use nanonbt::{Read, SliceReader, Tag, read_string_into, skip_nbt};
+use sekai_util::{ChunkHash, RegionKind};
 
 pub use chunk::legacy;
 pub use chunk::{
@@ -20,97 +20,111 @@ pub use nanonbt::Error as NbtError;
 ///
 /// The 1.13+ shape is tried first: it is the common case, and trying it
 /// costs nothing extra there. A legacy chunk is exactly the case where that
-/// read fails and the pre-1.13 `Level` wrapper decodes instead. Errors are
-/// reported from whichever schema matched, so a malformed chunk still fails
-/// loudly.
+/// read fails and the pre-1.13 `Level` wrapper decodes instead.
+///
+/// When both fail, the error names the field the payload was actually
+/// missing: a root with no `Level` member is a modern chunk that failed for
+/// its own reason, so only that case reports the legacy read's failure.
 pub fn parse(bytes: &[u8]) -> Result<Chunk<'_>, NbtError> {
-    nanonbt::from_slice(bytes).map_or_else(
-        |_| nanonbt::from_slice(bytes).map(Chunk::Legacy),
-        |modern| Ok(Chunk::Modern(modern)),
-    )
+    let modern = match nanonbt::from_slice::<ChunkPayload>(bytes) {
+        Ok(modern) => return Ok(Chunk::Modern(modern)),
+        Err(modern) => modern,
+    };
+    match nanonbt::from_slice::<LegacyChunkPayload>(bytes) {
+        Ok(legacy) => Ok(Chunk::Legacy(legacy)),
+        Err(legacy) if matches!(modern, NbtError::MissingField("Level")) => Err(legacy),
+        Err(_) => Err(modern),
+    }
+}
+
+/// Why a payload could not be reduced to a [`ChunkHash`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChunkHashError {
+    /// The payload is not valid NBT, or not the NBT a chunk of this kind can
+    /// be read from. Nothing is keyed, so ingest fails instead of storing a
+    /// chunk under an identity that cannot be normalized.
+    Invalid(NbtError),
+    /// The payload decoded as a level chunk but could not be re-encoded for
+    /// its normalized view.
+    Normalize(NbtError),
+}
+
+impl From<NbtError> for ChunkHashError {
+    fn from(source: NbtError) -> Self {
+        Self::Invalid(source)
+    }
+}
+
+impl core::fmt::Display for ChunkHashError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Invalid(source) => write!(f, "no chunk hash for this payload: {source}"),
+            Self::Normalize(source) => write!(f, "cannot encode the normalized view: {source}"),
+        }
+    }
+}
+
+impl core::error::Error for ChunkHashError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Invalid(source) | Self::Normalize(source) => Some(source),
+        }
+    }
 }
 
 /// The CAS key of an already-decompressed chunk payload.
 ///
-/// The key is the [`Chunk::normalize_hash`] digest: volatile tags
-/// (`InhabitedTime`, `LastUpdate`) never reach it, so a server rewrite of
+/// A `region/` payload keys on the [`Chunk::normalize_hash`] digest: volatile
+/// tags (`InhabitedTime`, `LastUpdate`) never reach it, so a server rewrite of
 /// those tags does not store the chunk again.
 ///
-/// A payload without a level-chunk schema (`entities`/`poi` regions, or a
-/// chunk whose root carries no [`ChunkPayload`] fields) has nothing to
-/// normalize and keys on its exact bytes instead. That keeps the ingest path
-/// total: it never fails on content a server wrote.
-pub fn chunk_blob_hash(raw_nbt: &[u8]) -> ChunkHash {
-    parse(raw_nbt).map_or_else(
-        |_| raw_hash(raw_nbt),
-        |chunk| chunk.normalize_hash().unwrap_or_else(|_| raw_hash(raw_nbt)),
-    )
-}
-
-/// The [`chunk_blob_hash`] digest, also reporting damage the raw-byte
-/// fallback would hide.
+/// `entities`/`poi` payloads have no level-chunk schema to normalize, so they
+/// key on their exact bytes. That identity is a property of the region kind,
+/// not of a failed decode: the payload must still be well-formed NBT, and
+/// anything else is rejected.
 ///
-/// A payload that decodes as a level chunk of either format reports exactly
-/// the [`chunk_blob_hash`] digest, so the two can never disagree on
-/// "changed". What differs is a torn payload: a root compound whose body ends
-/// mid-value. The fallback keys it verbatim, so repairing it later yields the
-/// normalized digest instead and a damaged chunk resurfaces as a rewrite.
-/// The diff reports that a chunk is cut short rather than letting it pass as
-/// a byte-level difference.
+/// Nothing is keyed by default. A payload whose schema cannot be read is an
+/// error rather than a raw-byte fallback, so a damaged `region/` chunk cannot
+/// hide behind a byte-level identity that later normalizes differently.
 ///
 /// # Errors
 ///
-/// The decode failure when `raw_nbt` is a torn level chunk: the schema read
-/// that ran out of input, which says which part of the chunk ends early.
-pub fn chunk_diff_hash(raw_nbt: &[u8]) -> Result<ChunkHash, NbtError> {
-    let failure = match parse(raw_nbt) {
-        Ok(chunk) => {
-            return Ok(chunk.normalize_hash().unwrap_or_else(|_| raw_hash(raw_nbt)));
+/// [`ChunkHashError::Invalid`] when the payload is not well-formed NBT, or
+/// when a `region/` payload decodes as neither the 1.13+ nor the legacy
+/// level-chunk shape, and [`ChunkHashError::Normalize`] when the decoded
+/// chunk cannot be encoded for its normalized view.
+pub fn chunk_key(kind: RegionKind, raw_nbt: &[u8]) -> Result<ChunkHash, ChunkHashError> {
+    match kind {
+        RegionKind::Region => {
+            let chunk = parse(raw_nbt).map_err(ChunkHashError::Invalid)?;
+            chunk.normalize_hash().map_err(ChunkHashError::Normalize)
         }
-        Err(failure) => failure,
-    };
-
-    // The schema read may have stopped earlier than the framing did, so ask
-    // the bytes whether the compound itself is cut short.
-    if !root_body_is_torn(raw_nbt) {
-        return Ok(raw_hash(raw_nbt));
+        // These kinds carry their own schema, so byte identity is their
+        // defined key. It still requires valid NBT: a truncated or non-NBT
+        // payload has no hash to record.
+        RegionKind::Entities | RegionKind::Poi => {
+            validate_nbt(raw_nbt).map_err(ChunkHashError::Invalid)?;
+            Ok(ChunkHash::new(sekai_util::hash_bytes(raw_nbt)))
+        }
     }
-    Err(if is_truncation(&failure) {
-        failure
-    } else {
-        NbtError::UnexpectedEof
-    })
 }
 
-/// Whether `failure` reports input that ended before a value did.
-const fn is_truncation(failure: &NbtError) -> bool {
-    matches!(failure, NbtError::UnexpectedEof)
-}
-
-/// Whether `raw_nbt` is a root compound whose body runs past the end of the
-/// input.
+/// Whether `raw_nbt` is one complete well-formed NBT document.
 ///
-/// Any shape parses this way, so it distinguishes a payload cut short from
-/// one that is complete but of another schema, which is where the raw-byte
-/// fallback belongs.
-fn root_body_is_torn(raw_nbt: &[u8]) -> bool {
+/// Any root shape is accepted: the point is that the bytes are NBT a reader
+/// can traverse, not which schema they follow.
+fn validate_nbt(raw_nbt: &[u8]) -> Result<(), NbtError> {
     let mut reader = SliceReader::new(raw_nbt);
-    let root = reader
-        .read_u8()
-        .is_ok_and(|tag| tag == Tag::Compound.as_u8());
+    let tag = reader.read_u8()?;
     let mut root_name = alloc::string::String::new();
-    root && read_string_into(&mut reader, &mut root_name).is_ok()
-        && matches!(
-            skip_nbt(&mut reader, Tag::Compound),
-            Err(Error::UnexpectedEof)
-        )
-}
-
-/// Hashes an arbitrary payload that has no chunk schema.
-///
-/// Only a fallback for data [`Chunk::normalize_hash`] cannot describe.
-pub fn raw_hash(bytes: &[u8]) -> ChunkHash {
-    ChunkHash::new(sekai_util::hash_bytes(bytes))
+    if tag != Tag::Compound.as_u8() {
+        return Err(NbtError::InvalidTag {
+            expected: Tag::Compound,
+            actual: tag,
+        });
+    }
+    read_string_into(&mut reader, &mut root_name)?;
+    skip_nbt(&mut reader, Tag::Compound)
 }
 
 #[cfg(test)]
@@ -215,22 +229,61 @@ mod tests {
         let base = bytes(7, 9, status);
         let other = bytes(7, 9, &empty);
         assert_eq!(
-            chunk_blob_hash(&base),
-            chunk_blob_hash(&bytes(999, 1_234, status))
-        );
-        assert_ne!(chunk_blob_hash(&base), chunk_blob_hash(&other));
-    }
-
-    #[test]
-    fn blob_hash_falls_back_to_exact_bytes_without_a_chunk_schema() {
-        assert_eq!(
-            chunk_blob_hash(b"entities-payload"),
-            raw_hash(b"entities-payload")
+            chunk_key(RegionKind::Region, &base).unwrap(),
+            chunk_key(RegionKind::Region, &bytes(999, 1_234, status)).unwrap()
         );
         assert_ne!(
-            chunk_blob_hash(b"entities-payload"),
-            chunk_blob_hash(b"entities-payloac")
+            chunk_key(RegionKind::Region, &base).unwrap(),
+            chunk_key(RegionKind::Region, &other).unwrap()
         );
+    }
+
+    /// A `region/` payload that is not a level chunk has no normalized view,
+    /// so it gets no key: keying it on its exact bytes would hide a damaged
+    /// chunk behind a byte-level identity that never normalizes again.
+    #[test]
+    fn region_payload_without_a_chunk_schema_has_no_key() {
+        assert!(matches!(
+            chunk_key(RegionKind::Region, b"entities-payload"),
+            Err(ChunkHashError::Invalid(_))
+        ));
+
+        // Valid NBT (an empty compound), but neither level-chunk shape.
+        assert!(matches!(
+            chunk_key(RegionKind::Region, &[10u8, 0, 0, 0]),
+            Err(ChunkHashError::Invalid(_))
+        ));
+    }
+
+    /// `entities`/`poi` key on exact bytes, which is their defined identity -
+    /// but only once the payload is well-formed NBT.
+    #[test]
+    fn sparse_kinds_key_on_validated_bytes() {
+        let doc = alloc::vec![
+            10u8, 0, 0, // root compound, empty name
+            8, 0, 2, b'i', b'd', 0, 1, b'a', // id = "a"
+            0,    // end
+        ];
+        let other = alloc::vec![
+            10u8, 0, 0, // root compound, empty name
+            8, 0, 2, b'i', b'd', 0, 1, b'b', // id = "b"
+            0,    // end
+        ];
+
+        let key = chunk_key(RegionKind::Entities, &doc).unwrap();
+        assert_eq!(key, chunk_key(RegionKind::Poi, &doc).unwrap());
+        assert_eq!(key, ChunkHash::new(sekai_util::hash_bytes(&doc)));
+        assert_ne!(key, chunk_key(RegionKind::Entities, &other).unwrap());
+
+        assert!(matches!(
+            chunk_key(RegionKind::Entities, b"not nbt"),
+            Err(ChunkHashError::Invalid(_))
+        ));
+        // A root compound whose body is cut short is not well-formed.
+        assert!(matches!(
+            chunk_key(RegionKind::Entities, &doc[..doc.len() - 1]),
+            Err(ChunkHashError::Invalid(_))
+        ));
     }
 
     #[test]

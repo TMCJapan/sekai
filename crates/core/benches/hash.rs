@@ -1,7 +1,7 @@
 //! Micro benchmarks for chunk hashing.
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use sekai_core::raw_hash;
+use sekai_core::hash_bytes;
 use std::hint::black_box;
 
 fn benches(c: &mut Criterion) {
@@ -11,17 +11,17 @@ fn benches(c: &mut Criterion) {
 
     c.bench_function("hash/64B", |b| {
         b.iter(|| {
-            raw_hash(black_box(&tiny));
+            hash_bytes(black_box(&tiny));
         });
     });
     c.bench_function("hash/4KiB", |b| {
         b.iter(|| {
-            raw_hash(black_box(&chunk));
+            hash_bytes(black_box(&chunk));
         });
     });
     c.bench_function("hash/1MiB", |b| {
         b.iter(|| {
-            raw_hash(black_box(&big));
+            hash_bytes(black_box(&big));
         });
     });
 }

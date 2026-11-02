@@ -133,7 +133,7 @@ async fn cas_skips_foreign_and_temp_names() {
     let (dir, _guard) = tempdir("names");
     let mut store = init(&dir).await;
     let cas = store.cas_mut();
-    let hash = sekai_core::raw_hash(b"real");
+    let hash = ChunkHash::new(sekai_core::hash_bytes(b"real"));
     assert!(cas.put(&hash, b"real").await.unwrap());
     let hex = hash.hex_string();
     let shard = cas.root().as_ref().join("blobs").join(&hex[..2]);

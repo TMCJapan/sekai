@@ -25,7 +25,7 @@ pub use usecase::{
     list_refs, list_scopes,
 };
 
-pub use sekai_nbt::{ChunkPayloadDiff, chunk_blob_hash, raw_hash};
+pub use sekai_nbt::{ChunkHashError, ChunkPayloadDiff, chunk_key};
 
 pub use commit::commit_hash;
 
@@ -49,15 +49,31 @@ mod tests {
     }
 
     #[test]
-    fn chunk_blob_hash_is_the_cas_key_for_normalized_content() {
+    fn chunk_key_is_the_cas_key_for_normalized_content() {
         let varied = nbt_bytes(100, 0, "minecraft:full");
         let same = nbt_bytes(999_999, 0, "minecraft:full");
         let other = nbt_bytes(100, 0, "minecraft:empty");
 
-        assert_eq!(chunk_blob_hash(&varied), chunk_blob_hash(&same));
-        assert_ne!(chunk_blob_hash(&varied), chunk_blob_hash(&other));
+        let key = |raw: &[u8]| chunk_key(RegionKind::Region, raw).unwrap();
+        assert_eq!(key(&varied), key(&same));
+        assert_ne!(key(&varied), key(&other));
         // The key is the normalized digest, not a hash of the raw bytes.
-        assert_ne!(chunk_blob_hash(&varied), raw_hash(&varied));
+        assert_ne!(
+            key(&varied),
+            ChunkHash::new(sekai_util::hash_bytes(&varied))
+        );
+    }
+
+    #[test]
+    fn chunk_key_refuses_invalid_nbt() {
+        assert!(matches!(
+            chunk_key(RegionKind::Region, b"not nbt at all"),
+            Err(ChunkHashError::Invalid(_))
+        ));
+        assert!(matches!(
+            chunk_key(RegionKind::Entities, b"not nbt at all"),
+            Err(ChunkHashError::Invalid(_))
+        ));
     }
 
     #[test]

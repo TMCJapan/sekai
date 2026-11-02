@@ -61,7 +61,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
 ///
 /// An absent region file or chunk entry is [`None`]; a corrupt file, payload,
 /// or undecodable chunk fails loudly. A digest that is returned goes through
-/// [`chunk_diff_hash`], so it equals the CAS key ingest recorded.
+/// [`chunk_digest`], so it equals the CAS key ingest recorded.
 fn read_world_chunk<R: RegionFile>(regions: &BTreeMap<RegionKey, R>, coord: &ChunkCoord) -> Side
 where
     AppError: From<R::Error>,
@@ -83,30 +83,33 @@ where
     };
 
     let started = Instant::now();
-    let digest = decompress_chunk(payload).and_then(|nbt| chunk_diff_hash(*coord, &nbt));
+    let digest = decompress_chunk(payload).and_then(|nbt| chunk_digest(*coord, &nbt));
     Side {
         digest: digest.map(Some),
         prepare: started.elapsed(),
     }
 }
 
-/// The [`sekai_nbt::chunk_diff_hash`] digest with a decode failure attributed
-/// to `coord`.
+/// The [`sekai_nbt::chunk_key`] digest - the same key ingest records - with a
+/// decode failure attributed to `coord`.
 ///
 /// Knowing which chunk (and so which region file) is malformed is what makes
-/// the report actionable, and a payload cut short gets the diagnostic that
-/// names it as damaged rather than as content of an unexpected shape.
-fn chunk_diff_hash(coord: ChunkCoord, nbt: &[u8]) -> Result<ChunkHash, AppError> {
-    sekai_nbt::chunk_diff_hash(nbt).map_err(|source| {
+/// the report actionable. There is no byte-level fallback for a `region/`
+/// payload that does not decode: it has no normalized view, so it is
+/// reported rather than silently compared by its exact bytes.
+fn chunk_digest(coord: ChunkCoord, nbt: &[u8]) -> Result<ChunkHash, AppError> {
+    sekai_nbt::chunk_key(coord.kind, nbt).map_err(|source| {
         let (rx, rz) = (coord.region_x(), coord.region_z());
         match source {
-            source @ sekai_nbt::NbtError::UnexpectedEof => AppError::TruncatedLegacyChunk {
-                coord,
-                rx,
-                rz,
-                source,
-            },
-            source => AppError::ChunkNbt {
+            sekai_nbt::ChunkHashError::Invalid(source @ sekai_nbt::NbtError::UnexpectedEof) => {
+                AppError::TruncatedChunk {
+                    coord,
+                    rx,
+                    rz,
+                    source,
+                }
+            }
+            source => AppError::UnhashableChunk {
                 coord,
                 rx,
                 rz,

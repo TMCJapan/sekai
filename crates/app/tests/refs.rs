@@ -4,6 +4,10 @@
 
 #![cfg(feature = "backend-sqlite")]
 
+mod fixtures;
+
+use fixtures::chunk_nbt;
+
 use sekai_app::{DEFAULT_REF_NAME, HostWorldTree, RefName};
 use std::path::Path;
 
@@ -64,7 +68,10 @@ async fn a_commit_hangs_from_the_active_ref() {
     let world_path = root.path().join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.path().join("store").to_string_lossy().into_owned();
-    write_region(world_path.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
+    write_region(
+        world_path.join("region/r.0.0.mca"),
+        &[(0, 0, chunk_nbt("marker-1"))],
+    );
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let first = commit(&mut instance, &mut world).await;
@@ -96,7 +103,10 @@ async fn switching_refs_forks_the_history() {
     let world_path = root.path().join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.path().join("store").to_string_lossy().into_owned();
-    write_region(world_path.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
+    write_region(
+        world_path.join("region/r.0.0.mca"),
+        &[(0, 0, chunk_nbt("marker-1"))],
+    );
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let first = commit(&mut instance, &mut world).await;
@@ -168,7 +178,10 @@ async fn forcing_a_move_keeps_the_active_flag() {
     let world_path = root.path().join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.path().join("store").to_string_lossy().into_owned();
-    write_region(world_path.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
+    write_region(
+        world_path.join("region/r.0.0.mca"),
+        &[(0, 0, chunk_nbt("marker-1"))],
+    );
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let first = commit(&mut instance, &mut world).await;

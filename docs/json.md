@@ -237,8 +237,9 @@ size cap: a huge rectangle enumerates every chunk inside it.
 
 `coord` uses raw integer `dim`/`kind` codes. The list contains
 only chunks with differences: absent on both sides yields nothing, so
-missing coordinates never error (sparse `entities`/`poi` diff empty);
-only corrupt payloads and missing blobs fail loudly.
+missing coordinates never error (sparse `entities`/`poi` diff empty).
+A payload that has no chunk hash - corrupt, truncated, or of a schema this
+version does not read - fails loudly.
 
 With `--timing` the array moves under `diffs` and the timing block is
 appended (single and grouped alike):
@@ -251,10 +252,11 @@ appended (single and grouped alike):
 }
 ```
 
-`blob_fetch` covers commit lookup plus CAS fetch on both sides
-(world-side acquisition included); `decompress` both sides'
-decompression; `diff_compute` the AST diff. Commit-ID resolution and
-coordinate enumeration stay outside the measured phases.
+`blob_fetch` covers commit-side metadata lookup plus world-side region
+acquisition; `decompress` world-side decompression and digesting (the
+commit side is a recorded digest, so it contributes nothing); `diff_compute`
+the digest comparison. Commit-ID resolution and coordinate enumeration stay
+outside the measured phases.
 
 ### `gc`
 

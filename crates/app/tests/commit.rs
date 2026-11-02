@@ -4,6 +4,10 @@
 
 #![cfg(feature = "backend-sqlite")]
 
+mod fixtures;
+
+use fixtures::chunk_nbt;
+
 use sekai_app::{CommitId, CommitOptions, RegionKind, Scope};
 use sekai_app::{HostWorldTree, WorldTree};
 use sekai_nbt::ChunkPayloadDiff;
@@ -85,7 +89,7 @@ async fn commits_a_non_canonical_region_name() {
     let store = root.join("store").to_string_lossy().into_owned();
     write_region(
         world_path.join("region/r.00.00.mca"),
-        &[(0, 0, vec![3, 1, 2, 3])],
+        &[(0, 0, chunk_nbt("marker-1"))],
     );
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
@@ -129,7 +133,7 @@ async fn timing_rows_are_ordered_by_region_identity() {
     ] {
         write_region(
             world_path.join("region").join(name),
-            &[(chunk.0, chunk.1, vec![3, 1])],
+            &[(chunk.0, chunk.1, chunk_nbt("marker-1"))],
         );
     }
 
@@ -309,11 +313,11 @@ async fn scoped_commit_addresses_a_detected_trio_world() {
     // (an unrecognizable root falls back to the legacy tree).
     write_region(
         world_path.join("dimensions/minecraft/overworld/region/r.0.0.mca"),
-        &[(0, 0, vec![3, 1]), (1, 0, vec![3, 2])],
+        &[(0, 0, chunk_nbt("marker-1")), (1, 0, chunk_nbt("marker-2"))],
     );
     write_region(
         world_path.join("dimensions/minecraft/the_nether/region/r.0.0.mca"),
-        &[(0, 0, vec![3, 3])],
+        &[(0, 0, chunk_nbt("marker-3"))],
     );
     let mut world = HostWorldTree::new(&world_path).unwrap();
 
@@ -338,8 +342,8 @@ async fn scoped_checkout_leaves_other_dimensions_untouched() {
     let store = root.join("store").to_string_lossy().into_owned();
     let over = world_path.join("region/r.0.0.mca");
     let nether = world_path.join("DIM-1/region/r.0.0.mca");
-    write_region(&over, &[(0, 0, vec![3, 1])]);
-    write_region(&nether, &[(0, 0, vec![3, 2])]);
+    write_region(&over, &[(0, 0, chunk_nbt("marker-1"))]);
+    write_region(&nether, &[(0, 0, chunk_nbt("marker-2"))]);
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
@@ -350,8 +354,8 @@ async fn scoped_checkout_leaves_other_dimensions_untouched() {
     let commits = instance.list_commits().await.unwrap();
 
     // Diverge both dimensions, then delete the nether file outright.
-    write_region(&over, &[(0, 0, vec![3, 9])]);
-    write_region(&nether, &[(0, 0, vec![3, 8])]);
+    write_region(&over, &[(0, 0, chunk_nbt("marker-9"))]);
+    write_region(&nether, &[(0, 0, chunk_nbt("marker-8"))]);
     let nether_diverged = std::fs::read(&nether).unwrap();
     std::fs::remove_file(&nether).unwrap();
 
@@ -390,7 +394,7 @@ async fn scoped_checkout_leaves_other_dimensions_untouched() {
     assert_eq!(read_coords(&nether), vec![(0, 0)]);
 
     // Overworld-scoped checkout never rewrites an in-place nether file.
-    write_region(&nether, &[(0, 0, vec![3, 8])]);
+    write_region(&nether, &[(0, 0, chunk_nbt("marker-8"))]);
     let before = std::fs::read(&nether).unwrap();
     assert_eq!(before, nether_diverged);
     instance
@@ -413,7 +417,7 @@ async fn strict_checkout_removes_post_commit_files() {
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let kept = world_path.join("region/r.0.0.mca");
-    write_region(&kept, &[(0, 0, vec![3, 1])]);
+    write_region(&kept, &[(0, 0, chunk_nbt("marker-1"))]);
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
@@ -424,7 +428,7 @@ async fn strict_checkout_removes_post_commit_files() {
 
     // Afterwards: the known chunk vanishes and a new region appears.
     let added = world_path.join("region/r.1.0.mca");
-    write_region(&added, &[(32, 0, vec![3, 2])]);
+    write_region(&added, &[(32, 0, chunk_nbt("marker-2"))]);
     write_region(&kept, &[]);
     instance
         .world_mut(&mut world)
@@ -476,7 +480,7 @@ async fn keep_options_preserve_post_commit_data() {
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let known = world_path.join("region/r.0.0.mca");
-    write_region(&known, &[(0, 0, vec![3, 1])]);
+    write_region(&known, &[(0, 0, chunk_nbt("marker-1"))]);
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
@@ -488,8 +492,11 @@ async fn keep_options_preserve_post_commit_data() {
 
     // Afterwards: a new chunk inside the known region plus a new file.
     let added = world_path.join("region/r.1.0.mca");
-    write_region(&known, &[(0, 0, vec![3, 1]), (1, 0, vec![3, 2])]);
-    write_region(&added, &[(32, 0, vec![3, 3])]);
+    write_region(
+        &known,
+        &[(0, 0, chunk_nbt("marker-1")), (1, 0, chunk_nbt("marker-2"))],
+    );
+    write_region(&added, &[(32, 0, chunk_nbt("marker-3"))]);
 
     let keep = CheckoutOptions {
         keep_post_commit_files: true,
@@ -505,8 +512,8 @@ async fn keep_options_preserve_post_commit_data() {
     assert_eq!(checked_out.files_deleted, 0);
     assert_eq!(checked_out.chunks_restored, 1);
     let map = chunk_map(&known);
-    assert_eq!(map.get(&(0, 0)), Some(&vec![3, 1]));
-    assert_eq!(map.get(&(1, 0)), Some(&vec![3, 2]));
+    assert_eq!(map.get(&(0, 0)), Some(&chunk_nbt("marker-1")));
+    assert_eq!(map.get(&(1, 0)), Some(&chunk_nbt("marker-2")));
     assert_eq!(read_coords(&added), vec![(32, 0)]);
 }
 
@@ -518,7 +525,10 @@ async fn keep_tombstoned_chunks_preserves_live_bytes() {
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world_path.join("region/r.0.0.mca");
-    write_region(&region, &[(0, 0, vec![3, 1]), (1, 0, vec![3, 2])]);
+    write_region(
+        &region,
+        &[(0, 0, chunk_nbt("marker-1")), (1, 0, chunk_nbt("marker-2"))],
+    );
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
@@ -527,7 +537,7 @@ async fn keep_tombstoned_chunks_preserves_live_bytes() {
         .await
         .unwrap();
     // Delete one chunk: the second commit tombstones it.
-    write_region(&region, &[(0, 0, vec![3, 1])]);
+    write_region(&region, &[(0, 0, chunk_nbt("marker-1"))]);
     instance
         .world_mut(&mut world)
         .commit(options(), sekai_app::Scope::World, |_| {})
@@ -537,7 +547,10 @@ async fn keep_tombstoned_chunks_preserves_live_bytes() {
     assert_eq!(commits.len(), 2);
 
     // Diverge live: change the kept chunk, recreate the deleted one.
-    write_region(&region, &[(0, 0, vec![3, 9]), (1, 0, vec![3, 8])]);
+    write_region(
+        &region,
+        &[(0, 0, chunk_nbt("marker-9")), (1, 0, chunk_nbt("marker-8"))],
+    );
 
     // Strict checkout drops the tombstoned chunk and reverts the rest.
     let (checked_out, _) = instance
@@ -552,10 +565,13 @@ async fn keep_tombstoned_chunks_preserves_live_bytes() {
         .unwrap();
     assert_eq!(checked_out.chunks_restored, 1);
     assert_eq!(read_coords(&region), vec![(0, 0)]);
-    assert_eq!(chunk_map(&region)[&(0, 0)], vec![3, 1]);
+    assert_eq!(chunk_map(&region)[&(0, 0)], chunk_nbt("marker-1"));
 
     // Keep checkout preserves the live bytes of the tombstoned chunk.
-    write_region(&region, &[(0, 0, vec![3, 9]), (1, 0, vec![3, 8])]);
+    write_region(
+        &region,
+        &[(0, 0, chunk_nbt("marker-9")), (1, 0, chunk_nbt("marker-8"))],
+    );
     let keep = CheckoutOptions {
         keep_tombstoned_chunks: true,
         ..CheckoutOptions::default()
@@ -567,8 +583,8 @@ async fn keep_tombstoned_chunks_preserves_live_bytes() {
         .unwrap();
     assert_eq!(checked_out.chunks_restored, 1);
     let map = chunk_map(&region);
-    assert_eq!(map[&(0, 0)], vec![3, 1]);
-    assert_eq!(map[&(1, 0)], vec![3, 8]);
+    assert_eq!(map[&(0, 0)], chunk_nbt("marker-1"));
+    assert_eq!(map[&(1, 0)], chunk_nbt("marker-8"));
 }
 
 #[tokio::test]
@@ -579,7 +595,7 @@ async fn keep_tombstoned_chunks_leaves_fully_tombstoned_files() {
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world_path.join("region/r.0.0.mca");
-    write_region(&region, &[(0, 0, vec![3, 1])]);
+    write_region(&region, &[(0, 0, chunk_nbt("marker-1"))]);
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
@@ -597,7 +613,7 @@ async fn keep_tombstoned_chunks_leaves_fully_tombstoned_files() {
     let commits = instance.list_commits().await.unwrap();
 
     // Live recreates the chunk afterwards.
-    write_region(&region, &[(0, 0, vec![3, 7])]);
+    write_region(&region, &[(0, 0, chunk_nbt("marker-7"))]);
     let keep = CheckoutOptions {
         keep_tombstoned_chunks: true,
         ..CheckoutOptions::default()
@@ -635,7 +651,7 @@ async fn missing_blob_abort_is_default_and_skip_recovers() {
     let store_dir = root.join("store");
     let store = store_dir.to_string_lossy().into_owned();
     let region = world_path.join("region/r.0.0.mca");
-    write_region(&region, &[(0, 0, vec![3, 1])]);
+    write_region(&region, &[(0, 0, chunk_nbt("marker-1"))]);
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
@@ -701,7 +717,7 @@ async fn missing_file_error_policy_refuses_to_guess() {
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world_path.join("region/r.0.0.mca");
-    write_region(&region, &[(0, 0, vec![3, 1])]);
+    write_region(&region, &[(0, 0, chunk_nbt("marker-1"))]);
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
@@ -799,8 +815,14 @@ async fn progress_fires_per_changed_file() {
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
-    write_region(world_path.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
-    write_region(world_path.join("region/r.1.0.mca"), &[(32, 0, vec![3, 2])]);
+    write_region(
+        world_path.join("region/r.0.0.mca"),
+        &[(0, 0, chunk_nbt("marker-1"))],
+    );
+    write_region(
+        world_path.join("region/r.1.0.mca"),
+        &[(32, 0, chunk_nbt("marker-2"))],
+    );
 
     let events = Arc::new(Mutex::new(Vec::new()));
     let seen = Arc::clone(&events);
@@ -854,7 +876,10 @@ async fn gc_runs_and_returns_timings() {
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
-    write_region(world_path.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
+    write_region(
+        world_path.join("region/r.0.0.mca"),
+        &[(0, 0, chunk_nbt("marker-1"))],
+    );
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
@@ -968,10 +993,10 @@ async fn checkout_progress_completes_for_tombstone_only_region() {
     let store = root.join("store").to_string_lossy().into_owned();
 
     let doomed = world_path.join("poi/r.0.0.mca");
-    write_region(&doomed, &[(0, 0, vec![3, 1, 2, 3])]);
+    write_region(&doomed, &[(0, 0, chunk_nbt("marker-1"))]);
     write_region(
         world_path.join("region/r.0.0.mca"),
-        &[(0, 0, vec![3, 8, 8, 8])],
+        &[(0, 0, chunk_nbt("marker-8"))],
     );
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
@@ -1065,22 +1090,16 @@ async fn diff_chunk_between_commits() {
     );
 }
 
-/// A payload that is valid NBT but outside the level-chunk schema has no
-/// normalized view; it diffs on its exact bytes rather than failing or
-/// reading as a change.
+/// A `region/` payload that is valid NBT but outside the level-chunk schema
+/// has no normalized view, so it gets no key: commit refuses it instead of
+/// falling back to byte identity.
 #[tokio::test]
-async fn diff_compares_unschema_payload_by_raw_bytes() {
+async fn a_region_payload_outside_the_chunk_schema_fails_ingest() {
     let (root, _guard) = tempdir("diff-malformed");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world_path.join("region/r.0.0.mca");
-    let coord = sekai_core::ChunkCoord::new(
-        sekai_core::Dimension::OVERWORLD,
-        sekai_core::RegionKind::Region,
-        0,
-        0,
-    );
 
     write_region(&region, &[(0, 0, build_status_nbt("minecraft:full"))]);
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
@@ -1093,23 +1112,19 @@ async fn diff_compares_unschema_payload_by_raw_bytes() {
     // Valid NBT (an empty compound), but not a level-chunk payload.
     std::thread::sleep(std::time::Duration::from_millis(5));
     write_region(&region, &[(0, 0, vec![3, 0x0a, 0, 0, 0])]);
-    instance
+    let err = instance
         .world_mut(&mut world)
         .commit(options(), sekai_app::Scope::World, |_| {})
         .await
-        .unwrap();
-
-    let commits = instance.list_commits().await.unwrap();
-    let diffs = instance
-        .diff_chunk(commits[0].id, commits[1].id, &coord)
-        .await
-        .expect("a payload outside the chunk schema still diffs");
-    // The payload decodes into neither chunk format, so it has no
-    // normalized view: it keys on its exact bytes, and replacing a real
-    // level chunk with it is a change like any other, not a failure.
+        .unwrap_err();
+    let message = format!("{err}");
     assert!(
-        matches!(diffs, ChunkPayloadDiff::Full { old, new } if old != new),
-        "an unschema'd payload diffs as a change: {diffs:?}"
+        matches!(err, sekai_app::AppError::UnhashableChunk { .. }),
+        "an unschema'd region payload must not get a hash: {err:?}"
+    );
+    assert!(
+        message.contains("r.0.0.mca"),
+        "error names the file: {message}"
     );
 }
 
@@ -1200,7 +1215,7 @@ async fn commits_region_with_trailing_partial_sector() {
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world_path.join("region/r.0.0.mca");
-    write_region(&region, &[(0, 0, vec![3, 1])]);
+    write_region(&region, &[(0, 0, chunk_nbt("marker-1"))]);
 
     let mut bytes = std::fs::read(&region).unwrap();
     bytes.extend_from_slice(&[0xAB; 188]);
@@ -1226,7 +1241,7 @@ async fn corrupt_region_names_its_file() {
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world_path.join("region/r.0.0.mca");
-    write_region(&region, &[(0, 0, vec![3, 1])]);
+    write_region(&region, &[(0, 0, chunk_nbt("marker-1"))]);
 
     // Point the only entry far past end of file.
     let mut bytes = std::fs::read(&region).unwrap();
@@ -1871,16 +1886,10 @@ async fn randomized_commit_checkout_round_trip() {
 /// World model: root-relative region path -> chunk payloads.
 type ChunkMaps = BTreeMap<String, BTreeMap<(i32, i32), Vec<u8>>>;
 
-/// Uncompressed sector framing around a minimal NBT compound.
+/// A minimal level chunk carrying `id` as its `Status`, so every model
+/// state has a normalized view and a distinct digest.
 fn model_payload(id: &str) -> Vec<u8> {
-    let mut nbt = vec![10u8, 0, 0, 8, 0, 2];
-    nbt.extend_from_slice(b"id");
-    nbt.extend_from_slice(&u16::try_from(id.len()).unwrap().to_be_bytes());
-    nbt.extend_from_slice(id.as_bytes());
-    nbt.push(0);
-    let mut out = vec![3u8];
-    out.extend_from_slice(&nbt);
-    out
+    chunk_nbt(id)
 }
 
 fn materialize(world_root: impl AsRef<Path>, model: &ChunkMaps, files: &[(&str, i32, i32)]) {

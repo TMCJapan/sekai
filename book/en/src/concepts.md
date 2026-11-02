@@ -9,13 +9,17 @@
 - **Ref**: a named, movable pointer to a commit - sekai's branch. One
   ref is active, and new commits hang from it; switching the active ref
   forks the history. See [Refs](commands/refs.md).
-- **Blob (CAS key)**: the exact raw chunk payload, hashed with framing
-  included. Identical payloads share one stored copy across all
-  commits; checkout restores these bytes verbatim, rewinding volatile
-  tags such as `LastUpdate` to capture time.
-- **Diff hash**: an opt-in volatile view over decompressed NBT with
-  non-essential tags excluded. It speeds up change detection only and
-  never alters stored blobs.
+- **Chunk hash (CAS key)**: the normalized digest of a decompressed chunk,
+  over a canonical encoding with volatile tags such as `LastUpdate`
+  excluded. It is independent of key order and compression codec.
+  `entities`/`poi` payloads have no level-chunk schema, so they key on
+  their exact bytes. Identical content shares one stored copy across all
+  commits; checkout restores the captured bytes verbatim, rewinding
+  volatile tags to capture time.
+- **No separate diff hash**: `diff` compares the very same digest recorded
+  at commit time, read straight from history. A payload that cannot be
+  normalized gets no key and fails ingest instead of being stored under a
+  byte-level identity.
 - **Tombstone**: an explicit "chunk absent" row. A chunk deleted between
   commits is recorded as a tombstone, not as silence — this is what lets
   checkout delete it again faithfully.

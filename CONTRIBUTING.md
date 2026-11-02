@@ -41,9 +41,8 @@ Rules:
   custom ids); `core` composes them and re-exports every util type at its
   root so downstream paths stay stable.
 - `anvil` never calls `nbt`. `core`/`app` drives `anvil`'s decompressed raw
-  NBT bytes into `nbt` (opt-in diff path), keeping the pure DAG acyclic and
-  the commit hot path decode-free. Compression framing is MCA spec and lives
-  in `anvil`; `nbt` never sees a compression-type byte.
+  NBT bytes into `nbt`, keeping the pure DAG acyclic. Compression framing is
+  MCA spec and lives in `anvil`; `nbt` never sees a compression-type byte.
 - `async`/tokio lives in `storage`, `storage-sqlite`, `world`, `app`, and the
   binary only. `anvil`/`nbt` are sync-only; `core` policy is sync except for
   `async fn` in traits (RPITIT, see below).
@@ -163,8 +162,9 @@ any exception in the PR body.
 - **Performance Considerations**:
 - Enforce zero-allocation on critical hot paths (reuse buffers, prefer stack allocations).
 - Prefer static dispatch (generics) over dynamic dispatch (`dyn Trait`) in core performance paths.
-- Keep the commit hot path decode-free: commit never decompresses or parses
-  payloads; `nbt` runs only on the read-only `diff` path.
+- Keep ingest's per-chunk work bounded: decompress and normalize once per
+  in-scope chunk, reuse buffers, and never re-read a payload the CAS write
+  already holds.
 
 # Pull Request Checklist
 

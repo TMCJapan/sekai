@@ -171,16 +171,20 @@ everything else is that digest under a different name.
   and legacy `Level`) has its own view, so converting a chunk is a real
   change, never a silent no-op.
 - **Chunk digest -> CAS key**: `normalize_hash` through `hash_bytes` is the
-  `ChunkHash` (`nbt::chunk_blob_hash`). The very same digest drives `diff`
-  output. Because volatile tags never enter it, a server rewriting them
-  neither adds a blob nor records a history row; checkout still writes the
-  captured bytes back verbatim.
+  `ChunkHash` (`nbt::chunk_key`). The very same digest drives `diff` output.
+  Because volatile tags never enter it, a server rewriting them neither adds
+  a blob nor records a history row; checkout still writes the captured bytes
+  back verbatim.
 
-Two payloads have no chunk schema to normalize: `entities`/`poi` region
-data, and a chunk whose root does not decode into the level-chunk schema.
-Those key on their exact bytes (`raw_hash` over the `hash_bytes` primitive),
-which keeps ingest total; `diff` reports them as raw-byte comparisons. A
-blob whose compression codec `anvil` does not know takes the same fallback.
+`entities`/`poi` payloads have no level-chunk schema to normalize, so they
+key on their exact bytes. That identity comes from the region kind, not from
+a failed decode: the payload must still be well-formed NBT.
+
+Nothing else gets a key. A `region/` payload that does not decode into a
+level chunk - corrupt, truncated, or of a schema this version does not
+read - is an error at ingest rather than a raw-byte fallback, so a damaged
+chunk cannot hide behind a byte-level identity that later normalizes
+differently. An unknown compression codec fails the same way.
 
 Commit IDs hash a canonical byte encoding of the logical delta
 ([ADR-0020](docs/adr/0020-content-addressed-commit-ids.md)) with the same

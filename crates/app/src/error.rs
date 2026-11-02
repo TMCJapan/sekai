@@ -49,26 +49,12 @@ pub enum AppError {
     /// NBT parsing or diff operation failed.
     #[error(transparent)]
     Nbt(#[from] sekai_nbt::NbtError),
-    /// Chunk NBT failed to parse, with its coordinates attached for
-    /// diagnosis.
-    #[error("failed to parse chunk {coord} (region r.{rx}.{rz}.mca): {source}")]
-    ChunkNbt {
-        /// Chunk whose payload could not be parsed.
-        coord: ChunkCoord,
-        /// Region X of the owning region file.
-        rx: i32,
-        /// Region Z of the owning region file.
-        rz: i32,
-        /// Underlying parse failure.
-        #[source]
-        source: sekai_nbt::NbtError,
-    },
-    /// A legacy (`Level`-wrapped) chunk ended before its compound closed,
-    /// with its coordinates attached for diagnosis.
+    /// Chunk NBT ended before its root compound closed, with its
+    /// coordinates attached for diagnosis.
     #[error(
-        "chunk {coord} in region r.{rx}.{rz}.mca is truncated: its legacy `Level` compound ends early (the payload is incomplete, not a format mismatch): {source}"
+        "chunk {coord} in region r.{rx}.{rz}.mca is truncated: its root compound ends early (the payload is incomplete, not a format mismatch): {source}"
     )]
-    TruncatedLegacyChunk {
+    TruncatedChunk {
         /// Chunk whose payload is cut short.
         coord: ChunkCoord,
         /// Region X of the owning region file.
@@ -78,6 +64,22 @@ pub enum AppError {
         /// Underlying parse failure that reported the short input.
         #[source]
         source: sekai_nbt::NbtError,
+    },
+    /// A payload that could not be reduced to a chunk hash, with its
+    /// coordinates attached for diagnosis.
+    #[error(
+        "chunk {coord} in region r.{rx}.{rz}.mca has no chunk hash (the payload is corrupt, truncated, or of a schema this version does not read): {source}"
+    )]
+    UnhashableChunk {
+        /// Chunk whose payload has no hash.
+        coord: ChunkCoord,
+        /// Region X of the owning region file.
+        rx: i32,
+        /// Region Z of the owning region file.
+        rz: i32,
+        /// Why no key could be derived.
+        #[source]
+        source: sekai_core::ChunkHashError,
     },
     /// Commit-graph operation failed.
     #[error("{0}")]

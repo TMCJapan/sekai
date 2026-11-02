@@ -4,6 +4,10 @@
 
 #![cfg(feature = "backend-sqlite")]
 
+mod fixtures;
+
+use fixtures::chunk_nbt;
+
 use sekai_app::HostWorldTree;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -61,8 +65,11 @@ async fn clone_rebuilds_commit_into_fresh_directory() {
     let store = root.join("store").to_string_lossy().into_owned();
     let over = world_path.join("region/r.0.0.mca");
     let nether = world_path.join("DIM-1/region/r.0.0.mca");
-    write_region(&over, &[(0, 0, vec![3, 1]), (1, 0, vec![3, 2])]);
-    write_region(&nether, &[(0, 0, vec![3, 3])]);
+    write_region(
+        &over,
+        &[(0, 0, chunk_nbt("marker-1")), (1, 0, chunk_nbt("marker-2"))],
+    );
+    write_region(&nether, &[(0, 0, chunk_nbt("marker-3"))]);
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
@@ -73,7 +80,7 @@ async fn clone_rebuilds_commit_into_fresh_directory() {
     let commits = instance.list_commits().await.unwrap();
 
     // Diverge live afterwards: clone must still reproduce the commit.
-    write_region(&over, &[(0, 0, vec![3, 9])]);
+    write_region(&over, &[(0, 0, chunk_nbt("marker-9"))]);
 
     let out_path = root.join("cloned");
     let out = HostWorldTree::new_legacy(&out_path);
@@ -92,11 +99,11 @@ async fn clone_rebuilds_commit_into_fresh_directory() {
     assert!(timings.total >= timings.plan + timings.clone_files);
 
     let mut expected = BTreeMap::new();
-    expected.insert((0, 0), vec![3, 1]);
-    expected.insert((1, 0), vec![3, 2]);
+    expected.insert((0, 0), chunk_nbt("marker-1"));
+    expected.insert((1, 0), chunk_nbt("marker-2"));
     assert_eq!(chunk_map(out_path.join("region/r.0.0.mca")), expected);
     let mut expected_nether = BTreeMap::new();
-    expected_nether.insert((0, 0), vec![3, 3]);
+    expected_nether.insert((0, 0), chunk_nbt("marker-3"));
     assert_eq!(
         chunk_map(out_path.join("DIM-1/region/r.0.0.mca")),
         expected_nether
@@ -110,10 +117,13 @@ async fn clone_honors_layout_and_scope() {
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
-    write_region(world_path.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
+    write_region(
+        world_path.join("region/r.0.0.mca"),
+        &[(0, 0, chunk_nbt("marker-1"))],
+    );
     write_region(
         world_path.join("DIM-1/region/r.0.0.mca"),
-        &[(0, 0, vec![3, 2])],
+        &[(0, 0, chunk_nbt("marker-2"))],
     );
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
@@ -179,7 +189,10 @@ async fn clone_refuses_non_empty_directory() {
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
-    write_region(world_path.join("region/r.0.0.mca"), &[(0, 0, vec![3, 1])]);
+    write_region(
+        world_path.join("region/r.0.0.mca"),
+        &[(0, 0, chunk_nbt("marker-1"))],
+    );
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
@@ -227,7 +240,7 @@ async fn clone_omits_tombstoned_regions() {
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world_path.join("region/r.0.0.mca");
-    write_region(&region, &[(0, 0, vec![3, 1])]);
+    write_region(&region, &[(0, 0, chunk_nbt("marker-1"))]);
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
