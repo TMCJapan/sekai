@@ -5,8 +5,8 @@ use sekai_app::{CommitOptions, CommitReport, CommitTimings, HostWorldTree};
 use serde::Serialize;
 use std::path::Path;
 
-use super::ReportOut;
 use super::progress::{finish_progress, progress_bar, report_progress};
+use super::{ReportOut, resolve_selection};
 use crate::cli::Selection;
 use crate::envelope::envelope_ok;
 use crate::style::Styler;
@@ -39,14 +39,19 @@ pub async fn run(
     selection: &Selection,
     out: ReportOut,
 ) -> anyhow::Result<()> {
-    let scope = selection.owned_scope();
     let fresh_store = !store_preexists(store);
     let mut world = HostWorldTree::new(&world_path)
         .with_context(|| format!("failed to inspect world {}", world_path.as_ref().display()))?;
     let bar = progress_bar(progress);
-    let mut instance = sekai_app::SekaiInstance::init(store)
-        .await
-        .with_context(|| format!("commit of {} failed", world_path.as_ref().display()))?;
+    // A missing store holds no scope, and a failing run must not create
+    // one as a side effect (#80).
+    let mut instance = if selection.scope.is_some() {
+        sekai_app::SekaiInstance::open(store).await
+    } else {
+        sekai_app::SekaiInstance::init(store).await
+    }
+    .with_context(|| format!("commit of {} failed", world_path.as_ref().display()))?;
+    let scope = resolve_selection(&instance, selection).await?;
     let (report, timings) = instance
         .world_mut(&mut world)
         .commit(options(with_diff, jobs), scope, |update| {

@@ -7,19 +7,21 @@ use super::diff_render::{
     TimedDiffs, diff_group_payload, print_diff_timing_table, render_diff_coords,
 };
 use super::progress::{finish_progress, progress_bar, report_progress};
+use super::resolve_selection;
 use crate::cli::{CommitRef, DiffArgs, DiffTarget};
 use crate::envelope::envelope_ok;
 use crate::style::Styler;
 
 pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<()> {
     let selection = &args.selection;
-    let scope = selection.owned_scope();
     let mut coords = selection.explicit_chunks();
     let instance = sekai_app::SekaiInstance::open(store).await?;
+    let scope = resolve_selection(&instance, selection).await?;
     let bar = progress_bar(args.progress);
 
     // Broad areas (whole dimensions, rectangles) and empty selections
-    // resolve through enumeration; explicit chunks join the union.
+    // resolve through enumeration; explicit chunks join the union. A named
+    // scope spells no inline chunk, so it always enumerates and filters.
     let broad = selection.has_broad_areas() || coords.is_empty();
     let (diffs, timings) = match args.target() {
         DiffTarget::World { world, commit } => {

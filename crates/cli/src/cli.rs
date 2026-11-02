@@ -2,7 +2,9 @@
 
 use crate::style::ColorChoice;
 use clap::{Parser, Subcommand};
-use sekai_app::{Area, ChunkCoord, CommitId, Dimension, Rect, RefName, RegionKind, Scope};
+use sekai_app::{
+    Area, ChunkCoord, CommitId, Dimension, Rect, RefName, RegionKind, Scope, ScopeName,
+};
 use std::path::{Path, PathBuf};
 
 /// Chunk-level deduplicated version control for Minecraft region files.
@@ -150,6 +152,11 @@ pub enum Command {
         #[command(subcommand)]
         action: RefCommand,
     },
+    /// Manage named scopes: store-saved world areas selected with `--scope`.
+    Scope {
+        #[command(subcommand)]
+        action: ScopeCommand,
+    },
     /// Compare chunk NBT AST between two commits or between world state and a commit.
     Diff(DiffArgs),
     /// Delete old commits, folding their rows into retained ones.
@@ -199,6 +206,7 @@ impl Command {
             Self::Log { .. } => "log",
             Self::Clone { .. } => "clone",
             Self::Ref { .. } => "ref",
+            Self::Scope { .. } => "scope",
             Self::Prune { .. } => "prune",
             Self::Diff(_) => "diff",
             Self::Gc { .. } => "gc",
@@ -217,6 +225,7 @@ impl Command {
             | Self::Gc { output, .. } => output.json,
             Self::Log { json, .. } => *json,
             Self::Ref { action } => action.output_json(),
+            Self::Scope { action } => action.output_json(),
             Self::Diff(args) => args.output.json,
         }
     }
@@ -275,6 +284,61 @@ impl RefCommand {
             | Self::Delete { json, .. }
             | Self::List { json }
             | Self::Activate { json, .. } => *json,
+        }
+    }
+}
+
+/// Named scope operations (ADR-0021). A scope covers every region family,
+/// so `create` takes areas but no `--kind`.
+#[derive(Debug, Subcommand)]
+pub enum ScopeCommand {
+    /// Save one or more areas under a name.
+    Create {
+        /// Scope name (ASCII alphanumerics plus ".", "_", "-", "/"; 1-64
+        /// bytes).
+        name: ScopeName,
+        /// Chunk `DIM:x,z` or rectangle `DIM:x0,z0..x1,z1` (inclusive). A
+        /// bare `DIM` is refused: a scope area is a chunk rectangle.
+        /// Repeatable, additive with `--region`.
+        #[arg(
+            long = "in",
+            value_name = "DIM:X,Z|X0,Z0..X1,Z1",
+            allow_hyphen_values = true,
+            required_unless_present = "region"
+        )]
+        areas: Vec<ScopeAreaSpec>,
+        /// Region `DIM:RX,RZ`: every chunk of the file. Repeatable,
+        /// additive with `--in`.
+        #[arg(long, value_name = "DIM:RX,RZ", allow_hyphen_values = true)]
+        region: Vec<RegionSpec>,
+        /// Replace an existing scope instead of failing.
+        #[arg(long)]
+        force: bool,
+        /// Emit output as JSON instead of human text. See docs/json.md.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete a scope.
+    Delete {
+        /// Scope name to delete.
+        name: ScopeName,
+        /// Emit output as JSON instead of human text. See docs/json.md.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List all scopes in name order.
+    List {
+        /// Emit output as JSON instead of human text. See docs/json.md.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+impl ScopeCommand {
+    /// Whether the operation runs in JSON mode (`--json`).
+    pub const fn output_json(&self) -> bool {
+        match self {
+            Self::Create { json, .. } | Self::Delete { json, .. } | Self::List { json } => *json,
         }
     }
 }
@@ -447,7 +511,8 @@ pub enum DiffTarget<'a> {
 /// Each `--in` picks one dimension whole, one chunk, or one rectangle;
 /// `--region` is shorthand for a region-aligned rectangle. Entries compose
 /// by union; unlisted dimensions are out. No `--in`/`--region` selects the
-/// whole world. `--kind` applies to every selected area.
+/// whole world. `--kind` applies to every selected area. `--scope` names a
+/// selection saved in the store instead of spelling one inline.
 #[derive(Debug, Clone, clap::Args)]
 pub struct Selection {
     /// Dimension area: `DIM` (whole), `DIM:x,z` (chunk), or
@@ -465,11 +530,18 @@ pub struct Selection {
     /// Region families applied to every selected area. Empty means all.
     #[arg(long)]
     pub kind: Vec<RegionKind>,
+    /// Named scope saved with `scope create`. Exclusive with `--in`,
+    /// `--region`, and `--kind`; not repeatable.
+    #[arg(long, value_name = "NAME", conflicts_with_all = ["areas", "region", "kind"])]
+    pub scope: Option<ScopeName>,
 }
 
 impl Selection {
     /// One-line human summary of the selected scope for pre-run echoes.
     pub fn describe(&self) -> String {
+        if let Some(name) = &self.scope {
+            return format!("scope {name}");
+        }
         if self.areas.is_empty() && self.region.is_empty() {
             return if self.kind.is_empty() {
                 "whole world".to_owned()
@@ -538,7 +610,9 @@ impl Selection {
             || !self.region.is_empty()
     }
 
-    /// Owned scope for this selection. Empty means the whole world.
+    /// Owned scope for the inline flags. Empty means the whole world.
+    ///
+    /// Ignores `--scope`: only the store can resolve a scope name.
     pub fn owned_scope(&self) -> Scope {
         if self.areas.is_empty() && self.region.is_empty() {
             // `--kind` alone still narrows: dropping it here would silently
@@ -568,10 +642,8 @@ impl Selection {
             }
         }
         for region in &self.region {
-            areas.push((
-                region.dim,
-                Area::Rect(Rect::region(region.at.x, region.at.z)),
-            ));
+            let (dim, rect) = region.area();
+            areas.push((dim, Area::Rect(rect)));
         }
         for (dim, coords) in chunks {
             areas.push((dim, Area::Chunks(coords)));
@@ -631,6 +703,37 @@ impl std::str::FromStr for AreaSpec {
     }
 }
 
+/// One `scope create --in` area: a chunk or a rectangle, never a whole
+/// dimension, since a named scope stores only chunk rectangles (ADR-0021).
+#[derive(Debug, Clone, Copy)]
+pub struct ScopeAreaSpec {
+    /// Selected dimension.
+    pub dim: Dimension,
+    /// Inclusive rectangle; a single chunk is its 1x1 rectangle.
+    pub rect: Rect,
+}
+
+impl std::str::FromStr for ScopeAreaSpec {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let spec: AreaSpec = s.parse()?;
+        let rect = match spec.area {
+            DimArea::Chunk(xz) => Rect::new(xz.x, xz.z, xz.x, xz.z),
+            DimArea::Rect(rect) => rect,
+            DimArea::All => {
+                return Err(format!(
+                    "scope area {s:?} names a whole dimension, expected DIM:X,Z or DIM:X0,Z0..X1,Z1"
+                ));
+            }
+        };
+        Ok(Self {
+            dim: spec.dim,
+            rect,
+        })
+    }
+}
+
 /// One `--region DIM:RX,RZ` entry.
 #[derive(Debug, Clone, Copy)]
 pub struct RegionSpec {
@@ -638,6 +741,13 @@ pub struct RegionSpec {
     pub dim: Dimension,
     /// Region coordinates.
     pub at: Xz,
+}
+
+impl RegionSpec {
+    /// The region file as a chunk rectangle.
+    pub const fn area(&self) -> (Dimension, Rect) {
+        (self.dim, Rect::region(self.at.x, self.at.z))
+    }
 }
 
 impl std::str::FromStr for RegionSpec {

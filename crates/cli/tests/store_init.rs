@@ -34,6 +34,15 @@ async fn commands_on_a_missing_store_fail_without_creating_it() {
         vec!["sekai", "--store", store, "diff"],
         vec!["sekai", "--store", store, "checkout", world, HASH],
         vec!["sekai", "--store", store, "clone", HASH, "out"],
+        // `commit` creates a missing store, but not to look a scope up in.
+        vec![
+            "sekai", "--store", store, "commit", world, "--scope", "spawn",
+        ],
+        vec!["sekai", "--store", store, "scope", "list"],
+        vec!["sekai", "--store", store, "scope", "delete", "spawn"],
+        vec![
+            "sekai", "--store", store, "scope", "create", "spawn", "--in", "ow:0,0",
+        ],
     ] {
         let cli = Cli::try_parse_from(&args).expect("valid invocation");
         let err = sekai_cli::commands::run(&cli)
