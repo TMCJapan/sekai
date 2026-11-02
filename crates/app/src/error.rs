@@ -66,7 +66,7 @@ pub enum AppError {
     /// A legacy (`Level`-wrapped) chunk ended before its compound closed,
     /// with its coordinates attached for diagnosis.
     #[error(
-        "chunk {coord} in region r.{rx}.{rz}.mca is truncated: its legacy `Level` compound ends early (the payload is incomplete, not a format mismatch)"
+        "chunk {coord} in region r.{rx}.{rz}.mca is truncated: its legacy `Level` compound ends early (the payload is incomplete, not a format mismatch): {source}"
     )]
     TruncatedLegacyChunk {
         /// Chunk whose payload is cut short.
@@ -75,6 +75,9 @@ pub enum AppError {
         rx: i32,
         /// Region Z of the owning region file.
         rz: i32,
+        /// Underlying parse failure that reported the short input.
+        #[source]
+        source: sekai_nbt::NbtError,
     },
     /// Commit-graph operation failed.
     #[error("{0}")]

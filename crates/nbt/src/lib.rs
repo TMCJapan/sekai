@@ -4,6 +4,7 @@ extern crate alloc;
 mod chunk;
 mod diff;
 
+use nanonbt::{Error, Read, SliceReader, Tag, read_string_into, skip_nbt};
 use sekai_util::ChunkHash;
 
 pub use chunk::legacy;
@@ -41,13 +42,70 @@ pub fn parse(bytes: &[u8]) -> Result<Chunk<'_>, NbtError> {
 /// total: it never fails on content a server wrote.
 pub fn chunk_blob_hash(raw_nbt: &[u8]) -> ChunkHash {
     parse(raw_nbt).map_or_else(
-        |_| ChunkHash::new(sekai_util::hash_bytes(raw_nbt)),
-        |chunk| {
-            chunk
-                .normalize_hash()
-                .unwrap_or_else(|_| ChunkHash::new(sekai_util::hash_bytes(raw_nbt)))
-        },
+        |_| raw_hash(raw_nbt),
+        |chunk| chunk.normalize_hash().unwrap_or_else(|_| raw_hash(raw_nbt)),
     )
+}
+
+/// The [`chunk_blob_hash`] digest, also reporting damage the raw-byte
+/// fallback would hide.
+///
+/// A payload that decodes as a level chunk of either format reports exactly
+/// the [`chunk_blob_hash`] digest, so the two can never disagree on
+/// "changed". What differs is a torn payload: a root compound whose body ends
+/// mid-value. The fallback keys it verbatim, so repairing it later yields the
+/// normalized digest instead and a damaged chunk resurfaces as a rewrite.
+/// The diff reports that a chunk is cut short rather than letting it pass as
+/// a byte-level difference.
+///
+/// # Errors
+///
+/// The decode failure when `raw_nbt` is a torn level chunk: the schema read
+/// that ran out of input, which says which part of the chunk ends early.
+pub fn chunk_diff_hash(raw_nbt: &[u8]) -> Result<ChunkHash, NbtError> {
+    let failure = match parse(raw_nbt) {
+        Ok(chunk) => {
+            return Ok(chunk
+                .normalize_hash()
+                .unwrap_or_else(|_| raw_hash(raw_nbt)));
+        }
+        Err(failure) => failure,
+    };
+
+    // The schema read may have stopped earlier than the framing did, so ask
+    // the bytes whether the compound itself is cut short.
+    if !root_body_is_torn(raw_nbt) {
+        return Ok(raw_hash(raw_nbt));
+    }
+    Err(if is_truncation(&failure) {
+        failure
+    } else {
+        NbtError::UnexpectedEof
+    })
+}
+
+/// Whether `failure` reports input that ended before a value did.
+const fn is_truncation(failure: &NbtError) -> bool {
+    matches!(failure, NbtError::UnexpectedEof)
+}
+
+/// Whether `raw_nbt` is a root compound whose body runs past the end of the
+/// input.
+///
+/// Any shape parses this way, so it distinguishes a payload cut short from
+/// one that is complete but of another schema, which is where the raw-byte
+/// fallback belongs.
+fn root_body_is_torn(raw_nbt: &[u8]) -> bool {
+    let mut reader = SliceReader::new(raw_nbt);
+    let root = reader
+        .read_u8()
+        .is_ok_and(|tag| tag == Tag::Compound.as_u8());
+    let mut root_name = alloc::string::String::new();
+    root && read_string_into(&mut reader, &mut root_name).is_ok()
+        && matches!(
+            skip_nbt(&mut reader, Tag::Compound),
+            Err(Error::UnexpectedEof)
+        )
 }
 
 /// Hashes an arbitrary payload that has no chunk schema.

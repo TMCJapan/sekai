@@ -1065,8 +1065,11 @@ async fn diff_chunk_between_commits() {
     );
 }
 
+/// A payload that is valid NBT but outside the level-chunk schema has no
+/// normalized view; it diffs on its exact bytes rather than failing or
+/// reading as a change.
 #[tokio::test]
-async fn diff_chunk_propagates_malformed_region_nbt() {
+async fn diff_compares_unschema_payload_by_raw_bytes() {
     let (root, _guard) = tempdir("diff-malformed");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -1097,13 +1100,16 @@ async fn diff_chunk_propagates_malformed_region_nbt() {
         .unwrap();
 
     let commits = instance.list_commits().await.unwrap();
-    let err = instance
+    let diffs = instance
         .diff_chunk(commits[0].id, commits[1].id, &coord)
         .await
-        .unwrap_err();
+        .expect("a payload outside the chunk schema still diffs");
+    // The payload decodes into neither chunk format, so it has no
+    // normalized view: it keys on its exact bytes, and replacing a real
+    // level chunk with it is a change like any other, not a failure.
     assert!(
-        matches!(err, sekai_app::AppError::ChunkNbt { .. }),
-        "malformed region payload must fail loudly: {err:?}"
+        matches!(diffs, ChunkPayloadDiff::Full { old, new } if old != new),
+        "an unschema'd payload diffs as a change: {diffs:?}"
     );
 }
 
@@ -1162,7 +1168,10 @@ async fn diffs_a_non_canonical_region_name() {
         .await
         .unwrap();
 
-    write_region(&region, &[(0, 0, vec![3, 4, 5, 6])]);
+    // Only the non-canonical file changes. A diff that looked up the
+    // canonical path instead would find no chunk at all there, and report
+    // the edit as a removal rather than a change.
+    write_region(&region, &[(0, 0, build_status_nbt("minecraft:empty"))]);
 
     let coord = sekai_app::ChunkCoord::new(
         sekai_app::Dimension::OVERWORLD,
@@ -1170,16 +1179,14 @@ async fn diffs_a_non_canonical_region_name() {
         0,
         0,
     );
-    // The commit side holds valid NBT, so the decode failure can only
-    // come from the world side: it proves the discovered file was read.
-    let err = instance
+    let diffs = instance
         .world(&world)
         .diff_world_chunk(None, &coord)
         .await
-        .expect_err("raw payload is not valid NBT");
+        .expect("the discovered region file reads");
     assert!(
-        matches!(err, sekai_app::AppError::ChunkNbt { .. }),
-        "diff must read the discovered file, got: {err}"
+        matches!(diffs, ChunkPayloadDiff::Full { .. }),
+        "diff must read the discovered file, got: {diffs:?}"
     );
 }
 
