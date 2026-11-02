@@ -65,9 +65,7 @@ pub fn chunk_blob_hash(raw_nbt: &[u8]) -> ChunkHash {
 pub fn chunk_diff_hash(raw_nbt: &[u8]) -> Result<ChunkHash, NbtError> {
     let failure = match parse(raw_nbt) {
         Ok(chunk) => {
-            return Ok(chunk
-                .normalize_hash()
-                .unwrap_or_else(|_| raw_hash(raw_nbt)));
+            return Ok(chunk.normalize_hash().unwrap_or_else(|_| raw_hash(raw_nbt)));
         }
         Err(failure) => failure,
     };

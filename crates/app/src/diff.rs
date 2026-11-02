@@ -62,10 +62,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
 /// An absent region file or chunk entry is [`None`]; a corrupt file, payload,
 /// or undecodable chunk fails loudly. A digest that is returned goes through
 /// [`chunk_diff_hash`], so it equals the CAS key ingest recorded.
-fn read_world_chunk<R: RegionFile>(
-    regions: &BTreeMap<RegionKey, R>,
-    coord: &ChunkCoord,
-) -> Side
+fn read_world_chunk<R: RegionFile>(regions: &BTreeMap<RegionKey, R>, coord: &ChunkCoord) -> Side
 where
     AppError: From<R::Error>,
 {
@@ -414,10 +411,7 @@ impl<R: RegionFile> DiffSource for WorldDiff<R>
 where
     AppError: From<R::Error>,
 {
-    fn payload(
-        &self,
-        coord: &ChunkCoord,
-    ) -> impl Future<Output = Result<Side, AppError>> {
+    fn payload(&self, coord: &ChunkCoord) -> impl Future<Output = Result<Side, AppError>> {
         // A world read failure is always confined to this coordinate.
         std::future::ready(Ok(read_world_chunk(&self.regions, coord)))
     }
