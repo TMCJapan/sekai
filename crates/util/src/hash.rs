@@ -86,13 +86,6 @@ pub(crate) fn hex32_from(input: &[u8]) -> Result<[u8; 32], HexError> {
 }
 
 impl ChunkHash {
-    /// The digest of no chunk at all: what an added or removed chunk's
-    /// present-absence pair carries on the missing side.
-    ///
-    /// Not a content digest, so it is never produced by hashing; it cannot
-    /// compare equal to anything [`hash_bytes`] returns.
-    pub const ZERO: Self = Self([0; 32]);
-
     /// Wrap a chunk digest.
     #[inline]
     pub const fn new(hash: [u8; 32]) -> Self {

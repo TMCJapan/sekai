@@ -218,7 +218,7 @@ fn volatile_tags_do_not_change_the_hash() {
     );
     let diff =
         ChunkPayloadDiff::new(&parse_legacy(&base_bytes), &parse_legacy(&varied_bytes)).unwrap();
-    assert_eq!(diff, ChunkPayloadDiff::Nothing);
+    assert!(diff.is_empty());
 }
 
 #[test]
@@ -229,7 +229,7 @@ fn block_content_change_reports_a_full_diff() {
     let new = parse_legacy(&new_bytes);
     let diff = ChunkPayloadDiff::new(&old, &new).unwrap();
     assert!(
-        matches!(diff, ChunkPayloadDiff::Full { old, new } if old != new),
+        matches!((diff.old, diff.new), (Some(old), Some(new)) if old != new),
         "changed blocks must report distinct hashes: {diff:?}"
     );
 }
@@ -254,7 +254,7 @@ fn legacy_and_modern_never_compare_equal() {
     };
     let diff = ChunkPayloadDiff::new(&legacy_side, &Chunk::Modern(modern)).unwrap();
     assert!(
-        matches!(diff, ChunkPayloadDiff::Full { old, new } if old != new),
+        matches!((diff.old, diff.new), (Some(old), Some(new)) if old != new),
         "a format conversion is a real change: {diff:?}"
     );
 }

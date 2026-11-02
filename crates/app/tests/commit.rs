@@ -10,7 +10,6 @@ use fixtures::chunk_nbt;
 
 use sekai_app::{CommitId, CommitOptions, RegionKind, Scope};
 use sekai_app::{HostWorldTree, WorldTree};
-use sekai_nbt::ChunkPayloadDiff;
 use sekai_nbt::nanonbt::Cesu8;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -197,7 +196,7 @@ async fn scoped_commit_records_no_spurious_tombstones() {
         .diff_chunk(commits[0].id, commits[1].id, &nether_coord)
         .await
         .unwrap();
-    assert_eq!(diffs, ChunkPayloadDiff::Nothing);
+    assert!(diffs.is_empty());
 
     // Vanish one in-scope chunk: exactly that tombstone is recorded.
     write_region(&over, &[(0, 0, payload)]);
@@ -225,7 +224,7 @@ async fn scoped_commit_records_no_spurious_tombstones() {
         .diff_chunk(commits[0].id, commits[3].id, &nether_coord)
         .await
         .unwrap();
-    assert_eq!(diffs, ChunkPayloadDiff::Nothing);
+    assert!(diffs.is_empty());
 }
 
 /// A partial scope reads only part of a region; the next full commit must
@@ -1085,7 +1084,7 @@ async fn diff_chunk_between_commits() {
         .unwrap();
 
     assert!(
-        matches!(diffs, ChunkPayloadDiff::Full { old, new } if old != new),
+        matches!((diffs.old, diffs.new), (Some(old), Some(new)) if old != new),
         "status change must report a full diff with distinct hashes: {diffs:?}"
     );
 }
@@ -1160,7 +1159,7 @@ async fn diff_world_chunk_with_commit() {
         .unwrap();
 
     assert!(
-        matches!(diffs, ChunkPayloadDiff::Full { old, new } if old != new),
+        matches!((diffs.old, diffs.new), (Some(old), Some(new)) if old != new),
         "status change must report a full diff with distinct hashes: {diffs:?}"
     );
 }
@@ -1200,7 +1199,7 @@ async fn diffs_a_non_canonical_region_name() {
         .await
         .expect("the discovered region file reads");
     assert!(
-        matches!(diffs, ChunkPayloadDiff::Full { .. }),
+        !diffs.is_empty(),
         "diff must read the discovered file, got: {diffs:?}"
     );
 }
@@ -1356,7 +1355,7 @@ async fn legacy_level_chunks_diff_by_content() {
         .diff_world_chunk(None, &coord)
         .await
         .unwrap();
-    assert_eq!(diffs, ChunkPayloadDiff::Nothing);
+    assert!(diffs.is_empty());
 
     // Changed block content reports a full diff.
     write_region(
@@ -1369,7 +1368,7 @@ async fn legacy_level_chunks_diff_by_content() {
         .await
         .unwrap();
     assert!(
-        matches!(diffs, ChunkPayloadDiff::Full { old, new } if old != new),
+        matches!((diffs.old, diffs.new), (Some(old), Some(new)) if old != new),
         "changed legacy blocks must report a diff: {diffs:?}"
     );
 
@@ -1386,7 +1385,7 @@ async fn legacy_level_chunks_diff_by_content() {
         .await
         .unwrap();
     assert!(
-        matches!(stored, ChunkPayloadDiff::Full { .. }),
+        !stored.is_empty(),
         "stored legacy blobs diff by content: {stored:?}"
     );
 }

@@ -85,7 +85,7 @@ mod tests {
         let new = sekai_nbt::parse(&new_raw).unwrap();
         let diffs = ChunkPayloadDiff::new(&old, &new).unwrap();
         assert!(
-            matches!(diffs, ChunkPayloadDiff::Full { old, new } if old != new),
+            matches!((diffs.old, diffs.new), (Some(old), Some(new)) if old != new),
             "status change must report a full diff with distinct hashes: {diffs:?}"
         );
     }
@@ -95,10 +95,7 @@ mod tests {
         let raw = nbt_bytes(100, 0, "minecraft:full");
 
         let chunk = sekai_nbt::parse(&raw).unwrap();
-        assert_eq!(
-            ChunkPayloadDiff::new(&chunk, &chunk).unwrap(),
-            ChunkPayloadDiff::Nothing
-        );
+        assert!(ChunkPayloadDiff::new(&chunk, &chunk).unwrap().is_empty());
     }
 
     /// Serialised chunk payload with the given volatile fields.

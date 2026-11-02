@@ -145,7 +145,7 @@ mod tests {
 
         let diff = block_on(diff_blobs(&cas, &hash_old, &hash_new)).unwrap();
         assert!(
-            matches!(diff, ChunkPayloadDiff::Full { old, new } if old != new),
+            matches!((diff.old, diff.new), (Some(old), Some(new)) if old != new),
             "different payloads must report a full diff with distinct hashes: {diff:?}"
         );
     }
@@ -158,7 +158,7 @@ mod tests {
         block_on(cas.put(&hash, &payload)).unwrap();
 
         let diff = block_on(diff_blobs(&cas, &hash, &hash)).unwrap();
-        assert_eq!(diff, ChunkPayloadDiff::Nothing);
+        assert!(diff.is_empty());
     }
 
     #[test]

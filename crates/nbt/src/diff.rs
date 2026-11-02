@@ -2,36 +2,25 @@ use sekai_util::ChunkHash;
 
 use crate::Chunk;
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-pub enum ChunkPayloadDiff {
-    Full { old: ChunkHash, new: ChunkHash },
-    Nothing,
+/// One chunk's normalized view on each side of a diff.
+///
+/// `None` means that side holds no chunk (absent or tombstoned). The two
+/// sides are compared structurally: absent on both is no change, present on
+/// exactly one side is a change against `None`, and no sentinel digest is
+/// ever fabricated for the missing side.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct ChunkPayloadDiff {
+    /// The old side's digest, `None` when it holds no chunk.
+    pub old: Option<ChunkHash>,
+    /// The new side's digest, `None` when it holds no chunk.
+    pub new: Option<ChunkHash>,
 }
 
 impl ChunkPayloadDiff {
     /// Compares the two sides of a chunk by the digests already computed for
     /// them, without decoding either payload.
-    ///
-    /// `None` means that side holds no chunk. Absent on both sides is
-    /// [`Self::Nothing`]; present on exactly one side is [`Self::Full`], with
-    /// [`ChunkHash::ZERO`] standing for the absent side, since no content
-    /// digest can compare equal to it.
-    pub fn from_sides(old: Option<ChunkHash>, new: Option<ChunkHash>) -> Self {
-        match (old, new) {
-            (Some(old), Some(new)) => Self::changed(old, new),
-            (Some(old), None) => Self::changed(old, ChunkHash::ZERO),
-            (None, Some(new)) => Self::changed(ChunkHash::ZERO, new),
-            (None, None) => Self::Nothing,
-        }
-    }
-
-    /// The one definition of "changed": two digests differing.
-    fn changed(old: ChunkHash, new: ChunkHash) -> Self {
-        if old == new {
-            Self::Nothing
-        } else {
-            Self::Full { old, new }
-        }
+    pub const fn from_sides(old: Option<ChunkHash>, new: Option<ChunkHash>) -> Self {
+        Self { old, new }
     }
 
     /// Compares two chunks through the normalized view of their format.
@@ -51,7 +40,45 @@ impl ChunkPayloadDiff {
     }
 
     /// Whether both sides normalize identically: this chunk has no changes.
-    pub const fn is_empty(&self) -> bool {
-        matches!(self, Self::Nothing)
+    pub fn is_empty(&self) -> bool {
+        self.old == self.new
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const fn hash(byte: u8) -> ChunkHash {
+        ChunkHash::new([byte; 32])
+    }
+
+    #[test]
+    fn absent_on_both_sides_is_empty() {
+        assert!(ChunkPayloadDiff::from_sides(None, None).is_empty());
+    }
+
+    #[test]
+    fn identical_digests_are_empty() {
+        let diff = ChunkPayloadDiff::from_sides(Some(hash(1)), Some(hash(1)));
+        assert!(diff.is_empty());
+    }
+
+    #[test]
+    fn differing_digests_are_a_change() {
+        let diff = ChunkPayloadDiff::from_sides(Some(hash(1)), Some(hash(2)));
+        assert!(!diff.is_empty());
+        assert_eq!((diff.old, diff.new), (Some(hash(1)), Some(hash(2))));
+    }
+
+    #[test]
+    fn presence_mismatch_keeps_the_missing_side_none() {
+        let removed = ChunkPayloadDiff::from_sides(Some(hash(1)), None);
+        assert!(!removed.is_empty());
+        assert_eq!((removed.old, removed.new), (Some(hash(1)), None));
+
+        let added = ChunkPayloadDiff::from_sides(None, Some(hash(2)));
+        assert!(!added.is_empty());
+        assert_eq!((added.old, added.new), (None, Some(hash(2))));
     }
 }

@@ -177,10 +177,7 @@ mod tests {
 
         let old = Chunk::Modern(payload(7, 9));
         let new = Chunk::Modern(payload(999, 1_234));
-        assert_eq!(
-            ChunkPayloadDiff::new(&old, &new).unwrap(),
-            ChunkPayloadDiff::Nothing
-        );
+        assert!(ChunkPayloadDiff::new(&old, &new).unwrap().is_empty());
     }
 
     #[test]

@@ -146,10 +146,10 @@ impl<S: SekaiStore> SekaiInstance<S> {
         let (diffs, _) = self
             .diff_chunks(old_commit, new_commit, &[*coord], |_| {})
             .await?;
-        Ok(diffs
-            .into_iter()
-            .next()
-            .map_or(ChunkPayloadDiff::Nothing, |diff| diff.entries))
+        Ok(diffs.into_iter().next().map_or_else(
+            || ChunkPayloadDiff::from_sides(None, None),
+            |diff| diff.entries,
+        ))
     }
 }
 
@@ -158,8 +158,8 @@ impl<S: SekaiStore> SekaiInstance<S> {
 pub struct ChunkDiff {
     /// Chunk the diff belongs to.
     pub coord: ChunkCoord,
-    /// Normalized change detection: `Nothing` when both sides digest
-    /// identically, `Full` with both digests otherwise.
+    /// Normalized change detection: both sides' digests, `None` for a side
+    /// that holds no chunk.
     pub entries: ChunkPayloadDiff,
 }
 
@@ -169,8 +169,8 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// Compares two commits in the store, additionally returning
     /// per-phase timings. Both sides compare the digests already recorded at
     /// commit time, so no blob is fetched or decoded. A chunk absent (or
-    /// tombstoned) on both sides yields [`ChunkPayloadDiff::Nothing`], present
-    /// on exactly one side reports [`ChunkPayloadDiff::Full`].
+    /// tombstoned) on both sides yields an empty [`ChunkPayloadDiff`]; present
+    /// on exactly one side keeps `None` for the other.
     pub async fn diff_chunks(
         &self,
         old_commit: CommitId,
@@ -273,10 +273,10 @@ where
         coord: &ChunkCoord,
     ) -> Result<ChunkPayloadDiff, AppError> {
         let (diffs, _) = self.diff_world_chunks(commit, &[*coord], |_| {}).await?;
-        Ok(diffs
-            .into_iter()
-            .next()
-            .map_or(ChunkPayloadDiff::Nothing, |diff| diff.entries))
+        Ok(diffs.into_iter().next().map_or_else(
+            || ChunkPayloadDiff::from_sides(None, None),
+            |diff| diff.entries,
+        ))
     }
 
     /// Compute AST diffs for explicit chunk coordinates between the bound
