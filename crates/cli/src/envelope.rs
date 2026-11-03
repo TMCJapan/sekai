@@ -29,10 +29,14 @@ pub struct ErrEnvelope<'a> {
 }
 
 pub fn envelope_err(command: &str, err: &anyhow::Error) -> anyhow::Result<String> {
+    let rendered = format!("{err:?}");
+    let rendered = rendered
+        .split_once("\n\nStack backtrace:")
+        .map_or_else(|| rendered.clone(), |(head, _)| head.to_owned());
     Ok(serde_json::to_string(&ErrEnvelope {
         command,
         status: "error",
-        error: format!("{err:?}"),
+        error: rendered,
     })?)
 }
 
@@ -40,6 +44,9 @@ pub fn envelope_err(command: &str, err: &anyhow::Error) -> anyhow::Result<String
 /// anyhow context chain. Mirrors clap's own parse-error look.
 pub fn render_error(err: &anyhow::Error, style: Styler) -> String {
     let chain = format!("{err:?}");
+    let chain = chain
+        .split_once("\n\nStack backtrace:")
+        .map_or_else(|| chain.clone(), |(head, _)| head.to_owned());
     let mut lines = chain.lines();
     let mut out = lines.next().map_or_else(
         || style.red_bold("error"),
