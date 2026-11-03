@@ -1,8 +1,8 @@
-//! End-to-end commit flows over real world folders and SQLite stores.
+//! End-to-end commit flows over real world folders and storage stores.
 //!
-//! Requires the `backend-sqlite` feature.
+//! Requires a storage backend feature (`backend-surrealdb` or `backend-sqlite`).
 
-#![cfg(feature = "backend-sqlite")]
+#![cfg(any(feature = "backend-surrealdb", feature = "backend-sqlite"))]
 
 mod fixtures;
 
@@ -655,7 +655,7 @@ async fn missing_blob_abort_is_default_and_skip_recovers() {
 
     // Corrupt the CAS by removing every stored blob.
     let mut blobs = Vec::new();
-    sekai_core::BlobStore::visit_blobs(instance.store().blob(), |hash| {
+    sekai_core::BlobStore::visit_blobs(sekai_app::SekaiStore::blob(instance.store()), |hash| {
         blobs.push(*hash);
         true
     })
@@ -664,9 +664,12 @@ async fn missing_blob_abort_is_default_and_skip_recovers() {
     assert_eq!(blobs.len(), 1, "one chunk was committed");
     for hash in &blobs {
         assert!(
-            sekai_core::BlobStore::remove(instance.store_mut().blob_mut(), hash)
-                .await
-                .unwrap()
+            sekai_core::BlobStore::remove(
+                sekai_app::SekaiStore::blob_mut(instance.store_mut()),
+                hash,
+            )
+            .await
+            .unwrap()
         );
     }
 
@@ -781,9 +784,7 @@ async fn commit_records_no_diff_metadata() {
     assert_eq!(report.chunks, 1);
 
     let commits = instance.list_commits().await.unwrap();
-    let meta = sekai_storage_sqlite::open_sqlite(&store_dir).await.unwrap();
-    let row = meta
-        .meta()
+    let row = sekai_app::SekaiStore::meta(instance.store())
         .lookup_chunk(
             commits[0].id,
             &sekai_core::ChunkCoord::new(

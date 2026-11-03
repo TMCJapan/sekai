@@ -39,6 +39,8 @@ pub use commit::{
 pub use diff::{ChunkDiff, DiffProgress, DiffTimings, world_chunk_coords};
 pub use error::AppError;
 pub use gc::{GcProgress, GcTimings};
+#[cfg(any(feature = "backend-sqlite", feature = "backend-surrealdb"))]
+pub use instance::DefaultStore;
 pub use instance::{SekaiInstance, WorldHandle, WorldHandleMut};
 pub use prune::{PruneProgress, PruneTimings};
 pub use sekai_core::{

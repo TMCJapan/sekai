@@ -15,10 +15,12 @@ non-default backend:
 
 ```sh
 sekai --store ./backups/sekai commit ./world
-sekai --store sqlite:///var/lib/sekai commit ./world
+sekai --store surrealkv:///var/lib/sekai commit ./world
 ```
 
 `--store` is a global option and works with all subcommands.
 `commit` creates the store directory when it is missing; every other
-command fails on a missing store. Prefix the value with `sqlite://`
-to select the SQLite backend explicitly.
+command fails on a missing store. The default backend is SurrealDB over
+SurrealKV; prefix the value with `surrealkv://` (or `surrealdb://`) to
+name it explicitly. A build that includes the SQLite backend selects it
+with `sqlite://`.

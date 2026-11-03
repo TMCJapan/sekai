@@ -15,10 +15,12 @@ sekai gc
 
 ```sh
 sekai --store ./backups/sekai commit ./world
-sekai --store sqlite:///var/lib/sekai commit ./world
+sekai --store surrealkv:///var/lib/sekai commit ./world
 ```
 
 `--store` はグローバルオプションで、すべてのサブコマンドで使用
 できます。`commit` はストアディレクトリが存在しない場合に作成し、
-他のコマンドはストアが存在しない場合に失敗します。値の先頭に
-`sqlite://` を付けると SQLite バックエンドを明示的に選択します。
+他のコマンドはストアが存在しない場合に失敗します。デフォルトの
+バックエンドは SurrealDB (SurrealKV) です。明示的に指定する場合は
+`surrealkv://` (または `surrealdb://`) を付けます。SQLite バックエンドを
+含めてビルドした場合は `sqlite://` で選択できます。

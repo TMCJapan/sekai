@@ -1,0 +1,245 @@
+//! `SurrealDB` backend conformance: shared flows plus lifecycle checks.
+
+mod common;
+
+use sekai_core::{
+    BlobStore as _, ChunkCoord, ChunkHash, ChunkHistoryEntry, CommitEntry, Dimension,
+    MetaStore as _, RegionKind, usecase::checkout::plan_checkout,
+};
+use sekai_storage::SekaiStore as _;
+use sekai_storage_surrealdb::{SCHEMA_VERSION, SurrealdbStore, init_surrealdb, open_surrealdb};
+use std::path::Path;
+
+/// A temp dir whose name starts with the calling test's name (tempfile
+/// appends a random suffix), removed when its guard is dropped at the end
+/// of the test, panics included.
+fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
+    let guard = tempfile::Builder::new()
+        .prefix(&format!("sekai-{name}-"))
+        .tempdir()
+        .unwrap();
+    (guard.path().to_path_buf(), guard)
+}
+
+async fn init(dir: impl AsRef<Path>) -> sekai_storage_surrealdb::SurrealdbStore {
+    init_surrealdb(dir).await.unwrap()
+}
+
+#[tokio::test]
+async fn surrealdb_commit_lifecycle() {
+    let (dir, _guard) = tempdir("lifecycle");
+    let mut store = init(&dir).await;
+    common::commit_lifecycle(store.meta_mut()).await;
+}
+
+#[tokio::test]
+async fn surrealdb_scope_flow() {
+    let (dir, _guard) = tempdir("scopes");
+    let mut store = init(&dir).await;
+    common::scope_flow(store.meta_mut()).await;
+}
+
+#[tokio::test]
+async fn surrealdb_fresh_stats() {
+    let (dir, _guard) = tempdir("fresh");
+    let mut store = init(&dir).await;
+    common::fresh_stats(store.meta_mut()).await;
+}
+
+/// A vanished coordinate keeps resolving as a tombstone: the effective row
+/// is present at the new commit, the only fresh row is the tombstone, and a
+/// checkout plan drops the coordinate instead of asking for a blob.
+#[tokio::test]
+async fn surrealdb_tombstones_shape_and_checkout_drop() {
+    let (dir, _guard) = tempdir("tombstones");
+    let mut store = init(&dir).await;
+    let meta = store.meta_mut();
+    let present = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
+    let gone = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 1, 0);
+    let first = meta
+        .apply_commit_incremental(
+            1_000,
+            &[],
+            &[
+                CommitEntry::new(present, Some(ChunkHash::new([1; 32]))),
+                CommitEntry::new(gone, Some(ChunkHash::new([2; 32]))),
+            ],
+        )
+        .await
+        .unwrap()
+        .id;
+    let second = meta
+        .apply_commit_incremental(2_000, &[first], &[CommitEntry::new(gone, None)])
+        .await
+        .unwrap()
+        .id;
+
+    let row = meta.lookup_chunk(second, &gone).await.unwrap().unwrap();
+    assert!(row.is_tombstone());
+    let mut fresh = Vec::new();
+    meta.visit_fresh_rows(second, |row| {
+        fresh.push(*row);
+        true
+    })
+    .await
+    .unwrap();
+    assert_eq!(fresh, vec![ChunkHistoryEntry::new(gone, second, None)]);
+
+    let plan = plan_checkout(&*meta, second).await.unwrap();
+    let region = sekai_core::RegionKey::of(present);
+    assert_eq!(
+        plan.groups[&region],
+        vec![(present, ChunkHash::new([1; 32]))]
+    );
+    assert_eq!(plan.tombstones[&region], vec![gone]);
+}
+
+#[tokio::test]
+async fn surrealdb_prune_flow() {
+    let (dir, _guard) = tempdir("prune");
+    let mut store = init(&dir).await;
+    common::prune_flow(store.meta_mut()).await;
+}
+
+#[tokio::test]
+async fn surrealdb_prune_chain_flow() {
+    let (dir, _guard) = tempdir("prune-chain");
+    let mut store = init(&dir).await;
+    common::prune_chain_flow(store.meta_mut()).await;
+}
+
+#[tokio::test]
+async fn surrealdb_history_graph() {
+    let (dir, _guard) = tempdir("graph");
+    let mut store = init(&dir).await;
+    common::history_graph(store.meta_mut()).await;
+}
+
+#[tokio::test]
+async fn surrealdb_cas_roundtrip() {
+    let (dir, _guard) = tempdir("cas");
+    let mut store = init(&dir).await;
+    common::cas_roundtrip(store.blob_mut()).await;
+}
+
+#[tokio::test]
+async fn surrealdb_torn_orphan_gc() {
+    let (dir, _guard) = tempdir("gc");
+    let mut store = init(&dir).await;
+    common::torn_orphan_gc(&mut store).await;
+}
+
+#[tokio::test]
+async fn visit_lists_stored_hashes_and_missing_fetch_clears() {
+    let (dir, _guard) = tempdir("visit");
+    let mut store = init(&dir).await;
+    let blobs = store.blob_mut();
+    let hash = ChunkHash::new(sekai_core::hash_bytes(b"real"));
+    assert!(blobs.put(&hash, b"real").await.unwrap());
+    // A table has no file names to skip, so visiting every row is the whole
+    // story; a missing hash is a read error, not an ignorable name.
+    let mut seen = Vec::new();
+    blobs
+        .visit_blobs(|h| {
+            seen.push(*h);
+            true
+        })
+        .await
+        .unwrap();
+    assert_eq!(seen, vec![hash]);
+    let mut out = vec![1u8, 2, 3];
+    let err = blobs
+        .fetch_into(&ChunkHash::new([9; 32]), &mut out)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        sekai_storage::StorageError::BlobMissing { .. }
+    ));
+    assert!(out.is_empty(), "a failed fetch clears the buffer");
+}
+
+/// A fresh store carries the managed schema version; a future version is
+/// refused loudly instead of reinterpreted.
+#[tokio::test]
+async fn schema_version_is_created_and_gated() {
+    let (dir, _guard) = tempdir("schema");
+    let mut store = init(&dir).await;
+    let hash = ChunkHash::new(sekai_core::hash_bytes(b"payload"));
+    assert!(store.blob_mut().put(&hash, b"payload").await.unwrap());
+    store.blob_mut().sync().await.unwrap();
+
+    let mut response = store
+        .db()
+        .query("SELECT VALUE schema_version FROM meta:store;")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    let versions: Vec<i64> = response.take(0).unwrap();
+    assert_eq!(versions, vec![SCHEMA_VERSION]);
+
+    store
+        .db()
+        .query("UPDATE meta:store SET schema_version = 99;")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    drop(store);
+
+    let err = open_surrealdb(&dir).await.unwrap_err();
+    assert!(matches!(
+        err,
+        sekai_storage::StorageError::UnsupportedSchema {
+            found: 99,
+            supported: SCHEMA_VERSION
+        }
+    ));
+}
+
+/// Only `init_surrealdb` materializes a store; `open_surrealdb` must fail
+/// loudly on a root that was never initialized and leave nothing behind.
+#[tokio::test]
+async fn open_of_a_missing_store_fails_without_creating_it() {
+    let (base, _guard) = tempdir("missing");
+    let dir = base.join("store");
+    let err = open_surrealdb(&dir).await.unwrap_err();
+    assert!(
+        matches!(&err, sekai_storage::StorageError::StoreMissing { path } if path == &dir),
+        "unexpected error: {err}"
+    );
+    assert!(!dir.exists(), "a failed open must not create anything");
+
+    let store = init_surrealdb(&dir).await.unwrap();
+    assert!(dir.join("manifest").is_dir());
+    drop(store);
+    let _store = open_surrealdb(&dir).await.unwrap();
+}
+
+/// The inherent opener accepts the backend's URL grammar as well as a plain
+/// path, so callers cannot accidentally treat `surrealkv://...` as a
+/// directory name.
+#[tokio::test]
+async fn url_schemes_open_the_same_store() {
+    let (dir, _guard) = tempdir("url");
+    let store = init_surrealdb(&dir).await.unwrap();
+    drop(store);
+
+    for scheme in ["surrealkv", "surrealdb"] {
+        let url = format!("{scheme}://{}", dir.display());
+        let store = SurrealdbStore::open(&url).await.unwrap();
+        drop(store);
+    }
+
+    let store = SurrealdbStore::open(dir.to_string_lossy().into_owned().as_str())
+        .await
+        .unwrap();
+    store
+        .db()
+        .query("RETURN 1;")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+}
