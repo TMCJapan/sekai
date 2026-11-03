@@ -235,7 +235,7 @@ pub async fn open_surrealdb(path: impl AsRef<Path>) -> Result<SurrealdbStore, St
     if !path.join("manifest").is_dir() {
         return Err(StorageError::StoreMissing { path: path.clone() });
     }
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
     let mut last_error = None;
     while tokio::time::Instant::now() < deadline {
         match connect(&path).await {
@@ -254,7 +254,7 @@ pub async fn open_surrealdb(path: impl AsRef<Path>) -> Result<SurrealdbStore, St
             },
             Err(error) => last_error = Some(error),
         }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
     Err(last_error.unwrap_or(StorageError::StoreMissing { path: path.clone() }))
 }
@@ -274,7 +274,7 @@ async fn connect(path: impl AsRef<Path>) -> Result<SurrealdbStore, StorageError>
     // last handle drops. A reopen in the same process can race that shutdown
     // and see the old `LOCK`; retry briefly instead of surfacing a transient
     // failure. A lock held by another process still fails after the deadline.
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
     let db = loop {
         match Surreal::new::<SurrealKv>(path.clone()).await {
             Ok(db) => break db,
