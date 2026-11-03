@@ -15,7 +15,8 @@ There is no `backup --dry-run`: `status` is that command. It runs the
 same observe, plan, and ingest path with blob puts replaced by
 existence probes and no metadata commit, then reports the staged
 counts. Counts match a subsequent backup unless the world changes in
-between. Diff views stay off in previews.
+between. Previews compute the same normalized chunk hashes as commit but
+write nothing.
 
 ## Consequences
 

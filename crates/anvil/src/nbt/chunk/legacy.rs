@@ -3,9 +3,10 @@
 //! Legacy chunks keep their fields inside a `Level` compound, mark
 //! generation progress with `TerrainPopulated` instead of `Status`, and
 //! store block content as per-section `Blocks`/`Add`/`Data` byte arrays
-//! rather than a palette. This module decodes the fields the diff needs;
-//! the arrays are owned copies because the derive can only default a field
-//! whose type owns its data, and pre-1.9 files omit most of them.
+//! rather than a palette. This module decodes the fields the normalized
+//! view needs; the arrays are owned copies because the derive can only
+//! default a field whose type owns its data, and pre-1.9 files omit most of
+//! them.
 
 use alloc::vec::Vec;
 
@@ -38,8 +39,8 @@ impl SerializeNbt for RawCompound<'_> {
 /// arrays.
 ///
 /// An `Anvil`-era section that already carried a palette has no `Blocks` and
-/// decodes with empty arrays. `skip_serializing_if` keeps those empty arrays
-/// out of the normalized view, so "absent" and "empty" hash alike.
+/// decodes with empty arrays. Absent and explicitly empty arrays serialize
+/// the same way in the normalized view.
 #[derive(SerializeNbt, DeserializeNbt, Debug, Clone, Eq, PartialEq, Default)]
 pub struct LegacySection<'de> {
     #[nbt(rename = "Y", default)]
@@ -95,7 +96,7 @@ pub struct LegacySection<'de> {
     pub data2: &'de [u8],
 }
 
-/// A pre-1.13 chunk: the fields the diff view needs.
+/// A pre-1.13 chunk: the fields the normalized view needs.
 ///
 /// Sections and height maps keep their legacy shapes, and every field
 /// defaults: pre-1.9 files omit most of them.
@@ -165,9 +166,9 @@ impl LegacyChunkPayload<'_> {
 /// The hash input of [`LegacyChunkPayload::normalized_hash`].
 ///
 /// The same rule as [`super::NormalizedChunkPayload`]: volatile tags stay
-/// out, and a new payload field joins change detection only once it is added
-/// here as well. Empty collections are omitted, so absent and empty data
-/// normalize alike.
+/// out, and a new payload field joins the chunk key and change detection
+/// only once it is added here as well. Empty collections are omitted, so
+/// absent and empty data normalize alike.
 #[derive(SerializeNbt, Debug)]
 struct NormalizedLegacyChunkPayload<'a, 'de> {
     data_version: i32,

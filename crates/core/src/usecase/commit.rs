@@ -1,7 +1,8 @@
 //! Recording a world state as a commit, over abstract ports.
 //!
-//! Change detection (`diff`) is deliberately not computed here; parsing
-//! every chunk would multiply scan cost for data no consumer reads yet.
+//! Chunk normalization happens in the adapter's ingest pass, before rows are
+//! staged here; `diff` is not computed during commit. This module only merges
+//! the normalized rows into the delta.
 //!
 //! The policy is stated in ARCHITECTURE.md ("Delta History Storage" and
 //! "Tombstones"): chunks unchanged since the base commit write no fresh

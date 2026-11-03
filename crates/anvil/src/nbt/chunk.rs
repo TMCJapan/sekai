@@ -97,8 +97,8 @@ impl ChunkPayload<'_> {
 ///
 /// `InhabitedTime` and `LastUpdate` are deliberately absent: the server
 /// rewrites them on its own, so they must not register as changes. New
-/// payload fields participate in change detection only once they are added
-/// here as well.
+/// payload fields participate in the chunk key and change detection only
+/// once they are added here as well.
 #[derive(SerializeNbt, Debug)]
 struct NormalizedChunkPayload<'a, 'de> {
     #[nbt(rename = "DataVersion")]

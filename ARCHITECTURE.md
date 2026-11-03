@@ -75,7 +75,7 @@ behind them. See
 
 ### Shared value types (`sekai-util`)
 
-Coordinates, hashes, and history records live in a zero-dependency leaf so
+Coordinates, hashes, and history records live in a leaf crate so
 `anvil` can name the same types as `core` without a package cycle
 (`core -> anvil -> core` is forbidden by Cargo). The boundary rules:
 
@@ -97,7 +97,7 @@ Coordinates, hashes, and history records live in a zero-dependency leaf so
 ```text
 commit:
   world: region handle -> Vec<u8> image
-    -> anvil: image -> chunk payloads (stored opaquely)
+    -> anvil: image -> chunk payloads (captured bytes)
     -> Chunk::normalized_hash -> ChunkHash -> storage CAS put
 
 checkout:
@@ -196,9 +196,12 @@ owns all codec errors — type `127` surfaces as `CustomCompression`,
 as `UnknownCompression`. `Chunk::normalized_hash` decompresses the sector
 payload and parses the raw NBT internally with a `no_std` parser (no
 `Serialize` by design); nothing outside `sekai-anvil` sees NBT types.
-Commit ingests raw sector payloads opaquely into CAS; unsupported codecs
-surface only when the normalized view is derived for hashing, never as
-ingest failures.
+Commit stores the exact captured sector payload in CAS, but derives every
+key by decompressing and normalizing the chunk. Only well-formed NBT of the
+kind's schema is a chunk: a `region/` payload must decode as a level chunk,
+and an `entities`/`poi` payload must be a well-formed NBT compound. An
+unsupported compression codec or an unparsable/unsupported payload fails
+ingest; there is no raw-byte fallback.
 
 ### Chunk NBT formats
 

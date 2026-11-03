@@ -33,8 +33,8 @@ mod tests {
         assert_ne!(a, custom_dimension_id("dimensions/aether/other",));
     }
 
-    /// `util` ships the trio ids precomputed because it cannot run blake3;
-    /// pin them so they can never drift from the hash function.
+    /// `util` ships the trio ids as constants because hashing is not
+    /// const-evaluable; pin them so they can never drift from the hash function.
     #[test]
     fn vanilla_trio_consts_match_hashed_keys() {
         assert_eq!(

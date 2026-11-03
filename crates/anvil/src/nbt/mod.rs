@@ -40,9 +40,10 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Chunk<'_>, ChunkNbtError> {
 /// not of a failed decode: the payload must still be well-formed NBT, and
 /// anything else is rejected.
 ///
-/// Nothing is keyed by default. A payload whose schema cannot be read is an
-/// error rather than a raw-byte fallback, so a damaged `region/` chunk cannot
-/// hide behind a byte-level identity that later normalizes differently.
+/// Nothing is keyed by default. A payload that is not well-formed NBT, or a
+/// `region/` payload whose schema cannot be read, is an error rather than a
+/// raw-byte fallback, so a damaged chunk cannot hide behind a byte-level
+/// identity that later normalizes differently.
 ///
 /// # Errors
 ///
@@ -68,10 +69,10 @@ pub(crate) fn chunk_key(kind: RegionKind, raw_nbt: &[u8]) -> Result<ChunkHash, C
     }
 }
 
-/// Whether `raw_nbt` is one complete well-formed NBT document.
+/// Whether `raw_nbt` is one complete, well-formed NBT compound.
 ///
-/// Any root shape is accepted: the point is that the bytes are NBT a reader
-/// can traverse, not which schema they follow.
+/// `entities`/`poi` documents are compounds at the root, so the body must be
+/// fully traversable as NBT. No level-chunk schema is applied.
 fn validate_nbt(raw_nbt: &[u8]) -> Result<(), ChunkNbtError> {
     let mut reader = SliceReader::new(raw_nbt);
     let tag = reader.read_u8()?;

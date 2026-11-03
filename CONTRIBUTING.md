@@ -34,11 +34,11 @@ Rules:
 - `core` never depends on `world`, `storage`, `app`, or the binary.
   `world` already depends on `core` types, so the reverse edge would be a
   Cargo package cycle.
-- `util` is a dependency leaf: zero external dependencies, pure data plus
-  total validation only (no hashing backends, no codecs, no ports, no
-  orchestration). `anvil` names util types directly (`Dimension` custom
-  ids, `RegionKind`); `core` composes it and re-exports every util type at
-  its root so downstream paths stay stable.
+- `util` is a dependency leaf: pure data plus total validation only, plus
+  the shared Blake3 primitive (`hash_bytes`, `BytesHasher`). It owns no
+  codecs, ports, or orchestration. `anvil` names util types directly
+  (`Dimension` custom ids, `RegionKind`); `core` composes it and re-exports
+  every util type at its root so downstream paths stay stable.
 - NBT parsing and normalized views are private to `anvil`. `core`/`app`
   call `Chunk::normalized_hash()` and never see raw NBT types, so the
   parser cannot drift into a second public path. Compression framing and
@@ -78,10 +78,13 @@ any exception in the PR body.
   in the same directory as the target and swaps via atomic `rename`.
 - **Captured-payload checkout**: store raw chunk payloads verbatim in CAS.
   A chunk's CAS key is its `Chunk::normalized_hash` digest, which is also
-  what `diff` compares; nothing else hashes a chunk. Checkout reproduces
-  the exact bytes captured for the commit, including volatile tags (e.g.
-  `LastUpdate`) as of capture time - it rewinds them to the commit, it does
-  not preserve their live values.
+  what `diff` compares; nothing else hashes a chunk. A payload is stored
+  only when it yields that key: a `region/` payload must decode as a level
+  chunk, and an `entities`/`poi` payload must be well-formed NBT. Undecodable
+  or unsupported payloads fail ingest; there is no raw-byte fallback.
+  Checkout reproduces the exact bytes captured for the commit, including
+  volatile tags (e.g. `LastUpdate`) as of capture time - it rewinds them to
+  the commit, it does not preserve their live values.
 - **No server orchestration in libraries**: `save-off`/`save-all`, process
   control, and scheduling belong to the caller, never to library crates.
 - **No persisted derived state**: commit decisions compare per-chunk
@@ -102,7 +105,8 @@ any exception in the PR body.
   with no `std`-only or async-runtime dependencies.
 - **Pure-crate dependency allowlist** (keep this list minimal and
   `no_std`-gated):
-  - `util`: nothing. New dependencies need explicit justification.
+  - `util`: `blake3` with `default-features = false` for the shared digest
+    primitive. Other new dependencies need explicit justification.
   - `anvil`: `sekai-util` (shared dimension and region-kind codes),
     `miniz_oxide` (zlib/raw-inflate), `crc32fast` (gzip footer),
     `lz4_flex` block API (lz4-java stream bodies), `twox-hash` (lz4-java

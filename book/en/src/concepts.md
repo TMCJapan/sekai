@@ -17,7 +17,9 @@
   commits; checkout restores the captured bytes verbatim, rewinding
   volatile tags to capture time.
 - **No separate diff hash**: `diff` compares the very same digest recorded
-  at commit time, read straight from history. A payload that cannot be
+  at commit time, read straight from history. Only well-formed NBT is a
+  chunk: a `region/` payload must decode as a level chunk, and an
+  `entities`/`poi` payload must be well-formed NBT. A payload that cannot be
   normalized gets no key and fails ingest instead of being stored under a
   byte-level identity.
 - **Tombstone**: an explicit "chunk absent" row. A chunk deleted between

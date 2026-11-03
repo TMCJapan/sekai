@@ -40,7 +40,9 @@ impl<'a> Chunk<'a> {
     /// A `region/` payload hashes its decompressed level-chunk NBT with the
     /// volatile tags excluded. `entities`/`poi` payloads have no level-chunk
     /// schema, so they hash their exact decompressed NBT bytes after
-    /// validating that the payload is well-formed NBT.
+    /// validating that the payload is well-formed NBT. A payload that cannot
+    /// be decompressed or parsed has no key and is rejected; there is no
+    /// raw-byte fallback.
     ///
     /// # Errors
     ///
