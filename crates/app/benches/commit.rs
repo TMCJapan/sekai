@@ -4,7 +4,7 @@
 mod common;
 
 use common::{MEDIUM, SMALL, generate, options, runtime, tempdir};
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::Criterion;
 use sekai_app::{HostWorldTree, Scope};
 
 fn benches(c: &mut Criterion) {
@@ -74,5 +74,6 @@ fn benches(c: &mut Criterion) {
     });
 }
 
-criterion_group!(all_benches, benches);
-criterion_main!(all_benches);
+fn main() {
+    common::run(benches);
+}
