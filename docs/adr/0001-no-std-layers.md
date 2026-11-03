@@ -12,11 +12,13 @@ filesystem and the async runtime.
 
 ## Decision
 
-`util`/`anvil`/`nbt`/`core` are `no_std` + `alloc` with unidirectional
-dependencies (`app` → `core` → `{anvil, nbt}` → `util`); `storage`/
-`world`/`app`/CLI own `std` + tokio. `core` also owns the async port
-traits (`BlobStore`/`MetaStore`); backends implement them. Pluggability
-lives at those two boundaries, not at reader/normalizer-style traits.
+`util`/`anvil`/`core` are `no_std` + `alloc` with unidirectional
+dependencies (`app` → `core` → `anvil` → `util`); `storage`/`world`/`app`/
+CLI own `std` + tokio. NBT parsing and normalized chunk views are private
+to `anvil`; the only public hash path is `Chunk::normalized_hash`.
+`core` also owns the async port traits (`BlobStore`/`MetaStore`); backends
+implement them. Pluggability lives at those two boundaries, not at
+reader/normalizer-style traits.
 
 ## Consequences
 

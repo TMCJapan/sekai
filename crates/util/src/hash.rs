@@ -8,7 +8,7 @@ use super::error::HexError;
 ///
 /// Only for payloads with no chunk schema to normalize (region file
 /// fingerprints, non-level-chunk data); chunks hash through
-/// `Chunk::normalize_hash`.
+/// `Chunk::normalized_hash`.
 pub fn hash_bytes(bytes: &[u8]) -> [u8; 32] {
     *blake3::hash(bytes).as_bytes()
 }

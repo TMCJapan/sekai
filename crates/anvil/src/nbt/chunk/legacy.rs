@@ -144,7 +144,7 @@ impl LegacyChunkPayload<'_> {
     /// (`HeightMap`, the legacy section encoding), so legacy and modern
     /// content can never normalize equal: a format conversion is a real
     /// change, not a silent no-op.
-    pub fn normalize_hash(&self) -> Result<ChunkHash, nanonbt::Error> {
+    pub fn normalized_hash(&self) -> Result<ChunkHash, nanonbt::Error> {
         let normalized = NormalizedLegacyChunkPayload {
             data_version: self.data_version,
             x_pos: self.level.x_pos,
@@ -162,7 +162,7 @@ impl LegacyChunkPayload<'_> {
     }
 }
 
-/// The hash input of [`LegacyChunkPayload::normalize_hash`].
+/// The hash input of [`LegacyChunkPayload::normalized_hash`].
 ///
 /// The same rule as [`super::NormalizedChunkPayload`]: volatile tags stay
 /// out, and a new payload field joins change detection only once it is added

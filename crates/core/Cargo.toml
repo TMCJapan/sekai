@@ -13,7 +13,6 @@ workspace = true
 
 [dependencies]
 sekai-anvil.workspace = true
-sekai-nbt.workspace = true
 sekai-util.workspace = true
 
 [[bench]]

@@ -46,9 +46,9 @@ pub enum AppError {
     /// Commit pruning failed.
     #[error("{0}")]
     Prune(sekai_core::PruneError<sekai_storage::StorageError>),
-    /// NBT parsing or diff operation failed.
+    /// Chunk hashing failed.
     #[error(transparent)]
-    Nbt(#[from] sekai_nbt::NbtError),
+    ChunkHash(#[from] sekai_anvil::ChunkHashError),
     /// Chunk NBT ended before its root compound closed, with its
     /// coordinates attached for diagnosis.
     #[error(
@@ -63,7 +63,7 @@ pub enum AppError {
         rz: i32,
         /// Underlying parse failure that reported the short input.
         #[source]
-        source: sekai_nbt::NbtError,
+        source: sekai_anvil::ChunkNbtError,
     },
     /// A payload that could not be reduced to a chunk hash, with its
     /// coordinates attached for diagnosis.
@@ -79,7 +79,7 @@ pub enum AppError {
         rz: i32,
         /// Why no key could be derived.
         #[source]
-        source: sekai_core::ChunkHashError,
+        source: sekai_anvil::ChunkHashError,
     },
     /// Commit-graph operation failed.
     #[error("{0}")]

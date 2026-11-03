@@ -6,7 +6,7 @@
 
 <!-- e.g. `core`, `storage`, `anvil`. -->
 
-- [ ] `util`, `core`, `anvil`, and `nbt` remain `no_std`
+- [ ] `util`, `core`, and `anvil` remain `no_std`
 - [ ] No storage schema change (or: `user_version` bumped, see below)
 - [ ] JSON output unchanged (or: golden tests + `docs/json.md` updated together)
 
@@ -18,7 +18,7 @@
 
 ## Verification
 
-<!-- Paste or link: fmt, clippy (incl. thumbv7m/wasm when util/core/nbt touched), tests.
+<!-- Paste or link: fmt, clippy (incl. thumbv7m/wasm when util/core/anvil touched), tests.
       For perf-labeled or hot-path changes, paste the affected command's
       `--timing` before/after (release build). -->
 
@@ -26,8 +26,8 @@
 typos
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo clippy -p sekai-util -p sekai-anvil -p sekai-nbt -p sekai-core --target thumbv7m-none-eabi -- -D warnings
-cargo clippy -p sekai-util -p sekai-anvil -p sekai-nbt -p sekai-core -p sekai-storage --target wasm32-unknown-unknown --no-default-features -- -D warnings
+cargo clippy -p sekai-util -p sekai-anvil -p sekai-core --target thumbv7m-none-eabi -- -D warnings
+cargo clippy -p sekai-util -p sekai-anvil -p sekai-core -p sekai-storage --target wasm32-unknown-unknown --no-default-features -- -D warnings
 cargo hack --each-feature clippy --workspace --all-targets -- -D warnings
 cargo hack --each-feature nextest run --workspace --all-targets
 cargo deny check

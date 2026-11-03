@@ -3,8 +3,11 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use sekai_core::{BlobStore as _, ChunkCoord, ChunkHash, CommitId, MetaStore, RegionKey};
-use sekai_nbt::ChunkPayloadDiff;
+use sekai_anvil::{Chunk, ChunkHashError};
+use sekai_core::{
+    BlobStore as _, ChunkCoord, ChunkHash, ChunkPayloadDiff, CommitId, MetaStore, RegionKey,
+    RegionKind,
+};
 use sekai_storage::SekaiStore;
 use sekai_world::{Region, RegionFile, WorldLockMode, WorldTree};
 
@@ -48,12 +51,9 @@ impl<S: SekaiStore> SekaiInstance<S> {
             .fetch_into(new_hash, &mut new_compressed)
             .await?;
 
-        let old_nbt = decompress_chunk(&old_compressed)?;
-        let new_nbt = decompress_chunk(&new_compressed)?;
-
-        let old_val = sekai_nbt::parse(&old_nbt)?;
-        let new_val = sekai_nbt::parse(&new_nbt)?;
-        ChunkPayloadDiff::new(&old_val, &new_val).map_err(AppError::Nbt)
+        let old = Chunk::new(RegionKind::Region, 0, 0, &old_compressed).normalized_hash()?;
+        let new = Chunk::new(RegionKind::Region, 0, 0, &new_compressed).normalized_hash()?;
+        Ok(ChunkPayloadDiff::from_sides(Some(old), Some(new)))
     }
 }
 
@@ -83,47 +83,43 @@ where
     };
 
     let started = Instant::now();
-    let digest = decompress_chunk(payload).and_then(|nbt| chunk_digest(*coord, &nbt));
+    let digest = chunk_digest(*coord, payload);
     Side {
         digest: digest.map(Some),
         prepare: started.elapsed(),
     }
 }
 
-/// The [`sekai_nbt::chunk_key`] digest - the same key ingest records - with a
-/// decode failure attributed to `coord`.
+/// The normalized digest - the same key ingest records - with a decode
+/// failure attributed to `coord`.
 ///
 /// Knowing which chunk (and so which region file) is malformed is what makes
 /// the report actionable. There is no byte-level fallback for a `region/`
 /// payload that does not decode: it has no normalized view, so it is
 /// reported rather than silently compared by its exact bytes.
-fn chunk_digest(coord: ChunkCoord, nbt: &[u8]) -> Result<ChunkHash, AppError> {
-    sekai_nbt::chunk_key(coord.kind, nbt).map_err(|source| {
-        let (rx, rz) = (coord.region_x(), coord.region_z());
-        match source {
-            sekai_nbt::ChunkHashError::Invalid(source @ sekai_nbt::NbtError::UnexpectedEof) => {
-                AppError::TruncatedChunk {
+fn chunk_digest(coord: ChunkCoord, payload: &[u8]) -> Result<ChunkHash, AppError> {
+    Chunk::new(coord.kind, coord.x, coord.z, payload)
+        .normalized_hash()
+        .map_err(|source| {
+            let (rx, rz) = (coord.region_x(), coord.region_z());
+            match source {
+                ChunkHashError::Decompress(source) => AppError::Anvil(source),
+                ChunkHashError::Invalid(source) if source.is_truncated() => {
+                    AppError::TruncatedChunk {
+                        coord,
+                        rx,
+                        rz,
+                        source,
+                    }
+                }
+                source => AppError::UnhashableChunk {
                     coord,
                     rx,
                     rz,
                     source,
-                }
+                },
             }
-            source => AppError::UnhashableChunk {
-                coord,
-                rx,
-                rz,
-                source,
-            },
-        }
-    })
-}
-
-/// Decompress one raw chunk payload into NBT bytes.
-fn decompress_chunk(compressed: &[u8]) -> Result<Vec<u8>, AppError> {
-    let mut nbt = Vec::new();
-    sekai_anvil::decompress_into(compressed, &mut nbt)?;
-    Ok(nbt)
+        })
 }
 
 /// Per-chunk progress report for the `progress` callback.

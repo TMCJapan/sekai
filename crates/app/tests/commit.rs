@@ -10,7 +10,6 @@ use fixtures::chunk_nbt;
 
 use sekai_app::{CommitId, CommitOptions, RegionKind, Scope};
 use sekai_app::{HostWorldTree, WorldTree};
-use sekai_nbt::nanonbt::Cesu8;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -165,7 +164,7 @@ async fn scoped_commit_records_no_spurious_tombstones() {
     let over = world_path.join("region/r.0.0.mca");
     let nether = world_path.join("DIM-1/region/r.0.0.mca");
     // Minimal valid chunk payload so chunk diffs parse.
-    let payload = build_status_nbt("minecraft:full");
+    let payload = chunk_nbt("minecraft:full");
     write_region(&over, &[(0, 0, payload.clone()), (1, 0, payload.clone())]);
     write_region(&nether, &[(0, 0, payload.clone())]);
 
@@ -238,10 +237,7 @@ async fn partial_scope_then_full_commit_reingests_unread_chunks() {
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world_path.join("region/r.0.0.mca");
-    write_region(
-        &region,
-        &[(0, 0, build_status_nbt("a")), (1, 0, build_status_nbt("b"))],
-    );
+    write_region(&region, &[(0, 0, chunk_nbt("a")), (1, 0, chunk_nbt("b"))]);
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
@@ -251,10 +247,7 @@ async fn partial_scope_then_full_commit_reingests_unread_chunks() {
         .unwrap();
 
     // Both chunks change, but the scoped commit reads only (0,0).
-    write_region(
-        &region,
-        &[(0, 0, build_status_nbt("c")), (1, 0, build_status_nbt("d"))],
-    );
+    write_region(&region, &[(0, 0, chunk_nbt("c")), (1, 0, chunk_nbt("d"))]);
     let partial = Scope::Select {
         kinds: vec![RegionKind::Region],
         areas: vec![(Dimension::OVERWORLD, Area::Rect(Rect::new(0, 0, 0, 0)))],
@@ -777,7 +770,7 @@ async fn commit_records_no_diff_metadata() {
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store_dir = root.join("store");
     let store_url = store_dir.to_string_lossy().into_owned();
-    let payload = build_status_nbt("minecraft:full");
+    let payload = chunk_nbt("minecraft:full");
     write_region(world_path.join("region/r.0.0.mca"), &[(0, 0, payload)]);
 
     let mut instance = sekai_app::SekaiInstance::init(&store_url).await.unwrap();
@@ -907,11 +900,11 @@ async fn progress_events_cover_checkout_diff_and_gc() {
     let store = root.join("store").to_string_lossy().into_owned();
     write_region(
         world_path.join("region/r.0.0.mca"),
-        &[(0, 0, build_status_nbt("minecraft:full"))],
+        &[(0, 0, chunk_nbt("minecraft:full"))],
     );
     write_region(
         world_path.join("region/r.1.0.mca"),
-        &[(32, 0, build_status_nbt("minecraft:full"))],
+        &[(32, 0, chunk_nbt("minecraft:full"))],
     );
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
@@ -1050,7 +1043,7 @@ async fn diff_chunk_between_commits() {
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world_path.join("region/r.0.0.mca");
 
-    write_region(&region, &[(0, 0, build_status_nbt("minecraft:full"))]);
+    write_region(&region, &[(0, 0, chunk_nbt("minecraft:full"))]);
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
@@ -1061,7 +1054,7 @@ async fn diff_chunk_between_commits() {
     // Same millisecond-tick hazard as below: separate ticks so the
     // same-size rewrite is observed instead of carried.
     std::thread::sleep(std::time::Duration::from_millis(5));
-    write_region(&region, &[(0, 0, build_status_nbt("minecraft:empty"))]);
+    write_region(&region, &[(0, 0, chunk_nbt("minecraft:empty"))]);
     instance
         .world_mut(&mut world)
         .commit(options(), sekai_app::Scope::World, |_| {})
@@ -1100,7 +1093,7 @@ async fn a_region_payload_outside_the_chunk_schema_fails_ingest() {
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world_path.join("region/r.0.0.mca");
 
-    write_region(&region, &[(0, 0, build_status_nbt("minecraft:full"))]);
+    write_region(&region, &[(0, 0, chunk_nbt("minecraft:full"))]);
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
@@ -1135,7 +1128,7 @@ async fn diff_world_chunk_with_commit() {
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world_path.join("region/r.0.0.mca");
 
-    write_region(&region, &[(0, 0, build_status_nbt("minecraft:full"))]);
+    write_region(&region, &[(0, 0, chunk_nbt("minecraft:full"))]);
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
@@ -1143,7 +1136,7 @@ async fn diff_world_chunk_with_commit() {
         .await
         .unwrap();
 
-    write_region(&region, &[(0, 0, build_status_nbt("minecraft:empty"))]);
+    write_region(&region, &[(0, 0, chunk_nbt("minecraft:empty"))]);
 
     let coord = sekai_core::ChunkCoord::new(
         sekai_core::Dimension::OVERWORLD,
@@ -1174,7 +1167,7 @@ async fn diffs_a_non_canonical_region_name() {
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world_path.join("region/r.00.00.mca");
 
-    write_region(&region, &[(0, 0, build_status_nbt("minecraft:full"))]);
+    write_region(&region, &[(0, 0, chunk_nbt("minecraft:full"))]);
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
@@ -1185,7 +1178,7 @@ async fn diffs_a_non_canonical_region_name() {
     // Only the non-canonical file changes. A diff that looked up the
     // canonical path instead would find no chunk at all there, and report
     // the edit as a removal rather than a change.
-    write_region(&region, &[(0, 0, build_status_nbt("minecraft:empty"))]);
+    write_region(&region, &[(0, 0, chunk_nbt("minecraft:empty"))]);
 
     let coord = sekai_app::ChunkCoord::new(
         sekai_app::Dimension::OVERWORLD,
@@ -1260,27 +1253,6 @@ async fn corrupt_region_names_its_file() {
     );
 }
 
-fn build_status_nbt(status: &str) -> Vec<u8> {
-    let chunk = sekai_nbt::nanonbt::to_bytes(&sekai_nbt::ChunkPayload {
-        data_version: 1,
-        x_pos: 0,
-        y_pos: 0,
-        z_pos: 0,
-        inhabited_time: 0,
-        last_update: 0,
-        sections: vec![],
-        heightmaps: sekai_nbt::Heightmaps::default(),
-        status: &Cesu8::from_str(status),
-        block_entities: vec![],
-        block_ticks: vec![],
-        fluid_ticks: vec![],
-    })
-    .unwrap();
-    let mut payload = vec![3]; // Uncompressed header byte
-    payload.extend(chunk);
-    payload
-}
-
 const fn kind_dir(kind: sekai_app::RegionKind) -> &'static str {
     match kind {
         sekai_app::RegionKind::Region => "region",
@@ -1299,7 +1271,7 @@ async fn sparse_entities_chunk_diffs_empty_without_error() {
     // Dense terrain only; no entities/poi files at all.
     write_region(
         world_path.join("region/r.0.0.mca"),
-        &[(0, 0, build_status_nbt("minecraft:full"))],
+        &[(0, 0, chunk_nbt("minecraft:full"))],
     );
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
@@ -1520,7 +1492,7 @@ async fn created_and_deleted_chunks_diff_as_added_removed() {
     // S1: no entities chunk.
     write_region(
         world_path.join("region/r.0.0.mca"),
-        &[(0, 0, build_status_nbt("minecraft:full"))],
+        &[(0, 0, chunk_nbt("minecraft:full"))],
     );
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
@@ -1530,7 +1502,7 @@ async fn created_and_deleted_chunks_diff_as_added_removed() {
         .unwrap();
 
     // S2: entities chunk appears.
-    write_region(&entities, &[(0, 0, build_status_nbt("minecraft:full"))]);
+    write_region(&entities, &[(0, 0, chunk_nbt("minecraft:full"))]);
     instance
         .world_mut(&mut world)
         .commit(options(), sekai_app::Scope::World, |_| {})
@@ -1570,7 +1542,7 @@ async fn all_kinds_round_trip() {
         let file = world_path.join(format!("{}/r.0.0.mca", kind_dir(kind)));
         let coord = ChunkCoord::new(Dimension::OVERWORLD, kind, 0, 0);
 
-        write_region(&file, &[(0, 0, build_status_nbt("minecraft:full"))]);
+        write_region(&file, &[(0, 0, chunk_nbt("minecraft:full"))]);
         let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
         instance
             .world_mut(&mut world)
@@ -1582,7 +1554,7 @@ async fn all_kinds_round_trip() {
         // back up within one tick, and same-size/same-header files would
         // wrongly carry. Separate the ticks so the rewrite is observed.
         std::thread::sleep(std::time::Duration::from_millis(5));
-        write_region(&file, &[(0, 0, build_status_nbt("minecraft:empty"))]);
+        write_region(&file, &[(0, 0, chunk_nbt("minecraft:empty"))]);
         instance
             .world_mut(&mut world)
             .commit(options(), sekai_app::Scope::World, |_| {})
@@ -1619,15 +1591,15 @@ async fn rect_and_kind_scopes_limit_ingest() {
     let store = root.join("store").to_string_lossy().into_owned();
     write_region(
         world_path.join("region/r.0.0.mca"),
-        &[(0, 0, build_status_nbt("a")), (1, 0, build_status_nbt("b"))],
+        &[(0, 0, chunk_nbt("a")), (1, 0, chunk_nbt("b"))],
     );
     write_region(
         world_path.join("region/r.1.0.mca"),
-        &[(32, 0, build_status_nbt("c"))],
+        &[(32, 0, chunk_nbt("c"))],
     );
     write_region(
         world_path.join("entities/r.0.0.mca"),
-        &[(0, 0, build_status_nbt("d"))],
+        &[(0, 0, chunk_nbt("d"))],
     );
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();

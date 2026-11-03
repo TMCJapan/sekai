@@ -1164,6 +1164,7 @@ dependencies = [
  "criterion",
  "lz4_flex",
  "miniz_oxide",
+ "nanonbt",
  "sekai-util",
  "twox-hash",
 ]
@@ -1176,7 +1177,6 @@ dependencies = [
  "miniz_oxide",
  "sekai-anvil",
  "sekai-core",
- "sekai-nbt",
  "sekai-storage",
  "sekai-storage-sqlite",
  "sekai-world",
@@ -1206,15 +1206,6 @@ version = "0.1.0"
 dependencies = [
  "criterion",
  "sekai-anvil",
- "sekai-nbt",
- "sekai-util",
-]
-
-[[package]]
-name = "sekai-nbt"
-version = "0.1.0"
-dependencies = [
- "nanonbt",
  "sekai-util",
 ]
 

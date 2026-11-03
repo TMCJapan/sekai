@@ -751,15 +751,14 @@ fn stage_chunk(
         return Ok(true);
     }
     let hash_started = Instant::now();
-    let mut raw_nbt = Vec::new();
-    sekai_anvil::decompress_into(chunk.payload, &mut raw_nbt)?;
-    let hash = sekai_core::chunk_key(coord.kind, &raw_nbt).map_err(|source| {
-        AppError::UnhashableChunk {
+    let hash = chunk.normalized_hash().map_err(|source| match source {
+        sekai_anvil::ChunkHashError::Decompress(source) => AppError::Anvil(source),
+        source => AppError::UnhashableChunk {
             coord,
             rx: key.rx,
             rz: key.rz,
             source,
-        }
+        },
     })?;
     staged.hash += hash_started.elapsed();
     staged.entries.push(CommitEntry::new(coord, Some(hash)));

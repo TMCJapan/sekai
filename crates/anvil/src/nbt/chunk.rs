@@ -7,7 +7,7 @@ mod tick;
 
 pub use block_entity::BlockEntity;
 pub use heightmap::Heightmaps;
-pub use legacy::{LegacyChunkPayload, LegacySection, RawCompound};
+pub use legacy::LegacyChunkPayload;
 pub use section::Section;
 use sekai_util::ChunkHash;
 pub use tick::{BlockTick, FluidTick};
@@ -31,10 +31,10 @@ pub enum Chunk<'de> {
 
 impl Chunk<'_> {
     /// Hashes the chunk through the normalized view of its format.
-    pub fn normalize_hash(&self) -> Result<sekai_util::ChunkHash, nanonbt::Error> {
+    pub fn normalized_hash(&self) -> Result<sekai_util::ChunkHash, nanonbt::Error> {
         match self {
-            Self::Modern(payload) => payload.normalize_hash(),
-            Self::Legacy(payload) => payload.normalize_hash(),
+            Self::Modern(payload) => payload.normalized_hash(),
+            Self::Legacy(payload) => payload.normalized_hash(),
         }
     }
 }
@@ -75,7 +75,7 @@ impl ChunkPayload<'_> {
     ///
     /// Everything except the volatile `InhabitedTime`/`LastUpdate` tags is
     /// encoded; the view is defined next to this impl.
-    pub fn normalize_hash(&self) -> Result<sekai_util::ChunkHash, nanonbt::Error> {
+    pub fn normalized_hash(&self) -> Result<sekai_util::ChunkHash, nanonbt::Error> {
         let normalized = NormalizedChunkPayload {
             data_version: self.data_version,
             x_pos: self.x_pos,
@@ -93,7 +93,7 @@ impl ChunkPayload<'_> {
     }
 }
 
-/// The hash input of [`ChunkPayload::normalize_hash`].
+/// The hash input of [`ChunkPayload::normalized_hash`].
 ///
 /// `InhabitedTime` and `LastUpdate` are deliberately absent: the server
 /// rewrites them on its own, so they must not register as changes. New

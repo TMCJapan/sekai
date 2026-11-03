@@ -131,3 +131,80 @@ impl fmt::Display for AnvilError {
 }
 
 impl core::error::Error for AnvilError {}
+
+/// NBT-level failure while deriving a chunk's normalized view.
+///
+/// Wraps the parser error so NBT decoding stays an implementation detail of
+/// this crate rather than a type callers have to name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChunkNbtError(nanonbt::Error);
+
+impl ChunkNbtError {
+    /// Whether the payload ended before its NBT value did.
+    pub const fn is_truncated(&self) -> bool {
+        matches!(self.0, nanonbt::Error::UnexpectedEof)
+    }
+}
+
+impl From<nanonbt::Error> for ChunkNbtError {
+    fn from(source: nanonbt::Error) -> Self {
+        Self(source)
+    }
+}
+
+impl fmt::Display for ChunkNbtError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl core::error::Error for ChunkNbtError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+/// Why a chunk payload could not be reduced to a [`sekai_util::ChunkHash`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChunkHashError {
+    /// The stored payload could not be decompressed.
+    Decompress(AnvilError),
+    /// The payload is not valid NBT, or not the NBT a chunk of this kind can
+    /// be read from.
+    Invalid(ChunkNbtError),
+    /// The payload decoded as a level chunk but could not be re-encoded for
+    /// its normalized view.
+    Normalize(ChunkNbtError),
+}
+
+impl ChunkHashError {
+    /// Whether the payload ended before its NBT value did.
+    pub const fn is_truncated(&self) -> bool {
+        matches!(self, Self::Invalid(source) if source.is_truncated())
+    }
+}
+
+impl From<AnvilError> for ChunkHashError {
+    fn from(source: AnvilError) -> Self {
+        Self::Decompress(source)
+    }
+}
+
+impl fmt::Display for ChunkHashError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Decompress(source) => write!(f, "chunk decompression failed: {source}"),
+            Self::Invalid(source) => write!(f, "no chunk hash for this payload: {source}"),
+            Self::Normalize(source) => write!(f, "cannot encode the normalized view: {source}"),
+        }
+    }
+}
+
+impl core::error::Error for ChunkHashError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Decompress(source) => Some(source),
+            Self::Invalid(source) | Self::Normalize(source) => Some(source),
+        }
+    }
+}

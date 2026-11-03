@@ -18,7 +18,7 @@ invocation prints exactly one JSON envelope
 result is the bare report, with it the timing block merges in (arrays
 promote to `{"diffs"|"entries",...}` objects). Removed flags fail
 loudly as unknown arguments. Serialization lives in CLI-local DTOs;
-domain structs never derive output shapes, and `nbt::Value` has no
+domain structs never derive output shapes, and the internal NBT model has no
 `Serialize` impl by design (derived form would compete with SNBT).
 
 ## Consequences

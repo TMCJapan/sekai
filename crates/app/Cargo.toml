@@ -18,7 +18,6 @@ backend-sqlite = ["dep:sekai-storage-sqlite"]
 [dependencies]
 sekai-anvil.workspace = true
 sekai-core.workspace = true
-sekai-nbt.workspace = true
 sekai-storage.workspace = true
 sekai-storage-sqlite = { workspace = true, optional = true }
 sekai-world.workspace = true

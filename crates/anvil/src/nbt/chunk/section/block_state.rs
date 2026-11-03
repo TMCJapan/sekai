@@ -5,7 +5,7 @@ use nanonbt::{
     skip_nbt,
 };
 
-use crate::chunk::decode::read_long_array;
+use crate::nbt::chunk::decode::read_long_array;
 
 #[derive(SerializeNbt, Debug, Clone, Eq, PartialEq, Default)]
 pub struct BlockStates<'de> {

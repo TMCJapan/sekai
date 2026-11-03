@@ -1,20 +1,10 @@
-#![no_std]
-extern crate alloc;
-
-mod chunk;
-mod diff;
+pub(crate) mod chunk;
 
 use nanonbt::{Read, SliceReader, Tag, read_string_into, skip_nbt};
 use sekai_util::{ChunkHash, RegionKind};
 
-pub use chunk::legacy;
-pub use chunk::{
-    BlockEntity, BlockTick, Chunk, ChunkPayload, FluidTick, Heightmaps, LegacyChunkPayload,
-    LegacySection, RawCompound, Section,
-};
-pub use diff::ChunkPayloadDiff;
-pub use nanonbt;
-pub use nanonbt::Error as NbtError;
+use crate::error::{ChunkHashError, ChunkNbtError};
+use chunk::{Chunk, ChunkPayload, LegacyChunkPayload};
 
 /// Deserializes a level-chunk NBT root, either format.
 ///
@@ -25,58 +15,25 @@ pub use nanonbt::Error as NbtError;
 /// When both fail, the error names the field the payload was actually
 /// missing: a root with no `Level` member is a modern chunk that failed for
 /// its own reason, so only that case reports the legacy read's failure.
-pub fn parse(bytes: &[u8]) -> Result<Chunk<'_>, NbtError> {
+pub(crate) fn parse(bytes: &[u8]) -> Result<Chunk<'_>, ChunkNbtError> {
     let modern = match nanonbt::from_slice::<ChunkPayload>(bytes) {
         Ok(modern) => return Ok(Chunk::Modern(modern)),
         Err(modern) => modern,
     };
     match nanonbt::from_slice::<LegacyChunkPayload>(bytes) {
         Ok(legacy) => Ok(Chunk::Legacy(legacy)),
-        Err(legacy) if matches!(modern, NbtError::MissingField("Level")) => Err(legacy),
-        Err(_) => Err(modern),
-    }
-}
-
-/// Why a payload could not be reduced to a [`ChunkHash`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ChunkHashError {
-    /// The payload is not valid NBT, or not the NBT a chunk of this kind can
-    /// be read from. Nothing is keyed, so ingest fails instead of storing a
-    /// chunk under an identity that cannot be normalized.
-    Invalid(NbtError),
-    /// The payload decoded as a level chunk but could not be re-encoded for
-    /// its normalized view.
-    Normalize(NbtError),
-}
-
-impl From<NbtError> for ChunkHashError {
-    fn from(source: NbtError) -> Self {
-        Self::Invalid(source)
-    }
-}
-
-impl core::fmt::Display for ChunkHashError {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Invalid(source) => write!(f, "no chunk hash for this payload: {source}"),
-            Self::Normalize(source) => write!(f, "cannot encode the normalized view: {source}"),
+        Err(legacy) if matches!(modern, nanonbt::Error::MissingField("Level")) => {
+            Err(legacy.into())
         }
-    }
-}
-
-impl core::error::Error for ChunkHashError {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        match self {
-            Self::Invalid(source) | Self::Normalize(source) => Some(source),
-        }
+        Err(_) => Err(modern.into()),
     }
 }
 
 /// The CAS key of an already-decompressed chunk payload.
 ///
-/// A `region/` payload keys on the [`Chunk::normalize_hash`] digest: volatile
-/// tags (`InhabitedTime`, `LastUpdate`) never reach it, so a server rewrite of
-/// those tags does not store the chunk again.
+/// A `region/` payload keys on the [`Chunk::normalized_hash`] digest:
+/// volatile tags (`InhabitedTime`, `LastUpdate`) never reach it, so a server
+/// rewrite of those tags does not store the chunk again.
 ///
 /// `entities`/`poi` payloads have no level-chunk schema to normalize, so they
 /// key on their exact bytes. That identity is a property of the region kind,
@@ -93,11 +50,13 @@ impl core::error::Error for ChunkHashError {
 /// when a `region/` payload decodes as neither the 1.13+ nor the legacy
 /// level-chunk shape, and [`ChunkHashError::Normalize`] when the decoded
 /// chunk cannot be encoded for its normalized view.
-pub fn chunk_key(kind: RegionKind, raw_nbt: &[u8]) -> Result<ChunkHash, ChunkHashError> {
+pub(crate) fn chunk_key(kind: RegionKind, raw_nbt: &[u8]) -> Result<ChunkHash, ChunkHashError> {
     match kind {
         RegionKind::Region => {
             let chunk = parse(raw_nbt).map_err(ChunkHashError::Invalid)?;
-            chunk.normalize_hash().map_err(ChunkHashError::Normalize)
+            chunk
+                .normalized_hash()
+                .map_err(|source| ChunkHashError::Normalize(source.into()))
         }
         // These kinds carry their own schema, so byte identity is their
         // defined key. It still requires valid NBT: a truncated or non-NBT
@@ -113,24 +72,27 @@ pub fn chunk_key(kind: RegionKind, raw_nbt: &[u8]) -> Result<ChunkHash, ChunkHas
 ///
 /// Any root shape is accepted: the point is that the bytes are NBT a reader
 /// can traverse, not which schema they follow.
-fn validate_nbt(raw_nbt: &[u8]) -> Result<(), NbtError> {
+fn validate_nbt(raw_nbt: &[u8]) -> Result<(), ChunkNbtError> {
     let mut reader = SliceReader::new(raw_nbt);
     let tag = reader.read_u8()?;
     let mut root_name = alloc::string::String::new();
     if tag != Tag::Compound.as_u8() {
-        return Err(NbtError::InvalidTag {
+        return Err(nanonbt::Error::InvalidTag {
             expected: Tag::Compound,
             actual: tag,
-        });
+        }
+        .into());
     }
     read_string_into(&mut reader, &mut root_name)?;
-    skip_nbt(&mut reader, Tag::Compound)
+    skip_nbt(&mut reader, Tag::Compound)?;
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use nanonbt::Cesu8;
 
+    use super::chunk::{BlockTick, Heightmaps, Section};
     use super::*;
 
     #[test]
@@ -152,9 +114,9 @@ mod tests {
         };
 
         let base = payload(7, 9);
-        let base_hash = base.normalize_hash().unwrap();
-        assert_eq!(base_hash, payload(7, 9).normalize_hash().unwrap());
-        assert_eq!(base_hash, payload(999, 1_234).normalize_hash().unwrap());
+        let base_hash = base.normalized_hash().unwrap();
+        assert_eq!(base_hash, payload(7, 9).normalized_hash().unwrap());
+        assert_eq!(base_hash, payload(999, 1_234).normalized_hash().unwrap());
     }
 
     #[test]
@@ -177,7 +139,10 @@ mod tests {
 
         let old = Chunk::Modern(payload(7, 9));
         let new = Chunk::Modern(payload(999, 1_234));
-        assert!(ChunkPayloadDiff::new(&old, &new).unwrap().is_empty());
+        assert_eq!(
+            old.normalized_hash().unwrap(),
+            new.normalized_hash().unwrap()
+        );
     }
 
     #[test]
@@ -296,8 +261,8 @@ mod tests {
         let bytes = nanonbt::to_bytes(&MinimalSection { y: 3 }).unwrap();
         let section: Section = nanonbt::from_slice(&bytes).unwrap();
         assert_eq!(section.y, 3);
-        assert_eq!(section.block_lights, []);
-        assert_eq!(section.sky_lights, []);
+        assert_eq!(section.block_lights.len(), 0);
+        assert_eq!(section.sky_lights.len(), 0);
 
         let section = Section {
             y: -2,
@@ -346,12 +311,12 @@ mod tests {
         let fluid = payload(alloc::vec![], alloc::vec![tick]);
 
         assert_ne!(
-            empty.normalize_hash().unwrap(),
-            block.normalize_hash().unwrap()
+            empty.normalized_hash().unwrap(),
+            block.normalized_hash().unwrap()
         );
         assert_ne!(
-            empty.normalize_hash().unwrap(),
-            fluid.normalize_hash().unwrap()
+            empty.normalized_hash().unwrap(),
+            fluid.normalized_hash().unwrap()
         );
     }
 }
