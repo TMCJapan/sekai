@@ -136,25 +136,26 @@ fn missing_meta_table(error: &surrealdb::Error) -> bool {
 impl SurrealdbStore<Db> {
     /// Open the existing store rooted at `path` (or named by a store URL).
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
-        open_surrealdb(inherent_path(path.as_ref())?).await
+        open_surrealdb(inherent_path(path)?).await
     }
 
     /// Open the store rooted at `path` (or named by a store URL), creating it
     /// when missing.
     pub async fn init(path: impl AsRef<Path>) -> Result<Self, StorageError> {
-        init_surrealdb(inherent_path(path.as_ref())?).await
+        init_surrealdb(inherent_path(path)?).await
     }
 }
 
 /// Inherent `open`/`init` accept both plain paths and the same URL grammar as
 /// [`SekaiStoreOpener`].
-fn inherent_path(path: &Path) -> Result<&str, StorageError> {
+fn inherent_path(path: impl AsRef<Path>) -> Result<String, StorageError> {
+    let path = path.as_ref();
     let text = path
         .to_str()
         .ok_or_else(|| StorageError::UnsupportedBackend {
             url: path.display().to_string(),
         })?;
-    url_path(text)
+    url_path(text).map(str::to_owned)
 }
 
 impl<C: Connection + 'static> SekaiStore for SurrealdbStore<C> {
@@ -258,14 +259,15 @@ pub async fn init_surrealdb(path: impl AsRef<Path>) -> Result<SurrealdbStore, St
     Ok(store)
 }
 
-async fn connect(path: &Path) -> Result<SurrealdbStore, StorageError> {
+async fn connect(path: impl AsRef<Path>) -> Result<SurrealdbStore, StorageError> {
+    let path = path.as_ref().to_path_buf();
     // The engine shuts its SurrealKV datastore down asynchronously when the
     // last handle drops. A reopen in the same process can race that shutdown
     // and see the old `LOCK`; retry briefly instead of surfacing a transient
     // failure. A lock held by another process still fails after the deadline.
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
     let db = loop {
-        match Surreal::new::<SurrealKv>(path.to_path_buf()).await {
+        match Surreal::new::<SurrealKv>(path.clone()).await {
             Ok(db) => break db,
             Err(error)
                 if error
