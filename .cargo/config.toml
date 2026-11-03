@@ -3,4 +3,3 @@ rustflags = ["-D", "warnings"]
 
 [env]
 RUST_BACKTRACE = "1"
-RUST_MIN_STACK = "8388608"
