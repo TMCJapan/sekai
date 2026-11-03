@@ -43,14 +43,9 @@ pub async fn run(
     let mut world = HostWorldTree::new(&world_path)
         .with_context(|| format!("failed to inspect world {}", world_path.as_ref().display()))?;
     let bar = progress_bar(progress);
-    // A missing store holds no scope, and a failing run must not create
-    // one as a side effect (#80).
-    let mut instance = if selection.scope.is_some() {
-        sekai_app::SekaiInstance::open(store).await
-    } else {
-        sekai_app::SekaiInstance::init(store).await
-    }
-    .with_context(|| format!("commit of {} failed", world_path.as_ref().display()))?;
+    let mut instance = sekai_app::SekaiInstance::init(store)
+        .await
+        .with_context(|| format!("commit of {} failed", world_path.as_ref().display()))?;
     let scope = resolve_selection(&instance, selection).await?;
     let (report, timings) = instance
         .world_mut(&mut world)

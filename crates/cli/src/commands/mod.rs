@@ -34,12 +34,12 @@ async fn resolve_selection<S: SekaiStore>(
     instance: &SekaiInstance<S>,
     selection: &Selection,
 ) -> anyhow::Result<Scope> {
-    match &selection.scope {
-        Some(name) => instance
+    match selection {
+        Selection::Inline(inline) => Ok(inline.owned_scope()),
+        Selection::Scope(name) => instance
             .resolve_scope(name)
             .await
             .with_context(|| format!("scope {name} failed to resolve")),
-        None => Ok(selection.owned_scope()),
     }
 }
 

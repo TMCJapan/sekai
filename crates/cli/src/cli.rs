@@ -506,15 +506,80 @@ pub enum DiffTarget<'a> {
 }
 
 /// World-portion selection shared by commit, status, checkout, diff, and
-/// clone.
+/// clone: spelled inline, or named by a scope saved in the store.
+#[derive(Debug, Clone)]
+pub enum Selection {
+    /// `--in`/`--region`/`--kind` spelled on the command line.
+    Inline(InlineSelection),
+    /// `--scope NAME`, resolved against the store at runtime.
+    Scope(ScopeName),
+}
+
+impl Selection {
+    /// One-line human summary of the selected scope for pre-run echoes.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Inline(inline) => inline.describe(),
+            // The caller labels it `scope:` already.
+            Self::Scope(name) => name.to_string(),
+        }
+    }
+}
+
+/// The selection flags as clap parses them. clap cannot derive `Args` for
+/// an enum (clap-rs/clap#2621), so [`Selection`] delegates to this struct
+/// and converts right after parsing.
+#[derive(Debug, Clone, clap::Args)]
+struct SelectionArgs {
+    #[command(flatten)]
+    inline: InlineSelection,
+    /// Named scope saved with `scope create`. Exclusive with `--in`,
+    /// `--region`, and `--kind`; not repeatable.
+    #[arg(long, value_name = "NAME", conflicts_with_all = ["areas", "region", "kind"])]
+    scope: Option<ScopeName>,
+}
+
+impl SelectionArgs {
+    fn into_selection(self) -> Selection {
+        self.scope
+            .map_or(Selection::Inline(self.inline), Selection::Scope)
+    }
+}
+
+impl clap::FromArgMatches for Selection {
+    fn from_arg_matches(matches: &clap::ArgMatches) -> Result<Self, clap::Error> {
+        SelectionArgs::from_arg_matches(matches).map(SelectionArgs::into_selection)
+    }
+
+    fn update_from_arg_matches(&mut self, matches: &clap::ArgMatches) -> Result<(), clap::Error> {
+        // The variant may change, so a field-wise update does not apply.
+        *self = Self::from_arg_matches(matches)?;
+        Ok(())
+    }
+}
+
+impl clap::Args for Selection {
+    fn group_id() -> Option<clap::Id> {
+        SelectionArgs::group_id()
+    }
+
+    fn augment_args(cmd: clap::Command) -> clap::Command {
+        SelectionArgs::augment_args(cmd)
+    }
+
+    fn augment_args_for_update(cmd: clap::Command) -> clap::Command {
+        SelectionArgs::augment_args_for_update(cmd)
+    }
+}
+
+/// Selection spelled with `--in`, `--region`, and `--kind`.
 ///
 /// Each `--in` picks one dimension whole, one chunk, or one rectangle;
 /// `--region` is shorthand for a region-aligned rectangle. Entries compose
 /// by union; unlisted dimensions are out. No `--in`/`--region` selects the
-/// whole world. `--kind` applies to every selected area. `--scope` names a
-/// selection saved in the store instead of spelling one inline.
+/// whole world. `--kind` applies to every selected area.
 #[derive(Debug, Clone, clap::Args)]
-pub struct Selection {
+pub struct InlineSelection {
     /// Dimension area: `DIM` (whole), `DIM:x,z` (chunk), or
     /// `DIM:x0,z0..x1,z1` (rectangle, inclusive). Repeatable.
     #[arg(
@@ -530,19 +595,11 @@ pub struct Selection {
     /// Region families applied to every selected area. Empty means all.
     #[arg(long)]
     pub kind: Vec<RegionKind>,
-    /// Named scope saved with `scope create`. Exclusive with `--in`,
-    /// `--region`, and `--kind`; not repeatable.
-    #[arg(long, value_name = "NAME", conflicts_with_all = ["areas", "region", "kind"])]
-    pub scope: Option<ScopeName>,
 }
 
-impl Selection {
-    /// One-line human summary of the selected scope for pre-run echoes.
+impl InlineSelection {
+    /// One-line human summary of the selected areas.
     pub fn describe(&self) -> String {
-        if let Some(name) = &self.scope {
-            // The caller labels it `scope:` already.
-            return name.to_string();
-        }
         if self.areas.is_empty() && self.region.is_empty() {
             return if self.kind.is_empty() {
                 "whole world".to_owned()
@@ -611,9 +668,7 @@ impl Selection {
             || !self.region.is_empty()
     }
 
-    /// Owned scope for the inline flags. Empty means the whole world.
-    ///
-    /// Ignores `--scope`: only the store can resolve a scope name.
+    /// Owned scope for these flags. Empty means the whole world.
     pub fn owned_scope(&self) -> Scope {
         if self.areas.is_empty() && self.region.is_empty() {
             // `--kind` alone still narrows: dropping it here would silently

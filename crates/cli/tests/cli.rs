@@ -3,14 +3,22 @@ use clap::Parser as _;
 const H1: &str = "0101010101010101010101010101010101010101010101010101010101010101";
 const H2: &str = "0202020202020202020202020202020202020202020202020202020202020202";
 const H3: &str = "0303030303030303030303030303030303030303030303030303030303030303";
-use sekai_app::{Dimension, Rect, ScopeName};
+use sekai_app::{Dimension, Rect};
 use sekai_cli::{
     cli::{
-        Cli, CloneFlavor, Command, CommitRef, DiffArgs, OnMissingBlob, OnMissingFile, RefCommand,
-        RegionSpec, ScopeCommand, Selection, TimingArgs,
+        Cli, CloneFlavor, Command, CommitRef, DiffArgs, InlineSelection, OnMissingBlob,
+        OnMissingFile, RefCommand, RegionSpec, ScopeCommand, Selection, TimingArgs,
     },
     style::ColorChoice,
 };
+
+/// The inline flags of a selection, or a panic for a named scope.
+fn inline(selection: &Selection) -> &InlineSelection {
+    match selection {
+        Selection::Inline(inline) => inline,
+        Selection::Scope(name) => panic!("expected an inline selection, got scope {name}"),
+    }
+}
 
 /// `Option<CommitRef>` as `Option<&str>` for assertions.
 fn ref_str(value: Option<&CommitRef>) -> Option<&str> {
@@ -172,7 +180,7 @@ fn parses_diff_command() {
     ));
     if let Command::Diff(args) = &cli.command {
         // Default kinds cover all three families.
-        assert_eq!(args.selection.explicit_chunks().len(), 3);
+        assert_eq!(inline(&args.selection).explicit_chunks().len(), 3);
         assert_eq!(ref_str(args.old_commit.as_ref()), Some(H1));
         assert_eq!(ref_str(args.new_commit.as_ref()), Some(H2));
     } else {
@@ -212,7 +220,7 @@ fn parses_diff_command() {
         })
     ));
     if let Command::Diff(args) = &cli.command {
-        let chunks = args.selection.explicit_chunks();
+        let chunks = inline(&args.selection).explicit_chunks();
         assert_eq!(chunks.len(), 1);
         assert_eq!((chunks[0].x, chunks[0].z), (10, -5));
     } else {
@@ -252,9 +260,10 @@ fn parses_diff_command() {
     ])
     .expect("repeated areas parse");
     if let Command::Diff(args) = &cli.command {
-        assert!(args.selection.has_broad_areas());
-        assert_eq!(args.selection.explicit_chunks().len(), 1);
-        let scope = args.selection.owned_scope();
+        let selection = inline(&args.selection);
+        assert!(selection.has_broad_areas());
+        assert_eq!(selection.explicit_chunks().len(), 1);
+        let scope = selection.owned_scope();
         assert!(matches!(scope, sekai_app::Scope::Select { .. }));
     } else {
         panic!("expected diff");
@@ -386,6 +395,7 @@ fn parses_selection_for_commit_and_checkout() {
         .expect("commit --in parses");
     assert!(matches!(cli.command, Command::Commit { .. }));
     if let Command::Commit { selection, .. } = &cli.command {
+        let selection = inline(selection);
         assert!(selection.has_broad_areas());
         assert_eq!(
             selection.explicit_chunks(),
@@ -417,7 +427,7 @@ fn parses_selection_for_commit_and_checkout() {
     ])
     .expect("repeatable --kind parses");
     if let Command::Commit { selection, .. } = &cli.command {
-        assert_eq!(selection.kinds().len(), 2);
+        assert_eq!(inline(selection).kinds().len(), 2);
     } else {
         panic!("expected commit");
     }
@@ -432,15 +442,14 @@ fn parses_selection_for_commit_and_checkout() {
 fn selection_owned_scope_round_trips() {
     use sekai_app::Scope;
 
-    let base = Selection {
+    let base = InlineSelection {
         areas: Vec::new(),
         region: Vec::new(),
         kind: Vec::new(),
-        scope: None,
     };
     assert_eq!(base.owned_scope(), Scope::World);
     // `--kind` on its own narrows the whole world instead of being dropped.
-    let kinds = Selection {
+    let kinds = InlineSelection {
         kind: vec![sekai_app::RegionKind::Region],
         ..base.clone()
     };
@@ -458,13 +467,13 @@ fn selection_owned_scope_round_trips() {
         4,
         4
     )));
-    let dim = Selection {
+    let dim = InlineSelection {
         areas: vec!["nether".parse().unwrap()],
         ..base.clone()
     };
     let scope = dim.owned_scope();
     assert!(matches!(scope, Scope::Select { .. }));
-    let chunks = Selection {
+    let chunks = InlineSelection {
         areas: vec!["overworld:1,-2".parse().unwrap()],
         kind: vec![sekai_app::RegionKind::Region],
         ..base
@@ -483,31 +492,24 @@ fn selection_owned_scope_round_trips() {
 
 #[test]
 fn selection_describe_summarizes() {
-    use sekai_cli::cli::Selection;
-
-    let base = Selection {
+    let base = Selection::Inline(InlineSelection {
         areas: Vec::new(),
         region: Vec::new(),
         kind: Vec::new(),
-        scope: None,
-    };
+    });
     assert_eq!(base.describe(), "whole world");
 
-    let scoped = Selection {
+    let scoped = Selection::Inline(InlineSelection {
         areas: vec!["nether".parse().unwrap(), "overworld:1,-2".parse().unwrap()],
         region: vec!["overworld:0,0".parse().unwrap()],
         kind: vec![sekai_app::RegionKind::Region, sekai_app::RegionKind::Poi],
-        scope: None,
-    };
+    });
     assert_eq!(
         scoped.describe(),
         "2 area(s), 1 region(s), kinds region,poi"
     );
 
-    let named = Selection {
-        scope: Some("hub/nether".parse().unwrap()),
-        ..base
-    };
+    let named = Selection::Scope("hub/nether".parse().unwrap());
     assert_eq!(named.describe(), "hub/nether");
 }
 
@@ -1031,9 +1033,8 @@ fn parses_scope_selection_flag() {
             | Command::Diff(DiffArgs { selection, .. }) => selection,
             other => panic!("unexpected command: {other:?}"),
         };
-        assert_eq!(
-            selection.scope.as_ref().map(ScopeName::as_str),
-            Some("spawn"),
+        assert!(
+            matches!(selection, Selection::Scope(name) if name.as_str() == "spawn"),
             "{args:?}"
         );
     }

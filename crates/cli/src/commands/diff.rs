@@ -8,21 +8,27 @@ use super::diff_render::{
 };
 use super::progress::{finish_progress, progress_bar, report_progress};
 use super::resolve_selection;
-use crate::cli::{CommitRef, DiffArgs, DiffTarget};
+use crate::cli::{CommitRef, DiffArgs, DiffTarget, Selection};
 use crate::envelope::envelope_ok;
 use crate::style::Styler;
 
 pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<()> {
-    let selection = &args.selection;
-    let mut coords = selection.explicit_chunks();
+    // Broad areas (whole dimensions, rectangles) and empty selections
+    // resolve through enumeration; explicit chunks join the union.
+    let (mut coords, broad) = match &args.selection {
+        Selection::Inline(inline) => {
+            let coords = inline.explicit_chunks();
+            let broad = inline.has_broad_areas() || coords.is_empty();
+            (coords, broad)
+        }
+        // A named scope spells no chunk inline, so it always enumerates and
+        // filters.
+        Selection::Scope(_) => (Vec::new(), true),
+    };
     let instance = sekai_app::SekaiInstance::open(store).await?;
-    let scope = resolve_selection(&instance, selection).await?;
+    let scope = resolve_selection(&instance, &args.selection).await?;
     let bar = progress_bar(args.progress);
 
-    // Broad areas (whole dimensions, rectangles) and empty selections
-    // resolve through enumeration; explicit chunks join the union. A named
-    // scope spells no inline chunk, so it always enumerates and filters.
-    let broad = selection.has_broad_areas() || coords.is_empty();
     let (diffs, timings) = match args.target() {
         DiffTarget::World { world, commit } => {
             let world = HostWorldTree::new(world)

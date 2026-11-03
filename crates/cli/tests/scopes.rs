@@ -68,10 +68,9 @@ async fn saved_scopes_select_by_name() {
     ])
     .await
     .expect_err("an existing name needs --force");
-    assert!(
-        err.chain()
-            .any(|cause| cause.to_string().contains("scope already exists"))
-    );
+    assert!(err.chain().any(
+        |cause| cause.to_string() == "scope already exists: spawn (use --force to replace it)"
+    ));
     run(&[
         "sekai", "--store", store, "scope", "create", "spawn", "--in", "ow:0,0", "--force",
     ])

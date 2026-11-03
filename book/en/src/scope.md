@@ -45,7 +45,7 @@ sekai scope delete spawn
   with `--in`, `--region`, or `--kind`, and names one scope per run.
 - The name is looked up when the command runs: replacing a scope changes
   what later runs select, never what earlier commits hold. An unknown
-  name fails, and `commit --scope` never creates a missing store.
+  name fails.
 - Scope names follow the ref name rules (ASCII alphanumerics plus `.`,
   `_`, `-`, `/`; 1-64 bytes), but may be all digits.
 
