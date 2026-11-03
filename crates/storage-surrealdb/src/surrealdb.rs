@@ -231,22 +231,33 @@ fn url_path(url: &str) -> Result<&str, StorageError> {
 /// A store carries a `SurrealKV` `manifest/` directory; its absence means the
 /// path was never initialized, so this fails without creating anything.
 pub async fn open_surrealdb(path: impl AsRef<Path>) -> Result<SurrealdbStore, StorageError> {
-    let path = path.as_ref();
+    let path = path.as_ref().to_path_buf();
     if !path.join("manifest").is_dir() {
-        return Err(StorageError::StoreMissing {
-            path: path.to_path_buf(),
-        });
+        return Err(StorageError::StoreMissing { path: path.clone() });
     }
-    let store = connect(path).await?;
-    match store.schema_version().await? {
-        Some(found) if found == SCHEMA_VERSION => Ok(store),
-        Some(found) => Err(StorageError::UnsupportedSchema {
-            found,
-            supported: SCHEMA_VERSION,
-        }),
-        None => Err(StorageError::StoreMissing {
-            path: path.to_path_buf(),
-        }),
+    // A just-dropped store can leave its SurrealKV data not yet visible to a
+    // reopen on slower platforms (notably Windows), so retry until the schema
+    // row appears or the deadline expires. A genuine schema mismatch is never
+    // retried.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let store = connect(&path).await?;
+        match store.schema_version().await? {
+            Some(found) if found == SCHEMA_VERSION => return Ok(store),
+            Some(found) => {
+                return Err(StorageError::UnsupportedSchema {
+                    found,
+                    supported: SCHEMA_VERSION,
+                });
+            }
+            None => {
+                drop(store);
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(StorageError::StoreMissing { path: path.clone() });
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        }
     }
 }
 
