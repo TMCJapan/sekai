@@ -1,8 +1,8 @@
-//! End-to-end commit pruning over real world folders and SQLite stores.
+//! End-to-end commit pruning over real world folders and storage stores.
 //!
-//! Requires the `backend-sqlite` feature.
+//! Requires a storage backend feature (`backend-surrealdb` or `backend-sqlite`).
 
-#![cfg(feature = "backend-sqlite")]
+#![cfg(any(feature = "backend-surrealdb", feature = "backend-sqlite"))]
 
 mod fixtures;
 
@@ -38,11 +38,10 @@ const fn commit_options() -> sekai_app::CommitOptions {
     sekai_app::CommitOptions { concurrency: 2 }
 }
 
-/// Stored blob count, read through a second handle on the same store.
-async fn blob_count(store: impl AsRef<Path>) -> usize {
-    let opened = sekai_storage_sqlite::open_sqlite(store).await.unwrap();
+/// Stored blob count, read through the instance that owns the store.
+async fn blob_count(instance: &sekai_app::SekaiInstance<impl sekai_app::SekaiStore>) -> usize {
     let mut count = 0usize;
-    sekai_core::BlobStore::visit_blobs(opened.blob(), |_| {
+    sekai_core::BlobStore::visit_blobs(instance.store().blob(), |_| {
         count += 1;
         true
     })
@@ -83,7 +82,7 @@ async fn prune_folds_and_gc_reclaims() {
         .unwrap();
     let commits = instance.list_commits().await.unwrap();
     assert_eq!(commits.len(), 3);
-    assert_eq!(blob_count(&store_dir).await, 3);
+    assert_eq!(blob_count(&instance).await, 3);
 
     let doomed_name = sekai_app::RefName::parse("doomed").unwrap();
     instance
@@ -130,10 +129,10 @@ async fn prune_folds_and_gc_reclaims() {
     assert_eq!(checked_out.chunks_restored, 1);
 
     // Pruning dereferences but never unlinks: GC reclaims exactly one blob.
-    assert_eq!(blob_count(&store_dir).await, 3);
+    assert_eq!(blob_count(&instance).await, 3);
     let (gc_report, _) = instance.gc(|_| {}).await.unwrap();
     assert_eq!(gc_report.removed, 1);
-    assert_eq!(blob_count(&store_dir).await, 2);
+    assert_eq!(blob_count(&instance).await, 2);
 }
 
 #[tokio::test]

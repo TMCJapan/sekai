@@ -1,8 +1,8 @@
-//! End-to-end named scope flows over SQLite stores.
+//! End-to-end named scope flows over storage stores.
 //!
-//! Requires the `backend-sqlite` feature.
+//! Requires a storage backend feature (`backend-surrealdb` or `backend-sqlite`).
 
-#![cfg(feature = "backend-sqlite")]
+#![cfg(any(feature = "backend-surrealdb", feature = "backend-sqlite"))]
 
 mod fixtures;
 

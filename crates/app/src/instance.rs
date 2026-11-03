@@ -23,6 +23,16 @@ use sekai_world::{WorldLock, WorldLockMode, WorldLockState, WorldTree};
 
 use crate::error::AppError;
 
+/// Store type selected by the enabled backend feature.
+///
+/// When both backends are compiled in, `SurrealDB` wins.
+#[cfg(feature = "backend-surrealdb")]
+pub type DefaultStore = sekai_storage_surrealdb::SurrealdbStore;
+
+/// Store type selected by the enabled backend feature.
+#[cfg(all(feature = "backend-sqlite", not(feature = "backend-surrealdb")))]
+pub type DefaultStore = sekai_storage_sqlite::SqliteStore;
+
 /// An opened store; all store-scoped operations go through this.
 pub struct SekaiInstance<T: SekaiStore> {
     pub(crate) store: T,
@@ -129,7 +139,35 @@ impl<T: SekaiStore> SekaiInstance<T> {
     }
 }
 
-#[cfg(feature = "backend-sqlite")]
+#[cfg(feature = "backend-surrealdb")]
+impl SekaiInstance<sekai_storage_surrealdb::SurrealdbStore> {
+    /// Open the existing store named by `store_url`.
+    ///
+    /// `surrealkv://<dir>`, `surrealdb://<dir>`, or a bare `<dir>` opens a
+    /// SurrealKV-backed store; anything else fails loudly, including
+    /// backends not compiled in. A store that was never initialized fails
+    /// without creating anything: only [`Self::init`] materializes a store.
+    pub async fn open(store_url: &str) -> Result<Self, AppError> {
+        Ok(Self {
+            store: <sekai_storage_surrealdb::SurrealdbStore as SekaiStoreOpener>::open(store_url)
+                .await?,
+        })
+    }
+
+    /// Open the store named by `store_url`, initializing it when missing.
+    ///
+    /// This is the creation path reserved for `commit`; every other command
+    /// must go through [`Self::open`] so a missing store fails loudly instead
+    /// of leaving an empty store behind.
+    pub async fn init(store_url: &str) -> Result<Self, AppError> {
+        Ok(Self {
+            store: <sekai_storage_surrealdb::SurrealdbStore as SekaiStoreOpener>::init(store_url)
+                .await?,
+        })
+    }
+}
+
+#[cfg(all(feature = "backend-sqlite", not(feature = "backend-surrealdb")))]
 impl SekaiInstance<sekai_storage_sqlite::SqliteStore> {
     /// Open the existing store named by `store_url`.
     ///

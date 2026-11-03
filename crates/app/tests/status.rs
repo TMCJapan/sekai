@@ -1,8 +1,8 @@
-//! Read-only commit previews over real world folders and SQLite stores.
+//! Read-only commit previews over real world folders and storage stores.
 //!
-//! Requires the `backend-sqlite` feature.
+//! Requires a storage backend feature (`backend-surrealdb` or `backend-sqlite`).
 
-#![cfg(feature = "backend-sqlite")]
+#![cfg(any(feature = "backend-surrealdb", feature = "backend-sqlite"))]
 
 mod fixtures;
 
@@ -38,11 +38,10 @@ const fn options() -> sekai_app::StatusOptions {
     sekai_app::StatusOptions { concurrency: 2 }
 }
 
-/// Stored blob count, read through a second handle on the same store.
-async fn blob_count(store: impl AsRef<Path>) -> usize {
-    let opened = sekai_storage_sqlite::open_sqlite(store).await.unwrap();
+/// Stored blob count, read through the instance that owns the store.
+async fn blob_count(instance: &sekai_app::SekaiInstance<impl sekai_app::SekaiStore>) -> usize {
     let mut count = 0usize;
-    sekai_core::BlobStore::visit_blobs(opened.blob(), |_| {
+    sekai_core::BlobStore::visit_blobs(instance.store().blob(), |_| {
         count += 1;
         true
     })
@@ -76,7 +75,7 @@ async fn status_counts_tombstones_without_writing() {
     write_region(&region, &[(0, 0, chunk_nbt("marker-1"))]);
 
     let commits_before = instance.list_commits().await.unwrap().len();
-    let blobs_before = blob_count(&store).await;
+    let blobs_before = blob_count(&instance).await;
     let (report, timings) = instance
         .world(&world)
         .status(options(), sekai_app::Scope::World, |_| {})
@@ -95,7 +94,7 @@ async fn status_counts_tombstones_without_writing() {
     );
     // A preview is pure: no commit rows and no blob files appear.
     assert_eq!(instance.list_commits().await.unwrap().len(), commits_before);
-    assert_eq!(blob_count(&store).await, blobs_before);
+    assert_eq!(blob_count(&instance).await, blobs_before);
 }
 
 #[tokio::test]

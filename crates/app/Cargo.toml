@@ -12,14 +12,16 @@ keywords = ["minecraft", "version-control"]
 workspace = true
 
 [features]
-default = ["backend-sqlite"]
+default = ["backend-surrealdb"]
 backend-sqlite = ["dep:sekai-storage-sqlite"]
+backend-surrealdb = ["dep:sekai-storage-surrealdb"]
 
 [dependencies]
 sekai-anvil.workspace = true
 sekai-core.workspace = true
 sekai-storage.workspace = true
 sekai-storage-sqlite = { workspace = true, optional = true }
+sekai-storage-surrealdb = { workspace = true, optional = true }
 sekai-world.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
@@ -27,22 +29,22 @@ tokio.workspace = true
 [[bench]]
 name = "commit"
 harness = false
-required-features = ["backend-sqlite"]
+required-features = ["backend-surrealdb"]
 
 [[bench]]
 name = "checkout"
 harness = false
-required-features = ["backend-sqlite"]
+required-features = ["backend-surrealdb"]
 
 [[bench]]
 name = "diff"
 harness = false
-required-features = ["backend-sqlite"]
+required-features = ["backend-surrealdb"]
 
 [[bench]]
 name = "gc_scan"
 harness = false
-required-features = ["backend-sqlite"]
+required-features = ["backend-surrealdb"]
 
 [dev-dependencies]
 criterion.workspace = true
