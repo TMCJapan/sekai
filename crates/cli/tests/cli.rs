@@ -3,14 +3,22 @@ use clap::Parser as _;
 const H1: &str = "0101010101010101010101010101010101010101010101010101010101010101";
 const H2: &str = "0202020202020202020202020202020202020202020202020202020202020202";
 const H3: &str = "0303030303030303030303030303030303030303030303030303030303030303";
-use sekai_app::Dimension;
+use sekai_app::{Dimension, Rect};
 use sekai_cli::{
     cli::{
-        Cli, CloneFlavor, Command, CommitRef, DiffArgs, OnMissingBlob, OnMissingFile, RefCommand,
-        Selection, TimingArgs,
+        Cli, CloneFlavor, Command, CommitRef, DiffArgs, InlineSelection, OnMissingBlob,
+        OnMissingFile, RefCommand, RegionSpec, ScopeCommand, Selection, TimingArgs,
     },
     style::ColorChoice,
 };
+
+/// The inline flags of a selection, or a panic for a named scope.
+fn inline(selection: &Selection) -> &InlineSelection {
+    match selection {
+        Selection::Inline(inline) => inline,
+        Selection::Scope(name) => panic!("expected an inline selection, got scope {name}"),
+    }
+}
 
 /// `Option<CommitRef>` as `Option<&str>` for assertions.
 fn ref_str(value: Option<&CommitRef>) -> Option<&str> {
@@ -172,7 +180,7 @@ fn parses_diff_command() {
     ));
     if let Command::Diff(args) = &cli.command {
         // Default kinds cover all three families.
-        assert_eq!(args.selection.explicit_chunks().len(), 3);
+        assert_eq!(inline(&args.selection).explicit_chunks().len(), 3);
         assert_eq!(ref_str(args.old_commit.as_ref()), Some(H1));
         assert_eq!(ref_str(args.new_commit.as_ref()), Some(H2));
     } else {
@@ -212,7 +220,7 @@ fn parses_diff_command() {
         })
     ));
     if let Command::Diff(args) = &cli.command {
-        let chunks = args.selection.explicit_chunks();
+        let chunks = inline(&args.selection).explicit_chunks();
         assert_eq!(chunks.len(), 1);
         assert_eq!((chunks[0].x, chunks[0].z), (10, -5));
     } else {
@@ -252,9 +260,10 @@ fn parses_diff_command() {
     ])
     .expect("repeated areas parse");
     if let Command::Diff(args) = &cli.command {
-        assert!(args.selection.has_broad_areas());
-        assert_eq!(args.selection.explicit_chunks().len(), 1);
-        let scope = args.selection.owned_scope();
+        let selection = inline(&args.selection);
+        assert!(selection.has_broad_areas());
+        assert_eq!(selection.explicit_chunks().len(), 1);
+        let scope = selection.owned_scope();
         assert!(matches!(scope, sekai_app::Scope::Select { .. }));
     } else {
         panic!("expected diff");
@@ -386,6 +395,7 @@ fn parses_selection_for_commit_and_checkout() {
         .expect("commit --in parses");
     assert!(matches!(cli.command, Command::Commit { .. }));
     if let Command::Commit { selection, .. } = &cli.command {
+        let selection = inline(selection);
         assert!(selection.has_broad_areas());
         assert_eq!(
             selection.explicit_chunks(),
@@ -417,7 +427,7 @@ fn parses_selection_for_commit_and_checkout() {
     ])
     .expect("repeatable --kind parses");
     if let Command::Commit { selection, .. } = &cli.command {
-        assert_eq!(selection.kinds().len(), 2);
+        assert_eq!(inline(selection).kinds().len(), 2);
     } else {
         panic!("expected commit");
     }
@@ -432,14 +442,14 @@ fn parses_selection_for_commit_and_checkout() {
 fn selection_owned_scope_round_trips() {
     use sekai_app::Scope;
 
-    let base = Selection {
+    let base = InlineSelection {
         areas: Vec::new(),
         region: Vec::new(),
         kind: Vec::new(),
     };
     assert_eq!(base.owned_scope(), Scope::World);
     // `--kind` on its own narrows the whole world instead of being dropped.
-    let kinds = Selection {
+    let kinds = InlineSelection {
         kind: vec![sekai_app::RegionKind::Region],
         ..base.clone()
     };
@@ -457,13 +467,13 @@ fn selection_owned_scope_round_trips() {
         4,
         4
     )));
-    let dim = Selection {
+    let dim = InlineSelection {
         areas: vec!["nether".parse().unwrap()],
         ..base.clone()
     };
     let scope = dim.owned_scope();
     assert!(matches!(scope, Scope::Select { .. }));
-    let chunks = Selection {
+    let chunks = InlineSelection {
         areas: vec!["overworld:1,-2".parse().unwrap()],
         kind: vec![sekai_app::RegionKind::Region],
         ..base
@@ -482,24 +492,25 @@ fn selection_owned_scope_round_trips() {
 
 #[test]
 fn selection_describe_summarizes() {
-    use sekai_cli::cli::Selection;
-
-    let base = Selection {
+    let base = Selection::Inline(InlineSelection {
         areas: Vec::new(),
         region: Vec::new(),
         kind: Vec::new(),
-    };
+    });
     assert_eq!(base.describe(), "whole world");
 
-    let scoped = Selection {
+    let scoped = Selection::Inline(InlineSelection {
         areas: vec!["nether".parse().unwrap(), "overworld:1,-2".parse().unwrap()],
         region: vec!["overworld:0,0".parse().unwrap()],
         kind: vec![sekai_app::RegionKind::Region, sekai_app::RegionKind::Poi],
-    };
+    });
     assert_eq!(
         scoped.describe(),
         "2 area(s), 1 region(s), kinds region,poi"
     );
+
+    let named = Selection::Scope("hub/nether".parse().unwrap());
+    assert_eq!(named.describe(), "hub/nether");
 }
 
 #[test]
@@ -895,4 +906,155 @@ fn reports_json_mode_per_command() {
     let cli = Cli::try_parse_from(["sekai", "clone", H3, "out", "--json"]).expect("parses");
     assert!(cli.command.output_json());
     assert_eq!(cli.command.name(), "clone");
+}
+
+#[test]
+fn parses_scope_subcommands() {
+    let cli = Cli::try_parse_from([
+        "sekai",
+        "scope",
+        "create",
+        "hub/nether",
+        "--in",
+        "nether:1,-2",
+        "--in",
+        "nether:3,4..-5,6",
+        "--region",
+        "overworld:-1,0",
+        "--force",
+        "--json",
+    ])
+    .expect("scope create parses");
+    let Command::Scope {
+        action:
+            ScopeCommand::Create {
+                name,
+                areas,
+                region,
+                force: true,
+                json: true,
+            },
+    } = &cli.command
+    else {
+        panic!("unexpected command: {:?}", cli.command);
+    };
+    assert_eq!(name.as_str(), "hub/nether");
+    assert_eq!(
+        areas
+            .iter()
+            .map(|spec| (spec.dim, spec.rect))
+            .collect::<Vec<_>>(),
+        [
+            (Dimension::NETHER, Rect::new(1, -2, 1, -2)),
+            (Dimension::NETHER, Rect::new(-5, 4, 3, 6)),
+        ]
+    );
+    assert_eq!(
+        region.iter().map(RegionSpec::area).collect::<Vec<_>>(),
+        [(Dimension::OVERWORLD, Rect::region(-1, 0))]
+    );
+    assert_eq!(cli.command.name(), "scope");
+    assert!(cli.command.output_json());
+
+    let cli = Cli::try_parse_from(["sekai", "scope", "create", "spawn", "--region", "ow:0,0"])
+        .expect("scope create with only --region parses");
+    assert!(matches!(
+        &cli.command,
+        Command::Scope {
+            action: ScopeCommand::Create { areas, force: false, json: false, .. }
+        } if areas.is_empty()
+    ));
+    assert!(!cli.command.output_json());
+
+    let cli = Cli::try_parse_from(["sekai", "scope", "delete", "spawn"]).expect("scope delete");
+    assert!(matches!(
+        &cli.command,
+        Command::Scope {
+            action: ScopeCommand::Delete { name, json: false }
+        } if name.as_str() == "spawn"
+    ));
+
+    let cli = Cli::try_parse_from(["sekai", "scope", "list", "--json"]).expect("scope list");
+    assert!(matches!(
+        cli.command,
+        Command::Scope {
+            action: ScopeCommand::List { json: true }
+        }
+    ));
+    assert!(cli.command.output_json());
+
+    for args in [
+        // A scope selects nothing without an area.
+        vec!["sekai", "scope", "create", "spawn"],
+        // A whole dimension is not a chunk rectangle (ADR-0021).
+        vec!["sekai", "scope", "create", "spawn", "--in", "nether"],
+        // A scope covers every region family.
+        vec![
+            "sekai", "scope", "create", "spawn", "--in", "ow:0,0", "--kind", "region",
+        ],
+        vec!["sekai", "scope", "create", "bad name", "--in", "ow:0,0"],
+        vec!["sekai", "scope", "create", "a/../b", "--in", "ow:0,0"],
+        vec!["sekai", "scope", "delete", "spawn", "--force"],
+        vec!["sekai", "scope", "list", "--force"],
+    ] {
+        assert!(
+            Cli::try_parse_from(&args).is_err(),
+            "{args:?} must be refused"
+        );
+    }
+
+    // Errors advertise only the forms a scope area accepts.
+    for area in ["bogus:0,0", "nether"] {
+        let err = Cli::try_parse_from(["sekai", "scope", "create", "spawn", "--in", area])
+            .expect_err("invalid scope area")
+            .to_string();
+        assert!(
+            err.contains("expected DIM:X,Z or DIM:X0,Z0..X1,Z1"),
+            "{err}"
+        );
+    }
+}
+
+#[test]
+fn parses_scope_selection_flag() {
+    for args in [
+        vec!["sekai", "commit", "w", "--scope", "spawn"],
+        vec!["sekai", "status", "w", "--scope", "spawn"],
+        vec!["sekai", "checkout", "w", H3, "--scope", "spawn"],
+        vec!["sekai", "clone", H3, "out", "--scope", "spawn"],
+        vec!["sekai", "diff", "--scope", "spawn"],
+    ] {
+        let cli = Cli::try_parse_from(&args).expect("--scope parses");
+        let selection = match &cli.command {
+            Command::Commit { selection, .. }
+            | Command::Status { selection, .. }
+            | Command::Checkout { selection, .. }
+            | Command::Clone { selection, .. }
+            | Command::Diff(DiffArgs { selection, .. }) => selection,
+            other => panic!("unexpected command: {other:?}"),
+        };
+        assert!(
+            matches!(selection, Selection::Scope(name) if name.as_str() == "spawn"),
+            "{args:?}"
+        );
+    }
+
+    // A selection is spelled inline or named, never a mix, and names one
+    // scope at most.
+    for args in [
+        vec!["sekai", "commit", "w", "--scope", "spawn", "--in", "ow:0,0"],
+        vec![
+            "sekai", "commit", "w", "--scope", "spawn", "--region", "ow:0,0",
+        ],
+        vec![
+            "sekai", "commit", "w", "--scope", "spawn", "--kind", "region",
+        ],
+        vec!["sekai", "commit", "w", "--scope", "spawn", "--scope", "hub"],
+        vec!["sekai", "commit", "w", "--scope", "bad name"],
+    ] {
+        assert!(
+            Cli::try_parse_from(&args).is_err(),
+            "{args:?} must be refused"
+        );
+    }
 }

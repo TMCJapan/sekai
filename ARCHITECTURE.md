@@ -324,7 +324,10 @@ per-dimension areas — whole dimension (`--in DIM`), chunk rectangle
 files (`--region DIM:RX,RZ`, rectangle sugar). Region kinds (`--kind`,
 repeatable; empty means all) apply uniformly across every area, and on
 their own they narrow the whole world to those families (`Scope::Kinds`).
-The scope is a filter, not a partition:
+A selection can also be saved in the store as a named scope and picked
+with `--scope NAME` (ADR-0021); the CLI resolves the name to the same
+filter when the command runs, so commits never record which scope
+produced them. The scope is a filter, not a partition:
 
 - Scoped commit ingests and tombstones only inside the scope.
   Out-of-scope coordinates record no rows and no tombstones, resolving

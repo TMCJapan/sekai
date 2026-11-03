@@ -10,9 +10,13 @@ mod log;
 mod progress;
 mod prune;
 mod refs;
+mod scopes;
 mod status;
 
-use crate::cli::{Cli, Command, TimingArgs};
+use anyhow::Context as _;
+use sekai_app::{Scope, SekaiInstance, SekaiStore};
+
+use crate::cli::{Cli, Command, Selection, TimingArgs};
 use crate::style::Styler;
 
 /// Render Unix milliseconds as RFC 3339, falling back to raw millis when
@@ -22,6 +26,21 @@ fn format_time(created_at_ms: u64) -> String {
         .ok()
         .and_then(chrono::DateTime::from_timestamp_millis)
         .map_or_else(|| format!("{created_at_ms}ms"), |time| time.to_rfc3339())
+}
+
+/// The scope a selection stands for: `--scope NAME` looked up in the
+/// store, or the inline `--in`/`--region`/`--kind` spelling.
+async fn resolve_selection<S: SekaiStore>(
+    instance: &SekaiInstance<S>,
+    selection: &Selection,
+) -> anyhow::Result<Scope> {
+    match selection {
+        Selection::Inline(inline) => Ok(inline.owned_scope()),
+        Selection::Scope(name) => instance
+            .resolve_scope(name)
+            .await
+            .with_context(|| format!("scope {name} failed to resolve")),
+    }
 }
 
 /// Output controls shared by report commands (commit, status, checkout,
@@ -114,6 +133,7 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
         }
         Command::Log { json, stat } => log::run(&cli.store, *json, *stat, style).await,
         Command::Ref { action } => refs::run(&cli.store, action, style).await,
+        Command::Scope { action } => scopes::run(&cli.store, action, style).await,
         Command::Clone {
             commit,
             out,

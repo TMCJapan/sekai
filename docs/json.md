@@ -20,6 +20,7 @@ carries the bare result only.
 | `log` | commit array (+stats with `--stat`) | n/a | no phases exist |
 | `clone` | report (+timings with `--timing`) | table + JSON block | |
 | `ref` | record, deletion record, or ref array | n/a | no phases exist |
+| `scope` | record, deletion record, or scope array | n/a | no phases exist |
 | `diff` | single array, grouped array (multi), or timed object | table + JSON block | `--in`/`--region` select chunks; one chunk keeps the single shape |
 | `gc` | report or dry-run plan (+timings with `--timing`) | table + JSON block | dry-run timings carry `plan_ms`; `apply_ms` is `0` |
 | `prune` | report or dry-run plan (+timings with `--timing`) | table + JSON block | dry-run lists IDs; blobs are never unlinked, run `gc` after |
@@ -40,7 +41,7 @@ Every invocation prints exactly one JSON object to stdout:
 {"command": "<name>", "status": "error", "error": "<full context chain>"}
 ```
 
-`command` is one of `commit`, `status`, `checkout`, `log`, `clone`, `ref`, `prune`, `diff`, `gc`.
+`command` is one of `commit`, `status`, `checkout`, `log`, `clone`, `ref`, `scope`, `prune`, `diff`, `gc`.
 The canonical name is used even when an alias (`backup`, `rollback`,
 `export`, `list`) invoked the command.
 The error string is the full anyhow context chain (outermost message
@@ -186,6 +187,29 @@ active ref is the one new commits hang from; it is never removed.
 Commit arguments to `checkout`, `clone`, `diff`, `prune --before`, and
 `ref create` accept `<id>` or a bare ref name; payloads always carry the
 resolved numeric ID.
+
+### `scope`
+
+Create (`scope create <name> (--in ... | --region ...)...`) returns the
+record as stored:
+
+```jsonc
+{"name": "spawn", "areas": [{"dim": -817260936, "x0": -8, "z0": -8, "x1": 7, "z1": 7}],
+ "created_at_ms": 1700000000000}
+```
+
+`areas` holds inclusive chunk rectangles with the raw integer `dim`
+code (`-817260936` is the overworld), sorted by `(dim, x0, z0, x1, z1)` with duplicates removed. A
+chunk (`--in DIM:x,z`) is stored as its 1x1 rectangle and a region
+(`--region DIM:RX,RZ`) as its 32x32 one, so the spelling used at
+creation is not kept. A replacement (`--force`) keeps the original
+`created_at_ms`.
+
+Deletion returns `{"name": "spawn"}`. `scope list` lists all scopes in
+name order as an array of records.
+
+`commit`, `status`, `checkout`, `clone`, and `diff` select a saved
+scope with `--scope NAME`; their payloads do not change.
 
 ### `diff`
 

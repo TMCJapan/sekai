@@ -47,6 +47,10 @@ sekai diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a
 sekai ref create feature
 sekai ref activate feature
 
+# Save an area once, then select it by name
+sekai scope create spawn --in overworld:-8,-8..7,7
+sekai commit ./world --scope spawn
+
 # Preview unreferenced blobs, then collect them
 sekai gc --dry-run
 sekai gc
@@ -72,7 +76,8 @@ for a per-phase breakdown (combine both for timed JSON). `commit`,
 Commit, status, checkout, diff,
 and clone accept a scope: repeatable `--in DIM[:x,z|x0,z0..x1,z1]`,
 `--region DIM:RX,RZ`, and repeatable `--kind` (empty means all);
-nothing selected means the whole world. See `docs/json.md` for the
+nothing selected means the whole world. `--scope NAME` selects an area
+saved with `scope create` instead. See `docs/json.md` for the
 output contract.
 
 The git-style names are canonical; the previous ones still work as
