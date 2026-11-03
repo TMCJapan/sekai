@@ -279,9 +279,7 @@ async fn connect(path: impl AsRef<Path>) -> Result<SurrealdbStore, StorageError>
         match Surreal::new::<SurrealKv>(path.clone()).await {
             Ok(db) => break db,
             Err(error)
-                if error
-                    .message()
-                    .contains("already locked by another process")
+                if error.message().to_lowercase().contains("lock")
                     && tokio::time::Instant::now() < deadline =>
             {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
