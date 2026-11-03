@@ -235,30 +235,28 @@ pub async fn open_surrealdb(path: impl AsRef<Path>) -> Result<SurrealdbStore, St
     if !path.join("manifest").is_dir() {
         return Err(StorageError::StoreMissing { path: path.clone() });
     }
-    // A just-dropped store can leave its SurrealKV data not yet visible to a
-    // reopen on slower platforms (notably Windows), so retry until the schema
-    // row appears or the deadline expires. A genuine schema mismatch is never
-    // retried.
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
-        let store = connect(&path).await?;
-        match store.schema_version().await? {
-            Some(found) if found == SCHEMA_VERSION => return Ok(store),
-            Some(found) => {
-                return Err(StorageError::UnsupportedSchema {
-                    found,
-                    supported: SCHEMA_VERSION,
-                });
-            }
-            None => {
-                drop(store);
-                if tokio::time::Instant::now() >= deadline {
-                    return Err(StorageError::StoreMissing { path: path.clone() });
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let mut last_error = None;
+    while tokio::time::Instant::now() < deadline {
+        match connect(&path).await {
+            Ok(store) => match store.schema_version().await {
+                Ok(Some(found)) if found == SCHEMA_VERSION => return Ok(store),
+                Ok(Some(found)) => {
+                    return Err(StorageError::UnsupportedSchema {
+                        found,
+                        supported: SCHEMA_VERSION,
+                    });
                 }
-                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-            }
+                Ok(None) => {
+                    last_error = Some(StorageError::StoreMissing { path: path.clone() });
+                }
+                Err(error) => last_error = Some(error),
+            },
+            Err(error) => last_error = Some(error),
         }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
+    Err(last_error.unwrap_or(StorageError::StoreMissing { path: path.clone() }))
 }
 
 /// Open the store rooted at `path`, creating and initializing it when missing.
@@ -276,7 +274,7 @@ async fn connect(path: impl AsRef<Path>) -> Result<SurrealdbStore, StorageError>
     // last handle drops. A reopen in the same process can race that shutdown
     // and see the old `LOCK`; retry briefly instead of surfacing a transient
     // failure. A lock held by another process still fails after the deadline.
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
     let db = loop {
         match Surreal::new::<SurrealKv>(path.clone()).await {
             Ok(db) => break db,
