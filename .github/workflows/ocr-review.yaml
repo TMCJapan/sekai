@@ -39,7 +39,7 @@ jobs:
 
     steps:
       - name: Run OpenCodeReview
-        uses: alibaba/open-code-review@8eb83340a487b1150af00701b94f01af97e4b4d6 # v1.13.1
+        uses: alibaba/open-code-review@375f64cd6f67a48a135da83cfcf59c52669a09cb # v1.13.3
         env:
           # The npm launcher spawns a detached self-update on every `ocr`
           # invocation; once a newer release exists, its `npm i -g` briefly
@@ -48,7 +48,7 @@ jobs:
           # the installation for this job, so keep self-update off.
           OCR_NO_UPDATE: '1'
         with:
-          ocr_version: '1.13.0'
+          ocr_version: '1.13.3'
           llm_url: ${{ secrets.OCR_LLM_URL }}
           llm_auth_token: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
           llm_model: ${{ vars.OCR_LLM_MODEL }}
