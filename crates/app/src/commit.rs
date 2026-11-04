@@ -206,14 +206,13 @@ where
         } = prepare(store, self.world, &options, &scope, progress, false, &guard).await?;
 
         let created_at_ms = now_ms()?;
-        // Persist batched shard-directory renames before the metadata commit:
-        // file data is already synced per blob, and this single barrier (at
-        // most one fsync per touched shard) is what makes every referenced blob
-        // crash-durable. Timed under `cas`, the durability bucket. Explicit
-        // here even though workers already synced their own handles: the
+        // Persist blob writes before the metadata commit: every row already
+        // committed when its `put` returned, and this single checkpoint folds
+        // the WAL back into `blob.sqlite`. Timed under `cas`, the durability
+        // bucket. Explicit here even though workers already synced: the
         // barrier belongs at the call site, never hidden inside adapters.
         let sync_started = Instant::now();
-        store.cas_mut().sync().await?;
+        store.blob_mut().sync().await?;
         let dir_sync = sync_started.elapsed();
         let db_started = Instant::now();
         let report = sekai_core::usecase::commit::record_commit(
@@ -304,7 +303,7 @@ where
 
     let (ingested, walk) = ingest_changed::<W::Region, S, W::Lock>(
         changed,
-        store.cas().clone(),
+        store.blob().clone(),
         options,
         scope.clone(),
         progress,
@@ -518,8 +517,8 @@ struct IngestTimings {
 /// One file never justifies task overhead, so it stays inline with
 /// identical counts. Larger sets split into size-balanced groups; each
 /// worker cloned the blob adapter over the same store and syncs its own
-/// shards before returning, so joining orders every durability barrier
-/// ahead of the metadata commit. Workers need no lock: the CAS is
+/// writes before returning, so joining orders every durability barrier
+/// ahead of the metadata commit. Workers need no lock: the store is
 /// append-only, so concurrent puts never conflict.
 /// Each worker keeps `guard` alive until it returns, so the world stays put
 /// while blobs are still being read out of it.

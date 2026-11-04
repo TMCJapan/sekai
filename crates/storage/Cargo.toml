@@ -16,7 +16,3 @@ workspace = true
 [dependencies]
 sekai-core.workspace = true
 thiserror.workspace = true
-# `rt` carries `spawn_blocking`, which the file CAS uses for its filesystem
-# pass. Inheriting the workspace tokio would drag in `rt-multi-thread`, which
-# tokio rejects on wasm, and `features` precludes inheritance here anyway.
-tokio = { version = "1", default-features = false, features = ["rt"] }

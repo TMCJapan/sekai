@@ -1215,7 +1215,6 @@ version = "0.1.0"
 dependencies = [
  "sekai-core",
  "thiserror",
- "tokio",
 ]
 
 [[package]]

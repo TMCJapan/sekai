@@ -110,7 +110,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
         let job = CloneJob::<S, W> {
             groups,
             options,
-            cas: store.cas().clone(),
+            cas: store.blob().clone(),
             out: out.clone(),
         };
 
