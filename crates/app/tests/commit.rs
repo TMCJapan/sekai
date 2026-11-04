@@ -1549,6 +1549,8 @@ async fn all_kinds_round_trip() {
             .await
             .unwrap();
 
+        // No pause between the two writes: commits compare chunk blobs, not
+        // file metadata, so a rewrite within one mtime tick is still seen.
         write_region(&file, &[(0, 0, chunk_nbt("minecraft:empty"))]);
         instance
             .world_mut(&mut world)

@@ -28,8 +28,11 @@ today's call site fits that shape.
 
 ## Decision
 
-- Discovery reads metadata only: `RegionFile::size` (a `stat`) feeds the
-  largest-first worker partition. No file content is read before ingest.
+- No file content is read before ingest. After planning, only the files
+  the plan ingests are sized through `RegionFile::size` (a `stat`), which
+  feeds the largest-first worker partition; out-of-scope files are never
+  touched, so one vanishing mid-run cannot fail the pass. A planned file
+  that cannot be sized is an error, as its read would be.
 - `core::plan_commit` takes the discovered `RegionKey`s; the
   `Observation` wrapper is gone.
 - `CommitReport`/`CommitTimings` lose `skipped_regions`,
@@ -46,7 +49,8 @@ today's call site fits that shape.
 ## Consequences
 
 A no-change commit reads each in-scope file once instead of twice, and
-out-of-scope files are never read. JSON consumers that read the removed
+out-of-scope files are neither read nor stat'd. Sizing costs one more
+hop to the blocking pool per run. JSON consumers that read the removed
 fields break; the project is pre-release, and `docs/json.md` records the
 change.
 

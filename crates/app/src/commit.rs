@@ -17,7 +17,7 @@
 //! *before* the single metadata batch commits, so a torn commit leaves at
 //! most orphan blobs (reclaimed by future GC), never dangling references.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashSet};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -78,7 +78,7 @@ pub struct StatusReport {
 pub struct StatusTimings {
     /// Wall-clock total.
     pub total: Duration,
-    /// World discovery.
+    /// World discovery, plus sizing the files to ingest.
     pub discover: Duration,
     /// Previous-state load plus ingest planning.
     pub universe_load: Duration,
@@ -106,7 +106,7 @@ pub struct CommitProgress {
 pub struct CommitTimings {
     /// Wall-clock total.
     pub total: Duration,
-    /// World discovery.
+    /// World discovery, plus sizing the files to ingest.
     pub discover: Duration,
     /// Previous-state load plus ingest planning.
     pub universe_load: Duration,
@@ -143,8 +143,8 @@ pub struct RegionTiming {
     pub cas: Duration,
 }
 
-/// One discovered region file, awaiting ingest.
-struct DiscoveredFile<R> {
+/// One region file the plan ingests.
+struct PlannedFile<R> {
     key: RegionKey,
     region: R,
     /// Size in bytes: ingest balances its workers by it.
@@ -260,34 +260,38 @@ async fn prepare<W: WorldTree, S: SekaiStore>(
 where
     AppError: From<W::Error>,
 {
-    // Discovery walks directories and stats files: clone the handle and
-    // run it on the blocking pool, owning a share of the world lock like
-    // every file pass.
+    // Discovery walks directories and sizing stats files: both run on the
+    // blocking pool, each owning a share of the world lock like every file
+    // pass.
     let discover_started = Instant::now();
     let world_handle = world.clone();
     let discover_guard = Arc::clone(guard);
-    let discovered = tokio::task::spawn_blocking(move || {
+    let mut regions = tokio::task::spawn_blocking(move || {
         let _guard = discover_guard;
-        discover_files(&world_handle)
+        discover_regions(&world_handle)
     })
     .await??;
-    let discover = discover_started.elapsed();
+    let mut discover = discover_started.elapsed();
 
     let universe_started = Instant::now();
-    let keys: Vec<RegionKey> = discovered.iter().map(|file| file.key).collect();
+    let keys: Vec<RegionKey> = regions.keys().copied().collect();
     let (previous, plan) =
         sekai_core::usecase::commit::plan_commit(store.meta(), &keys, scope).await?;
     let universe_load = universe_started.elapsed();
 
-    let mut files: HashMap<RegionKey, DiscoveredFile<W::Region>> = discovered
-        .into_iter()
-        .map(|file| (file.key, file))
-        .collect();
-    let changed: Vec<DiscoveredFile<W::Region>> = plan
+    let sizing_started = Instant::now();
+    let planned: Vec<(RegionKey, W::Region)> = plan
         .ingest
         .iter()
-        .filter_map(|key| files.remove(key))
+        .filter_map(|key| regions.remove_entry(key))
         .collect();
+    let sizing_guard = Arc::clone(guard);
+    let changed = tokio::task::spawn_blocking(move || {
+        let _guard = sizing_guard;
+        size_planned(planned)
+    })
+    .await??;
+    discover += sizing_started.elapsed();
 
     let (ingested, walk) = ingest_changed::<W::Region, S, W::Lock>(
         changed,
@@ -409,18 +413,24 @@ where
     Ok((report, timings))
 }
 
-/// Discover every region file with its size. Only metadata is read, never
-/// file content. Blocking: file walks belong on a blocking pool, never on
-/// an async worker.
-fn discover_files<T: WorldTree>(world: &T) -> Result<Vec<DiscoveredFile<T::Region>>, AppError>
+/// Size the files the plan ingests, from metadata only. Blocking: `stat`
+/// belongs on a blocking pool, never on an async worker.
+///
+/// Only planned files are sized, so an out-of-scope file that vanishes
+/// mid-run cannot fail the pass. A planned file that cannot be sized
+/// fails it: the read that follows would fail on it anyway, and a size
+/// of 0 would hide the I/O error instead of reporting it.
+fn size_planned<R: RegionFile>(
+    planned: Vec<(RegionKey, R)>,
+) -> Result<Vec<PlannedFile<R>>, AppError>
 where
-    AppError: From<T::Error>,
+    AppError: From<R::Error>,
 {
-    discover_regions(world)?
+    planned
         .into_iter()
         .map(|(key, region)| {
             let size = region.size()?;
-            Ok(DiscoveredFile { key, region, size })
+            Ok(PlannedFile { key, region, size })
         })
         .collect()
 }
@@ -490,7 +500,7 @@ struct IngestTimings {
 /// Each worker keeps `guard` alive until it returns, so the world stays put
 /// while blobs are still being read out of it.
 async fn ingest_changed<R: RegionFile, S: SekaiStore, L: WorldLock>(
-    changed: Vec<DiscoveredFile<R>>,
+    changed: Vec<PlannedFile<R>>,
     cas: S::Blobs,
     options: &CommitOptions,
     scope: Scope,
@@ -574,11 +584,11 @@ where
 /// Largest files first onto the currently lightest group, so every group
 /// is non-empty.
 fn partition_groups<R>(
-    mut changed: Vec<DiscoveredFile<R>>,
+    mut changed: Vec<PlannedFile<R>>,
     workers: usize,
-) -> Vec<Vec<DiscoveredFile<R>>> {
+) -> Vec<Vec<PlannedFile<R>>> {
     changed.sort_by_key(|file| std::cmp::Reverse(file.size));
-    let mut groups: Vec<Vec<DiscoveredFile<R>>> = Vec::with_capacity(workers);
+    let mut groups: Vec<Vec<PlannedFile<R>>> = Vec::with_capacity(workers);
     groups.resize_with(workers, Vec::new);
     let mut loads = vec![0u64; workers];
     for file in changed {

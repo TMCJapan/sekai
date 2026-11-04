@@ -27,6 +27,10 @@ pub trait RegionFile: Clone + std::fmt::Debug + std::fmt::Display + Send + Sync 
 
     /// The file's size in bytes, from its metadata alone: the content is
     /// not read.
+    ///
+    /// A missing or uninspectable file is an error, never a size of 0: the
+    /// caller is about to read the file, and a default size would only
+    /// postpone the failure and hide its cause.
     fn size(&self) -> Result<u64, Self::Error>;
 
     /// Observe the file's fingerprint as of now.
