@@ -28,7 +28,7 @@ sekai (bin, thin: clap parse + print + exit code)
   -> sekai-app (std + tokio: orchestration, parallelism, clocks, timing)
     -> sekai-core (no_std + alloc: use-case policy API over shared types)
       -> sekai-anvil (no_std + alloc: pure sector codec, decompress, NBT normalization)
-    -> sekai-world (std: filesystem owner - discover/fingerprint/swap)
+    -> sekai-world (std: filesystem owner - discover/observe/swap)
       -> sekai-anvil + sekai-core (types only)
     -> sekai-storage (std + tokio: store traits and locks)
       -> sekai-core
@@ -59,8 +59,7 @@ sekai-util (no_std, no tokio dependency: coordinates, chunk hashes,
 - `world` already depends on `core` types, so the reverse edge would be a
   package cycle (forbidden by Cargo).
 - Correct direction: `world` observes the filesystem and produces `core`
-  input structs (`Observation`, `RegionFingerprint`); `app` feeds them into
-  `core::plan_*`. This is dependency inversion: `core` owns the shapes,
+  input values (`RegionKey`); `app` feeds them into `core::plan_*`. This is dependency inversion: `core` owns the shapes,
   outer crates produce them.
 
 ### The world access boundary
@@ -68,7 +67,8 @@ sekai-util (no_std, no tokio dependency: coordinates, chunk hashes,
 `world` owns the boundary between the operations and the files they
 touch. A `WorldTree` names the region files it holds, derives the ones
 that are missing, and hands out `RegionFile` handles: a handle reads,
-fingerprints, writes, and removes one region file, and nothing else. The
+sizes, fingerprints, writes, and removes one region file, and nothing
+else. The
 operations never see a path, so the flows do not depend on the tree
 behind them. See
 [ADR-0015](docs/adr/0015-world-region-handles.md).
@@ -368,9 +368,11 @@ produced them. The scope is a filter, not a partition:
 
 - **Source of truth**: metadata history (`commits`, `commit_parents`,
   `chunk_history`) in the selected DB backend + CAS blobs.
-- **No persisted derived state**: region fingerprints are not stored.
-  Commit decisions compare per-chunk history, so there is no cache to
-  wipe and no derived table to keep consistent.
+- **No persisted derived state**: region fingerprints are neither stored
+  nor computed. Commit decisions compare per-chunk history, so there is
+  no cache to wipe and no derived table to keep consistent. The
+  fingerprint primitive stays for a tree-structured history
+  ([ADR-0023](docs/adr/0023-drop-the-fingerprint-pass.md)).
 
 ## Garbage Collection (GC)
 

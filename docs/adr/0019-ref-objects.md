@@ -80,7 +80,9 @@ Two consequences of the graph have to follow:
   active ref's history describes another branch, so it must not be
   carried into this one: the plan reads the fingerprints within the
   base commit's ancestry only. Carrying one across branches would
-  record chunks the branch never had.
+  record chunks the branch never had. (Moot since schema 13 dropped
+  `region_state` in PR #151: no fingerprint is stored or carried; see
+  [ADR-0023](0023-drop-the-fingerprint-pass.md).)
 - **Pruning folds into a descendant.** A retired commit hands its rows
   to a retained commit that continues it, and a ref naming the retired
   commit follows the fold. A commit that several branches continue
@@ -94,7 +96,8 @@ A store holds several histories, and `sekai commit` lands on the
 branch the operator selected. The cost is that switching branches
 re-ingests the files whose fingerprints belong to the other branch
 (they are confirmed outside the new history); the blobs deduplicate, so
-only the read is repeated.
+only the read is repeated. Since PR #151 every commit rereads every
+in-scope file, so a branch switch costs nothing extra.
 
 The `MetaStore` port carries the model: `set_ref`, `lookup_ref`,
 `visit_refs`, `delete_ref`, `active_ref`, and `activate_ref`. The
