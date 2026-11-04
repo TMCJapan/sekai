@@ -48,7 +48,7 @@ jobs:
           # the installation for this job, so keep self-update off.
           OCR_NO_UPDATE: '1'
         with:
-          ocr_version: '1.13.0'
+          ocr_version: '1.13.3'
           llm_url: ${{ secrets.OCR_LLM_URL }}
           llm_auth_token: ${{ secrets.OCR_LLM_AUTH_TOKEN }}
           llm_model: ${{ vars.OCR_LLM_MODEL }}
