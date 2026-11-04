@@ -1,7 +1,8 @@
-//! Fingerprinting region files: the file-level change check of ADR-0012.
+//! Fingerprinting region files: the content hash ADR-0012 defines.
 //!
-//! No commit consults it today; it stays for the region-subtree reuse a
-//! tree-structured history needs (ADR-0023).
+//! No commit consults it today: ADR-0023 removed the call site and keeps
+//! this module for the region-subtree reuse a tree-structured history
+//! needs.
 
 use std::fs::File;
 use std::path::Path;
