@@ -20,9 +20,9 @@ pub use sekai_util::{
 
 pub use usecase::{
     Assembled, CheckoutError, CheckoutPlan, CheckoutReport, ChunkPayloadDiff, CommitError,
-    CommitReport, CommitStats, DiffError, GcError, GcReport, Observation, Plan, Previous,
-    PruneError, PrunePlan, PruneReport, ResolveError, active_ref, commit_ancestors, commit_history,
-    commit_parents, diff_blobs, list_refs, list_scopes,
+    CommitReport, CommitStats, DiffError, GcError, GcReport, Plan, Previous, PruneError, PrunePlan,
+    PruneReport, ResolveError, active_ref, commit_ancestors, commit_history, commit_parents,
+    diff_blobs, list_refs, list_scopes,
 };
 
 pub use commit::commit_hash;

@@ -90,7 +90,7 @@ async fn status_counts_tombstones_without_writing() {
     assert_eq!(report.new_blobs, 0);
     assert_eq!(report.latest, Some(committed.commit));
     assert!(
-        timings.total >= timings.discover + timings.fingerprint,
+        timings.total >= timings.discover + timings.universe_load,
         "total timing must cover its phases"
     );
     // A preview is pure: no commit rows and no blob files appear.
@@ -133,7 +133,7 @@ async fn status_reports_a_clean_world_after_commit() {
     assert_eq!(report.new_chunks, 0);
     assert_eq!(report.tombstones, 0);
     assert!(
-        timings.total >= timings.discover + timings.fingerprint,
+        timings.total >= timings.discover + timings.universe_load,
         "total timing must cover its phases"
     );
 }

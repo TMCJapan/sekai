@@ -24,7 +24,7 @@ use alloc::vec::Vec;
 use crate::port::meta::MetaStore;
 use sekai_util::{
     ApplyOutcome, ChunkCoord, ChunkHash, ChunkHistoryEntry, Commit, CommitEntry, CommitId,
-    RegionFingerprint, RegionKey, Scope,
+    RegionKey, Scope,
 };
 
 /// Outcome of one commit run.
@@ -38,11 +38,6 @@ pub struct CommitReport {
     pub new_blobs: usize,
     /// Tombstone rows recorded for vanished chunks.
     pub tombstones: usize,
-    /// Region files skipped via fingerprint match. Always zero: region
-    /// skipping was removed together with the derived-state table.
-    pub skipped_regions: usize,
-    /// History rows carried over for skipped regions. Always zero.
-    pub carried_chunks: usize,
 }
 
 /// Previous commit plus the state the walk needs.
@@ -55,16 +50,6 @@ pub struct Previous {
     /// (empty on an unborn ref). Keyed by coordinate; the row carries the
     /// blob hash used for chunk-level change detection.
     pub state: BTreeMap<ChunkCoord, ChunkHistoryEntry>,
-}
-
-/// One region file observed on disk by the adapter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Observation {
-    /// Which region file was observed.
-    pub key: RegionKey,
-    /// Fresh fingerprint of the file. Kept for diagnostics and timing;
-    /// commit decisions compare chunk hashes instead of file metadata.
-    pub fingerprint: RegionFingerprint,
 }
 
 /// Staged commit decision: what to ingest or report as gone.
@@ -111,13 +96,13 @@ pub struct Assembled {
 /// a concurrent rewrite after the read is not detected until a later
 /// commit.
 ///
-/// Every in-scope file is ingested: persisted file fingerprints were
-/// removed with the derived-state table, so skipping is impossible without
-/// rereading the file. Chunk-level delta writes are preserved by
-/// [`assemble`], which drops rows whose blob matches the base commit.
+/// `discovered` lists every region file found on disk. Every in-scope
+/// file is ingested - there is no file-level skip - and [`assemble`]
+/// keeps the history a delta by dropping rows whose blob matches the base
+/// commit.
 pub async fn plan_commit<M: MetaStore>(
     meta: &M,
-    observed: &[Observation],
+    discovered: &[RegionKey],
     scope: &Scope,
 ) -> Result<(Previous, Plan), M::Error> {
     let active = meta.active_ref().await?;
@@ -151,10 +136,10 @@ pub async fn plan_commit<M: MetaStore>(
         removed: Vec::new(),
         discovered: BTreeSet::new(),
     };
-    for obs in observed {
-        if scope.matches_region(obs.key) {
-            plan.discovered.insert(obs.key);
-            plan.ingest.push(obs.key);
+    for &key in discovered {
+        if scope.matches_region(key) {
+            plan.discovered.insert(key);
+            plan.ingest.push(key);
         }
     }
     let mut removed: BTreeSet<RegionKey> = BTreeSet::new();
@@ -266,8 +251,6 @@ pub async fn record_commit<M: MetaStore>(
         chunks: staged.chunks,
         new_blobs: staged.new_blobs,
         tombstones: staged.tombstones,
-        skipped_regions: 0,
-        carried_chunks: 0,
     })
 }
 
@@ -309,24 +292,12 @@ mod tests {
         meta
     }
 
-    fn fingerprint(key: RegionKey) -> RegionFingerprint {
-        RegionFingerprint {
-            key,
-            mtime_ms: Some(1_700_000_000_000),
-            size: 8192,
-            content_hash: [7; 32],
-        }
-    }
-
     #[test]
     fn first_commit_ingests_everything() {
         let meta = store_with_ref();
-        let observed = [Observation {
-            key: key(0, 0),
-            fingerprint: fingerprint(key(0, 0)),
-        }];
+        let discovered = [key(0, 0)];
         let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
+            crate::support::block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
         assert!(previous.commit.is_none());
         assert!(previous.state.is_empty());
         assert_eq!(plan.ingest, alloc::vec![key(0, 0)]);
@@ -337,14 +308,11 @@ mod tests {
     fn a_new_commit_continues_the_active_ref() {
         let mut meta = store_with_ref();
         let main = main_ref();
-        let observed = [Observation {
-            key: key(0, 0),
-            fingerprint: fingerprint(key(0, 0)),
-        }];
+        let discovered = [key(0, 0)];
 
         // The active ref is unborn: the commit starts a history.
         let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
+            crate::support::block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
         assert!(previous.commit.is_none());
         let staged = assemble(
             plan,
@@ -371,7 +339,7 @@ mod tests {
         crate::support::block_on(meta.activate_ref(&feature)).unwrap();
 
         let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
+            crate::support::block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
         assert_eq!(previous.commit.as_ref().map(|c| c.id), Some(first.commit));
         let staged = assemble(
             plan,
@@ -399,15 +367,12 @@ mod tests {
     #[test]
     fn the_recorded_commit_continues_the_previous_one() {
         let mut meta = store_with_ref();
-        let observed = [Observation {
-            key: key(0, 0),
-            fingerprint: fingerprint(key(0, 0)),
-        }];
+        let discovered = [key(0, 0)];
 
         // The first commit starts a history: no previous commit, no
         // parent.
         let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
+            crate::support::block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
         let staged = assemble(
             plan,
             &previous,
@@ -428,7 +393,7 @@ mod tests {
         // The second commit continues the history of the commit it was
         // planned against.
         let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
+            crate::support::block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
         assert_eq!(previous.commit.as_ref().map(|c| c.id), Some(first.commit));
         let staged = assemble(
             plan,
@@ -490,12 +455,9 @@ mod tests {
     #[test]
     fn an_empty_region_is_not_a_new_file() {
         let meta = store_with_ref();
-        let observed = [Observation {
-            key: key(0, 0),
-            fingerprint: fingerprint(key(0, 0)),
-        }];
+        let discovered = [key(0, 0)];
         let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
+            crate::support::block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
         let staged = assemble(plan, &previous, Ingested::default(), &Scope::World);
         assert_eq!(staged.entries, [] as [CommitEntry; 0]);
         assert_eq!(staged.new_files, 0);
@@ -505,17 +467,14 @@ mod tests {
     #[test]
     fn unchanged_chunks_write_no_rows() {
         let mut meta = store_with_ref();
-        let observed = [Observation {
-            key: key(0, 0),
-            fingerprint: fingerprint(key(0, 0)),
-        }];
+        let discovered = [key(0, 0)];
         let entries = [
             stage_present(coord(0, 0), ChunkHash::new([1; 32])),
             stage_present(coord(1, 0), ChunkHash::new([2; 32])),
         ];
         let present = BTreeSet::from([coord(0, 0), coord(1, 0)]);
         let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
+            crate::support::block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
         let staged = assemble(
             plan,
             &previous,
@@ -530,7 +489,7 @@ mod tests {
             crate::support::block_on(record_commit(&mut meta, &previous, &staged, 1_000)).unwrap();
 
         let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
+            crate::support::block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
         let staged = assemble(
             plan,
             &previous,
@@ -554,12 +513,9 @@ mod tests {
     #[test]
     fn changed_chunk_writes_only_its_row() {
         let mut meta = store_with_ref();
-        let observed = [Observation {
-            key: key(0, 0),
-            fingerprint: fingerprint(key(0, 0)),
-        }];
+        let discovered = [key(0, 0)];
         let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
+            crate::support::block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
         let staged = assemble(
             plan,
             &previous,
@@ -576,7 +532,7 @@ mod tests {
         crate::support::block_on(record_commit(&mut meta, &previous, &staged, 1_000)).unwrap();
 
         let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
+            crate::support::block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
         let staged = assemble(
             plan,
             &previous,
@@ -654,12 +610,9 @@ mod tests {
 
         // Region (0,0) is gone from disk: its chunk tombstones once while
         // region (1,0) is still present.
-        let observed = [Observation {
-            key: key(1, 0),
-            fingerprint: fingerprint(key(1, 0)),
-        }];
+        let discovered = [key(1, 0)];
         let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
+            crate::support::block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
         let staged = assemble(
             plan,
             &previous,
@@ -681,7 +634,7 @@ mod tests {
         // through fallback, so it records no fresh row and the vanished
         // chunk is not carried back as present.
         let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
+            crate::support::block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
         assert_eq!(
             previous.state.keys().copied().collect::<Vec<_>>(),
             [coord(32, 0)]
@@ -720,30 +673,18 @@ mod tests {
         ))
         .unwrap();
 
-        // Only the nether region is observed (overworld file deleted from
+        // Only the nether region is discovered (overworld file deleted from
         // disk), but the overworld scope sees neither ingest nor removal.
-        let observed = [Observation {
-            key: nether_key(0, 0),
-            fingerprint: fingerprint(nether_key(0, 0)),
-        }];
+        let discovered = [nether_key(0, 0)];
         let scope = Scope::dimension(NETHER);
-        let (_, plan) = crate::support::block_on(plan_commit(&meta, &observed, &scope)).unwrap();
+        let (_, plan) = crate::support::block_on(plan_commit(&meta, &discovered, &scope)).unwrap();
         assert_eq!(plan.ingest, alloc::vec![nether_key(0, 0)]);
         assert_eq!(plan.removed, [] as [RegionKey; 0]);
 
-        // Out-of-scope observations never enter the plan at all.
-        let observed = [
-            Observation {
-                key: key(0, 0),
-                fingerprint: fingerprint(key(0, 0)),
-            },
-            Observation {
-                key: nether_key(0, 0),
-                fingerprint: fingerprint(nether_key(0, 0)),
-            },
-        ];
+        // Out-of-scope regions never enter the plan at all.
+        let discovered = [key(0, 0), nether_key(0, 0)];
         let (_, plan) =
-            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
+            crate::support::block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
         assert_eq!(plan.ingest, alloc::vec![key(0, 0), nether_key(0, 0)]);
     }
 
@@ -764,13 +705,10 @@ mod tests {
         // Scoped commit of the overworld re-ingests its changed region:
         // (1,0) is genuinely gone, the nether chunk is out of scope and
         // must not become a tombstone.
-        let observed = [Observation {
-            key: key(0, 0),
-            fingerprint: fingerprint(key(0, 0)),
-        }];
+        let discovered = [key(0, 0)];
         let scope = Scope::dimension(OVER);
         let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &observed, &scope)).unwrap();
+            crate::support::block_on(plan_commit(&meta, &discovered, &scope)).unwrap();
         assert_eq!(plan.ingest, alloc::vec![key(0, 0)]);
         assert_eq!(plan.removed, [] as [RegionKey; 0]);
         let staged = assemble(
@@ -824,13 +762,10 @@ mod tests {
         .unwrap();
 
         // Both chunks changed on disk, but the scope reads only (0,0).
-        let observed = [Observation {
-            key: key(0, 0),
-            fingerprint: fingerprint(key(0, 0)),
-        }];
+        let discovered = [key(0, 0)];
         let scope = over_rect(Rect::new(0, 0, 0, 0));
         let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &observed, &scope)).unwrap();
+            crate::support::block_on(plan_commit(&meta, &discovered, &scope)).unwrap();
         assert_eq!(plan.ingest, alloc::vec![key(0, 0)]);
         let staged = assemble(
             plan,
@@ -848,7 +783,7 @@ mod tests {
         // The next full commit rereads the whole file and records the
         // unread (1,0) change, while (0,0) stays unchanged.
         let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &observed, &Scope::World)).unwrap();
+            crate::support::block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
         let staged = assemble(
             plan,
             &previous,

@@ -89,6 +89,11 @@ impl RegionFile for FakeRegion {
         Err(FakeError { reason: "no bytes" })
     }
 
+    fn size(&self) -> Result<u64, Self::Error> {
+        // Not supported: the fake holds no files.
+        Err(FakeError { reason: "no size" })
+    }
+
     fn fingerprint(&self, _key: RegionKey) -> Result<sekai_app::RegionFingerprint, Self::Error> {
         // Not supported: the fake serves no bytes to fingerprint.
         Err(FakeError {

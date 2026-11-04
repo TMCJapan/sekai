@@ -57,6 +57,11 @@ first, then `Caused by:` lines), JSON-escaped.
 
 ## Compatibility
 
+Breaking change (ADR-0023): `commit --json` no longer carries
+`skipped_regions` or `carried_chunks` (always 0 since PR #151 removed
+region skipping), and the `--timing` phases of `commit` and `status` no
+longer carry `fingerprint_ms` (no fingerprint is computed).
+
 Breaking change (PR #145): `log --json` no longer carries the `tags`
 field on commit objects (tags were removed in favor of refs). Consumers
 that read `tags` must be updated; the array was always empty after this
@@ -73,7 +78,7 @@ Without `--timing`:
 ```jsonc
 {
   "commit": "3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f", "chunks": 101, "new_blobs": 5,
-  "tombstones": 0, "skipped_regions": 2, "carried_chunks": 40
+  "tombstones": 0
 }
 ```
 
@@ -82,11 +87,10 @@ With `--timing` the `total_ms`/`phases`/`regions` block is appended:
 ```jsonc
 {
   "commit": "3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f", "chunks": 101, "new_blobs": 5,
-  "tombstones": 0, "skipped_regions": 2, "carried_chunks": 40, "total_ms": 123,
+  "tombstones": 0, "total_ms": 123,
   "phases": {
-    "discover_ms": 1, "universe_load_ms": 10, "fingerprint_ms": 2,
-    "region_open_ms": 3, "ingest_ms": 40, "hash_ms": 5, "cas_put_ms": 30,
-    "db_apply_ms": 20
+    "discover_ms": 1, "universe_load_ms": 10, "region_open_ms": 3,
+    "ingest_ms": 40, "hash_ms": 5, "cas_put_ms": 30, "db_apply_ms": 20
   },
   "regions": [
     {"path": "/w/region/r.0.0.mca", "chunks": 60,
@@ -103,8 +107,8 @@ With `--timing` the `total_ms`/`phases`/`regions` block is appended:
   "new_files": 0,
   "deleted_files": 0, "new_chunks": 3, "tombstones": 1, "new_blobs": 2,
   "total_ms": 50,
-  "phases": {"discover_ms": 1, "fingerprint_ms": 2, "universe_load_ms": 3,
-             "region_open_ms": 4, "ingest_ms": 30, "hash_ms": 10}
+  "phases": {"discover_ms": 1, "universe_load_ms": 3, "region_open_ms": 4,
+             "ingest_ms": 30, "hash_ms": 10}
 }
 ```
 

@@ -1549,10 +1549,6 @@ async fn all_kinds_round_trip() {
             .await
             .unwrap();
 
-        // Fingerprints compare mtime at millisecond resolution; tiny worlds
-        // back up within one tick, and same-size/same-header files would
-        // wrongly carry. Separate the ticks so the rewrite is observed.
-        std::thread::sleep(std::time::Duration::from_millis(5));
         write_region(&file, &[(0, 0, chunk_nbt("minecraft:empty"))]);
         instance
             .world_mut(&mut world)

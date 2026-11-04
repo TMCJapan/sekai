@@ -4,8 +4,8 @@ use sekai_core::{RegionFingerprint, RegionKey};
 
 /// One region file, as the only capability the composition layer gets.
 ///
-/// The handle reads the file, observes its fingerprint, writes a rebuilt
-/// image, and removes the file - nothing else. Where the file lives and
+/// The handle reads the file, observes its size or fingerprint, writes a
+/// rebuilt image, and removes the file - nothing else. Where the file lives and
 /// which file counts as its sibling stay with the
 /// [`WorldTree`](crate::WorldTree) that produced the handle, so a tree can
 /// be backed by memory instead of a filesystem.
@@ -25,10 +25,19 @@ pub trait RegionFile: Clone + std::fmt::Debug + std::fmt::Display + Send + Sync 
     /// `key` names the region the file holds, like [`RegionFile::fingerprint`].
     fn read(&self, key: RegionKey) -> Result<Self::RegionImage, Self::Error>;
 
+    /// The file's size in bytes, from its metadata alone: the content is
+    /// not read.
+    fn size(&self) -> Result<u64, Self::Error>;
+
     /// Observe the file's fingerprint as of now.
     ///
     /// `key` names the region the file holds: a file carries no identity of
     /// its own, so the caller supplies the one it discovered.
+    ///
+    /// No flow calls this today: commits reread every in-scope file since
+    /// persisted fingerprints were removed. It stays as the file-level
+    /// change check a tree-structured history can reuse unchanged region
+    /// subtrees with (ADR-0023).
     fn fingerprint(&self, key: RegionKey) -> Result<RegionFingerprint, Self::Error>;
 
     /// Whether the file exists.

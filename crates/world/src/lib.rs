@@ -1,9 +1,9 @@
-//! World access: discovery, fingerprint observation, and atomic file
-//! swaps.
+//! World access: discovery, file observation, and atomic file swaps.
 //!
 //! The [`WorldTree`] trait is the boundary the composition layer talks
 //! to: a tree names the region files it holds and hands out
-//! [`RegionFile`] handles that read, fingerprint, write, and remove them.
+//! [`RegionFile`] handles that read, size, fingerprint, write, and remove
+//! them.
 //! [`HostWorldTree`] is the filesystem-backed tree.
 //!
 //! [`WorldTree::lock`] excludes concurrent sekai operations over one
@@ -20,7 +20,7 @@ mod swap;
 mod tree;
 
 pub use error::WorldError;
-pub use fingerprint::{file_mtime_ms, fingerprint_file};
+pub use fingerprint::fingerprint_file;
 pub use lock::{UnguardedReason, WorldLock, WorldLockMode, WorldLockState};
 pub use region::{Region, RegionFile};
 pub use swap::{atomic_swap, open_image};

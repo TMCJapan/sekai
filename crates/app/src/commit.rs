@@ -1,13 +1,12 @@
-//! Recording a world state as a commit: observe files, ingest, filter the
+//! Recording a world state as a commit: discover files, ingest, filter the
 //! delta.
 //!
 //! Rationale: this is the orchestration half of commit. All policy lives in
 //! [`core`](sekai_core::usecase::commit): the previous-state plan, per-chunk
 //! staging, delta filtering, tombstone assembly, and the atomic commit.
 //! What stays here is mechanics `core` cannot own without breaking its
-//! `no_std` boundary: world discovery and fingerprint observation
-//! (filesystem), concurrent blob ingest, the wall clock, and timing
-//! collection for `--timing` output.
+//! `no_std` boundary: world discovery (filesystem), concurrent blob
+//! ingest, the wall clock, and timing collection for `--timing` output.
 //!
 //! Ingest is fully async: region reads run on the blocking pool (the
 //! [`WorldTree`] boundary stays synchronous), and every blob put is an
@@ -25,8 +24,8 @@ use std::time::{Duration, Instant};
 
 use sekai_core::usecase::commit::Ingested;
 use sekai_core::{
-    Assembled, BlobStore, ChunkCoord, CommitEntry, CommitId, CommitReport, Observation, Previous,
-    RegionFingerprint, RegionKey, Scope,
+    Assembled, BlobStore, ChunkCoord, CommitEntry, CommitId, CommitReport, Previous, RegionKey,
+    Scope,
 };
 use sekai_storage::{SekaiStore, StorageError};
 use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
@@ -81,8 +80,6 @@ pub struct StatusTimings {
     pub total: Duration,
     /// World discovery.
     pub discover: Duration,
-    /// Fingerprint observation.
-    pub fingerprint: Duration,
     /// Previous-state load plus ingest planning.
     pub universe_load: Duration,
     /// Opening changed region files.
@@ -111,8 +108,6 @@ pub struct CommitTimings {
     pub total: Duration,
     /// World discovery.
     pub discover: Duration,
-    /// Fingerprint observation.
-    pub fingerprint: Duration,
     /// Previous-state load plus ingest planning.
     pub universe_load: Duration,
     /// Opening changed region files.
@@ -125,11 +120,6 @@ pub struct CommitTimings {
     pub cas_put: Duration,
     /// Metadata commit.
     pub db_apply: Duration,
-    /// Region files skipped by file metadata. Always zero: region skipping
-    /// was removed with the derived-state table.
-    pub skipped_regions: usize,
-    /// History rows carried over. Always zero.
-    pub carried_chunks: usize,
     /// Per-region details for ingested files, ordered by region identity:
     /// dimension (by its code), then family, then coordinates - the order
     /// the world walk uses.
@@ -153,13 +143,18 @@ pub struct RegionTiming {
     pub cas: Duration,
 }
 
-/// Changed file handle plus its fresh fingerprint, awaiting ingest.
-type Changed<R> = (R, RegionFingerprint);
+/// One discovered region file, awaiting ingest.
+struct DiscoveredFile<R> {
+    key: RegionKey,
+    region: R,
+    /// Size in bytes: ingest balances its workers by it.
+    size: u64,
+}
 
 /// One ingested file's staged rows, ready to merge into the walk.
 struct FileOutcome {
-    /// Fresh fingerprint for the derived-state upsert.
-    fingerprint: RegionFingerprint,
+    /// The region the file holds.
+    key: RegionKey,
     /// History rows for the file's chunks.
     entries: Vec<CommitEntry>,
     /// Coordinates present in the file.
@@ -201,7 +196,6 @@ where
             staged,
             walk,
             discover,
-            fingerprint,
             universe_load,
         } = prepare(store, self.world, &options, &scope, progress, false, &guard).await?;
 
@@ -227,15 +221,12 @@ where
         let timings = CommitTimings {
             total: total.elapsed(),
             discover,
-            fingerprint,
             universe_load,
             region_open: walk.region_open,
             ingest: walk.ingest,
             hash: walk.hash,
             cas_put: walk.cas + dir_sync,
             db_apply,
-            skipped_regions: report.skipped_regions,
-            carried_chunks: report.carried_chunks,
             regions: walk.regions,
         };
         Ok((report, timings))
@@ -249,11 +240,10 @@ struct Prepared {
     staged: Assembled,
     walk: IngestTimings,
     discover: Duration,
-    fingerprint: Duration,
     universe_load: Duration,
 }
 
-/// Observe the world, plan against the previous commit, and ingest the
+/// Discover the world, plan against the previous commit, and ingest the
 /// changed files - the whole pipeline `commit` and `status` share.
 ///
 /// Under `dry_run` blobs are probed instead of stored, so the staged rows
@@ -270,32 +260,30 @@ async fn prepare<W: WorldTree, S: SekaiStore>(
 where
     AppError: From<W::Error>,
 {
-    // Whole-world observation walks and opens files: clone the handle and
+    // Discovery walks directories and stats files: clone the handle and
     // run it on the blocking pool, owning a share of the world lock like
     // every file pass.
+    let discover_started = Instant::now();
     let world_handle = world.clone();
-    let observe_guard = Arc::clone(guard);
-    let observed = tokio::task::spawn_blocking(move || {
-        let _guard = observe_guard;
-        observe(&world_handle)
+    let discover_guard = Arc::clone(guard);
+    let discovered = tokio::task::spawn_blocking(move || {
+        let _guard = discover_guard;
+        discover_files(&world_handle)
     })
     .await??;
-    let discover = observed.discover;
-    let fingerprint = observed.fingerprint;
+    let discover = discover_started.elapsed();
 
     let universe_started = Instant::now();
-    let observations: Vec<Observation> = observed.files.iter().map(|(_, obs)| *obs).collect();
+    let keys: Vec<RegionKey> = discovered.iter().map(|file| file.key).collect();
     let (previous, plan) =
-        sekai_core::usecase::commit::plan_commit(store.meta(), &observations, scope).await?;
+        sekai_core::usecase::commit::plan_commit(store.meta(), &keys, scope).await?;
     let universe_load = universe_started.elapsed();
 
-    let mut files: HashMap<RegionKey, Changed<W::Region>> =
-        HashMap::with_capacity(observed.files.len());
-    for (region, observation) in observed.files {
-        files.insert(observation.key, (region, observation.fingerprint));
-    }
-    // Changed files in key order; carries need no file access.
-    let changed: Vec<Changed<W::Region>> = plan
+    let mut files: HashMap<RegionKey, DiscoveredFile<W::Region>> = discovered
+        .into_iter()
+        .map(|file| (file.key, file))
+        .collect();
+    let changed: Vec<DiscoveredFile<W::Region>> = plan
         .ingest
         .iter()
         .filter_map(|key| files.remove(key))
@@ -318,7 +306,6 @@ where
         staged,
         walk,
         discover,
-        fingerprint,
         universe_load,
     })
 }
@@ -392,7 +379,6 @@ where
         staged,
         walk,
         discover,
-        fingerprint,
         universe_load,
     } = prepare(store, world, &preview, &scope, progress, true, guard).await?;
 
@@ -415,7 +401,6 @@ where
     let timings = StatusTimings {
         total: total.elapsed(),
         discover,
-        fingerprint,
         universe_load,
         region_open: walk.region_open,
         ingest: walk.ingest,
@@ -424,38 +409,20 @@ where
     Ok((report, timings))
 }
 
-// Whole-world observation: discovery plus fresh fingerprints.
-struct Observed<T> {
-    /// Every discovered file with its fresh fingerprint.
-    files: Vec<(T, Observation)>,
-    discover: Duration,
-    fingerprint: Duration,
-}
-
-/// Discover every region file and fingerprint it. Blocking: file walks and
-/// opens belong on a blocking pool, never on an async worker.
-fn observe<T: WorldTree>(world: &T) -> Result<Observed<T::Region>, AppError>
+/// Discover every region file with its size. Only metadata is read, never
+/// file content. Blocking: file walks belong on a blocking pool, never on
+/// an async worker.
+fn discover_files<T: WorldTree>(world: &T) -> Result<Vec<DiscoveredFile<T::Region>>, AppError>
 where
     AppError: From<T::Error>,
 {
-    let discover_started = Instant::now();
-    let regions = discover_regions(world)?;
-    let discover = discover_started.elapsed();
-
-    let fingerprint_started = Instant::now();
-    let mut files = Vec::with_capacity(regions.len());
-    for (key, region) in regions {
-        let observation = Observation {
-            key,
-            fingerprint: region.fingerprint(key)?,
-        };
-        files.push((region, observation));
-    }
-    Ok(Observed {
-        files,
-        discover,
-        fingerprint: fingerprint_started.elapsed(),
-    })
+    discover_regions(world)?
+        .into_iter()
+        .map(|(key, region)| {
+            let size = region.size()?;
+            Ok(DiscoveredFile { key, region, size })
+        })
+        .collect()
 }
 
 /// Staged result of walking all discovered regions.
@@ -523,7 +490,7 @@ struct IngestTimings {
 /// Each worker keeps `guard` alive until it returns, so the world stays put
 /// while blobs are still being read out of it.
 async fn ingest_changed<R: RegionFile, S: SekaiStore, L: WorldLock>(
-    changed: Vec<Changed<R>>,
+    changed: Vec<DiscoveredFile<R>>,
     cas: S::Blobs,
     options: &CommitOptions,
     scope: Scope,
@@ -561,9 +528,9 @@ where
             let _guard = guard;
             let mut outcomes = Vec::with_capacity(group.len());
             let mut cas = cas;
-            for (region, observed) in group {
+            for file in group {
                 let outcome: FileOutcome =
-                    ingest_file(region, observed, &mut cas, &scope, dry_run).await?;
+                    ingest_file(file.region, file.key, &mut cas, &scope, dry_run).await?;
                 outcomes.push(outcome);
             }
             let sync_elapsed = if dry_run {
@@ -606,19 +573,22 @@ where
 ///
 /// Largest files first onto the currently lightest group, so every group
 /// is non-empty.
-fn partition_groups<R>(mut changed: Vec<Changed<R>>, workers: usize) -> Vec<Vec<Changed<R>>> {
-    changed.sort_by_key(|item| std::cmp::Reverse(item.1.size));
-    let mut groups: Vec<Vec<Changed<R>>> = Vec::with_capacity(workers);
+fn partition_groups<R>(
+    mut changed: Vec<DiscoveredFile<R>>,
+    workers: usize,
+) -> Vec<Vec<DiscoveredFile<R>>> {
+    changed.sort_by_key(|file| std::cmp::Reverse(file.size));
+    let mut groups: Vec<Vec<DiscoveredFile<R>>> = Vec::with_capacity(workers);
     groups.resize_with(workers, Vec::new);
     let mut loads = vec![0u64; workers];
-    for item in changed {
+    for file in changed {
         let lightest = loads
             .iter()
             .enumerate()
             .min_by_key(|(_, load)| *load)
             .map_or(0, |(index, _)| index);
-        loads[lightest] += item.1.size;
-        groups[lightest].push(item);
+        loads[lightest] += file.size;
+        groups[lightest].push(file);
     }
     groups.retain(|group| !group.is_empty());
     groups
@@ -632,7 +602,7 @@ fn merge_outcome(walk: &mut RegionWalk, outcome: FileOutcome) {
     walk.ingest += outcome.timing.ingest;
     walk.hash += outcome.timing.hash;
     walk.cas += outcome.timing.cas;
-    walk.timings.push((outcome.fingerprint.key, outcome.timing));
+    walk.timings.push((outcome.key, outcome.timing));
 }
 
 /// Read, hash, and store one changed region file, staging its rows.
@@ -640,15 +610,15 @@ fn merge_outcome(walk: &mut RegionWalk, outcome: FileOutcome) {
 /// untouched and fallback keeps resolving them. Under `dry_run` blobs are
 /// probed, never stored.
 ///
-/// The fingerprint names the file: discovery observed it under that
-/// identity, and the timing row reports the same one.
+/// `key` names the file: discovery found it under that identity, and the
+/// timing row reports the same one.
 ///
 /// Reading and hashing touch the world and run on the blocking pool; the
 /// store pass then awaits the CAS for each payload. Splitting the passes
 /// this way keeps chunk bytes from outliving the image that owns them.
 async fn ingest_file<R: RegionFile, C: BlobStore<Error = StorageError>>(
     region: R,
-    observed: RegionFingerprint,
+    key: RegionKey,
     cas: &mut C,
     scope: &Scope,
     dry_run: bool,
@@ -656,7 +626,6 @@ async fn ingest_file<R: RegionFile, C: BlobStore<Error = StorageError>>(
 where
     AppError: From<R::Error>,
 {
-    let key = observed.key;
     let location = region.to_string();
     let scope = scope.clone();
     let staged = tokio::task::spawn_blocking(move || stage_file(&region, key, &scope))
@@ -678,7 +647,7 @@ where
         new_blobs += usize::from(stored?);
     }
     Ok(FileOutcome {
-        fingerprint: observed,
+        key,
         entries: staged.entries,
         present: staged.present,
         new_blobs,

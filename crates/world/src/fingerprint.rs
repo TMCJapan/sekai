@@ -1,4 +1,7 @@
-//! Fingerprinting region files for incremental commits.
+//! Fingerprinting region files: the file-level change check of ADR-0012.
+//!
+//! No commit consults it today; it stays for the region-subtree reuse a
+//! tree-structured history needs (ADR-0023).
 
 use std::fs::File;
 use std::path::Path;
@@ -7,12 +10,6 @@ use sekai_core::{RegionFingerprint, RegionKey};
 
 use crate::error::WorldError;
 use crate::observation::{content_hash_of, mtime_ms_from_metadata};
-
-/// Last modification time as Unix millis, or `None` when unavailable.
-pub fn file_mtime_ms(path: impl AsRef<Path>) -> Option<u64> {
-    let meta = std::fs::metadata(path).ok()?;
-    mtime_ms_from_metadata(&meta)
-}
 
 /// Fingerprint one region file.
 ///
