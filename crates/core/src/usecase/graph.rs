@@ -357,7 +357,7 @@ mod tests {
 
     #[test]
     fn counts_fresh_and_effective_rows() {
-        use sekai_util::{BlobHash, ChunkCoord, Dimension, RegionKind};
+        use sekai_util::{ChunkCoord, ChunkHash, Dimension, RegionKind};
         let mut meta = MemMeta::default();
         let over = Dimension::OVERWORLD;
         let region = RegionKind::Region;
@@ -365,27 +365,23 @@ mod tests {
         block_on(meta.record_chunk(
             first,
             &ChunkCoord::new(over, region, 0, 0),
-            Some(&BlobHash([1; 32])),
-            None,
+            Some(&ChunkHash::new([1; 32])),
         ))
         .unwrap();
         block_on(meta.record_chunk(
             first,
             &ChunkCoord::new(over, region, 1, 0),
-            Some(&BlobHash([1; 32])),
-            None,
+            Some(&ChunkHash::new([1; 32])),
         ))
         .unwrap();
         let second = block_on(meta.create_commit(200, &[first])).unwrap();
         block_on(meta.record_chunk(
             second,
             &ChunkCoord::new(over, region, 0, 0),
-            Some(&BlobHash([2; 32])),
-            None,
+            Some(&ChunkHash::new([2; 32])),
         ))
         .unwrap();
-        block_on(meta.record_chunk(second, &ChunkCoord::new(over, region, 1, 0), None, None))
-            .unwrap();
+        block_on(meta.record_chunk(second, &ChunkCoord::new(over, region, 1, 0), None)).unwrap();
 
         assert_eq!(
             block_on(commit_stats(&meta, first)).unwrap(),
@@ -434,11 +430,11 @@ mod tests {
 
     #[test]
     fn a_commit_only_inherits_from_its_own_ancestors() {
-        use sekai_util::{BlobHash, ChunkCoord, Dimension, RegionKind};
+        use sekai_util::{ChunkCoord, ChunkHash, Dimension, RegionKind};
         let mut meta = MemMeta::default();
         let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
         let first = block_on(meta.create_commit(100, &[])).unwrap();
-        block_on(meta.record_chunk(first, &coord, Some(&BlobHash([1; 32])), None)).unwrap();
+        block_on(meta.record_chunk(first, &coord, Some(&ChunkHash::new([1; 32])))).unwrap();
         // A second history: its root shares no ancestor with `first`.
         let other = block_on(meta.create_commit(200, &[])).unwrap();
         let child = block_on(meta.create_commit(300, &[other])).unwrap();

@@ -4,6 +4,10 @@
 
 #![cfg(feature = "backend-sqlite")]
 
+mod fixtures;
+
+use fixtures::chunk_nbt;
+
 use sekai_app::HostWorldTree;
 use std::path::Path;
 
@@ -61,7 +65,10 @@ async fn status_counts_tombstones_without_writing() {
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let region = world_path.join("region/r.0.0.mca");
-    write_region(&region, &[(0, 0, vec![3, 1]), (1, 0, vec![3, 2])]);
+    write_region(
+        &region,
+        &[(0, 0, chunk_nbt("marker-1")), (1, 0, chunk_nbt("marker-2"))],
+    );
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let (committed, _) = instance
@@ -73,7 +80,7 @@ async fn status_counts_tombstones_without_writing() {
         )
         .await
         .unwrap();
-    write_region(&region, &[(0, 0, vec![3, 1])]);
+    write_region(&region, &[(0, 0, chunk_nbt("marker-1"))]);
 
     let commits_before = instance.list_commits().await.unwrap().len();
     let blobs_before = blob_count(&store);
@@ -106,7 +113,7 @@ async fn status_reports_a_clean_world_after_commit() {
     let store = root.join("store").to_string_lossy().into_owned();
     write_region(
         world_path.join("region/r.0.0.mca"),
-        &[(0, 0, vec![3, 1]), (1, 0, vec![3, 2])],
+        &[(0, 0, chunk_nbt("marker-1")), (1, 0, chunk_nbt("marker-2"))],
     );
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();

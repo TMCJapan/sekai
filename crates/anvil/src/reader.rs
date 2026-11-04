@@ -2,7 +2,9 @@
 
 use alloc::vec::Vec;
 
-use crate::error::AnvilError;
+use sekai_util::{ChunkHash, RegionKind};
+
+use crate::error::{AnvilError, ChunkHashError};
 use crate::region::{FIRST_DATA_SECTOR, RegionLoc, SECTOR_LEN, TABLE_ENTRIES};
 
 /// One present chunk and its exact stored payload.
@@ -12,8 +14,46 @@ pub struct Chunk<'a> {
     pub x: i32,
     /// Global chunk Z coordinate.
     pub z: i32,
+    /// Region family the chunk was read from.
+    pub kind: RegionKind,
     /// Stored compression byte followed by the compressed body.
     pub payload: &'a [u8],
+}
+
+impl<'a> Chunk<'a> {
+    /// Constructs a chunk from a stored payload.
+    ///
+    /// A chunk read through [`RegionImage`] already carries the kind of its
+    /// region; this constructor is for callers holding a payload directly,
+    /// such as a CAS blob.
+    pub const fn new(kind: RegionKind, x: i32, z: i32, payload: &'a [u8]) -> Self {
+        Self {
+            x,
+            z,
+            kind,
+            payload,
+        }
+    }
+
+    /// Hashes the chunk through its normalized view.
+    ///
+    /// A `region/` payload hashes its decompressed level-chunk NBT with the
+    /// volatile tags excluded. `entities`/`poi` payloads have no level-chunk
+    /// schema, so they hash their exact decompressed NBT bytes after
+    /// validating that the payload is well-formed NBT. A payload that cannot
+    /// be decompressed or parsed has no key and is rejected; there is no
+    /// raw-byte fallback.
+    ///
+    /// # Errors
+    ///
+    /// [`ChunkHashError::Decompress`] when the stored payload cannot be
+    /// decompressed, and [`ChunkHashError::Invalid`] when it is not NBT a
+    /// chunk of this kind can be read from.
+    pub fn normalized_hash(&self) -> Result<ChunkHash, ChunkHashError> {
+        let mut raw_nbt = Vec::new();
+        crate::codec::decompress_into(self.payload, &mut raw_nbt)?;
+        crate::nbt::chunk_key(self.kind, &raw_nbt)
+    }
 }
 
 /// Parsed `.mca` image.
@@ -22,16 +62,31 @@ pub struct Chunk<'a> {
 #[derive(Debug)]
 pub struct RegionImage {
     loc: RegionLoc,
+    kind: RegionKind,
     bytes: Vec<u8>,
 }
 
 impl RegionImage {
     /// Parses an in-memory region image.
+    ///
+    /// The image is assumed to hold `region/` chunks; use
+    /// [`Self::from_bytes_with_kind`] for `entities` or `poi` files.
     pub fn from_bytes(bytes: Vec<u8>, region_x: i32, region_z: i32) -> Result<Self, AnvilError> {
+        Self::from_bytes_with_kind(bytes, region_x, region_z, RegionKind::Region)
+    }
+
+    /// Parses an in-memory region image from the given region family.
+    pub fn from_bytes_with_kind(
+        bytes: Vec<u8>,
+        region_x: i32,
+        region_z: i32,
+        kind: RegionKind,
+    ) -> Result<Self, AnvilError> {
         crate::region::check_image_len(bytes.len() as u64)?;
 
         Ok(Self {
             loc: RegionLoc::new(region_x, region_z)?,
+            kind,
             bytes,
         })
     }
@@ -124,7 +179,7 @@ impl RegionImage {
 
         let (x, z) = self.loc.coord_at(index);
 
-        Ok(Some(Chunk { x, z, payload }))
+        Ok(Some(Chunk::new(self.kind, x, z, payload)))
     }
 
     /// Returns the stored raw payload for a single chunk at global coordinates `(x, z)`.
@@ -329,7 +384,7 @@ mod tests {
     fn zero_length_image_is_empty_region() {
         let image = RegionImage::from_bytes(Vec::new(), 0, 0).unwrap();
 
-        assert_eq!(image.image(), []);
+        assert_eq!(image.image(), &[] as &[u8]);
 
         let mut count = 0;
 
@@ -584,6 +639,79 @@ mod tests {
             .unwrap();
 
         assert_eq!(seen, alloc::vec![[&[2u8] as &[_], b"nbt!"].concat()]);
+    }
+
+    #[test]
+    fn chunk_normalized_hash_uses_the_region_shape() {
+        use nanonbt::Cesu8;
+
+        let bytes = |inhabited_time| {
+            let chunk = crate::nbt::chunk::ChunkPayload {
+                data_version: 1,
+                x_pos: 0,
+                y_pos: 0,
+                z_pos: 0,
+                inhabited_time,
+                last_update: 0,
+                sections: Vec::new(),
+                heightmaps: crate::nbt::chunk::Heightmaps::default(),
+                status: &Cesu8::from_str("minecraft:full"),
+                block_entities: Vec::new(),
+                block_ticks: Vec::new(),
+                fluid_ticks: Vec::new(),
+            };
+            let nbt = nanonbt::to_bytes(&chunk).unwrap();
+            let mut payload = alloc::vec![3];
+            payload.extend(nbt);
+            payload
+        };
+
+        let base_bytes = bytes(0);
+        let varied_bytes = bytes(99);
+        let base = Chunk::new(RegionKind::Region, 0, 0, &base_bytes);
+        let varied = Chunk::new(RegionKind::Region, 0, 0, &varied_bytes);
+        assert_eq!(
+            base.normalized_hash().unwrap(),
+            varied.normalized_hash().unwrap()
+        );
+    }
+
+    #[test]
+    fn chunk_normalized_hash_keys_sparse_kinds_by_their_nbt_bytes() {
+        let nbt = [10u8, 0, 0, 0]; // Empty root compound.
+        let payload = [&[3u8] as &[_], &nbt].concat();
+        let chunk = Chunk::new(RegionKind::Entities, 0, 0, &payload);
+
+        assert_eq!(
+            chunk.normalized_hash().unwrap(),
+            ChunkHash::new(sekai_util::hash_bytes(&nbt))
+        );
+        assert!(matches!(
+            Chunk::new(RegionKind::Region, 0, 0, &payload).normalized_hash(),
+            Err(ChunkHashError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn region_image_carries_its_kind_to_every_chunk() {
+        let mut image = header_only();
+
+        image.extend_from_slice(&[0; 4096]);
+        image[0..4].copy_from_slice(&entry_of(2, 1));
+        image[8192..8196].copy_from_slice(&2u32.to_be_bytes());
+        image[8196] = 3;
+        image[8197] = 0;
+
+        let image = RegionImage::from_bytes_with_kind(image, 0, 0, RegionKind::Poi).unwrap();
+        let mut kinds = Vec::new();
+        image
+            .visit_chunks(|chunk| {
+                kinds.push(chunk.kind);
+                true
+            })
+            .unwrap();
+
+        assert_eq!(kinds, [RegionKind::Poi]);
     }
 
     #[test]

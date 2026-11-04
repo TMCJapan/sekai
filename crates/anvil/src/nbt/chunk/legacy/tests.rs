@@ -10,8 +10,8 @@ use alloc::vec::Vec;
 use nanonbt::Cesu8;
 
 use super::*;
-use crate::parse;
-use crate::{Chunk, ChunkPayloadDiff};
+use crate::nbt::chunk::Chunk;
+use crate::nbt::parse;
 
 const ROOT: &[u8] = &[10, 0, 0]; // TAG_Compound, empty name
 
@@ -159,7 +159,7 @@ fn parses_level_wrapper_and_maps_fields() {
     assert_eq!(section.blocks, [4; 8]);
     assert_eq!(section.add, [0; 4]);
     assert_eq!(section.data, [0; 4]);
-    assert_eq!(section.data2, []);
+    assert_eq!(section.data2, &[] as &[u8]);
 }
 
 /// 1.9+ writes `DataVersion` at the root, next to `Level`, not inside it.
@@ -206,38 +206,36 @@ fn volatile_tags_do_not_change_the_hash() {
         compound_list("Sections", &[section(0, &[1; 8])]),
         byte("TerrainPopulated", 1),
     ];
-    // Reorder, too: the view must not depend on field order.
+    // Duplicated keys decode as the first occurrence and reordering is
+    // harmless: neither may change the decoded value the view hashes.
     entries.reverse();
     let varied_bytes = legacy_doc(&entries);
     let varied = legacy(&varied_bytes);
 
     assert_eq!(
-        base.normalize_hash().unwrap(),
-        varied.normalize_hash().unwrap()
+        base.normalized_hash().unwrap(),
+        varied.normalized_hash().unwrap()
     );
-    let diff =
-        ChunkPayloadDiff::new(&parse_legacy(&base_bytes), &parse_legacy(&varied_bytes)).unwrap();
-    assert_eq!(diff, ChunkPayloadDiff::Nothing);
+    assert_eq!(
+        parse_legacy(&base_bytes).normalized_hash().unwrap(),
+        parse_legacy(&varied_bytes).normalized_hash().unwrap()
+    );
 }
 
 #[test]
 fn block_content_change_reports_a_full_diff() {
     let old_bytes = full_legacy(Some(1), &[0; 8]);
     let new_bytes = full_legacy(Some(1), &[0, 1, 0, 0, 0, 0, 0, 0]);
-    let old = parse_legacy(&old_bytes);
-    let new = parse_legacy(&new_bytes);
-    let diff = ChunkPayloadDiff::new(&old, &new).unwrap();
-    assert!(
-        matches!(diff, ChunkPayloadDiff::Full { old, new } if old != new),
-        "changed blocks must report distinct hashes: {diff:?}"
-    );
+    let old = parse_legacy(&old_bytes).normalized_hash().unwrap();
+    let new = parse_legacy(&new_bytes).normalized_hash().unwrap();
+    assert_ne!(old, new, "changed blocks must report distinct hashes");
 }
 
 #[test]
 fn legacy_and_modern_never_compare_equal() {
     let legacy_bytes = full_legacy(Some(1), &[]);
     let legacy_side = parse_legacy(&legacy_bytes);
-    let modern = crate::ChunkPayload {
+    let modern = crate::nbt::chunk::ChunkPayload {
         data_version: 1,
         x_pos: 5,
         y_pos: 0,
@@ -245,22 +243,23 @@ fn legacy_and_modern_never_compare_equal() {
         inhabited_time: 11,
         last_update: 13,
         sections: vec![],
-        heightmaps: crate::Heightmaps::default(),
+        heightmaps: crate::nbt::chunk::Heightmaps::default(),
         status: &Cesu8::from_str("minecraft:full"),
         block_entities: vec![],
         block_ticks: vec![],
         fluid_ticks: vec![],
     };
-    let diff = ChunkPayloadDiff::new(&legacy_side, &Chunk::Modern(modern)).unwrap();
-    assert!(
-        matches!(diff, ChunkPayloadDiff::Full { old, new } if old != new),
-        "a format conversion is a real change: {diff:?}"
+    let legacy_hash = legacy_side.normalized_hash().unwrap();
+    let modern_hash = Chunk::Modern(modern).normalized_hash().unwrap();
+    assert_ne!(
+        legacy_hash, modern_hash,
+        "a format conversion is a real change"
     );
 }
 
 #[test]
 fn modern_chunk_still_parses_as_modern() {
-    let modern = crate::ChunkPayload {
+    let modern = crate::nbt::chunk::ChunkPayload {
         data_version: 1,
         x_pos: 0,
         y_pos: 0,
@@ -268,7 +267,7 @@ fn modern_chunk_still_parses_as_modern() {
         inhabited_time: 0,
         last_update: 0,
         sections: vec![],
-        heightmaps: crate::Heightmaps::default(),
+        heightmaps: crate::nbt::chunk::Heightmaps::default(),
         status: &Cesu8::from_str("minecraft:full"),
         block_entities: vec![],
         block_ticks: vec![],
@@ -291,9 +290,9 @@ fn missing_fields_default_instead_of_failing() {
     assert_eq!(payload.level.last_update, 0);
     // assert!(payload.terrain_populated.is_missing());
     assert_eq!(payload.level.terrain_populated, 0);
-    assert_eq!(payload.level.sections, []);
-    assert_eq!(payload.level.height_map, []);
-    assert_eq!(payload.level.block_entities, []);
+    assert_eq!(payload.level.sections.len(), 0);
+    assert_eq!(payload.level.height_map.len(), 0);
+    assert_eq!(payload.level.block_entities.len(), 0);
 }
 
 /// Tile entities are opaque: the raw compound is captured byte for byte, so
@@ -330,16 +329,16 @@ fn tile_entities_are_captured_verbatim() {
 /// key and an explicitly empty one hash alike.
 #[test]
 fn empty_collections_normalize_alike() {
-    // let without = legacy(&legacy_doc(&[int("xPos", 0), int("zPos", 0)]));
-    // let with_empty = legacy(&legacy_doc(&[
-    //     int("xPos", 0),
-    //     int("zPos", 0),
-    //     int_array("HeightMap", &[]),
-    //     compound_list("Sections", &[]),
-    //     compound_list("TileEntities", &[]),
-    // ]));
-    // assert_eq!(
-    //     without.normalize_hash().unwrap(),
-    //     with_empty.normalize_hash().unwrap()
-    // );
+    let without_bytes = legacy_doc(&[int("xPos", 0), int("zPos", 0)]);
+    let with_empty_bytes = legacy_doc(&[
+        int("xPos", 0),
+        int("zPos", 0),
+        int_array("HeightMap", &[]),
+        compound_list("Sections", &[]),
+        compound_list("TileEntities", &[]),
+    ]);
+    assert_eq!(
+        legacy(&without_bytes).normalized_hash().unwrap(),
+        legacy(&with_empty_bytes).normalized_hash().unwrap()
+    );
 }

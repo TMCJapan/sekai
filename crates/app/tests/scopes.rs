@@ -4,6 +4,10 @@
 
 #![cfg(feature = "backend-sqlite")]
 
+mod fixtures;
+
+use fixtures::chunk_nbt;
+
 use sekai_app::{
     AppError, Area, ChunkCoord, Dimension, HostWorldTree, NamedScopeError, Rect, RegionKind, Scope,
     ScopeName,
@@ -158,7 +162,11 @@ async fn a_resolved_scope_limits_a_commit() {
     let mut world = HostWorldTree::new(&world_path).unwrap();
     write_region(
         world_path.join("region/r.0.0.mca"),
-        &[(0, 0, vec![1]), (1, 0, vec![2]), (5, 5, vec![3])],
+        &[
+            (0, 0, chunk_nbt("marker-1")),
+            (1, 0, chunk_nbt("marker-2")),
+            (5, 5, chunk_nbt("marker-3")),
+        ],
     );
     let mut instance = sekai_app::SekaiInstance::init(&root.path().join("store").to_string_lossy())
         .await

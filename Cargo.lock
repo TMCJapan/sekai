@@ -1160,11 +1160,11 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 name = "sekai-anvil"
 version = "0.1.0"
 dependencies = [
- "blake3",
  "crc32fast",
  "criterion",
  "lz4_flex",
  "miniz_oxide",
+ "nanonbt",
  "sekai-util",
  "twox-hash",
 ]
@@ -1173,12 +1173,10 @@ dependencies = [
 name = "sekai-app"
 version = "0.1.0"
 dependencies = [
- "blake3",
  "criterion",
  "miniz_oxide",
  "sekai-anvil",
  "sekai-core",
- "sekai-nbt",
  "sekai-storage",
  "sekai-storage-sqlite",
  "sekai-world",
@@ -1206,19 +1204,8 @@ dependencies = [
 name = "sekai-core"
 version = "0.1.0"
 dependencies = [
- "blake3",
  "criterion",
  "sekai-anvil",
- "sekai-nbt",
- "sekai-util",
-]
-
-[[package]]
-name = "sekai-nbt"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "nanonbt",
  "sekai-util",
 ]
 
@@ -1245,6 +1232,9 @@ dependencies = [
 [[package]]
 name = "sekai-util"
 version = "0.1.0"
+dependencies = [
+ "blake3",
+]
 
 [[package]]
 name = "sekai-world"

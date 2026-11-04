@@ -12,9 +12,7 @@ keywords = ["minecraft", "version-control"]
 workspace = true
 
 [dependencies]
-blake3.workspace = true
 sekai-anvil.workspace = true
-sekai-nbt.workspace = true
 sekai-util.workspace = true
 
 [[bench]]

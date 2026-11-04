@@ -9,8 +9,6 @@ commit hash, chunk/blob counts, tombstones, skipped regions, and carried
 chunks. Recording an identical commit again returns the existing hash
 without adding rows.
 
-- `--with-diff` additionally derives volatile diff views alongside blobs
-  (slower ingest; the hot path stays decode-free without it).
 - `--jobs N` sets the ingest worker count (`0` means one per CPU).
 - `--progress` shows a stderr progress bar (refused with `--json`).
 - Scope flags (`--in`, `--region`, `--kind`) restrict what is recorded;

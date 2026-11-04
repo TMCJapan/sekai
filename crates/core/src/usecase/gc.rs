@@ -8,7 +8,7 @@ use core::fmt;
 
 use crate::port::blob::BlobStore;
 use crate::port::meta::MetaStore;
-use sekai_util::{BlobHash, CommitId, GcPlan};
+use sekai_util::{ChunkHash, CommitId, GcPlan};
 
 /// Outcome of one [`gc_apply`] run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,7 +44,7 @@ pub async fn gc_plan<B: BlobStore, M: MetaStore>(
     blobs: &B,
     meta: &M,
 ) -> Result<GcPlan, GcError<B::Error, M::Error>> {
-    let mut referenced: BTreeSet<BlobHash> = BTreeSet::new();
+    let mut referenced: BTreeSet<ChunkHash> = BTreeSet::new();
     let mut commits: Vec<CommitId> = Vec::new();
     meta.visit_commits(|commit| {
         commits.push(commit.id);
@@ -88,7 +88,7 @@ pub async fn gc_apply<B: BlobStore, M: MetaStore>(
     mut progress: impl FnMut(usize, usize) + Send,
 ) -> Result<GcReport, GcError<B::Error, M::Error>> {
     let fresh = gc_plan(&*blobs, meta).await?;
-    let still_orphan: BTreeSet<BlobHash> = fresh.into_orphans().into_iter().collect();
+    let still_orphan: BTreeSet<ChunkHash> = fresh.into_orphans().into_iter().collect();
     let mut orphans = 0usize;
     let mut removed = 0usize;
     let mut done = 0usize;
@@ -128,14 +128,14 @@ mod tests {
         let mut meta = MemMeta::default();
         meta.with_active_ref(&RefName::parse("main").unwrap());
         let mut cas = MemCas::default();
-        let live = BlobHash([1; 32]);
-        let orphan = BlobHash([2; 32]);
+        let live = ChunkHash::new([1; 32]);
+        let orphan = ChunkHash::new([2; 32]);
         block_on(cas.put(&live, b"live")).unwrap();
         block_on(cas.put(&orphan, b"orphan")).unwrap();
         block_on(meta.apply_commit_incremental(
             1_000,
             &[],
-            &[CommitEntry::new(coord(0, 0), Some(live), None)],
+            &[CommitEntry::new(coord(0, 0), Some(live))],
         ))
         .unwrap();
 

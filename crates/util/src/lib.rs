@@ -2,7 +2,7 @@
 //! the record types every other crate passes around.
 //!
 //! Pure data plus the invariants that belong to it (coordinate arithmetic,
-//! hex encoding); no I/O and no policy.
+//! hex encoding, chunk digests); no I/O and no policy.
 
 #![no_std]
 
@@ -27,7 +27,7 @@ pub use commit::{Commit, CommitId};
 pub use dimension::Dimension;
 pub use error::{HexError, NamedScopeError, ParseCodeError, RefNameError, ScopeNameError};
 pub use gc::GcPlan;
-pub use hash::{BlobHash, DiffHash};
+pub use hash::{BytesHasher, ChunkHash, hash_bytes};
 pub use history::ChunkHistoryEntry;
 pub use named_scope::{NamedScope, ScopeName};
 pub use refs::{CommitRef, DEFAULT_REF_NAME, RefName};

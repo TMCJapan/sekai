@@ -3,12 +3,11 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
+use sekai_anvil::{Chunk, ChunkHashError};
 use sekai_core::{
-    BlobHash, BlobStore as _, ChunkCoord, CommitId, DiffHash, MetaStore, RegionKey, RegionKind,
-    diff_nbt,
+    BlobStore as _, ChunkCoord, ChunkHash, ChunkPayloadDiff, CommitId, MetaStore, RegionKey,
+    RegionKind,
 };
-use sekai_nbt::nanonbt::Cesu8Buf;
-use sekai_nbt::{Chunk, ChunkPayload, ChunkPayloadDiff, Heightmaps};
 use sekai_storage::SekaiStore;
 use sekai_world::{Region, RegionFile, WorldLockMode, WorldTree};
 
@@ -22,11 +21,14 @@ use crate::regions::discover_regions;
 pub struct DiffTimings {
     /// Wall-clock total.
     pub total: Duration,
-    /// Commit metadata lookup plus CAS blob fetch, both sides.
+    /// Commit metadata lookup plus world-side region read, both sides.
     pub blob_fetch: Duration,
-    /// Payload decompression, both sides.
+    /// World-side payload decompression and digesting.
+    ///
+    /// A commit side contributes nothing here: its digest was recorded at
+    /// commit time and is read back, not recomputed.
     pub decompress: Duration,
-    /// AST diff computation.
+    /// Digest comparison.
     pub diff_compute: Duration,
 }
 
@@ -34,8 +36,8 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// Compute AST diff between two stored chunk blob hashes.
     pub async fn diff_blobs(
         &self,
-        old_hash: &BlobHash,
-        new_hash: &BlobHash,
+        old_hash: &ChunkHash,
+        new_hash: &ChunkHash,
     ) -> Result<ChunkPayloadDiff, AppError> {
         let mut old_compressed = Vec::new();
         let mut new_compressed = Vec::new();
@@ -49,39 +51,75 @@ impl<S: SekaiStore> SekaiInstance<S> {
             .fetch_into(new_hash, &mut new_compressed)
             .await?;
 
-        let old_nbt = decompress_chunk(&old_compressed)?;
-        let new_nbt = decompress_chunk(&new_compressed)?;
-
-        Ok(diff_nbt(&old_nbt, &new_nbt)?)
+        let old = Chunk::new(RegionKind::Region, 0, 0, &old_compressed).normalized_hash()?;
+        let new = Chunk::new(RegionKind::Region, 0, 0, &new_compressed).normalized_hash()?;
+        Ok(ChunkPayloadDiff::from_sides(Some(old), Some(new)))
     }
 }
 
-/// Fetch raw (still compressed) chunk payload directly from a world directory.
-/// Returns `None` when the region file or chunk entry is absent; corrupt
-/// files still fail loudly.
-fn read_world_chunk_compressed<R: RegionFile>(
-    regions: &BTreeMap<RegionKey, R>,
-    coord: &ChunkCoord,
-) -> Result<Option<Vec<u8>>, AppError>
+/// Digest a world chunk as `commit` would have.
+///
+/// An absent region file or chunk entry is [`None`]; a corrupt file, payload,
+/// or undecodable chunk fails loudly. A digest that is returned goes through
+/// [`chunk_digest`], so it equals the CAS key ingest recorded.
+fn read_world_chunk<R: RegionFile>(regions: &BTreeMap<RegionKey, R>, coord: &ChunkCoord) -> Side
 where
     AppError: From<R::Error>,
 {
     let key = RegionKey::of(*coord);
     let Some(region) = regions.get(&key) else {
-        return Ok(None);
+        return Side::absent();
     };
 
-    let image = region.read(key)?;
+    let read = region.read(key).map_err(AppError::from);
+    let image = match read {
+        Ok(image) => image,
+        Err(error) => return Side::failed(error),
+    };
+    let payload = match image.chunk_payload(coord.x, coord.z) {
+        Ok(Some(payload)) => payload,
+        Ok(None) => return Side::absent(),
+        Err(error) => return Side::failed(error.into()),
+    };
 
-    let payload = image.chunk_payload(coord.x, coord.z)?;
-    Ok(payload.map(<[u8]>::to_vec))
+    let started = Instant::now();
+    let digest = chunk_digest(*coord, payload);
+    Side {
+        digest: digest.map(Some),
+        prepare: started.elapsed(),
+    }
 }
 
-/// Decompress one raw chunk payload into NBT bytes.
-fn decompress_chunk(compressed: &[u8]) -> Result<Vec<u8>, AppError> {
-    let mut nbt = Vec::new();
-    sekai_anvil::decompress_into(compressed, &mut nbt)?;
-    Ok(nbt)
+/// The normalized digest - the same key ingest records - with a decode
+/// failure attributed to `coord`.
+///
+/// Knowing which chunk (and so which region file) is malformed is what makes
+/// the report actionable. There is no byte-level fallback for a `region/`
+/// payload that does not decode: it has no normalized view, so it is
+/// reported rather than silently compared by its exact bytes.
+fn chunk_digest(coord: ChunkCoord, payload: &[u8]) -> Result<ChunkHash, AppError> {
+    Chunk::new(coord.kind, coord.x, coord.z, payload)
+        .normalized_hash()
+        .map_err(|source| {
+            let (rx, rz) = (coord.region_x(), coord.region_z());
+            match source {
+                ChunkHashError::Decompress(source) => AppError::Anvil(source),
+                ChunkHashError::Invalid(source) if source.is_truncated() => {
+                    AppError::TruncatedChunk {
+                        coord,
+                        rx,
+                        rz,
+                        source,
+                    }
+                }
+                source => AppError::UnhashableChunk {
+                    coord,
+                    rx,
+                    rz,
+                    source,
+                },
+            }
+        })
 }
 
 /// Per-chunk progress report for the `progress` callback.
@@ -104,10 +142,10 @@ impl<S: SekaiStore> SekaiInstance<S> {
         let (diffs, _) = self
             .diff_chunks(old_commit, new_commit, &[*coord], |_| {})
             .await?;
-        Ok(diffs
-            .into_iter()
-            .next()
-            .map_or(ChunkPayloadDiff::Nothing, |diff| diff.entries))
+        Ok(diffs.into_iter().next().map_or_else(
+            || ChunkPayloadDiff::from_sides(None, None),
+            |diff| diff.entries,
+        ))
     }
 }
 
@@ -116,8 +154,8 @@ impl<S: SekaiStore> SekaiInstance<S> {
 pub struct ChunkDiff {
     /// Chunk the diff belongs to.
     pub coord: ChunkCoord,
-    /// Normalized change detection: `Nothing` when both sides normalize
-    /// identically, `Full` with both hash pairs otherwise.
+    /// Normalized change detection: both sides' digests, `None` for a side
+    /// that holds no chunk.
     pub entries: ChunkPayloadDiff,
 }
 
@@ -125,10 +163,10 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// Compute AST diffs for explicit chunk coordinates.
     ///
     /// Compares two commits in the store, additionally returning
-    /// per-phase timings. A chunk absent (or tombstoned) on a side diffs as a
-    /// synthesized zeroed payload there: absent on both sides yields
-    /// [`ChunkPayloadDiff::Nothing`], present on one side reports
-    /// [`ChunkPayloadDiff::Full`].
+    /// per-phase timings. Both sides compare the digests already recorded at
+    /// commit time, so no blob is fetched or decoded. A chunk absent (or
+    /// tombstoned) on both sides yields an empty [`ChunkPayloadDiff`]; present
+    /// on exactly one side keeps `None` for the other.
     pub async fn diff_chunks(
         &self,
         old_commit: CommitId,
@@ -196,14 +234,16 @@ where
     Ok(coords)
 }
 
-/// Fetch raw (still compressed) chunk payload for a commit from an open store.
-/// Returns `None` when the chunk is unknown there or tombstoned; a present
-/// blob missing from CAS still fails as corruption.
-async fn commit_chunk_compressed<S: SekaiStore>(
+/// The digest a commit recorded for a chunk.
+///
+/// Returns `None` when the chunk is unknown there or tombstoned. Nothing is
+/// fetched from CAS: the recorded digest *is* what a recomputed one compares
+/// against, which is what makes a commit-side diff a metadata lookup.
+async fn commit_chunk_hash<S: SekaiStore>(
     store: &S,
     commit_id: CommitId,
     coord: &ChunkCoord,
-) -> Result<Option<Vec<u8>>, AppError> {
+) -> Result<Option<ChunkHash>, AppError> {
     let Some(entry) = store.meta().lookup_chunk(commit_id, coord).await? else {
         return Ok(None);
     };
@@ -211,70 +251,7 @@ async fn commit_chunk_compressed<S: SekaiStore>(
         return Ok(None);
     };
 
-    let mut compressed = Vec::new();
-    store.cas().fetch_into(&hash, &mut compressed).await?;
-    Ok(Some(compressed))
-}
-
-/// The NBT a missing chunk diffs as: a synthesized zeroed [`ChunkPayload`]
-/// (data version 0, empty status). Absent on both sides yields
-/// [`ChunkPayloadDiff::Nothing`]; present on one side reports a
-/// [`ChunkPayloadDiff::Full`] against those zeroed bytes.
-fn decompress_or_empty(compressed: Option<Vec<u8>>) -> Result<Vec<u8>, AppError> {
-    compressed.map_or_else(
-        || {
-            let chunk = ChunkPayload {
-                data_version: 0,
-                x_pos: 0,
-                y_pos: 0,
-                z_pos: 0,
-                inhabited_time: 0,
-                last_update: 0,
-                sections: vec![],
-                heightmaps: Heightmaps::default(),
-                status: &Cesu8Buf::new(),
-                block_entities: vec![],
-                block_ticks: vec![],
-                fluid_ticks: vec![],
-            };
-            sekai_nbt::nanonbt::to_bytes(&chunk).map_err(AppError::Nbt)
-        },
-        |c| decompress_chunk(&c),
-    )
-}
-
-/// Parse a decompressed payload for diffing.
-///
-/// A parse failure is attributed to `coord`: knowing which chunk (and so
-/// which region file) is malformed is what makes the report actionable.
-/// `entities`/`poi` payloads use their own schemas, so a missing level-chunk
-/// field there is not corruption and yields `None`: their raw bytes are
-/// compared instead. A level chunk with missing fields fails loudly.
-fn parse_for_diff(coord: ChunkCoord, nbt: &[u8]) -> Result<Option<Chunk<'_>>, AppError> {
-    let (rx, rz) = (coord.region_x(), coord.region_z());
-    match sekai_nbt::parse(nbt) {
-        Ok(payload) => Ok(Some(payload)),
-        Err(sekai_nbt::NbtError::MissingField(_)) if coord.kind != RegionKind::Region => Ok(None),
-        Err(source) => Err(AppError::ChunkNbt {
-            coord,
-            rx,
-            rz,
-            source,
-        }),
-    }
-}
-
-/// Diff for non-level-chunk kinds (`entities`/`poi`), whose payload schema is
-/// not [`ChunkPayload`]. Raw NBT bytes are hashed independently so a `Full`
-/// result never carries identical hashes.
-fn raw_nbt_diff(old: &[u8], new: &[u8]) -> ChunkPayloadDiff {
-    if old == new {
-        return ChunkPayloadDiff::Nothing;
-    }
-    ChunkPayloadDiff::Full {
-        old: DiffHash(*blake3::hash(old).as_bytes()),
-        new: DiffHash(*blake3::hash(new).as_bytes()),
-    }
+    Ok(Some(hash))
 }
 
 impl<W: WorldTree, S: SekaiStore> WorldHandle<'_, W, S>
@@ -292,19 +269,20 @@ where
         coord: &ChunkCoord,
     ) -> Result<ChunkPayloadDiff, AppError> {
         let (diffs, _) = self.diff_world_chunks(commit, &[*coord], |_| {}).await?;
-        Ok(diffs
-            .into_iter()
-            .next()
-            .map_or(ChunkPayloadDiff::Nothing, |diff| diff.entries))
+        Ok(diffs.into_iter().next().map_or_else(
+            || ChunkPayloadDiff::from_sides(None, None),
+            |diff| diff.entries,
+        ))
     }
 
     /// Compute AST diffs for explicit chunk coordinates between the bound
     /// world state and a commit, additionally returning per-phase timings.
     ///
     /// If `commit` is `None`, the active ref's target is used - the
-    /// commit the next one would continue. World-side acquisition
-    /// (region lookup, read, parse) counts under `blob_fetch`; both
-    /// sides' decompression under `decompress`.
+    /// commit the next one would continue. The commit side is a metadata
+    /// lookup; the world side (region lookup, read, decompression, digesting)
+    /// counts under `blob_fetch`, and comparing the two digests under
+    /// `diff_compute`.
     pub async fn diff_world_chunks(
         &self,
         commit: Option<CommitId>,
@@ -371,8 +349,39 @@ where
     }
 }
 
+/// What one source has to say about a chunk.
+struct Side {
+    /// The [`ChunkHash`] the side's payload digests to, `None` when it holds
+    /// no chunk there. A read error confined to this coordinate takes its
+    /// place, so a failing chunk can still be reported as absent elsewhere.
+    digest: Result<Option<ChunkHash>, AppError>,
+    /// Time spent turning the stored payload into that digest: decompression
+    /// and hashing. Zero for a recorded digest.
+    prepare: Duration,
+}
+
+impl Side {
+    /// No chunk on this side.
+    const fn absent() -> Self {
+        Self {
+            digest: Ok(None),
+            prepare: Duration::ZERO,
+        }
+    }
+
+    /// The payload exists but could not be read.
+    const fn failed(error: AppError) -> Self {
+        Self {
+            digest: Err(error),
+            prepare: Duration::ZERO,
+        }
+    }
+}
+
 trait DiffSource {
-    async fn payload(&self, coord: &ChunkCoord) -> Result<Option<Vec<u8>>, AppError>;
+    /// The side's answer for `coord`; the outer `Result` is the source itself
+    /// failing, which no coordinate confines.
+    async fn payload(&self, coord: &ChunkCoord) -> Result<Side, AppError>;
 }
 
 struct CommitDiff<'a, S> {
@@ -381,8 +390,12 @@ struct CommitDiff<'a, S> {
 }
 
 impl<S: SekaiStore> DiffSource for CommitDiff<'_, S> {
-    async fn payload(&self, coord: &ChunkCoord) -> Result<Option<Vec<u8>>, AppError> {
-        commit_chunk_compressed(self.store, self.id, coord).await
+    async fn payload(&self, coord: &ChunkCoord) -> Result<Side, AppError> {
+        Ok(Side {
+            digest: commit_chunk_hash(self.store, self.id, coord).await,
+            // The digest is recorded, not recomputed: nothing to prepare.
+            prepare: Duration::ZERO,
+        })
     }
 }
 
@@ -397,19 +410,19 @@ impl<R: RegionFile> DiffSource for WorldDiff<R>
 where
     AppError: From<R::Error>,
 {
-    fn payload(
-        &self,
-        coord: &ChunkCoord,
-    ) -> impl Future<Output = Result<Option<Vec<u8>>, AppError>> {
-        std::future::ready(read_world_chunk_compressed(&self.regions, coord))
+    fn payload(&self, coord: &ChunkCoord) -> impl Future<Output = Result<Side, AppError>> {
+        // A world read failure is always confined to this coordinate.
+        std::future::ready(Ok(read_world_chunk(&self.regions, coord)))
     }
 }
 
 /// Diff every coordinate of `old` against `new`, accumulating phase timings.
 ///
-/// A payload of `None` decompresses as a synthesized zeroed chunk (see
-/// [`decompress_or_empty`]), so an absent chunk on one side reports
-/// [`ChunkPayloadDiff::Full`] against those bytes.
+/// Each side yields the digest it holds for the chunk, either recorded at
+/// commit time or recomputed from the world; see
+/// [`ChunkPayloadDiff::from_sides`] for the cases. Both sides are always
+/// consulted before either failure is reported, so a per-chunk read error
+/// still leaves the other side's outcome known.
 async fn diff_coords(
     coords: &[ChunkCoord],
     old: impl DiffSource,
@@ -420,28 +433,12 @@ async fn diff_coords(
     let mut out = Vec::with_capacity(coords.len());
     for (index, coord) in coords.iter().enumerate() {
         let started = Instant::now();
-        let old_compressed = old.payload(coord).await?;
-        let new_compressed = new.payload(coord).await?;
+        let old_side = old.payload(coord).await?;
+        let new_side = new.payload(coord).await?;
         timings.blob_fetch += started.elapsed();
+        timings.decompress += old_side.prepare + new_side.prepare;
         let started = Instant::now();
-        let old_nbt = decompress_or_empty(old_compressed)?;
-        let new_nbt = decompress_or_empty(new_compressed)?;
-        timings.decompress += started.elapsed();
-        let started = Instant::now();
-        let entries = match (
-            parse_for_diff(*coord, &old_nbt)?,
-            parse_for_diff(*coord, &new_nbt)?,
-        ) {
-            (Some(old_val), Some(new_val)) => {
-                ChunkPayloadDiff::new(&old_val, &new_val).map_err(|source| AppError::ChunkNbt {
-                    coord: *coord,
-                    rx: coord.region_x(),
-                    rz: coord.region_z(),
-                    source,
-                })?
-            }
-            _ => raw_nbt_diff(&old_nbt, &new_nbt),
-        };
+        let entries = ChunkPayloadDiff::from_sides(old_side.digest?, new_side.digest?);
         timings.diff_compute += started.elapsed();
         progress(DiffProgress {
             chunks_done: index + 1,
@@ -453,19 +450,4 @@ async fn diff_coords(
         });
     }
     Ok(out)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn raw_nbt_diff_hashes_both_sides() {
-        let changed = raw_nbt_diff(b"old", b"new");
-        assert!(
-            matches!(changed, ChunkPayloadDiff::Full { old, new } if old != new),
-            "different payloads need distinct hashes: {changed:?}"
-        );
-        assert_eq!(raw_nbt_diff(b"same", b"same"), ChunkPayloadDiff::Nothing);
-    }
 }

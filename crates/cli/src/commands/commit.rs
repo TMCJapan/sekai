@@ -11,11 +11,8 @@ use crate::cli::Selection;
 use crate::envelope::envelope_ok;
 use crate::style::Styler;
 
-const fn options(with_diff: bool, jobs: usize) -> CommitOptions {
-    CommitOptions {
-        concurrency: jobs,
-        with_diff,
-    }
+const fn options(jobs: usize) -> CommitOptions {
+    CommitOptions { concurrency: jobs }
 }
 
 /// Whether the store directory already exists. Unknown URL schemes are
@@ -33,7 +30,6 @@ fn store_preexists(store: &str) -> bool {
 pub async fn run(
     store: &str,
     world_path: impl AsRef<Path>,
-    with_diff: bool,
     jobs: usize,
     progress: bool,
     selection: &Selection,
@@ -49,7 +45,7 @@ pub async fn run(
     let scope = resolve_selection(&instance, selection).await?;
     let (report, timings) = instance
         .world_mut(&mut world)
-        .commit(options(with_diff, jobs), scope, |update| {
+        .commit(options(jobs), scope, |update| {
             report_progress(
                 bar.as_ref(),
                 update.files_done,

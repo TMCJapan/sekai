@@ -23,7 +23,8 @@ refuses to trust mtime alone.
 ## Decision
 
 Hash the entire file. `fingerprint_file` streams it in 128 KiB chunks
-through a new `anvil::ContentHasher`, so memory stays bounded regardless of
+through a streaming hasher (`anvil::ContentHasher` then; today
+`sekai_util::BytesHasher`), so memory stays bounded regardless of
 region size, and the field is renamed `content_hash` (schema version 6;
 derived state, so a mismatch costs one full re-ingest and never wrong data).
 

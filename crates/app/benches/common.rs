@@ -82,28 +82,75 @@ pub const MEDIUM: WorldSpec = WorldSpec {
     seed: 1337,
 };
 
+fn name(out: &mut Vec<u8>, key: &str) {
+    out.extend_from_slice(&u16::try_from(key.len()).unwrap().to_be_bytes());
+    out.extend_from_slice(key.as_bytes());
+}
+
+fn int(out: &mut Vec<u8>, key: &str, value: i32) {
+    out.push(3);
+    name(out, key);
+    out.extend_from_slice(&value.to_be_bytes());
+}
+
+fn long(out: &mut Vec<u8>, key: &str, value: i64) {
+    out.push(4);
+    name(out, key);
+    out.extend_from_slice(&value.to_be_bytes());
+}
+
+fn string(out: &mut Vec<u8>, key: &str, value: &str) {
+    out.push(8);
+    name(out, key);
+    out.extend_from_slice(&u16::try_from(value.len()).unwrap().to_be_bytes());
+    out.extend_from_slice(value.as_bytes());
+}
+
+fn empty_list(out: &mut Vec<u8>, key: &str) {
+    out.push(9);
+    name(out, key);
+    out.push(0);
+    out.extend_from_slice(&0i32.to_be_bytes());
+}
+
+fn empty_compound(out: &mut Vec<u8>, key: &str) {
+    out.push(10);
+    name(out, key);
+    out.push(0);
+}
+
 fn chunk_nbt(rng: &mut Rng, spec: &WorldSpec, x: i32, z: i32) -> Vec<u8> {
     let mut block_lights = vec![0u8; spec.payload_bytes];
     rng.fill(&mut block_lights, spec.compressible_permille);
-    let chunk = sekai_nbt::ChunkPayload {
-        data_version: 3_465,
-        x_pos: x,
-        y_pos: 0,
-        z_pos: z,
-        inhabited_time: 0,
-        last_update: 0,
-        sections: vec![sekai_nbt::Section {
-            y: 0,
-            block_lights: &block_lights,
-            ..sekai_nbt::Section::default()
-        }],
-        heightmaps: sekai_nbt::Heightmaps::default(),
-        status: &sekai_nbt::nanonbt::Cesu8::from_str("minecraft:full"),
-        block_entities: vec![],
-        block_ticks: vec![],
-        fluid_ticks: vec![],
-    };
-    sekai_nbt::nanonbt::to_bytes(&chunk).expect("chunk serializes")
+
+    let mut nbt = vec![10, 0, 0];
+    int(&mut nbt, "DataVersion", 3_465);
+    int(&mut nbt, "xPos", x);
+    int(&mut nbt, "yPos", 0);
+    int(&mut nbt, "zPos", z);
+    long(&mut nbt, "InhabitedTime", 0);
+    long(&mut nbt, "LastUpdate", 0);
+
+    nbt.push(9);
+    name(&mut nbt, "sections");
+    nbt.push(10);
+    nbt.extend_from_slice(&1i32.to_be_bytes());
+    nbt.push(1);
+    name(&mut nbt, "Y");
+    nbt.push(0);
+    nbt.push(7);
+    name(&mut nbt, "BlockLight");
+    nbt.extend_from_slice(&i32::try_from(block_lights.len()).unwrap().to_be_bytes());
+    nbt.extend_from_slice(&block_lights);
+    nbt.push(0);
+
+    empty_compound(&mut nbt, "Heightmaps");
+    string(&mut nbt, "Status", "minecraft:full");
+    empty_list(&mut nbt, "block_entities");
+    empty_list(&mut nbt, "block_ticks");
+    empty_list(&mut nbt, "fluid_ticks");
+    nbt.push(0);
+    nbt
 }
 
 /// Generate `spec` into `world/region/` (overworld only).
@@ -180,11 +227,8 @@ fn write_region(path: impl AsRef<Path>, image: &[u8]) {
 }
 
 /// Default bench options (workers follow CPU count).
-pub fn options() -> sekai_app::CommitOptions {
-    sekai_app::CommitOptions {
-        concurrency: 0,
-        ..sekai_app::CommitOptions::default()
-    }
+pub const fn options() -> sekai_app::CommitOptions {
+    sekai_app::CommitOptions { concurrency: 0 }
 }
 
 /// Multi-threaded runtime shared by async benches.

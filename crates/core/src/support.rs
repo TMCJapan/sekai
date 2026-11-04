@@ -8,7 +8,7 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use crate::port::{BlobStore, MetaStore};
 use sekai_util::{
-    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitId, CommitRef, DiffHash,
+    ApplyOutcome, ChunkCoord, ChunkHash, ChunkHistoryEntry, Commit, CommitId, CommitRef,
     FoldOutcome, NamedScope, RefName, ScopeName,
 };
 
@@ -231,15 +231,10 @@ impl MetaStore for MemMeta {
         &mut self,
         commit: CommitId,
         coord: &ChunkCoord,
-        blob: Option<&BlobHash>,
-        diff: Option<&DiffHash>,
+        blob: Option<&ChunkHash>,
     ) -> impl Future<Output = Result<(), MemError>> + Send {
-        self.rows.push(ChunkHistoryEntry::new(
-            *coord,
-            commit,
-            blob.copied(),
-            diff.copied(),
-        ));
+        self.rows
+            .push(ChunkHistoryEntry::new(*coord, commit, blob.copied()));
         core::future::ready(Ok(()))
     }
 
@@ -385,12 +380,8 @@ impl MetaStore for MemMeta {
         let id = crate::commit::commit_hash(&canonical, created_at_ms, entries);
         if self.insert_commit(id, created_at_ms, canonical) {
             for entry in entries {
-                self.rows.push(ChunkHistoryEntry::new(
-                    entry.coord,
-                    id,
-                    entry.blob,
-                    entry.diff,
-                ));
+                self.rows
+                    .push(ChunkHistoryEntry::new(entry.coord, id, entry.blob));
             }
         }
         // The active ref moves onto the new commit, in the same step: a
@@ -611,19 +602,19 @@ impl MetaStore for MemMeta {
 /// In-memory [`BlobStore`].
 #[derive(Debug, Default)]
 pub struct MemCas {
-    blobs: BTreeMap<BlobHash, Vec<u8>>,
+    blobs: BTreeMap<ChunkHash, Vec<u8>>,
 }
 
 impl BlobStore for MemCas {
     type Error = MemError;
 
-    fn contains(&self, hash: &BlobHash) -> impl Future<Output = Result<bool, Self::Error>> + Send {
+    fn contains(&self, hash: &ChunkHash) -> impl Future<Output = Result<bool, Self::Error>> + Send {
         core::future::ready(Ok(self.blobs.contains_key(hash)))
     }
 
     fn put(
         &mut self,
-        hash: &BlobHash,
+        hash: &ChunkHash,
         payload: &[u8],
     ) -> impl Future<Output = Result<bool, Self::Error>> + Send {
         if self.blobs.contains_key(hash) {
@@ -639,7 +630,7 @@ impl BlobStore for MemCas {
 
     fn fetch_into(
         &self,
-        hash: &BlobHash,
+        hash: &ChunkHash,
         out: &mut Vec<u8>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send {
         out.clear();
@@ -652,14 +643,14 @@ impl BlobStore for MemCas {
 
     fn remove(
         &mut self,
-        hash: &BlobHash,
+        hash: &ChunkHash,
     ) -> impl Future<Output = Result<bool, Self::Error>> + Send {
         core::future::ready(Ok(self.blobs.remove(hash).is_some()))
     }
 
     fn visit_blobs<F>(&self, mut visit: F) -> impl Future<Output = Result<(), Self::Error>> + Send
     where
-        F: FnMut(&BlobHash) -> bool + Send,
+        F: FnMut(&ChunkHash) -> bool + Send,
     {
         for hash in self.blobs.keys() {
             if !visit(hash) {

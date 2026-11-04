@@ -1,7 +1,7 @@
 //! `no_std` Anvil region-image codec.
 //!
-//! Provides strict `.mca` parsing, chunk decompression, region-coordinate
-//! mapping, hashing helpers, and rebuilding of region images.
+//! Provides strict `.mca` parsing, chunk decompression and normalized
+//! hashing, region-coordinate mapping, and rebuilding of region images.
 //!
 //! Filesystem access is intentionally outside this crate.
 
@@ -12,13 +12,14 @@ extern crate alloc;
 mod codec;
 mod error;
 mod hash;
+mod nbt;
 mod reader;
 mod region;
 mod writer;
 
 pub use codec::{Compression, compression_of, decompress_into};
-pub use error::AnvilError;
-pub use hash::{ContentHasher, content_hash, custom_dimension_id, custom_dimension_id_bytes};
+pub use error::{AnvilError, ChunkHashError, ChunkNbtError};
+pub use hash::{custom_dimension_id, custom_dimension_id_bytes};
 pub use reader::{Chunk, RegionImage, RegionImageIter};
 pub use region::{
     FIRST_DATA_SECTOR, HEADER_LEN, MAX_SECTOR_OFFSET, MAX_SECTORS_PER_CHUNK, ROW_WIDTH, RegionLoc,

@@ -10,8 +10,8 @@
 use alloc::vec::Vec;
 use core::future::Future;
 use sekai_util::{
-    ApplyOutcome, BlobHash, ChunkCoord, ChunkHistoryEntry, Commit, CommitEntry, CommitId,
-    CommitRef, DiffHash, FoldOutcome, NamedScope, RefName, ScopeName,
+    ApplyOutcome, ChunkCoord, ChunkHash, ChunkHistoryEntry, Commit, CommitEntry, CommitId,
+    CommitRef, FoldOutcome, NamedScope, RefName, ScopeName,
 };
 
 /// Commit metadata and per-chunk history storage.
@@ -48,8 +48,7 @@ pub trait MetaStore {
         &mut self,
         commit: CommitId,
         coord: &ChunkCoord,
-        blob: Option<&BlobHash>,
-        diff: Option<&DiffHash>,
+        blob: Option<&ChunkHash>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// Effective row for (`commit`, `coord`): the row introduced at

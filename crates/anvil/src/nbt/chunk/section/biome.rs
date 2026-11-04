@@ -4,7 +4,7 @@ use nanonbt::{
     Cesu8, DeserializeNbtRef, I64Be, ReadRef, SerializeNbt, Tag, read_name_into, skip_nbt,
 };
 
-use crate::chunk::decode::read_long_array;
+use crate::nbt::chunk::decode::read_long_array;
 
 #[derive(SerializeNbt, Debug, Clone, Eq, PartialEq, Default)]
 pub struct Biomes<'de> {

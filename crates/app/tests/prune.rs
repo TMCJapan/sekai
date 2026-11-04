@@ -4,6 +4,10 @@
 
 #![cfg(feature = "backend-sqlite")]
 
+mod fixtures;
+
+use fixtures::chunk_nbt;
+
 use sekai_app::HostWorldTree;
 use std::path::Path;
 
@@ -30,11 +34,8 @@ fn write_region(path: impl AsRef<Path>, chunks: &[(i32, i32, Vec<u8>)]) {
     std::fs::write(path, image).unwrap();
 }
 
-fn commit_options() -> sekai_app::CommitOptions {
-    sekai_app::CommitOptions {
-        concurrency: 2,
-        ..sekai_app::CommitOptions::default()
-    }
+const fn commit_options() -> sekai_app::CommitOptions {
+    sekai_app::CommitOptions { concurrency: 2 }
 }
 
 fn blob_count(store: impl AsRef<Path>) -> usize {
@@ -68,19 +69,19 @@ async fn prune_folds_and_gc_reclaims() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
 
     // Three commits with distinct payloads.
-    write_region(&region, &[(0, 0, vec![3, 1])]);
+    write_region(&region, &[(0, 0, chunk_nbt("marker-1"))]);
     instance
         .world_mut(&mut world)
         .commit(commit_options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
-    write_region(&region, &[(0, 0, vec![3, 2])]);
+    write_region(&region, &[(0, 0, chunk_nbt("marker-2"))]);
     instance
         .world_mut(&mut world)
         .commit(commit_options(), sekai_app::Scope::World, |_| {})
         .await
         .unwrap();
-    write_region(&region, &[(0, 0, vec![3, 3])]);
+    write_region(&region, &[(0, 0, chunk_nbt("marker-3"))]);
     instance
         .world_mut(&mut world)
         .commit(commit_options(), sekai_app::Scope::World, |_| {})
@@ -149,7 +150,11 @@ async fn prune_before_ref_and_empty_guards() {
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store = root.join("store").to_string_lossy().into_owned();
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
-    for payload in [vec![3, 1], vec![3, 2], vec![3, 3]] {
+    for payload in [
+        chunk_nbt("marker-1"),
+        chunk_nbt("marker-2"),
+        chunk_nbt("marker-3"),
+    ] {
         write_region(world_path.join("region/r.0.0.mca"), &[(0, 0, payload)]);
         instance
             .world_mut(&mut world)

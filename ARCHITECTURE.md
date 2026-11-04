@@ -27,25 +27,23 @@ anything through it).
 sekai (bin, thin: clap parse + print + exit code)
   -> sekai-app (std + tokio: orchestration, parallelism, clocks, timing)
     -> sekai-core (no_std + alloc: use-case policy API over shared types)
-      -> sekai-anvil (no_std + alloc: pure sector codec, decompress)
-      -> sekai-nbt (no_std + alloc: pure parse/diff)
+      -> sekai-anvil (no_std + alloc: pure sector codec, decompress, NBT normalization)
     -> sekai-world (std: filesystem owner - discover/fingerprint/swap)
       -> sekai-anvil + sekai-core (types only)
     -> sekai-storage (std + tokio: store traits, file CAS, and locks)
       -> sekai-core
     -> sekai-storage-sqlite (std + tokio: sqlx SQLite implementation)
       -> sekai-storage
-sekai-util (no_std, zero-dependency: coordinates, hashes, history value
-  types) <- anvil, nbt, core (world/storage/app reach them through
-  `core` re-exports)
+sekai-util (no_std, no tokio dependency: coordinates, chunk hashes,
+  history value types) <- anvil, core (world/storage/app reach them
+  through `core` re-exports)
 ```
 
 | Crate | `std` | `async` | Role |
 |---|---|---|---|
-| `sekai-util` | `no_std`, zero external dependencies | no | Shared value types: coordinates, hashes, region/history/commit/gc records, hex errors. Pure data plus total validation only. |
-| `sekai-anvil` | `no_std` + `alloc` | no | Pure Anvil sector codec including decompression. `&[u8]` sector payload in, raw NBT bytes out; also builds `Vec<u8>` images. Compression framing is MCA spec knowledge, so it lives here. No `Path`, no `fs`. Names custom dimensions with util `Dimension`. |
-| `sekai-nbt` | `no_std` + `alloc` | no | Pure `raw NBT bytes -> diff view`. Hand-rolled NBT parser (no `Serialize` by design; output uses SNBT), tag filtering, canonical digest returning util `DiffHash`. Never sees compression. |
-| `sekai-core` | `no_std` + `alloc` | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_checkout`, `gc plan`/`apply`) plus composition helpers (`hash_blob`, storage ports). Composes `anvil`/`nbt` over util types and re-exports them, so downstream paths stay stable. |
+| `sekai-util` | `no_std`, no `std`/tokio dependencies | no | Shared value types: coordinates, the chunk digest (`ChunkHash`, `hash_bytes`, `BytesHasher`), region/history/commit/gc records, hex errors. Pure data plus total validation only. |
+| `sekai-anvil` | `no_std` + `alloc` | no | Pure Anvil sector codec including decompression and chunk NBT normalization. A stored sector payload becomes a `Chunk` whose `normalized_hash()` is the only public NBT-derived digest; the parser and normalized views stay internal. Also builds `Vec<u8>` images. Compression framing is MCA spec knowledge, so it lives here. No `Path`, no `fs`. Names custom dimensions with util `Dimension`. |
+| `sekai-core` | `no_std` + `alloc` | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_checkout`, `gc plan`/`apply`) plus storage ports. Composes `anvil` over util types and re-exports every util type at its root, so downstream paths stay stable. |
 | `sekai-storage` | `std` + tokio | yes (RPITIT) | Backend-neutral boundaries: async `BlobStore`/`MetaStore` traits (owned by `core::port`, re-exported from the `api` module), high-level `SekaiStore`/`SekaiStoreOpener` traits, file CAS (`cas` module, `blobs/ab/cdef...` retained by design), and URL-based backend selection. Depends on `core`. |
 | `sekai-storage-sqlite` | `std` + tokio | yes | Concrete SQLite implementation over sqlx: `SqliteMeta` plus the SQLite-backed `SqliteStore`, schema/version gate, and opener. Implements the traits from `sekai-storage` (and `core::port`). Other backends become sibling crates without touching `core`/`app`. |
 | `sekai-world` | `std` | yes (I/O) / sync pure helpers where trivial | World access boundary: the `WorldTree` trait, the `RegionFile` handle, and the filesystem tree (`HostWorldTree`). |
@@ -77,49 +75,46 @@ behind them. See
 
 ### Shared value types (`sekai-util`)
 
-Coordinates, hashes, and history records live in a zero-dependency leaf so
-`anvil` and `nbt` can name the same types as `core` without a package
-cycle (`core -> anvil/nbt -> core` is forbidden by Cargo). The boundary
-rules:
+Coordinates, hashes, and history records live in a leaf crate so
+`anvil` can name the same types as `core` without a package cycle
+(`core -> anvil -> core` is forbidden by Cargo). The boundary rules:
 
-- `util` holds pure data plus total validation only: no hashing backends,
-  no codecs, no ports, no orchestration. It depends on nothing.
-- `anvil`/`nbt` implement over util types (`Dimension` custom ids,
-  `DiffHash` digests); `core` composes them (`hash_blob`, storage ports,
-  use cases).
+- `util` holds pure data plus total validation only: no codecs, no ports,
+  no orchestration. It owns the one Blake3 primitive (`hash_bytes`,
+  `BytesHasher`) so every digest in the system comes from the same
+  function; `anvil` builds on it instead of linking its own.
+- `anvil` implements over util types (`Dimension` custom ids, `RegionKind`
+  chunk families); `core` composes it (storage ports, use cases).
 - `core` re-exports every util type at its root, so downstream paths
   (`sekai_core::ChunkCoord`, ...) keep working; `world`/`storage`/`app`
   continue to import through `core`.
-- Codec errors (`UnknownCompression`, `CustomCompression`, `ExternalBody`,
-  decompression failures) are `anvil` errors: compression framing is MCA
-  spec knowledge. `nbt` input is always already-decompressed raw NBT; it
-  knows nothing of compression-type bytes or sector framing.
+- Codec and NBT errors (`UnknownCompression`, `CustomCompression`,
+  `ExternalBody`, decompression failures, invalid chunk NBT) are `anvil`
+  errors: compression framing and chunk schema knowledge both live there.
 
 ## Data Flow
 
 ```text
 commit:
   world: region handle -> Vec<u8> image
-    -> anvil: image -> sector payloads -> decompress -> raw NBT bytes
-    -> core::hash_blob(sector payload) -> BlobHash -> storage CAS put
-    -> nbt (opt-in only): diff_hash(raw NBT bytes) -> diff cache column
+    -> anvil: image -> chunk payloads (captured bytes)
+    -> Chunk::normalized_hash -> ChunkHash -> storage CAS put
 
 checkout:
-  core::plan_checkout -> groups of (coord, BlobHash)
+  core::plan_checkout -> groups of (coord, ChunkHash)
     -> storage CAS fetch -> anvil builder -> Vec<u8> image
     -> world: region handle <- atomic swap(target, image)
+
+diff:
+  CAS blob or world payload -> Chunk::normalized_hash -> in-memory digest
 ```
 
-`blob_hash` runs over the opaque sector payload (compression framing
-included); `diff_hash` runs over the decompressed raw NBT bytes. The two
-inputs diverge at the `anvil` decompression step, which is why decompression
-belongs to `anvil`: it is the only crate that understands the sector
-framing.
-
-`nbt` is an opt-in path (`with_diff` flag); `anvil` never calls `nbt`
-directly (no `anvil -> nbt` edge); `core`/`app` drives `anvil`'s
-decompressed raw NBT bytes into `nbt` so the layering stays acyclic and
-the hot path stays decode-free.
+A chunk has exactly one hash: the `Chunk::normalized_hash` digest of its
+normalized view (see
+[Two-Layer Hashing Architecture](#two-layer-hashing-architecture)). That
+digest is the CAS key and the restore path, and the diff path compares the
+very same digests instead of computing a second one. NBT parsing is an
+implementation detail of `anvil`; no other crate can name or call it.
 
 ## World Layouts
 
@@ -157,16 +152,37 @@ handles when folders moved since the commit.
 
 ## Two-Layer Hashing Architecture
 
-- `blob_hash` (CAS key): hash over the exact raw byte payload as read from
-  the sector (compression framing included). Immutable, persistent, restore
-  path. Checkout reproduces captured bytes verbatim, rewinding volatile tags
-  (e.g. `LastUpdate`) to capture time.
-- `diff_hash` (volatile diff view): hash over uncompressed NBT with
-  non-essential tags excluded (treated as absent), over a canonical encoding
-  (compound keys sorted, big-endian scalars, UTF-8 strings) - never over
-  re-serialized NBT bytes, so it is independent of on-disk order and codec.
-  V1 rules exclude `LastUpdate` and `InhabitedTime`. Used only in-memory or as a cache column;
-  never alters stored blobs.
+There is one chunk hash and no free function for it. `Chunk::normalized_hash`
+is the only way to hash a chunk; the NBT payload forms and their normalized
+views are private to `sekai-anvil`. Everything else is that digest under a
+different name.
+
+- **Normalized view** (in-memory): the chunk encoded canonically - compound
+  keys sorted, big-endian scalars, UTF-8 strings, empty collections omitted -
+  with the volatile `LastUpdate` and `InhabitedTime` tags excluded (treated
+  as absent). It never hashes re-serialized on-disk NBT bytes, so it is
+  independent of key order and of the compression codec. Each format (1.13+
+  and legacy `Level`) has its own view, so converting a chunk is a real
+  change, never a silent no-op.
+- **Chunk digest -> CAS key**: `normalized_hash` through `hash_bytes` is the
+  `ChunkHash`. The very same digest drives `diff` output. Because volatile
+  tags never enter it, a server rewriting them neither adds a blob nor
+  records a history row; checkout still writes the captured bytes back
+  verbatim.
+
+`entities`/`poi` payloads have no level-chunk schema to normalize, so they
+key on their exact bytes. That identity comes from the region kind, not from
+a failed decode: the payload must still be well-formed NBT.
+
+Nothing else gets a key. A `region/` payload that does not decode into a
+level chunk - corrupt, truncated, or of a schema this version does not
+read - is an error at ingest rather than a raw-byte fallback, so a damaged
+chunk cannot hide behind a byte-level identity that later normalizes
+differently. An unknown compression codec fails the same way.
+
+Commit IDs hash a canonical byte encoding of the logical delta
+([ADR-0020](docs/adr/0020-content-addressed-commit-ids.md)) with the same
+`hash_bytes` primitive: a different preimage, not a second hashing layer.
 
 ## Chunk Codec Support
 
@@ -177,15 +193,19 @@ Decompression lives in `sekai-anvil`: the framing byte is MCA spec
 knowledge, so `anvil` exposes `decompress_into(payload, &mut out)` and
 owns all codec errors — type `127` surfaces as `CustomCompression`,
 `>= 128` (external `c.<x>.<z>.mcc` body) as `ExternalBody`, anything else
-as `UnknownCompression`. `sekai-nbt` only ever receives already-decompressed
-raw NBT bytes and parses them with a hand-rolled `no_std` parser (no
-`Serialize` by design). Commit ingests raw sector payloads opaquely into CAS;
-unsupported codecs surface only when the raw NBT view is derived for
-diffing, never as ingest failures.
+as `UnknownCompression`. `Chunk::normalized_hash` decompresses the sector
+payload and parses the raw NBT internally with a `no_std` parser (no
+`Serialize` by design); nothing outside `sekai-anvil` sees NBT types.
+Commit stores the exact captured sector payload in CAS, but derives every
+key by decompressing and normalizing the chunk. Only well-formed NBT of the
+kind's schema is a chunk: a `region/` payload must decode as a level chunk,
+and an `entities`/`poi` payload must be a well-formed NBT compound. An
+unsupported compression codec or an unparsable/unsupported payload fails
+ingest; there is no raw-byte fallback.
 
 ### Chunk NBT formats
 
-`sekai-nbt::parse` accepts both on-disk shapes and returns a `Chunk`:
+`Chunk::normalized_hash` accepts both on-disk shapes:
 
 - **Modern** (1.13+): fields at the root, palette `sections`,
   `Heightmaps`, `Status`.
@@ -431,7 +451,7 @@ object-store CAS swaps don't touch metadata code.
 ## Async Policy
 
 - `async` lives in `storage`, `world`, `app`, and the bin - never in
-  `anvil`/`nbt`/`core` logic. `core` uses `async fn` in traits (RPITIT,
+  `anvil`/`core` logic. `core` uses `async fn` in traits (RPITIT,
   no `async-trait` macro, no boxing, static dispatch preserved) so
   implementations can be `tokio`-backed while policy stays runtime-free.
 - Pure orchestration steps (`assemble`, image building, canonical digest)
@@ -457,6 +477,6 @@ object-store CAS swaps don't touch metadata code.
     delete) commits atomically; blobs unlink only in a later `gc`.
 - **No server orchestration in libraries**: `save-off`/`save-all`,
   scheduling, and process control belong to callers, never to `core`,
-  `anvil`, `nbt`, `storage`, `world`, or `app` internals.
+  `anvil`, `storage`, `world`, or `app` internals.
 - **Two-phase destructive operations** (plan before apply) hold for every
   change.

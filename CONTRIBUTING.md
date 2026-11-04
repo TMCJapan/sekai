@@ -6,9 +6,8 @@ This project is organized as a Cargo workspace under `crates/`:
 .
 └── crates
     ├── util            # Shared value types: coordinates, hashes, history records (no_std, zero dependencies)
-    ├── anvil           # Pure Anvil sector codec + decompression (no_std + alloc, ex-mca)
-    ├── nbt             # Pure NBT parse/diff views over raw NBT bytes (no_std + alloc, hand-rolled parser)
-    ├── core            # Use-case policy API over shared types (no_std + alloc, depends on util/anvil/nbt)
+    ├── anvil           # Pure Anvil sector codec, decompression, and normalized chunk hashing (no_std + alloc, ex-mca)
+    ├── core            # Use-case policy API over shared types (no_std + alloc, depends on util/anvil)
     ├── storage         # Backend-neutral store traits, file CAS, locks (std + tokio)
     ├── storage-sqlite  # SQLite metadata backend over sqlx (std + tokio)
     ├── world           # World access boundary (std): WorldTree trait, RegionFile
@@ -23,11 +22,11 @@ Keep dependencies strictly unidirectional (inward):
 
 ```text
 sekai (bin) -> app -> {core, world, storage, storage-sqlite}
-app -> core -> {anvil, nbt}
+app -> core -> anvil
 world -> {anvil, core}
 storage -> core (whose `port` module owns the async traits; backend crates implement them)
 storage-sqlite -> storage
-{anvil, nbt, core} -> util (world/storage/app reach shared types through `core` re-exports)
+{anvil, core} -> util (world/storage/app reach shared types through `core` re-exports)
 ```
 
 Rules:
@@ -35,17 +34,17 @@ Rules:
 - `core` never depends on `world`, `storage`, `app`, or the binary.
   `world` already depends on `core` types, so the reverse edge would be a
   Cargo package cycle.
-- `util` is a dependency leaf: zero external dependencies, pure data plus
-  total validation only (no hashing backends, no codecs, no ports, no
-  orchestration). `anvil`/`nbt` name util types directly (`Dimension`
-  custom ids, `DiffHash` digests); `core` composes them and re-exports
+- `util` is a dependency leaf: pure data plus total validation only, plus
+  the shared Blake3 primitive (`hash_bytes`, `BytesHasher`). It owns no
+  codecs, ports, or orchestration. `anvil` names util types directly
+  (`Dimension` custom ids, `RegionKind`); `core` composes it and re-exports
   every util type at its root so downstream paths stay stable.
-- `anvil` never calls `nbt`. `core`/`app` drives `anvil`'s decompressed raw
-  NBT bytes into `nbt` (opt-in diff path), keeping the pure DAG acyclic and
-  the commit hot path decode-free. Compression framing is MCA spec and lives
-  in `anvil`; `nbt` never sees a compression-type byte.
+- NBT parsing and normalized views are private to `anvil`. `core`/`app`
+  call `Chunk::normalized_hash()` and never see raw NBT types, so the
+  parser cannot drift into a second public path. Compression framing and
+  chunk schema knowledge both live in `anvil`.
 - `async`/tokio lives in `storage`, `storage-sqlite`, `world`, `app`, and the
-  binary only. `anvil`/`nbt` are sync-only; `core` policy is sync except for
+  binary only. `anvil` is sync-only; `core` policy is sync except for
   `async fn` in traits (RPITIT, see below).
 - `storage` owns backend-neutral boundaries (`api` / `store` / `cas`);
   concrete database backends live in sibling crates such as
@@ -57,13 +56,13 @@ Rules:
 These hold for every change. The PR template asks for confirmation; explain
 any exception in the PR body.
 
-- **Pure-layer hygiene**: `util`, `anvil`, `nbt`, and `core` stay `no_std` + `alloc`.
+- **Pure-layer hygiene**: `util`, `anvil`, and `core` stay `no_std` + `alloc`.
   No `std::fs`, `Path`, `std::time`, `std::io::Error`, or `thiserror` there;
   hand-written `core::fmt::Display` error enums only. No `tokio`, no
   `async-trait` macro.
 - **`core` is an API layer and the port hub**: it composes the concrete
-  pure crates (`anvil`, `nbt`) over shared `util` types for sector/diff
-  logic, re-exports every util type at its root, and owns the async
+  pure crate (`anvil`) over shared `util` types for sector/diff logic,
+  re-exports every util type at its root, and owns the async
   `BlobStore`/`MetaStore` ports (`port` module, RPITIT). Pluggability lives
   at those ports (implemented by `storage` backends) and at the `world`
   observation boundary - not at `RegionReader`/`Normalizer`-style traits.
@@ -77,11 +76,15 @@ any exception in the PR body.
 - **Atomic file I/O**: never overwrite `.mca` files in place. `anvil` builds
   the `Vec<u8>` image; `world::atomic_swap` writes it to a temporary file
   in the same directory as the target and swaps via atomic `rename`.
-- **Captured-payload checkout**: store raw chunk payloads verbatim in CAS;
-  normalization feeds diff views only, never stored blobs. Checkout
-  reproduces the exact bytes captured for the commit, including volatile
-  tags (e.g. `LastUpdate`) as of capture time - it rewinds them to the
-  commit, it does not preserve their live values.
+- **Captured-payload checkout**: store raw chunk payloads verbatim in CAS.
+  A chunk's CAS key is its `Chunk::normalized_hash` digest, which is also
+  what `diff` compares; nothing else hashes a chunk. A payload is stored
+  only when it yields that key: a `region/` payload must decode as a level
+  chunk, and an `entities`/`poi` payload must be well-formed NBT. Undecodable
+  or unsupported payloads fail ingest; there is no raw-byte fallback.
+  Checkout reproduces the exact bytes captured for the commit, including
+  volatile tags (e.g. `LastUpdate`) as of capture time - it rewinds them to
+  the commit, it does not preserve their live values.
 - **No server orchestration in libraries**: `save-off`/`save-all`, process
   control, and scheduling belong to the caller, never to library crates.
 - **No persisted derived state**: commit decisions compare per-chunk
@@ -98,23 +101,19 @@ any exception in the PR body.
 ## Tech Stack & Tooling
 
 - **Rust Edition**: 2024 (toolchain pinned in `rust-toolchain.toml`)
-- **Pure crates**: `util`, `anvil`, `nbt`, `core` must remain `no_std` + `alloc`
+- **Pure crates**: `util`, `anvil`, `core` must remain `no_std` + `alloc`
   with no `std`-only or async-runtime dependencies.
 - **Pure-crate dependency allowlist** (keep this list minimal and
   `no_std`-gated):
-  - `util`: nothing. New dependencies need explicit justification.
-  - `anvil`: `sekai-util` (shared dimension codes), `miniz_oxide` (zlib/raw-inflate), `crc32fast` (gzip footer),
+  - `util`: `blake3` with `default-features = false` for the shared digest
+    primitive. Other new dependencies need explicit justification.
+  - `anvil`: `sekai-util` (shared dimension and region-kind codes),
+    `miniz_oxide` (zlib/raw-inflate), `crc32fast` (gzip footer),
     `lz4_flex` block API (lz4-java stream bodies), `twox-hash` (lz4-java
-    block checksums), `blake3` (header/dimension digests, all with
-    `default-features = false`).
-  - `nbt`: `sekai-util` (shared `DiffHash`) plus `blake3` with
-    `default-features = false` for the canonical digest. No `serde`:
-    the `Value` data model has deliberately no `Serialize` impl
-    (derived output would be externally tagged, competing with the
-    SNBT `Display` that machine-readable output uses).
+    block checksums), and `nanonbt` (chunk NBT parsing and normalized
+    views; private to the crate).
   - `core`: `sekai-util` (shared types, re-exported at the root) plus
-    `anvil` + `nbt` (concrete composition targets) plus `blake3` with
-    `default-features = false` for hashing.
+    `anvil` (concrete composition target).
 - **Async policy**: `async fn` in traits via RPITIT (return-position
   `impl Future`, no `async-trait` macro, no boxing). All trait futures are
   `Send`-bounded for tokio. Static dispatch (`generics`) is preferred over
@@ -123,8 +122,8 @@ any exception in the PR body.
 - **Runtime**: tokio in `storage`, `storage-sqlite`, `world` (I/O parts),
   `app`, and the binary only.
 - **Portability targets**: CI lints the pure crates on every push and pull request.
-- `no_std`: `util`, `anvil`, `nbt`, `core` must keep linting clean for `thumbv7m-none-eabi`.
-- `wasm`: `util`, `anvil`, `nbt`, `core`, and the backend-neutral
+- `no_std`: `util`, `anvil`, `core` must keep linting clean for `thumbv7m-none-eabi`.
+- `wasm`: `util`, `anvil`, `core`, and the backend-neutral
   `storage` crate must keep linting clean for `wasm32-unknown-unknown`.
   `world`, `storage-sqlite`, `app`, and the binary own host file I/O, locks,
   and SQLite and are intentionally **not** wasm targets yet. The
@@ -153,7 +152,7 @@ any exception in the PR body.
 - **Language**: Write all code comments, documentation, and commit messages in **English**.
 - **Comments**: Focus on rationale ("why", design trade-offs, `unsafe` safety specifications) rather than explaining obvious implementation details.
 - **Error Handling**:
-- For pure crates (`util`, `anvil`, `nbt`, `core`), use hand-written error types
+- For pure crates (`util`, `anvil`, `core`), use hand-written error types
   (`core::fmt::Display` without external dependencies).
 - For `std` library crates (`storage`, `world`, `app`), use `thiserror`.
 - For the binary, use `anyhow`.
@@ -162,8 +161,9 @@ any exception in the PR body.
 - **Performance Considerations**:
 - Enforce zero-allocation on critical hot paths (reuse buffers, prefer stack allocations).
 - Prefer static dispatch (generics) over dynamic dispatch (`dyn Trait`) in core performance paths.
-- Keep the commit hot path decode-free: `nbt` runs only on the opt-in
-  (`with_diff`) path, never per-chunk by default.
+- Keep ingest's per-chunk work bounded: decompress and normalize once per
+  in-scope chunk, reuse buffers, and never re-read a payload the CAS write
+  already holds.
 
 # Pull Request Checklist
 
@@ -178,10 +178,10 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 
 # Ensure the pure crates remain no_std
-cargo clippy -p sekai-util -p sekai-anvil -p sekai-nbt -p sekai-core --target thumbv7m-none-eabi -- -D warnings
+cargo clippy -p sekai-util -p sekai-anvil -p sekai-core --target thumbv7m-none-eabi -- -D warnings
 
 # Ensure the pure crates and backend-neutral storage stay lint-clean for wasm
-cargo clippy -p sekai-util -p sekai-anvil -p sekai-nbt -p sekai-core -p sekai-storage --target wasm32-unknown-unknown --no-default-features -- -D warnings
+cargo clippy -p sekai-util -p sekai-anvil -p sekai-core -p sekai-storage --target wasm32-unknown-unknown --no-default-features -- -D warnings
 
 # Run all unit and integration tests (default backend)
 cargo nextest run --workspace
@@ -217,7 +217,7 @@ cargo build -p sekai-cli --release
   wipe recovery. Future backend crates must run the same suite via the
   shared conformance flows.
 - **Benchmarks**: micro benches live beside their crates (`cargo bench -p
-  sekai-anvil -p sekai-nbt -p sekai-core`); integration flows in
+  sekai-anvil -p sekai-core`); integration flows in
   `crates/app/benches` (seeded worlds from `benches/common.rs`, `cargo
   bench -p sekai-app --bench commit`). Record new baselines in
   `docs/benchmarks.md` when a `perf` change lands. The `bench.yaml`
@@ -260,7 +260,7 @@ Write [Conventional Commits](https://www.conventionalcommits.org/):
 
 - Format: `<type>(<scope>): <summary>` (e.g., `feat(storage): count carried chunks via effective-rows query`).
 - Types: `feat`, `fix`, `perf`, `refactor`, `test`, `docs`, `build`, `ci`, `chore`.
-- Scope is the crate or area (`core`, `nbt`, `anvil`, `world`, `app`, `storage`, `cli`, `docs`, `ci`).
+- Scope is the crate or area (`core`, `anvil`, `world`, `app`, `storage`, `cli`, `docs`, `ci`).
 - Summaries are imperative, lowercase, without a trailing period.
 
 ### Storage Schema Changes

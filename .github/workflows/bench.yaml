@@ -32,7 +32,7 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
 
       - name: Run micro benches
-        run: cargo bench -p sekai-anvil -p sekai-nbt -p sekai-core
+        run: cargo bench -p sekai-anvil -p sekai-core
 
       - name: Run integration benches
         run: cargo bench -p sekai-app --bench commit

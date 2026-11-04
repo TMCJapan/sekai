@@ -32,7 +32,7 @@ canonical:
 1. sorted, deduplicated parent IDs;
 2. `created_at_ms` as big-endian bytes;
 3. fresh history rows sorted by coordinate: dimension, kind, x, z, then
-   the optional blob hash and optional diff hash (presence-tagged);
+   the optional blob hash (presence-tagged);
 4. sorted removed region keys: dimension, kind, region x, region z.
 
 Carried regions and derived fingerprints are excluded: they describe

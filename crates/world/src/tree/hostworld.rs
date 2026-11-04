@@ -129,7 +129,7 @@ impl RegionFile for HostRegion {
             });
         }
         let bytes = crate::swap::open_image(&self.0)?;
-        let image = RegionImage::from_bytes(bytes, key.rx, key.rz)
+        let image = RegionImage::from_bytes_with_kind(bytes, key.rx, key.rz, key.kind)
             .map_err(|source| WorldError::region_file(&self.0, source))?;
         Ok(McaFile {
             image,
