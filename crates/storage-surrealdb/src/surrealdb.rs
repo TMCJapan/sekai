@@ -111,6 +111,16 @@ impl<C: Connection> SurrealdbStore<C> {
         &self.db
     }
 
+    /// Stop the embedded database and wait until its directory is released.
+    ///
+    /// Dropping the last handle also stops the engine, but on a task nothing
+    /// can await, so an immediate reopen of the same path can race the release
+    /// of the `SurrealKV` lock. Await this method and then drop the handle
+    /// before reopening the store.
+    pub async fn shutdown(&self) -> Result<(), StorageError> {
+        self.db.shutdown().await.map_err(db_err)
+    }
+
     async fn schema_version(&self) -> Result<Option<i64>, StorageError> {
         let row: Result<Option<MetaRow>, surrealdb::Error> =
             self.db.select(("meta", "store")).await;
