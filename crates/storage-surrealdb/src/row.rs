@@ -1,4 +1,9 @@
-//! Conversion between `SurrealDB` values and Sekai's shared value types.
+//! Typed row documents exchanged with `SurrealDB`, plus conversions to the
+//! domain types in `sekai-core`.
+//!
+//! Every table is read and written through a `SurrealValue` struct so the
+//! derive macro owns field decoding; only the domain validation (hash length,
+//! region kind, ref/scope name grammar) stays explicit.
 
 use std::fmt;
 
@@ -7,7 +12,9 @@ use sekai_core::{
     NamedScopeError, Rect, RefName, RegionKind, ScopeName,
 };
 use sekai_storage::StorageError;
-use surrealdb::types::{Bytes, Number, Object, RecordId, Value};
+// `Value` is named by the expansion of `#[surreal(flatten)]` below, not by
+// this module directly.
+use surrealdb::types::{Bytes, RecordId, SurrealValue, Value};
 
 /// Record ID of a blob, keyed by its lowercase hex hash.
 pub(crate) fn blob_record(hash: &ChunkHash) -> RecordId {
@@ -21,7 +28,12 @@ pub(crate) fn commit_record(id: CommitId) -> RecordId {
 
 /// Record ID of a ref, keyed by its validated name.
 pub(crate) fn ref_record(name: &RefName) -> RecordId {
-    RecordId::new("ref", name.as_str())
+    ref_record_name(name.as_str())
+}
+
+/// Record ID of a ref from a name already known to be valid.
+pub(crate) fn ref_record_name(name: &str) -> RecordId {
+    RecordId::new("ref", name)
 }
 
 /// Record ID of a scope, keyed by its validated name.
@@ -34,7 +46,7 @@ pub(crate) fn db_err(source: surrealdb::Error) -> StorageError {
     StorageError::backend("surrealdb", source)
 }
 
-/// Failure while decoding a stored row.
+/// Failure while converting a typed row into its domain value.
 #[derive(Debug)]
 struct DataError(String);
 
@@ -51,113 +63,131 @@ pub(crate) fn corrupt(message: impl Into<String>) -> StorageError {
     StorageError::backend("surrealdb", DataError(message.into()))
 }
 
-/// Encode a 32-byte hash for a `SurrealDB` `bytes` field.
-pub(crate) fn hash_bytes(hash: &[u8; 32]) -> Bytes {
-    Bytes::from(hash.to_vec())
+/// Encode a chunk hash for a `SurrealDB` `bytes` field.
+pub(crate) fn hash_bytes(hash: &ChunkHash) -> Bytes {
+    Bytes::from(hash.as_bytes().to_vec())
 }
 
 /// Encode a commit ID for a `SurrealDB` `bytes` field.
 pub(crate) fn commit_bytes(id: CommitId) -> Bytes {
-    hash_bytes(&id.0)
+    Bytes::from(id.0.to_vec())
 }
 
-/// Decode a 32-byte hash value.
-pub(crate) fn decode_hash(value: Value, column: &'static str) -> Result<[u8; 32], StorageError> {
-    into_hash(value, column)
+fn decode_hash(bytes: Bytes) -> Result<[u8; 32], StorageError> {
+    bytes
+        .into_inner()
+        .to_vec()
+        .try_into()
+        .map_err(|bytes: Vec<u8>| StorageError::InvalidHashLength { len: bytes.len() })
 }
 
-fn into_hash(value: Value, column: &'static str) -> Result<[u8; 32], StorageError> {
-    match value {
-        Value::Bytes(bytes) => bytes
-            .into_inner()
-            .to_vec()
-            .try_into()
-            .map_err(|bytes: Vec<u8>| StorageError::InvalidHashLength { len: bytes.len() }),
-        _ => Err(corrupt(format!("{column} is not a byte string"))),
-    }
+fn decode_commit(bytes: Bytes) -> Result<CommitId, StorageError> {
+    decode_hash(bytes).map(CommitId)
 }
 
-/// Decode a commit ID value.
-fn into_commit(value: Value, column: &'static str) -> Result<CommitId, StorageError> {
-    into_hash(value, column).map(CommitId)
-}
-
-fn into_bytes(value: Value, column: &'static str) -> Result<Vec<u8>, StorageError> {
-    match value {
-        Value::Bytes(bytes) => Ok(bytes.into_inner().to_vec()),
-        _ => Err(corrupt(format!("{column} is not a byte string"))),
-    }
-}
-
-fn into_object(value: Value) -> Result<Object, StorageError> {
-    match value {
-        Value::Object(object) => Ok(object),
-        _ => Err(corrupt("record is not an object")),
-    }
-}
-
-fn take_field(object: &mut Object, column: &'static str) -> Result<Value, StorageError> {
-    object
-        .remove(column)
-        .ok_or_else(|| corrupt(format!("record has no {column} field")))
-}
-
-fn take_optional_field(object: &mut Object, column: &'static str) -> Option<Value> {
-    match object.remove(column) {
-        Some(Value::None | Value::Null) | None => None,
-        Some(value) => Some(value),
-    }
-}
-
-pub(crate) fn take_optional_hash(
-    object: &mut Object,
-    column: &'static str,
-) -> Result<Option<[u8; 32]>, StorageError> {
-    take_optional_field(object, column)
-        .map(|value| into_hash(value, column))
+fn decode_optional_hash(bytes: Option<Bytes>) -> Result<Option<ChunkHash>, StorageError> {
+    bytes
+        .map(|bytes| decode_hash(bytes).map(ChunkHash::new))
         .transpose()
 }
 
-fn take_i64(object: &mut Object, column: &'static str) -> Result<i64, StorageError> {
-    match take_field(object, column)? {
-        Value::Number(Number::Int(value)) => Ok(value),
-        _ => Err(corrupt(format!("{column} is not an integer"))),
+/// Reject a timestamp that does not fit the signed integer `SurrealDB` stores.
+fn checked_millis(ms: u64) -> Result<u64, StorageError> {
+    i64::try_from(ms)
+        .map(|_| ms)
+        .map_err(|_| StorageError::InvalidTimestamp(ms))
+}
+
+pub(crate) fn parent_bytes(parents: &[CommitId]) -> Vec<Bytes> {
+    parents.iter().copied().map(commit_bytes).collect()
+}
+
+fn parent_ids(bytes: Vec<Bytes>) -> Result<Vec<CommitId>, StorageError> {
+    bytes.into_iter().map(decode_commit).collect()
+}
+
+/// The singleton `meta:store` document.
+#[derive(Debug, SurrealValue)]
+pub(crate) struct MetaRow {
+    pub(crate) schema_version: i64,
+}
+
+/// A blob document; the record ID is the hex hash.
+#[derive(Debug, SurrealValue)]
+pub(crate) struct BlobRow {
+    pub(crate) hash: Bytes,
+    pub(crate) payload: Bytes,
+}
+
+impl BlobRow {
+    pub(crate) fn new(hash: &ChunkHash, payload: &[u8]) -> Self {
+        Self {
+            hash: hash_bytes(hash),
+            payload: Bytes::from(payload.to_vec()),
+        }
+    }
+
+    pub(crate) fn into_parts(self) -> Result<(ChunkHash, Vec<u8>), StorageError> {
+        Ok((
+            ChunkHash::new(decode_hash(self.hash)?),
+            self.payload.into_inner().to_vec(),
+        ))
     }
 }
 
-fn take_i32(object: &mut Object, column: &'static str) -> Result<i32, StorageError> {
-    let value = take_i64(object, column)?;
-    i32::try_from(value).map_err(|_| StorageError::InvalidHistoryValue { column, value })
+/// A blob hash projection used when visiting the CAS without payloads.
+#[derive(Debug, SurrealValue)]
+pub(crate) struct BlobHashRow {
+    pub(crate) hash: Bytes,
 }
 
-fn take_u64(object: &mut Object, column: &'static str) -> Result<u64, StorageError> {
-    let value = take_i64(object, column)?;
-    u64::try_from(value).map_err(|_| StorageError::InvalidHistoryValue { column, value })
-}
-
-fn take_bool(object: &mut Object, column: &'static str) -> Result<bool, StorageError> {
-    match take_field(object, column)? {
-        Value::Bool(value) => Ok(value),
-        _ => Err(corrupt(format!("{column} is not a boolean"))),
+impl BlobHashRow {
+    pub(crate) fn into_hash(self) -> Result<ChunkHash, StorageError> {
+        decode_hash(self.hash).map(ChunkHash::new)
     }
 }
 
-fn take_string(object: &mut Object, column: &'static str) -> Result<String, StorageError> {
-    match take_field(object, column)? {
-        Value::String(value) => Ok(value),
-        _ => Err(corrupt(format!("{column} is not a string"))),
+/// A row that only needs its record ID (existence probes).
+#[derive(Debug, SurrealValue)]
+pub(crate) struct IdRow {
+    pub(crate) id: RecordId,
+}
+
+/// The stored commit fields shared by reads and writes.
+#[derive(Debug, SurrealValue)]
+pub(crate) struct CommitRow {
+    pub(crate) hash: Bytes,
+    pub(crate) seq: i64,
+    pub(crate) created_at_ms: u64,
+    pub(crate) parents: Vec<Bytes>,
+}
+
+impl CommitRow {
+    pub(crate) fn new(
+        id: CommitId,
+        seq: i64,
+        created_at_ms: u64,
+        parents: &[CommitId],
+    ) -> Result<Self, StorageError> {
+        Ok(Self {
+            hash: commit_bytes(id),
+            seq,
+            created_at_ms: checked_millis(created_at_ms)?,
+            parents: parent_bytes(parents),
+        })
+    }
+
+    pub(crate) fn into_stored(self) -> Result<StoredCommit, StorageError> {
+        Ok(StoredCommit {
+            id: decode_commit(self.hash)?,
+            seq: self.seq,
+            created_at_ms: self.created_at_ms,
+            parents: parent_ids(self.parents)?,
+        })
     }
 }
 
-fn take_array(object: &mut Object, column: &'static str) -> Result<Vec<Value>, StorageError> {
-    match take_optional_field(object, column) {
-        None => Ok(Vec::new()),
-        Some(Value::Array(array)) => Ok(array.into_inner()),
-        Some(_) => Err(corrupt(format!("{column} is not an array"))),
-    }
-}
-
-/// A commit row as stored, including the local sequence.
+/// A commit row with its local sequence, after domain validation.
 pub(crate) struct StoredCommit {
     pub(crate) id: CommitId,
     pub(crate) seq: i64,
@@ -171,115 +201,256 @@ impl StoredCommit {
     }
 }
 
-pub(crate) fn decode_commit(value: Value) -> Result<StoredCommit, StorageError> {
-    let mut object = into_object(value)?;
-    let id = into_commit(take_field(&mut object, "hash")?, "hash")?;
-    let seq = take_i64(&mut object, "seq")?;
-    let created_at_ms = take_u64(&mut object, "created_at_ms")?;
-    let parents = take_array(&mut object, "parents")?
-        .into_iter()
-        .map(|value| into_commit(value, "parents"))
-        .collect::<Result<_, _>>()?;
-    Ok(StoredCommit {
-        id,
-        seq,
-        created_at_ms,
-        parents,
-    })
+/// A commit patch that changes only the parent list.
+#[derive(Debug, SurrealValue)]
+pub(crate) struct CommitParentsPatch {
+    pub(crate) parents: Vec<Bytes>,
 }
 
-/// A chunk-history row as stored, including its record ID for rewrites.
-pub(crate) struct StoredHistory {
-    pub(crate) record: Option<RecordId>,
-    pub(crate) entry: ChunkHistoryEntry,
-}
-
-pub(crate) fn decode_history(value: Value) -> Result<StoredHistory, StorageError> {
-    let mut object = into_object(value)?;
-    let record = match object.remove("id") {
-        Some(Value::RecordId(record)) => Some(record),
-        _ => None,
-    };
-    let commit = into_commit(take_field(&mut object, "commit")?, "commit")?;
-    let dim = take_i32(&mut object, "dim")?;
-    let kind_raw = take_i32(&mut object, "kind")?;
-    let kind = RegionKind::new(kind_raw)
-        .map_err(|_| StorageError::UnknownRegionKind { kind: kind_raw })?;
-    let cx = take_i32(&mut object, "cx")?;
-    let cz = take_i32(&mut object, "cz")?;
-    let blob = take_optional_hash(&mut object, "blob")?.map(ChunkHash::new);
-    Ok(StoredHistory {
-        record,
-        entry: ChunkHistoryEntry::new(
-            ChunkCoord::new(Dimension::new(dim), kind, cx, cz),
-            commit,
-            blob,
-        ),
-    })
-}
-
-pub(crate) fn decode_commit_ref(value: Value) -> Result<CommitRef, StorageError> {
-    let mut object = into_object(value)?;
-    let name_raw = take_string(&mut object, "name")?;
-    let name =
-        RefName::parse(&name_raw).map_err(|_| StorageError::InvalidRefName { name: name_raw })?;
-    let commit = take_optional_hash(&mut object, "commit")?.map(CommitId);
-    let active = take_bool(&mut object, "active")?;
-    let created_at_ms = take_u64(&mut object, "created_at_ms")?;
-    Ok(CommitRef::new(name, commit, active, created_at_ms))
-}
-
-/// Decode a standalone integer value.
-pub(crate) fn decode_int(value: &Value, column: &'static str) -> Result<i64, StorageError> {
-    match value {
-        Value::Number(Number::Int(value)) => Ok(*value),
-        _ => Err(corrupt(format!("{column} is not an integer"))),
+impl CommitParentsPatch {
+    pub(crate) fn new(parents: &[CommitId]) -> Self {
+        Self {
+            parents: parent_bytes(parents),
+        }
     }
 }
 
-/// Read just the creation time of a stored scope.
-pub(crate) fn decode_created_at_ms(value: Value) -> Result<u64, StorageError> {
-    let mut object = into_object(value)?;
-    take_u64(&mut object, "created_at_ms")
+/// The fields shared by a stored history row and a fresh insert.
+#[derive(Debug, SurrealValue)]
+pub(crate) struct HistoryRow {
+    pub(crate) commit: Bytes,
+    pub(crate) seq: i64,
+    pub(crate) dim: i32,
+    pub(crate) kind: i32,
+    pub(crate) cx: i32,
+    pub(crate) cz: i32,
+    pub(crate) blob: Option<Bytes>,
 }
 
-pub(crate) fn decode_scope(value: Value) -> Result<NamedScope, StorageError> {
-    let mut object = into_object(value)?;
-    let name_raw = take_string(&mut object, "name")?;
-    let name = ScopeName::parse(&name_raw)
-        .map_err(|_| StorageError::InvalidScopeName { name: name_raw })?;
-    let created_at_ms = take_u64(&mut object, "created_at_ms")?;
-    let areas = take_array(&mut object, "areas")?
-        .into_iter()
-        .map(|value| {
-            let mut area = into_object(value)?;
-            let dim = take_i32(&mut area, "dim")?;
-            let rect = Rect::new(
-                take_i32(&mut area, "x0")?,
-                take_i32(&mut area, "z0")?,
-                take_i32(&mut area, "x1")?,
-                take_i32(&mut area, "z1")?,
-            );
-            Ok((Dimension::new(dim), rect))
+impl HistoryRow {
+    pub(crate) fn new(
+        commit: CommitId,
+        seq: i64,
+        coord: ChunkCoord,
+        blob: Option<&ChunkHash>,
+    ) -> Self {
+        Self {
+            commit: commit_bytes(commit),
+            seq,
+            dim: coord.dim.raw(),
+            kind: i32::from(coord.kind.raw()),
+            cx: coord.x,
+            cz: coord.z,
+            blob: blob.map(hash_bytes),
+        }
+    }
+}
+
+/// A stored history row, including the record ID needed by prune rewrites.
+#[derive(Debug, SurrealValue)]
+pub(crate) struct StoredHistoryRow {
+    pub(crate) id: RecordId,
+    #[surreal(flatten)]
+    pub(crate) row: HistoryRow,
+}
+
+impl StoredHistoryRow {
+    pub(crate) fn into_stored(self) -> Result<StoredHistory, StorageError> {
+        let kind = RegionKind::new(self.row.kind).map_err(|_| StorageError::UnknownRegionKind {
+            kind: self.row.kind,
+        })?;
+        let entry = ChunkHistoryEntry::new(
+            ChunkCoord::new(Dimension::new(self.row.dim), kind, self.row.cx, self.row.cz),
+            decode_commit(self.row.commit)?,
+            decode_optional_hash(self.row.blob)?,
+        );
+        Ok(StoredHistory {
+            record: self.id,
+            entry,
         })
-        .collect::<Result<Vec<_>, StorageError>>()?;
-    let display = name.as_str().to_owned();
-    NamedScope::new(name, areas, created_at_ms)
-        .map_err(|NamedScopeError::NoAreas| StorageError::EmptyScope { name: display })
+    }
 }
 
-/// Decode a blob payload value.
-pub(crate) fn decode_payload(value: Value) -> Result<Vec<u8>, StorageError> {
-    into_bytes(value, "payload")
+/// A chunk-history row with its record ID, after domain validation.
+pub(crate) struct StoredHistory {
+    pub(crate) record: RecordId,
+    pub(crate) entry: ChunkHistoryEntry,
 }
 
-/// Decode the coordinate columns of a chunk-history row.
-pub(crate) fn decode_coord_fields(value: Value) -> Result<(i32, i32, i32, i32), StorageError> {
-    let mut object = into_object(value)?;
-    Ok((
-        take_i32(&mut object, "dim")?,
-        take_i32(&mut object, "kind")?,
-        take_i32(&mut object, "cx")?,
-        take_i32(&mut object, "cz")?,
-    ))
+/// A history patch that re-stamps a folded row onto its successor.
+#[derive(Debug, SurrealValue)]
+pub(crate) struct HistoryMove {
+    pub(crate) commit: Bytes,
+    pub(crate) seq: i64,
+}
+
+impl HistoryMove {
+    pub(crate) fn new(commit: CommitId, seq: i64) -> Self {
+        Self {
+            commit: commit_bytes(commit),
+            seq,
+        }
+    }
+}
+
+/// The coordinate columns of a history row.
+#[derive(Debug, SurrealValue)]
+pub(crate) struct CoordRow {
+    pub(crate) dim: i32,
+    pub(crate) kind: i32,
+    pub(crate) cx: i32,
+    pub(crate) cz: i32,
+}
+
+impl CoordRow {
+    pub(crate) const fn into_key(self) -> (i32, i32, i32, i32) {
+        (self.dim, self.kind, self.cx, self.cz)
+    }
+}
+
+/// A ref document; the record ID is the validated ref name.
+#[derive(Debug, SurrealValue)]
+pub(crate) struct RefRow {
+    pub(crate) name: String,
+    pub(crate) commit: Option<Bytes>,
+    pub(crate) active: bool,
+    pub(crate) created_at_ms: u64,
+}
+
+impl RefRow {
+    pub(crate) fn new(
+        name: &RefName,
+        commit: Option<CommitId>,
+        active: bool,
+        created_at_ms: u64,
+    ) -> Result<Self, StorageError> {
+        Ok(Self {
+            name: name.as_str().to_owned(),
+            commit: commit.map(commit_bytes),
+            active,
+            created_at_ms: checked_millis(created_at_ms)?,
+        })
+    }
+
+    pub(crate) fn new_default(created_at_ms: u64) -> Result<Self, StorageError> {
+        Ok(Self {
+            name: sekai_core::DEFAULT_REF_NAME.to_owned(),
+            commit: None,
+            active: true,
+            created_at_ms: checked_millis(created_at_ms)?,
+        })
+    }
+
+    pub(crate) fn into_domain(self) -> Result<CommitRef, StorageError> {
+        let name = RefName::parse(&self.name)
+            .map_err(|_| StorageError::InvalidRefName { name: self.name })?;
+        Ok(CommitRef::new(
+            name,
+            self.commit.map(decode_commit).transpose()?,
+            self.active,
+            self.created_at_ms,
+        ))
+    }
+}
+
+/// A ref patch that changes only the target commit.
+#[derive(Debug, SurrealValue)]
+pub(crate) struct RefCommitPatch {
+    pub(crate) commit: Option<Bytes>,
+}
+
+impl RefCommitPatch {
+    pub(crate) fn new(commit: Option<CommitId>) -> Self {
+        Self {
+            commit: commit.map(commit_bytes),
+        }
+    }
+}
+
+/// A ref patch that changes only the active flag.
+#[derive(Debug, SurrealValue)]
+pub(crate) struct RefActivePatch {
+    pub(crate) active: bool,
+}
+
+/// One rectangle of a named scope.
+#[derive(Debug, SurrealValue)]
+pub(crate) struct AreaRow {
+    pub(crate) dim: i32,
+    pub(crate) x0: i32,
+    pub(crate) z0: i32,
+    pub(crate) x1: i32,
+    pub(crate) z1: i32,
+}
+
+/// A named scope document; the record ID is the validated scope name.
+#[derive(Debug, SurrealValue)]
+pub(crate) struct ScopeRow {
+    pub(crate) name: String,
+    pub(crate) created_at_ms: u64,
+    pub(crate) areas: Vec<AreaRow>,
+}
+
+impl ScopeRow {
+    pub(crate) fn new(scope: &NamedScope, created_at_ms: u64) -> Result<Self, StorageError> {
+        Ok(Self {
+            name: scope.name.as_str().to_owned(),
+            created_at_ms: checked_millis(created_at_ms)?,
+            areas: scope
+                .areas()
+                .iter()
+                .map(|(dim, rect)| AreaRow {
+                    dim: dim.raw(),
+                    x0: rect.x0,
+                    z0: rect.z0,
+                    x1: rect.x1,
+                    z1: rect.z1,
+                })
+                .collect(),
+        })
+    }
+
+    pub(crate) fn into_domain(self) -> Result<NamedScope, StorageError> {
+        let name = ScopeName::parse(&self.name).map_err(|_| StorageError::InvalidScopeName {
+            name: self.name.clone(),
+        })?;
+        let areas = self
+            .areas
+            .into_iter()
+            .map(|area| {
+                (
+                    Dimension::new(area.dim),
+                    Rect::new(area.x0, area.z0, area.x1, area.z1),
+                )
+            })
+            .collect();
+        NamedScope::new(name, areas, self.created_at_ms)
+            .map_err(|NamedScopeError::NoAreas| StorageError::EmptyScope { name: self.name })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hash_round_trip_preserves_bytes() {
+        let hash = ChunkHash::new([0xAB; 32]);
+        let row = BlobRow::new(&hash, b"payload");
+        let (decoded, payload) = row.into_parts().unwrap();
+        assert_eq!(decoded, hash);
+        assert_eq!(payload, b"payload");
+    }
+
+    #[test]
+    fn wrong_hash_length_is_rejected() {
+        let row = BlobRow {
+            hash: Bytes::from(vec![1, 2, 3]),
+            payload: Bytes::from(Vec::new()),
+        };
+        assert!(matches!(
+            row.into_parts(),
+            Err(StorageError::InvalidHashLength { len: 3 })
+        ));
+    }
 }

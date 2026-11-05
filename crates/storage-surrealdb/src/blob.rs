@@ -2,79 +2,49 @@
 
 use sekai_core::{BlobStore, ChunkHash};
 use sekai_storage::StorageError;
-use surrealdb::types::{Bytes, Value};
+use surrealdb::Connection;
 
 use crate::SurrealdbStore;
-use crate::row::{blob_record, db_err, decode_hash, decode_payload};
-use surrealdb::Connection;
+use crate::row::{BlobHashRow, BlobRow, IdRow, blob_record, db_err};
 
 impl<C: Connection> SurrealdbStore<C> {
     async fn contains_blob(&self, hash: &ChunkHash) -> Result<bool, StorageError> {
-        let mut response = self
-            .db
-            .query("SELECT VALUE id FROM $record;")
-            .bind(("record", blob_record(hash)))
-            .await
-            .map_err(db_err)?
-            .check()
-            .map_err(db_err)?;
-        let rows: Vec<Value> = response.take(0).map_err(db_err)?;
-        Ok(!rows.is_empty())
+        let row: Option<IdRow> = self.db.select(blob_record(hash)).await.map_err(db_err)?;
+        Ok(row.is_some())
     }
 
     async fn fetch_blob(&self, hash: &ChunkHash, out: &mut Vec<u8>) -> Result<(), StorageError> {
         out.clear();
-        let mut response = self
-            .db
-            .query("SELECT VALUE payload FROM $record;")
-            .bind(("record", blob_record(hash)))
-            .await
-            .map_err(db_err)?
-            .check()
-            .map_err(db_err)?;
-        let payloads: Vec<Value> = response.take(0).map_err(db_err)?;
-        let Some(payload) = payloads.into_iter().next() else {
+        let row: Option<BlobRow> = self.db.select(blob_record(hash)).await.map_err(db_err)?;
+        let Some(row) = row else {
             return Err(StorageError::BlobMissing {
                 hex: hash.hex_string(),
             });
         };
-        *out = decode_payload(payload)?;
+        let (_, payload) = row.into_parts()?;
+        *out = payload;
         Ok(())
     }
 
     async fn put_blob(&self, hash: &ChunkHash, payload: &[u8]) -> Result<bool, StorageError> {
         let _write = self.write_lock.lock().await;
-        let mut response = self
+        let existing: Option<IdRow> = self.db.select(blob_record(hash)).await.map_err(db_err)?;
+        if existing.is_some() {
+            return Ok(false);
+        }
+        let created: Option<BlobRow> = self
             .db
-            .query(
-                "INSERT IGNORE INTO blob {
-                     id: $record, hash: $hash, payload: $payload
-                 }
-                 RETURN AFTER;",
-            )
-            .bind(("record", blob_record(hash)))
-            .bind(("hash", Bytes::from(hash.as_bytes().to_vec())))
-            .bind(("payload", Bytes::from(payload.to_vec())))
+            .create(blob_record(hash))
+            .content(BlobRow::new(hash, payload))
             .await
-            .map_err(db_err)?
-            .check()
             .map_err(db_err)?;
-        let inserted: Vec<Value> = response.take(0).map_err(db_err)?;
-        Ok(!inserted.is_empty())
+        Ok(created.is_some())
     }
 
     async fn remove_blob(&self, hash: &ChunkHash) -> Result<bool, StorageError> {
         let _write = self.write_lock.lock().await;
-        let mut response = self
-            .db
-            .query("DELETE $record RETURN BEFORE;")
-            .bind(("record", blob_record(hash)))
-            .await
-            .map_err(db_err)?
-            .check()
-            .map_err(db_err)?;
-        let removed: Vec<Value> = response.take(0).map_err(db_err)?;
-        Ok(!removed.is_empty())
+        let removed: Option<BlobRow> = self.db.delete(blob_record(hash)).await.map_err(db_err)?;
+        Ok(removed.is_some())
     }
 
     async fn visit_blob_hashes<F>(&self, mut visit: F) -> Result<(), StorageError>
@@ -83,14 +53,14 @@ impl<C: Connection> SurrealdbStore<C> {
     {
         let mut response = self
             .db
-            .query("SELECT VALUE hash FROM blob ORDER BY hash;")
+            .query("SELECT hash FROM blob ORDER BY hash;")
             .await
             .map_err(db_err)?
             .check()
             .map_err(db_err)?;
-        let hashes: Vec<Value> = response.take(0).map_err(db_err)?;
-        for value in hashes {
-            if !visit(&ChunkHash::new(decode_hash(value, "hash")?)) {
+        let rows: Vec<BlobHashRow> = response.take(0).map_err(db_err)?;
+        for row in rows {
+            if !visit(&row.into_hash()?) {
                 break;
             }
         }
@@ -118,7 +88,7 @@ impl<C: Connection> BlobStore for SurrealdbStore<C> {
     }
 
     fn sync(&mut self) -> impl core::future::Future<Output = Result<(), Self::Error>> + Send {
-        // SurrealKV commits every `INSERT` durably; no batch barrier is needed.
+        // SurrealKV commits every `CREATE` durably; no batch barrier is needed.
         core::future::ready(Ok(()))
     }
 
