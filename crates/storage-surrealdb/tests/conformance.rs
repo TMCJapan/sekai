@@ -25,6 +25,12 @@ async fn init(dir: impl AsRef<Path>) -> sekai_storage_surrealdb::SurrealdbStore 
     init_surrealdb(dir).await.unwrap()
 }
 
+/// Wait for the embedded engine to release the store, so reopening the same
+/// path cannot race the asynchronous shutdown that a bare drop starts.
+async fn close(store: SurrealdbStore) {
+    store.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn surrealdb_commit_lifecycle() {
     let (dir, _guard) = tempdir("lifecycle");
@@ -186,7 +192,7 @@ async fn schema_version_is_created_and_gated() {
         .unwrap()
         .check()
         .unwrap();
-    drop(store);
+    close(store).await;
 
     let err = open_surrealdb(&dir).await.unwrap_err();
     assert!(matches!(
@@ -213,7 +219,7 @@ async fn open_of_a_missing_store_fails_without_creating_it() {
 
     let store = init_surrealdb(&dir).await.unwrap();
     assert!(dir.join("manifest").is_dir());
-    drop(store);
+    close(store).await;
     let _store = open_surrealdb(&dir).await.unwrap();
 }
 
@@ -224,12 +230,12 @@ async fn open_of_a_missing_store_fails_without_creating_it() {
 async fn url_schemes_open_the_same_store() {
     let (dir, _guard) = tempdir("url");
     let store = init_surrealdb(&dir).await.unwrap();
-    drop(store);
+    close(store).await;
 
     for scheme in ["surrealkv", "surrealdb"] {
         let url = format!("{scheme}://{}", dir.display());
         let store = SurrealdbStore::open(&url).await.unwrap();
-        drop(store);
+        close(store).await;
     }
 
     let store = SurrealdbStore::open(dir.to_string_lossy().into_owned().as_str())
@@ -257,10 +263,10 @@ async fn query_parameters_do_not_rename_the_store_directory() {
         !Path::new(&url).exists(),
         "query parameters must not become part of the directory name"
     );
-    drop(store);
+    close(store).await;
 
     let store = SurrealdbStore::open(&url).await.unwrap();
-    drop(store);
+    close(store).await;
 }
 
 /// A transaction larger than the configured memtable must still commit:
