@@ -29,8 +29,9 @@ impl RegionKey {
 
 /// Fingerprint observed on disk.
 ///
-/// Commit decisions compare per-chunk history instead, so this is an
-/// observation/diagnostic value rather than a persisted cache key.
+/// No commit decision reads it today: commits compare per-chunk history.
+/// It stays as the file-level change check a tree-structured history can
+/// reuse unchanged region subtrees with (ADR-0023).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RegionFingerprint {
     /// Which file this fingerprint describes.

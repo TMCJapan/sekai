@@ -1,6 +1,8 @@
 # ADR-0012: The region fingerprint hashes the whole file
 
-- Status: Accepted
+- Status: Accepted (dormant: no flow computes the fingerprint since
+  [ADR-0023](0023-drop-the-fingerprint-pass.md); the decision still
+  governs `fingerprint_file`)
 - Date: 2026-09-26
 
 ## Context

@@ -18,6 +18,6 @@ without adding rows.
 - When the store directory is created by the commit, the CLI says so
   on stderr (human output only).
 
-Unchanged regions are skipped by fingerprint; unchanged chunks inside
-changed regions resolve through fallback and cost no new blobs. A commit
+Every region file in scope is read on each commit; unchanged chunks
+resolve through fallback and cost no new blobs or history rows. A commit
 with no changes still writes one commit row.

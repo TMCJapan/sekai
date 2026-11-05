@@ -137,6 +137,12 @@ impl RegionFile for HostRegion {
         })
     }
 
+    fn size(&self) -> Result<u64, WorldError> {
+        std::fs::metadata(&self.0)
+            .map(|meta| meta.len())
+            .map_err(|source| WorldError::io(&self.0, source))
+    }
+
     fn fingerprint(&self, key: RegionKey) -> Result<RegionFingerprint, WorldError> {
         crate::fingerprint::fingerprint_file(&self.0, key)
     }

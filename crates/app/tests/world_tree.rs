@@ -89,6 +89,11 @@ impl RegionFile for FakeRegion {
         Err(FakeError { reason: "no bytes" })
     }
 
+    fn size(&self) -> Result<u64, Self::Error> {
+        // Not supported: the fake holds no files.
+        Err(FakeError { reason: "no size" })
+    }
+
     fn fingerprint(&self, _key: RegionKey) -> Result<sekai_app::RegionFingerprint, Self::Error> {
         // Not supported: the fake serves no bytes to fingerprint.
         Err(FakeError {
@@ -262,4 +267,45 @@ fn custom_tree_reports_its_unguarded_answer() {
             "{mode:?}"
         );
     }
+}
+
+/// Only the files a plan ingests are sized: an out-of-scope file whose
+/// `size` fails cannot fail the run, while the same failure in scope does.
+#[cfg(feature = "backend-sqlite")]
+#[tokio::test]
+async fn only_planned_files_are_sized() {
+    let root = tempfile::Builder::new()
+        .prefix("sekai-world-tree-sizing-")
+        .tempdir()
+        .unwrap();
+    let store = root.path().join("store").to_string_lossy().into_owned();
+    let instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    // The fake serves overworld files only, and every `size` fails.
+    let world = FakeWorld {
+        fail_dims: false,
+        fail_regions: false,
+        serve_region: true,
+    };
+    let options = sekai_app::StatusOptions { concurrency: 1 };
+
+    let (report, _) = instance
+        .world(&world)
+        .status(
+            options,
+            sekai_app::Scope::dimension(Dimension::NETHER),
+            |_| {},
+        )
+        .await
+        .unwrap();
+    assert!(report.clean);
+
+    let error = instance
+        .world(&world)
+        .status(options, sekai_app::Scope::World, |_| {})
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("fake world failed: no size"),
+        "unexpected error: {error}"
+    );
 }

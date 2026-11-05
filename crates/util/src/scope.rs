@@ -208,10 +208,11 @@ impl Scope {
 
     /// Whether the scope contains every chunk of a region file.
     ///
-    /// Only a fully covered file may record its whole-file fingerprint: a
-    /// partial ingest leaves out-of-scope chunks unrecorded. Coverage by
-    /// the union of several areas is reported as partial, which costs a
-    /// re-ingest rather than correctness.
+    /// No flow asks today. A file-level skip may only stand for a fully
+    /// covered file: a partial ingest leaves out-of-scope chunks
+    /// unrecorded (ADR-0023). Coverage by the union of several areas is
+    /// reported as partial, which costs a re-ingest rather than
+    /// correctness.
     pub fn covers_region(&self, key: RegionKey) -> bool {
         match self {
             Self::World => true,

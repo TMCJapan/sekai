@@ -66,10 +66,10 @@ any exception in the PR body.
   `BlobStore`/`MetaStore` ports (`port` module, RPITIT). Pluggability lives
   at those ports (implemented by `storage` backends) and at the `world`
   observation boundary - not at `RegionReader`/`Normalizer`-style traits.
-- **`core` never touches the filesystem**: `world` produces `Observation` /
-  `RegionFingerprint`; `app` feeds them into `core::plan_*`.
+- **`core` never touches the filesystem**: `world` discovers the region
+  files; `app` feeds their `RegionKey`s into `core::plan_*`.
 - **The world boundary is path-free**: the operations receive `RegionFile`
-  handles (read, fingerprint, write, remove) and never a `Path`; only the
+  handles (read, size, fingerprint, write, remove) and never a `Path`; only the
   world crate knows where a region file lives. A tree outside this
   workspace implements `WorldTree` plus one handle
   ([ADR-0015](docs/adr/0015-world-region-handles.md)).

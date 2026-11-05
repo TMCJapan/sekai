@@ -17,7 +17,7 @@ pub mod refs;
 pub mod scopes;
 
 pub use checkout::{CheckoutError, CheckoutPlan, CheckoutReport};
-pub use commit::{Assembled, CommitReport, Observation, Plan, Previous};
+pub use commit::{Assembled, CommitReport, Plan, Previous};
 pub use diff::{ChunkPayloadDiff, DiffError, diff_blobs};
 pub use gc::{GcError, GcReport};
 pub use graph::{

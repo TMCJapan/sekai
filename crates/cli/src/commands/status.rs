@@ -98,7 +98,6 @@ struct StatusTiming {
 #[derive(Serialize)]
 struct StatusPhases {
     discover_ms: u128,
-    fingerprint_ms: u128,
     universe_load_ms: u128,
     region_open_ms: u128,
     ingest_ms: u128,
@@ -119,7 +118,6 @@ fn status_payload(report: &StatusReport, timings: &StatusTimings, timing: bool) 
             total_ms: timings.total.as_millis(),
             phases: StatusPhases {
                 discover_ms: timings.discover.as_millis(),
-                fingerprint_ms: timings.fingerprint.as_millis(),
                 universe_load_ms: timings.universe_load.as_millis(),
                 region_open_ms: timings.region_open.as_millis(),
                 ingest_ms: timings.ingest.as_millis(),
@@ -133,10 +131,9 @@ fn print_status_timing_table(timings: &StatusTimings, style: Styler) {
     println!(
         "{}",
         style.dim(&format!(
-            "timing total={}ms discover={}ms fingerprint={}ms universe_load={}ms region_open={}ms ingest={}ms hash={}ms",
+            "timing total={}ms discover={}ms universe_load={}ms region_open={}ms ingest={}ms hash={}ms",
             timings.total.as_millis(),
             timings.discover.as_millis(),
-            timings.fingerprint.as_millis(),
             timings.universe_load.as_millis(),
             timings.region_open.as_millis(),
             timings.ingest.as_millis(),
@@ -167,7 +164,6 @@ mod tests {
         StatusTimings {
             total: Duration::from_millis(50),
             discover: Duration::from_millis(1),
-            fingerprint: Duration::from_millis(2),
             universe_load: Duration::from_millis(3),
             region_open: Duration::from_millis(4),
             ingest: Duration::from_millis(30),
@@ -189,7 +185,7 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&payload_timed).unwrap(),
             format!(
-                r#"{{"clean":false,"latest":"{latest}","changed_regions":1,"new_files":0,"deleted_files":0,"new_chunks":3,"tombstones":1,"new_blobs":2,"total_ms":50,"phases":{{"discover_ms":1,"fingerprint_ms":2,"universe_load_ms":3,"region_open_ms":4,"ingest_ms":30,"hash_ms":10}}}}"#
+                r#"{{"clean":false,"latest":"{latest}","changed_regions":1,"new_files":0,"deleted_files":0,"new_chunks":3,"tombstones":1,"new_blobs":2,"total_ms":50,"phases":{{"discover_ms":1,"universe_load_ms":3,"region_open_ms":4,"ingest_ms":30,"hash_ms":10}}}}"#
             )
         );
     }

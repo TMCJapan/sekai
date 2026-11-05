@@ -1282,6 +1282,23 @@ fn fingerprints_are_stable_and_change_sensitive() {
     ));
 }
 
+/// Ingest balances its workers by file size, so the handle reports the
+/// file's length, and a missing file is an I/O error rather than zero.
+#[test]
+fn region_size_reports_the_file_length() {
+    use sekai_world::RegionFile;
+
+    let (world, _guard) = tempdir("size");
+    let path = world.join("region/r.0.0.mca");
+    let image = one_chunk_image();
+    write(&path, &image);
+    let region = HostRegion::from_path(&path);
+    assert_eq!(region.size().unwrap(), image.len() as u64);
+
+    std::fs::remove_file(&path).expect("the region is gone so the next lookup is an I/O error");
+    assert!(matches!(region.size(), Err(WorldError::Io { .. })));
+}
+
 /// The whole point of hashing content: a payload edit past the location
 /// table, with the file's size *and* mtime preserved, must still be seen.
 /// `cp -p`, `rsync -t`, `tar -x`, a ZFS/Btrfs snapshot rollback, or any
