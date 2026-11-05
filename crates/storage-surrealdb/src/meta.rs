@@ -7,33 +7,25 @@ use sekai_core::{
     CommitRef, FoldOutcome, MetaStore, NamedScope, RefName, ScopeName, commit_hash,
 };
 use sekai_storage::StorageError;
+use surrealdb::Connection;
 use surrealdb::method::Transaction;
-use surrealdb::types::{Bytes, Object, RecordId, Value};
-use surrealdb::{Connection, Surreal};
+use surrealdb::types::{Bytes, RecordId};
 
 use crate::SurrealdbStore;
 use crate::row::{
-    StoredCommit, StoredHistory, commit_bytes, commit_record, db_err, decode_commit,
-    decode_commit_ref, decode_coord_fields, decode_created_at_ms, decode_history, decode_int,
-    decode_scope, ref_record, scope_record,
+    CommitParentsPatch, CommitRow, CoordRow, HistoryMove, HistoryRow, RefActivePatch,
+    RefCommitPatch, RefRow, ScopeRow, StoredCommit, StoredHistory, StoredHistoryRow, commit_bytes,
+    commit_record, db_err, ref_record, ref_record_name, scope_record,
 };
 
 /// Managed schema version stored in `meta:store`.
 pub const SCHEMA_VERSION: i64 = 1;
-
-fn millis_param(ms: u64) -> Result<i64, StorageError> {
-    i64::try_from(ms).map_err(|_| StorageError::InvalidTimestamp(ms))
-}
 
 fn normalized_parents(parents: &[CommitId]) -> Vec<CommitId> {
     let mut parents = parents.to_vec();
     parents.sort_unstable();
     parents.dedup();
     parents
-}
-
-fn parent_bytes(parents: &[CommitId]) -> Vec<Bytes> {
-    parents.iter().copied().map(commit_bytes).collect()
 }
 
 fn commit_id_set(ids: &BTreeSet<CommitId>) -> Vec<Bytes> {
@@ -68,37 +60,7 @@ fn ancestor_ids(commits: &[StoredCommit], seed: CommitId) -> BTreeSet<CommitId> 
     ancestors
 }
 
-async fn selected_value<C: Connection>(
-    db: &Surreal<C>,
-    record: RecordId,
-) -> Result<Option<Value>, StorageError> {
-    let mut response = db
-        .query("SELECT * FROM $record;")
-        .bind(("record", record))
-        .await
-        .map_err(db_err)?
-        .check()
-        .map_err(db_err)?;
-    let rows: Vec<Value> = response.take(0).map_err(db_err)?;
-    Ok(rows.into_iter().next())
-}
-
-async fn tx_selected_value<C: Connection>(
-    tx: &Transaction<C>,
-    record: RecordId,
-) -> Result<Option<Value>, StorageError> {
-    let mut response = tx
-        .query("SELECT * FROM $record;")
-        .bind(("record", record))
-        .await
-        .map_err(db_err)?
-        .check()
-        .map_err(db_err)?;
-    let rows: Vec<Value> = response.take(0).map_err(db_err)?;
-    Ok(rows.into_iter().next())
-}
-
-async fn finish_commit<C: Connection, T>(
+pub(crate) async fn finish_tx<C: Connection, T>(
     tx: Transaction<C>,
     result: Result<T, StorageError>,
 ) -> Result<T, StorageError> {
@@ -121,14 +83,14 @@ async fn insert_commit<C: Connection>(
     parents: &[CommitId],
 ) -> Result<Option<i64>, StorageError> {
     for parent in parents {
-        if tx_selected_value(tx, commit_record(*parent))
-            .await?
-            .is_none()
-        {
+        let existing: Option<CommitRow> =
+            tx.select(commit_record(*parent)).await.map_err(db_err)?;
+        if existing.is_none() {
             return Err(StorageError::UnknownCommit { id: *parent });
         }
     }
-    if tx_selected_value(tx, commit_record(id)).await?.is_some() {
+    let existing: Option<CommitRow> = tx.select(commit_record(id)).await.map_err(db_err)?;
+    if existing.is_some() {
         return Ok(None);
     }
 
@@ -138,28 +100,15 @@ async fn insert_commit<C: Connection>(
         .map_err(db_err)?
         .check()
         .map_err(db_err)?;
-    let seq_value: Value = response.take(0).map_err(db_err)?;
-    let seq = decode_int(&seq_value, "seq")?;
+    let seq: Option<i64> = response.take(0).map_err(db_err)?;
+    let seq = seq.ok_or_else(|| crate::row::corrupt("commit sequence returned no value"))?;
 
-    let mut response = tx
-        .query(
-            "INSERT IGNORE INTO commit {
-                 id: $record, hash: $hash, seq: $seq,
-                 created_at_ms: $created_at_ms, parents: $parents
-             }
-             RETURN AFTER;",
-        )
-        .bind(("record", commit_record(id)))
-        .bind(("hash", commit_bytes(id)))
-        .bind(("seq", seq))
-        .bind(("created_at_ms", millis_param(created_at_ms)?))
-        .bind(("parents", parent_bytes(parents)))
+    let created: Option<CommitRow> = tx
+        .create(commit_record(id))
+        .content(CommitRow::new(id, seq, created_at_ms, parents)?)
         .await
-        .map_err(db_err)?
-        .check()
         .map_err(db_err)?;
-    let inserted: Vec<Value> = response.take(0).map_err(db_err)?;
-    Ok((!inserted.is_empty()).then_some(seq))
+    Ok(created.map(|_| seq))
 }
 
 async fn insert_history<C: Connection>(
@@ -169,25 +118,11 @@ async fn insert_history<C: Connection>(
     coord: ChunkCoord,
     blob: Option<&ChunkHash>,
 ) -> Result<(), StorageError> {
-    let blob = blob.map(|hash| Bytes::from(hash.as_bytes().to_vec()));
-    tx.query(
-        "INSERT INTO chunk_history {
-             commit: $commit, seq: $seq, dim: $dim, kind: $kind,
-             cx: $cx, cz: $cz, blob: $blob
-         }
-         RETURN NONE;",
-    )
-    .bind(("commit", commit_bytes(commit)))
-    .bind(("seq", seq))
-    .bind(("dim", i64::from(coord.dim.raw())))
-    .bind(("kind", i64::from(coord.kind.raw())))
-    .bind(("cx", i64::from(coord.x)))
-    .bind(("cz", i64::from(coord.z)))
-    .bind(("blob", blob))
-    .await
-    .map_err(db_err)?
-    .check()
-    .map_err(db_err)?;
+    let _: Option<StoredHistoryRow> = tx
+        .create("chunk_history")
+        .content(HistoryRow::new(commit, seq, coord, blob))
+        .await
+        .map_err(db_err)?;
     Ok(())
 }
 
@@ -197,10 +132,8 @@ async fn record_chunk_tx<C: Connection>(
     coord: &ChunkCoord,
     blob: Option<&ChunkHash>,
 ) -> Result<(), StorageError> {
-    let value = tx_selected_value(tx, commit_record(commit))
-        .await?
-        .ok_or(StorageError::UnknownCommit { id: commit })?;
-    let stored = decode_commit(value)?;
+    let stored: Option<CommitRow> = tx.select(commit_record(commit)).await.map_err(db_err)?;
+    let stored = stored.ok_or(StorageError::UnknownCommit { id: commit })?;
     insert_history(tx, commit, stored.seq, *coord, blob).await
 }
 
@@ -211,18 +144,12 @@ async fn apply_commit_tx<C: Connection>(
     parents: &[CommitId],
     entries: &[CommitEntry],
 ) -> Result<ApplyOutcome, StorageError> {
-    let mut response = tx
-        .query("SELECT * FROM ref WHERE active = true LIMIT 1;")
-        .await
-        .map_err(db_err)?
-        .check()
-        .map_err(db_err)?;
-    let refs: Vec<Value> = response.take(0).map_err(db_err)?;
+    let refs: Vec<RefRow> = tx.select("ref").await.map_err(db_err)?;
     let active = refs
         .into_iter()
-        .next()
-        .ok_or(StorageError::NoActiveRef)
-        .and_then(decode_commit_ref)?;
+        .find(|row| row.active)
+        .ok_or(StorageError::NoActiveRef)?
+        .into_domain()?;
 
     if let Some(base) = active.commit
         && !parents.contains(&base)
@@ -237,16 +164,12 @@ async fn apply_commit_tx<C: Connection>(
         }
     }
 
-    let mut response = tx
-        .query("UPDATE $record SET commit = $commit RETURN AFTER;")
-        .bind(("record", ref_record(&active.name)))
-        .bind(("commit", commit_bytes(id)))
+    let moved: Option<RefRow> = tx
+        .update(ref_record(&active.name))
+        .merge(RefCommitPatch::new(Some(id)))
         .await
-        .map_err(db_err)?
-        .check()
         .map_err(db_err)?;
-    let moved: Vec<Value> = response.take(0).map_err(db_err)?;
-    if moved.is_empty() {
+    if moved.is_none() {
         return Err(StorageError::NoActiveRef);
     }
 
@@ -259,35 +182,29 @@ async fn set_ref_tx<C: Connection>(
     commit: Option<CommitId>,
     created_at_ms: u64,
 ) -> Result<(), StorageError> {
-    if let Some(id) = commit
-        && tx_selected_value(tx, commit_record(id)).await?.is_none()
-    {
-        return Err(StorageError::UnknownCommit { id });
+    if let Some(id) = commit {
+        let existing: Option<CommitRow> = tx.select(commit_record(id)).await.map_err(db_err)?;
+        if existing.is_none() {
+            return Err(StorageError::UnknownCommit { id });
+        }
     }
-    let stored_commit = commit.map(commit_bytes);
-    let created_at_ms = millis_param(created_at_ms)?;
-    let record = ref_record(name);
-    if tx_selected_value(tx, record.clone()).await?.is_some() {
-        tx.query("UPDATE $record SET commit = $commit RETURN NONE;")
-            .bind(("record", record))
-            .bind(("commit", stored_commit))
-            .await
-            .map_err(db_err)?
-            .check()
-            .map_err(db_err)?;
-    } else {
-        tx.query(
-            "CREATE $record SET name = $name, commit = $commit,
-                 active = false, created_at_ms = $created_at_ms RETURN NONE;",
-        )
-        .bind(("record", record))
-        .bind(("name", name.as_str().to_owned()))
-        .bind(("commit", stored_commit))
-        .bind(("created_at_ms", created_at_ms))
+
+    let updated: Option<RefRow> = tx
+        .update(ref_record(name))
+        .merge(RefCommitPatch::new(commit))
         .await
-        .map_err(db_err)?
-        .check()
         .map_err(db_err)?;
+    if updated.is_some() {
+        return Ok(());
+    }
+
+    let created: Option<RefRow> = tx
+        .create(ref_record(name))
+        .content(RefRow::new(name, commit, false, created_at_ms)?)
+        .await
+        .map_err(db_err)?;
+    if created.is_none() {
+        return Err(crate::row::corrupt("failed to create ref row"));
     }
     Ok(())
 }
@@ -296,21 +213,16 @@ async fn delete_ref_tx<C: Connection>(
     tx: &Transaction<C>,
     name: &RefName,
 ) -> Result<bool, StorageError> {
-    let Some(value) = tx_selected_value(tx, ref_record(name)).await? else {
+    let existing: Option<RefRow> = tx.select(ref_record(name)).await.map_err(db_err)?;
+    let Some(row) = existing else {
         return Ok(false);
     };
-    let record = decode_commit_ref(value)?;
-    if record.active {
+    if row.active {
         return Err(StorageError::ActiveRefProtected {
             name: name.as_str().to_owned(),
         });
     }
-    tx.query("DELETE $record RETURN NONE;")
-        .bind(("record", ref_record(name)))
-        .await
-        .map_err(db_err)?
-        .check()
-        .map_err(db_err)?;
+    let _: Option<RefRow> = tx.delete(ref_record(name)).await.map_err(db_err)?;
     Ok(true)
 }
 
@@ -318,34 +230,34 @@ async fn activate_ref_tx<C: Connection>(
     tx: &Transaction<C>,
     name: &RefName,
 ) -> Result<(), StorageError> {
-    let value = tx_selected_value(tx, ref_record(name))
-        .await?
+    let existing: Option<RefRow> = tx.select(ref_record(name)).await.map_err(db_err)?;
+    let record = existing
         .ok_or_else(|| StorageError::UnknownRef {
             name: name.as_str().to_owned(),
-        })?;
-    let record = decode_commit_ref(value)?;
-    if let Some(commit) = record.commit
-        && tx_selected_value(tx, commit_record(commit))
-            .await?
-            .is_none()
-    {
-        return Err(StorageError::UnknownCommit { id: commit });
+        })?
+        .into_domain()?;
+    if let Some(commit) = record.commit {
+        let target: Option<CommitRow> = tx.select(commit_record(commit)).await.map_err(db_err)?;
+        if target.is_none() {
+            return Err(StorageError::UnknownCommit { id: commit });
+        }
     }
 
-    tx.query("UPDATE ref SET active = false WHERE active = true RETURN NONE;")
+    let refs: Vec<RefRow> = tx.select("ref").await.map_err(db_err)?;
+    for row in refs.into_iter().filter(|row| row.active) {
+        let _: Option<RefRow> = tx
+            .update(ref_record_name(&row.name))
+            .merge(RefActivePatch { active: false })
+            .await
+            .map_err(db_err)?;
+    }
+
+    let activated: Option<RefRow> = tx
+        .update(ref_record(name))
+        .merge(RefActivePatch { active: true })
         .await
-        .map_err(db_err)?
-        .check()
         .map_err(db_err)?;
-    let mut response = tx
-        .query("UPDATE $record SET active = true RETURN AFTER;")
-        .bind(("record", ref_record(name)))
-        .await
-        .map_err(db_err)?
-        .check()
-        .map_err(db_err)?;
-    let activated: Vec<Value> = response.take(0).map_err(db_err)?;
-    if activated.is_empty() {
+    if activated.is_none() {
         return Err(StorageError::UnknownRef {
             name: name.as_str().to_owned(),
         });
@@ -357,49 +269,13 @@ async fn set_scope_tx<C: Connection>(
     tx: &Transaction<C>,
     scope: &NamedScope,
 ) -> Result<(), StorageError> {
-    let record = scope_record(&scope.name);
-    let existing = tx_selected_value(tx, record.clone()).await?;
-    let created_at_ms = match &existing {
-        Some(value) => decode_created_at_ms(value.clone())?,
-        None => scope.created_at_ms,
-    };
-    let areas: Vec<Object> = scope
-        .areas()
-        .iter()
-        .map(|(dim, rect)| {
-            let mut area = Object::new();
-            area.insert("dim", i64::from(dim.raw()));
-            area.insert("x0", i64::from(rect.x0));
-            area.insert("z0", i64::from(rect.z0));
-            area.insert("x1", i64::from(rect.x1));
-            area.insert("z1", i64::from(rect.z1));
-            area
-        })
-        .collect();
-
-    if existing.is_some() {
-        tx.query("UPDATE $record SET name = $name, areas = $areas RETURN NONE;")
-            .bind(("record", record))
-            .bind(("name", scope.name.as_str().to_owned()))
-            .bind(("areas", areas))
-            .await
-            .map_err(db_err)?
-            .check()
-            .map_err(db_err)?;
-    } else {
-        tx.query(
-            "CREATE $record SET name = $name, created_at_ms = $created_at_ms,
-                 areas = $areas RETURN NONE;",
-        )
-        .bind(("record", record))
-        .bind(("name", scope.name.as_str().to_owned()))
-        .bind(("created_at_ms", millis_param(created_at_ms)?))
-        .bind(("areas", areas))
+    let existing: Option<ScopeRow> = tx.select(scope_record(&scope.name)).await.map_err(db_err)?;
+    let created_at_ms = existing.map_or(scope.created_at_ms, |row| row.created_at_ms);
+    let _: Option<ScopeRow> = tx
+        .upsert(scope_record(&scope.name))
+        .content(ScopeRow::new(scope, created_at_ms)?)
         .await
-        .map_err(db_err)?
-        .check()
         .map_err(db_err)?;
-    }
     Ok(())
 }
 
@@ -412,36 +288,30 @@ async fn retire_writes<C: Connection>(
     into_seq: i64,
     commits: &[StoredCommit],
     dropped: &[RecordId],
-    folded: usize,
+    folded: &[RecordId],
 ) -> Result<FoldOutcome, StorageError> {
-    if !dropped.is_empty() {
-        tx.query("DELETE chunk_history WHERE id IN $records RETURN NONE;")
-            .bind(("records", dropped.to_vec()))
+    for record in dropped {
+        let _: Option<StoredHistoryRow> = tx.delete(record.clone()).await.map_err(db_err)?;
+    }
+    for record in folded {
+        let _: Option<StoredHistoryRow> = tx
+            .update(record.clone())
+            .merge(HistoryMove::new(into, into_seq))
             .await
-            .map_err(db_err)?
-            .check()
             .map_err(db_err)?;
     }
-    if folded > 0 {
-        tx.query(
-            "UPDATE chunk_history SET commit = $into, seq = $into_seq
-             WHERE commit = $from RETURN NONE;",
-        )
-        .bind(("from", commit_bytes(from)))
-        .bind(("into", commit_bytes(into)))
-        .bind(("into_seq", into_seq))
-        .await
-        .map_err(db_err)?
-        .check()
-        .map_err(db_err)?;
+
+    let from_bytes = commit_bytes(from);
+    let refs: Vec<RefRow> = tx.select("ref").await.map_err(db_err)?;
+    for row in refs {
+        if row.commit.as_ref() == Some(&from_bytes) {
+            let _: Option<RefRow> = tx
+                .update(ref_record_name(&row.name))
+                .merge(RefCommitPatch::new(Some(into)))
+                .await
+                .map_err(db_err)?;
+        }
     }
-    tx.query("UPDATE ref SET commit = $into WHERE commit = $from RETURN NONE;")
-        .bind(("from", commit_bytes(from)))
-        .bind(("into", commit_bytes(into)))
-        .await
-        .map_err(db_err)?
-        .check()
-        .map_err(db_err)?;
 
     for commit in commits {
         if commit.id == from || !commit.parents.contains(&from) {
@@ -456,39 +326,30 @@ async fn retire_writes<C: Connection>(
         parents.extend(from_parents.iter().copied());
         parents.sort_unstable();
         parents.dedup();
-        tx.query("UPDATE $record SET parents = $parents RETURN NONE;")
-            .bind(("record", commit_record(commit.id)))
-            .bind(("parents", parent_bytes(&parents)))
+        let _: Option<CommitRow> = tx
+            .update(commit_record(commit.id))
+            .merge(CommitParentsPatch::new(&parents))
             .await
-            .map_err(db_err)?
-            .check()
             .map_err(db_err)?;
     }
 
-    tx.query("DELETE $record RETURN NONE;")
-        .bind(("record", commit_record(from)))
-        .await
-        .map_err(db_err)?
-        .check()
-        .map_err(db_err)?;
+    let _: Option<CommitRow> = tx.delete(commit_record(from)).await.map_err(db_err)?;
 
     Ok(FoldOutcome {
-        folded,
+        folded: folded.len(),
         dropped: dropped.len(),
     })
 }
 
 impl<C: Connection> SurrealdbStore<C> {
     async fn load_commits(&self) -> Result<Vec<StoredCommit>, StorageError> {
-        let mut response = self
-            .db
-            .query("SELECT * FROM commit ORDER BY seq;")
-            .await
-            .map_err(db_err)?
-            .check()
-            .map_err(db_err)?;
-        let rows: Vec<Value> = response.take(0).map_err(db_err)?;
-        rows.into_iter().map(decode_commit).collect()
+        let rows: Vec<CommitRow> = self.db.select("commit").await.map_err(db_err)?;
+        let mut commits = rows
+            .into_iter()
+            .map(CommitRow::into_stored)
+            .collect::<Result<Vec<_>, _>>()?;
+        commits.sort_unstable_by_key(|commit| commit.seq);
+        Ok(commits)
     }
 
     async fn load_history(&self, commit: CommitId) -> Result<Vec<StoredHistory>, StorageError> {
@@ -500,8 +361,10 @@ impl<C: Connection> SurrealdbStore<C> {
             .map_err(db_err)?
             .check()
             .map_err(db_err)?;
-        let rows: Vec<Value> = response.take(0).map_err(db_err)?;
-        rows.into_iter().map(decode_history).collect()
+        let rows: Vec<StoredHistoryRow> = response.take(0).map_err(db_err)?;
+        rows.into_iter()
+            .map(StoredHistoryRow::into_stored)
+            .collect()
     }
 
     async fn superseding_coords(
@@ -521,10 +384,8 @@ impl<C: Connection> SurrealdbStore<C> {
             .map_err(db_err)?
             .check()
             .map_err(db_err)?;
-        let rows: Vec<Value> = response.take(0).map_err(db_err)?;
-        rows.into_iter()
-            .map(decode_coord_fields)
-            .collect::<Result<_, _>>()
+        let rows: Vec<CoordRow> = response.take(0).map_err(db_err)?;
+        Ok(rows.into_iter().map(CoordRow::into_key).collect())
     }
 }
 
@@ -541,15 +402,20 @@ impl<C: Connection> MetaStore for SurrealdbStore<C> {
         let parents = normalized_parents(parents);
         let tx = self.db.clone().begin().await.map_err(db_err)?;
         let result = insert_commit(&tx, id, created_at_ms, &parents).await;
-        finish_commit(tx, result).await?;
+        finish_tx(tx, result).await?;
         Ok(id)
     }
 
     async fn commit_parents(&self, commit: CommitId) -> Result<Vec<CommitId>, StorageError> {
-        let Some(value) = selected_value(&self.db, commit_record(commit)).await? else {
-            return Ok(Vec::new());
-        };
-        Ok(decode_commit(value)?.parents)
+        let row: Option<CommitRow> = self
+            .db
+            .select(commit_record(commit))
+            .await
+            .map_err(db_err)?;
+        match row {
+            Some(row) => Ok(row.into_stored()?.parents),
+            None => Ok(Vec::new()),
+        }
     }
 
     async fn record_chunk(
@@ -561,7 +427,7 @@ impl<C: Connection> MetaStore for SurrealdbStore<C> {
         let _write = self.write_lock.lock().await;
         let tx = self.db.clone().begin().await.map_err(db_err)?;
         let result = record_chunk_tx(&tx, commit, coord, blob).await;
-        finish_commit(tx, result).await
+        finish_tx(tx, result).await
     }
 
     async fn lookup_chunk(
@@ -580,41 +446,36 @@ impl<C: Connection> MetaStore for SurrealdbStore<C> {
                  ORDER BY seq DESC LIMIT 1;",
             )
             .bind(("commits", commit_id_set(&ancestors)))
-            .bind(("dim", i64::from(coord.dim.raw())))
-            .bind(("kind", i64::from(coord.kind.raw())))
-            .bind(("cx", i64::from(coord.x)))
-            .bind(("cz", i64::from(coord.z)))
+            .bind(("dim", coord.dim.raw()))
+            .bind(("kind", i32::from(coord.kind.raw())))
+            .bind(("cx", coord.x))
+            .bind(("cz", coord.z))
             .await
             .map_err(db_err)?
             .check()
             .map_err(db_err)?;
-        let rows: Vec<Value> = response.take(0).map_err(db_err)?;
+        let rows: Vec<StoredHistoryRow> = response.take(0).map_err(db_err)?;
         rows.into_iter()
             .next()
-            .map(|value| decode_history(value).map(|stored| stored.entry))
+            .map(StoredHistoryRow::into_stored)
             .transpose()
+            .map(|stored| stored.map(|stored| stored.entry))
     }
 
     async fn lookup_commit(&self, id: CommitId) -> Result<Option<Commit>, StorageError> {
-        selected_value(&self.db, commit_record(id))
-            .await?
-            .map(|value| decode_commit(value).map(StoredCommit::into_commit))
-            .transpose()
+        let row: Option<CommitRow> = self.db.select(commit_record(id)).await.map_err(db_err)?;
+        Ok(row
+            .map(CommitRow::into_stored)
+            .transpose()?
+            .map(StoredCommit::into_commit))
     }
 
     async fn latest_commit(&self) -> Result<Option<Commit>, StorageError> {
-        let mut response = self
-            .db
-            .query("SELECT * FROM commit ORDER BY seq DESC LIMIT 1;")
-            .await
-            .map_err(db_err)?
-            .check()
-            .map_err(db_err)?;
-        let rows: Vec<Value> = response.take(0).map_err(db_err)?;
-        rows.into_iter()
-            .next()
-            .map(|value| decode_commit(value).map(StoredCommit::into_commit))
-            .transpose()
+        let commits = self.load_commits().await?;
+        Ok(commits
+            .into_iter()
+            .max_by_key(|commit| commit.seq)
+            .map(StoredCommit::into_commit))
     }
 
     async fn visit_commit_chunks<F>(
@@ -638,10 +499,10 @@ impl<C: Connection> MetaStore for SurrealdbStore<C> {
             .map_err(db_err)?
             .check()
             .map_err(db_err)?;
-        let rows: Vec<Value> = response.take(0).map_err(db_err)?;
+        let rows: Vec<StoredHistoryRow> = response.take(0).map_err(db_err)?;
         let mut current: Option<ChunkCoord> = None;
-        for value in rows {
-            let entry = decode_history(value)?.entry;
+        for row in rows {
+            let entry = row.into_stored()?.entry;
             if current == Some(entry.coord) {
                 continue;
             }
@@ -657,17 +518,8 @@ impl<C: Connection> MetaStore for SurrealdbStore<C> {
     where
         F: FnMut(&ChunkHistoryEntry) -> bool + Send,
     {
-        let mut response = self
-            .db
-            .query("SELECT * FROM chunk_history WHERE commit = $commit;")
-            .bind(("commit", commit_bytes(commit)))
-            .await
-            .map_err(db_err)?
-            .check()
-            .map_err(db_err)?;
-        let rows: Vec<Value> = response.take(0).map_err(db_err)?;
-        for value in rows {
-            if !visit(&decode_history(value)?.entry) {
+        for row in self.load_history(commit).await? {
+            if !visit(&row.entry) {
                 break;
             }
         }
@@ -697,7 +549,7 @@ impl<C: Connection> MetaStore for SurrealdbStore<C> {
         let parents = normalized_parents(parents);
         let tx = self.db.clone().begin().await.map_err(db_err)?;
         let result = apply_commit_tx(&tx, id, created_at_ms, &parents, entries).await;
-        finish_commit(tx, result).await
+        finish_tx(tx, result).await
     }
 
     async fn retire_commit(
@@ -727,15 +579,12 @@ impl<C: Connection> MetaStore for SurrealdbStore<C> {
         let from_parents = from_row.parents.clone();
         let into_seq = into_row.seq;
         let mut dropped = Vec::new();
-        let mut folded = 0usize;
+        let mut folded = Vec::new();
         for row in self.load_history(from).await? {
             if superseding.contains(&coord_key(row.entry.coord)) {
-                let Some(record) = row.record else {
-                    return Err(crate::row::corrupt("chunk-history row has no record ID"));
-                };
-                dropped.push(record);
+                dropped.push(row.record);
             } else {
-                folded += 1;
+                folded.push(row.record);
             }
         }
 
@@ -748,10 +597,10 @@ impl<C: Connection> MetaStore for SurrealdbStore<C> {
             into_seq,
             &commits,
             &dropped,
-            folded,
+            &folded,
         )
         .await;
-        finish_commit(tx, result).await
+        finish_tx(tx, result).await
     }
 
     async fn set_ref(
@@ -763,30 +612,26 @@ impl<C: Connection> MetaStore for SurrealdbStore<C> {
         let _write = self.write_lock.lock().await;
         let tx = self.db.clone().begin().await.map_err(db_err)?;
         let result = set_ref_tx(&tx, name, commit, created_at_ms).await;
-        finish_commit(tx, result).await
+        finish_tx(tx, result).await
     }
 
     async fn lookup_ref(&self, name: &RefName) -> Result<Option<CommitRef>, StorageError> {
-        selected_value(&self.db, ref_record(name))
-            .await?
-            .map(decode_commit_ref)
-            .transpose()
+        let row: Option<RefRow> = self.db.select(ref_record(name)).await.map_err(db_err)?;
+        row.map(RefRow::into_domain).transpose()
     }
 
     async fn visit_refs<F>(&self, mut visit: F) -> Result<(), StorageError>
     where
         F: FnMut(&CommitRef) -> bool + Send,
     {
-        let mut response = self
-            .db
-            .query("SELECT * FROM ref ORDER BY name;")
-            .await
-            .map_err(db_err)?
-            .check()
-            .map_err(db_err)?;
-        let rows: Vec<Value> = response.take(0).map_err(db_err)?;
-        for value in rows {
-            if !visit(&decode_commit_ref(value)?) {
+        let rows: Vec<RefRow> = self.db.select("ref").await.map_err(db_err)?;
+        let mut refs = rows
+            .into_iter()
+            .map(RefRow::into_domain)
+            .collect::<Result<Vec<_>, _>>()?;
+        refs.sort_by(|left, right| left.name.as_str().cmp(right.name.as_str()));
+        for record in refs {
+            if !visit(&record) {
                 break;
             }
         }
@@ -797,28 +642,24 @@ impl<C: Connection> MetaStore for SurrealdbStore<C> {
         let _write = self.write_lock.lock().await;
         let tx = self.db.clone().begin().await.map_err(db_err)?;
         let result = delete_ref_tx(&tx, name).await;
-        finish_commit(tx, result).await
+        finish_tx(tx, result).await
     }
 
     async fn active_ref(&self) -> Result<Option<CommitRef>, StorageError> {
-        let mut response = self
-            .db
-            .query("SELECT * FROM ref WHERE active = true LIMIT 1;")
-            .await
-            .map_err(db_err)?
-            .check()
-            .map_err(db_err)?;
-        let rows: Vec<Value> = response.take(0).map_err(db_err)?;
-        let Some(value) = rows.into_iter().next() else {
+        let rows: Vec<RefRow> = self.db.select("ref").await.map_err(db_err)?;
+        let Some(row) = rows.into_iter().find(|row| row.active) else {
             return Ok(None);
         };
-        let record = decode_commit_ref(value)?;
-        if let Some(commit) = record.commit
-            && selected_value(&self.db, commit_record(commit))
-                .await?
-                .is_none()
-        {
-            return Err(StorageError::UnknownCommit { id: commit });
+        let record = row.into_domain()?;
+        if let Some(commit) = record.commit {
+            let target: Option<CommitRow> = self
+                .db
+                .select(commit_record(commit))
+                .await
+                .map_err(db_err)?;
+            if target.is_none() {
+                return Err(StorageError::UnknownCommit { id: commit });
+            }
         }
         Ok(Some(record))
     }
@@ -827,37 +668,33 @@ impl<C: Connection> MetaStore for SurrealdbStore<C> {
         let _write = self.write_lock.lock().await;
         let tx = self.db.clone().begin().await.map_err(db_err)?;
         let result = activate_ref_tx(&tx, name).await;
-        finish_commit(tx, result).await
+        finish_tx(tx, result).await
     }
 
     async fn set_scope(&mut self, scope: &NamedScope) -> Result<(), StorageError> {
         let _write = self.write_lock.lock().await;
         let tx = self.db.clone().begin().await.map_err(db_err)?;
         let result = set_scope_tx(&tx, scope).await;
-        finish_commit(tx, result).await
+        finish_tx(tx, result).await
     }
 
     async fn lookup_scope(&self, name: &ScopeName) -> Result<Option<NamedScope>, StorageError> {
-        selected_value(&self.db, scope_record(name))
-            .await?
-            .map(decode_scope)
-            .transpose()
+        let row: Option<ScopeRow> = self.db.select(scope_record(name)).await.map_err(db_err)?;
+        row.map(ScopeRow::into_domain).transpose()
     }
 
     async fn visit_scopes<F>(&self, mut visit: F) -> Result<(), StorageError>
     where
         F: FnMut(&NamedScope) -> bool + Send,
     {
-        let mut response = self
-            .db
-            .query("SELECT * FROM scope ORDER BY name;")
-            .await
-            .map_err(db_err)?
-            .check()
-            .map_err(db_err)?;
-        let rows: Vec<Value> = response.take(0).map_err(db_err)?;
-        for value in rows {
-            if !visit(&decode_scope(value)?) {
+        let rows: Vec<ScopeRow> = self.db.select("scope").await.map_err(db_err)?;
+        let mut scopes = rows
+            .into_iter()
+            .map(ScopeRow::into_domain)
+            .collect::<Result<Vec<_>, _>>()?;
+        scopes.sort_by(|left, right| left.name.as_str().cmp(right.name.as_str()));
+        for scope in scopes {
+            if !visit(&scope) {
                 break;
             }
         }
@@ -866,15 +703,7 @@ impl<C: Connection> MetaStore for SurrealdbStore<C> {
 
     async fn delete_scope(&mut self, name: &ScopeName) -> Result<bool, StorageError> {
         let _write = self.write_lock.lock().await;
-        let mut response = self
-            .db
-            .query("DELETE $record RETURN BEFORE;")
-            .bind(("record", scope_record(name)))
-            .await
-            .map_err(db_err)?
-            .check()
-            .map_err(db_err)?;
-        let removed: Vec<Value> = response.take(0).map_err(db_err)?;
-        Ok(!removed.is_empty())
+        let removed: Option<ScopeRow> = self.db.delete(scope_record(name)).await.map_err(db_err)?;
+        Ok(removed.is_some())
     }
 }

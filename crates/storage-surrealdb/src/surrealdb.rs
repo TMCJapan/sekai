@@ -7,12 +7,14 @@ use std::time::SystemTime;
 
 use sekai_storage::{SekaiStore, SekaiStoreOpener, StorageError};
 use surrealdb::engine::local::{Db, SurrealKv};
-use surrealdb::types::{NotFoundError, Value};
+use surrealdb::method::Transaction;
+use surrealdb::types::NotFoundError;
 use surrealdb::{Connection, Surreal};
 use tokio::sync::Mutex;
 
 use crate::SCHEMA_VERSION;
-use crate::row::db_err;
+use crate::meta::finish_tx;
+use crate::row::{MetaRow, RefRow, db_err, ref_record_name};
 
 /// Default `SurrealKV` directory used when the CLI is invoked without a store.
 pub const DEFAULT_PATH: &str = ".sekai";
@@ -109,18 +111,13 @@ impl<C: Connection> SurrealdbStore<C> {
     }
 
     async fn schema_version(&self) -> Result<Option<i64>, StorageError> {
-        let response = self
-            .db
-            .query("SELECT VALUE schema_version FROM meta:store;")
-            .await
-            .and_then(surrealdb::IndexedResults::check);
-        let mut response = match response {
-            Ok(response) => response,
-            Err(error) if missing_meta_table(&error) => return Ok(None),
-            Err(error) => return Err(db_err(error)),
-        };
-        let versions: Vec<i64> = response.take(0).map_err(db_err)?;
-        Ok(versions.into_iter().next())
+        let row: Result<Option<MetaRow>, surrealdb::Error> =
+            self.db.select(("meta", "store")).await;
+        match row {
+            Ok(row) => Ok(row.map(|row| row.schema_version)),
+            Err(error) if missing_meta_table(&error) => Ok(None),
+            Err(error) => Err(db_err(error)),
+        }
     }
 }
 
@@ -321,43 +318,36 @@ impl SurrealdbStore<Db> {
 
     async fn create_initial_records(&self) -> Result<(), StorageError> {
         let tx = self.db.clone().begin().await.map_err(db_err)?;
-        let mut response = tx
-            .query(
-                "INSERT IGNORE INTO meta { id: meta:store, schema_version: $version }
-                 RETURN AFTER;",
-            )
-            .bind(("version", SCHEMA_VERSION))
-            .await
-            .map_err(db_err)?;
-        let created: Vec<Value> = response.take(0).map_err(db_err)?;
-
-        if !created.is_empty() {
-            let created_at_ms = now_ms()?;
-            tx.query(
-                "INSERT IGNORE INTO ref {
-                     id: ref:main, name: $name, commit: NONE,
-                     active: true, created_at_ms: $created_at_ms
-                 }
-                 RETURN NONE;",
-            )
-            .bind(("name", sekai_core::DEFAULT_REF_NAME.to_owned()))
-            .bind(("created_at_ms", created_at_ms))
-            .await
-            .map_err(db_err)?
-            .check()
-            .map_err(db_err)?;
-        }
-
-        tx.commit().await.map_err(db_err)?;
-        Ok(())
+        let result = create_initial_records_tx(&tx).await;
+        finish_tx(tx, result).await
     }
 }
 
-fn now_ms() -> Result<i64, StorageError> {
+async fn create_initial_records_tx<C: Connection>(tx: &Transaction<C>) -> Result<(), StorageError> {
+    let created: Option<MetaRow> = tx
+        .create(("meta", "store"))
+        .content(MetaRow {
+            schema_version: SCHEMA_VERSION,
+        })
+        .await
+        .map_err(db_err)?;
+
+    if created.is_some() {
+        let created_at_ms = now_ms()?;
+        let _: Option<RefRow> = tx
+            .create(ref_record_name(sekai_core::DEFAULT_REF_NAME))
+            .content(RefRow::new_default(created_at_ms)?)
+            .await
+            .map_err(db_err)?;
+    }
+
+    Ok(())
+}
+
+fn now_ms() -> Result<u64, StorageError> {
     let millis = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_err(|_| StorageError::ClockBeforeEpoch)?
         .as_millis();
-    let millis = u64::try_from(millis).map_err(|_| StorageError::ClockOutOfRange)?;
-    i64::try_from(millis).map_err(|_| StorageError::InvalidTimestamp(millis))
+    u64::try_from(millis).map_err(|_| StorageError::ClockOutOfRange)
 }
