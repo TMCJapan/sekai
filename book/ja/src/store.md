@@ -24,3 +24,8 @@ sekai --store surrealkv:///var/lib/sekai commit ./world
 バックエンドは SurrealDB (SurrealKV) です。明示的に指定する場合は
 `surrealkv://` (または `surrealdb://`) を付けます。SQLite バックエンドを
 含めてビルドした場合は `sqlite://` で選択できます。
+
+SurrealDB 3.x を使ったビルドで作成したストアは、SurrealDB 4 では
+デフォルトで拒否されます。ディレクトリをバックアップしたうえで、
+ストアを作り直すか、`SURREAL_EXPERIMENTAL_UPGRADE_FROM_3X=true` を
+指定して一方向の実験的なインプレース移行を選んでください。

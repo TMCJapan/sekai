@@ -14,7 +14,9 @@ workspace = true
 [dependencies]
 sekai-core.workspace = true
 sekai-storage.workspace = true
-surrealdb = { version = "3.3.5", default-features = false, features = [
+# 4.0 stores an oversized transaction in a level-0 table instead of failing
+# with SurrealKV's "Memtable arena is full" error (the 3.x behavior).
+surrealdb = { version = "4.0.0", default-features = false, features = [
   "parse",
   "rustls",
   "kv-surrealkv",
