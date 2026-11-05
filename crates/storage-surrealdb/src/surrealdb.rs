@@ -1,7 +1,7 @@
 //! Store handle, schema lifecycle, and backend selection.
 
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -229,10 +229,11 @@ fn url_path(url: &str) -> Result<&str, StorageError> {
 ///
 /// `SurrealKV` reads the query parameters when it opens the store, but the
 /// directory checks and creation must not treat them as part of the path.
-fn filesystem_path(path: &Path) -> &Path {
+fn filesystem_path(path: impl AsRef<Path>) -> PathBuf {
+    let path = path.as_ref();
     match path.to_str().and_then(|text| text.split_once('?')) {
-        Some((filesystem, _)) => Path::new(filesystem),
-        None => path,
+        Some((filesystem, _)) => PathBuf::from(filesystem),
+        None => path.to_path_buf(),
     }
 }
 
@@ -245,7 +246,7 @@ pub async fn open_surrealdb(path: impl AsRef<Path>) -> Result<SurrealdbStore, St
     let filesystem = filesystem_path(&path);
     if !filesystem.join("manifest").is_dir() {
         return Err(StorageError::StoreMissing {
-            path: filesystem.to_path_buf(),
+            path: filesystem.clone(),
         });
     }
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -262,7 +263,7 @@ pub async fn open_surrealdb(path: impl AsRef<Path>) -> Result<SurrealdbStore, St
                 }
                 Ok(None) => {
                     last_error = Some(StorageError::StoreMissing {
-                        path: filesystem.to_path_buf(),
+                        path: filesystem.clone(),
                     });
                 }
                 Err(error) => last_error = Some(error),
@@ -272,7 +273,7 @@ pub async fn open_surrealdb(path: impl AsRef<Path>) -> Result<SurrealdbStore, St
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     Err(last_error.unwrap_or(StorageError::StoreMissing {
-        path: filesystem.to_path_buf(),
+        path: filesystem.clone(),
     }))
 }
 
@@ -280,8 +281,8 @@ pub async fn open_surrealdb(path: impl AsRef<Path>) -> Result<SurrealdbStore, St
 pub async fn init_surrealdb(path: impl AsRef<Path>) -> Result<SurrealdbStore, StorageError> {
     let path = path.as_ref();
     let filesystem = filesystem_path(path);
-    std::fs::create_dir_all(filesystem)
-        .map_err(|source| sekai_storage::io_error(filesystem, source))?;
+    std::fs::create_dir_all(&filesystem)
+        .map_err(|source| sekai_storage::io_error(filesystem.clone(), source))?;
     let store = connect(path).await?;
     store.initialize().await?;
     Ok(store)

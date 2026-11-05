@@ -11,6 +11,8 @@ ignore = [
   "RUSTSEC-2026-0387",
   # rsa via jsonwebtoken (SurrealDB auth); no fixed release exists.
   "RUSTSEC-2023-0071",
+  # pin-utils (unmaintained) via wasmtimer <- surrealdb; no patched release.
+  "RUSTSEC-2026-0441",
 ]
 
 [licenses]
