@@ -9,10 +9,6 @@ ignore = [
   "RUSTSEC-2024-0436",
   # crypto-bigint via jsonwebtoken (SurrealDB auth).
   "RUSTSEC-2026-0387",
-  # quick-xml via object_store (SurrealDB's storage helpers): object_store
-  # pins quick-xml ^0.39, so the 0.41 fix is not selectable yet.
-  "RUSTSEC-2026-0194",
-  "RUSTSEC-2026-0195",
   # rsa via jsonwebtoken (SurrealDB auth); no fixed release exists.
   "RUSTSEC-2023-0071",
 ]

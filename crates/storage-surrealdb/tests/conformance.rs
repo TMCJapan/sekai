@@ -243,3 +243,70 @@ async fn url_schemes_open_the_same_store() {
         .check()
         .unwrap();
 }
+
+/// Engine configuration rides in the URL query and must not rename the
+/// directory that holds the store.
+#[tokio::test]
+async fn query_parameters_do_not_rename_the_store_directory() {
+    let (dir, _guard) = tempdir("query");
+    let url = format!("{}?max_memtable_size=16384", dir.display());
+
+    let store = init_surrealdb(&url).await.unwrap();
+    assert!(dir.join("manifest").is_dir());
+    assert!(
+        !Path::new(&url).exists(),
+        "query parameters must not become part of the directory name"
+    );
+    drop(store);
+
+    let store = SurrealdbStore::open(&url).await.unwrap();
+    drop(store);
+}
+
+/// A transaction larger than the configured memtable must still commit:
+/// `SurrealKV` 1.2 writes it directly to a level-0 table instead of failing
+/// with `Memtable arena is full` (the 3.x behavior).
+#[tokio::test]
+async fn oversized_transaction_does_not_hit_the_memtable_limit() {
+    let (dir, _guard) = tempdir("oversized");
+    let url = format!("{}?max_memtable_size=16384", dir.display());
+    let mut store = init_surrealdb(&url).await.unwrap();
+
+    let entries: Vec<CommitEntry> = (0..=255u8)
+        .map(|index| {
+            let coord = ChunkCoord::new(
+                Dimension::OVERWORLD,
+                RegionKind::Region,
+                i32::from(index),
+                0,
+            );
+            CommitEntry::new(coord, Some(ChunkHash::new([index; 32])))
+        })
+        .collect();
+    let id = store
+        .meta_mut()
+        .apply_commit_incremental(1_000, &[], &entries)
+        .await
+        .unwrap()
+        .id;
+
+    assert!(store.meta().lookup_commit(id).await.unwrap().is_some());
+    let mut fresh = 0;
+    store
+        .meta()
+        .visit_fresh_rows(id, |_| {
+            fresh += 1;
+            true
+        })
+        .await
+        .unwrap();
+    assert_eq!(fresh, entries.len());
+
+    // The oversized batch bypassed the memtable, so an L0 table exists even
+    // before any background flush.
+    let sstables = dir.join("sstables");
+    assert!(
+        std::fs::read_dir(sstables).unwrap().next().is_some(),
+        "an oversized transaction must write a level-0 table"
+    );
+}

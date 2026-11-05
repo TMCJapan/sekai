@@ -8,6 +8,7 @@ use std::time::SystemTime;
 use sekai_storage::{SekaiStore, SekaiStoreOpener, StorageError};
 use surrealdb::engine::local::{Db, SurrealKv};
 use surrealdb::method::Transaction;
+use surrealdb::opt::Config;
 use surrealdb::types::NotFoundError;
 use surrealdb::{Connection, Surreal};
 use tokio::sync::Mutex;
@@ -223,14 +224,29 @@ fn url_path(url: &str) -> Result<&str, StorageError> {
     Ok(path)
 }
 
+/// The filesystem component of a store path, without the `?key=value`
+/// engine configuration suffix.
+///
+/// `SurrealKV` reads the query parameters when it opens the store, but the
+/// directory checks and creation must not treat them as part of the path.
+fn filesystem_path(path: &Path) -> &Path {
+    match path.to_str().and_then(|text| text.split_once('?')) {
+        Some((filesystem, _)) => Path::new(filesystem),
+        None => path,
+    }
+}
+
 /// Open the existing store rooted at `path`.
 ///
 /// A store carries a `SurrealKV` `manifest/` directory; its absence means the
 /// path was never initialized, so this fails without creating anything.
 pub async fn open_surrealdb(path: impl AsRef<Path>) -> Result<SurrealdbStore, StorageError> {
     let path = path.as_ref().to_path_buf();
-    if !path.join("manifest").is_dir() {
-        return Err(StorageError::StoreMissing { path: path.clone() });
+    let filesystem = filesystem_path(&path);
+    if !filesystem.join("manifest").is_dir() {
+        return Err(StorageError::StoreMissing {
+            path: filesystem.to_path_buf(),
+        });
     }
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
     let mut last_error = None;
@@ -245,7 +261,9 @@ pub async fn open_surrealdb(path: impl AsRef<Path>) -> Result<SurrealdbStore, St
                     });
                 }
                 Ok(None) => {
-                    last_error = Some(StorageError::StoreMissing { path: path.clone() });
+                    last_error = Some(StorageError::StoreMissing {
+                        path: filesystem.to_path_buf(),
+                    });
                 }
                 Err(error) => last_error = Some(error),
             },
@@ -253,13 +271,17 @@ pub async fn open_surrealdb(path: impl AsRef<Path>) -> Result<SurrealdbStore, St
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    Err(last_error.unwrap_or(StorageError::StoreMissing { path: path.clone() }))
+    Err(last_error.unwrap_or(StorageError::StoreMissing {
+        path: filesystem.to_path_buf(),
+    }))
 }
 
 /// Open the store rooted at `path`, creating and initializing it when missing.
 pub async fn init_surrealdb(path: impl AsRef<Path>) -> Result<SurrealdbStore, StorageError> {
     let path = path.as_ref();
-    std::fs::create_dir_all(path).map_err(|source| sekai_storage::io_error(path, source))?;
+    let filesystem = filesystem_path(path);
+    std::fs::create_dir_all(filesystem)
+        .map_err(|source| sekai_storage::io_error(filesystem, source))?;
     let store = connect(path).await?;
     store.initialize().await?;
     Ok(store)
@@ -267,13 +289,20 @@ pub async fn init_surrealdb(path: impl AsRef<Path>) -> Result<SurrealdbStore, St
 
 async fn connect(path: impl AsRef<Path>) -> Result<SurrealdbStore, StorageError> {
     let path = path.as_ref().to_path_buf();
+    // The embedded SDK deliberately reads no `SURREAL_*` environment
+    // variables, but SurrealKV's migration error tells operators to set this
+    // one. Bridge it so the documented opt-in works for embedded stores.
+    let mut config = Config::new();
+    if let Ok(value) = std::env::var("SURREAL_EXPERIMENTAL_UPGRADE_FROM_3X") {
+        config = config.datastore_option("experimental_upgrade_from_3x", value);
+    }
     // The engine shuts its SurrealKV datastore down asynchronously when the
     // last handle drops. A reopen in the same process can race that shutdown
     // and see the old `LOCK`; retry briefly instead of surfacing a transient
     // failure. A lock held by another process still fails after the deadline.
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
     let db = loop {
-        match Surreal::new::<SurrealKv>(path.clone()).await {
+        match Surreal::new::<SurrealKv>((path.clone(), config.clone())).await {
             Ok(db) => break db,
             Err(error)
                 if error.message().to_lowercase().contains("lock")
