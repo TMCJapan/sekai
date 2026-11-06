@@ -59,7 +59,9 @@ pub struct ChunkPayload<'de> {
     #[nbt(rename = "yPos")]
     pub y_pos: i32,
 
-    #[nbt(rename = "Status")]
+    /// Renamed to `status` in 26.4. Both spellings decode here and the
+    /// normalized view writes `Status`, so the rename alone is no change.
+    #[nbt(rename = "Status", alias = "status")]
     pub status: &'de Cesu8,
 
     #[nbt(rename = "LastUpdate")]

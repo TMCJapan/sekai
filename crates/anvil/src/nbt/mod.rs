@@ -457,6 +457,35 @@ mod tests {
         assert_eq!(keys.len(), total, "every variant must key apart");
     }
 
+    /// 26.4 renames `Status` to `status`; a chunk saved only to pick up the
+    /// new spelling keys exactly as it did before.
+    #[test]
+    fn lowercase_status_keys_like_the_legacy_spelling() {
+        let pre_rename = chunk_with(&[]);
+        let old_name = named_tag(Tag::String, "Status", &[]);
+        let new_name = named_tag(Tag::String, "status", &[]);
+        let at = pre_rename
+            .windows(old_name.len())
+            .position(|window| window == old_name.as_slice())
+            .unwrap();
+        let mut renamed = pre_rename.clone();
+        renamed[at..at + new_name.len()].copy_from_slice(&new_name);
+
+        assert_eq!(region_key(&pre_rename), region_key(&renamed));
+    }
+
+    /// With both spellings present, neither value can be picked safely.
+    #[test]
+    fn both_status_spellings_have_no_key() {
+        let mut status = 14u16.to_be_bytes().to_vec();
+        status.extend(b"minecraft:full");
+        let both = chunk_with(&[&named_tag(Tag::String, "status", &status)]);
+        assert!(matches!(
+            chunk_key(RegionKind::Region, &both),
+            Err(ChunkHashError::Invalid(_))
+        ));
+    }
+
     /// An absent compound and a present empty one are different documents,
     /// so they must not share a key.
     #[test]
