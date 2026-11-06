@@ -1,12 +1,12 @@
-//! Pre-1.13 (`Level`-wrapped) chunk decoding.
+//! Pre-1.18 (`Level`-wrapped) chunk decoding.
 //!
-//! Legacy chunks keep their fields inside a `Level` compound, mark
-//! generation progress with `TerrainPopulated` instead of `Status`, and
-//! store block content as per-section `Blocks`/`Add`/`Data` byte arrays
-//! rather than a palette. This module decodes the fields the normalized
-//! view needs; the arrays are owned copies because the derive can only
-//! default a field whose type owns its data, and pre-1.9 files omit most of
-//! them.
+//! Legacy chunks keep their fields inside a `Level` compound. Before 1.13
+//! they also mark generation progress with `TerrainPopulated` instead of
+//! `Status` and store block content as per-section `Blocks`/`Add`/`Data`
+//! byte arrays rather than a palette, which is the layout read here. This
+//! module decodes the fields the normalized view needs; the arrays are owned
+//! copies because the derive can only default a field whose type owns its
+//! data, and pre-1.9 files omit most of them.
 
 use alloc::vec::Vec;
 
@@ -76,7 +76,7 @@ pub struct LegacySection<'de> {
     pub data2: &'de [u8],
 }
 
-/// A pre-1.13 chunk: the fields the normalized view needs.
+/// A pre-1.18 chunk: the fields the normalized view needs.
 ///
 /// Sections and height maps keep their legacy shapes, and every field
 /// defaults: pre-1.9 files omit most of them.

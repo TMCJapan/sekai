@@ -19,15 +19,15 @@ use nanonbt::{Cesu8, DeserializeNbt, SerializeNbt};
 
 /// A parsed level chunk in either on-disk format.
 ///
-/// Pre-1.13 worlds wrap their fields in `Level` and store sections as byte
-/// arrays. Each format hashes through its own normalized view; the legacy
+/// Pre-1.18 worlds wrap their fields in `Level`, and pre-1.13 ones also store
+/// sections as byte arrays. Each format hashes through its own normalized view; the legacy
 /// view writes keys the modern one never does, so a conversion is never
 /// mistaken for "no change".
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub enum Chunk<'de> {
-    /// 1.13+ shape: fields at the root, palette sections.
+    /// 1.18+ shape: fields at the root, palette sections.
     Modern(ChunkPayload<'de>),
-    /// Pre-1.13 `Level` shape: byte-array sections.
+    /// Pre-1.18 `Level` shape, read with pre-1.13 byte-array sections.
     Legacy(LegacyChunkPayload<'de>),
 }
 

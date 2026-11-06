@@ -132,7 +132,7 @@ mod tests {
         out.push(0);
     }
 
-    /// A minimal 1.13+ level chunk whose only content is `status`.
+    /// A minimal 1.18+ level chunk whose only content is `status`.
     fn chunk_nbt(status: &str) -> Vec<u8> {
         let mut out = vec![10, 0, 0];
         int(&mut out, "DataVersion", 1);

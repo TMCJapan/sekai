@@ -169,8 +169,9 @@ different name.
   their inner key order does count. An absent optional compound writes
   nothing, while an empty one writes its `TAG_End`, so the two never compare
   equal. The legacy view omits its empty top-level lists and arrays; the
-  modern view writes them. Each format (1.13+ and legacy `Level`) has its own view, so
-  converting a chunk is a real change, never a silent no-op.
+  modern view writes them. Each format (1.18+ root and legacy `Level`) has
+  its own view, so converting a chunk is a real change, never a silent
+  no-op.
 - **Chunk digest -> CAS key**: `normalized_hash` through `hash_bytes` is the
   `ChunkHash`. The very same digest drives `diff` output. Because volatile
   tags never enter it, a server rewriting them neither adds a blob nor
@@ -214,15 +215,17 @@ ingest; there is no raw-byte fallback.
 
 `Chunk::normalized_hash` accepts both on-disk shapes:
 
-- **Modern** (1.13+): fields at the root, palette `sections`,
+- **Modern** (1.18+): fields at the root, palette `sections`,
   `Heightmaps`, `Status`, plus `structures`, `PostProcessing`,
   `blending_data` and `isLightOn`, which default when absent. `Status` is
   also read under its 26.4 spelling `status`; the view always writes
   `Status`, so the rename alone is not a change, and a chunk carrying both
   spellings fails to decode.
-- **Legacy** (pre-1.13): fields inside a `Level` compound,
-  per-section `Blocks`/`Add`/`Data`/`Data2` byte arrays (kept verbatim as
-  owned copies, not expanded into a palette), a 16-bit `HeightMap`, and
+- **Legacy** (pre-1.18): fields inside a `Level` compound, read in their
+  pre-1.13 layout: per-section `Blocks`/`Add`/`Data`/`Data2` byte arrays
+  (kept verbatim as owned copies, not expanded into a palette; a 1.13–1.17
+  section carries a palette instead and decodes with empty arrays), a
+  16-bit `HeightMap`, and
   `TerrainPopulated` mapped onto the modern `Status` vocabulary
   (`minecraft:full` / `legacy:empty` / `legacy:missing`). `DataVersion`
   is read from the root when `Level` lacks it (1.9+ writes it there).
@@ -231,7 +234,7 @@ ingest; there is no raw-byte fallback.
   for that attribute, which is why the arrays are owned rather than
   borrowed.
 
-The 1.13+ schema is decoded first; the legacy `Level` wrapper is tried
+The 1.18+ schema is decoded first; the legacy `Level` wrapper is tried
 only when that read fails, so the common path pays nothing and the rare
 case pays one failed pass. Each format hashes through its own normalized
 view; the legacy view writes keys the modern one never does, so converting

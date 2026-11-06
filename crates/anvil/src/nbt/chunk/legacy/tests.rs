@@ -1,8 +1,8 @@
-//! Legacy (pre-1.13 `Level`-wrapped) chunk tests.
+//! Legacy (pre-1.18 `Level`-wrapped) chunk tests.
 //!
 //! Fixtures are built byte by byte: the point is the on-disk shape, which no
 //! serializer in the workspace produces (the modern writer always emits the
-//! 1.13+ root layout).
+//! 1.18+ root layout).
 
 use alloc::vec;
 use alloc::vec::Vec;

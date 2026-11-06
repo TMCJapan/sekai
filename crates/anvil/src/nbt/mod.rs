@@ -8,9 +8,9 @@ use chunk::{Chunk, ChunkPayload, LegacyChunkPayload};
 
 /// Deserializes a level-chunk NBT root, either format.
 ///
-/// The 1.13+ shape is tried first: it is the common case, and trying it
+/// The 1.18+ shape is tried first: it is the common case, and trying it
 /// costs nothing extra there. A legacy chunk is exactly the case where that
-/// read fails and the pre-1.13 `Level` wrapper decodes instead.
+/// read fails and the pre-1.18 `Level` wrapper decodes instead.
 ///
 /// When both fail, the error names the field the payload was actually
 /// missing: a root with no `Level` member is a modern chunk that failed for
@@ -48,7 +48,7 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<Chunk<'_>, ChunkNbtError> {
 /// # Errors
 ///
 /// [`ChunkHashError::Invalid`] when the payload is not well-formed NBT, or
-/// when a `region/` payload decodes as neither the 1.13+ nor the legacy
+/// when a `region/` payload decodes as neither the 1.18+ nor the legacy
 /// level-chunk shape, and [`ChunkHashError::Normalize`] when the decoded
 /// chunk cannot be encoded for its normalized view.
 pub(crate) fn chunk_key(kind: RegionKind, raw_nbt: &[u8]) -> Result<ChunkHash, ChunkHashError> {
