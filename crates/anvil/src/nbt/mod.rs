@@ -93,29 +93,15 @@ fn validate_nbt(raw_nbt: &[u8]) -> Result<(), ChunkNbtError> {
 mod tests {
     use nanonbt::Cesu8;
 
-    use super::chunk::{BlockTick, Heightmaps, RawCompound, Section};
+    use super::chunk::{BlockTick, Heightmaps, Section};
     use super::*;
 
     #[test]
     fn normalized_hash_is_deterministic_and_skips_volatile_tags() {
-        let status = Cesu8::try_from_str("minecraft:full").unwrap();
         let payload = |inhabited_time, last_update| ChunkPayload {
-            data_version: 1,
-            x_pos: 3,
-            y_pos: 0,
-            z_pos: -1,
-            inhabited_time,
             last_update,
-            sections: alloc::vec![],
-            heightmaps: Heightmaps::default(),
-            status,
-            block_entities: alloc::vec![],
-            block_ticks: alloc::vec![],
-            fluid_ticks: alloc::vec![],
-            blending_data: RawCompound::default(),
-            post_processing: alloc::vec![],
-            structures: RawCompound::default(),
-            is_light_on: false,
+            inhabited_time,
+            ..ChunkPayload::empty_full()
         };
 
         let base = payload(7, 9);
@@ -126,24 +112,10 @@ mod tests {
 
     #[test]
     fn volatile_only_change_reports_nothing() {
-        let status = Cesu8::try_from_str("minecraft:full").unwrap();
         let payload = |inhabited_time, last_update| ChunkPayload {
-            data_version: 1,
-            x_pos: 3,
-            y_pos: 0,
-            z_pos: -1,
-            inhabited_time,
             last_update,
-            sections: alloc::vec![],
-            heightmaps: Heightmaps::default(),
-            status,
-            block_entities: alloc::vec![],
-            block_ticks: alloc::vec![],
-            fluid_ticks: alloc::vec![],
-            blending_data: RawCompound::default(),
-            post_processing: alloc::vec![],
-            structures: RawCompound::default(),
-            is_light_on: false,
+            inhabited_time,
+            ..ChunkPayload::empty_full()
         };
 
         let old = Chunk::Modern(payload(7, 9));
@@ -157,22 +129,11 @@ mod tests {
     #[test]
     fn payload_round_trips() {
         let payload = ChunkPayload {
-            data_version: 1,
             x_pos: 3,
-            y_pos: 0,
             z_pos: -1,
-            inhabited_time: 7,
             last_update: 9,
-            sections: alloc::vec![],
-            heightmaps: Heightmaps::default(),
-            status: &Cesu8::from_str("minecraft:full"),
-            block_entities: alloc::vec![],
-            block_ticks: alloc::vec![],
-            fluid_ticks: alloc::vec![],
-            blending_data: RawCompound::default(),
-            post_processing: alloc::vec![],
-            structures: RawCompound::default(),
-            is_light_on: false,
+            inhabited_time: 7,
+            ..ChunkPayload::empty_full()
         };
         let bytes = nanonbt::to_bytes(&payload).unwrap();
         let parsed = nanonbt::from_slice::<ChunkPayload>(&bytes).unwrap();
@@ -184,22 +145,10 @@ mod tests {
         let status = Cesu8::try_from_str("minecraft:full").unwrap();
         let bytes = |inhabited_time, last_update, status| {
             nanonbt::to_bytes(&ChunkPayload {
-                data_version: 1,
-                x_pos: 3,
-                y_pos: 0,
-                z_pos: -1,
-                inhabited_time,
-                last_update,
-                sections: alloc::vec![],
-                heightmaps: Heightmaps::default(),
                 status,
-                block_entities: alloc::vec![],
-                block_ticks: alloc::vec![],
-                fluid_ticks: alloc::vec![],
-                blending_data: RawCompound::default(),
-                post_processing: alloc::vec![],
-                structures: RawCompound::default(),
-                is_light_on: false,
+                last_update,
+                inhabited_time,
+                ..ChunkPayload::empty_full()
             })
             .unwrap()
         };
@@ -299,7 +248,6 @@ mod tests {
     #[test]
     fn normalized_hash_covers_both_tick_lists() {
         let id = Cesu8::try_from_str("minecraft:water").unwrap();
-        let status = Cesu8::try_from_str("minecraft:full").unwrap();
         let tick = BlockTick {
             x: 1,
             y: 2,
@@ -309,22 +257,9 @@ mod tests {
             id,
         };
         let payload = |block_ticks, fluid_ticks| ChunkPayload {
-            data_version: 1,
-            x_pos: 3,
-            y_pos: 0,
-            z_pos: -1,
-            inhabited_time: 7,
-            last_update: 9,
-            sections: alloc::vec![],
-            heightmaps: Heightmaps::default(),
-            status,
-            block_entities: alloc::vec![],
-            block_ticks,
             fluid_ticks,
-            blending_data: RawCompound::default(),
-            post_processing: alloc::vec![],
-            structures: RawCompound::default(),
-            is_light_on: false,
+            block_ticks,
+            ..ChunkPayload::empty_full()
         };
 
         let empty = payload(alloc::vec![], alloc::vec![]);

@@ -643,26 +643,10 @@ mod tests {
 
     #[test]
     fn chunk_normalized_hash_uses_the_region_shape() {
-        use nanonbt::Cesu8;
-
         let bytes = |inhabited_time| {
             let chunk = crate::nbt::chunk::ChunkPayload {
-                data_version: 1,
-                x_pos: 0,
-                y_pos: 0,
-                z_pos: 0,
                 inhabited_time,
-                last_update: 0,
-                sections: Vec::new(),
-                heightmaps: crate::nbt::chunk::Heightmaps::default(),
-                status: &Cesu8::from_str("minecraft:full"),
-                block_entities: Vec::new(),
-                block_ticks: Vec::new(),
-                fluid_ticks: Vec::new(),
-                blending_data: crate::nbt::chunk::RawCompound::default(),
-                post_processing: Vec::new(),
-                structures: crate::nbt::chunk::RawCompound::default(),
-                is_light_on: false,
+                ..crate::nbt::chunk::ChunkPayload::empty_full()
             };
             let nbt = nanonbt::to_bytes(&chunk).unwrap();
             let mut payload = alloc::vec![3];

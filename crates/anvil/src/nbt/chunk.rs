@@ -100,6 +100,32 @@ pub struct ChunkPayload<'de> {
     pub is_light_on: bool,
 }
 
+#[cfg(test)]
+impl ChunkPayload<'static> {
+    /// A fully generated chunk at the origin with every list empty and every
+    /// optional key absent, for tests to override with struct update syntax.
+    pub(crate) fn empty_full() -> Self {
+        Self {
+            data_version: 1,
+            x_pos: 0,
+            z_pos: 0,
+            y_pos: 0,
+            status: Cesu8::try_from_str("minecraft:full").unwrap(),
+            last_update: 0,
+            sections: Vec::new(),
+            block_entities: Vec::new(),
+            heightmaps: Heightmaps::default(),
+            fluid_ticks: Vec::new(),
+            block_ticks: Vec::new(),
+            inhabited_time: 0,
+            blending_data: RawCompound::default(),
+            post_processing: Vec::new(),
+            structures: RawCompound::default(),
+            is_light_on: false,
+        }
+    }
+}
+
 impl ChunkPayload<'_> {
     /// Hashes the payload through its normalized view.
     ///

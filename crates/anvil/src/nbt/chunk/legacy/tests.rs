@@ -7,8 +7,6 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use nanonbt::Cesu8;
-
 use super::*;
 use crate::nbt::chunk::Chunk;
 use crate::nbt::parse;
@@ -236,22 +234,11 @@ fn legacy_and_modern_never_compare_equal() {
     let legacy_bytes = full_legacy(Some(1), &[]);
     let legacy_side = parse_legacy(&legacy_bytes);
     let modern = crate::nbt::chunk::ChunkPayload {
-        data_version: 1,
         x_pos: 5,
-        y_pos: 0,
         z_pos: -7,
-        inhabited_time: 11,
         last_update: 13,
-        sections: vec![],
-        heightmaps: crate::nbt::chunk::Heightmaps::default(),
-        status: &Cesu8::from_str("minecraft:full"),
-        block_entities: vec![],
-        block_ticks: vec![],
-        fluid_ticks: vec![],
-        blending_data: crate::nbt::chunk::RawCompound::default(),
-        post_processing: vec![],
-        structures: crate::nbt::chunk::RawCompound::default(),
-        is_light_on: false,
+        inhabited_time: 11,
+        ..crate::nbt::chunk::ChunkPayload::empty_full()
     };
     let legacy_hash = legacy_side.normalized_hash().unwrap();
     let modern_hash = Chunk::Modern(modern).normalized_hash().unwrap();
@@ -263,24 +250,7 @@ fn legacy_and_modern_never_compare_equal() {
 
 #[test]
 fn modern_chunk_still_parses_as_modern() {
-    let modern = crate::nbt::chunk::ChunkPayload {
-        data_version: 1,
-        x_pos: 0,
-        y_pos: 0,
-        z_pos: 0,
-        inhabited_time: 0,
-        last_update: 0,
-        sections: vec![],
-        heightmaps: crate::nbt::chunk::Heightmaps::default(),
-        status: &Cesu8::from_str("minecraft:full"),
-        block_entities: vec![],
-        block_ticks: vec![],
-        fluid_ticks: vec![],
-        blending_data: crate::nbt::chunk::RawCompound::default(),
-        post_processing: vec![],
-        structures: crate::nbt::chunk::RawCompound::default(),
-        is_light_on: false,
-    };
+    let modern = crate::nbt::chunk::ChunkPayload::empty_full();
     let bytes = nanonbt::to_bytes(&modern).unwrap();
     assert!(matches!(parse(&bytes).unwrap(), Chunk::Modern(_)));
 }
