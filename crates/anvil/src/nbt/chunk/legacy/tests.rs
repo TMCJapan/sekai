@@ -248,6 +248,10 @@ fn legacy_and_modern_never_compare_equal() {
         block_entities: vec![],
         block_ticks: vec![],
         fluid_ticks: vec![],
+        blending_data: crate::nbt::chunk::RawCompound::default(),
+        post_processing: vec![],
+        structures: crate::nbt::chunk::RawCompound::default(),
+        is_light_on: false,
     };
     let legacy_hash = legacy_side.normalized_hash().unwrap();
     let modern_hash = Chunk::Modern(modern).normalized_hash().unwrap();
@@ -272,6 +276,10 @@ fn modern_chunk_still_parses_as_modern() {
         block_entities: vec![],
         block_ticks: vec![],
         fluid_ticks: vec![],
+        blending_data: crate::nbt::chunk::RawCompound::default(),
+        post_processing: vec![],
+        structures: crate::nbt::chunk::RawCompound::default(),
+        is_light_on: false,
     };
     let bytes = nanonbt::to_bytes(&modern).unwrap();
     assert!(matches!(parse(&bytes).unwrap(), Chunk::Modern(_)));

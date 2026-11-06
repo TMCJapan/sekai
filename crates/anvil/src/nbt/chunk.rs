@@ -2,12 +2,14 @@ mod block_entity;
 mod decode;
 mod heightmap;
 pub mod legacy;
+mod raw_compound;
 mod section;
 mod tick;
 
 pub use block_entity::BlockEntity;
 pub use heightmap::Heightmaps;
 pub use legacy::LegacyChunkPayload;
+pub use raw_compound::RawCompound;
 pub use section::Section;
 use sekai_util::ChunkHash;
 pub use tick::{BlockTick, FluidTick};
@@ -39,6 +41,12 @@ impl Chunk<'_> {
     }
 }
 
+/// A 1.18+ level chunk, fields in the order of the Minecraft Wiki's
+/// [Chunk format](https://minecraft.wiki/w/Chunk_format) root listing.
+///
+/// Keys not declared here are skipped on decode and so never reach the
+/// chunk key. The fields added after the original schema default when
+/// absent, so a chunk that predates or omits them still parses.
 #[derive(SerializeNbt, DeserializeNbt, Debug, Clone, Eq, PartialEq)]
 pub struct ChunkPayload<'de> {
     #[nbt(rename = "DataVersion")]
@@ -46,28 +54,48 @@ pub struct ChunkPayload<'de> {
 
     #[nbt(rename = "xPos")]
     pub x_pos: i32,
-    #[nbt(rename = "yPos")]
-    pub y_pos: i32,
     #[nbt(rename = "zPos")]
     pub z_pos: i32,
+    #[nbt(rename = "yPos")]
+    pub y_pos: i32,
 
-    #[nbt(rename = "InhabitedTime")]
-    pub inhabited_time: i64,
+    #[nbt(rename = "Status")]
+    pub status: &'de Cesu8,
+
     #[nbt(rename = "LastUpdate")]
     pub last_update: i64,
 
     pub sections: Vec<Section<'de>>,
 
+    pub block_entities: Vec<BlockEntity<'de>>,
+
     #[nbt(rename = "Heightmaps")]
     pub heightmaps: Heightmaps<'de>,
 
-    #[nbt(rename = "Status")]
-    pub status: &'de Cesu8,
-
-    pub block_entities: Vec<BlockEntity<'de>>,
-
-    pub block_ticks: Vec<BlockTick<'de>>,
     pub fluid_ticks: Vec<FluidTick<'de>>,
+    pub block_ticks: Vec<BlockTick<'de>>,
+
+    #[nbt(rename = "InhabitedTime")]
+    pub inhabited_time: i64,
+
+    /// Present only next to pre-1.18 terrain. Opaque because its heights
+    /// are `Double`s, which cannot satisfy `Eq`.
+    #[nbt(default, skip_serializing_if = "RawCompound::is_absent")]
+    pub blending_data: RawCompound<'de>,
+
+    /// Packed in-section positions of blocks awaiting a post-generation
+    /// update, one list per section.
+    #[nbt(rename = "PostProcessing", default)]
+    pub post_processing: Vec<Vec<i16>>,
+
+    /// Structure starts and references, kept opaque: its layout varies per
+    /// structure type.
+    #[nbt(default, skip_serializing_if = "RawCompound::is_absent")]
+    pub structures: RawCompound<'de>,
+
+    /// Not on the Wiki listing, but written by vanilla into every chunk.
+    #[nbt(rename = "isLightOn", default)]
+    pub is_light_on: bool,
 }
 
 impl ChunkPayload<'_> {
@@ -79,14 +107,18 @@ impl ChunkPayload<'_> {
         let normalized = NormalizedChunkPayload {
             data_version: self.data_version,
             x_pos: self.x_pos,
-            y_pos: self.y_pos,
             z_pos: self.z_pos,
-            sections: &self.sections,
-            heightmaps: &self.heightmaps,
+            y_pos: self.y_pos,
             status: self.status,
+            sections: &self.sections,
             block_entities: &self.block_entities,
-            block_ticks: &self.block_ticks,
+            heightmaps: &self.heightmaps,
             fluid_ticks: &self.fluid_ticks,
+            block_ticks: &self.block_ticks,
+            blending_data: self.blending_data,
+            post_processing: &self.post_processing,
+            structures: self.structures,
+            is_light_on: self.is_light_on,
         };
         let bytes = nanonbt::to_bytes(&normalized)?;
         Ok(ChunkHash::new(sekai_util::hash_bytes(&bytes)))
@@ -106,21 +138,33 @@ struct NormalizedChunkPayload<'a, 'de> {
 
     #[nbt(rename = "xPos")]
     pub x_pos: i32,
-    #[nbt(rename = "yPos")]
-    pub y_pos: i32,
     #[nbt(rename = "zPos")]
     pub z_pos: i32,
-
-    pub sections: &'a [Section<'de>],
-
-    #[nbt(rename = "Heightmaps")]
-    pub heightmaps: &'a Heightmaps<'de>,
+    #[nbt(rename = "yPos")]
+    pub y_pos: i32,
 
     #[nbt(rename = "Status")]
     pub status: &'a Cesu8,
 
+    pub sections: &'a [Section<'de>],
+
     pub block_entities: &'a [BlockEntity<'de>],
 
-    pub block_ticks: &'a [BlockTick<'de>],
+    #[nbt(rename = "Heightmaps")]
+    pub heightmaps: &'a Heightmaps<'de>,
+
     pub fluid_ticks: &'a [FluidTick<'de>],
+    pub block_ticks: &'a [BlockTick<'de>],
+
+    #[nbt(skip_serializing_if = "RawCompound::is_absent")]
+    pub blending_data: RawCompound<'de>,
+
+    #[nbt(rename = "PostProcessing")]
+    pub post_processing: &'a [Vec<i16>],
+
+    #[nbt(skip_serializing_if = "RawCompound::is_absent")]
+    pub structures: RawCompound<'de>,
+
+    #[nbt(rename = "isLightOn")]
+    pub is_light_on: bool,
 }

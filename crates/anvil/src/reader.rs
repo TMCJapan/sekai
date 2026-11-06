@@ -659,6 +659,10 @@ mod tests {
                 block_entities: Vec::new(),
                 block_ticks: Vec::new(),
                 fluid_ticks: Vec::new(),
+                blending_data: crate::nbt::chunk::RawCompound::default(),
+                post_processing: Vec::new(),
+                structures: crate::nbt::chunk::RawCompound::default(),
+                is_light_on: false,
             };
             let nbt = nanonbt::to_bytes(&chunk).unwrap();
             let mut payload = alloc::vec![3];

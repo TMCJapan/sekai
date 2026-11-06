@@ -10,30 +10,10 @@
 
 use alloc::vec::Vec;
 
-use nanonbt::{DeserializeNbt, I32Be, SerializeNbt, Tag, Write};
+use nanonbt::{DeserializeNbt, I32Be, SerializeNbt};
 use sekai_util::ChunkHash;
 
-/// A compound preserved verbatim as its raw payload bytes.
-///
-/// Legacy `TileEntities`/`TileTicks`/`LiquidTicks` entries carry fields this
-/// crate never interprets, so they stay opaque: the bytes captured here are
-/// exactly what the file held, including the terminating `TAG_End`, which is
-/// what the normalized view hashes and what keeps a server rewrite of an
-/// unrelated field visible.
-#[derive(DeserializeNbt, Debug, Clone, Eq, PartialEq, Default)]
-pub struct RawCompound<'de> {
-    #[nbt(self)]
-    raw: &'de [u8],
-}
-
-impl SerializeNbt for RawCompound<'_> {
-    const TAG: Tag = Tag::Compound;
-
-    fn serialize_nbt<W: Write + ?Sized>(&self, writer: &mut W) -> nanonbt::Result<()> {
-        writer.write_bytes(self.raw);
-        Ok(())
-    }
-}
+use super::RawCompound;
 
 /// One legacy section: the fields both formats share, plus the legacy block
 /// arrays.
