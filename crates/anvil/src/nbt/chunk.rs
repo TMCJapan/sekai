@@ -159,6 +159,11 @@ impl ChunkPayload<'_> {
 /// rewrites them on its own, so they must not register as changes. New
 /// payload fields participate in the chunk key and change detection only
 /// once they are added here as well.
+///
+/// Unlike the legacy view, empty lists and a `false` `isLightOn` are written
+/// rather than omitted. A missing key decodes to that same default, so
+/// absent and empty still normalize alike; only the opaque compounds keep
+/// the two apart, as [`RawCompound`] describes.
 #[derive(SerializeNbt, Debug)]
 struct NormalizedChunkPayload<'a, 'de> {
     #[nbt(rename = "DataVersion")]

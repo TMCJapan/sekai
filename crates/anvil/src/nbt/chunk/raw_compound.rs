@@ -8,9 +8,11 @@ use nanonbt::{DeserializeNbt, SerializeNbt, Tag, Write};
 /// `TAG_End`, which is what the normalized views hash and what keeps a
 /// server rewrite of an unrelated field visible.
 ///
-/// An absent key decodes as the default, which holds no bytes at all; a
-/// present compound always carries at least its `TAG_End`, so
-/// [`Self::is_absent`] tells the two apart.
+/// [`Default`] is the absent value and holds no bytes at all. The field is
+/// private, so any other value comes from decoding, which captures a
+/// compound up to and including its `TAG_End`: even an empty compound
+/// holds that one byte, and [`Self::is_absent`] tells the two apart. A
+/// present empty compound therefore cannot be built through `Default`.
 #[derive(DeserializeNbt, Debug, Clone, Copy, Eq, PartialEq, Default)]
 pub struct RawCompound<'de> {
     #[nbt(self)]
