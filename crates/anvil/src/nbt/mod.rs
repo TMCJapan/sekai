@@ -93,7 +93,7 @@ fn validate_nbt(raw_nbt: &[u8]) -> Result<(), ChunkNbtError> {
 mod tests {
     use nanonbt::Cesu8;
 
-    use super::chunk::{BlockTick, Heightmaps, Section};
+    use super::chunk::{BlockTick, FluidTick, Heightmaps, Section};
     use super::*;
 
     #[test]
@@ -314,7 +314,7 @@ mod tests {
         block_entities: &'a [super::chunk::BlockEntity<'a>],
         #[nbt(rename = "Heightmaps")]
         heightmaps: Heightmaps<'a>,
-        fluid_ticks: &'a [BlockTick<'a>],
+        fluid_ticks: &'a [FluidTick<'a>],
         block_ticks: &'a [BlockTick<'a>],
         #[nbt(rename = "InhabitedTime")]
         inhabited_time: i64,
