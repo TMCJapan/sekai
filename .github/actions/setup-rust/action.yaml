@@ -25,6 +25,13 @@ inputs:
       untrusted run could have written cannot influence the build.
     required: false
     default: "false"
+  save-if:
+    description: >-
+      Passed to rust-cache: whether to save the cache. Callers that share one
+      cache key across matrix jobs can let only the slice with the complete
+      dependency set save it.
+    required: false
+    default: "true"
 
 runs:
   using: composite
@@ -41,3 +48,4 @@ runs:
       with:
         key: ${{ inputs.cache-key }}
         lookup-only: ${{ inputs.lookup-only }}
+        save-if: ${{ inputs.save-if }}
