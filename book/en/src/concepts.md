@@ -11,7 +11,8 @@
   forks the history. See [Refs](commands/refs.md).
 - **Chunk hash (CAS key)**: the normalized digest of a decompressed chunk,
   over a canonical encoding with volatile tags such as `LastUpdate`
-  excluded. It is independent of key order and compression codec.
+  excluded. It is independent of the order of the chunk's top-level keys
+  and of the compression codec; keys sekai does not read never affect it.
   `entities`/`poi` payloads have no level-chunk schema, so they key on
   their exact bytes. Identical content shares one stored copy across all
   commits; checkout restores the captured bytes verbatim, rewinding

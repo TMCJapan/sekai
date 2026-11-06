@@ -157,13 +157,20 @@ is the only way to hash a chunk; the NBT payload forms and their normalized
 views are private to `sekai-anvil`. Everything else is that digest under a
 different name.
 
-- **Normalized view** (in-memory): the chunk encoded canonically - compound
-  keys sorted, big-endian scalars, UTF-8 strings, empty collections omitted -
-  with the volatile `LastUpdate` and `InhabitedTime` tags excluded (treated
-  as absent). It never hashes re-serialized on-disk NBT bytes, so it is
-  independent of key order and of the compression codec. Each format (1.13+
-  and legacy `Level`) has its own view, so converting a chunk is a real
-  change, never a silent no-op.
+- **Normalized view** (in-memory): the decoded chunk re-encoded as NBT in a
+  fixed field order per format, with the volatile `LastUpdate` and
+  `InhabitedTime` tags excluded (treated as absent). Decoded fields are
+  written in declaration order whatever order the file held them in, and
+  the compression codec never reaches the hash. Root keys a format does not
+  declare are skipped on decode and never reach the hash either, so a key
+  joins change detection only once its format declares it. Compounds the
+  crate does not interpret (block entities, `structures`, `blending_data`,
+  legacy tile entries and ticks) are hashed as their captured bytes, so
+  their inner key order does count. An absent optional compound writes
+  nothing, while an empty one writes its `TAG_End`, so the two never compare
+  equal. The legacy view omits its empty top-level lists and arrays; the
+  modern view writes them. Each format (1.13+ and legacy `Level`) has its own view, so
+  converting a chunk is a real change, never a silent no-op.
 - **Chunk digest -> CAS key**: `normalized_hash` through `hash_bytes` is the
   `ChunkHash`. The very same digest drives `diff` output. Because volatile
   tags never enter it, a server rewriting them neither adds a blob nor
@@ -208,7 +215,11 @@ ingest; there is no raw-byte fallback.
 `Chunk::normalized_hash` accepts both on-disk shapes:
 
 - **Modern** (1.13+): fields at the root, palette `sections`,
-  `Heightmaps`, `Status`.
+  `Heightmaps`, `Status`, plus `structures`, `PostProcessing`,
+  `blending_data` and `isLightOn`, which default when absent. `Status` is
+  also read under its 26.4 spelling `status`; the view always writes
+  `Status`, so the rename alone is not a change, and a chunk carrying both
+  spellings fails to decode.
 - **Legacy** (pre-1.13): fields inside a `Level` compound,
   per-section `Blocks`/`Add`/`Data`/`Data2` byte arrays (kept verbatim as
   owned copies, not expanded into a palette), a 16-bit `HeightMap`, and
