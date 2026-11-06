@@ -45,7 +45,7 @@ indicatif = { version = "0.18" }
 libc = { version = "0.2.189", default-features = false }
 lz4_flex = { version = "0.14.0", default-features = false }
 miniz_oxide = { version = "0.9.1", default-features = false, features = ["with-alloc"] }
-nanonbt = { git = "https://github.com/TMCJapan/nanonbt.git", rev = "d92836c870f3571181cfbbe818b07ef0632691b8" }
+nanonbt = { git = "https://github.com/TMCJapan/nanonbt.git", rev = "ad6faa7ff1748f19bc3096a85af599d0400b3099" }
 serde = { version = "1.0.229", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1.0.151", default-features = false, features = ["alloc"] }
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio"] }
