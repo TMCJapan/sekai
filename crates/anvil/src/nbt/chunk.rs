@@ -15,7 +15,7 @@ use sekai_util::ChunkHash;
 pub use tick::{BlockTick, FluidTick};
 
 use alloc::vec::Vec;
-use nanonbt::{Cesu8, DeserializeNbt, SerializeNbt};
+use nanonbt::{Cesu8, DeserializeNbt, I16Be, SerializeNbt};
 
 /// A parsed level chunk in either on-disk format.
 ///
@@ -88,7 +88,7 @@ pub struct ChunkPayload<'de> {
     /// Packed in-section positions of blocks awaiting a post-generation
     /// update, one list per section.
     #[nbt(rename = "PostProcessing", default)]
-    pub post_processing: Vec<Vec<i16>>,
+    pub post_processing: Vec<&'de [I16Be]>,
 
     /// Structure starts and references, kept opaque: its layout varies per
     /// structure type.
@@ -193,7 +193,7 @@ struct NormalizedChunkPayload<'a, 'de> {
     pub blending_data: RawCompound<'de>,
 
     #[nbt(rename = "PostProcessing")]
-    pub post_processing: &'a [Vec<i16>],
+    pub post_processing: &'a [&'de [I16Be]],
 
     #[nbt(skip_serializing_if = "RawCompound::is_absent")]
     pub structures: RawCompound<'de>,

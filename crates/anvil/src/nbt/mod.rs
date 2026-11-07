@@ -457,7 +457,7 @@ mod tests {
         let parsed = nanonbt::from_slice::<ChunkPayload>(&bytes).unwrap();
         assert!(!parsed.structures.is_absent());
         assert!(!parsed.blending_data.is_absent());
-        assert_eq!(parsed.post_processing, alloc::vec![alloc::vec![5i16]]);
+        assert_eq!(parsed.post_processing, [&[nanonbt::I16Be::new(5)][..]]);
         assert!(parsed.is_light_on);
 
         let reencoded = nanonbt::to_bytes(&parsed).unwrap();
