@@ -33,9 +33,9 @@ jobs:
       # `clippy.yaml` and the `dist` matrix in `ci.yaml`.
       # Each extra entry is one disjoint `cargo hack --partition` slice; the
       # slices for an OS together cover the same runs as one unpartitioned job.
-      # Windows gets three slices because it dominates the critical path; the
-      # other runners get two, and macOS stays at two to fit GitHub's five-job
-      # macOS limit (shared with `clippy` and `dist`).
+      # Windows gets three slices because it dominates the critical path.
+      # macos-x64 gets four because SurrealDB makes its feature combinations
+      # the slowest; the other runners get two.
       matrix:
         include:
           - name: linux-x64
@@ -57,11 +57,19 @@ jobs:
           - name: macos-x64
             os: macos-15-intel
             target: x86_64-apple-darwin
-            partition: "1/2"
+            partition: "1/4"
           - name: macos-x64
             os: macos-15-intel
             target: x86_64-apple-darwin
-            partition: "2/2"
+            partition: "2/4"
+          - name: macos-x64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            partition: "3/4"
+          - name: macos-x64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            partition: "4/4"
           - name: macos-arm64
             os: macos-latest
             target: aarch64-apple-darwin
@@ -106,9 +114,9 @@ jobs:
       # would thrash on every run. Partitions deliberately share one key per
       # target: rust-cache saves dependency crates only, so per-partition keys
       # would duplicate the same cache without retaining the workspace
-      # artifacts that actually differ. Only the last slice (app/cli, hence
-      # every dependency) saves the cache; letting a lighter slice save first
-      # would persist an incomplete set.
+      # artifacts that actually differ. Only the app slice (2/2, 3/3, or 3/4,
+      # hence every dependency) saves the cache; letting a lighter slice save
+      # first would persist an incomplete set.
       - name: Setup Rust toolchain and cache
         uses: ./.github/actions/setup-rust
         with:
@@ -116,7 +124,7 @@ jobs:
           targets: ${{ matrix.target }}
           components: ""
           cache-key: test-${{ matrix.target }}
-          save-if: ${{ matrix.partition == '2/2' || matrix.partition == '3/3' }}
+          save-if: ${{ matrix.partition == '2/2' || matrix.partition == '3/3' || matrix.partition == '3/4' }}
 
       # After the cache step on purpose: `rust-cache` restores `~/.cargo/bin`,
       # which is where `install-action` drops the binary.
