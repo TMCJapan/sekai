@@ -34,8 +34,8 @@ jobs:
       # Each extra entry is one disjoint `cargo hack --partition` slice; the
       # slices for an OS together cover the same runs as one unpartitioned job.
       # Windows gets three slices because it dominates the critical path; the
-      # other runners get two, and macOS stays at two to fit GitHub's five-job
-      # macOS limit (shared with `test` and `dist`).
+      # other runners get two. `test.yaml` gives macos-x64 four slices because
+      # its SurrealDB builds are the slowest, while clippy stays at two.
       matrix:
         include:
           - name: linux-x64
