@@ -1,0 +1,133 @@
+name: Clippy
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # Keep in sync with `rust-toolchain.toml`.
+  RUST_TOOLCHAIN: 1.99.1
+
+# Split from `test.yaml` so clippy gets its own runner and timeout budget
+# instead of sharing a job with nextest.
+jobs:
+  clippy:
+    name: ${{ matrix.name }} (${{ matrix.partition }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+
+    strategy:
+      fail-fast: false
+      # Keep the OS/target pairs in sync with the `test` matrix in `test.yaml`
+      # and the `dist` matrix in `ci.yaml`.
+      # Each extra entry is one disjoint `cargo hack --partition` slice; the
+      # slices for an OS together cover the same runs as one unpartitioned job.
+      # Windows gets three slices because it dominates the critical path; the
+      # other runners get two, and macOS stays at two to fit GitHub's five-job
+      # macOS limit (shared with `test` and `dist`).
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            partition: "1/2"
+          - name: linux-x64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            partition: "2/2"
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            partition: "1/2"
+          - name: linux-arm64
+            os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            partition: "2/2"
+          - name: macos-x64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            partition: "1/2"
+          - name: macos-x64
+            os: macos-15-intel
+            target: x86_64-apple-darwin
+            partition: "2/2"
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            partition: "1/2"
+          - name: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+            partition: "2/2"
+          - name: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            partition: "1/3"
+          - name: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            partition: "2/3"
+          - name: windows-x64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            partition: "3/3"
+          - name: windows-arm64
+            os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            partition: "1/3"
+          - name: windows-arm64
+            os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            partition: "2/3"
+          - name: windows-arm64
+            os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            partition: "3/3"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      # Keyed apart from `test` and `dist`: this workflow runs concurrently
+      # with them, so sharing a key would make the first finisher overwrite
+      # the dependency cache the others expect.
+      # Partitions deliberately share one key per target: rust-cache saves
+      # dependency crates only, so per-partition keys would duplicate the same
+      # cache without retaining the workspace artifacts that actually differ.
+      # Only the last slice (app/cli, hence every dependency) saves the cache;
+      # letting a lighter slice save first would persist an incomplete set.
+      - name: Setup Rust toolchain and cache
+        uses: ./.github/actions/setup-rust
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: ${{ matrix.target }}
+          components: clippy
+          cache-key: clippy-${{ matrix.target }}
+          save-if: ${{ matrix.partition == '2/2' || matrix.partition == '3/3' }}
+
+      # After the cache step on purpose: `rust-cache` restores `~/.cargo/bin`,
+      # which is where `install-action` drops the binary.
+      - name: Install cargo-hack
+        uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037
+        with:
+          tool: cargo-hack
+
+      # The store-backed suites need `backend-sqlite`, so they are compiled out
+      # of the combinations that do not provide it.
+      # `--no-deps` builds dependencies with rustc rather than `clippy-driver`;
+      # workspace crates are still linted one by one.
+      - name: Clippy
+        run: cargo hack --each-feature --partition ${{ matrix.partition }} clippy --workspace --all-targets --target ${{ matrix.target }} --no-deps -- -D warnings

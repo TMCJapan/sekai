@@ -119,7 +119,7 @@ jobs:
 
     strategy:
       fail-fast: false
-      # Keep in sync with the `test` matrix in ci.yaml.
+      # Keep in sync with the `test` matrix in test.yaml.
       matrix:
         include:
           - name: linux-x64
