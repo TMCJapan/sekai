@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 #[command(name = "sekai", version, about)]
 pub struct Cli {
     /// Store directory (`commit` creates it when missing; other commands
-    /// fail). Defaults to `.sekai` when omitted. Prefix with `sqlite://`
+    /// fail). Defaults to `.sekai` when omitted. Prefix with `surrealkv://`
     /// explicitly if preferred.
     #[arg(long, global = true, default_value = ".sekai")]
     pub store: String,

@@ -19,12 +19,17 @@ const fn options(jobs: usize) -> CommitOptions {
 /// treated as pre-existing so no note is printed for backends this
 /// helper cannot resolve to a path.
 fn store_preexists(store: &str) -> bool {
-    let path = match store.strip_prefix("sqlite://") {
-        Some(rest) => rest,
-        None if store.contains("://") => return true,
-        None => store,
-    };
-    std::path::Path::new(path).exists()
+    let path = store
+        .strip_prefix("surrealkv://")
+        .or_else(|| store.strip_prefix("surrealdb://"))
+        .or_else(|| store.strip_prefix("sqlite://"));
+    match path {
+        Some(path) => std::path::Path::new(path).exists(),
+        // Unknown URL schemes are treated as pre-existing so no note is
+        // printed for backends this helper cannot resolve to a path.
+        None if store.contains("://") => true,
+        None => std::path::Path::new(store).exists(),
+    }
 }
 
 pub async fn run(
@@ -251,6 +256,7 @@ mod tests {
                 .unwrap()
         ));
         assert!(!store_preexists("sqlite:///definitely/missing/store"));
+        assert!(!store_preexists("surrealkv:///definitely/missing/store"));
         assert!(store_preexists("mysql://user@localhost/store"));
     }
 }

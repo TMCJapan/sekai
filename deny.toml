@@ -2,11 +2,36 @@
 version = 2
 # `paste` (unmaintained, not vulnerable) comes transitively via
 # pulp <- nanocesu8 <- nanonbt. Revisit once upstream drops it.
-ignore = ["RUSTSEC-2024-0436"]
+#
+# The remaining advisories are all transitive through SurrealDB/SurrealKV;
+# none has a patched release in the dependency's current semver range.
+ignore = [
+  "RUSTSEC-2024-0436",
+  # crypto-bigint via jsonwebtoken (SurrealDB auth).
+  "RUSTSEC-2026-0387",
+  # rsa via jsonwebtoken (SurrealDB auth); no fixed release exists.
+  "RUSTSEC-2023-0071",
+  # pin-utils (unmaintained) via wasmtimer <- surrealdb; no patched release.
+  "RUSTSEC-2026-0441",
+]
 
 [licenses]
 version = 2
-allow = ["MIT", "Apache-2.0", "Unicode-3.0", "Zlib"]
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Unicode-3.0",
+  "Zlib",
+  "ISC",
+  "BSD-3-Clause",
+  "MPL-2.0",
+  "Unlicense",
+  "MIT-0",
+  "BSL-1.0",
+  "CDLA-Permissive-2.0",
+  # SurrealDB itself ships under the Business Source License.
+  "BUSL-1.1",
+]
 
 [bans]
 multiple-versions = "warn"

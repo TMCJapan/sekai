@@ -7,6 +7,8 @@
 
 use std::path::Path;
 
+use criterion::Criterion;
+
 /// Seeded xorshift64: deterministic filler without dependencies.
 pub struct Rng(u64);
 
@@ -237,6 +239,25 @@ pub fn runtime() -> tokio::runtime::Runtime {
         .enable_all()
         .build()
         .expect("runtime builds")
+}
+
+/// Run one Criterion group on a thread with a generous, host-independent stack.
+///
+/// Criterion drives every benchmark from `main`, and Windows gives that thread
+/// only 1 MiB. The debug-build async state machines behind the store benches
+/// overflow it, so use a stack size that does not depend on the platform.
+pub fn run(benches: fn(&mut Criterion)) {
+    std::thread::Builder::new()
+        .name("criterion".into())
+        .stack_size(16 * 1024 * 1024)
+        .spawn(move || {
+            let mut criterion = Criterion::default().configure_from_args();
+            benches(&mut criterion);
+            criterion.final_summary();
+        })
+        .expect("bench thread starts")
+        .join()
+        .expect("bench thread finishes");
 }
 
 /// Copy the checked-in real-data corpus into a temp world.

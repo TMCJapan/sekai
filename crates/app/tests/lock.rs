@@ -4,9 +4,9 @@
 //! concurrent runs here. The store itself never locks: its blobs are
 //! append-only and its metadata resolves conflicts at commit time.
 //!
-//! Requires the `backend-sqlite` feature.
+//! Requires a storage backend feature (`backend-surrealdb` or `backend-sqlite`).
 
-#![cfg(feature = "backend-sqlite")]
+#![cfg(any(feature = "backend-surrealdb", feature = "backend-sqlite"))]
 
 mod fixtures;
 
@@ -18,7 +18,6 @@ use sekai_app::{
     WorldTree,
 };
 use sekai_core::MetaStore as _;
-use sekai_storage_sqlite::SqliteStore;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -43,7 +42,7 @@ struct Fixture {
     root: PathBuf,
     world_path: PathBuf,
     world: HostWorldTree,
-    instance: SekaiInstance<SqliteStore>,
+    instance: SekaiInstance<sekai_app::DefaultStore>,
     /// The fixture's only commit.
     commit: CommitId,
     /// A blob that the fixture commit references, for blob-level operations.
@@ -78,9 +77,7 @@ impl Fixture {
         let commit = report.commit;
         let coords = instance.commit_chunk_coords(commit).await.unwrap();
         let coord = coords.first().expect("the fixture commit holds chunks");
-        let blob = instance
-            .store()
-            .meta()
+        let blob = sekai_app::SekaiStore::meta(instance.store())
             .lookup_chunk(commit, coord)
             .await
             .unwrap()

@@ -1,0 +1,28 @@
+[package]
+name = "sekai-storage-surrealdb"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+description = "SurrealDB/SurrealKV metadata and blob backend for Sekai"
+keywords = ["minecraft", "version-control", "storage", "surrealdb"]
+
+[lints]
+workspace = true
+
+[dependencies]
+sekai-core.workspace = true
+sekai-storage.workspace = true
+# 4.0 stores an oversized transaction in a level-0 table instead of failing
+# with SurrealKV's "Memtable arena is full" error (the 3.x behavior).
+surrealdb = { version = "4.0.0", default-features = false, features = [
+  "parse",
+  "rustls",
+  "kv-surrealkv",
+] }
+tokio = { workspace = true, features = ["time"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio.workspace = true

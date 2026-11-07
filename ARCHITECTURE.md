@@ -34,6 +34,8 @@ sekai (bin, thin: clap parse + print + exit code)
       -> sekai-core
     -> sekai-storage-sqlite (std + tokio: sqlx SQLite implementation)
       -> sekai-storage
+    -> sekai-storage-surrealdb (std + tokio: SurrealDB/SurrealKV implementation)
+      -> sekai-storage
 sekai-util (no_std, no tokio dependency: coordinates, chunk hashes,
   history value types) <- anvil, core (world/storage/app reach them
   through `core` re-exports)
@@ -46,6 +48,7 @@ sekai-util (no_std, no tokio dependency: coordinates, chunk hashes,
 | `sekai-core` | `no_std` + `alloc` | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_checkout`, `gc plan`/`apply`) plus storage ports. Composes `anvil` over util types and re-exports every util type at its root, so downstream paths stay stable. |
 | `sekai-storage` | `std` + tokio | yes (RPITIT) | Backend-neutral boundaries: async `BlobStore`/`MetaStore` traits (owned by `core::port`, re-exported from the `api` module), high-level `SekaiStore`/`SekaiStoreOpener` traits, and URL-based backend selection. Depends on `core`. |
 | `sekai-storage-sqlite` | `std` + tokio | yes | Concrete SQLite implementation over sqlx: `SqliteMeta`/`SqliteBlob` plus the SQLite-backed `SqliteStore`, both schema/version gates, and the opener. Implements the traits from `sekai-storage` (and `core::port`). Other backends become sibling crates without touching `core`/`app`. |
+| `sekai-storage-surrealdb` | `std` + tokio | yes | Concrete embedded SurrealDB implementation over SurrealKV: one `SurrealdbStore` serves metadata and blobs, owns the schema/version gate, and implements the storage traits plus `SekaiStoreOpener`. Default backend. |
 | `sekai-world` | `std` | yes (I/O) / sync pure helpers where trivial | World access boundary: the `WorldTree` trait, the `RegionFile` handle, and the filesystem tree (`HostWorldTree`). |
 | `sekai-app` | `std` + tokio | yes | Composition/orchestration library for third parties: parallel ingest, clocks, timing, progress callbacks. |
 | `sekai` bin (`sekai-cli` package) | `std` + tokio | yes | Thin clap wrapper over `sekai-app`. No logic. Binary name stays `sekai`; package name stays `sekai-cli` so existing CI/artifact names keep working. |
@@ -250,12 +253,13 @@ surfaces as a diagnostic naming the chunk and region file.
 
 ## CAS Consistency
 
-Blobs live in their own SQLite database (`blob.sqlite`, one `WITHOUT ROWID`
-table keyed by the 32-byte hash) beside `meta.sqlite`, so a store is a single
-directory of database files and a blob write is durable before any metadata
-names it. Normalization rule updates affect only change detection - zero data
-migration or blob re-indexing. See
-[ADR-0022](docs/adr/0022-sqlite-blob-store.md).
+Blobs are content-addressed and durable before any metadata names them.
+The SQLite backend keeps them in their own `blob.sqlite` database beside
+`meta.sqlite`, so a store is a single directory of database files; see
+[ADR-0022](docs/adr/0022-sqlite-blob-store.md). The SurrealDB backend keeps
+the `blob` table in the same embedded SurrealKV database as metadata, so a
+store is one SurrealKV directory. Normalization rule updates affect only
+change detection - zero data migration or blob re-indexing.
 
 # History, State, and GC Model
 
@@ -404,34 +408,38 @@ produced them. The scope is a filter, not a partition:
   `SekaiStoreOpener` (URL selection). Blob adapters are async only and
   `Clone`: the CAS is append-only, so ingest workers share it without
   exclusion and a cancelled future cannot strand a blob lock.
-- `sekai-storage-sqlite` is the concrete sqlx backend. It owns `SqliteMeta`,
+- `sekai-storage-surrealdb` is the default embedded backend. One
+  `SurrealdbStore` implements both `BlobStore` and `MetaStore` over a
+  SurrealKV database; `SekaiStore` exposes the same handle as both adapters.
+  It owns the table/index schema and the `SCHEMA_VERSION` gate.
+- `sekai-storage-sqlite` is the optional sqlx backend. It owns `SqliteMeta`,
   `SqliteBlob`, `SqliteStore`, both schemas, and both version gates, and
-  implements the storage/core traits. Removing sqlx from `sekai-storage`
-  keeps the abstraction crate free of a native database dependency.
+  implements the storage/core traits.
 - New backends (mysql, postgres, embedded, in-memory, wasm) become sibling
   crates implementing the same traits. `app` is generic over
   `SekaiInstance<T: SekaiStore>`, so adding a backend does not touch use-case
   policy. No generic `Any`-driver abstraction.
-- SQLite is the only backend shipped. `sekai-storage` holds no backend
-  modules at all: it owns the traits and the locks, and stays free of a
-  native database dependency. A mysql or postgres backend arrives as a
-  sibling crate, never as a stub inside `sekai-storage`.
+- `sekai-storage` holds no backend modules at all: it owns the traits and the
+  locks, and stays free of a native database dependency. A mysql or postgres
+  backend arrives as a sibling crate, never as a stub inside `sekai-storage`.
 
 ## Backend Selection
 
 Runtime-selected, with compile-time gating on the backend crate: `app`
-exposes a `backend-sqlite` feature (default-on) that pulls in
-`sekai-storage-sqlite`; `sekai-cli` inherits it through `sekai-app` and
-needs no features of its own. At runtime the connection URL picks the
-backend, and requesting a backend this build does not carry is a loud
-`UnsupportedBackend` error — never silent reinterpretation.
-`sekai-storage` keeps `BackendKind` and URL parsing; each
-backend crate implements `SekaiStoreOpener` for its store type, so the
-backend owns the grammar of the URLs that name it.
+exposes `backend-surrealdb` (default-on, pulls in
+`sekai-storage-surrealdb`) and `backend-sqlite` (pulls in
+`sekai-storage-sqlite`); `sekai-cli` inherits the default through
+`sekai-app` and needs no features of its own. Bare paths select the default
+SurrealDB backend; `surrealkv://` and `surrealdb://` name it explicitly, and
+`sqlite://` names SQLite. Requesting a backend this build does not carry is
+a loud `UnsupportedBackend` error — never silent reinterpretation.
+`sekai-storage` keeps `BackendKind` and URL parsing; each backend crate
+implements `SekaiStoreOpener` for its store type, so the backend owns the
+grammar of the URLs that name it.
 
-A build without `backend-sqlite` has no store-opening entry point at all:
-`sekai-storage` ships no stand-in store, so a build that carries no backend
-cannot open one and says so at compile time.
+A build without either backend feature has no store-opening entry point at
+all: `sekai-storage` ships no stand-in store, so a build that carries no
+backend cannot open one and says so at compile time.
 
 ## Store Exclusion
 
@@ -448,13 +456,16 @@ still writes files.
 
 ## Schema
 
-Owned by the backend crate (`crates/storage-sqlite/schema/sqlite.sql` for
-SQLite; `commits`, `commit_parents`, `chunk_history`, `refs`, `scopes`,
-`scope_areas`; `SCHEMA_VERSION` gate; pre-release policy = recreate, don't
-migrate). The blob database (`blob.sqlite`, one `blobs` table) carries its own
-`user_version` gate; blob rows are opaque payloads, so it has no derived state
-to reinterpret. CAS stays behind the backend-neutral port, so an object-store
-backend swaps the adapter without touching metadata code.
+Owned by the backend crate. SQLite uses
+`crates/storage-sqlite/schema/sqlite.sql` (`commits`, `commit_parents`,
+`chunk_history`, `refs`, `scopes`, `scope_areas`) and a separate blob
+database (`blob.sqlite`, one `blobs` table) with its own `user_version`
+gate. SurrealDB defines `meta`, `blob`, `commit`, `chunk_history`, `ref`, and
+`scope` tables in `crates/storage-surrealdb/src/surrealdb.rs`, recording
+`SCHEMA_VERSION` in `meta:store`. Both backends follow the pre-release
+policy: recreate, don't migrate. Blob rows are opaque payloads, so they have
+no derived state to reinterpret. CAS stays behind the backend-neutral port,
+so an object-store backend swaps the adapter without touching metadata code.
 
 ## Async Policy
 

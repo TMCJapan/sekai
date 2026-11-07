@@ -174,9 +174,12 @@ impl StorageError {
 /// backends; URLs naming anything else fail loudly at open time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendKind {
-    /// `sqlite://<dir>` (or a bare `<dir>`): metadata lives in
-    /// `<dir>/meta.sqlite`, blobs in `<dir>/blob.sqlite`.
+    /// `sqlite://<dir>` (or a bare `<dir>` in a SQLite-only build): metadata
+    /// lives in `<dir>/meta.sqlite`, blobs in `<dir>/blob.sqlite`.
     Sqlite,
+    /// `surrealkv://<dir>`, `surrealdb://<dir>`, or a bare `<dir>`: metadata
+    /// and blobs share one embedded `SurrealKV` database.
+    Surrealdb,
     /// Reserved stub.
     Mysql,
     /// Reserved stub.
@@ -185,19 +188,20 @@ pub enum BackendKind {
 
 /// Split a store URL into backend and the part after `://`.
 ///
-/// Bare paths select SQLite when that backend is compiled; unknown schemes
-/// fail. An empty location fails too: it would resolve against the process
-/// working directory and scatter a store there.
+/// Bare paths select `SurrealDB`, the default backend. Unknown schemes and
+/// empty locations fail loudly. An empty location would resolve against the
+/// process working directory and scatter a store there.
 pub fn parse_backend_url(url: &str) -> Result<(BackendKind, &str), StorageError> {
     let unsupported = || StorageError::UnsupportedBackend {
         url: url.to_owned(),
     };
     let selected = match url.split_once("://") {
         Some(("sqlite", rest)) => Some((BackendKind::Sqlite, rest)),
+        Some(("surrealkv" | "surrealdb", rest)) => Some((BackendKind::Surrealdb, rest)),
         Some(("mysql", rest)) => Some((BackendKind::Mysql, rest)),
         Some(("postgres", rest)) => Some((BackendKind::Postgres, rest)),
         Some(_) => None,
-        None => Some((BackendKind::Sqlite, url)),
+        None => Some((BackendKind::Surrealdb, url)),
     };
     match selected {
         Some((_, "")) => Err(StorageError::EmptyStorePath),
@@ -269,19 +273,31 @@ mod tests {
     }
 
     #[test]
-    fn parses_sqlite_urls_and_bare_dirs() {
+    fn parses_surrealdb_urls_and_bare_dirs() {
         assert_eq!(
-            parse_backend_url("sqlite:///var/sekai").unwrap(),
-            (BackendKind::Sqlite, "/var/sekai")
+            parse_backend_url("surrealkv:///var/sekai").unwrap(),
+            (BackendKind::Surrealdb, "/var/sekai")
+        );
+        assert_eq!(
+            parse_backend_url("surrealdb:///var/sekai").unwrap(),
+            (BackendKind::Surrealdb, "/var/sekai")
         );
         assert_eq!(
             parse_backend_url("/var/sekai").unwrap(),
-            (BackendKind::Sqlite, "/var/sekai")
+            (BackendKind::Surrealdb, "/var/sekai")
         );
         assert!(matches!(
             parse_backend_url("s3://bucket/store"),
             Err(StorageError::UnsupportedBackend { .. })
         ));
+    }
+
+    #[test]
+    fn parses_sqlite_urls_explicitly() {
+        assert_eq!(
+            parse_backend_url("sqlite:///var/sekai").unwrap(),
+            (BackendKind::Sqlite, "/var/sekai")
+        );
     }
 
     #[test]
@@ -292,6 +308,10 @@ mod tests {
         ));
         assert!(matches!(
             parse_backend_url("sqlite://"),
+            Err(StorageError::EmptyStorePath)
+        ));
+        assert!(matches!(
+            parse_backend_url("surrealkv://"),
             Err(StorageError::EmptyStorePath)
         ));
     }

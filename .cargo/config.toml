@@ -3,3 +3,6 @@ rustflags = ["-D", "warnings"]
 
 [env]
 RUST_BACKTRACE = "1"
+# SurrealDB 4.0's embedded engine needs more than the default 2 MiB test-thread
+# stack in debug builds; 8 MiB matches the main thread.
+RUST_MIN_STACK = "8388608"
