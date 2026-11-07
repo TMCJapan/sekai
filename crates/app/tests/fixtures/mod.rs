@@ -2,7 +2,7 @@
 //!
 //! Ingest hashes every chunk through its normalized view, so a fake
 //! payload that is not a level chunk has no key. These helpers produce a
-//! real 1.13+ chunk whose only content is a distinguishable `Status`, which
+//! real 1.18+ chunk whose only content is a distinguishable `Status`, which
 //! keeps each test's payloads distinct while staying parseable.
 
 fn name(out: &mut Vec<u8>, key: &str) {

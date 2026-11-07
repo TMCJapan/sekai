@@ -886,7 +886,7 @@ dependencies = [
 [[package]]
 name = "nanocesu8"
 version = "0.1.0"
-source = "git+https://github.com/TMCJapan/nanonbt.git?rev=d92836c870f3571181cfbbe818b07ef0632691b8#d92836c870f3571181cfbbe818b07ef0632691b8"
+source = "git+https://github.com/TMCJapan/nanonbt.git?rev=e842ae44e61f9586bd9a00e130af41b655748a3d#e842ae44e61f9586bd9a00e130af41b655748a3d"
 dependencies = [
  "pulp",
  "simdutf8",
@@ -895,7 +895,7 @@ dependencies = [
 [[package]]
 name = "nanonbt"
 version = "0.1.0"
-source = "git+https://github.com/TMCJapan/nanonbt.git?rev=d92836c870f3571181cfbbe818b07ef0632691b8#d92836c870f3571181cfbbe818b07ef0632691b8"
+source = "git+https://github.com/TMCJapan/nanonbt.git?rev=e842ae44e61f9586bd9a00e130af41b655748a3d#e842ae44e61f9586bd9a00e130af41b655748a3d"
 dependencies = [
  "hashify",
  "nanocesu8",
@@ -905,7 +905,7 @@ dependencies = [
 [[package]]
 name = "nanonbt-derive"
 version = "0.1.0"
-source = "git+https://github.com/TMCJapan/nanonbt.git?rev=d92836c870f3571181cfbbe818b07ef0632691b8#d92836c870f3571181cfbbe818b07ef0632691b8"
+source = "git+https://github.com/TMCJapan/nanonbt.git?rev=e842ae44e61f9586bd9a00e130af41b655748a3d#e842ae44e61f9586bd9a00e130af41b655748a3d"
 dependencies = [
  "nanocesu8",
  "proc-macro2",

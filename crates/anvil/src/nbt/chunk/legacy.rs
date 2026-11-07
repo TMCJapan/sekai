@@ -1,39 +1,19 @@
-//! Pre-1.13 (`Level`-wrapped) chunk decoding.
+//! Pre-1.18 (`Level`-wrapped) chunk decoding.
 //!
-//! Legacy chunks keep their fields inside a `Level` compound, mark
-//! generation progress with `TerrainPopulated` instead of `Status`, and
-//! store block content as per-section `Blocks`/`Add`/`Data` byte arrays
-//! rather than a palette. This module decodes the fields the normalized
-//! view needs; the arrays are owned copies because the derive can only
-//! default a field whose type owns its data, and pre-1.9 files omit most of
-//! them.
+//! Legacy chunks keep their fields inside a `Level` compound. Before 1.13
+//! they also mark generation progress with `TerrainPopulated` instead of
+//! `Status` and store block content as per-section `Blocks`/`Add`/`Data`
+//! byte arrays rather than a palette, which is the layout read here. This
+//! module decodes the fields the normalized view needs; the arrays are owned
+//! copies because the derive can only default a field whose type owns its
+//! data, and pre-1.9 files omit most of them.
 
 use alloc::vec::Vec;
 
-use nanonbt::{DeserializeNbt, I32Be, SerializeNbt, Tag, Write};
+use nanonbt::{DeserializeNbt, I32Be, SerializeNbt};
 use sekai_util::ChunkHash;
 
-/// A compound preserved verbatim as its raw payload bytes.
-///
-/// Legacy `TileEntities`/`TileTicks`/`LiquidTicks` entries carry fields this
-/// crate never interprets, so they stay opaque: the bytes captured here are
-/// exactly what the file held, including the terminating `TAG_End`, which is
-/// what the normalized view hashes and what keeps a server rewrite of an
-/// unrelated field visible.
-#[derive(DeserializeNbt, Debug, Clone, Eq, PartialEq, Default)]
-pub struct RawCompound<'de> {
-    #[nbt(self)]
-    raw: &'de [u8],
-}
-
-impl SerializeNbt for RawCompound<'_> {
-    const TAG: Tag = Tag::Compound;
-
-    fn serialize_nbt<W: Write + ?Sized>(&self, writer: &mut W) -> nanonbt::Result<()> {
-        writer.write_bytes(self.raw);
-        Ok(())
-    }
-}
+use super::RawCompound;
 
 /// One legacy section: the fields both formats share, plus the legacy block
 /// arrays.
@@ -96,7 +76,7 @@ pub struct LegacySection<'de> {
     pub data2: &'de [u8],
 }
 
-/// A pre-1.13 chunk: the fields the normalized view needs.
+/// A pre-1.18 chunk: the fields the normalized view needs.
 ///
 /// Sections and height maps keep their legacy shapes, and every field
 /// defaults: pre-1.9 files omit most of them.

@@ -1,13 +1,11 @@
-//! Legacy (pre-1.13 `Level`-wrapped) chunk tests.
+//! Legacy (pre-1.18 `Level`-wrapped) chunk tests.
 //!
 //! Fixtures are built byte by byte: the point is the on-disk shape, which no
 //! serializer in the workspace produces (the modern writer always emits the
-//! 1.13+ root layout).
+//! 1.18+ root layout).
 
 use alloc::vec;
 use alloc::vec::Vec;
-
-use nanonbt::Cesu8;
 
 use super::*;
 use crate::nbt::chunk::Chunk;
@@ -236,18 +234,11 @@ fn legacy_and_modern_never_compare_equal() {
     let legacy_bytes = full_legacy(Some(1), &[]);
     let legacy_side = parse_legacy(&legacy_bytes);
     let modern = crate::nbt::chunk::ChunkPayload {
-        data_version: 1,
         x_pos: 5,
-        y_pos: 0,
         z_pos: -7,
-        inhabited_time: 11,
         last_update: 13,
-        sections: vec![],
-        heightmaps: crate::nbt::chunk::Heightmaps::default(),
-        status: &Cesu8::from_str("minecraft:full"),
-        block_entities: vec![],
-        block_ticks: vec![],
-        fluid_ticks: vec![],
+        inhabited_time: 11,
+        ..crate::nbt::chunk::ChunkPayload::empty_full()
     };
     let legacy_hash = legacy_side.normalized_hash().unwrap();
     let modern_hash = Chunk::Modern(modern).normalized_hash().unwrap();
@@ -259,20 +250,7 @@ fn legacy_and_modern_never_compare_equal() {
 
 #[test]
 fn modern_chunk_still_parses_as_modern() {
-    let modern = crate::nbt::chunk::ChunkPayload {
-        data_version: 1,
-        x_pos: 0,
-        y_pos: 0,
-        z_pos: 0,
-        inhabited_time: 0,
-        last_update: 0,
-        sections: vec![],
-        heightmaps: crate::nbt::chunk::Heightmaps::default(),
-        status: &Cesu8::from_str("minecraft:full"),
-        block_entities: vec![],
-        block_ticks: vec![],
-        fluid_ticks: vec![],
-    };
+    let modern = crate::nbt::chunk::ChunkPayload::empty_full();
     let bytes = nanonbt::to_bytes(&modern).unwrap();
     assert!(matches!(parse(&bytes).unwrap(), Chunk::Modern(_)));
 }
