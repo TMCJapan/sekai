@@ -33,7 +33,7 @@ jobs:
             with:
               persist-credentials: false
           - name: Install cargo-deny and cargo-machete
-            uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037
+            uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941
             with:
               tool: cargo-deny,cargo-machete
 
@@ -69,7 +69,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install ast-grep
-        uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037
+        uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941
         with:
           tool: ast-grep
       - name: Run ast-grep tests
@@ -108,7 +108,7 @@ jobs:
           cache-key: ${{ matrix.target }}
 
       - name: Install cargo-hack
-        uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037
+        uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941
         with:
           tool: cargo-hack
 
@@ -156,7 +156,7 @@ jobs:
         run: python3 .github/scripts/check-docs.py
 
       - name: Install mdbook
-        uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037
+        uses: taiki-e/install-action@682ce6c3c696a4cd5168a05f98e51aa02b877941
         with:
           tool: mdbook
 
