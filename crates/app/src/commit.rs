@@ -167,8 +167,8 @@ where
     ///
     /// Only `scope` is ingested: out-of-scope coordinates record no rows and
     /// no tombstones, resolving through fallback from earlier commits.
-    /// `progress` fires as changed files complete,
-    /// before their blobs are synced: a full count does not mean the commit is durable yet. The
+    /// `progress` fires as changed files complete, before their blobs are
+    /// synced: a full count does not mean the commit is durable yet. The
     /// report is identical with or without timings.
     pub async fn commit(
         &mut self,
