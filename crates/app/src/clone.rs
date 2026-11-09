@@ -7,7 +7,8 @@
 //! files; only vanilla namespaces are derivable (custom dimensions fail
 //! loudly with the offending coordinates, as in checkout).
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::{Duration, Instant};
 
 use sekai_core::{ChunkCoord, ChunkHash, CommitId, RegionKey, Scope};
@@ -57,7 +58,8 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// layout comes from how it was constructed (for example
     /// `HostWorldTree::new_legacy` or `HostWorldTree::new_bukkit`). Only
     /// `scope` is cloned. `progress` fires as files complete, on the async
-    /// side.
+    /// side, counting them in the order their writes land, which need not
+    /// be plan order.
     pub async fn clone_to<W: WorldTree>(
         &self,
         out: &W,
@@ -126,12 +128,11 @@ struct CloneJob<S: SekaiStore, W: WorldTree> {
     out: W,
 }
 
-/// One file's write, queued on the blocking pool.
-struct QueuedWrite {
-    step: tokio::task::JoinHandle<Result<(), AppError>>,
-    key: RegionKey,
-    /// Chunks the file holds, counted once the write lands.
+/// One file's write, reported back from the blocking pool once it ends.
+struct LandedWrite {
+    /// Chunks the file holds, counted only if the write succeeded.
     chunks: usize,
+    outcome: Result<(), AppError>,
 }
 
 /// Rebuild every commit region file under `out`.
@@ -159,53 +160,66 @@ where
     };
     let mut progress = progress.start(groups.len());
     let mut blob_buf = Vec::new();
-    let mut files = groups.iter();
-    // Writes queued in plan order, so a failure names the file it came from.
-    let mut queued = VecDeque::new();
-    loop {
-        // Keep fetching while the oldest write is busy. It is settled only
-        // once a later file is queued behind it (or nothing is left to
-        // fetch), so a future cancelled at a report has already promised
-        // the next file too.
-        let oldest_done = queued.len() > 1
-            && queued
-                .front()
-                .is_some_and(|oldest: &QueuedWrite| oldest.step.is_finished());
-        if !oldest_done && let Some((key, rows)) = files.next() {
-            let region = out.derive_region(*key)?;
-            let mut writer = sekai_anvil::RegionBuilder::new(key.rx, key.rz, timestamp)?;
-            let mut chunks = 0usize;
-            for (coord, hash) in rows {
-                if !fetch_or_skip(&cas, hash, options.on_missing_blob, &mut blob_buf).await? {
-                    continue;
-                }
-                writer.stage_chunk(coord.x, coord.z, &blob_buf)?;
-                chunks += 1;
+    // Each write reports back as it lands, so nothing waits on an older
+    // write and no handle has to be kept around.
+    let (landed_tx, mut landed_rx) = tokio::sync::mpsc::unbounded_channel::<LandedWrite>();
+    let mut spawned = 0usize;
+    for (key, rows) in &groups {
+        let region = out.derive_region(*key)?;
+        let mut writer = sekai_anvil::RegionBuilder::new(key.rx, key.rz, timestamp)?;
+        let mut chunks = 0usize;
+        for (coord, hash) in rows {
+            if !fetch_or_skip(&cas, hash, options.on_missing_blob, &mut blob_buf).await? {
+                continue;
             }
-            // Queued as soon as its input is ready: a cancelled future must
-            // not take a file it has already promised to write with it.
-            let image = writer.image()?;
-            let step =
-                tokio::task::spawn_blocking(move || region.write(&image).map_err(AppError::from));
-            queued.push_back(QueuedWrite {
-                step,
-                key: *key,
-                chunks,
-            });
-            continue;
+            writer.stage_chunk(coord.x, coord.z, &blob_buf)?;
+            chunks += 1;
         }
-        let Some(QueuedWrite { step, key, chunks }) = queued.pop_front() else {
-            break;
-        };
-        step.await.map_err(|err| {
-            AppError::Storage(StorageError::backend(
-                "clone worker",
-                std::io::Error::other(format!("the file step for {key:?} stopped: {err}")),
-            ))
-        })??;
-        report.files_written += 1;
-        report.chunks_restored += chunks;
-        progress.step(report.files_written);
+        let image = writer.image()?;
+        let key = *key;
+        let landed_tx = landed_tx.clone();
+        // Spawned as soon as its input is ready and detached at once: a
+        // cancelled future must not take a file it has already promised to
+        // write with it.
+        tokio::task::spawn_blocking(move || {
+            let outcome = catch_unwind(AssertUnwindSafe(|| region.write(&image)))
+                .map_err(|_| clone_worker_error(format!("the write for {key:?} panicked")))
+                .and_then(|written| written.map_err(AppError::from));
+            // The receiver is gone only once the clone is abandoned.
+            let _ = landed_tx.send(LandedWrite { chunks, outcome });
+        });
+        spawned += 1;
+        while let Ok(landed) = landed_rx.try_recv() {
+            settle(&mut report, landed, &mut progress)?;
+        }
+    }
+    drop(landed_tx);
+    while report.files_written < spawned {
+        // Every sender gone with writes unreported means the blocking pool
+        // dropped a write unrun (runtime shutdown).
+        let landed = landed_rx.recv().await.ok_or_else(|| {
+            clone_worker_error("a write stopped before reporting back".to_owned())
+        })?;
+        settle(&mut report, landed, &mut progress)?;
     }
     Ok(report)
+}
+
+fn settle(
+    report: &mut CloneReport,
+    landed: LandedWrite,
+    progress: &mut impl Reporter,
+) -> Result<(), AppError> {
+    landed.outcome?;
+    report.files_written += 1;
+    report.chunks_restored += landed.chunks;
+    progress.step(report.files_written);
+    Ok(())
+}
+
+fn clone_worker_error(detail: String) -> AppError {
+    AppError::Storage(StorageError::backend(
+        "clone worker",
+        std::io::Error::other(detail),
+    ))
 }
