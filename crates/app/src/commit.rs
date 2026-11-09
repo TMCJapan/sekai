@@ -167,9 +167,9 @@ where
     ///
     /// Only `scope` is ingested: out-of-scope coordinates record no rows and
     /// no tombstones, resolving through fallback from earlier commits.
-    /// `progress` fires as changed files complete, before their blobs are
-    /// synced: a full count does not mean the commit is durable yet. The
-    /// report is identical with or without timings.
+    /// `progress` fires as changed files complete, possibly before their
+    /// blobs are synced: a full count does not mean the commit is durable
+    /// yet. The report is identical with or without timings.
     pub async fn commit(
         &mut self,
         options: CommitOptions,
@@ -492,7 +492,8 @@ struct IngestTimings {
 /// Each worker keeps `guard` alive until it returns, so the world stays put
 /// while blobs are still being read out of it.
 ///
-/// `progress` fires per file as it finishes, before its worker's sync.
+/// `progress` fires per file as its outcome is received here, which may be
+/// before that file's worker has synced.
 async fn ingest_changed<R: RegionFile, S: SekaiStore, L: WorldLock>(
     changed: Vec<PlannedFile<R>>,
     cas: S::Blobs,
