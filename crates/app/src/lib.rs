@@ -22,6 +22,7 @@ mod diff;
 mod error;
 mod gc;
 mod instance;
+mod progress;
 mod prune;
 mod refs;
 mod regions;
@@ -40,6 +41,10 @@ pub use diff::{ChunkDiff, DiffProgress, DiffTimings, world_chunk_coords};
 pub use error::AppError;
 pub use gc::{GcProgress, GcTimings};
 pub use instance::{SekaiInstance, WorldHandle, WorldHandleMut};
+pub use progress::{
+    CheckoutReporter, CloneReporter, CommitReporter, DiffReporter, GcReporter, ProgressBuilder,
+    PruneReporter,
+};
 pub use prune::{PruneProgress, PruneTimings};
 pub use sekai_core::{
     Area, CheckoutReport, ChunkCoord, ChunkHash, Commit, CommitId, CommitRef, CommitReport,

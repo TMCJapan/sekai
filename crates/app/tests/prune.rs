@@ -66,19 +66,19 @@ async fn prune_folds_and_gc_reclaims() {
     write_region(&region, &[(0, 0, chunk_nbt("marker-1"))]);
     instance
         .world_mut(&mut world)
-        .commit(commit_options(), sekai_app::Scope::World, |_| {})
+        .commit(commit_options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
     write_region(&region, &[(0, 0, chunk_nbt("marker-2"))]);
     instance
         .world_mut(&mut world)
-        .commit(commit_options(), sekai_app::Scope::World, |_| {})
+        .commit(commit_options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
     write_region(&region, &[(0, 0, chunk_nbt("marker-3"))]);
     instance
         .world_mut(&mut world)
-        .commit(commit_options(), sekai_app::Scope::World, |_| {})
+        .commit(commit_options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
     let commits = instance.list_commits().await.unwrap();
@@ -98,7 +98,7 @@ async fn prune_folds_and_gc_reclaims() {
     assert_eq!(plan_timings.apply, std::time::Duration::ZERO);
     assert_eq!(instance.list_commits().await.unwrap().len(), 3);
 
-    let (report, _) = instance.prune(Some(2), None, |_| {}).await.unwrap();
+    let (report, _) = instance.prune(Some(2), None, &()).await.unwrap();
     assert_eq!(report.pruned, 1);
     assert_eq!(report.rows_folded + report.rows_dropped, 1);
     let remaining = instance.list_commits().await.unwrap();
@@ -123,7 +123,7 @@ async fn prune_folds_and_gc_reclaims() {
             commits[1].id,
             sekai_app::CheckoutOptions::default(),
             sekai_app::Scope::World,
-            |_| {},
+            &(),
         )
         .await
         .unwrap();
@@ -131,7 +131,7 @@ async fn prune_folds_and_gc_reclaims() {
 
     // Pruning dereferences but never unlinks: GC reclaims exactly one blob.
     assert_eq!(blob_count(&store_dir).await, 3);
-    let (gc_report, _) = instance.gc(|_| {}).await.unwrap();
+    let (gc_report, _) = instance.gc(&()).await.unwrap();
     assert_eq!(gc_report.removed, 1);
     assert_eq!(blob_count(&store_dir).await, 2);
 }
@@ -152,7 +152,7 @@ async fn prune_before_ref_and_empty_guards() {
         write_region(world_path.join("region/r.0.0.mca"), &[(0, 0, payload)]);
         instance
             .world_mut(&mut world)
-            .commit(commit_options(), sekai_app::Scope::World, |_| {})
+            .commit(commit_options(), sekai_app::Scope::World, &())
             .await
             .unwrap();
     }
@@ -162,7 +162,7 @@ async fn prune_before_ref_and_empty_guards() {
     let third = commits[2].id;
 
     // `--before` the second commit retains it and newer.
-    let (report, _) = instance.prune(None, Some(second), |_| {}).await.unwrap();
+    let (report, _) = instance.prune(None, Some(second), &()).await.unwrap();
     assert_eq!(report.pruned, 1);
     assert_eq!(instance.list_commits().await.unwrap().len(), 2);
 
@@ -172,10 +172,10 @@ async fn prune_before_ref_and_empty_guards() {
     assert_eq!(plan.retained, [third]);
 
     // Selections retaining nothing fail loudly instead of wiping the store.
-    assert!(instance.prune(Some(0), None, |_| {}).await.is_err());
+    assert!(instance.prune(Some(0), None, &()).await.is_err());
     assert!(
         instance
-            .prune(None, Some(CommitId([0xFF; 32])), |_| {})
+            .prune(None, Some(CommitId([0xFF; 32])), &())
             .await
             .is_err()
     );

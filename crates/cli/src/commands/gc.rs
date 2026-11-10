@@ -5,7 +5,7 @@ use sekai_app::{GcPlan, GcReport, GcTimings};
 use serde::Serialize;
 
 use super::ReportOut;
-use super::progress::{finish_progress, progress_bar, report_progress};
+use super::progress::BarProgress;
 use crate::envelope::envelope_ok;
 use crate::style::Styler;
 
@@ -37,14 +37,12 @@ pub async fn run(store: &str, dry_run: bool, progress: bool, out: ReportOut) -> 
         return Ok(());
     }
 
-    let bar = progress_bar(progress);
+    let bar = BarProgress::new(progress);
     let (report, timings) = instance
-        .gc(|update| {
-            report_progress(bar.as_ref(), update.blobs_done, update.blobs_total, "blobs");
-        })
+        .gc(&bar)
         .await
         .with_context(|| format!("gc for {store} failed"))?;
-    finish_progress(bar.as_ref());
+    bar.finish();
     if out.json {
         println!(
             "{}",

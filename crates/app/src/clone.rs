@@ -17,6 +17,7 @@ use sekai_world::{RegionFile, WorldTree};
 use crate::checkout::{MissingBlobPolicy, fetch_or_skip};
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
+use crate::progress::{CloneReporter, ProgressBuilder};
 
 /// Clone policy. `Default` aborts on missing blobs, as in checkout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -45,7 +46,7 @@ pub struct CloneTimings {
     pub clone_files: Duration,
 }
 
-/// Per-file progress report for the `progress` callback.
+/// Per-file progress event, handed to [`CloneReporter::step`].
 #[derive(Debug, Clone, Copy)]
 pub struct CloneProgress {
     /// Files fully rebuilt so far.
@@ -66,16 +67,15 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// starts there after the emptiness check is not excluded. Its
     /// layout comes from how it was constructed (for example
     /// `HostWorldTree::new_legacy` or `HostWorldTree::new_bukkit`). Only
-    /// `scope` is cloned. `progress` fires as files complete; it must be
-    /// `'static` because the file pass runs on a blocking pool (pass a
-    /// `move` closure owning its state).
+    /// `scope` is cloned. `progress` fires as files complete, on the async
+    /// side.
     pub async fn clone_to<W: WorldTree>(
         &self,
         out: &W,
         commit: CommitId,
         options: CloneOptions,
         scope: Scope,
-        progress: impl Fn(CloneProgress) + Send + 'static,
+        progress: &impl ProgressBuilder,
     ) -> Result<(CloneReport, CloneTimings), AppError>
     where
         AppError: From<W::Error>,
@@ -115,7 +115,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
         };
 
         let files_started = Instant::now();
-        let report = clone_files(job, timestamp, progress).await;
+        let report = clone_files(job, timestamp, progress.clone_to()).await;
         let files_dt = files_started.elapsed();
         let report = report?;
 
@@ -144,7 +144,7 @@ struct CloneJob<S: SekaiStore, W: WorldTree> {
 async fn clone_files<S: SekaiStore, W: WorldTree>(
     job: CloneJob<S, W>,
     timestamp: u32,
-    progress: impl Fn(CloneProgress),
+    mut progress: impl CloneReporter,
 ) -> Result<CloneReport, AppError>
 where
     AppError: From<W::Error>,
@@ -192,7 +192,7 @@ where
         })??;
         report.files_written += 1;
         files_done += 1;
-        progress(CloneProgress {
+        progress.step(CloneProgress {
             files_done,
             files_total,
             chunks_done: report.chunks_restored,

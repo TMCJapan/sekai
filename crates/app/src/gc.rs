@@ -7,6 +7,7 @@ use sekai_storage::SekaiStore;
 
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
+use crate::progress::{GcReporter, ProgressBuilder};
 
 /// Per-phase timings for garbage collection.
 #[derive(Debug, Clone, Default)]
@@ -19,7 +20,7 @@ pub struct GcTimings {
     pub apply: Duration,
 }
 
-/// Per-blob progress report for the `progress` callback.
+/// Per-blob progress event, handed to [`GcReporter::step`].
 #[derive(Debug, Clone, Copy)]
 pub struct GcProgress {
     /// Orphan candidates examined so far.
@@ -56,10 +57,10 @@ impl<S: SekaiStore> SekaiInstance<S> {
     pub async fn gc_apply(
         &mut self,
         plan: &GcPlan,
-        progress: impl FnMut(GcProgress) + Send,
+        progress: &impl ProgressBuilder,
     ) -> Result<(GcReport, GcTimings), AppError> {
         let total_started = Instant::now();
-        let (report, apply_dt) = apply_within(self.store_mut(), plan, progress).await?;
+        let (report, apply_dt) = apply_within(self.store_mut(), plan, progress.gc()).await?;
         let timings = GcTimings {
             total: total_started.elapsed(),
             plan: Duration::ZERO,
@@ -72,11 +73,11 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// `progress` fires per examined orphan candidate during apply.
     pub async fn gc(
         &mut self,
-        progress: impl FnMut(GcProgress) + Send,
+        progress: &impl ProgressBuilder,
     ) -> Result<(GcReport, GcTimings), AppError> {
         let total_started = Instant::now();
         let (plan, plan_dt) = plan_within(self.store()).await?;
-        let (report, apply_dt) = apply_within(self.store_mut(), &plan, progress).await?;
+        let (report, apply_dt) = apply_within(self.store_mut(), &plan, progress.gc()).await?;
         let timings = GcTimings {
             total: total_started.elapsed(),
             plan: plan_dt,
@@ -99,12 +100,12 @@ async fn plan_within<S: SekaiStore>(store: &S) -> Result<(GcPlan, Duration), App
 async fn apply_within<S: SekaiStore>(
     store: &mut S,
     plan: &GcPlan,
-    mut progress: impl FnMut(GcProgress) + Send,
+    mut progress: impl GcReporter,
 ) -> Result<(GcReport, Duration), AppError> {
     let started = Instant::now();
     let (cas, meta) = store.blob_and_meta();
     let report = sekai_core::usecase::gc::gc_apply(cas, meta, plan, |done, total| {
-        progress(GcProgress {
+        progress.step(GcProgress {
             blobs_done: done,
             blobs_total: total,
         });

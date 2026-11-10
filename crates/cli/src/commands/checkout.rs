@@ -5,7 +5,7 @@ use sekai_app::{CheckoutReport, CheckoutTimings, HostWorldTree};
 use serde::Serialize;
 use std::path::Path;
 
-use super::progress::{finish_progress, progress_bar, report_progress};
+use super::progress::BarProgress;
 use super::{ReportOut, resolve_selection};
 use crate::cli::{CommitRef, OnMissingBlob, OnMissingFile, Selection};
 use crate::envelope::envelope_ok;
@@ -65,18 +65,10 @@ pub async fn run(
             policy_summary(flags),
         );
     }
-    let bar = progress_bar(progress);
-    let owned = bar.clone();
+    let bar = BarProgress::new(progress);
     let (report, timings) = instance
         .world_mut(&mut world)
-        .checkout(id, options, scope, move |update| {
-            report_progress(
-                owned.as_ref(),
-                update.files_done,
-                update.files_total,
-                format!("files {} chunks", update.chunks_done),
-            );
-        })
+        .checkout(id, options, scope, &bar)
         .await
         .with_context(|| {
             format!(
@@ -84,7 +76,7 @@ pub async fn run(
                 world_path.as_ref().display()
             )
         })?;
-    finish_progress(bar.as_ref());
+    bar.finish();
     if out.json {
         println!(
             "{}",

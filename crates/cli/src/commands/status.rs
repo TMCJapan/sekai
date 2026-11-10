@@ -5,7 +5,7 @@ use sekai_app::{HostWorldTree, StatusReport, StatusTimings};
 use serde::Serialize;
 use std::path::Path;
 
-use super::progress::{finish_progress, progress_bar, report_progress};
+use super::progress::BarProgress;
 use super::{ReportOut, resolve_selection};
 use crate::cli::Selection;
 use crate::envelope::envelope_ok;
@@ -21,8 +21,7 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let world = HostWorldTree::new(&world_path)
         .with_context(|| format!("failed to inspect world {}", world_path.as_ref().display()))?;
-    let bar = progress_bar(progress);
-    let owned = bar.clone();
+    let bar = BarProgress::new(progress);
     let options = sekai_app::StatusOptions { concurrency: jobs };
     let instance = sekai_app::SekaiInstance::open(store)
         .await
@@ -30,17 +29,10 @@ pub async fn run(
     let scope = resolve_selection(&instance, selection).await?;
     let (report, timings) = instance
         .world(&world)
-        .status(options, scope, move |update| {
-            report_progress(
-                owned.as_ref(),
-                update.files_done,
-                update.files_total,
-                format!("files {} chunks", update.chunks_done),
-            );
-        })
+        .status(options, scope, &bar)
         .await
         .with_context(|| format!("status of {} failed", world_path.as_ref().display()))?;
-    finish_progress(bar.as_ref());
+    bar.finish();
     if out.json {
         println!(
             "{}",

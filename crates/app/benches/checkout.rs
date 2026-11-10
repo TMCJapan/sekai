@@ -22,7 +22,7 @@ fn benches(c: &mut Criterion) {
         rt.block_on(
             instance
                 .world_mut(&mut world)
-                .commit(options(), Scope::World, |_| {}),
+                .commit(options(), Scope::World, &()),
         )
         .expect("commit works");
         let commits = rt.block_on(instance.list_commits()).expect("list works");
@@ -31,7 +31,7 @@ fn benches(c: &mut Criterion) {
                 commits[0].id,
                 sekai_app::CheckoutOptions::default(),
                 Scope::World,
-                |_| {},
+                &(),
             ))
             .expect("checkout works");
         });
@@ -53,7 +53,7 @@ fn benches(c: &mut Criterion) {
         rt.block_on(
             instance
                 .world_mut(&mut world)
-                .commit(options(), Scope::World, |_| {}),
+                .commit(options(), Scope::World, &()),
         )
         .expect("commit works");
         let commits = rt.block_on(instance.list_commits()).expect("list works");
@@ -62,7 +62,7 @@ fn benches(c: &mut Criterion) {
                 commits[0].id,
                 sekai_app::CheckoutOptions::default(),
                 Scope::World,
-                |_| {},
+                &(),
             ))
             .expect("checkout works");
         });

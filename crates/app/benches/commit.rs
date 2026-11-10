@@ -23,7 +23,7 @@ fn benches(c: &mut Criterion) {
             rt.block_on(
                 instance
                     .world_mut(&mut world)
-                    .commit(options(), Scope::World, |_| {}),
+                    .commit(options(), Scope::World, &()),
             )
             .expect("commit works");
         });
@@ -41,14 +41,14 @@ fn benches(c: &mut Criterion) {
         rt.block_on(
             instance
                 .world_mut(&mut world)
-                .commit(options(), Scope::World, |_| {}),
+                .commit(options(), Scope::World, &()),
         )
         .expect("commit works");
         b.iter(|| {
             rt.block_on(
                 instance
                     .world_mut(&mut world)
-                    .commit(options(), Scope::World, |_| {}),
+                    .commit(options(), Scope::World, &()),
             )
             .expect("commit works");
         });
@@ -67,7 +67,7 @@ fn benches(c: &mut Criterion) {
             rt.block_on(
                 instance
                     .world_mut(&mut world)
-                    .commit(options(), Scope::World, |_| {}),
+                    .commit(options(), Scope::World, &()),
             )
             .expect("commit works");
         });

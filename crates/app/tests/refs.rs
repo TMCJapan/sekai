@@ -41,7 +41,7 @@ async fn commit<S: sekai_app::SekaiStore>(
         .commit(
             sekai_app::CommitOptions::default(),
             sekai_app::Scope::World,
-            |_| {},
+            &(),
         )
         .await
         .unwrap()

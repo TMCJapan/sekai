@@ -5,7 +5,7 @@ use sekai_app::{CloneReport, CloneTimings, HostWorldTree};
 use serde::Serialize;
 use std::path::Path;
 
-use super::progress::{finish_progress, progress_bar, report_progress};
+use super::progress::BarProgress;
 use super::{ReportOut, resolve_selection};
 use crate::cli::{CloneFlavor, CommitRef, OnMissingBlob, Selection};
 use crate::envelope::envelope_ok;
@@ -60,17 +60,9 @@ pub async fn run(
         .with_context(|| format!("commit {commit} failed to resolve"))?;
     let scope = resolve_selection(&instance, selection).await?;
     let options = map_options(flags.on_missing_blob);
-    let bar = progress_bar(progress);
-    let owned = bar.clone();
+    let bar = BarProgress::new(progress);
     let (report, timings) = instance
-        .clone_to(&world, id, options, scope, move |update| {
-            report_progress(
-                owned.as_ref(),
-                update.files_done,
-                update.files_total,
-                format!("files {} chunks", update.chunks_done),
-            );
-        })
+        .clone_to(&world, id, options, scope, &bar)
         .await
         .with_context(|| {
             format!(
@@ -78,7 +70,7 @@ pub async fn run(
                 out_dir.as_ref().display()
             )
         })?;
-    finish_progress(bar.as_ref());
+    bar.finish();
     if out.json {
         println!(
             "{}",

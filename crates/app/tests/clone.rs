@@ -74,7 +74,7 @@ async fn clone_rebuilds_commit_into_fresh_directory() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .commit(commit_options(), sekai_app::Scope::World, |_| {})
+        .commit(commit_options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
     let commits = instance.list_commits().await.unwrap();
@@ -90,7 +90,7 @@ async fn clone_rebuilds_commit_into_fresh_directory() {
             commits[0].id,
             sekai_app::CloneOptions::default(),
             sekai_app::Scope::World,
-            |_| {},
+            &(),
         )
         .await
         .unwrap();
@@ -129,7 +129,7 @@ async fn clone_honors_layout_and_scope() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .commit(commit_options(), Scope::World, |_| {})
+        .commit(commit_options(), Scope::World, &())
         .await
         .unwrap();
     let commits = instance.list_commits().await.unwrap();
@@ -143,7 +143,7 @@ async fn clone_honors_layout_and_scope() {
             commits[0].id,
             sekai_app::CloneOptions::default(),
             Scope::dimension(Dimension::OVERWORLD),
-            |_| {},
+            &(),
         )
         .await
         .unwrap();
@@ -170,7 +170,7 @@ async fn clone_honors_layout_and_scope() {
             commits[0].id,
             sekai_app::CloneOptions::default(),
             Scope::World,
-            |_| {},
+            &(),
         )
         .await
         .unwrap();
@@ -197,7 +197,7 @@ async fn clone_refuses_non_empty_directory() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .commit(commit_options(), sekai_app::Scope::World, |_| {})
+        .commit(commit_options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
     let commits = instance.list_commits().await.unwrap();
@@ -213,7 +213,7 @@ async fn clone_refuses_non_empty_directory() {
                 commits[0].id,
                 sekai_app::CloneOptions::default(),
                 sekai_app::Scope::World,
-                |_| {},
+                &(),
             )
             .await
             .is_err()
@@ -226,7 +226,7 @@ async fn clone_refuses_non_empty_directory() {
             commits[0].id,
             sekai_app::CloneOptions::default(),
             sekai_app::Scope::World,
-            |_| {},
+            &(),
         )
         .await
         .unwrap();
@@ -245,14 +245,14 @@ async fn clone_omits_tombstoned_regions() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .commit(commit_options(), sekai_app::Scope::World, |_| {})
+        .commit(commit_options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
     // Empty the region: the second commit tombstones its only chunk.
     write_region(&region, &[]);
     instance
         .world_mut(&mut world)
-        .commit(commit_options(), sekai_app::Scope::World, |_| {})
+        .commit(commit_options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
     let commits = instance.list_commits().await.unwrap();
@@ -265,7 +265,7 @@ async fn clone_omits_tombstoned_regions() {
             commits[1].id,
             sekai_app::CloneOptions::default(),
             sekai_app::Scope::World,
-            |_| {},
+            &(),
         )
         .await
         .unwrap();

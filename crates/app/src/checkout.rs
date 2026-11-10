@@ -23,6 +23,7 @@ use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
 
 use crate::error::AppError;
 use crate::instance::{ExclusiveWorldGuard, WorldGuard, WorldHandleMut};
+use crate::progress::{CheckoutReporter, ProgressBuilder};
 use crate::regions::discover_regions;
 
 /// Per-phase timings for checkout execution.
@@ -38,7 +39,7 @@ pub struct CheckoutTimings {
     pub checkout_files: Duration,
 }
 
-/// Per-file progress report for the `progress` callback.
+/// Per-file progress event, handed to [`CheckoutReporter::step`].
 #[derive(Debug, Clone, Copy)]
 pub struct CheckoutProgress {
     /// Files fully rebuilt so far.
@@ -102,7 +103,7 @@ where
     ///
     /// Only `scope` is rebuilt: region files outside the scope are never
     /// written, deleted, or otherwise touched. `progress` fires as files
-    /// complete, always on the async side: a callback that works straight
+    /// complete, always on the async side: a reporter that works straight
     /// on the future's own state must be safe to run there.
     ///
     /// Rebuilding writes (and may delete) region files, so it goes through
@@ -112,7 +113,7 @@ where
         commit: CommitId,
         options: CheckoutOptions,
         scope: Scope,
-        progress: impl FnMut(CheckoutProgress),
+        progress: &impl ProgressBuilder,
     ) -> Result<(CheckoutReport, CheckoutTimings), AppError> {
         let guard =
             ExclusiveWorldGuard::acquire(self.world, WorldLockMode::Exclusive)?.into_shared();
@@ -161,7 +162,7 @@ where
         };
 
         let files_started = Instant::now();
-        let report = checkout_file_pass(job, timestamp, progress).await?;
+        let report = checkout_file_pass(job, timestamp, progress.checkout()).await?;
         let files_dt = files_started.elapsed();
 
         let timings = CheckoutTimings {
@@ -194,11 +195,11 @@ struct CheckoutJob<S: SekaiStore, T: WorldTree> {
 /// Blob fetches are async; `progress` fires between files on the async side.
 /// Each file's build and write runs on the blocking pool, never on an async
 /// worker, and reports completion through [`Completion`] so a parked
-/// `progress` callback does not also hold a blocking thread.
+/// reporter does not also hold a blocking thread.
 async fn checkout_file_pass<S: SekaiStore, T: WorldTree>(
     job: CheckoutJob<S, T>,
     timestamp: u32,
-    mut progress: impl FnMut(CheckoutProgress),
+    mut progress: impl CheckoutReporter,
 ) -> Result<CheckoutReport, AppError>
 where
     AppError: From<T::Error>,
@@ -244,7 +245,7 @@ where
             None => match rows {
                 // No rows and no file: nothing to do.
                 None => {
-                    progress(done(report.chunks_restored));
+                    progress.step(done(report.chunks_restored));
                     continue;
                 }
                 Some(_) => resolve_target(&discovered, &world, &key, options.on_missing_file)?,
@@ -274,7 +275,7 @@ where
                 ),
             );
             report.files_deleted += usize::from(step.outcome().await?);
-            progress(done(report.chunks_restored));
+            progress.step(done(report.chunks_restored));
             continue;
         };
         let mut writer = sekai_anvil::RegionBuilder::new(key.rx, key.rz, timestamp)?;
@@ -312,7 +313,7 @@ where
         );
         step.outcome().await?;
         report.files_written += 1;
-        progress(done(report.chunks_restored));
+        progress.step(done(report.chunks_restored));
     }
     // Every step has been awaited, so nothing can start after this: release
     // the world rather than waiting for the guard to drop with the future.
@@ -353,7 +354,7 @@ fn release_if_idle<L>(guard: &Arc<WorldGuard<L>>, pending: &AtomicUsize) {
 ///
 /// The step owns a share of the world lock, so the lock outlives the future
 /// that started it. Completion travels over a oneshot instead of the join
-/// handle: a `progress` callback parked on the async side would otherwise
+/// handle: a progress reporter parked on the async side would otherwise
 /// keep a blocking thread busy while the step is already done, and a
 /// cancelled future must still see the lock released.
 struct Step<R, T> {

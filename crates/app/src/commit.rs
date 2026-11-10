@@ -32,6 +32,7 @@ use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
 
 use crate::error::AppError;
 use crate::instance::{SharedWorldGuard, WorldHandle, WorldHandleMut};
+use crate::progress::{CommitReporter, ProgressBuilder};
 use crate::regions::discover_regions;
 use crate::time::now_ms;
 
@@ -90,7 +91,7 @@ pub struct StatusTimings {
     pub hash: Duration,
 }
 
-/// Per-file progress report for the `progress` callback.
+/// Per-file progress event, handed to [`CommitReporter::step`].
 #[derive(Debug, Clone, Copy)]
 pub struct CommitProgress {
     /// Files fully ingested so far.
@@ -183,7 +184,7 @@ where
         &mut self,
         options: CommitOptions,
         scope: Scope,
-        progress: impl Fn(CommitProgress) + Send,
+        progress: &impl ProgressBuilder,
     ) -> Result<(CommitReport, CommitTimings), AppError> {
         let total = Instant::now();
         // The world stays stable for the whole read pass; the store needs no
@@ -197,7 +198,16 @@ where
             walk,
             discover,
             universe_load,
-        } = prepare(store, self.world, &options, &scope, progress, false, &guard).await?;
+        } = prepare(
+            store,
+            self.world,
+            &options,
+            &scope,
+            progress.commit(),
+            false,
+            &guard,
+        )
+        .await?;
 
         let created_at_ms = now_ms()?;
         // Persist blob writes before the metadata commit: every row already
@@ -253,7 +263,7 @@ async fn prepare<W: WorldTree, S: SekaiStore>(
     world: &W,
     options: &CommitOptions,
     scope: &Scope,
-    progress: impl Fn(CommitProgress) + Send,
+    progress: impl CommitReporter,
     dry_run: bool,
     guard: &Arc<SharedWorldGuard<W::Lock>>,
 ) -> Result<Prepared, AppError>
@@ -330,7 +340,7 @@ where
         &self,
         options: StatusOptions,
         scope: Scope,
-        progress: impl Fn(CommitProgress) + Send,
+        progress: &impl ProgressBuilder,
     ) -> Result<(StatusReport, StatusTimings), AppError> {
         let guard = SharedWorldGuard::acquire(self.world, WorldLockMode::Shared)?;
         status_impl(
@@ -354,7 +364,7 @@ where
         &self,
         options: StatusOptions,
         scope: Scope,
-        progress: impl Fn(CommitProgress) + Send,
+        progress: &impl ProgressBuilder,
     ) -> Result<(StatusReport, StatusTimings), AppError> {
         self.view().status(options, scope, progress).await
     }
@@ -366,7 +376,7 @@ async fn status_impl<W: WorldTree, S: SekaiStore>(
     world: &W,
     options: StatusOptions,
     scope: Scope,
-    progress: impl Fn(CommitProgress) + Send,
+    progress: &impl ProgressBuilder,
     guard: &Arc<SharedWorldGuard<W::Lock>>,
 ) -> Result<(StatusReport, StatusTimings), AppError>
 where
@@ -384,7 +394,16 @@ where
         walk,
         discover,
         universe_load,
-    } = prepare(store, world, &preview, &scope, progress, true, guard).await?;
+    } = prepare(
+        store,
+        world,
+        &preview,
+        &scope,
+        progress.status(),
+        true,
+        guard,
+    )
+    .await?;
 
     let new_chunks = staged.entries.iter().filter(|e| e.blob.is_some()).count();
     let changed_regions: BTreeSet<RegionKey> = staged
@@ -504,7 +523,7 @@ async fn ingest_changed<R: RegionFile, S: SekaiStore, L: WorldLock>(
     cas: S::Blobs,
     options: &CommitOptions,
     scope: Scope,
-    progress: impl Fn(CommitProgress) + Send,
+    mut progress: impl CommitReporter,
     dry_run: bool,
     guard: &Arc<SharedWorldGuard<L>>,
 ) -> Result<(Ingested, IngestTimings), AppError>
@@ -564,7 +583,7 @@ where
         for outcome in outcomes {
             files_done += 1;
             chunks_done += outcome.timing.chunks;
-            progress(CommitProgress {
+            progress.step(CommitProgress {
                 files_done,
                 files_total,
                 chunks_done,
