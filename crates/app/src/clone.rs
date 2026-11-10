@@ -139,6 +139,11 @@ struct LandedWrite {
 ///
 /// Blob fetches are async; each file's build and write runs on the blocking
 /// pool, never on an async worker.
+///
+/// Landed writes are drained once per queued file, so a write that lands or
+/// fails while the next file is fetched is reported only after that file is
+/// queued: a failure can let one more file reach `out`, and progress holds
+/// still for one file's fetch.
 async fn clone_files<S: SekaiStore, W: WorldTree>(
     job: CloneJob<S, W>,
     timestamp: u32,
