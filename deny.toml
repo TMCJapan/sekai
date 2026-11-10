@@ -4,6 +4,12 @@ version = 2
 # pulp <- nanocesu8 <- nanonbt. Revisit once upstream drops it.
 ignore = ["RUSTSEC-2024-0436"]
 
+[sources]
+allow-git = [
+  "https://github.com/TMCJapan/nanonbt",
+  "https://github.com/launchbadge/sqlx",
+]
+
 [licenses]
 version = 2
 allow = ["MIT", "Apache-2.0", "Unicode-3.0", "Zlib"]
@@ -11,7 +17,6 @@ allow = ["MIT", "Apache-2.0", "Unicode-3.0", "Zlib"]
 [bans]
 multiple-versions = "warn"
 skip = [
-  { name = "cpufeatures", version = "0.2.17" },
   { name = "hashbrown", version = "0.16.1" },
   { name = "syn", version = "2.0.119" },
 ]

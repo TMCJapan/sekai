@@ -54,6 +54,12 @@ tokio = { version = "1", default-features = false, features = ["macros", "rt-mul
 tempfile = { version = "3.27.0", default-features = false }
 twox-hash = { version = "2", default-features = false, features = ["xxhash32"] }
 
+# SQLx 0.9.0 pins `libsqlite3-sys < 0.38`, which bundles a SQLite version affected
+# by RUSTSEC-2026-0459. The fix is on the unreleased `release/0.9.1` branch.
+# Remove this patch once sqlx 0.9.1 (or newer) is published.
+[patch.crates-io]
+sqlx = { git = "https://github.com/launchbadge/sqlx", rev = "92a43e76a49244340fefdba099a485e40318d81f" }
+
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
 pedantic = { level = "warn", priority = -1 }
