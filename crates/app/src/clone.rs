@@ -7,7 +7,7 @@
 //! files; only vanilla namespaces are derivable (custom dimensions fail
 //! loudly with the offending coordinates, as in checkout).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use sekai_core::{ChunkCoord, ChunkHash, CommitId, RegionKey, Scope};
@@ -126,6 +126,14 @@ struct CloneJob<S: SekaiStore, W: WorldTree> {
     out: W,
 }
 
+/// One file's write, queued on the blocking pool.
+struct QueuedWrite {
+    step: tokio::task::JoinHandle<Result<(), AppError>>,
+    key: RegionKey,
+    /// Chunks the file holds, counted once the write lands.
+    chunks: usize,
+}
+
 /// Rebuild every commit region file under `out`.
 ///
 /// Blob fetches are async; each file's build and write runs on the blocking
@@ -150,29 +158,45 @@ where
         chunks_restored: 0,
     };
     let mut progress = progress.start(groups.len());
-    let mut files_done = 0usize;
     let mut blob_buf = Vec::new();
-    let mut steps = Vec::new();
-    for (key, rows) in &groups {
-        let region = out.derive_region(*key)?;
-        let mut writer = sekai_anvil::RegionBuilder::new(key.rx, key.rz, timestamp)?;
-        for (coord, hash) in rows {
-            if !fetch_or_skip(&cas, hash, options.on_missing_blob, &mut blob_buf).await? {
-                continue;
+    let mut files = groups.iter();
+    // Writes queued in plan order, so a failure names the file it came from.
+    let mut queued = VecDeque::new();
+    loop {
+        // Keep fetching while the oldest write is busy. It is settled only
+        // once a later file is queued behind it (or nothing is left to
+        // fetch), so a future cancelled at a report has already promised
+        // the next file too.
+        let oldest_done = queued.len() > 1
+            && queued
+                .front()
+                .is_some_and(|oldest: &QueuedWrite| oldest.step.is_finished());
+        if !oldest_done && let Some((key, rows)) = files.next() {
+            let region = out.derive_region(*key)?;
+            let mut writer = sekai_anvil::RegionBuilder::new(key.rx, key.rz, timestamp)?;
+            let mut chunks = 0usize;
+            for (coord, hash) in rows {
+                if !fetch_or_skip(&cas, hash, options.on_missing_blob, &mut blob_buf).await? {
+                    continue;
+                }
+                writer.stage_chunk(coord.x, coord.z, &blob_buf)?;
+                chunks += 1;
             }
-            writer.stage_chunk(coord.x, coord.z, &blob_buf)?;
-            report.chunks_restored += 1;
+            // Queued as soon as its input is ready: a cancelled future must
+            // not take a file it has already promised to write with it.
+            let image = writer.image()?;
+            let step =
+                tokio::task::spawn_blocking(move || region.write(&image).map_err(AppError::from));
+            queued.push_back(QueuedWrite {
+                step,
+                key: *key,
+                chunks,
+            });
+            continue;
         }
-        // Queued as soon as its input is ready: a cancelled future must not
-        // take a file it has already promised to write with it.
-        let image = writer.image()?;
-        steps.push((
-            tokio::task::spawn_blocking(move || region.write(&image).map_err(AppError::from)),
-            key,
-        ));
-    }
-    // Collect in plan order, so a failure names the file it came from.
-    for (step, key) in steps {
+        let Some(QueuedWrite { step, key, chunks }) = queued.pop_front() else {
+            break;
+        };
         step.await.map_err(|err| {
             AppError::Storage(StorageError::backend(
                 "clone worker",
@@ -180,8 +204,8 @@ where
             ))
         })??;
         report.files_written += 1;
-        files_done += 1;
-        progress.step(files_done);
+        report.chunks_restored += chunks;
+        progress.step(report.files_written);
     }
     Ok(report)
 }

@@ -167,8 +167,9 @@ where
     ///
     /// Only `scope` is ingested: out-of-scope coordinates record no rows and
     /// no tombstones, resolving through fallback from earlier commits.
-    /// `progress` fires as changed files complete. The report is identical
-    /// with or without timings.
+    /// `progress` fires as changed files complete,
+    /// before their blobs are synced: a full count does not mean the commit is durable yet. The
+    /// report is identical with or without timings.
     pub async fn commit(
         &mut self,
         options: CommitOptions,
@@ -314,10 +315,10 @@ where
     /// CAS puts, no metadata commit, no region writes. Only lock files may
     /// be created (ADR-0014).
     ///
-    /// Only `scope` is previewed. `progress` fires as changed files
-    /// complete. Staged rows are assembled exactly as commit would, then
-    /// counted instead of committed - so counts match a subsequent commit
-    /// unless the world changes in between.
+    /// Only `scope` is previewed. `progress` reports as for
+    /// [`WorldHandleMut::commit`]. Staged rows are assembled exactly as
+    /// commit would, then counted instead of committed - so counts match a
+    /// subsequent commit unless the world changes in between.
     pub async fn status(
         &self,
         options: StatusOptions,
@@ -481,16 +482,17 @@ struct IngestTimings {
     regions: Vec<RegionTiming>,
 }
 
-/// Ingest changed files, sequentially or concurrently across workers.
+/// Ingest changed files concurrently across workers.
 ///
-/// One file never justifies task overhead, so it stays inline with
-/// identical counts. Larger sets split into size-balanced groups; each
-/// worker cloned the blob adapter over the same store and syncs its own
-/// writes before returning, so joining orders every durability barrier
-/// ahead of the metadata commit. Workers need no lock: the store is
+/// Files split into size-balanced groups, one per worker; each worker
+/// clones the blob adapter over the same store and syncs its own writes
+/// before returning, so joining orders every durability barrier ahead of
+/// the metadata commit. Workers need no lock: the store is
 /// append-only, so concurrent puts never conflict.
 /// Each worker keeps `guard` alive until it returns, so the world stays put
 /// while blobs are still being read out of it.
+///
+/// `progress` fires per file as it finishes, before its worker's sync.
 async fn ingest_changed<R: RegionFile, S: SekaiStore, L: WorldLock>(
     changed: Vec<PlannedFile<R>>,
     cas: S::Blobs,
@@ -519,19 +521,23 @@ where
     let groups = partition_groups(changed, workers);
     let mut files_done = 0usize;
 
+    // `progress` is not `'static`, so workers hand each finished file back
+    // here instead of reporting it themselves.
+    let (finished_tx, mut finished_rx) = tokio::sync::mpsc::unbounded_channel::<FileOutcome>();
     let mut set = tokio::task::JoinSet::new();
     for group in groups {
         let cas = cas.clone();
         let scope = scope.clone();
         let guard = Arc::clone(guard);
+        let finished_tx = finished_tx.clone();
         set.spawn(async move {
             let _guard = guard;
-            let mut outcomes = Vec::with_capacity(group.len());
             let mut cas = cas;
             for file in group {
-                let outcome: FileOutcome =
-                    ingest_file(file.region, file.key, &mut cas, &scope, dry_run).await?;
-                outcomes.push(outcome);
+                let outcome = ingest_file(file.region, file.key, &mut cas, &scope, dry_run).await?;
+                // The receiver only goes away when ingest is abandoned, and
+                // then the abort that follows discards this worker anyway.
+                let _ = finished_tx.send(outcome);
             }
             let sync_elapsed = if dry_run {
                 // Nothing was written: no shards to sync.
@@ -543,18 +549,27 @@ where
                 cas.sync().await?;
                 sync_started.elapsed()
             };
-            Ok::<_, AppError>((outcomes, sync_elapsed))
+            Ok::<_, AppError>(sync_elapsed)
         });
     }
-    while let Some(outcome) = set.join_next().await {
-        let (outcomes, sync_elapsed) = outcome.map_err(|source| {
-            AppError::Storage(StorageError::backend("ingest worker", source))
-        })??;
-        walk.cas += sync_elapsed;
-        for outcome in outcomes {
-            files_done += 1;
-            progress.step(files_done);
-            merge_outcome(&mut walk, outcome);
+    drop(finished_tx);
+    // Joining alongside the channel, not after it drains, surfaces a failed
+    // worker at once; returning drops the set, which aborts the others. The
+    // channel still yields buffered outcomes after every worker is gone, so
+    // the loop ends only once both are exhausted.
+    loop {
+        tokio::select! {
+            Some(outcome) = finished_rx.recv() => {
+                files_done += 1;
+                progress.step(files_done);
+                merge_outcome(&mut walk, outcome);
+            }
+            Some(joined) = set.join_next() => {
+                walk.cas += joined.map_err(|source| {
+                    AppError::Storage(StorageError::backend("ingest worker", source))
+                })??;
+            }
+            else => break,
         }
     }
     // Completion order is nondeterministic; keep timing output stable.
