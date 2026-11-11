@@ -13,12 +13,9 @@
 /// A reporter may borrow the builder: the operation holds it only while it
 /// runs.
 pub trait ProgressBuilder: Sync {
-    /// Reporter for one commit, which ingests `files_total` files.
+    /// Reporter for one commit or status preview, which ingests (or, for a
+    /// preview, counts) `files_total` files.
     fn commit(&self, _files_total: usize) -> impl CommitReporter {}
-
-    /// Reporter for one status preview, which counts the `files_total`
-    /// files a commit would ingest.
-    fn status(&self, _files_total: usize) -> impl CommitReporter {}
 
     /// Reporter for one checkout, which visits `files_total` files.
     fn checkout(&self, _files_total: usize) -> impl CheckoutReporter {}

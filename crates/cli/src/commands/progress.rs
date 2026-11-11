@@ -53,10 +53,6 @@ impl ProgressBuilder for BarProgress {
         self.reporter(files_total)
     }
 
-    fn status(&self, files_total: usize) -> impl CommitReporter {
-        self.reporter(files_total)
-    }
-
     fn checkout(&self, files_total: usize) -> impl CheckoutReporter {
         self.reporter(files_total)
     }

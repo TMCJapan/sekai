@@ -187,16 +187,7 @@ where
             walk,
             discover,
             universe_load,
-        } = prepare(
-            store,
-            self.world,
-            &options,
-            &scope,
-            |files_total| progress.commit(files_total),
-            false,
-            &guard,
-        )
-        .await?;
+        } = prepare(store, self.world, &options, &scope, progress, false, &guard).await?;
 
         let created_at_ms = now_ms()?;
         // Persist blob writes before the metadata commit: every row already
@@ -246,14 +237,14 @@ struct Prepared {
 /// changed files - the whole pipeline `commit` and `status` share.
 ///
 /// Under `dry_run` blobs are probed instead of stored, so the staged rows
-/// are the same numbers a real commit would commit. `start_progress` builds
-/// the reporter once the number of files to ingest is known.
-async fn prepare<W: WorldTree, S: SekaiStore, R: CommitReporter>(
+/// are the same numbers a real commit would commit. The reporter is built
+/// from `progress` once the number of files to ingest is known.
+async fn prepare<W: WorldTree, S: SekaiStore>(
     store: &S,
     world: &W,
     options: &CommitOptions,
     scope: &Scope,
-    start_progress: impl FnOnce(usize) -> R,
+    progress: &impl ProgressBuilder,
     dry_run: bool,
     guard: &Arc<SharedWorldGuard<W::Lock>>,
 ) -> Result<Prepared, AppError>
@@ -293,13 +284,13 @@ where
     .await??;
     discover += sizing_started.elapsed();
 
-    let progress = start_progress(changed.len());
+    let reporter = progress.commit(changed.len());
     let (ingested, walk) = ingest_changed::<W::Region, S, W::Lock>(
         changed,
         store.blob().clone(),
         options,
         scope.clone(),
-        progress,
+        reporter,
         dry_run,
         guard,
     )
@@ -385,16 +376,7 @@ where
         walk,
         discover,
         universe_load,
-    } = prepare(
-        store,
-        world,
-        &preview,
-        &scope,
-        |files_total| progress.status(files_total),
-        true,
-        guard,
-    )
-    .await?;
+    } = prepare(store, world, &preview, &scope, progress, true, guard).await?;
 
     let new_chunks = staged.entries.iter().filter(|e| e.blob.is_some()).count();
     let changed_regions: BTreeSet<RegionKey> = staged
