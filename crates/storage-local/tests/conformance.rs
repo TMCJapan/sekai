@@ -6,7 +6,7 @@ use sekai_core::{
     BlobStore as _, ChunkCoord, ChunkHash, ChunkHistoryEntry, CommitEntry, Dimension,
     MetaStore as _, RegionKind, usecase::checkout::plan_checkout,
 };
-use sekai_storage_sqlite::{init_sqlite, open_sqlite};
+use sekai_storage_local::{init_sqlite, open_sqlite};
 use std::path::Path;
 
 /// A temp dir whose name starts with the calling test's name (tempfile
@@ -20,7 +20,7 @@ fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
     (guard.path().to_path_buf(), guard)
 }
 
-async fn init(dir: impl AsRef<Path>) -> sekai_storage_sqlite::SqliteStore {
+async fn init(dir: impl AsRef<Path>) -> sekai_storage_local::SqliteStore {
     init_sqlite(dir).await.unwrap()
 }
 

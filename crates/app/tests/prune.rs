@@ -1,8 +1,8 @@
 //! End-to-end commit pruning over real world folders and SQLite stores.
 //!
-//! Requires the `backend-sqlite` feature.
+//! Requires the `backend-local` feature.
 
-#![cfg(feature = "backend-sqlite")]
+#![cfg(feature = "backend-local")]
 
 mod fixtures;
 
@@ -40,7 +40,7 @@ const fn commit_options() -> sekai_app::CommitOptions {
 
 /// Stored blob count, read through a second handle on the same store.
 async fn blob_count(store: impl AsRef<Path>) -> usize {
-    let opened = sekai_storage_sqlite::open_sqlite(store).await.unwrap();
+    let opened = sekai_storage_local::open_sqlite(store).await.unwrap();
     let mut count = 0usize;
     sekai_core::BlobStore::visit_blobs(opened.blob(), |_| {
         count += 1;

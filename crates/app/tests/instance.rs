@@ -1,9 +1,9 @@
 //! Store lifecycle: only `init` materializes a store, while `open` must fail
 //! loudly on a root that was never initialized (issue #80).
 //!
-//! Requires the `backend-sqlite` feature.
+//! Requires the `backend-local` feature.
 
-#![cfg(feature = "backend-sqlite")]
+#![cfg(feature = "backend-local")]
 
 /// A temp dir whose name starts with the calling test's name (tempfile
 /// appends a random suffix), removed when its guard is dropped at the end

@@ -1167,7 +1167,7 @@ dependencies = [
  "sekai-anvil",
  "sekai-core",
  "sekai-storage",
- "sekai-storage-sqlite",
+ "sekai-storage-local",
  "sekai-world",
  "tempfile",
  "thiserror",
@@ -1207,7 +1207,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sekai-storage-sqlite"
+name = "sekai-storage-local"
 version = "0.1.0"
 dependencies = [
  "sekai-core",

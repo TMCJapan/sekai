@@ -4,7 +4,7 @@ members = [
   "crates/anvil",
   "crates/core",
   "crates/storage",
-  "crates/storage-sqlite",
+  "crates/storage-local",
   "crates/world",
   "crates/app",
   "crates/cli",
@@ -23,7 +23,7 @@ sekai-anvil = { version = "0.1.0", path = "crates/anvil" }
 sekai-app = { version = "0.1.0", path = "crates/app" }
 sekai-core = { version = "0.1.0", path = "crates/core" }
 sekai-storage = { version = "0.1.0", path = "crates/storage" }
-sekai-storage-sqlite = { version = "0.1.0", path = "crates/storage-sqlite" }
+sekai-storage-local = { version = "0.1.0", path = "crates/storage-local" }
 sekai-util = { version = "0.1.0", path = "crates/util" }
 sekai-world = { version = "0.1.0", path = "crates/world" }
 
@@ -50,7 +50,11 @@ serde = { version = "1.0.229", default-features = false, features = ["alloc", "d
 serde_json = { version = "1.0.151", default-features = false, features = ["alloc"] }
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio"] }
 thiserror = { version = "2.0.20", default-features = false }
-tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread", "sync"] }
+tokio = { version = "1", default-features = false, features = [
+  "macros",
+  "rt-multi-thread",
+  "sync",
+] }
 tempfile = { version = "3.27.0", default-features = false }
 twox-hash = { version = "2", default-features = false, features = ["xxhash32"] }
 

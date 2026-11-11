@@ -1,8 +1,8 @@
 //! End-to-end ref flows over SQLite stores.
 //!
-//! Requires the `backend-sqlite` feature.
+//! Requires the `backend-local` feature.
 
-#![cfg(feature = "backend-sqlite")]
+#![cfg(feature = "backend-local")]
 
 mod fixtures;
 

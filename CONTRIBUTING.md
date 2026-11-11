@@ -92,8 +92,8 @@ any exception in the PR body.
   truth.
 - **Two-phase destructive operations**: GC and similar destructive
   operations keep a dry-run/plan phase separate from apply/execution.
-- **Crash order**: CAS blobs flushed + synced *before* DB metadata commit;
-  GC unlinks *after* metadata commit. The barrier calls live at the `app`
+- **Crash order**: CAS blobs flushed + synced _before_ DB metadata commit;
+  GC unlinks _after_ metadata commit. The barrier calls live at the `app`
   call site, never hidden inside adapters.
 
 # Development Guidelines
@@ -105,15 +105,15 @@ any exception in the PR body.
   with no `std`-only or async-runtime dependencies.
 - **Pure-crate dependency allowlist** (keep this list minimal and
   `no_std`-gated):
-  - `util`: `blake3` with `default-features = false` for the shared digest
-    primitive. Other new dependencies need explicit justification.
-  - `anvil`: `sekai-util` (shared dimension and region-kind codes),
-    `miniz_oxide` (zlib/raw-inflate), `crc32fast` (gzip footer),
-    `lz4_flex` block API (lz4-java stream bodies), `twox-hash` (lz4-java
-    block checksums), and `nanonbt` (chunk NBT parsing and normalized
-    views; private to the crate).
-  - `core`: `sekai-util` (shared types, re-exported at the root) plus
-    `anvil` (concrete composition target).
+    - `util`: `blake3` with `default-features = false` for the shared digest
+      primitive. Other new dependencies need explicit justification.
+    - `anvil`: `sekai-util` (shared dimension and region-kind codes),
+      `miniz_oxide` (zlib/raw-inflate), `crc32fast` (gzip footer),
+      `lz4_flex` block API (lz4-java stream bodies), `twox-hash` (lz4-java
+      block checksums), and `nanonbt` (chunk NBT parsing and normalized
+      views; private to the crate).
+    - `core`: `sekai-util` (shared types, re-exported at the root) plus
+      `anvil` (concrete composition target).
 - **Async policy**: `async fn` in traits via RPITIT (return-position
   `impl Future`, no `async-trait` macro, no boxing). All trait futures are
   `Send`-bounded for tokio. Static dispatch (`generics`) is preferred over
@@ -138,14 +138,14 @@ any exception in the PR body.
   file modes, the artifact wraps a `sekai-<target triple>.tar.gz` that keeps
   the binary executable.
 - **Storage backends**: this project ships SQLite only, in the
-  `sekai-storage-sqlite` crate (via sqlx, app feature `backend-sqlite`,
+  `sekai-storage-sqlite` crate (via sqlx, app feature `backend-local`,
   default-on). `sekai-storage` stays backend-neutral and owns the traits
   and locks; it holds no backend modules, so a mysql or postgres
   backend arrives as a sibling crate rather than as a stub.
   Backend selection is URL-selected at runtime (`sqlite://...`,
   `mysql://...`, `postgres://...`); requesting a backend this build does not
   carry is a loud `UnsupportedBackend` error, and a build without
-  `backend-sqlite` has no store-opening entry point at all.
+  `backend-local` has no store-opening entry point at all.
 
 ## Coding Standards
 
@@ -169,7 +169,6 @@ any exception in the PR body.
 
 Before submitting a Pull Request, make sure your changes pass all checks:
 
-
 ```bash
 # Format check
 cargo fmt --all -- --check
@@ -189,13 +188,13 @@ cargo nextest run --workspace
 # Feature-combination lint: default, none, each backend, all
 cargo hack --each-feature clippy --workspace --all-targets -- -D warnings
 
-# Feature-combination tests: the store-backed suites need `backend-sqlite`,
+# Feature-combination tests: the store-backed suites need `backend-local`,
 # so they are compiled out of the other combinations
 cargo hack --each-feature nextest run --workspace --all-targets
 
 # Backend matrix (when touching storage backends)
 cargo nextest run -p sekai-storage -p sekai-storage-sqlite
-cargo nextest run -p sekai-app --no-default-features --features backend-sqlite
+cargo nextest run -p sekai-app --no-default-features --features backend-local
 
 # Run dependency, advisory, and license checks
 cargo deny check
@@ -217,9 +216,9 @@ cargo build -p sekai-cli --release
   wipe recovery. Future backend crates must run the same suite via the
   shared conformance flows.
 - **Benchmarks**: micro benches live beside their crates (`cargo bench -p
-  sekai-anvil -p sekai-core`); integration flows in
+sekai-anvil -p sekai-core`); integration flows in
   `crates/app/benches` (seeded worlds from `benches/common.rs`, `cargo
-  bench -p sekai-app --bench commit`). Record new baselines in
+bench -p sekai-app --bench commit`). Record new baselines in
   `docs/benchmarks.md` when a `perf` change lands. The `bench.yaml`
   workflow runs on schedule only, never as a merge gate.
 

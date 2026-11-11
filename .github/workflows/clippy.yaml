@@ -2,9 +2,9 @@ name: Clippy
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -125,7 +125,7 @@ jobs:
         with:
           tool: cargo-hack
 
-      # The store-backed suites need `backend-sqlite`, so they are compiled out
+      # The store-backed suites need `backend-local`, so they are compiled out
       # of the combinations that do not provide it.
       # `--no-deps` builds dependencies with rustc rather than `clippy-driver`;
       # workspace crates are still linted one by one.

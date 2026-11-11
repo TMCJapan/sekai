@@ -4,9 +4,9 @@
 //! concurrent runs here. The store itself never locks: its blobs are
 //! append-only and its metadata resolves conflicts at commit time.
 //!
-//! Requires the `backend-sqlite` feature.
+//! Requires the `backend-local` feature.
 
-#![cfg(feature = "backend-sqlite")]
+#![cfg(feature = "backend-local")]
 
 mod fixtures;
 
@@ -18,7 +18,7 @@ use sekai_app::{
     WorldError, WorldLockMode, WorldTree,
 };
 use sekai_core::MetaStore as _;
-use sekai_storage_sqlite::SqliteStore;
+use sekai_storage_local::SqliteStore;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};

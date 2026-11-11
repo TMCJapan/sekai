@@ -1,8 +1,8 @@
 //! End-to-end commit flows over real world folders and SQLite stores.
 //!
-//! Requires the `backend-sqlite` feature.
+//! Requires the `backend-local` feature.
 
-#![cfg(feature = "backend-sqlite")]
+#![cfg(feature = "backend-local")]
 
 mod fixtures;
 
@@ -782,7 +782,7 @@ async fn commit_records_no_diff_metadata() {
     assert_eq!(report.chunks, 1);
 
     let commits = instance.list_commits().await.unwrap();
-    let meta = sekai_storage_sqlite::open_sqlite(&store_dir).await.unwrap();
+    let meta = sekai_storage_local::open_sqlite(&store_dir).await.unwrap();
     let row = meta
         .meta()
         .lookup_chunk(

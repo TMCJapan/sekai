@@ -129,8 +129,8 @@ impl<T: SekaiStore> SekaiInstance<T> {
     }
 }
 
-#[cfg(feature = "backend-sqlite")]
-impl SekaiInstance<sekai_storage_sqlite::SqliteStore> {
+#[cfg(feature = "backend-local")]
+impl SekaiInstance<sekai_storage_local::SqliteStore> {
     /// Open the existing store named by `store_url`.
     ///
     /// `sqlite://<dir>` (or a bare `<dir>`) opens a SQLite store; anything
@@ -139,7 +139,7 @@ impl SekaiInstance<sekai_storage_sqlite::SqliteStore> {
     /// [`Self::init`] materializes a store.
     pub async fn open(store_url: &str) -> Result<Self, AppError> {
         Ok(Self {
-            store: sekai_storage_sqlite::open_sqlite(store_url).await?,
+            store: sekai_storage_local::open_sqlite(store_url).await?,
         })
     }
 
@@ -150,7 +150,7 @@ impl SekaiInstance<sekai_storage_sqlite::SqliteStore> {
     /// of leaving an empty store behind.
     pub async fn init(store_url: &str) -> Result<Self, AppError> {
         Ok(Self {
-            store: sekai_storage_sqlite::init_sqlite(store_url).await?,
+            store: sekai_storage_local::init_sqlite(store_url).await?,
         })
     }
 }
