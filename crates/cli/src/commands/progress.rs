@@ -9,9 +9,15 @@ use sekai_app::{
 /// Progress bar for `--progress`, drawn on stderr. Hidden unless the flag
 /// is set and stderr is a TTY, so piped output stays clean; `--json`
 /// refuses the flag at parse time instead.
+///
+/// Dropping it clears the bar as well (indicatif finishes an unfinished
+/// bar with `ProgressFinish::AndClear` by default), so a command that
+/// returns early on an error needs no `finish` call.
 pub struct BarProgress(Option<ProgressBar>);
 
 impl BarProgress {
+    /// Create the bar, or a hidden one unless `enabled` is set and stderr is
+    /// a TTY.
     pub fn new(enabled: bool) -> Self {
         if !enabled || !std::io::IsTerminal::is_terminal(&std::io::stderr()) {
             return Self(None);
