@@ -68,7 +68,7 @@ where
 /// Open the keyspace and enforce the format version on one blocking task:
 /// recovery can replay the whole log, and the exclusive session lock sled
 /// takes makes the gate race-free without a write-transaction dance.
-fn open_gated(path: &Path) -> Result<sled::Db, StorageError> {
+fn open_gated(path: impl AsRef<Path>) -> Result<sled::Db, StorageError> {
     let db = sled::Config::new().path(path).open().map_err(db_err)?;
     let versions = db.open_tree(VERSION_TREE).map_err(db_err)?;
     match versions.get(VERSION_KEY).map_err(db_err)? {
