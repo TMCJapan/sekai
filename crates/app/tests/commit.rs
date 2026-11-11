@@ -1,4 +1,4 @@
-//! End-to-end commit flows over real world folders and SQLite stores.
+//! End-to-end commit flows over real world folders and local stores.
 //!
 //! Requires the `backend-local` feature.
 
@@ -782,8 +782,8 @@ async fn commit_records_no_diff_metadata() {
     assert_eq!(report.chunks, 1);
 
     let commits = instance.list_commits().await.unwrap();
-    let meta = sekai_storage_local::open_sqlite(&store_dir).await.unwrap();
-    let row = meta
+    let row = instance
+        .store()
         .meta()
         .lookup_chunk(
             commits[0].id,

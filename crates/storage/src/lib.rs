@@ -1,7 +1,7 @@
 //! Backend-neutral storage boundaries.
 //!
 //! Concrete database backends live in sibling crates (for example
-//! `sekai-storage-sqlite`) and implement the traits exported here.
+//! `sekai-storage-local`) and implement the traits exported here.
 
 /// Async `BlobStore`/`MetaStore` traits, `BackendKind`, URL selection.
 pub mod api;

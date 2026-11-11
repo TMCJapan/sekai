@@ -3,17 +3,18 @@
 //! [`SekaiInstance`] is the single entry point for store-scoped operations:
 //! the store is opened once per process instead of once per free function,
 //! and metadata/CAS adapters are reached through one place. The store type
-//! is pluggable: any [`SekaiStore`] backend can be used, and the SQLite
+//! is pluggable: any [`SekaiStore`] backend can be used, and the local
 //! backend additionally gets the convenience `open`/`init` entry points.
 //! Operations that touch a world hang off borrowed handles: [`WorldHandle`]
 //! for read-only work, [`WorldHandleMut`] for runs that write (commit,
 //! checkout), so write exclusivity shows in the type.
 //!
-//! Exclusion against other processes is per world, not per store: blobs are
-//! append-only and metadata writes are transactional, so store operations
-//! never lock the store. A run that touches a world takes that world's lock
-//! at entry and releases it on return, so an idle instance never blocks
-//! anyone; see [`WorldTree::lock`].
+//! Exclusion is per world, not per operation: blobs are append-only and
+//! metadata writes are transactional, so store operations never lock.
+//! Opening the store does take the blob keyspace's exclusive session lock,
+//! so one instance owns a store at a time and clones share that session. A
+//! run that touches a world takes that world's lock at entry and releases
+//! it on return; see [`WorldTree::lock`].
 
 use std::sync::{Arc, Mutex};
 
@@ -34,8 +35,8 @@ impl<T: SekaiStore> SekaiInstance<T> {
         Self { store }
     }
 
-    /// Store handle (metadata plus CAS) for escape-hatch access: the CAS
-    /// takes no lock at all, and metadata writes go through their own
+    /// Store handle (metadata plus CAS) for escape-hatch access: CAS
+    /// operations take no lock, and metadata writes go through their own
     /// transactions.
     pub const fn store(&self) -> &T {
         &self.store
@@ -133,7 +134,7 @@ impl<T: SekaiStore> SekaiInstance<T> {
 impl SekaiInstance<sekai_storage_local::LocalStore> {
     /// Open the existing store named by `store_url`.
     ///
-    /// `sqlite://<dir>` (or a bare `<dir>`) opens a SQLite store; anything
+    /// `sqlite://<dir>` (or a bare `<dir>`) opens a local store; anything
     /// else fails loudly, including backends not compiled in. A store that
     /// was never initialized fails without creating anything: only
     /// [`Self::init`] materializes a store.
@@ -241,7 +242,7 @@ impl<L: WorldLock> WorldGuard<L> {
 /// A cancelled future cannot abort a blocking task that already started, so
 /// the lock travels *inside* that task: released only when the task really
 /// ends, never when the future's async half is dropped. The store needs no
-/// such guard - it is never locked.
+/// such guard - operations never lock it.
 #[derive(Debug)]
 pub(crate) struct ExclusiveWorldGuard<L> {
     /// Shared with every queued step; the operation ends by releasing it.

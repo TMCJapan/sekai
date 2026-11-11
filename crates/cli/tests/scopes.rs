@@ -1,4 +1,4 @@
-//! Named scopes driven through the CLI over a SQLite store.
+//! Named scopes driven through the CLI over a local store.
 
 use clap::Parser as _;
 use sekai_app::{Dimension, Rect, SekaiInstance};

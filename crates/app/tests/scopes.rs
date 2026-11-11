@@ -1,4 +1,4 @@
-//! End-to-end named scope flows over SQLite stores.
+//! End-to-end named scope flows over local stores.
 //!
 //! Requires the `backend-local` feature.
 

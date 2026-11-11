@@ -1,6 +1,6 @@
 # ADR-0022: Blobs live in a SQLite database beside metadata
 
-- Status: Accepted
+- Status: Superseded by ADR-0024
 - Date: 2026-10-30
 
 ## Context

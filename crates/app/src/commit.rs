@@ -186,11 +186,10 @@ where
         } = prepare(store, self.world, &options, &scope, progress, false, &guard).await?;
 
         let created_at_ms = now_ms()?;
-        // Persist blob writes before the metadata commit: every row already
-        // committed when its `put` returned, and this single checkpoint folds
-        // the WAL back into `blob.sqlite`. Timed under `cas`, the durability
-        // bucket. This is the only barrier: ingest leaves it to the call
-        // site, never hidden inside adapters.
+        // Persist blob writes before the metadata commit: puts only append
+        // to the blob log, and this single flush fsyncs it. Timed under
+        // `cas`, the durability bucket. This is the only barrier: ingest
+        // leaves it to the call site, never hidden inside adapters.
         let sync_started = Instant::now();
         store.blob_mut().sync().await?;
         let dir_sync = sync_started.elapsed();

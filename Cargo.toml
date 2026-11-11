@@ -48,6 +48,7 @@ miniz_oxide = { version = "0.9.1", default-features = false, features = ["with-a
 nanonbt = { git = "https://github.com/TMCJapan/nanonbt.git", rev = "e842ae44e61f9586bd9a00e130af41b655748a3d" }
 serde = { version = "1.0.229", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1.0.151", default-features = false, features = ["alloc"] }
+sled = "0.34.7"
 sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio"] }
 thiserror = { version = "2.0.20", default-features = false }
 tokio = { version = "1", default-features = false, features = [

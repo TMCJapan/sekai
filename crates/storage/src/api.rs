@@ -33,7 +33,7 @@ pub enum StorageError {
         path = path.display()
     )]
     StoreMissing {
-        /// Store root that was expected to hold `meta.sqlite` and `blob.sqlite`.
+        /// Store root that was expected to hold `meta.sqlite` and the `blobs` keyspace.
         path: PathBuf,
     },
     /// Stored hash bytes are not 32 bytes long.
@@ -175,7 +175,7 @@ impl StorageError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendKind {
     /// `sqlite://<dir>` (or a bare `<dir>`): metadata lives in
-    /// `<dir>/meta.sqlite`, blobs in `<dir>/blob.sqlite`.
+    /// `<dir>/meta.sqlite`, blobs in the `<dir>/blobs` keyspace.
     Sqlite,
     /// Reserved stub.
     Mysql,

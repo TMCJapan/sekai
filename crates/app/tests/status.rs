@@ -1,4 +1,4 @@
-//! Read-only commit previews over real world folders and SQLite stores.
+//! Read-only commit previews over real world folders and local stores.
 //!
 //! Requires the `backend-local` feature.
 
@@ -38,11 +38,11 @@ const fn options() -> sekai_app::StatusOptions {
     sekai_app::StatusOptions { concurrency: 2 }
 }
 
-/// Stored blob count, read through a second handle on the same store.
-async fn blob_count(store: impl AsRef<Path>) -> usize {
-    let opened = sekai_storage_local::open_sqlite(store).await.unwrap();
+/// Stored blob count, read through the live instance's store handle: the
+/// keyspace admits one opener, so a second handle cannot exist.
+async fn blob_count(store: &sekai_storage_local::LocalStore) -> usize {
     let mut count = 0usize;
-    sekai_core::BlobStore::visit_blobs(opened.blob(), |_| {
+    sekai_core::BlobStore::visit_blobs(store.blob(), |_| {
         count += 1;
         true
     })
@@ -76,7 +76,7 @@ async fn status_counts_tombstones_without_writing() {
     write_region(&region, &[(0, 0, chunk_nbt("marker-1"))]);
 
     let commits_before = instance.list_commits().await.unwrap().len();
-    let blobs_before = blob_count(&store).await;
+    let blobs_before = blob_count(instance.store()).await;
     let (report, timings) = instance
         .world(&world)
         .status(options(), sekai_app::Scope::World, &())
@@ -93,9 +93,9 @@ async fn status_counts_tombstones_without_writing() {
         timings.total >= timings.discover + timings.universe_load,
         "total timing must cover its phases"
     );
-    // A preview is pure: no commit rows and no blob files appear.
+    // A preview is pure: no commit rows and no blobs appear.
     assert_eq!(instance.list_commits().await.unwrap().len(), commits_before);
-    assert_eq!(blob_count(&store).await, blobs_before);
+    assert_eq!(blob_count(instance.store()).await, blobs_before);
 }
 
 #[tokio::test]

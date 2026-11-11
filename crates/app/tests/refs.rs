@@ -1,4 +1,4 @@
-//! End-to-end ref flows over SQLite stores.
+//! End-to-end ref flows over local stores.
 //!
 //! Requires the `backend-local` feature.
 

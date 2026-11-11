@@ -1,4 +1,4 @@
-//! SQLite backend conformance: shared flows plus filesystem-specific checks.
+//! Local backend conformance: shared flows plus filesystem-specific checks.
 
 mod common;
 
@@ -135,8 +135,8 @@ async fn visit_lists_stored_hashes_and_missing_fetch_clears() {
     let blobs = store.blob_mut();
     let hash = ChunkHash::new(sekai_core::hash_bytes(b"real"));
     assert!(blobs.put(&hash, b"real").await.unwrap());
-    // A table has no file names to skip, so visiting every row is the whole
-    // story; a missing hash is a read error, not an ignorable name.
+    // The keyspace has no file names to skip, so visiting every key is the
+    // whole story; a missing hash is a read error, not an ignorable name.
     let mut seen = Vec::new();
     blobs
         .visit_blobs(|h| {
@@ -158,7 +158,7 @@ async fn visit_lists_stored_hashes_and_missing_fetch_clears() {
     assert!(out.is_empty(), "a failed fetch clears the buffer");
 }
 
-/// The blob database is its own versioned file beside `meta.sqlite`.
+/// The blob keyspace is its own versioned sled directory beside `meta.sqlite`.
 #[tokio::test]
 async fn blob_database_is_created_and_version_gated() {
     let (dir, _guard) = tempdir("blob-schema");
@@ -168,36 +168,23 @@ async fn blob_database_is_created_and_version_gated() {
     store.blob_mut().sync().await.unwrap();
     drop(store);
 
-    let blob_path = dir.join("blob.sqlite");
-    assert!(blob_path.is_file());
-    let version: i64 = {
-        let pool = sqlx::SqlitePool::connect_with(
-            sqlx::sqlite::SqliteConnectOptions::new().filename(&blob_path),
-        )
-        .await
-        .unwrap();
-        let version = sqlx::query_scalar("PRAGMA user_version")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        pool.close().await;
-        version
-    };
+    let blob_path = dir.join("blobs");
+    assert!(blob_path.is_dir());
+    // The version marker lives in a reserved tree, apart from the blob
+    // hashes; the tree and key names pin the on-disk format.
+    let db = sled::open(&blob_path).unwrap();
+    let versions = db.open_tree("__sekai_version").unwrap();
+    let stored = versions.get("schema").unwrap().unwrap();
+    let version = i64::from_le_bytes(stored.as_ref().try_into().unwrap());
     assert_eq!(version, 1);
 
     // A future version is refused loudly instead of reinterpreted.
-    let foreign = sqlx::SqlitePool::connect_with(
-        sqlx::sqlite::SqliteConnectOptions::new()
-            .filename(&blob_path)
-            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal),
-    )
-    .await
-    .unwrap();
-    sqlx::query("PRAGMA user_version = 99")
-        .execute(&foreign)
-        .await
-        .unwrap();
-    foreign.close().await;
+    versions.insert("schema", &99i64.to_le_bytes()[..]).unwrap();
+    db.flush().unwrap();
+    // Every tree handle shares the session: all of them must go before the
+    // keyspace can be opened again.
+    drop(versions);
+    drop(db);
     let err = open_sqlite(&dir).await.unwrap_err();
     assert!(matches!(
         err,
@@ -206,6 +193,27 @@ async fn blob_database_is_created_and_version_gated() {
             supported: 1
         }
     ));
+}
+
+/// sled admits a single opener per keyspace: a second open fails while the
+/// first handle lives, and succeeds once it is gone.
+#[tokio::test]
+async fn a_live_blob_keyspace_refuses_a_second_opener() {
+    let (dir, _guard) = tempdir("exclusive");
+    let store = init(&dir).await;
+    let err = open_sqlite(&dir).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            sekai_storage::StorageError::Backend {
+                backend: "sled",
+                ..
+            }
+        ),
+        "unexpected error: {err}"
+    );
+    drop(store);
+    let _store = open_sqlite(&dir).await.unwrap();
 }
 
 /// Only `init_sqlite` materializes a store; `open_sqlite` must fail loudly on
@@ -221,8 +229,10 @@ async fn open_of_a_missing_store_fails_without_creating_it() {
     );
     assert!(!dir.exists(), "a failed open must not create anything");
 
-    let _store = init_sqlite(&dir).await.unwrap();
+    let store = init_sqlite(&dir).await.unwrap();
     assert!(dir.join("meta.sqlite").is_file());
-    assert!(dir.join("blob.sqlite").is_file());
+    assert!(dir.join("blobs/conf").is_file());
+    // The keyspace admits one opener: release the init handle first.
+    drop(store);
     let _store = open_sqlite(&dir).await.unwrap();
 }
