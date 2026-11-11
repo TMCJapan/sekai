@@ -4,7 +4,7 @@ use sekai_storage::{StorageError, Store, io_error};
 
 use crate::{SqliteBlob, SqliteMeta};
 
-pub type SqliteStore = Store<SqliteMeta, SqliteBlob>;
+pub type LocalStore = Store<SqliteMeta, SqliteBlob>;
 
 /// Initialize the store rooted at `root`, creating it when missing.
 ///
@@ -13,7 +13,7 @@ pub type SqliteStore = Store<SqliteMeta, SqliteBlob>;
 /// materializes a store, reserved for first-time store creation. Schema
 /// creation serializes inside SQLite (see [`SqliteMeta::open`]), so
 /// concurrent first initializations all succeed.
-pub async fn init_sqlite(root: impl AsRef<Path>) -> Result<SqliteStore, StorageError> {
+pub async fn init_sqlite(root: impl AsRef<Path>) -> Result<LocalStore, StorageError> {
     std::fs::create_dir_all(root.as_ref()).map_err(|source| io_error(root.as_ref(), source))?;
     connect_sqlite(root).await
 }
@@ -23,7 +23,7 @@ pub async fn init_sqlite(root: impl AsRef<Path>) -> Result<SqliteStore, StorageE
 /// The layout is `<root>/meta.sqlite` plus `<root>/blob.sqlite`. Fails with
 /// [`StorageError::StoreMissing`] when the store was never initialized,
 /// without creating anything.
-pub async fn open_sqlite(root: impl AsRef<Path>) -> Result<SqliteStore, StorageError> {
+pub async fn open_sqlite(root: impl AsRef<Path>) -> Result<LocalStore, StorageError> {
     if !root.as_ref().join("meta.sqlite").is_file() || !root.as_ref().join("blob.sqlite").is_file()
     {
         return Err(StorageError::StoreMissing {
@@ -35,8 +35,8 @@ pub async fn open_sqlite(root: impl AsRef<Path>) -> Result<SqliteStore, StorageE
 
 /// Attach blob and metadata adapters to an existing store root; the root
 /// directory must already hold `meta.sqlite` and `blob.sqlite`.
-async fn connect_sqlite(root: impl AsRef<Path>) -> Result<SqliteStore, StorageError> {
+async fn connect_sqlite(root: impl AsRef<Path>) -> Result<LocalStore, StorageError> {
     let blob = SqliteBlob::open(&root.as_ref().join("blob.sqlite")).await?;
     let meta = SqliteMeta::open(&root.as_ref().join("meta.sqlite")).await?;
-    Ok(SqliteStore::new(meta, blob))
+    Ok(LocalStore::new(meta, blob))
 }

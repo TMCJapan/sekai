@@ -130,7 +130,7 @@ impl<T: SekaiStore> SekaiInstance<T> {
 }
 
 #[cfg(feature = "backend-local")]
-impl SekaiInstance<sekai_storage_local::SqliteStore> {
+impl SekaiInstance<sekai_storage_local::LocalStore> {
     /// Open the existing store named by `store_url`.
     ///
     /// `sqlite://<dir>` (or a bare `<dir>`) opens a SQLite store; anything

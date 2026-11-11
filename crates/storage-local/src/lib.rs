@@ -6,4 +6,4 @@ mod sqlite;
 
 pub use blob::SqliteBlob;
 pub use meta::{SCHEMA_VERSION, SqliteMeta};
-pub use sqlite::{SqliteStore, init_sqlite, open_sqlite};
+pub use sqlite::{LocalStore, init_sqlite, open_sqlite};

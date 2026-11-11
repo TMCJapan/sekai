@@ -20,7 +20,7 @@ fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
     (guard.path().to_path_buf(), guard)
 }
 
-async fn init(dir: impl AsRef<Path>) -> sekai_storage_local::SqliteStore {
+async fn init(dir: impl AsRef<Path>) -> sekai_storage_local::LocalStore {
     init_sqlite(dir).await.unwrap()
 }
 
