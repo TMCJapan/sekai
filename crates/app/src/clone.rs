@@ -7,6 +7,7 @@
 //! files; only vanilla namespaces are derivable (custom dimensions fail
 //! loudly with the offending coordinates, as in checkout).
 
+use std::any::Any;
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::{Duration, Instant};
@@ -188,7 +189,12 @@ where
         // write with it.
         tokio::task::spawn_blocking(move || {
             let outcome = catch_unwind(AssertUnwindSafe(|| region.write(&image)))
-                .map_err(|_| clone_worker_error(format!("the write for {key:?} panicked")))
+                .map_err(|payload| {
+                    clone_worker_error(format!(
+                        "the write for {key:?} panicked: {}",
+                        panic_message(&*payload)
+                    ))
+                })
                 .and_then(|written| written.map_err(AppError::from));
             // The receiver is gone only once the clone is abandoned.
             let _ = landed_tx.send(LandedWrite { chunks, outcome });
@@ -227,4 +233,32 @@ fn clone_worker_error(detail: String) -> AppError {
         "clone worker",
         std::io::Error::other(detail),
     ))
+}
+
+/// The message a panic was raised with: `panic!` carries a `&str` or a
+/// `String`; any other payload has nothing printable.
+fn panic_message(payload: &(dyn Any + Send)) -> &str {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("non-string panic payload")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::panic_message;
+    use std::panic::catch_unwind;
+
+    #[test]
+    fn panic_message_reads_str_and_string_payloads() {
+        let literal = catch_unwind(|| panic!("disk on fire")).unwrap_err();
+        assert_eq!(panic_message(&*literal), "disk on fire");
+
+        let formatted = catch_unwind(|| panic!("region {}", 7)).unwrap_err();
+        assert_eq!(panic_message(&*formatted), "region 7");
+
+        let other = catch_unwind(|| std::panic::panic_any(7_u8)).unwrap_err();
+        assert_eq!(panic_message(&*other), "non-string panic payload");
+    }
 }
