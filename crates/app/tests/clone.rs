@@ -111,8 +111,6 @@ async fn clone_rebuilds_commit_into_fresh_directory() {
     );
 }
 
-/// Progress is sized with the total, then counts a file only once it is
-/// written.
 /// Records a clone's events as `(files_done, files_total)`.
 #[derive(Default)]
 struct Recorded(Mutex<Vec<(usize, usize)>>);
@@ -137,6 +135,8 @@ impl Reporter for Recorder<'_> {
     }
 }
 
+/// Progress is sized with the total, then counts a file only once it is
+/// written.
 #[tokio::test]
 async fn clone_progress_counts_written_files() {
     let (root, _guard) = tempdir("progress");
@@ -162,7 +162,7 @@ async fn clone_progress_counts_written_files() {
 
     let recorded = Recorded::default();
     let out = HostWorldTree::new_legacy(root.join("cloned"));
-    instance
+    let (report, _) = instance
         .clone_to(
             &out,
             commits[0].id,
@@ -172,6 +172,8 @@ async fn clone_progress_counts_written_files() {
         )
         .await
         .unwrap();
+    assert_eq!(report.files_written, 2);
+    assert_eq!(report.chunks_restored, 3);
     assert_eq!(*recorded.0.lock().unwrap(), [(1, 2), (2, 2)]);
 }
 
