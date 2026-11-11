@@ -91,17 +91,6 @@ pub struct StatusTimings {
     pub hash: Duration,
 }
 
-/// Per-file progress event, handed to [`CommitReporter::step`].
-#[derive(Debug, Clone, Copy)]
-pub struct CommitProgress {
-    /// Files fully ingested so far.
-    pub files_done: usize,
-    /// Files to ingest in total.
-    pub files_total: usize,
-    /// Chunks ingested so far.
-    pub chunks_done: usize,
-}
-
 /// Per-phase timings. Informational only; never changes commit semantics.
 #[derive(Debug, Clone, Default)]
 pub struct CommitTimings {
@@ -203,7 +192,7 @@ where
             self.world,
             &options,
             &scope,
-            progress.commit(),
+            |files_total| progress.commit(files_total),
             false,
             &guard,
         )
@@ -257,13 +246,14 @@ struct Prepared {
 /// changed files - the whole pipeline `commit` and `status` share.
 ///
 /// Under `dry_run` blobs are probed instead of stored, so the staged rows
-/// are the same numbers a real commit would commit.
-async fn prepare<W: WorldTree, S: SekaiStore>(
+/// are the same numbers a real commit would commit. `start_progress` builds
+/// the reporter once the number of files to ingest is known.
+async fn prepare<W: WorldTree, S: SekaiStore, R: CommitReporter>(
     store: &S,
     world: &W,
     options: &CommitOptions,
     scope: &Scope,
-    progress: impl CommitReporter,
+    start_progress: impl FnOnce(usize) -> R,
     dry_run: bool,
     guard: &Arc<SharedWorldGuard<W::Lock>>,
 ) -> Result<Prepared, AppError>
@@ -303,6 +293,7 @@ where
     .await??;
     discover += sizing_started.elapsed();
 
+    let progress = start_progress(changed.len());
     let (ingested, walk) = ingest_changed::<W::Region, S, W::Lock>(
         changed,
         store.blob().clone(),
@@ -399,7 +390,7 @@ where
         world,
         &preview,
         &scope,
-        progress.status(),
+        |files_total| progress.status(files_total),
         true,
         guard,
     )
@@ -544,7 +535,6 @@ where
     .min(changed.len())
     .max(1);
     let groups = partition_groups(changed, workers);
-    let files_total: usize = groups.iter().map(Vec::len).sum();
     let mut files_done = 0usize;
     let mut chunks_done = 0usize;
 
@@ -583,11 +573,7 @@ where
         for outcome in outcomes {
             files_done += 1;
             chunks_done += outcome.timing.chunks;
-            progress.step(CommitProgress {
-                files_done,
-                files_total,
-                chunks_done,
-            });
+            progress.step(files_done, chunks_done);
             merge_outcome(&mut walk, outcome);
         }
     }

@@ -1,102 +1,106 @@
 //! Progress reporting seam between the operations and their callers.
 //!
 //! An operation receives a [`ProgressBuilder`] and asks it for a reporter
-//! once, when it starts; the reporter then receives every event that run
-//! produces. Each event carries running totals, so a reporter needs no
+//! once, as soon as it knows how much work the run holds; the reporter then
+//! receives every event that run produces. The total arrives with the
+//! reporter and each event carries running counts, so a reporter needs no
 //! state of its own to show where the run stands.
 
-use crate::{
-    CheckoutProgress, CloneProgress, CommitProgress, DiffProgress, GcProgress, PruneProgress,
-};
-
-/// Hands each operation the reporter for its run.
+/// Hands each operation the reporter for its run, sized by the run's total.
 ///
 /// Every method defaults to a reporter that drops its events, so an
 /// implementation spells out only the operations it shows; `()` shows none.
 /// A reporter may borrow the builder: the operation holds it only while it
 /// runs.
 pub trait ProgressBuilder: Sync {
-    /// Reporter for one commit.
-    fn commit(&self) -> impl CommitReporter {}
+    /// Reporter for one commit, which ingests `files_total` files.
+    fn commit(&self, _files_total: usize) -> impl CommitReporter {}
 
-    /// Reporter for one status preview, which counts the files a commit
-    /// would ingest.
-    fn status(&self) -> impl CommitReporter {}
+    /// Reporter for one status preview, which counts the `files_total`
+    /// files a commit would ingest.
+    fn status(&self, _files_total: usize) -> impl CommitReporter {}
 
-    /// Reporter for one checkout.
-    fn checkout(&self) -> impl CheckoutReporter {}
+    /// Reporter for one checkout, which visits `files_total` files.
+    fn checkout(&self, _files_total: usize) -> impl CheckoutReporter {}
 
-    /// Reporter for one clone.
-    fn clone_to(&self) -> impl CloneReporter {}
+    /// Reporter for one clone, which writes `files_total` files.
+    fn clone_to(&self, _files_total: usize) -> impl CloneReporter {}
 
-    /// Reporter for one chunk diff.
-    fn diff(&self) -> impl DiffReporter {}
+    /// Reporter for one chunk diff over `chunks_total` chunks.
+    fn diff(&self, _chunks_total: usize) -> impl DiffReporter {}
 
-    /// Reporter for one garbage collection apply.
-    fn gc(&self) -> impl GcReporter {}
+    /// Reporter for one garbage collection apply, which examines
+    /// `blobs_total` orphan candidates.
+    fn gc(&self, _blobs_total: usize) -> impl GcReporter {}
 
-    /// Reporter for one prune apply.
-    fn prune(&self) -> impl PruneReporter {}
+    /// Reporter for one prune apply, which deletes `commits_total` commits.
+    fn prune(&self, _commits_total: usize) -> impl PruneReporter {}
 }
 
 impl ProgressBuilder for () {}
 
-/// Receives a commit's or status preview's events (see [`CommitProgress`]).
+/// Receives a commit's or status preview's per-file events.
 pub trait CommitReporter: Send {
-    /// Record one event.
-    fn step(&mut self, progress: CommitProgress);
+    /// Record one finished file: `files_done` files and `chunks_done`
+    /// chunks have been ingested so far.
+    fn step(&mut self, files_done: usize, chunks_done: usize);
 }
 
-/// Receives a checkout's events (see [`CheckoutProgress`]).
+/// Receives a checkout's per-file events.
 pub trait CheckoutReporter: Send {
-    /// Record one event.
-    fn step(&mut self, progress: CheckoutProgress);
+    /// Record one finished file: `files_done` files have been rebuilt and
+    /// `chunks_done` chunks restored so far.
+    fn step(&mut self, files_done: usize, chunks_done: usize);
 }
 
-/// Receives a clone's events (see [`CloneProgress`]).
+/// Receives a clone's per-file events.
 pub trait CloneReporter: Send {
-    /// Record one event.
-    fn step(&mut self, progress: CloneProgress);
+    /// Record one written file: `files_done` files have been rebuilt and
+    /// `chunks_done` chunks restored so far.
+    fn step(&mut self, files_done: usize, chunks_done: usize);
 }
 
-/// Receives a chunk diff's events (see [`DiffProgress`]).
+/// Receives a chunk diff's per-chunk events.
 pub trait DiffReporter: Send {
-    /// Record one event.
-    fn step(&mut self, progress: DiffProgress);
+    /// Record one compared chunk: `chunks_done` chunks have been diffed so
+    /// far.
+    fn step(&mut self, chunks_done: usize);
 }
 
-/// Receives a garbage collection's events (see [`GcProgress`]).
+/// Receives a garbage collection's per-candidate events.
 pub trait GcReporter: Send {
-    /// Record one event.
-    fn step(&mut self, progress: GcProgress);
+    /// Record one examined candidate: `blobs_done` orphan candidates have
+    /// been examined so far.
+    fn step(&mut self, blobs_done: usize);
 }
 
-/// Receives a prune's events (see [`PruneProgress`]).
+/// Receives a prune's per-commit events.
 pub trait PruneReporter: Send {
-    /// Record one event.
-    fn step(&mut self, progress: PruneProgress);
+    /// Record one deleted commit: `commits_done` commits have been deleted
+    /// so far.
+    fn step(&mut self, commits_done: usize);
 }
 
 impl CommitReporter for () {
-    fn step(&mut self, _: CommitProgress) {}
+    fn step(&mut self, _: usize, _: usize) {}
 }
 
 impl CheckoutReporter for () {
-    fn step(&mut self, _: CheckoutProgress) {}
+    fn step(&mut self, _: usize, _: usize) {}
 }
 
 impl CloneReporter for () {
-    fn step(&mut self, _: CloneProgress) {}
+    fn step(&mut self, _: usize, _: usize) {}
 }
 
 impl DiffReporter for () {
-    fn step(&mut self, _: DiffProgress) {}
+    fn step(&mut self, _: usize) {}
 }
 
 impl GcReporter for () {
-    fn step(&mut self, _: GcProgress) {}
+    fn step(&mut self, _: usize) {}
 }
 
 impl PruneReporter for () {
-    fn step(&mut self, _: PruneProgress) {}
+    fn step(&mut self, _: usize) {}
 }

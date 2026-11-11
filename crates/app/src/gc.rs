@@ -20,15 +20,6 @@ pub struct GcTimings {
     pub apply: Duration,
 }
 
-/// Per-blob progress event, handed to [`GcReporter::step`].
-#[derive(Debug, Clone, Copy)]
-pub struct GcProgress {
-    /// Orphan candidates examined so far.
-    pub blobs_done: usize,
-    /// Orphan candidates in total.
-    pub blobs_total: usize,
-}
-
 impl<S: SekaiStore> SekaiInstance<S> {
     /// Inspect the store and return a plan of unreferenced orphan blobs,
     /// additionally returning per-phase timings (`apply` is zero: dry-run
@@ -60,7 +51,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
         progress: &impl ProgressBuilder,
     ) -> Result<(GcReport, GcTimings), AppError> {
         let total_started = Instant::now();
-        let (report, apply_dt) = apply_within(self.store_mut(), plan, progress.gc()).await?;
+        let (report, apply_dt) = apply_within(self.store_mut(), plan, progress).await?;
         let timings = GcTimings {
             total: total_started.elapsed(),
             plan: Duration::ZERO,
@@ -77,7 +68,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
     ) -> Result<(GcReport, GcTimings), AppError> {
         let total_started = Instant::now();
         let (plan, plan_dt) = plan_within(self.store()).await?;
-        let (report, apply_dt) = apply_within(self.store_mut(), &plan, progress.gc()).await?;
+        let (report, apply_dt) = apply_within(self.store_mut(), &plan, progress).await?;
         let timings = GcTimings {
             total: total_started.elapsed(),
             plan: plan_dt,
@@ -100,15 +91,13 @@ async fn plan_within<S: SekaiStore>(store: &S) -> Result<(GcPlan, Duration), App
 async fn apply_within<S: SekaiStore>(
     store: &mut S,
     plan: &GcPlan,
-    mut progress: impl GcReporter,
+    progress: &impl ProgressBuilder,
 ) -> Result<(GcReport, Duration), AppError> {
     let started = Instant::now();
+    let mut progress = progress.gc(plan.orphans.len());
     let (cas, meta) = store.blob_and_meta();
-    let report = sekai_core::usecase::gc::gc_apply(cas, meta, plan, |done, total| {
-        progress.step(GcProgress {
-            blobs_done: done,
-            blobs_total: total,
-        });
+    let report = sekai_core::usecase::gc::gc_apply(cas, meta, plan, |done, _| {
+        progress.step(done);
     })
     .await
     .map_err(AppError::Gc)?;

@@ -46,17 +46,6 @@ pub struct CloneTimings {
     pub clone_files: Duration,
 }
 
-/// Per-file progress event, handed to [`CloneReporter::step`].
-#[derive(Debug, Clone, Copy)]
-pub struct CloneProgress {
-    /// Files fully rebuilt so far.
-    pub files_done: usize,
-    /// Files to rebuild in total.
-    pub files_total: usize,
-    /// Chunks restored so far.
-    pub chunks_done: usize,
-}
-
 impl<S: SekaiStore> SekaiInstance<S> {
     /// Rebuild `commit` from the store into `out`, returning execution
     /// report and per-phase timings.
@@ -115,7 +104,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
         };
 
         let files_started = Instant::now();
-        let report = clone_files(job, timestamp, progress.clone_to()).await;
+        let report = clone_files(job, timestamp, progress).await;
         let files_dt = files_started.elapsed();
         let report = report?;
 
@@ -144,7 +133,7 @@ struct CloneJob<S: SekaiStore, W: WorldTree> {
 async fn clone_files<S: SekaiStore, W: WorldTree>(
     job: CloneJob<S, W>,
     timestamp: u32,
-    mut progress: impl CloneReporter,
+    progress: &impl ProgressBuilder,
 ) -> Result<CloneReport, AppError>
 where
     AppError: From<W::Error>,
@@ -160,7 +149,7 @@ where
         files_written: 0,
         chunks_restored: 0,
     };
-    let files_total = groups.len();
+    let mut progress = progress.clone_to(groups.len());
     let mut files_done = 0usize;
     let mut blob_buf = Vec::new();
     let mut steps = Vec::new();
@@ -192,11 +181,7 @@ where
         })??;
         report.files_written += 1;
         files_done += 1;
-        progress.step(CloneProgress {
-            files_done,
-            files_total,
-            chunks_done: report.chunks_restored,
-        });
+        progress.step(files_done, report.chunks_restored);
     }
     Ok(report)
 }

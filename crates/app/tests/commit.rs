@@ -9,8 +9,8 @@ mod fixtures;
 use fixtures::chunk_nbt;
 
 use sekai_app::{
-    CheckoutProgress, CheckoutReporter, CommitId, CommitOptions, CommitProgress, CommitReporter,
-    DiffProgress, DiffReporter, GcProgress, GcReporter, ProgressBuilder, RegionKind, Scope,
+    CheckoutReporter, CommitId, CommitOptions, CommitReporter, DiffReporter, GcReporter,
+    ProgressBuilder, RegionKind, Scope,
 };
 use sekai_app::{HostWorldTree, WorldTree};
 use std::collections::BTreeMap;
@@ -813,53 +813,65 @@ impl Recorded {
     }
 }
 
-struct Recorder<'a>(&'a Mutex<Vec<(usize, usize)>>);
+struct Recorder<'a> {
+    events: &'a Mutex<Vec<(usize, usize)>>,
+    total: usize,
+}
+
+impl Recorded {
+    const fn recorder(&self, total: usize) -> Recorder<'_> {
+        Recorder {
+            events: &self.0,
+            total,
+        }
+    }
+}
 
 impl Recorder<'_> {
-    fn push(&self, done: usize, total: usize) {
-        self.0.lock().unwrap().push((done, total));
+    fn push(&self, done: usize) {
+        self.events.lock().unwrap().push((done, self.total));
     }
 }
 
 impl ProgressBuilder for Recorded {
-    fn commit(&self) -> impl CommitReporter {
-        Recorder(&self.0)
+    fn commit(&self, files_total: usize) -> impl CommitReporter {
+        self.recorder(files_total)
     }
 
-    fn checkout(&self) -> impl CheckoutReporter {
-        Recorder(&self.0)
+    fn checkout(&self, files_total: usize) -> impl CheckoutReporter {
+        self.recorder(files_total)
     }
 
-    fn diff(&self) -> impl DiffReporter {
-        Recorder(&self.0)
+    fn diff(&self, chunks_total: usize) -> impl DiffReporter {
+        self.recorder(chunks_total)
     }
 
-    fn gc(&self) -> impl GcReporter {
-        Recorder(&self.0)
+    fn gc(&self, blobs_total: usize) -> impl GcReporter {
+        self.recorder(blobs_total)
     }
 }
 
 impl CommitReporter for Recorder<'_> {
-    fn step(&mut self, progress: CommitProgress) {
-        self.push(progress.files_done, progress.files_total);
+    fn step(&mut self, files_done: usize, _: usize) {
+        self.push(files_done);
     }
 }
 
 impl CheckoutReporter for Recorder<'_> {
-    fn step(&mut self, progress: CheckoutProgress) {
-        self.push(progress.files_done, progress.files_total);
+    fn step(&mut self, files_done: usize, _: usize) {
+        self.push(files_done);
     }
 }
 
 impl DiffReporter for Recorder<'_> {
-    fn step(&mut self, progress: DiffProgress) {
-        self.push(progress.chunks_done, progress.chunks_total);
+    fn step(&mut self, chunks_done: usize) {
+        self.push(chunks_done);
     }
 }
 
 impl GcReporter for Recorder<'_> {
-    fn step(&mut self, progress: GcProgress) {
-        self.push(progress.blobs_done, progress.blobs_total);
+    fn step(&mut self, blobs_done: usize) {
+        self.push(blobs_done);
     }
 }
 

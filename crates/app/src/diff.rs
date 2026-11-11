@@ -123,15 +123,6 @@ fn chunk_digest(coord: ChunkCoord, payload: &[u8]) -> Result<ChunkHash, AppError
         })
 }
 
-/// Per-chunk progress event, handed to [`DiffReporter::step`].
-#[derive(Debug, Clone, Copy)]
-pub struct DiffProgress {
-    /// Chunks diffed so far.
-    pub chunks_done: usize,
-    /// Chunks to diff in total.
-    pub chunks_total: usize,
-}
-
 impl<S: SekaiStore> SekaiInstance<S> {
     /// Compute AST diff for a chunk coordinate between two commits.
     pub async fn diff_chunk(
@@ -187,7 +178,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
                 store: &self.store,
                 id: new_commit,
             },
-            progress.diff(),
+            progress.diff(coords.len()),
             &mut timings,
         )
         .await?;
@@ -313,7 +304,7 @@ where
             WorldDiff {
                 regions: discover_regions(self.world)?,
             },
-            progress.diff(),
+            progress.diff(coords.len()),
             &mut timings,
         )
         .await?;
@@ -441,10 +432,7 @@ async fn diff_coords(
         let started = Instant::now();
         let entries = ChunkPayloadDiff::from_sides(old_side.digest?, new_side.digest?);
         timings.diff_compute += started.elapsed();
-        progress.step(DiffProgress {
-            chunks_done: index + 1,
-            chunks_total: coords.len(),
-        });
+        progress.step(index + 1);
         out.push(ChunkDiff {
             coord: *coord,
             entries,

@@ -39,17 +39,6 @@ pub struct CheckoutTimings {
     pub checkout_files: Duration,
 }
 
-/// Per-file progress event, handed to [`CheckoutReporter::step`].
-#[derive(Debug, Clone, Copy)]
-pub struct CheckoutProgress {
-    /// Files fully rebuilt so far.
-    pub files_done: usize,
-    /// Files to rebuild in total.
-    pub files_total: usize,
-    /// Chunks restored so far.
-    pub chunks_done: usize,
-}
-
 /// What to do when a commit blob is absent from CAS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MissingBlobPolicy {
@@ -162,7 +151,7 @@ where
         };
 
         let files_started = Instant::now();
-        let report = checkout_file_pass(job, timestamp, progress.checkout()).await?;
+        let report = checkout_file_pass(job, timestamp, progress).await?;
         let files_dt = files_started.elapsed();
 
         let timings = CheckoutTimings {
@@ -199,7 +188,7 @@ struct CheckoutJob<S: SekaiStore, T: WorldTree> {
 async fn checkout_file_pass<S: SekaiStore, T: WorldTree>(
     job: CheckoutJob<S, T>,
     timestamp: u32,
-    mut progress: impl CheckoutReporter,
+    progress: &impl ProgressBuilder,
 ) -> Result<CheckoutReport, AppError>
 where
     AppError: From<T::Error>,
@@ -225,19 +214,14 @@ where
     };
     // Tracks the steps still queued: the last one out releases the world.
     let pending = Arc::new(AtomicUsize::new(0));
-    let files_total = keys.len();
-    // Counts files as they finish: `done` reads it, so each report carries
-    // the file it concludes rather than a running total.
+    let mut progress = progress.checkout(keys.len());
+    // Counted when a file starts, so each report carries the file it
+    // concludes.
     let mut files_done = 0usize;
     let mut blob_buf = Vec::new();
     #[allow(clippy::explicit_counter_loop)]
     for key in keys {
         files_done += 1;
-        let done = |chunks_done| CheckoutProgress {
-            files_done,
-            files_total,
-            chunks_done,
-        };
         let rows = groups.get(&key);
         let tombs = tombstones.get(&key);
         let region = match discovered.get(&key) {
@@ -245,7 +229,7 @@ where
             None => match rows {
                 // No rows and no file: nothing to do.
                 None => {
-                    progress.step(done(report.chunks_restored));
+                    progress.step(files_done, report.chunks_restored);
                     continue;
                 }
                 Some(_) => resolve_target(&discovered, &world, &key, options.on_missing_file)?,
@@ -275,7 +259,7 @@ where
                 ),
             );
             report.files_deleted += usize::from(step.outcome().await?);
-            progress.step(done(report.chunks_restored));
+            progress.step(files_done, report.chunks_restored);
             continue;
         };
         let mut writer = sekai_anvil::RegionBuilder::new(key.rx, key.rz, timestamp)?;
@@ -313,7 +297,7 @@ where
         );
         step.outcome().await?;
         report.files_written += 1;
-        progress.step(done(report.chunks_restored));
+        progress.step(files_done, report.chunks_restored);
     }
     // Every step has been awaited, so nothing can start after this: release
     // the world rather than waiting for the guard to drop with the future.
