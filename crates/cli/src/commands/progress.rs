@@ -10,41 +10,40 @@ use sekai_app::{
 /// is set and stderr is a TTY, so piped output stays clean; `--json`
 /// refuses the flag at parse time instead.
 ///
+/// A disabled bar is indicatif's hidden bar rather than an absent one, so
+/// every update stays unconditional and simply draws nothing.
+///
 /// Dropping it clears the bar as well (indicatif finishes an unfinished
 /// bar with `ProgressFinish::AndClear` by default), so a command that
 /// returns early on an error needs no `finish` call.
-pub struct BarProgress(Option<ProgressBar>);
+pub struct BarProgress(ProgressBar);
 
 impl BarProgress {
-    /// Create the bar, or a hidden one unless `enabled` is set and stderr is
-    /// a TTY.
+    /// Create the bar, or a hidden one unless `enabled` is set. Its stderr
+    /// draw target already hides itself when stderr is not a TTY.
     pub fn new(enabled: bool) -> Self {
-        if !enabled || !std::io::IsTerminal::is_terminal(&std::io::stderr()) {
-            return Self(None);
+        if !enabled {
+            return Self(ProgressBar::hidden());
         }
         let bar = ProgressBar::new(0);
         bar.set_style(
             ProgressStyle::with_template("{bar:40} {pos}/{len} {msg}")
                 .unwrap_or_else(|_| ProgressStyle::default_bar()),
         );
-        Self(Some(bar))
+        Self(bar)
     }
 
     /// Clear the bar; the human report line that follows carries the summary.
     pub fn finish(&self) {
-        if let Some(bar) = &self.0 {
-            bar.finish_and_clear();
-        }
+        self.0.finish_and_clear();
     }
 
     /// Size the bar for a run of `total` items and hand out its reporter.
     fn reporter(&self, total: usize) -> BarReporter<'_> {
-        if let Some(bar) = &self.0
-            && bar.length() != Some(total as u64)
-        {
-            bar.set_length(total as u64);
+        if self.0.length() != Some(total as u64) {
+            self.0.set_length(total as u64);
         }
-        BarReporter(self.0.as_ref())
+        BarReporter(&self.0)
     }
 }
 
@@ -74,16 +73,14 @@ impl ProgressBuilder for BarProgress {
     }
 }
 
-struct BarReporter<'a>(Option<&'a ProgressBar>);
+struct BarReporter<'a>(&'a ProgressBar);
 
 impl BarReporter<'_> {
     /// Move the bar to `done`. `detail` trails the counters, e.g. `"files
     /// 12 chunks"`.
     fn advance(&self, done: usize, detail: impl Into<String>) {
-        if let Some(bar) = self.0 {
-            bar.set_position(done as u64);
-            bar.set_message(detail.into());
-        }
+        self.0.set_position(done as u64);
+        self.0.set_message(detail.into());
     }
 
     fn advance_files(&self, files_done: usize, chunks_done: usize) {
