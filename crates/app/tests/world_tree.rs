@@ -269,18 +269,18 @@ fn custom_tree_reports_its_unguarded_answer() {
     }
 }
 
-/// Only the files a plan ingests are sized: an out-of-scope file whose
-/// `size` fails cannot fail the run, while the same failure in scope does.
+/// Only the files a plan ingests are read: an out-of-scope file whose
+/// `read` fails cannot fail the run, while the same failure in scope does.
 #[cfg(feature = "backend-sqlite")]
 #[tokio::test]
-async fn only_planned_files_are_sized() {
+async fn only_planned_files_are_read() {
     let root = tempfile::Builder::new()
-        .prefix("sekai-world-tree-sizing-")
+        .prefix("sekai-world-tree-planned-")
         .tempdir()
         .unwrap();
     let store = root.path().join("store").to_string_lossy().into_owned();
     let instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
-    // The fake serves overworld files only, and every `size` fails.
+    // The fake serves overworld files only, and every `read` fails.
     let world = FakeWorld {
         fail_dims: false,
         fail_regions: false,
@@ -301,7 +301,7 @@ async fn only_planned_files_are_sized() {
         .await
         .unwrap_err();
     assert!(
-        error.to_string().contains("fake world failed: no size"),
+        error.to_string().contains("fake world failed: no bytes"),
         "unexpected error: {error}"
     );
 }
