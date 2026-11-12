@@ -6,21 +6,22 @@
 
 /// Hands an operation the reporter for its run, sized by the run's total.
 ///
-/// Defaults to a reporter that drops its events; `()` shows nothing. A
-/// reporter may borrow the builder: the operation holds it only while it
-/// runs.
+/// `()` is the builder to pass when no progress is wanted. A reporter may
+/// borrow the builder: the operation holds it only while it runs.
 pub trait ProgressBuilder: Sync {
     /// Reporter for one run over `total` items.
-    fn start(&self, _total: usize) -> impl Reporter {}
+    fn start(&self, total: usize) -> impl Reporter;
 }
-
-impl ProgressBuilder for () {}
 
 /// Receives one run's running count.
 pub trait Reporter: Send {
     /// Record one finished item: `done` of the run's items have finished
     /// so far.
     fn step(&mut self, done: usize);
+}
+
+impl ProgressBuilder for () {
+    fn start(&self, _: usize) -> impl Reporter {}
 }
 
 impl Reporter for () {
