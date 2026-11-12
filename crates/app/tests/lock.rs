@@ -457,7 +457,8 @@ async fn a_cancelled_clone_leaves_only_whole_files() {
     for name in &landed {
         assert_eq!(
             std::fs::read(target.join("region").join(name)).unwrap(),
-            std::fs::read(full.join("region").join(name)).unwrap(),
+            std::fs::read(full.join("region").join(name))
+                .unwrap_or_else(|err| panic!("the full clone lacks {name}: {err}")),
             "{name} is not whole"
         );
     }
