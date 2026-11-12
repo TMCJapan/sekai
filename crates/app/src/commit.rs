@@ -32,7 +32,7 @@ use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
 use tokio::task::JoinSet;
 
 use crate::error::AppError;
-use crate::instance::{SharedWorldGuard, WorldHandle, WorldHandleMut};
+use crate::instance::{WorldGuard, WorldHandle, WorldHandleMut};
 use crate::progress::{ProgressBuilder, Reporter};
 use crate::regions::discover_regions;
 use crate::time::now_ms;
@@ -174,7 +174,7 @@ where
         let total = Instant::now();
         // The world stays stable for the whole read pass; the store needs no
         // lock - blobs are append-only and the metadata write is atomic.
-        let guard = SharedWorldGuard::acquire(self.world, WorldLockMode::Shared)?;
+        let guard = WorldGuard::acquire(self.world, WorldLockMode::Shared)?;
         let store = &mut self.instance.store;
 
         let Prepared {
@@ -241,7 +241,7 @@ async fn prepare<W: WorldTree, S: SekaiStore>(
     scope: &Scope,
     progress: &impl ProgressBuilder,
     dry_run: bool,
-    guard: &Arc<SharedWorldGuard<W::Lock>>,
+    guard: &Arc<WorldGuard<W::Lock>>,
 ) -> Result<Prepared, AppError>
 where
     AppError: From<W::Error>,
@@ -310,7 +310,7 @@ where
         scope: Scope,
         progress: &impl ProgressBuilder,
     ) -> Result<(StatusReport, StatusTimings), AppError> {
-        let guard = SharedWorldGuard::acquire(self.world, WorldLockMode::Shared)?;
+        let guard = WorldGuard::acquire(self.world, WorldLockMode::Shared)?;
         status_impl(
             &self.instance.store,
             self.world,
@@ -345,7 +345,7 @@ async fn status_impl<W: WorldTree, S: SekaiStore>(
     options: StatusOptions,
     scope: Scope,
     progress: &impl ProgressBuilder,
-    guard: &Arc<SharedWorldGuard<W::Lock>>,
+    guard: &Arc<WorldGuard<W::Lock>>,
 ) -> Result<(StatusReport, StatusTimings), AppError>
 where
     AppError: From<W::Error>,
@@ -462,7 +462,7 @@ async fn ingest_changed<R: RegionFile, S: SekaiStore, L: WorldLock>(
     scope: Scope,
     mut progress: impl Reporter,
     dry_run: bool,
-    guard: &Arc<SharedWorldGuard<L>>,
+    guard: &Arc<WorldGuard<L>>,
 ) -> Result<(Ingested, IngestTimings), AppError>
 where
     AppError: From<R::Error>,
@@ -539,7 +539,7 @@ async fn ingest_file<R: RegionFile, C: BlobStore<Error = StorageError>, L: World
     cas: &mut C,
     scope: Scope,
     dry_run: bool,
-    guard: Arc<SharedWorldGuard<L>>,
+    guard: Arc<WorldGuard<L>>,
 ) -> Result<FileOutcome, AppError>
 where
     AppError: From<R::Error>,

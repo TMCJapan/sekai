@@ -38,6 +38,23 @@ const fn commit_options() -> sekai_app::CommitOptions {
     sekai_app::CommitOptions { concurrency: 2 }
 }
 
+/// The payload of chunk `(x, z)` in the region file at `path`.
+fn chunk_payload(path: impl AsRef<Path>, x: i32, z: i32) -> Option<Vec<u8>> {
+    let name = path.as_ref().file_name().unwrap().to_str().unwrap();
+    let (rx, rz) = sekai_anvil::parse_region_name(name).unwrap();
+    let image = sekai_anvil::RegionImage::from_bytes(std::fs::read(path).unwrap(), rx, rz).unwrap();
+    let mut payload = None;
+    image
+        .visit_chunks(|chunk| {
+            if (chunk.x, chunk.z) == (x, z) {
+                payload = Some(chunk.payload.to_vec());
+            }
+            payload.is_none()
+        })
+        .unwrap();
+    payload
+}
+
 /// Stored blob count, read through the live instance's store handle: the
 /// keyspace admits one opener, so a second handle cannot exist.
 async fn blob_count(store: &sekai_storage_local::LocalStore) -> usize {
@@ -128,6 +145,7 @@ async fn prune_folds_and_gc_reclaims() {
         .await
         .unwrap();
     assert_eq!(checked_out.chunks_restored, 1);
+    assert_eq!(chunk_payload(&region, 0, 0), Some(chunk_nbt("marker-2")));
 
     // Pruning dereferences but never unlinks: GC reclaims exactly one blob.
     assert_eq!(blob_count(instance.store()).await, 3);

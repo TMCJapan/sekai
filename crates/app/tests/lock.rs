@@ -13,14 +13,15 @@ mod fixtures;
 use fixtures::chunk_nbt;
 
 use sekai_app::{
-    CheckoutOptions, ChunkHash, CommitId, CommitOptions, Dimension, HostWorldTree, ProgressBuilder,
-    Rect, RefName, Reporter, Scope, ScopeName, SekaiInstance, StatusOptions, WorldError,
-    WorldLockMode, WorldTree,
+    CheckoutOptions, ChunkHash, CommitId, CommitOptions, Dimension, HostRegion, HostWorldLock,
+    HostWorldTree, Rect, RefName, RegionFile, RegionFingerprint, RegionKey, RegionKind, Scope,
+    ScopeName, SekaiInstance, StatusOptions, WorldError, WorldLockMode, WorldLockState, WorldTree,
 };
 use sekai_core::MetaStore as _;
 use sekai_storage_local::LocalStore;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 fn write_region(path: impl AsRef<Path>, payload: &[u8]) {
@@ -102,18 +103,6 @@ impl Fixture {
     /// A second tree over the same folder, standing in for another process.
     fn other_world(&self) -> HostWorldTree {
         HostWorldTree::new(&self.world_path).unwrap()
-    }
-
-    /// Region file names present under the world's `region` folder, sorted.
-    fn world_regions(&self) -> Vec<String> {
-        let mut names: Vec<String> = std::fs::read_dir(self.world_path.join("region"))
-            .expect("the region folder exists")
-            .filter_map(Result::ok)
-            .filter_map(|entry| entry.file_name().into_string().ok())
-            .filter(|name| name.to_ascii_lowercase().ends_with(".mca"))
-            .collect();
-        names.sort();
-        names
     }
 }
 
@@ -345,36 +334,38 @@ async fn collection_and_pruning_do_not_trip_over_their_own_phases() {
     fx.instance.gc_apply(&plan, &()).await.unwrap();
 }
 
-/// A cancelled checkout future cannot stop its blocking file pass, so the
-/// pass itself must keep the world locked until it finishes - and every file
-/// it has queued must still land.
+/// A cancelled checkout future cannot stop the writes already running on the
+/// blocking pool, so those writes must keep the world locked until they end.
 ///
-/// The future is dropped as soon as the pass reports anything, which is where
-/// it is still working: `progress` only ticks a counter, because parking it
-/// would park the async half this test drives by hand. The world must stay
-/// shut until the queued writes are done - an exclusive lock only succeeds
-/// once no step is left - and both regions must be on disk by then.
+/// Every write waits at a gate, and the future is dropped once one is held
+/// there: the world must stay locked while that write waits, then be
+/// released once the gate opens, with no write left mid-swap.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_cancelled_checkout_keeps_the_world_locked_until_its_files_finish() {
     let mut fx = Fixture::new("cancel").await;
     let other = fx.other_world();
-    let reported = Counted::default();
+    let gate = Arc::new(Gate::default());
+    let _release = OpenOnDrop(&gate);
+    let mut world = GatedTree {
+        inner: fx.other_world(),
+        gate: Arc::clone(&gate),
+    };
 
-    // A second tree over the same folder: the first one is busy being run.
-    let mut world = fx.other_world();
     let mut handle = fx.instance.world_mut(&mut world);
-    let checkout = handle.checkout(
-        fx.commit,
-        CheckoutOptions::default(),
-        Scope::World,
-        &reported,
-    );
+    let checkout = handle.checkout(fx.commit, CheckoutOptions::default(), Scope::World, &());
     let mut checkout = Box::pin(checkout);
-    poll_until(&mut checkout, || reported.count() > 0).await;
+    poll_until(&mut checkout, || gate.arrived() > 0).await;
     drop(checkout);
 
-    // The future is gone; the pass it queued is not. The world stays shut
-    // until every file queued behind the report has been written.
+    assert!(
+        matches!(
+            other.lock(WorldLockMode::Exclusive),
+            Err(WorldError::WorldLocked { .. })
+        ),
+        "the world was released while a write was still held"
+    );
+
+    gate.open();
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         match other.lock(WorldLockMode::Exclusive) {
@@ -388,44 +379,168 @@ async fn a_cancelled_checkout_keeps_the_world_locked_until_its_files_finish() {
         }
         break;
     }
-    assert_eq!(
-        fx.world_regions(),
-        vec!["r.0.0.mca", "r.1.0.mca"],
-        "a queued file was abandoned with the future"
+    assert!(
+        !has_swap_in_flight(&fx.world_path),
+        "the world was released while a write was still mid-swap"
     );
 }
 
-/// Counts the events of a checkout, readable while it runs.
-#[derive(Default)]
-struct Counted(AtomicUsize);
+/// The fixture world, except that every region write waits at `gate`.
+#[derive(Clone)]
+struct GatedTree {
+    inner: HostWorldTree,
+    gate: Arc<Gate>,
+}
 
-impl Counted {
-    fn count(&self) -> usize {
-        self.0.load(Ordering::SeqCst)
+impl GatedTree {
+    fn gated(&self, inner: HostRegion) -> GatedRegion {
+        GatedRegion {
+            inner,
+            gate: Arc::clone(&self.gate),
+        }
     }
 }
 
-struct Counter<'a>(&'a AtomicUsize);
+impl WorldTree for GatedTree {
+    type Error = WorldError;
+    type Region = GatedRegion;
+    type Lock = HostWorldLock;
 
-impl ProgressBuilder for Counted {
-    fn start(&self, _: usize) -> impl Reporter {
-        Counter(&self.0)
+    fn get_dims(&self) -> Result<Vec<Dimension>, WorldError> {
+        self.inner.get_dims()
+    }
+
+    fn get_regions(
+        &self,
+        dim: Dimension,
+        kind: RegionKind,
+    ) -> Result<Vec<(RegionKey, GatedRegion)>, WorldError> {
+        Ok(self
+            .inner
+            .get_regions(dim, kind)?
+            .into_iter()
+            .map(|(key, region)| (key, self.gated(region)))
+            .collect())
+    }
+
+    fn derive_region(&self, key: RegionKey) -> Result<GatedRegion, WorldError> {
+        self.inner
+            .derive_region(key)
+            .map(|region| self.gated(region))
+    }
+
+    fn sibling_region(
+        &self,
+        region: &GatedRegion,
+        key: RegionKey,
+    ) -> Result<GatedRegion, WorldError> {
+        self.inner
+            .sibling_region(&region.inner, key)
+            .map(|region| self.gated(region))
+    }
+
+    fn lock(&self, mode: WorldLockMode) -> Result<WorldLockState<HostWorldLock>, WorldError> {
+        self.inner.lock(mode)
     }
 }
 
-impl Reporter for Counter<'_> {
-    fn step(&mut self, _: usize) {
-        self.0.fetch_add(1, Ordering::SeqCst);
+/// A host region whose writes wait at `gate`.
+#[derive(Clone, Debug)]
+struct GatedRegion {
+    inner: HostRegion,
+    gate: Arc<Gate>,
+}
+
+impl std::fmt::Display for GatedRegion {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.inner.fmt(f)
     }
+}
+
+impl RegionFile for GatedRegion {
+    type Error = WorldError;
+    type RegionImage = <HostRegion as RegionFile>::RegionImage;
+
+    fn read(&self, key: RegionKey) -> Result<Self::RegionImage, WorldError> {
+        self.inner.read(key)
+    }
+
+    fn size(&self) -> Result<u64, WorldError> {
+        self.inner.size()
+    }
+
+    fn fingerprint(&self, key: RegionKey) -> Result<RegionFingerprint, WorldError> {
+        self.inner.fingerprint(key)
+    }
+
+    fn exists(&self) -> bool {
+        self.inner.exists()
+    }
+
+    fn write(&self, image: &[u8]) -> Result<(), WorldError> {
+        self.gate.pass();
+        self.inner.write(image)
+    }
+
+    fn remove(&self) -> Result<(), WorldError> {
+        self.inner.remove()
+    }
+}
+
+/// Holds every write that reaches it until opened.
+#[derive(Debug, Default)]
+struct Gate {
+    arrived: AtomicUsize,
+    open: Mutex<bool>,
+    opened: Condvar,
+}
+
+impl Gate {
+    /// Count this write in, then wait until the gate is open.
+    fn pass(&self) {
+        self.arrived.fetch_add(1, Ordering::SeqCst);
+        drop(
+            self.opened
+                .wait_while(self.open.lock().unwrap(), |open| !*open)
+                .unwrap(),
+        );
+    }
+
+    /// Writes that have reached the gate so far.
+    fn arrived(&self) -> usize {
+        self.arrived.load(Ordering::SeqCst)
+    }
+
+    fn open(&self) {
+        *self.open.lock().unwrap() = true;
+        self.opened.notify_all();
+    }
+}
+
+/// Opens the gate when dropped, so a failing assertion never leaves writes
+/// held: the runtime waits for them before the test can end.
+struct OpenOnDrop<'a>(&'a Gate);
+
+impl Drop for OpenOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.open();
+    }
+}
+
+/// Whether a write is still between its temporary file and the swap.
+fn has_swap_in_flight(root: impl AsRef<Path>) -> bool {
+    std::fs::read_dir(root.as_ref().join("region")).is_ok_and(|entries| {
+        entries
+            .filter_map(Result::ok)
+            .any(|entry| entry.file_name().to_string_lossy().contains(".tmp-"))
+    })
 }
 
 /// Poll `fut` until `ready` holds, keeping the future alive.
 ///
 /// The future is driven by hand so the caller decides when to drop it: that
-/// drop is the cancellation. Each poll yields, so the steps it queued get a
-/// chance to run. A regression trips the deadline instead of hanging. A pass
-/// that finishes before reporting is not cancelled mid-run, so `ready` checks
-/// always include the outcome: a truncated world still fails.
+/// drop is the cancellation. Each poll yields, so the work it started gets a
+/// chance to run. A regression trips the deadline instead of hanging.
 async fn poll_until<F>(fut: &mut std::pin::Pin<Box<F>>, ready: impl Fn() -> bool)
 where
     F: std::future::Future,

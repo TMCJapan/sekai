@@ -12,7 +12,7 @@ use sekai_storage::SekaiStore;
 use sekai_world::{Region, RegionFile, WorldLockMode, WorldTree};
 
 use crate::error::AppError;
-use crate::instance::{SekaiInstance, SharedWorldGuard, WorldHandle, WorldHandleMut};
+use crate::instance::{SekaiInstance, WorldGuard, WorldHandle, WorldHandleMut};
 use crate::progress::{ProgressBuilder, Reporter};
 use crate::regions::discover_regions;
 
@@ -283,7 +283,7 @@ where
     ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
         // Held across resolution and the reads below: the world snapshot
         // must outlive the operation.
-        let guard = SharedWorldGuard::acquire(self.world, WorldLockMode::Shared)?;
+        let guard = WorldGuard::acquire(self.world, WorldLockMode::Shared)?;
         let total_started = Instant::now();
         let commit_id = match commit {
             Some(id) => id,
