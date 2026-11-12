@@ -213,3 +213,50 @@ pub fn io_error(path: impl AsRef<Path>, source: std::io::Error) -> StorageError 
         source,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::error::Error as _;
+
+    #[test]
+    fn io_error_keeps_path_and_source() {
+        let err = io_error("store/meta.sqlite", std::io::Error::other("disk full"));
+        let StorageError::Io { path, source } = &err else {
+            panic!("io_error must build the Io variant");
+        };
+
+        assert_eq!(path, Path::new("store/meta.sqlite"));
+        assert_eq!(source.to_string(), "disk full");
+        assert_eq!(
+            err.to_string(),
+            "file I/O failed for store/meta.sqlite: disk full"
+        );
+    }
+
+    #[test]
+    fn backend_error_carries_name_and_source() {
+        let err = StorageError::backend("sled", std::io::Error::other("corrupt tree"));
+
+        assert_eq!(err.to_string(), "sled failed: corrupt tree");
+        assert_eq!(
+            err.source().map(ToString::to_string).as_deref(),
+            Some("corrupt tree")
+        );
+    }
+
+    #[test]
+    fn store_exposes_both_adapters() {
+        let mut store = Store::new("meta".to_owned(), "blob".to_owned());
+
+        assert_eq!(store.meta().as_str(), "meta");
+        assert_eq!(store.blob().as_str(), "blob");
+
+        *store.meta_mut() = "new meta".to_owned();
+        *store.blob_mut() = "new blob".to_owned();
+
+        let (blob, meta) = store.blob_and_meta();
+        assert_eq!(blob.as_str(), "new blob");
+        assert_eq!(meta.as_str(), "new meta");
+    }
+}
