@@ -5,6 +5,7 @@ mod commit;
 mod diff;
 mod diff_render;
 mod gc;
+mod init;
 mod log;
 mod progress;
 mod prune;
@@ -65,6 +66,7 @@ impl ReportOut {
 pub async fn run(cli: &Cli) -> anyhow::Result<()> {
     let style = Styler::new(cli.color);
     match &cli.command {
+        Command::Init { json } => init::run(&cli.store, *json, style).await,
         Command::Commit {
             world,
             output,

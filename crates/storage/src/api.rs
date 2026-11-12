@@ -19,11 +19,11 @@ pub enum StorageError {
     /// are represented in metadata.
     #[error("blob missing from CAS: {hex}")]
     BlobMissing { hex: String },
-    /// The root holds no initialized store. Only commit runs create one;
-    /// every other operation must fail here instead of materializing an
-    /// empty store as a side effect.
+    /// The root holds no initialized store. Only an explicit init creates
+    /// one; every other operation must fail here instead of materializing
+    /// an empty store as a side effect.
     #[error(
-        "no store at {path}: run a commit to create one",
+        "no store at {path}: run 'sekai init' to create one",
         path = path.display()
     )]
     StoreMissing {

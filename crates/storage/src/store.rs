@@ -38,13 +38,22 @@ pub trait SekaiStore: Send + Sync + Sized + 'static {
 
 /// Open or initialize a store of one concrete backend.
 ///
-/// The implementation owns the meaning of the location string; the local
-/// backend reads it as a store root directory.
+/// The two entry points are exclusive: only [`Self::init`] materializes a
+/// store, while [`Self::open`] never creates anything. The implementation
+/// owns the meaning of the location string; the local backend reads it as
+/// a store root directory.
 pub trait SekaiStoreOpener: SekaiStore {
     /// Open the existing store named by `location`.
+    ///
+    /// Fails with [`StorageError::StoreMissing`] when the store was never
+    /// initialized, without creating anything.
     fn open(location: &str) -> impl Future<Output = Result<Self, StorageError>> + Send;
 
-    /// Open the store named by `location`, creating it when missing.
+    /// Initialize the store named by `location` and open it.
+    ///
+    /// The only path that materializes a store, reserved for an explicit
+    /// init (the CLI's `sekai init`). Initializing an existing store again
+    /// is idempotent, like `git init`.
     fn init(location: &str) -> impl Future<Output = Result<Self, StorageError>> + Send;
 }
 

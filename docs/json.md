@@ -14,6 +14,7 @@ carries the bare result only.
 
 | Command | `--json` | `--timing` | Notes |
 |---|---|---|---|
+| `init` | store record | n/a | no phases exist |
 | `commit` | report (+timings with `--timing`) | table + JSON block | regions list is timing detail, JSON-only |
 | `status` | preview (+timings with `--timing`) | table + JSON block | read-only: never writes to world or store |
 | `checkout` | report (+timings with `--timing`) | table + JSON block | |
@@ -40,7 +41,7 @@ Every invocation prints exactly one JSON object to stdout:
 {"command": "<name>", "status": "error", "error": "<full context chain>"}
 ```
 
-`command` is one of `commit`, `status`, `checkout`, `log`, `ref`, `scope`, `prune`, `diff`, `gc`.
+`command` is one of `init`, `commit`, `status`, `checkout`, `log`, `ref`, `scope`, `prune`, `diff`, `gc`.
 The error string is the full anyhow context chain (outermost message
 first, then `Caused by:` lines), JSON-escaped.
 
@@ -53,6 +54,11 @@ first, then `Caused by:` lines), JSON-escaped.
 | 2 | Usage error (unknown flags, bad values). clap prints its own human-readable error to stderr. |
 
 ## Compatibility
+
+Breaking change (ADR-0026): store creation moves from `commit` to the new
+`init` command. `commit` (and every other command except `init`) now fails
+on a missing store instead of creating one; run `sekai init` first. The
+envelope's `command` gains the value `init`.
 
 Breaking change (ADR-0025): the `clone` command (alias `export`) is
 removed. `command` no longer takes the value `clone`, and the clone
@@ -71,6 +77,16 @@ release for newly produced stores.
 ## Result payloads
 
 All durations are integer milliseconds. Paths are OS strings as observed.
+
+### `init`
+
+```jsonc
+{"store": ".sekai", "created": true}
+```
+
+`store` is the `--store` value as given. `created` is `true` when this run
+materialized the store and `false` when it re-initialized an existing one
+(idempotent, like `git init`).
 
 ### `commit`
 

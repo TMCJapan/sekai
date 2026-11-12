@@ -26,7 +26,7 @@ pub async fn run(
     let mut world = HostWorldTree::new(&world_path)
         .with_context(|| format!("failed to inspect world {}", world_path.as_ref().display()))?;
     let bar = BarProgress::new(progress, Unit::Files);
-    let mut instance = sekai_app::SekaiInstance::init(store)
+    let mut instance = sekai_app::SekaiInstance::open(store)
         .await
         .with_context(|| format!("commit of {} failed", world_path.as_ref().display()))?;
     let scope = resolve_selection(&instance, selection).await?;

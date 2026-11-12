@@ -15,8 +15,9 @@ without adding rows.
   see [Scope selection](../scope.md).
 - For a dry-run preview of the above, see `status` under
   [Inspection](inspection.md).
-- When the store directory is created by the commit, the CLI says so
-  on stderr (human output only).
+- The store must already exist: run `sekai init` first (see
+  [Store location](../store.md)). A missing store fails without
+  creating anything.
 
 Every region file in scope is read on each commit; unchanged chunks
 resolve through fallback and cost no new blobs or history rows. A commit

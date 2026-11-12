@@ -1,6 +1,9 @@
 # Quickstart
 
 ```sh
+# Create the store (once, before any other command)
+sekai init
+
 # Record the current world state (pause the server first; see
 # "Server coordination")
 sekai commit ./world
@@ -31,7 +34,7 @@ sekai gc
 The store defaults to `.sekai`; see [Store location](store.md) for
 using another location. Every
 command accepts `--json` for machine-readable output and, except `log`,
-and `ref`, `--timing` for a per-phase breakdown. `commit`, `status`,
+`ref`, and `init`, `--timing` for a per-phase breakdown. `commit`, `status`,
 `checkout`, `diff`, `gc`, and `prune` take `--progress` for a
 stderr progress bar (refused with `--json`). `commit`, `status`,
 `checkout`, and `diff` accept a scope

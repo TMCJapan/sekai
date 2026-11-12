@@ -28,9 +28,12 @@ async fn saved_scopes_select_by_name() {
     let store = store.to_str().expect("temporary store path is UTF-8");
     let world = world.to_str().expect("temporary world path is UTF-8");
 
+    run(&["sekai", "--store", store, "init"])
+        .await
+        .expect("init creates the store");
     run(&["sekai", "--store", store, "commit", world])
         .await
-        .expect("commit creates the store");
+        .expect("commit records the empty world");
     run(&[
         "sekai",
         "--store",
