@@ -383,7 +383,7 @@ impl<R: Send + 'static, T: Send + 'static> Step<R, T> {
 ///
 /// `false` means the chunk must be skipped; under
 /// [`MissingBlobPolicy::Abort`] a missing blob is corruption and propagates.
-pub(super) async fn fetch_or_skip<C: sekai_core::BlobStore<Error = StorageError>>(
+async fn fetch_or_skip<C: sekai_core::BlobStore<Error = StorageError>>(
     cas: &C,
     hash: &ChunkHash,
     policy: MissingBlobPolicy,

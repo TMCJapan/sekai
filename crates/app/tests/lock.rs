@@ -103,6 +103,18 @@ impl Fixture {
     fn other_world(&self) -> HostWorldTree {
         HostWorldTree::new(&self.world_path).unwrap()
     }
+
+    /// Region file names present under the world's `region` folder, sorted.
+    fn world_regions(&self) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(self.world_path.join("region"))
+            .expect("the region folder exists")
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| name.to_ascii_lowercase().ends_with(".mca"))
+            .collect();
+        names.sort();
+        names
+    }
 }
 
 const fn is_lock_error(err: &sekai_app::AppError) -> bool {
@@ -377,7 +389,7 @@ async fn a_cancelled_checkout_keeps_the_world_locked_until_its_files_finish() {
         break;
     }
     assert_eq!(
-        read_regions(&fx.world_path),
+        fx.world_regions(),
         vec!["r.0.0.mca", "r.1.0.mca"],
         "a queued file was abandoned with the future"
     );
@@ -432,19 +444,6 @@ where
         assert!(Instant::now() < deadline, "the file pass never reported");
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
-}
-
-/// Region file names present under `root/region`, sorted.
-fn read_regions(root: impl AsRef<Path>) -> Vec<String> {
-    let root = root.as_ref();
-    let mut names: Vec<String> = std::fs::read_dir(root.join("region"))
-        .expect("the region folder exists")
-        .filter_map(Result::ok)
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        .filter(|name| name.to_ascii_lowercase().ends_with(".mca"))
-        .collect();
-    names.sort();
-    names
 }
 
 /// A crashed run - or a pre-lock binary - leaves `commit.inflight` behind.

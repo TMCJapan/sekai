@@ -57,8 +57,8 @@ first, then `Caused by:` lines), JSON-escaped.
 ## Compatibility
 
 Breaking change (ADR-0024): the `clone` command (alias `export`) is
-removed, so `command` no longer takes `clone` and its payload, including
-the `clone_files_ms` phase, is gone.
+removed. `command` no longer takes the value `clone`, and the clone
+payload (including the `clone_files_ms` phase) is gone.
 
 Breaking change (ADR-0023): `commit --json` no longer carries
 `skipped_regions` or `carried_chunks` (always 0 since PR #151 removed
