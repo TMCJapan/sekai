@@ -29,6 +29,7 @@ use sekai_core::{
 };
 use sekai_storage::{SekaiStore, StorageError};
 use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
+use tokio::task::JoinSet;
 
 use crate::error::AppError;
 use crate::instance::{SharedWorldGuard, WorldHandle, WorldHandleMut};
@@ -39,14 +40,16 @@ use crate::time::now_ms;
 /// Commit behavior knobs.
 #[derive(Debug, Clone, Default)]
 pub struct CommitOptions {
-    /// Ingest worker count. `0` means one per CPU, `1` stays sequential.
+    /// How many files ingest at once. `0` means one per CPU, `1` stays
+    /// sequential.
     pub concurrency: usize,
 }
 
 /// Preview behavior knobs.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct StatusOptions {
-    /// Ingest worker count. `0` means one per CPU, `1` stays sequential.
+    /// How many files ingest at once. `0` means one per CPU, `1` stays
+    /// sequential.
     pub concurrency: usize,
 }
 
@@ -133,14 +136,6 @@ pub struct RegionTiming {
     pub cas: Duration,
 }
 
-/// One region file the plan ingests.
-struct PlannedFile<R> {
-    key: RegionKey,
-    region: R,
-    /// Size in bytes: ingest balances its workers by it.
-    size: u64,
-}
-
 /// One ingested file's staged rows, ready to merge into the walk.
 struct FileOutcome {
     /// The region the file holds.
@@ -167,8 +162,9 @@ where
     ///
     /// Only `scope` is ingested: out-of-scope coordinates record no rows and
     /// no tombstones, resolving through fallback from earlier commits.
-    /// `progress` fires as changed files complete. The report is identical
-    /// with or without timings.
+    /// `progress` fires as changed files complete, possibly before their
+    /// blobs are synced: a full count does not mean the commit is durable
+    /// yet. The report is identical with or without timings.
     pub async fn commit(
         &mut self,
         options: CommitOptions,
@@ -193,8 +189,8 @@ where
         // Persist blob writes before the metadata commit: every row already
         // committed when its `put` returned, and this single checkpoint folds
         // the WAL back into `blob.sqlite`. Timed under `cas`, the durability
-        // bucket. Explicit here even though workers already synced: the
-        // barrier belongs at the call site, never hidden inside adapters.
+        // bucket. This is the only barrier: ingest leaves it to the call
+        // site, never hidden inside adapters.
         let sync_started = Instant::now();
         store.blob_mut().sync().await?;
         let dir_sync = sync_started.elapsed();
@@ -251,9 +247,8 @@ async fn prepare<W: WorldTree, S: SekaiStore>(
 where
     AppError: From<W::Error>,
 {
-    // Discovery walks directories and sizing stats files: both run on the
-    // blocking pool, each owning a share of the world lock like every file
-    // pass.
+    // Discovery walks directories on the blocking pool, owning a share of
+    // the world lock like every file pass.
     let discover_started = Instant::now();
     let world_handle = world.clone();
     let discover_guard = Arc::clone(guard);
@@ -262,7 +257,7 @@ where
         discover_regions(&world_handle)
     })
     .await??;
-    let mut discover = discover_started.elapsed();
+    let discover = discover_started.elapsed();
 
     let universe_started = Instant::now();
     let keys: Vec<RegionKey> = regions.keys().copied().collect();
@@ -270,19 +265,11 @@ where
         sekai_core::usecase::commit::plan_commit(store.meta(), &keys, scope).await?;
     let universe_load = universe_started.elapsed();
 
-    let sizing_started = Instant::now();
-    let planned: Vec<(RegionKey, W::Region)> = plan
+    let changed: Vec<(RegionKey, W::Region)> = plan
         .ingest
         .iter()
         .filter_map(|key| regions.remove_entry(key))
         .collect();
-    let sizing_guard = Arc::clone(guard);
-    let changed = tokio::task::spawn_blocking(move || {
-        let _guard = sizing_guard;
-        size_planned(planned)
-    })
-    .await??;
-    discover += sizing_started.elapsed();
 
     let reporter = progress.start(changed.len());
     let (ingested, walk) = ingest_changed::<W::Region, S, W::Lock>(
@@ -405,28 +392,6 @@ where
     Ok((report, timings))
 }
 
-/// Size the files the plan ingests, from metadata only. Blocking: `stat`
-/// belongs on a blocking pool, never on an async worker.
-///
-/// Only planned files are sized, so an out-of-scope file that vanishes
-/// mid-run cannot fail the pass. A planned file that cannot be sized
-/// fails it: the read that follows would fail on it anyway, and a size
-/// of 0 would hide the I/O error instead of reporting it.
-fn size_planned<R: RegionFile>(
-    planned: Vec<(RegionKey, R)>,
-) -> Result<Vec<PlannedFile<R>>, AppError>
-where
-    AppError: From<R::Error>,
-{
-    planned
-        .into_iter()
-        .map(|(key, region)| {
-            let size = region.size()?;
-            Ok(PlannedFile { key, region, size })
-        })
-        .collect()
-}
-
 /// Staged result of walking all discovered regions.
 #[derive(Default)]
 struct RegionWalk {
@@ -481,18 +446,18 @@ struct IngestTimings {
     regions: Vec<RegionTiming>,
 }
 
-/// Ingest changed files, sequentially or concurrently across workers.
+/// Ingest changed files concurrently, at most `options.concurrency` at once.
 ///
-/// One file never justifies task overhead, so it stays inline with
-/// identical counts. Larger sets split into size-balanced groups; each
-/// worker cloned the blob adapter over the same store and syncs its own
-/// writes before returning, so joining orders every durability barrier
-/// ahead of the metadata commit. Workers need no lock: the store is
-/// append-only, so concurrent puts never conflict.
-/// Each worker keeps `guard` alive until it returns, so the world stays put
-/// while blobs are still being read out of it.
+/// Each file is its own task, and a finished file frees its slot for the
+/// next, so a slow file never holds back the files queued behind it. Tasks
+/// clone the blob adapter over the same store and need no lock: the store
+/// is append-only, so concurrent puts never conflict. Nothing here syncs
+/// the store; the caller places that barrier before the metadata commit.
+///
+/// `progress` fires per file as its task is joined, before the caller's
+/// sync.
 async fn ingest_changed<R: RegionFile, S: SekaiStore, L: WorldLock>(
-    changed: Vec<PlannedFile<R>>,
+    changed: Vec<(RegionKey, R)>,
     cas: S::Blobs,
     options: &CommitOptions,
     scope: Scope,
@@ -507,54 +472,35 @@ where
         timings: Vec::with_capacity(changed.len()),
         ..Default::default()
     };
-    if changed.is_empty() {
-        return Ok(walk.into_parts());
-    }
-    let workers = match options.concurrency {
+    let slots = match options.concurrency {
         0 => std::thread::available_parallelism().map_or(4, NonZeroUsize::get),
         n => n,
-    }
-    .min(changed.len())
-    .max(1);
-    let groups = partition_groups(changed, workers);
-    let mut files_done = 0usize;
-
-    let mut set = tokio::task::JoinSet::new();
-    for group in groups {
-        let cas = cas.clone();
+    };
+    let spawn = |set: &mut JoinSet<Result<FileOutcome, AppError>>,
+                 (key, region): (RegionKey, R)| {
+        let mut cas = cas.clone();
         let scope = scope.clone();
         let guard = Arc::clone(guard);
-        set.spawn(async move {
-            let _guard = guard;
-            let mut outcomes = Vec::with_capacity(group.len());
-            let mut cas = cas;
-            for file in group {
-                let outcome: FileOutcome =
-                    ingest_file(file.region, file.key, &mut cas, &scope, dry_run).await?;
-                outcomes.push(outcome);
-            }
-            let sync_elapsed = if dry_run {
-                // Nothing was written: no shards to sync.
-                Duration::ZERO
-            } else {
-                // Barrier for this worker's shards; the join orders all
-                // barriers before the metadata commit.
-                let sync_started = Instant::now();
-                cas.sync().await?;
-                sync_started.elapsed()
-            };
-            Ok::<_, AppError>((outcomes, sync_elapsed))
-        });
+        set.spawn(async move { ingest_file(region, key, &mut cas, scope, dry_run, guard).await });
+    };
+
+    let mut queued = changed.into_iter();
+    let mut set = JoinSet::new();
+    for file in queued.by_ref().take(slots) {
+        spawn(&mut set, file);
     }
-    while let Some(outcome) = set.join_next().await {
-        let (outcomes, sync_elapsed) = outcome.map_err(|source| {
+    let mut files_done = 0usize;
+    // Completion order surfaces a failed file at once; returning drops the
+    // set, which aborts the files still in flight.
+    while let Some(joined) = set.join_next().await {
+        let outcome = joined.map_err(|source| {
             AppError::Storage(StorageError::backend("ingest worker", source))
         })??;
-        walk.cas += sync_elapsed;
-        for outcome in outcomes {
-            files_done += 1;
-            progress.step(files_done);
-            merge_outcome(&mut walk, outcome);
+        files_done += 1;
+        progress.step(files_done);
+        merge_outcome(&mut walk, outcome);
+        if let Some(file) = queued.next() {
+            spawn(&mut set, file);
         }
     }
     // Completion order is nondeterministic; keep timing output stable.
@@ -562,31 +508,6 @@ where
     // tree spells its locations as it sees fit.
     walk.timings.sort_by_key(|(key, _)| *key);
     Ok(walk.into_parts())
-}
-
-/// Split changed files into size-balanced groups, one per worker.
-///
-/// Largest files first onto the currently lightest group, so every group
-/// is non-empty.
-fn partition_groups<R>(
-    mut changed: Vec<PlannedFile<R>>,
-    workers: usize,
-) -> Vec<Vec<PlannedFile<R>>> {
-    changed.sort_by_key(|file| std::cmp::Reverse(file.size));
-    let mut groups: Vec<Vec<PlannedFile<R>>> = Vec::with_capacity(workers);
-    groups.resize_with(workers, Vec::new);
-    let mut loads = vec![0u64; workers];
-    for file in changed {
-        let lightest = loads
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, load)| *load)
-            .map_or(0, |(index, _)| index);
-        loads[lightest] += file.size;
-        groups[lightest].push(file);
-    }
-    groups.retain(|group| !group.is_empty());
-    groups
 }
 
 fn merge_outcome(walk: &mut RegionWalk, outcome: FileOutcome) {
@@ -608,24 +529,29 @@ fn merge_outcome(walk: &mut RegionWalk, outcome: FileOutcome) {
 /// `key` names the file: discovery found it under that identity, and the
 /// timing row reports the same one.
 ///
-/// Reading and hashing touch the world and run on the blocking pool; the
-/// store pass then awaits the CAS for each payload. Splitting the passes
-/// this way keeps chunk bytes from outliving the image that owns them.
-async fn ingest_file<R: RegionFile, C: BlobStore<Error = StorageError>>(
+/// Reading and hashing touch the world and run on the blocking pool, which
+/// holds `guard` until they end (ADR-0022): an abandoned ingest cannot free
+/// the world while a file is still being read. The store pass then awaits
+/// the CAS for each payload. Splitting the passes this way keeps chunk
+/// bytes from outliving the image that owns them.
+async fn ingest_file<R: RegionFile, C: BlobStore<Error = StorageError>, L: WorldLock>(
     region: R,
     key: RegionKey,
     cas: &mut C,
-    scope: &Scope,
+    scope: Scope,
     dry_run: bool,
+    guard: Arc<SharedWorldGuard<L>>,
 ) -> Result<FileOutcome, AppError>
 where
     AppError: From<R::Error>,
 {
     let location = region.to_string();
-    let scope = scope.clone();
-    let staged = tokio::task::spawn_blocking(move || stage_file(&region, key, &scope))
-        .await
-        .map_err(|source| AppError::Storage(StorageError::backend("ingest worker", source)))??;
+    let staged = tokio::task::spawn_blocking(move || {
+        let _guard = guard;
+        stage_file(&region, key, &scope)
+    })
+    .await
+    .map_err(|source| AppError::Storage(StorageError::backend("ingest worker", source)))??;
 
     let mut new_blobs = 0usize;
     let mut cas_elapsed = Duration::ZERO;

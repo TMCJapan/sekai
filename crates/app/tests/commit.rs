@@ -852,10 +852,7 @@ async fn progress_fires_per_changed_file() {
         .commit(options(), sekai_app::Scope::World, &recorded)
         .await
         .unwrap();
-    let events = recorded.events();
-    assert_eq!(events.len(), 2);
-    assert!(events.iter().all(|&(_, total)| total == 2));
-    assert_eq!(events.last().unwrap().0, 2);
+    assert_eq!(recorded.events(), [(1, 2), (2, 2)]);
 }
 
 #[tokio::test]
@@ -950,10 +947,7 @@ async fn progress_events_cover_checkout_diff_and_gc() {
         )
         .await
         .unwrap();
-    let events = recorded.events();
-    assert_eq!(events.len(), 2);
-    assert!(events.iter().all(|&(_, total)| total == 2));
-    assert_eq!(events.last().unwrap().0, 2);
+    assert_eq!(recorded.events(), [(1, 2), (2, 2)]);
 
     let coord = sekai_app::ChunkCoord::new(
         sekai_app::Dimension::OVERWORLD,

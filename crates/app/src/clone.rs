@@ -7,12 +7,14 @@
 //! files; only vanilla namespaces are derivable (custom dimensions fail
 //! loudly with the offending coordinates, as in checkout).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 
 use sekai_core::{ChunkCoord, ChunkHash, CommitId, RegionKey, Scope};
 use sekai_storage::{SekaiStore, StorageError};
 use sekai_world::{RegionFile, WorldTree};
+use tokio::task::{Id, JoinError, JoinSet};
 
 use crate::checkout::{MissingBlobPolicy, fetch_or_skip};
 use crate::error::AppError;
@@ -57,7 +59,9 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// layout comes from how it was constructed (for example
     /// `HostWorldTree::new_legacy` or `HostWorldTree::new_bukkit`). Only
     /// `scope` is cloned. `progress` fires as files complete, on the async
-    /// side.
+    /// side, counting them in the order their writes land, which need not
+    /// be plan order. A failed or cancelled clone leaves `out` incomplete,
+    /// but every file in it is whole.
     pub async fn clone_to<W: WorldTree>(
         &self,
         out: &W,
@@ -128,8 +132,14 @@ struct CloneJob<S: SekaiStore, W: WorldTree> {
 
 /// Rebuild every commit region file under `out`.
 ///
-/// Blob fetches are async; each file's build and write runs on the blocking
-/// pool, never on an async worker.
+/// Blob fetches run here, one file at a time; each file's write runs on the
+/// blocking pool while the next file is fetched. A queued write holds a
+/// whole region image, so at most one per CPU is in flight. Writes are
+/// settled between files and at the end, in the order they land.
+///
+/// Returning early or being cancelled drops the writes that have not
+/// started; those already running finish. Every write swaps a finished file
+/// into place, so `out` may be incomplete but never holds a partial file.
 async fn clone_files<S: SekaiStore, W: WorldTree>(
     job: CloneJob<S, W>,
     timestamp: u32,
@@ -150,38 +160,69 @@ where
         chunks_restored: 0,
     };
     let mut progress = progress.start(groups.len());
-    let mut files_done = 0usize;
+    let limit = std::thread::available_parallelism().map_or(4, NonZeroUsize::get);
+    let mut writes = JoinSet::new();
+    // A panicking write reaches us as a bare task id; this names its file.
+    let mut files = HashMap::new();
     let mut blob_buf = Vec::new();
-    let mut steps = Vec::new();
     for (key, rows) in &groups {
         let region = out.derive_region(*key)?;
         let mut writer = sekai_anvil::RegionBuilder::new(key.rx, key.rz, timestamp)?;
+        let mut chunks = 0usize;
         for (coord, hash) in rows {
             if !fetch_or_skip(&cas, hash, options.on_missing_blob, &mut blob_buf).await? {
                 continue;
             }
             writer.stage_chunk(coord.x, coord.z, &blob_buf)?;
-            report.chunks_restored += 1;
+            chunks += 1;
         }
-        // Queued as soon as its input is ready: a cancelled future must not
-        // take a file it has already promised to write with it.
         let image = writer.image()?;
-        steps.push((
-            tokio::task::spawn_blocking(move || region.write(&image).map_err(AppError::from)),
-            key,
-        ));
+        let write = writes.spawn_blocking(move || {
+            region.write(&image).map_err(AppError::from)?;
+            Ok(chunks)
+        });
+        files.insert(write.id(), *key);
+
+        while let Some(landed) = writes.try_join_next_with_id() {
+            settle(landed, &mut files, &mut report, &mut progress)?;
+        }
+        if writes.len() >= limit
+            && let Some(landed) = writes.join_next_with_id().await
+        {
+            settle(landed, &mut files, &mut report, &mut progress)?;
+        }
     }
-    // Collect in plan order, so a failure names the file it came from.
-    for (step, key) in steps {
-        step.await.map_err(|err| {
-            AppError::Storage(StorageError::backend(
-                "clone worker",
-                std::io::Error::other(format!("the file step for {key:?} stopped: {err}")),
-            ))
-        })??;
-        report.files_written += 1;
-        files_done += 1;
-        progress.step(files_done);
+    while let Some(landed) = writes.join_next_with_id().await {
+        settle(landed, &mut files, &mut report, &mut progress)?;
     }
     Ok(report)
+}
+
+/// Count one landed write, or turn its failure into the clone's error.
+fn settle(
+    landed: Result<(Id, Result<usize, AppError>), JoinError>,
+    files: &mut HashMap<Id, RegionKey>,
+    report: &mut CloneReport,
+    progress: &mut impl Reporter,
+) -> Result<(), AppError> {
+    let chunks = match landed {
+        Ok((id, written)) => {
+            files.remove(&id);
+            written?
+        }
+        Err(err) => {
+            let file = files.remove(&err.id()).map_or_else(
+                || "a write".to_owned(),
+                |key| format!("the write for {key:?}"),
+            );
+            return Err(AppError::Storage(StorageError::backend(
+                "clone worker",
+                std::io::Error::other(format!("{file} stopped: {err}")),
+            )));
+        }
+    };
+    report.files_written += 1;
+    report.chunks_restored += chunks;
+    progress.step(report.files_written);
+    Ok(())
 }

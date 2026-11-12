@@ -8,9 +8,10 @@ mod fixtures;
 
 use fixtures::chunk_nbt;
 
-use sekai_app::HostWorldTree;
+use sekai_app::{HostWorldTree, ProgressBuilder, Reporter};
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Mutex;
 
 /// A temp dir whose name starts with the calling test's name (tempfile
 /// appends a random suffix), removed when its guard is dropped at the end
@@ -108,6 +109,72 @@ async fn clone_rebuilds_commit_into_fresh_directory() {
         chunk_map(out_path.join("DIM-1/region/r.0.0.mca")),
         expected_nether
     );
+}
+
+/// Records a clone's events as `(files_done, files_total)`.
+#[derive(Default)]
+struct Recorded(Mutex<Vec<(usize, usize)>>);
+
+struct Recorder<'a> {
+    events: &'a Mutex<Vec<(usize, usize)>>,
+    total: usize,
+}
+
+impl ProgressBuilder for Recorded {
+    fn start(&self, total: usize) -> impl Reporter {
+        Recorder {
+            events: &self.0,
+            total,
+        }
+    }
+}
+
+impl Reporter for Recorder<'_> {
+    fn step(&mut self, done: usize) {
+        self.events.lock().unwrap().push((done, self.total));
+    }
+}
+
+/// Progress is sized with the total, then counts a file only once it is
+/// written.
+#[tokio::test]
+async fn clone_progress_counts_written_files() {
+    let (root, _guard) = tempdir("progress");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    write_region(
+        world_path.join("region/r.0.0.mca"),
+        &[(0, 0, chunk_nbt("marker-1")), (1, 0, chunk_nbt("marker-2"))],
+    );
+    write_region(
+        world_path.join("region/r.1.0.mca"),
+        &[(32, 0, chunk_nbt("marker-3"))],
+    );
+
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    instance
+        .world_mut(&mut world)
+        .commit(commit_options(), sekai_app::Scope::World, &())
+        .await
+        .unwrap();
+    let commits = instance.list_commits().await.unwrap();
+
+    let recorded = Recorded::default();
+    let out = HostWorldTree::new_legacy(root.join("cloned"));
+    let (report, _) = instance
+        .clone_to(
+            &out,
+            commits[0].id,
+            sekai_app::CloneOptions::default(),
+            sekai_app::Scope::World,
+            &recorded,
+        )
+        .await
+        .unwrap();
+    assert_eq!(report.files_written, 2);
+    assert_eq!(report.chunks_restored, 3);
+    assert_eq!(*recorded.0.lock().unwrap(), [(1, 2), (2, 2)]);
 }
 
 #[tokio::test]
