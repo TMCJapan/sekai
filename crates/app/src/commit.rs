@@ -480,10 +480,7 @@ where
         let mut cas = cas.clone();
         let scope = scope.clone();
         let guard = Arc::clone(guard);
-        set.spawn(async move {
-            let _guard = guard;
-            ingest_file(region, key, &mut cas, scope, dry_run).await
-        });
+        set.spawn(async move { ingest_file(region, key, &mut cas, scope, dry_run, guard).await });
     };
 
     let mut queued = changed.into_iter();
@@ -531,23 +528,29 @@ fn merge_outcome(walk: &mut RegionWalk, outcome: FileOutcome) {
 /// `key` names the file: discovery found it under that identity, and the
 /// timing row reports the same one.
 ///
-/// Reading and hashing touch the world and run on the blocking pool; the
-/// store pass then awaits the CAS for each payload. Splitting the passes
-/// this way keeps chunk bytes from outliving the image that owns them.
-async fn ingest_file<R: RegionFile, C: BlobStore<Error = StorageError>>(
+/// Reading and hashing touch the world and run on the blocking pool, which
+/// holds `guard` until they end (ADR-0022): an abandoned ingest cannot free
+/// the world while a file is still being read. The store pass then awaits
+/// the CAS for each payload. Splitting the passes this way keeps chunk
+/// bytes from outliving the image that owns them.
+async fn ingest_file<R: RegionFile, C: BlobStore<Error = StorageError>, L: WorldLock>(
     region: R,
     key: RegionKey,
     cas: &mut C,
     scope: Scope,
     dry_run: bool,
+    guard: Arc<SharedWorldGuard<L>>,
 ) -> Result<FileOutcome, AppError>
 where
     AppError: From<R::Error>,
 {
     let location = region.to_string();
-    let staged = tokio::task::spawn_blocking(move || stage_file(&region, key, &scope))
-        .await
-        .map_err(|source| AppError::Storage(StorageError::backend("ingest worker", source)))??;
+    let staged = tokio::task::spawn_blocking(move || {
+        let _guard = guard;
+        stage_file(&region, key, &scope)
+    })
+    .await
+    .map_err(|source| AppError::Storage(StorageError::backend("ingest worker", source)))??;
 
     let mut new_blobs = 0usize;
     let mut cas_elapsed = Duration::ZERO;
