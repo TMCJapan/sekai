@@ -17,6 +17,7 @@ use sekai_world::{RegionFile, WorldTree};
 use crate::checkout::{MissingBlobPolicy, fetch_or_skip};
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
+use crate::progress::{ProgressBuilder, Reporter};
 
 /// Clone policy. `Default` aborts on missing blobs, as in checkout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -45,17 +46,6 @@ pub struct CloneTimings {
     pub clone_files: Duration,
 }
 
-/// Per-file progress report for the `progress` callback.
-#[derive(Debug, Clone, Copy)]
-pub struct CloneProgress {
-    /// Files fully rebuilt so far.
-    pub files_done: usize,
-    /// Files to rebuild in total.
-    pub files_total: usize,
-    /// Chunks restored so far.
-    pub chunks_done: usize,
-}
-
 impl<S: SekaiStore> SekaiInstance<S> {
     /// Rebuild `commit` from the store into `out`, returning execution
     /// report and per-phase timings.
@@ -66,16 +56,15 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// starts there after the emptiness check is not excluded. Its
     /// layout comes from how it was constructed (for example
     /// `HostWorldTree::new_legacy` or `HostWorldTree::new_bukkit`). Only
-    /// `scope` is cloned. `progress` fires as files complete; it must be
-    /// `'static` because the file pass runs on a blocking pool (pass a
-    /// `move` closure owning its state).
+    /// `scope` is cloned. `progress` fires as files complete, on the async
+    /// side.
     pub async fn clone_to<W: WorldTree>(
         &self,
         out: &W,
         commit: CommitId,
         options: CloneOptions,
         scope: Scope,
-        progress: impl Fn(CloneProgress) + Send + 'static,
+        progress: &impl ProgressBuilder,
     ) -> Result<(CloneReport, CloneTimings), AppError>
     where
         AppError: From<W::Error>,
@@ -144,7 +133,7 @@ struct CloneJob<S: SekaiStore, W: WorldTree> {
 async fn clone_files<S: SekaiStore, W: WorldTree>(
     job: CloneJob<S, W>,
     timestamp: u32,
-    progress: impl Fn(CloneProgress),
+    progress: &impl ProgressBuilder,
 ) -> Result<CloneReport, AppError>
 where
     AppError: From<W::Error>,
@@ -160,7 +149,7 @@ where
         files_written: 0,
         chunks_restored: 0,
     };
-    let files_total = groups.len();
+    let mut progress = progress.start(groups.len());
     let mut files_done = 0usize;
     let mut blob_buf = Vec::new();
     let mut steps = Vec::new();
@@ -192,11 +181,7 @@ where
         })??;
         report.files_written += 1;
         files_done += 1;
-        progress(CloneProgress {
-            files_done,
-            files_total,
-            chunks_done: report.chunks_restored,
-        });
+        progress.step(files_done);
     }
     Ok(report)
 }

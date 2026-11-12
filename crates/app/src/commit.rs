@@ -32,6 +32,7 @@ use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
 
 use crate::error::AppError;
 use crate::instance::{SharedWorldGuard, WorldHandle, WorldHandleMut};
+use crate::progress::{ProgressBuilder, Reporter};
 use crate::regions::discover_regions;
 use crate::time::now_ms;
 
@@ -88,17 +89,6 @@ pub struct StatusTimings {
     pub ingest: Duration,
     /// Subset of `ingest` spent hashing.
     pub hash: Duration,
-}
-
-/// Per-file progress report for the `progress` callback.
-#[derive(Debug, Clone, Copy)]
-pub struct CommitProgress {
-    /// Files fully ingested so far.
-    pub files_done: usize,
-    /// Files to ingest in total.
-    pub files_total: usize,
-    /// Chunks ingested so far.
-    pub chunks_done: usize,
 }
 
 /// Per-phase timings. Informational only; never changes commit semantics.
@@ -183,7 +173,7 @@ where
         &mut self,
         options: CommitOptions,
         scope: Scope,
-        progress: impl Fn(CommitProgress) + Send,
+        progress: &impl ProgressBuilder,
     ) -> Result<(CommitReport, CommitTimings), AppError> {
         let total = Instant::now();
         // The world stays stable for the whole read pass; the store needs no
@@ -247,13 +237,14 @@ struct Prepared {
 /// changed files - the whole pipeline `commit` and `status` share.
 ///
 /// Under `dry_run` blobs are probed instead of stored, so the staged rows
-/// are the same numbers a real commit would commit.
+/// are the same numbers a real commit would commit. The reporter is built
+/// from `progress` once the number of files to ingest is known.
 async fn prepare<W: WorldTree, S: SekaiStore>(
     store: &S,
     world: &W,
     options: &CommitOptions,
     scope: &Scope,
-    progress: impl Fn(CommitProgress) + Send,
+    progress: &impl ProgressBuilder,
     dry_run: bool,
     guard: &Arc<SharedWorldGuard<W::Lock>>,
 ) -> Result<Prepared, AppError>
@@ -293,12 +284,13 @@ where
     .await??;
     discover += sizing_started.elapsed();
 
+    let reporter = progress.start(changed.len());
     let (ingested, walk) = ingest_changed::<W::Region, S, W::Lock>(
         changed,
         store.blob().clone(),
         options,
         scope.clone(),
-        progress,
+        reporter,
         dry_run,
         guard,
     )
@@ -330,7 +322,7 @@ where
         &self,
         options: StatusOptions,
         scope: Scope,
-        progress: impl Fn(CommitProgress) + Send,
+        progress: &impl ProgressBuilder,
     ) -> Result<(StatusReport, StatusTimings), AppError> {
         let guard = SharedWorldGuard::acquire(self.world, WorldLockMode::Shared)?;
         status_impl(
@@ -354,7 +346,7 @@ where
         &self,
         options: StatusOptions,
         scope: Scope,
-        progress: impl Fn(CommitProgress) + Send,
+        progress: &impl ProgressBuilder,
     ) -> Result<(StatusReport, StatusTimings), AppError> {
         self.view().status(options, scope, progress).await
     }
@@ -366,7 +358,7 @@ async fn status_impl<W: WorldTree, S: SekaiStore>(
     world: &W,
     options: StatusOptions,
     scope: Scope,
-    progress: impl Fn(CommitProgress) + Send,
+    progress: &impl ProgressBuilder,
     guard: &Arc<SharedWorldGuard<W::Lock>>,
 ) -> Result<(StatusReport, StatusTimings), AppError>
 where
@@ -504,7 +496,7 @@ async fn ingest_changed<R: RegionFile, S: SekaiStore, L: WorldLock>(
     cas: S::Blobs,
     options: &CommitOptions,
     scope: Scope,
-    progress: impl Fn(CommitProgress) + Send,
+    mut progress: impl Reporter,
     dry_run: bool,
     guard: &Arc<SharedWorldGuard<L>>,
 ) -> Result<(Ingested, IngestTimings), AppError>
@@ -525,9 +517,7 @@ where
     .min(changed.len())
     .max(1);
     let groups = partition_groups(changed, workers);
-    let files_total: usize = groups.iter().map(Vec::len).sum();
     let mut files_done = 0usize;
-    let mut chunks_done = 0usize;
 
     let mut set = tokio::task::JoinSet::new();
     for group in groups {
@@ -563,12 +553,7 @@ where
         walk.cas += sync_elapsed;
         for outcome in outcomes {
             files_done += 1;
-            chunks_done += outcome.timing.chunks;
-            progress(CommitProgress {
-                files_done,
-                files_total,
-                chunks_done,
-            });
+            progress.step(files_done);
             merge_outcome(&mut walk, outcome);
         }
     }

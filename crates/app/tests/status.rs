@@ -69,7 +69,7 @@ async fn status_counts_tombstones_without_writing() {
         .commit(
             sekai_app::CommitOptions::default(),
             sekai_app::Scope::World,
-            |_| {},
+            &(),
         )
         .await
         .unwrap();
@@ -79,7 +79,7 @@ async fn status_counts_tombstones_without_writing() {
     let blobs_before = blob_count(&store).await;
     let (report, timings) = instance
         .world(&world)
-        .status(options(), sekai_app::Scope::World, |_| {})
+        .status(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
     assert!(!report.clean);
@@ -115,14 +115,14 @@ async fn status_reports_a_clean_world_after_commit() {
         .commit(
             sekai_app::CommitOptions::default(),
             sekai_app::Scope::World,
-            |_| {},
+            &(),
         )
         .await
         .unwrap();
 
     let (report, timings) = instance
         .world(&world)
-        .status(options(), sekai_app::Scope::World, |_| {})
+        .status(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
     assert!(report.clean);

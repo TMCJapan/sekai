@@ -14,13 +14,12 @@ use fixtures::chunk_nbt;
 
 use sekai_app::{
     CheckoutOptions, ChunkHash, CloneOptions, CommitId, CommitOptions, Dimension, HostWorldTree,
-    Rect, RefName, Scope, ScopeName, SekaiInstance, StatusOptions, WorldError, WorldLockMode,
-    WorldTree,
+    ProgressBuilder, Rect, RefName, Reporter, Scope, ScopeName, SekaiInstance, StatusOptions,
+    WorldError, WorldLockMode, WorldTree,
 };
 use sekai_core::MetaStore as _;
 use sekai_storage_sqlite::SqliteStore;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
@@ -72,7 +71,7 @@ impl Fixture {
         let mut instance = SekaiInstance::init(&store).await.unwrap();
         let (report, _) = instance
             .world_mut(&mut world)
-            .commit(CommitOptions::default(), Scope::World, |_| {})
+            .commit(CommitOptions::default(), Scope::World, &())
             .await
             .unwrap();
         let commit = report.commit;
@@ -242,7 +241,7 @@ impl Op {
             Self::CommitStats => instance.commit_stats(id).await.map(drop),
             Self::CommitCoords => instance.commit_chunk_coords(id).await.map(drop),
             Self::DiffBlobs => instance.diff_blobs(&fx.blob, &fx.blob).await.map(drop),
-            Self::DiffChunks => instance.diff_chunks(id, id, &[], |_| {}).await.map(drop),
+            Self::DiffChunks => instance.diff_chunks(id, id, &[], &()).await.map(drop),
             Self::Clone => {
                 let clone_dir = fx.root.join(format!(
                     "clone-{}",
@@ -250,43 +249,43 @@ impl Op {
                 ));
                 let out = HostWorldTree::new_legacy(clone_dir);
                 let outcome = instance
-                    .clone_to(&out, id, CloneOptions::default(), Scope::World, |_| {})
+                    .clone_to(&out, id, CloneOptions::default(), Scope::World, &())
                     .await;
                 outcome.map(drop)
             }
             Self::GcPlan => instance.gc_plan().await.map(drop),
             Self::GcApply => {
                 let plan = sekai_app::GcPlan::new(Vec::new(), 0);
-                instance.gc_apply(&plan, |_| {}).await.map(drop)
+                instance.gc_apply(&plan, &()).await.map(drop)
             }
-            Self::Gc => instance.gc(|_| {}).await.map(drop),
+            Self::Gc => instance.gc(&()).await.map(drop),
             Self::PrunePlan => instance.prune_plan(Some(u64::MAX), None).await.map(drop),
             Self::PruneApply => {
                 let plan = sekai_app::PrunePlan {
                     delete: Vec::new(),
                     retained: vec![id],
                 };
-                instance.prune_apply(&plan, |_| {}).await.map(drop)
+                instance.prune_apply(&plan, &()).await.map(drop)
             }
-            Self::Prune => instance.prune(Some(u64::MAX), None, |_| {}).await.map(drop),
+            Self::Prune => instance.prune(Some(u64::MAX), None, &()).await.map(drop),
             Self::Commit => instance
                 .world_mut(&mut fx.world)
-                .commit(CommitOptions::default(), Scope::World, |_| {})
+                .commit(CommitOptions::default(), Scope::World, &())
                 .await
                 .map(drop),
             Self::Status => instance
                 .world(&fx.world)
-                .status(StatusOptions::default(), Scope::World, |_| {})
+                .status(StatusOptions::default(), Scope::World, &())
                 .await
                 .map(drop),
             Self::DiffWorld => instance
                 .world(&fx.world)
-                .diff_world_chunks(None, &[], |_| {})
+                .diff_world_chunks(None, &[], &())
                 .await
                 .map(drop),
             Self::Checkout => instance
                 .world_mut(&mut fx.world)
-                .checkout(id, CheckoutOptions::default(), Scope::World, |_| {})
+                .checkout(id, CheckoutOptions::default(), Scope::World, &())
                 .await
                 .map(drop),
             Self::WorldChunkCoords => sekai_app::world_chunk_coords(&fx.world).map(drop),
@@ -345,10 +344,10 @@ async fn collection_and_pruning_do_not_trip_over_their_own_phases() {
     // `gc`/`prune` plan and apply under the lock they already hold;
     // taking a phase's lock again inside the run (say, `gc` going through
     // `gc_plan`) would conflict with that hold.
-    fx.instance.gc(|_| {}).await.unwrap();
-    fx.instance.prune(Some(1), None, |_| {}).await.unwrap();
+    fx.instance.gc(&()).await.unwrap();
+    fx.instance.prune(Some(1), None, &()).await.unwrap();
     let (plan, _) = fx.instance.gc_plan().await.unwrap();
-    fx.instance.gc_apply(&plan, |_| {}).await.unwrap();
+    fx.instance.gc_apply(&plan, &()).await.unwrap();
 }
 
 /// A cancelled checkout future cannot stop its blocking file pass, so the
@@ -364,20 +363,19 @@ async fn collection_and_pruning_do_not_trip_over_their_own_phases() {
 async fn a_cancelled_checkout_keeps_the_world_locked_until_its_files_finish() {
     let mut fx = Fixture::new("cancel").await;
     let other = fx.other_world();
-    let reported = Arc::new(AtomicUsize::new(0));
+    let reported = Counted::default();
 
     // A second tree over the same folder: the first one is busy being run.
     let mut world = fx.other_world();
     let mut handle = fx.instance.world_mut(&mut world);
-    let checkout = handle.checkout(fx.commit, CheckoutOptions::default(), Scope::World, {
-        let reported = Arc::clone(&reported);
-        move |_| {
-            reported.fetch_add(1, Ordering::SeqCst);
-        }
-    });
-    let observed = Arc::clone(&reported);
+    let checkout = handle.checkout(
+        fx.commit,
+        CheckoutOptions::default(),
+        Scope::World,
+        &reported,
+    );
     let mut checkout = Box::pin(checkout);
-    poll_until(&mut checkout, || observed.load(Ordering::SeqCst) > 0).await;
+    poll_until(&mut checkout, || reported.count() > 0).await;
     drop(checkout);
 
     // The future is gone; the pass it queued is not. The world stays shut
@@ -418,19 +416,17 @@ async fn a_cancelled_clone_still_finishes_its_files() {
     // Not `HostWorldTree::new`: it creates its folder up front, and clone
     // only accepts an empty target.
     let out = HostWorldTree::new_legacy(&target);
-    let reported = Arc::new(AtomicUsize::new(0));
+    let reported = Counted::default();
 
-    let clone = fx
-        .instance
-        .clone_to(&out, fx.commit, CloneOptions::default(), Scope::World, {
-            let reported = Arc::clone(&reported);
-            move |_| {
-                reported.fetch_add(1, Ordering::SeqCst);
-            }
-        });
-    let observed = Arc::clone(&reported);
+    let clone = fx.instance.clone_to(
+        &out,
+        fx.commit,
+        CloneOptions::default(),
+        Scope::World,
+        &reported,
+    );
     let mut clone = Box::pin(clone);
-    poll_until(&mut clone, || observed.load(Ordering::SeqCst) >= 1).await;
+    poll_until(&mut clone, || reported.count() >= 1).await;
     drop(clone);
 
     // Nothing about the store is held, so readers keep working while the
@@ -443,6 +439,30 @@ async fn a_cancelled_clone_still_finishes_its_files() {
             "the clone output was abandoned halfway"
         );
         tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
+/// Counts the events of a checkout or clone, readable while it runs.
+#[derive(Default)]
+struct Counted(AtomicUsize);
+
+impl Counted {
+    fn count(&self) -> usize {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+struct Counter<'a>(&'a AtomicUsize);
+
+impl ProgressBuilder for Counted {
+    fn start(&self, _: usize) -> impl Reporter {
+        Counter(&self.0)
+    }
+}
+
+impl Reporter for Counter<'_> {
+    fn step(&mut self, _: usize) {
+        self.0.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -495,5 +515,5 @@ fn read_regions(root: impl AsRef<Path>) -> Vec<String> {
 async fn a_leftover_run_marker_is_ignored() {
     let mut fx = Fixture::new("marker").await;
     std::fs::write(fx.root.join("store/commit.inflight"), "12345 0\n").unwrap();
-    fx.instance.gc(|_| {}).await.unwrap();
+    fx.instance.gc(&()).await.unwrap();
 }

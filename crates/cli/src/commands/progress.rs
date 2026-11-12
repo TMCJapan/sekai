@@ -1,43 +1,74 @@
 //! Opt-in stderr progress bars (`--progress`), shared by report commands.
 
 use indicatif::{ProgressBar, ProgressStyle};
+use sekai_app::{ProgressBuilder, Reporter};
 
-/// Progress bar for `--progress`, drawn on stderr. `None` unless the flag
+/// What a bar counts, shown after its counters.
+#[derive(Debug, Clone, Copy)]
+pub enum Unit {
+    Files,
+    Chunks,
+    Blobs,
+    Commits,
+}
+
+impl Unit {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Files => "files",
+            Self::Chunks => "chunks",
+            Self::Blobs => "blobs",
+            Self::Commits => "commits",
+        }
+    }
+}
+
+/// Progress bar for `--progress`, drawn on stderr. Hidden unless the flag
 /// is set and stderr is a TTY, so piped output stays clean; `--json`
 /// refuses the flag at parse time instead.
-pub fn progress_bar(enabled: bool) -> Option<ProgressBar> {
-    if !enabled || !std::io::IsTerminal::is_terminal(&std::io::stderr()) {
-        return None;
-    }
-    let bar = ProgressBar::new(0);
-    bar.set_style(
-        ProgressStyle::with_template("{bar:40} {pos}/{len} {msg}")
-            .unwrap_or_else(|_| ProgressStyle::default_bar()),
-    );
-    Some(bar)
-}
+///
+/// A disabled bar is indicatif's hidden bar rather than an absent one, so
+/// every update stays unconditional and simply draws nothing.
+///
+/// Dropping it clears the bar as well (indicatif finishes an unfinished
+/// bar with `ProgressFinish::AndClear` by default), so a command that
+/// returns early on an error needs no `finish` call.
+pub struct BarProgress(ProgressBar);
 
-/// Advance `bar`, adopting the total on first sight (totals arrive with
-/// the first event). `detail` trails the counters, e.g. `"files 12
-/// chunks"`.
-pub fn report_progress(
-    bar: Option<&ProgressBar>,
-    done: usize,
-    total: usize,
-    detail: impl Into<String>,
-) {
-    if let Some(bar) = bar {
-        if bar.length() != Some(total as u64) {
-            bar.set_length(total as u64);
+impl BarProgress {
+    /// Create a bar counting `unit`, or a hidden one unless `enabled` is
+    /// set. Its stderr draw target already hides itself when stderr is not a
+    /// TTY.
+    pub fn new(enabled: bool, unit: Unit) -> Self {
+        if !enabled {
+            return Self(ProgressBar::hidden());
         }
-        bar.set_position(done as u64);
-        bar.set_message(detail.into());
+        let bar = ProgressBar::new(0);
+        bar.set_style(
+            ProgressStyle::with_template("{bar:40} {pos}/{len} {msg}")
+                .unwrap_or_else(|_| ProgressStyle::default_bar()),
+        );
+        bar.set_message(unit.label());
+        Self(bar)
+    }
+
+    /// Clear the bar; the human report line that follows carries the summary.
+    pub fn finish(&self) {
+        self.0.finish_and_clear();
     }
 }
 
-/// Clear the bar; the human report line that follows carries the summary.
-pub fn finish_progress(bar: Option<&ProgressBar>) {
-    if let Some(bar) = bar {
-        bar.finish_and_clear();
+impl ProgressBuilder for BarProgress {
+    fn start(&self, total: usize) -> impl Reporter {
+        self.0.set_length(total as u64);
+        BarReporter(&self.0)
+    }
+}
+
+struct BarReporter<'a>(&'a ProgressBar);
+
+impl Reporter for BarReporter<'_> {
+    fn step(&mut self, done: usize) {
+        self.0.set_position(done as u64);
     }
 }

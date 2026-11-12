@@ -11,6 +11,7 @@ use sekai_storage::SekaiStore;
 
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
+use crate::progress::{ProgressBuilder, Reporter};
 
 /// Per-phase timings for commit pruning.
 #[derive(Debug, Clone, Default)]
@@ -21,15 +22,6 @@ pub struct PruneTimings {
     pub plan: Duration,
     /// Folding and deleting commits.
     pub apply: Duration,
-}
-
-/// Per-commit progress report for the `progress` callback.
-#[derive(Debug, Clone, Copy)]
-pub struct PruneProgress {
-    /// Commits deleted so far.
-    pub commits_done: usize,
-    /// Commits to delete in total.
-    pub commits_total: usize,
 }
 
 impl<S: SekaiStore> SekaiInstance<S> {
@@ -64,7 +56,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
     pub async fn prune_apply(
         &mut self,
         plan: &PrunePlan,
-        progress: impl FnMut(PruneProgress) + Send,
+        progress: &impl ProgressBuilder,
     ) -> Result<(PruneReport, PruneTimings), AppError> {
         let total_started = Instant::now();
         let (report, apply_dt) = apply_within(self.store_mut(), plan, progress).await?;
@@ -82,7 +74,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
         &mut self,
         keep_last: Option<u64>,
         before: Option<CommitId>,
-        progress: impl FnMut(PruneProgress) + Send,
+        progress: &impl ProgressBuilder,
     ) -> Result<(PruneReport, PruneTimings), AppError> {
         let total_started = Instant::now();
         let (plan, plan_dt) = plan_within(self.store(), keep_last, before).await?;
@@ -117,14 +109,12 @@ async fn plan_within<S: SekaiStore>(
 async fn apply_within<S: SekaiStore>(
     store: &mut S,
     plan: &PrunePlan,
-    mut progress: impl FnMut(PruneProgress) + Send,
+    progress: &impl ProgressBuilder,
 ) -> Result<(PruneReport, Duration), AppError> {
     let started = Instant::now();
-    let report = sekai_core::usecase::prune::prune_apply(store.meta_mut(), plan, |done, total| {
-        progress(PruneProgress {
-            commits_done: done,
-            commits_total: total,
-        });
+    let mut progress = progress.start(plan.delete.len());
+    let report = sekai_core::usecase::prune::prune_apply(store.meta_mut(), plan, |done, _| {
+        progress.step(done);
     })
     .await
     .map_err(AppError::Prune)?;

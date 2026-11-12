@@ -5,7 +5,7 @@ use sekai_app::{CommitOptions, CommitReport, CommitTimings, HostWorldTree};
 use serde::Serialize;
 use std::path::Path;
 
-use super::progress::{finish_progress, progress_bar, report_progress};
+use super::progress::{BarProgress, Unit};
 use super::{ReportOut, resolve_selection};
 use crate::cli::Selection;
 use crate::envelope::envelope_ok;
@@ -38,24 +38,17 @@ pub async fn run(
     let fresh_store = !store_preexists(store);
     let mut world = HostWorldTree::new(&world_path)
         .with_context(|| format!("failed to inspect world {}", world_path.as_ref().display()))?;
-    let bar = progress_bar(progress);
+    let bar = BarProgress::new(progress, Unit::Files);
     let mut instance = sekai_app::SekaiInstance::init(store)
         .await
         .with_context(|| format!("commit of {} failed", world_path.as_ref().display()))?;
     let scope = resolve_selection(&instance, selection).await?;
     let (report, timings) = instance
         .world_mut(&mut world)
-        .commit(options(jobs), scope, |update| {
-            report_progress(
-                bar.as_ref(),
-                update.files_done,
-                update.files_total,
-                format!("files {} chunks", update.chunks_done),
-            );
-        })
+        .commit(options(jobs), scope, &bar)
         .await
         .with_context(|| format!("commit of {} failed", world_path.as_ref().display()))?;
-    finish_progress(bar.as_ref());
+    bar.finish();
     if out.json {
         println!(
             "{}",

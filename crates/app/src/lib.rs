@@ -22,25 +22,24 @@ mod diff;
 mod error;
 mod gc;
 mod instance;
+mod progress;
 mod prune;
 mod refs;
 mod regions;
 mod scopes;
 mod time;
 
-pub use checkout::{
-    CheckoutOptions, CheckoutProgress, CheckoutTimings, MissingBlobPolicy, MissingFilePolicy,
-};
-pub use clone::{CloneOptions, CloneProgress, CloneReport, CloneTimings};
+pub use checkout::{CheckoutOptions, CheckoutTimings, MissingBlobPolicy, MissingFilePolicy};
+pub use clone::{CloneOptions, CloneReport, CloneTimings};
 pub use commit::{
-    CommitOptions, CommitProgress, CommitTimings, RegionTiming, StatusOptions, StatusReport,
-    StatusTimings,
+    CommitOptions, CommitTimings, RegionTiming, StatusOptions, StatusReport, StatusTimings,
 };
-pub use diff::{ChunkDiff, DiffProgress, DiffTimings, world_chunk_coords};
+pub use diff::{ChunkDiff, DiffTimings, world_chunk_coords};
 pub use error::AppError;
-pub use gc::{GcProgress, GcTimings};
+pub use gc::GcTimings;
 pub use instance::{SekaiInstance, WorldHandle, WorldHandleMut};
-pub use prune::{PruneProgress, PruneTimings};
+pub use progress::{ProgressBuilder, Reporter};
+pub use prune::PruneTimings;
 pub use sekai_core::{
     Area, CheckoutReport, ChunkCoord, ChunkHash, Commit, CommitId, CommitRef, CommitReport,
     CommitStats, DEFAULT_REF_NAME, Dimension, GcPlan, GcReport, NamedScope, NamedScopeError,

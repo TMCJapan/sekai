@@ -22,7 +22,7 @@ fn benches(c: &mut Criterion) {
         rt.block_on(
             instance
                 .world_mut(&mut world)
-                .commit(options(), Scope::World, |_| {}),
+                .commit(options(), Scope::World, &()),
         )
         .expect("commit works");
         let commits = rt.block_on(instance.list_commits()).expect("list works");
@@ -30,7 +30,7 @@ fn benches(c: &mut Criterion) {
             .block_on(instance.commit_chunk_coords(commits[0].id))
             .expect("coords work");
         b.iter(|| {
-            rt.block_on(instance.diff_chunks(commits[0].id, commits[0].id, &coords, |_| {}))
+            rt.block_on(instance.diff_chunks(commits[0].id, commits[0].id, &coords, &()))
                 .expect("diff works");
         });
     });
@@ -51,7 +51,7 @@ fn benches(c: &mut Criterion) {
         rt.block_on(
             instance
                 .world_mut(&mut world)
-                .commit(options(), Scope::World, |_| {}),
+                .commit(options(), Scope::World, &()),
         )
         .expect("commit works");
         let commits = rt.block_on(instance.list_commits()).expect("list works");
@@ -59,7 +59,7 @@ fn benches(c: &mut Criterion) {
             .block_on(instance.commit_chunk_coords(commits[0].id))
             .expect("coords work");
         b.iter(|| {
-            rt.block_on(instance.diff_chunks(commits[0].id, commits[0].id, &coords, |_| {}))
+            rt.block_on(instance.diff_chunks(commits[0].id, commits[0].id, &coords, &()))
                 .expect("diff works");
         });
     });

@@ -8,10 +8,11 @@ mod fixtures;
 
 use fixtures::chunk_nbt;
 
-use sekai_app::{CommitId, CommitOptions, RegionKind, Scope};
+use sekai_app::{CommitId, CommitOptions, ProgressBuilder, RegionKind, Reporter, Scope};
 use sekai_app::{HostWorldTree, WorldTree};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 /// A temp dir whose name starts with the calling test's name (tempfile
 /// appends a random suffix), removed when its guard is dropped at the end
@@ -93,7 +94,7 @@ async fn commits_a_non_canonical_region_name() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let (report, timings) = instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
     assert_eq!(report.chunks, 1);
@@ -138,7 +139,7 @@ async fn timing_rows_are_ordered_by_region_identity() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let (_, timings) = instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
     let locations: Vec<&str> = timings
@@ -171,7 +172,7 @@ async fn scoped_commit_records_no_spurious_tombstones() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let (full, _) = instance
         .world_mut(&mut world)
-        .commit(options(), Scope::World, |_| {})
+        .commit(options(), Scope::World, &())
         .await
         .unwrap();
     assert_eq!(full.chunks, 3);
@@ -181,7 +182,7 @@ async fn scoped_commit_records_no_spurious_tombstones() {
     // out-of-scope nether chunk must not become a tombstone.
     let (scoped, _) = instance
         .world_mut(&mut world)
-        .commit(options(), Scope::dimension(Dimension::OVERWORLD), |_| {})
+        .commit(options(), Scope::dimension(Dimension::OVERWORLD), &())
         .await
         .unwrap();
     assert_eq!(scoped.tombstones, 0);
@@ -201,7 +202,7 @@ async fn scoped_commit_records_no_spurious_tombstones() {
     write_region(&over, &[(0, 0, payload)]);
     let (scoped2, _) = instance
         .world_mut(&mut world)
-        .commit(options(), Scope::dimension(Dimension::OVERWORLD), |_| {})
+        .commit(options(), Scope::dimension(Dimension::OVERWORLD), &())
         .await
         .unwrap();
     assert_eq!(scoped2.tombstones, 1);
@@ -211,7 +212,7 @@ async fn scoped_commit_records_no_spurious_tombstones() {
     // not resurrect its tombstoned chunk in the present count either.
     let (full2, _) = instance
         .world_mut(&mut world)
-        .commit(options(), Scope::World, |_| {})
+        .commit(options(), Scope::World, &())
         .await
         .unwrap();
     assert_eq!(full2.tombstones, 0);
@@ -242,7 +243,7 @@ async fn partial_scope_then_full_commit_reingests_unread_chunks() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .commit(options(), Scope::World, |_| {})
+        .commit(options(), Scope::World, &())
         .await
         .unwrap();
 
@@ -254,7 +255,7 @@ async fn partial_scope_then_full_commit_reingests_unread_chunks() {
     };
     let (scoped, _) = instance
         .world_mut(&mut world)
-        .commit(options(), partial, |_| {})
+        .commit(options(), partial, &())
         .await
         .unwrap();
     assert_eq!(scoped.chunks, 1);
@@ -264,7 +265,7 @@ async fn partial_scope_then_full_commit_reingests_unread_chunks() {
     // needs a new blob, and its content reaches history.
     let (full, _) = instance
         .world_mut(&mut world)
-        .commit(options(), Scope::World, |_| {})
+        .commit(options(), Scope::World, &())
         .await
         .unwrap();
     assert_eq!(full.chunks, 2);
@@ -284,7 +285,7 @@ async fn partial_scope_then_full_commit_reingests_unread_chunks() {
     // A repeated full commit has nothing left to write.
     let (quiet, _) = instance
         .world_mut(&mut world)
-        .commit(options(), Scope::World, |_| {})
+        .commit(options(), Scope::World, &())
         .await
         .unwrap();
     assert_eq!(quiet.chunks, 2);
@@ -316,7 +317,7 @@ async fn scoped_commit_addresses_a_detected_trio_world() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let (report, _) = instance
         .world_mut(&mut world)
-        .commit(options(), Scope::dimension(Dimension::OVERWORLD), |_| {})
+        .commit(options(), Scope::dimension(Dimension::OVERWORLD), &())
         .await
         .unwrap();
     // Only the overworld chunks: the scope must address the discovered
@@ -340,7 +341,7 @@ async fn scoped_checkout_leaves_other_dimensions_untouched() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .commit(options(), Scope::World, |_| {})
+        .commit(options(), Scope::World, &())
         .await
         .unwrap();
     let commits = instance.list_commits().await.unwrap();
@@ -360,7 +361,7 @@ async fn scoped_checkout_leaves_other_dimensions_untouched() {
             commits[0].id,
             sekai_app::CheckoutOptions::default(),
             Scope::dimension(Dimension::OVERWORLD),
-            |_| {},
+            &(),
         )
         .await
         .unwrap();
@@ -377,7 +378,7 @@ async fn scoped_checkout_leaves_other_dimensions_untouched() {
             commits[0].id,
             sekai_app::CheckoutOptions::default(),
             Scope::dimension(Dimension::NETHER),
-            |_| {},
+            &(),
         )
         .await
         .unwrap();
@@ -395,7 +396,7 @@ async fn scoped_checkout_leaves_other_dimensions_untouched() {
             commits[0].id,
             sekai_app::CheckoutOptions::default(),
             Scope::dimension(Dimension::OVERWORLD),
-            |_| {},
+            &(),
         )
         .await
         .unwrap();
@@ -414,7 +415,7 @@ async fn strict_checkout_removes_post_commit_files() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
 
@@ -424,7 +425,7 @@ async fn strict_checkout_removes_post_commit_files() {
     write_region(&kept, &[]);
     instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
     let commits = instance.list_commits().await.unwrap();
@@ -437,7 +438,7 @@ async fn strict_checkout_removes_post_commit_files() {
             commits[1].id,
             sekai_app::CheckoutOptions::default(),
             sekai_app::Scope::World,
-            |_| {},
+            &(),
         )
         .await
         .unwrap();
@@ -454,7 +455,7 @@ async fn strict_checkout_removes_post_commit_files() {
             commits[0].id,
             sekai_app::CheckoutOptions::default(),
             sekai_app::Scope::World,
-            |_| {},
+            &(),
         )
         .await
         .unwrap();
@@ -477,7 +478,7 @@ async fn keep_options_preserve_post_commit_data() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
     let commits = instance.list_commits().await.unwrap();
@@ -497,7 +498,7 @@ async fn keep_options_preserve_post_commit_data() {
     };
     let (checked_out, _) = instance
         .world_mut(&mut world)
-        .checkout(commits[0].id, keep, sekai_app::Scope::World, |_| {})
+        .checkout(commits[0].id, keep, sekai_app::Scope::World, &())
         .await
         .unwrap();
     assert_eq!(checked_out.files_written, 1);
@@ -525,14 +526,14 @@ async fn keep_tombstoned_chunks_preserves_live_bytes() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
     // Delete one chunk: the second commit tombstones it.
     write_region(&region, &[(0, 0, chunk_nbt("marker-1"))]);
     instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
     let commits = instance.list_commits().await.unwrap();
@@ -551,7 +552,7 @@ async fn keep_tombstoned_chunks_preserves_live_bytes() {
             commits[1].id,
             sekai_app::CheckoutOptions::default(),
             sekai_app::Scope::World,
-            |_| {},
+            &(),
         )
         .await
         .unwrap();
@@ -570,7 +571,7 @@ async fn keep_tombstoned_chunks_preserves_live_bytes() {
     };
     let (checked_out, _) = instance
         .world_mut(&mut world)
-        .checkout(commits[1].id, keep, sekai_app::Scope::World, |_| {})
+        .checkout(commits[1].id, keep, sekai_app::Scope::World, &())
         .await
         .unwrap();
     assert_eq!(checked_out.chunks_restored, 1);
@@ -592,14 +593,14 @@ async fn keep_tombstoned_chunks_leaves_fully_tombstoned_files() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
     // Empty the region: the second commit tombstones its only chunk.
     write_region(&region, &[]);
     instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
     let commits = instance.list_commits().await.unwrap();
@@ -612,7 +613,7 @@ async fn keep_tombstoned_chunks_leaves_fully_tombstoned_files() {
     };
     let (checked_out, _) = instance
         .world_mut(&mut world)
-        .checkout(commits[1].id, keep, sekai_app::Scope::World, |_| {})
+        .checkout(commits[1].id, keep, sekai_app::Scope::World, &())
         .await
         .unwrap();
     assert_eq!(checked_out.files_written, 0);
@@ -626,7 +627,7 @@ async fn keep_tombstoned_chunks_leaves_fully_tombstoned_files() {
             commits[1].id,
             sekai_app::CheckoutOptions::default(),
             sekai_app::Scope::World,
-            |_| {},
+            &(),
         )
         .await
         .unwrap();
@@ -648,7 +649,7 @@ async fn missing_blob_abort_is_default_and_skip_recovers() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
     let commits = instance.list_commits().await.unwrap();
@@ -678,7 +679,7 @@ async fn missing_blob_abort_is_default_and_skip_recovers() {
                 commits[0].id,
                 sekai_app::CheckoutOptions::default(),
                 sekai_app::Scope::World,
-                |_| {},
+                &(),
             )
             .await
             .is_err()
@@ -692,7 +693,7 @@ async fn missing_blob_abort_is_default_and_skip_recovers() {
     };
     let (checked_out, _) = instance
         .world_mut(&mut world)
-        .checkout(commits[0].id, skip, sekai_app::Scope::World, |_| {})
+        .checkout(commits[0].id, skip, sekai_app::Scope::World, &())
         .await
         .unwrap();
     assert_eq!(checked_out.files_written, 1);
@@ -713,7 +714,7 @@ async fn missing_file_error_policy_refuses_to_guess() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
     let commits = instance.list_commits().await.unwrap();
@@ -726,7 +727,7 @@ async fn missing_file_error_policy_refuses_to_guess() {
             commits[0].id,
             sekai_app::CheckoutOptions::default(),
             sekai_app::Scope::World,
-            |_| {},
+            &(),
         )
         .await
         .unwrap();
@@ -742,7 +743,7 @@ async fn missing_file_error_policy_refuses_to_guess() {
     assert!(
         instance
             .world_mut(&mut world)
-            .checkout(commits[0].id, strict, sekai_app::Scope::World, |_| {})
+            .checkout(commits[0].id, strict, sekai_app::Scope::World, &())
             .await
             .is_err()
     );
@@ -754,7 +755,7 @@ async fn missing_file_error_policy_refuses_to_guess() {
     };
     let (checked_out, _) = instance
         .world_mut(&mut world)
-        .checkout(commits[0].id, derived, sekai_app::Scope::World, |_| {})
+        .checkout(commits[0].id, derived, sekai_app::Scope::World, &())
         .await
         .unwrap();
     assert_eq!(checked_out.files_written, 1);
@@ -775,7 +776,7 @@ async fn commit_records_no_diff_metadata() {
     let mut instance = sekai_app::SekaiInstance::init(&store_url).await.unwrap();
     let (report, _) = instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
     assert_eq!(report.chunks, 1);
@@ -799,9 +800,38 @@ async fn commit_records_no_diff_metadata() {
     assert!(row.blob.is_some());
 }
 
+/// Records every event of the runs it reports as `(done, total)`.
+#[derive(Default)]
+struct Recorded(Mutex<Vec<(usize, usize)>>);
+
+impl Recorded {
+    fn events(&self) -> Vec<(usize, usize)> {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+struct Recorder<'a> {
+    events: &'a Mutex<Vec<(usize, usize)>>,
+    total: usize,
+}
+
+impl ProgressBuilder for Recorded {
+    fn start(&self, total: usize) -> impl Reporter {
+        Recorder {
+            events: &self.0,
+            total,
+        }
+    }
+}
+
+impl Reporter for Recorder<'_> {
+    fn step(&mut self, done: usize) {
+        self.events.lock().unwrap().push((done, self.total));
+    }
+}
+
 #[tokio::test]
 async fn progress_fires_per_changed_file() {
-    use std::sync::{Arc, Mutex};
     let (root, _guard) = tempdir("progress");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -815,17 +845,14 @@ async fn progress_fires_per_changed_file() {
         &[(32, 0, chunk_nbt("marker-2"))],
     );
 
-    let events = Arc::new(Mutex::new(Vec::new()));
-    let seen = Arc::clone(&events);
+    let recorded = Recorded::default();
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, move |p| {
-            seen.lock().unwrap().push((p.files_done, p.files_total));
-        })
+        .commit(options(), sekai_app::Scope::World, &recorded)
         .await
         .unwrap();
-    let events = events.lock().unwrap();
+    let events = recorded.events();
     assert_eq!(events.len(), 2);
     assert!(events.iter().all(|&(_, total)| total == 2));
     assert_eq!(events.last().unwrap().0, 2);
@@ -841,7 +868,7 @@ async fn errors_surface_loudly() {
     assert!(
         instance
             .world_mut(&mut missing)
-            .commit(options(), sekai_app::Scope::World, |_| {})
+            .commit(options(), sekai_app::Scope::World, &())
             .await
             .is_err()
     );
@@ -854,7 +881,7 @@ async fn errors_surface_loudly() {
                 CommitId([99; 32]),
                 sekai_app::CheckoutOptions::default(),
                 sekai_app::Scope::World,
-                |_| {},
+                &(),
             )
             .await
             .is_err()
@@ -875,7 +902,7 @@ async fn gc_runs_and_returns_timings() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
 
@@ -883,7 +910,7 @@ async fn gc_runs_and_returns_timings() {
     assert_eq!(plan.orphans, [] as [sekai_app::ChunkHash; 0]);
     assert_eq!(plan_timings.apply, std::time::Duration::ZERO);
 
-    let (report, timings) = instance.gc(|_| {}).await.unwrap();
+    let (report, timings) = instance.gc(&()).await.unwrap();
     assert_eq!(report.candidates, 0);
     assert_eq!(report.removed, 0);
     assert!(timings.total >= timings.plan + timings.apply);
@@ -891,8 +918,6 @@ async fn gc_runs_and_returns_timings() {
 
 #[tokio::test]
 async fn progress_events_cover_checkout_diff_and_gc() {
-    use sekai_app::{CheckoutProgress, DiffProgress, GcProgress};
-    use std::sync::{Arc, Mutex};
     let (root, _guard) = tempdir("progress-events");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -909,31 +934,26 @@ async fn progress_events_cover_checkout_diff_and_gc() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
     let commits = instance.list_commits().await.unwrap();
 
-    let events = Arc::new(Mutex::new(Vec::new()));
-    let seen = Arc::clone(&events);
+    let recorded = Recorded::default();
     instance
         .world_mut(&mut world)
         .checkout(
             commits[0].id,
             sekai_app::CheckoutOptions::default(),
             sekai_app::Scope::World,
-            move |p: CheckoutProgress| {
-                seen.lock().unwrap().push((p.files_done, p.files_total));
-            },
+            &recorded,
         )
         .await
         .unwrap();
-    {
-        let events = events.lock().unwrap();
-        assert_eq!(events.len(), 2);
-        assert!(events.iter().all(|&(_, total)| total == 2));
-        assert_eq!(events.last().unwrap().0, 2);
-    }
+    let events = recorded.events();
+    assert_eq!(events.len(), 2);
+    assert!(events.iter().all(|&(_, total)| total == 2));
+    assert_eq!(events.last().unwrap().0, 2);
 
     let coord = sekai_app::ChunkCoord::new(
         sekai_app::Dimension::OVERWORLD,
@@ -941,43 +961,22 @@ async fn progress_events_cover_checkout_diff_and_gc() {
         0,
         0,
     );
-    let seen_diff = Arc::new(Mutex::new(Vec::new()));
-    let seen_clone = Arc::clone(&seen_diff);
+    let recorded = Recorded::default();
     let (diffs, _) = instance
-        .diff_chunks(
-            commits[0].id,
-            commits[0].id,
-            &[coord],
-            move |p: DiffProgress| {
-                seen_clone
-                    .lock()
-                    .unwrap()
-                    .push((p.chunks_done, p.chunks_total));
-            },
-        )
+        .diff_chunks(commits[0].id, commits[0].id, &[coord], &recorded)
         .await
         .unwrap();
     assert!(diffs.iter().all(|diff| diff.entries.is_empty()));
-    assert_eq!(&*seen_diff.lock().unwrap(), &[(1, 1)]);
+    assert_eq!(recorded.events(), [(1, 1)]);
 
-    let seen_gc = Arc::new(Mutex::new(Vec::new()));
-    let seen_clone = Arc::clone(&seen_gc);
-    let (report, _) = instance
-        .gc(move |p: GcProgress| {
-            seen_clone
-                .lock()
-                .unwrap()
-                .push((p.blobs_done, p.blobs_total));
-        })
-        .await
-        .unwrap();
+    let recorded = Recorded::default();
+    let (report, _) = instance.gc(&recorded).await.unwrap();
     assert_eq!(report.candidates, 0);
-    assert!(seen_gc.lock().unwrap().is_empty());
+    assert_eq!(recorded.events(), []);
 }
 
 #[tokio::test]
 async fn checkout_progress_completes_for_tombstone_only_region() {
-    use std::sync::{Arc, Mutex};
     let (root, _guard) = tempdir("progress-tombstone-only");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -994,7 +993,7 @@ async fn checkout_progress_completes_for_tombstone_only_region() {
 
     instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
 
@@ -1002,7 +1001,7 @@ async fn checkout_progress_completes_for_tombstone_only_region() {
 
     let (second, _) = instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
 
@@ -1010,18 +1009,14 @@ async fn checkout_progress_completes_for_tombstone_only_region() {
 
     let commit_id = instance.latest_commit_id().await.unwrap();
 
-    let events = Arc::new(Mutex::new(Vec::new()));
-    let seen = Arc::clone(&events);
-
+    let recorded = Recorded::default();
     let (report, _) = instance
         .world_mut(&mut world)
         .checkout(
             commit_id,
             sekai_app::CheckoutOptions::default(),
             sekai_app::Scope::World,
-            move |p| {
-                seen.lock().unwrap().push((p.files_done, p.files_total));
-            },
+            &recorded,
         )
         .await
         .unwrap();
@@ -1030,8 +1025,7 @@ async fn checkout_progress_completes_for_tombstone_only_region() {
     assert_eq!(report.files_deleted, 0);
     assert!(!doomed.exists());
 
-    let events = events.lock().unwrap();
-    assert_eq!(*events, [(1, 2), (2, 2)]);
+    assert_eq!(recorded.events(), [(1, 2), (2, 2)]);
 }
 
 #[tokio::test]
@@ -1046,7 +1040,7 @@ async fn diff_chunk_between_commits() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
 
@@ -1056,7 +1050,7 @@ async fn diff_chunk_between_commits() {
     write_region(&region, &[(0, 0, chunk_nbt("minecraft:empty"))]);
     instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
 
@@ -1096,7 +1090,7 @@ async fn a_region_payload_outside_the_chunk_schema_fails_ingest() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
 
@@ -1105,7 +1099,7 @@ async fn a_region_payload_outside_the_chunk_schema_fails_ingest() {
     write_region(&region, &[(0, 0, vec![3, 0x0a, 0, 0, 0])]);
     let err = instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap_err();
     let message = format!("{err}");
@@ -1131,7 +1125,7 @@ async fn diff_world_chunk_with_commit() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
 
@@ -1170,7 +1164,7 @@ async fn diffs_a_non_canonical_region_name() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
 
@@ -1216,7 +1210,7 @@ async fn commits_region_with_trailing_partial_sector() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let (report, _) = instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
     assert_eq!(report.chunks, 1);
@@ -1242,7 +1236,7 @@ async fn corrupt_region_names_its_file() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let err = instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap_err();
     let message = format!("{err}");
@@ -1276,7 +1270,7 @@ async fn sparse_entities_chunk_diffs_empty_without_error() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
     let commits = instance.list_commits().await.unwrap();
@@ -1314,7 +1308,7 @@ async fn legacy_level_chunks_diff_by_content() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
     let commits = instance.list_commits().await.unwrap();
@@ -1346,7 +1340,7 @@ async fn legacy_level_chunks_diff_by_content() {
     // Commit-to-commit diff reads the stored legacy blob the same way.
     instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
     let commits_after = instance.list_commits().await.unwrap();
@@ -1376,7 +1370,7 @@ async fn truncated_legacy_chunk_diff_names_its_coord() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
 
@@ -1496,7 +1490,7 @@ async fn created_and_deleted_chunks_diff_as_added_removed() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
 
@@ -1504,7 +1498,7 @@ async fn created_and_deleted_chunks_diff_as_added_removed() {
     write_region(&entities, &[(0, 0, chunk_nbt("minecraft:full"))]);
     instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
     let commits = instance.list_commits().await.unwrap();
@@ -1519,7 +1513,7 @@ async fn created_and_deleted_chunks_diff_as_added_removed() {
     std::fs::remove_file(&entities).unwrap();
     instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
     let commits = instance.list_commits().await.unwrap();
@@ -1545,7 +1539,7 @@ async fn all_kinds_round_trip() {
         let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
         instance
             .world_mut(&mut world)
-            .commit(options(), sekai_app::Scope::World, |_| {})
+            .commit(options(), sekai_app::Scope::World, &())
             .await
             .unwrap();
 
@@ -1554,7 +1548,7 @@ async fn all_kinds_round_trip() {
         write_region(&file, &[(0, 0, chunk_nbt("minecraft:empty"))]);
         instance
             .world_mut(&mut world)
-            .commit(options(), sekai_app::Scope::World, |_| {})
+            .commit(options(), sekai_app::Scope::World, &())
             .await
             .unwrap();
         let commits = instance.list_commits().await.unwrap();
@@ -1571,7 +1565,7 @@ async fn all_kinds_round_trip() {
                 commits[0].id,
                 sekai_app::CheckoutOptions::default(),
                 sekai_app::Scope::World,
-                |_| {},
+                &(),
             )
             .await
             .unwrap();
@@ -1602,7 +1596,7 @@ async fn rect_and_kind_scopes_limit_ingest() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .commit(options(), Scope::World, |_| {})
+        .commit(options(), Scope::World, &())
         .await
         .unwrap();
 
@@ -1614,7 +1608,7 @@ async fn rect_and_kind_scopes_limit_ingest() {
     };
     let (report, _) = instance
         .world_mut(&mut world)
-        .commit(options(), rect, |_| {})
+        .commit(options(), rect, &())
         .await
         .unwrap();
     assert_eq!(report.chunks, 2);
@@ -1627,7 +1621,7 @@ async fn rect_and_kind_scopes_limit_ingest() {
     };
     let (report, _) = instance
         .world_mut(&mut world)
-        .commit(options(), entities, |_| {})
+        .commit(options(), entities, &())
         .await
         .unwrap();
     assert_eq!(report.chunks, 1);
@@ -1636,7 +1630,7 @@ async fn rect_and_kind_scopes_limit_ingest() {
     // A following full commit is quiet: nothing spurious was recorded.
     let (full, _) = instance
         .world_mut(&mut world)
-        .commit(options(), Scope::World, |_| {})
+        .commit(options(), Scope::World, &())
         .await
         .unwrap();
     assert_eq!(full.tombstones, 0);
@@ -1676,7 +1670,7 @@ async fn real_world_corpus_round_trip() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     let (report, _) = instance
         .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, |_| {})
+        .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
     assert_eq!(report.chunks, 1024 + 151 + 14);
@@ -1692,7 +1686,7 @@ async fn real_world_corpus_round_trip() {
             .collect::<Vec<_>>();
         assert!(!coords.is_empty(), "kind {kind:?} has chunks");
         let (diffs, _) = instance
-            .diff_chunks(commits[0].id, commits[0].id, &coords, |_| {})
+            .diff_chunks(commits[0].id, commits[0].id, &coords, &())
             .await
             .unwrap();
         assert!(diffs.iter().all(|diff| diff.entries.is_empty()));
@@ -1715,7 +1709,7 @@ async fn real_world_corpus_round_trip() {
             commits[0].id,
             sekai_app::CheckoutOptions::default(),
             sekai_app::Scope::World,
-            |_| {},
+            &(),
         )
         .await
         .unwrap();
@@ -1804,7 +1798,7 @@ async fn randomized_commit_checkout_round_trip() {
             std::thread::sleep(std::time::Duration::from_millis(5));
             let (report, _) = instance
                 .world_mut(&mut world)
-                .commit(options(), Scope::World, |_| {})
+                .commit(options(), Scope::World, &())
                 .await
                 .unwrap_or_else(|e| panic!("seed {seed} step {step}: commit failed: {e}"));
             let expected: usize = model.values().map(BTreeMap::len).sum();
@@ -1832,7 +1826,7 @@ async fn randomized_commit_checkout_round_trip() {
                     commit.id,
                     sekai_app::CheckoutOptions::default(),
                     Scope::World,
-                    |_| {},
+                    &(),
                 )
                 .await
                 .unwrap_or_else(|e| panic!("seed {seed}: checkout failed: {e}"));

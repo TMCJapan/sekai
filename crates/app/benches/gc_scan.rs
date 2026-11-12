@@ -22,7 +22,7 @@ fn benches(c: &mut Criterion) {
         rt.block_on(
             instance
                 .world_mut(&mut world)
-                .commit(options(), Scope::World, |_| {}),
+                .commit(options(), Scope::World, &()),
         )
         .expect("commit works");
         // Plan is read-only and repeatable; apply (unlink syscalls) is

@@ -13,6 +13,7 @@ use sekai_world::{Region, RegionFile, WorldLockMode, WorldTree};
 
 use crate::error::AppError;
 use crate::instance::{SekaiInstance, SharedWorldGuard, WorldHandle, WorldHandleMut};
+use crate::progress::{ProgressBuilder, Reporter};
 use crate::regions::discover_regions;
 
 /// Per-phase timings for chunk AST diffs. Informational only; never
@@ -122,15 +123,6 @@ fn chunk_digest(coord: ChunkCoord, payload: &[u8]) -> Result<ChunkHash, AppError
         })
 }
 
-/// Per-chunk progress report for the `progress` callback.
-#[derive(Debug, Clone, Copy)]
-pub struct DiffProgress {
-    /// Chunks diffed so far.
-    pub chunks_done: usize,
-    /// Chunks to diff in total.
-    pub chunks_total: usize,
-}
-
 impl<S: SekaiStore> SekaiInstance<S> {
     /// Compute AST diff for a chunk coordinate between two commits.
     pub async fn diff_chunk(
@@ -140,7 +132,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
         coord: &ChunkCoord,
     ) -> Result<ChunkPayloadDiff, AppError> {
         let (diffs, _) = self
-            .diff_chunks(old_commit, new_commit, &[*coord], |_| {})
+            .diff_chunks(old_commit, new_commit, &[*coord], &())
             .await?;
         Ok(diffs.into_iter().next().map_or_else(
             || ChunkPayloadDiff::from_sides(None, None),
@@ -172,7 +164,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
         old_commit: CommitId,
         new_commit: CommitId,
         coords: &[ChunkCoord],
-        progress: impl FnMut(DiffProgress) + Send,
+        progress: &impl ProgressBuilder,
     ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
         let total_started = Instant::now();
         let mut timings = DiffTimings::default();
@@ -186,7 +178,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
                 store: &self.store,
                 id: new_commit,
             },
-            progress,
+            progress.start(coords.len()),
             &mut timings,
         )
         .await?;
@@ -268,7 +260,7 @@ where
         commit: Option<CommitId>,
         coord: &ChunkCoord,
     ) -> Result<ChunkPayloadDiff, AppError> {
-        let (diffs, _) = self.diff_world_chunks(commit, &[*coord], |_| {}).await?;
+        let (diffs, _) = self.diff_world_chunks(commit, &[*coord], &()).await?;
         Ok(diffs.into_iter().next().map_or_else(
             || ChunkPayloadDiff::from_sides(None, None),
             |diff| diff.entries,
@@ -287,7 +279,7 @@ where
         &self,
         commit: Option<CommitId>,
         coords: &[ChunkCoord],
-        progress: impl FnMut(DiffProgress) + Send,
+        progress: &impl ProgressBuilder,
     ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
         // Held across resolution and the reads below: the world snapshot
         // must outlive the operation.
@@ -312,7 +304,7 @@ where
             WorldDiff {
                 regions: discover_regions(self.world)?,
             },
-            progress,
+            progress.start(coords.len()),
             &mut timings,
         )
         .await?;
@@ -341,7 +333,7 @@ where
         &self,
         commit: Option<CommitId>,
         coords: &[ChunkCoord],
-        progress: impl FnMut(DiffProgress) + Send,
+        progress: &impl ProgressBuilder,
     ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
         self.view()
             .diff_world_chunks(commit, coords, progress)
@@ -427,7 +419,7 @@ async fn diff_coords(
     coords: &[ChunkCoord],
     old: impl DiffSource,
     new: impl DiffSource,
-    mut progress: impl FnMut(DiffProgress) + Send,
+    mut progress: impl Reporter,
     timings: &mut DiffTimings,
 ) -> Result<Vec<ChunkDiff>, AppError> {
     let mut out = Vec::with_capacity(coords.len());
@@ -440,10 +432,7 @@ async fn diff_coords(
         let started = Instant::now();
         let entries = ChunkPayloadDiff::from_sides(old_side.digest?, new_side.digest?);
         timings.diff_compute += started.elapsed();
-        progress(DiffProgress {
-            chunks_done: index + 1,
-            chunks_total: coords.len(),
-        });
+        progress.step(index + 1);
         out.push(ChunkDiff {
             coord: *coord,
             entries,

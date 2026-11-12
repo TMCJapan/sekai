@@ -290,18 +290,14 @@ async fn only_planned_files_are_sized() {
 
     let (report, _) = instance
         .world(&world)
-        .status(
-            options,
-            sekai_app::Scope::dimension(Dimension::NETHER),
-            |_| {},
-        )
+        .status(options, sekai_app::Scope::dimension(Dimension::NETHER), &())
         .await
         .unwrap();
     assert!(report.clean);
 
     let error = instance
         .world(&world)
-        .status(options, sekai_app::Scope::World, |_| {})
+        .status(options, sekai_app::Scope::World, &())
         .await
         .unwrap_err();
     assert!(

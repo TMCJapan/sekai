@@ -23,6 +23,7 @@ use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
 
 use crate::error::AppError;
 use crate::instance::{ExclusiveWorldGuard, WorldGuard, WorldHandleMut};
+use crate::progress::{ProgressBuilder, Reporter};
 use crate::regions::discover_regions;
 
 /// Per-phase timings for checkout execution.
@@ -36,17 +37,6 @@ pub struct CheckoutTimings {
     pub discover: Duration,
     /// Rebuilding MCA files, restoring chunks from CAS, and removing post-commit files.
     pub checkout_files: Duration,
-}
-
-/// Per-file progress report for the `progress` callback.
-#[derive(Debug, Clone, Copy)]
-pub struct CheckoutProgress {
-    /// Files fully rebuilt so far.
-    pub files_done: usize,
-    /// Files to rebuild in total.
-    pub files_total: usize,
-    /// Chunks restored so far.
-    pub chunks_done: usize,
 }
 
 /// What to do when a commit blob is absent from CAS.
@@ -102,7 +92,7 @@ where
     ///
     /// Only `scope` is rebuilt: region files outside the scope are never
     /// written, deleted, or otherwise touched. `progress` fires as files
-    /// complete, always on the async side: a callback that works straight
+    /// complete, always on the async side: a reporter that works straight
     /// on the future's own state must be safe to run there.
     ///
     /// Rebuilding writes (and may delete) region files, so it goes through
@@ -112,7 +102,7 @@ where
         commit: CommitId,
         options: CheckoutOptions,
         scope: Scope,
-        progress: impl FnMut(CheckoutProgress),
+        progress: &impl ProgressBuilder,
     ) -> Result<(CheckoutReport, CheckoutTimings), AppError> {
         let guard =
             ExclusiveWorldGuard::acquire(self.world, WorldLockMode::Exclusive)?.into_shared();
@@ -194,11 +184,11 @@ struct CheckoutJob<S: SekaiStore, T: WorldTree> {
 /// Blob fetches are async; `progress` fires between files on the async side.
 /// Each file's build and write runs on the blocking pool, never on an async
 /// worker, and reports completion through [`Completion`] so a parked
-/// `progress` callback does not also hold a blocking thread.
+/// reporter does not also hold a blocking thread.
 async fn checkout_file_pass<S: SekaiStore, T: WorldTree>(
     job: CheckoutJob<S, T>,
     timestamp: u32,
-    mut progress: impl FnMut(CheckoutProgress),
+    progress: &impl ProgressBuilder,
 ) -> Result<CheckoutReport, AppError>
 where
     AppError: From<T::Error>,
@@ -224,19 +214,14 @@ where
     };
     // Tracks the steps still queued: the last one out releases the world.
     let pending = Arc::new(AtomicUsize::new(0));
-    let files_total = keys.len();
-    // Counts files as they finish: `done` reads it, so each report carries
-    // the file it concludes rather than a running total.
+    let mut progress = progress.start(keys.len());
+    // Counted when a file starts, so each report carries the file it
+    // concludes.
     let mut files_done = 0usize;
     let mut blob_buf = Vec::new();
     #[allow(clippy::explicit_counter_loop)]
     for key in keys {
         files_done += 1;
-        let done = |chunks_done| CheckoutProgress {
-            files_done,
-            files_total,
-            chunks_done,
-        };
         let rows = groups.get(&key);
         let tombs = tombstones.get(&key);
         let region = match discovered.get(&key) {
@@ -244,7 +229,7 @@ where
             None => match rows {
                 // No rows and no file: nothing to do.
                 None => {
-                    progress(done(report.chunks_restored));
+                    progress.step(files_done);
                     continue;
                 }
                 Some(_) => resolve_target(&discovered, &world, &key, options.on_missing_file)?,
@@ -274,7 +259,7 @@ where
                 ),
             );
             report.files_deleted += usize::from(step.outcome().await?);
-            progress(done(report.chunks_restored));
+            progress.step(files_done);
             continue;
         };
         let mut writer = sekai_anvil::RegionBuilder::new(key.rx, key.rz, timestamp)?;
@@ -312,7 +297,7 @@ where
         );
         step.outcome().await?;
         report.files_written += 1;
-        progress(done(report.chunks_restored));
+        progress.step(files_done);
     }
     // Every step has been awaited, so nothing can start after this: release
     // the world rather than waiting for the guard to drop with the future.
@@ -353,7 +338,7 @@ fn release_if_idle<L>(guard: &Arc<WorldGuard<L>>, pending: &AtomicUsize) {
 ///
 /// The step owns a share of the world lock, so the lock outlives the future
 /// that started it. Completion travels over a oneshot instead of the join
-/// handle: a `progress` callback parked on the async side would otherwise
+/// handle: a progress reporter parked on the async side would otherwise
 /// keep a blocking thread busy while the step is already done, and a
 /// cancelled future must still see the lock released.
 struct Step<R, T> {

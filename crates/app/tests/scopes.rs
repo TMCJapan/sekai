@@ -183,7 +183,7 @@ async fn a_resolved_scope_limits_a_commit() {
     let scope = instance.resolve_scope(&name("spawn")).await.unwrap();
     let (report, _) = instance
         .world_mut(&mut world)
-        .commit(sekai_app::CommitOptions::default(), scope, |_| {})
+        .commit(sekai_app::CommitOptions::default(), scope, &())
         .await
         .unwrap();
     let mut coords = instance.commit_chunk_coords(report.commit).await.unwrap();

@@ -5,7 +5,7 @@ use sekai_app::{PrunePlan, PruneReport, PruneTimings};
 use serde::Serialize;
 
 use super::ReportOut;
-use super::progress::{finish_progress, progress_bar, report_progress};
+use super::progress::{BarProgress, Unit};
 use crate::cli::CommitRef;
 use crate::envelope::envelope_ok;
 use crate::style::Styler;
@@ -54,19 +54,12 @@ pub async fn run(
         return Ok(());
     }
 
-    let bar = progress_bar(progress);
+    let bar = BarProgress::new(progress, Unit::Commits);
     let (report, timings) = instance
-        .prune(keep_last, before, |update| {
-            report_progress(
-                bar.as_ref(),
-                update.commits_done,
-                update.commits_total,
-                "commits",
-            );
-        })
+        .prune(keep_last, before, &bar)
         .await
         .with_context(|| format!("prune for {store} failed"))?;
-    finish_progress(bar.as_ref());
+    bar.finish();
     if out.json {
         println!(
             "{}",

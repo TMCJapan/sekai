@@ -7,6 +7,7 @@ use sekai_storage::SekaiStore;
 
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
+use crate::progress::{ProgressBuilder, Reporter};
 
 /// Per-phase timings for garbage collection.
 #[derive(Debug, Clone, Default)]
@@ -17,15 +18,6 @@ pub struct GcTimings {
     pub plan: Duration,
     /// Re-verifying and unlinking orphan blobs from storage.
     pub apply: Duration,
-}
-
-/// Per-blob progress report for the `progress` callback.
-#[derive(Debug, Clone, Copy)]
-pub struct GcProgress {
-    /// Orphan candidates examined so far.
-    pub blobs_done: usize,
-    /// Orphan candidates in total.
-    pub blobs_total: usize,
 }
 
 impl<S: SekaiStore> SekaiInstance<S> {
@@ -56,7 +48,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
     pub async fn gc_apply(
         &mut self,
         plan: &GcPlan,
-        progress: impl FnMut(GcProgress) + Send,
+        progress: &impl ProgressBuilder,
     ) -> Result<(GcReport, GcTimings), AppError> {
         let total_started = Instant::now();
         let (report, apply_dt) = apply_within(self.store_mut(), plan, progress).await?;
@@ -72,7 +64,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// `progress` fires per examined orphan candidate during apply.
     pub async fn gc(
         &mut self,
-        progress: impl FnMut(GcProgress) + Send,
+        progress: &impl ProgressBuilder,
     ) -> Result<(GcReport, GcTimings), AppError> {
         let total_started = Instant::now();
         let (plan, plan_dt) = plan_within(self.store()).await?;
@@ -99,15 +91,13 @@ async fn plan_within<S: SekaiStore>(store: &S) -> Result<(GcPlan, Duration), App
 async fn apply_within<S: SekaiStore>(
     store: &mut S,
     plan: &GcPlan,
-    mut progress: impl FnMut(GcProgress) + Send,
+    progress: &impl ProgressBuilder,
 ) -> Result<(GcReport, Duration), AppError> {
     let started = Instant::now();
+    let mut progress = progress.start(plan.orphans.len());
     let (cas, meta) = store.blob_and_meta();
-    let report = sekai_core::usecase::gc::gc_apply(cas, meta, plan, |done, total| {
-        progress(GcProgress {
-            blobs_done: done,
-            blobs_total: total,
-        });
+    let report = sekai_core::usecase::gc::gc_apply(cas, meta, plan, |done, _| {
+        progress.step(done);
     })
     .await
     .map_err(AppError::Gc)?;
