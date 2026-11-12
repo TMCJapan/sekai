@@ -6,7 +6,7 @@ use sekai_app::{AppError, ChunkCoord, ChunkDiff, CommitId, HostWorldTree, Scope,
 use super::diff_render::{
     TimedDiffs, diff_group_payload, print_diff_timing_table, render_diff_coords,
 };
-use super::progress::BarProgress;
+use super::progress::{BarProgress, Unit};
 use super::resolve_selection;
 use crate::cli::{CommitRef, DiffArgs, DiffTarget, Selection};
 use crate::envelope::envelope_ok;
@@ -27,7 +27,7 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
     };
     let instance = sekai_app::SekaiInstance::open(store).await?;
     let scope = resolve_selection(&instance, &args.selection).await?;
-    let bar = BarProgress::new(args.progress);
+    let bar = BarProgress::new(args.progress, Unit::Chunks);
 
     let (diffs, timings) = match args.target() {
         DiffTarget::World { world, commit } => {

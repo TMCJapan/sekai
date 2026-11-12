@@ -7,7 +7,7 @@ use sekai_storage::SekaiStore;
 
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
-use crate::progress::{GcReporter, ProgressBuilder};
+use crate::progress::{ProgressBuilder, Reporter};
 
 /// Per-phase timings for garbage collection.
 #[derive(Debug, Clone, Default)]
@@ -94,7 +94,7 @@ async fn apply_within<S: SekaiStore>(
     progress: &impl ProgressBuilder,
 ) -> Result<(GcReport, Duration), AppError> {
     let started = Instant::now();
-    let mut progress = progress.gc(plan.orphans.len());
+    let mut progress = progress.start(plan.orphans.len());
     let (cas, meta) = store.blob_and_meta();
     let report = sekai_core::usecase::gc::gc_apply(cas, meta, plan, |done, _| {
         progress.step(done);

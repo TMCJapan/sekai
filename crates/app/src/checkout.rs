@@ -23,7 +23,7 @@ use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
 
 use crate::error::AppError;
 use crate::instance::{ExclusiveWorldGuard, WorldGuard, WorldHandleMut};
-use crate::progress::{CheckoutReporter, ProgressBuilder};
+use crate::progress::{ProgressBuilder, Reporter};
 use crate::regions::discover_regions;
 
 /// Per-phase timings for checkout execution.
@@ -214,7 +214,7 @@ where
     };
     // Tracks the steps still queued: the last one out releases the world.
     let pending = Arc::new(AtomicUsize::new(0));
-    let mut progress = progress.checkout(keys.len());
+    let mut progress = progress.start(keys.len());
     // Counted when a file starts, so each report carries the file it
     // concludes.
     let mut files_done = 0usize;
@@ -229,7 +229,7 @@ where
             None => match rows {
                 // No rows and no file: nothing to do.
                 None => {
-                    progress.step(files_done, report.chunks_restored);
+                    progress.step(files_done);
                     continue;
                 }
                 Some(_) => resolve_target(&discovered, &world, &key, options.on_missing_file)?,
@@ -259,7 +259,7 @@ where
                 ),
             );
             report.files_deleted += usize::from(step.outcome().await?);
-            progress.step(files_done, report.chunks_restored);
+            progress.step(files_done);
             continue;
         };
         let mut writer = sekai_anvil::RegionBuilder::new(key.rx, key.rz, timestamp)?;
@@ -297,7 +297,7 @@ where
         );
         step.outcome().await?;
         report.files_written += 1;
-        progress.step(files_done, report.chunks_restored);
+        progress.step(files_done);
     }
     // Every step has been awaited, so nothing can start after this: release
     // the world rather than waiting for the guard to drop with the future.

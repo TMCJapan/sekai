@@ -5,7 +5,7 @@ use sekai_app::{PrunePlan, PruneReport, PruneTimings};
 use serde::Serialize;
 
 use super::ReportOut;
-use super::progress::BarProgress;
+use super::progress::{BarProgress, Unit};
 use crate::cli::CommitRef;
 use crate::envelope::envelope_ok;
 use crate::style::Styler;
@@ -54,7 +54,7 @@ pub async fn run(
         return Ok(());
     }
 
-    let bar = BarProgress::new(progress);
+    let bar = BarProgress::new(progress, Unit::Commits);
     let (report, timings) = instance
         .prune(keep_last, before, &bar)
         .await

@@ -32,7 +32,7 @@ use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
 
 use crate::error::AppError;
 use crate::instance::{SharedWorldGuard, WorldHandle, WorldHandleMut};
-use crate::progress::{CommitReporter, ProgressBuilder};
+use crate::progress::{ProgressBuilder, Reporter};
 use crate::regions::discover_regions;
 use crate::time::now_ms;
 
@@ -284,7 +284,7 @@ where
     .await??;
     discover += sizing_started.elapsed();
 
-    let reporter = progress.commit(changed.len());
+    let reporter = progress.start(changed.len());
     let (ingested, walk) = ingest_changed::<W::Region, S, W::Lock>(
         changed,
         store.blob().clone(),
@@ -496,7 +496,7 @@ async fn ingest_changed<R: RegionFile, S: SekaiStore, L: WorldLock>(
     cas: S::Blobs,
     options: &CommitOptions,
     scope: Scope,
-    mut progress: impl CommitReporter,
+    mut progress: impl Reporter,
     dry_run: bool,
     guard: &Arc<SharedWorldGuard<L>>,
 ) -> Result<(Ingested, IngestTimings), AppError>
@@ -518,7 +518,6 @@ where
     .max(1);
     let groups = partition_groups(changed, workers);
     let mut files_done = 0usize;
-    let mut chunks_done = 0usize;
 
     let mut set = tokio::task::JoinSet::new();
     for group in groups {
@@ -554,8 +553,7 @@ where
         walk.cas += sync_elapsed;
         for outcome in outcomes {
             files_done += 1;
-            chunks_done += outcome.timing.chunks;
-            progress.step(files_done, chunks_done);
+            progress.step(files_done);
             merge_outcome(&mut walk, outcome);
         }
     }

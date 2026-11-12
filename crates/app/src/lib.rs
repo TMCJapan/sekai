@@ -38,10 +38,7 @@ pub use diff::{ChunkDiff, DiffTimings, world_chunk_coords};
 pub use error::AppError;
 pub use gc::GcTimings;
 pub use instance::{SekaiInstance, WorldHandle, WorldHandleMut};
-pub use progress::{
-    CheckoutReporter, CloneReporter, CommitReporter, DiffReporter, GcReporter, ProgressBuilder,
-    PruneReporter,
-};
+pub use progress::{ProgressBuilder, Reporter};
 pub use prune::PruneTimings;
 pub use sekai_core::{
     Area, CheckoutReport, ChunkCoord, ChunkHash, Commit, CommitId, CommitRef, CommitReport,

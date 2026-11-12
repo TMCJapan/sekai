@@ -13,7 +13,7 @@ use sekai_world::{Region, RegionFile, WorldLockMode, WorldTree};
 
 use crate::error::AppError;
 use crate::instance::{SekaiInstance, SharedWorldGuard, WorldHandle, WorldHandleMut};
-use crate::progress::{DiffReporter, ProgressBuilder};
+use crate::progress::{ProgressBuilder, Reporter};
 use crate::regions::discover_regions;
 
 /// Per-phase timings for chunk AST diffs. Informational only; never
@@ -178,7 +178,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
                 store: &self.store,
                 id: new_commit,
             },
-            progress.diff(coords.len()),
+            progress.start(coords.len()),
             &mut timings,
         )
         .await?;
@@ -304,7 +304,7 @@ where
             WorldDiff {
                 regions: discover_regions(self.world)?,
             },
-            progress.diff(coords.len()),
+            progress.start(coords.len()),
             &mut timings,
         )
         .await?;
@@ -419,7 +419,7 @@ async fn diff_coords(
     coords: &[ChunkCoord],
     old: impl DiffSource,
     new: impl DiffSource,
-    mut progress: impl DiffReporter,
+    mut progress: impl Reporter,
     timings: &mut DiffTimings,
 ) -> Result<Vec<ChunkDiff>, AppError> {
     let mut out = Vec::with_capacity(coords.len());

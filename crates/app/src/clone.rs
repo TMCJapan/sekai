@@ -17,7 +17,7 @@ use sekai_world::{RegionFile, WorldTree};
 use crate::checkout::{MissingBlobPolicy, fetch_or_skip};
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
-use crate::progress::{CloneReporter, ProgressBuilder};
+use crate::progress::{ProgressBuilder, Reporter};
 
 /// Clone policy. `Default` aborts on missing blobs, as in checkout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -149,7 +149,7 @@ where
         files_written: 0,
         chunks_restored: 0,
     };
-    let mut progress = progress.clone_to(groups.len());
+    let mut progress = progress.start(groups.len());
     let mut files_done = 0usize;
     let mut blob_buf = Vec::new();
     let mut steps = Vec::new();
@@ -181,7 +181,7 @@ where
         })??;
         report.files_written += 1;
         files_done += 1;
-        progress.step(files_done, report.chunks_restored);
+        progress.step(files_done);
     }
     Ok(report)
 }

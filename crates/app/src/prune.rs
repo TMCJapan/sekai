@@ -11,7 +11,7 @@ use sekai_storage::SekaiStore;
 
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
-use crate::progress::{ProgressBuilder, PruneReporter};
+use crate::progress::{ProgressBuilder, Reporter};
 
 /// Per-phase timings for commit pruning.
 #[derive(Debug, Clone, Default)]
@@ -112,7 +112,7 @@ async fn apply_within<S: SekaiStore>(
     progress: &impl ProgressBuilder,
 ) -> Result<(PruneReport, Duration), AppError> {
     let started = Instant::now();
-    let mut progress = progress.prune(plan.delete.len());
+    let mut progress = progress.start(plan.delete.len());
     let report = sekai_core::usecase::prune::prune_apply(store.meta_mut(), plan, |done, _| {
         progress.step(done);
     })

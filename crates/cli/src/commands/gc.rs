@@ -5,7 +5,7 @@ use sekai_app::{GcPlan, GcReport, GcTimings};
 use serde::Serialize;
 
 use super::ReportOut;
-use super::progress::BarProgress;
+use super::progress::{BarProgress, Unit};
 use crate::envelope::envelope_ok;
 use crate::style::Styler;
 
@@ -37,7 +37,7 @@ pub async fn run(store: &str, dry_run: bool, progress: bool, out: ReportOut) -> 
         return Ok(());
     }
 
-    let bar = BarProgress::new(progress);
+    let bar = BarProgress::new(progress, Unit::Blobs);
     let (report, timings) = instance
         .gc(&bar)
         .await

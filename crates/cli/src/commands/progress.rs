@@ -1,10 +1,27 @@
 //! Opt-in stderr progress bars (`--progress`), shared by report commands.
 
 use indicatif::{ProgressBar, ProgressStyle};
-use sekai_app::{
-    CheckoutReporter, CloneReporter, CommitReporter, DiffReporter, GcReporter, ProgressBuilder,
-    PruneReporter,
-};
+use sekai_app::{ProgressBuilder, Reporter};
+
+/// What a bar counts, shown after its counters.
+#[derive(Debug, Clone, Copy)]
+pub enum Unit {
+    Files,
+    Chunks,
+    Blobs,
+    Commits,
+}
+
+impl Unit {
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Files => "files",
+            Self::Chunks => "chunks",
+            Self::Blobs => "blobs",
+            Self::Commits => "commits",
+        }
+    }
+}
 
 /// Progress bar for `--progress`, drawn on stderr. Hidden unless the flag
 /// is set and stderr is a TTY, so piped output stays clean; `--json`
@@ -19,9 +36,10 @@ use sekai_app::{
 pub struct BarProgress(ProgressBar);
 
 impl BarProgress {
-    /// Create the bar, or a hidden one unless `enabled` is set. Its stderr
-    /// draw target already hides itself when stderr is not a TTY.
-    pub fn new(enabled: bool) -> Self {
+    /// Create a bar counting `unit`, or a hidden one unless `enabled` is
+    /// set. Its stderr draw target already hides itself when stderr is not a
+    /// TTY.
+    pub fn new(enabled: bool, unit: Unit) -> Self {
         if !enabled {
             return Self(ProgressBar::hidden());
         }
@@ -30,6 +48,7 @@ impl BarProgress {
             ProgressStyle::with_template("{bar:40} {pos}/{len} {msg}")
                 .unwrap_or_else(|_| ProgressStyle::default_bar()),
         );
+        bar.set_message(unit.label());
         Self(bar)
     }
 
@@ -37,89 +56,19 @@ impl BarProgress {
     pub fn finish(&self) {
         self.0.finish_and_clear();
     }
-
-    /// Size the bar for a run of `total` items and hand out its reporter.
-    fn reporter(&self, total: usize) -> BarReporter<'_> {
-        if self.0.length() != Some(total as u64) {
-            self.0.set_length(total as u64);
-        }
-        BarReporter(&self.0)
-    }
 }
 
 impl ProgressBuilder for BarProgress {
-    fn commit(&self, files_total: usize) -> impl CommitReporter {
-        self.reporter(files_total)
-    }
-
-    fn checkout(&self, files_total: usize) -> impl CheckoutReporter {
-        self.reporter(files_total)
-    }
-
-    fn clone_to(&self, files_total: usize) -> impl CloneReporter {
-        self.reporter(files_total)
-    }
-
-    fn diff(&self, chunks_total: usize) -> impl DiffReporter {
-        self.reporter(chunks_total)
-    }
-
-    fn gc(&self, blobs_total: usize) -> impl GcReporter {
-        self.reporter(blobs_total)
-    }
-
-    fn prune(&self, commits_total: usize) -> impl PruneReporter {
-        self.reporter(commits_total)
+    fn start(&self, total: usize) -> impl Reporter {
+        self.0.set_length(total as u64);
+        BarReporter(&self.0)
     }
 }
 
 struct BarReporter<'a>(&'a ProgressBar);
 
-impl BarReporter<'_> {
-    /// Move the bar to `done`. `detail` trails the counters, e.g. `"files
-    /// 12 chunks"`.
-    fn advance(&self, done: usize, detail: impl Into<String>) {
+impl Reporter for BarReporter<'_> {
+    fn step(&mut self, done: usize) {
         self.0.set_position(done as u64);
-        self.0.set_message(detail.into());
-    }
-
-    fn advance_files(&self, files_done: usize, chunks_done: usize) {
-        self.advance(files_done, format!("files {chunks_done} chunks"));
-    }
-}
-
-impl CommitReporter for BarReporter<'_> {
-    fn step(&mut self, files_done: usize, chunks_done: usize) {
-        self.advance_files(files_done, chunks_done);
-    }
-}
-
-impl CheckoutReporter for BarReporter<'_> {
-    fn step(&mut self, files_done: usize, chunks_done: usize) {
-        self.advance_files(files_done, chunks_done);
-    }
-}
-
-impl CloneReporter for BarReporter<'_> {
-    fn step(&mut self, files_done: usize, chunks_done: usize) {
-        self.advance_files(files_done, chunks_done);
-    }
-}
-
-impl DiffReporter for BarReporter<'_> {
-    fn step(&mut self, chunks_done: usize) {
-        self.advance(chunks_done, "chunks");
-    }
-}
-
-impl GcReporter for BarReporter<'_> {
-    fn step(&mut self, blobs_done: usize) {
-        self.advance(blobs_done, "blobs");
-    }
-}
-
-impl PruneReporter for BarReporter<'_> {
-    fn step(&mut self, commits_done: usize) {
-        self.advance(commits_done, "commits");
     }
 }

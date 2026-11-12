@@ -5,7 +5,7 @@ use sekai_app::{CommitOptions, CommitReport, CommitTimings, HostWorldTree};
 use serde::Serialize;
 use std::path::Path;
 
-use super::progress::BarProgress;
+use super::progress::{BarProgress, Unit};
 use super::{ReportOut, resolve_selection};
 use crate::cli::Selection;
 use crate::envelope::envelope_ok;
@@ -38,7 +38,7 @@ pub async fn run(
     let fresh_store = !store_preexists(store);
     let mut world = HostWorldTree::new(&world_path)
         .with_context(|| format!("failed to inspect world {}", world_path.as_ref().display()))?;
-    let bar = BarProgress::new(progress);
+    let bar = BarProgress::new(progress, Unit::Files);
     let mut instance = sekai_app::SekaiInstance::init(store)
         .await
         .with_context(|| format!("commit of {} failed", world_path.as_ref().display()))?;

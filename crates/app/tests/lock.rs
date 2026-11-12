@@ -13,9 +13,9 @@ mod fixtures;
 use fixtures::chunk_nbt;
 
 use sekai_app::{
-    CheckoutOptions, CheckoutReporter, ChunkHash, CloneOptions, CloneReporter, CommitId,
-    CommitOptions, Dimension, HostWorldTree, ProgressBuilder, Rect, RefName, Scope, ScopeName,
-    SekaiInstance, StatusOptions, WorldError, WorldLockMode, WorldTree,
+    CheckoutOptions, ChunkHash, CloneOptions, CommitId, CommitOptions, Dimension, HostWorldTree,
+    ProgressBuilder, Rect, RefName, Reporter, Scope, ScopeName, SekaiInstance, StatusOptions,
+    WorldError, WorldLockMode, WorldTree,
 };
 use sekai_core::MetaStore as _;
 use sekai_storage_sqlite::SqliteStore;
@@ -455,23 +455,13 @@ impl Counted {
 struct Counter<'a>(&'a AtomicUsize);
 
 impl ProgressBuilder for Counted {
-    fn checkout(&self, _: usize) -> impl CheckoutReporter {
-        Counter(&self.0)
-    }
-
-    fn clone_to(&self, _: usize) -> impl CloneReporter {
+    fn start(&self, _: usize) -> impl Reporter {
         Counter(&self.0)
     }
 }
 
-impl CheckoutReporter for Counter<'_> {
-    fn step(&mut self, _: usize, _: usize) {
-        self.0.fetch_add(1, Ordering::SeqCst);
-    }
-}
-
-impl CloneReporter for Counter<'_> {
-    fn step(&mut self, _: usize, _: usize) {
+impl Reporter for Counter<'_> {
+    fn step(&mut self, _: usize) {
         self.0.fetch_add(1, Ordering::SeqCst);
     }
 }
