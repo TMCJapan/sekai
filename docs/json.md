@@ -56,7 +56,7 @@ first, then `Caused by:` lines), JSON-escaped.
 
 ## Compatibility
 
-Breaking change (ADR-0024): the `clone` command (alias `export`) is
+Breaking change (ADR-0025): the `clone` command (alias `export`) is
 removed. `command` no longer takes the value `clone`, and the clone
 payload (including the `clone_files_ms` phase) is gone.
 

@@ -1,4 +1,4 @@
-# ADR-0024: Remove the clone command
+# ADR-0025: Remove the clone command
 
 - Status: Accepted
 - Date: 2026-11-12
