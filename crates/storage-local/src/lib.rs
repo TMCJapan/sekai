@@ -48,7 +48,8 @@ pub fn local_store_exists(root: impl AsRef<Path>) -> bool {
 
 /// `conf` is the config file sled writes on first open: the keyspace's
 /// existence marker, checked without opening (and locking) anything.
-fn markers_present(root: &Path) -> bool {
+fn markers_present(root: impl AsRef<Path>) -> bool {
+    let root = root.as_ref();
     root.join("meta.sqlite").is_file() && root.join("blobs/conf").is_file()
 }
 
