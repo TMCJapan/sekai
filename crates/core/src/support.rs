@@ -222,8 +222,7 @@ impl MetaStore for MemMeta {
             .commits
             .iter()
             .find(|c| c.id == commit)
-            .map(|c| c.parents.clone())
-            .unwrap_or_default();
+            .map_or_default(|c| c.parents.clone());
         core::future::ready(Ok(parents))
     }
 
@@ -441,8 +440,7 @@ impl MetaStore for MemMeta {
             .commits
             .iter()
             .find(|c| c.id == from)
-            .map(|c| c.parents.clone())
-            .unwrap_or_default();
+            .map_or_default(|c| c.parents.clone());
         for commit in &mut self.commits {
             if !commit.parents.contains(&from) {
                 continue;
