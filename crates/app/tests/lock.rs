@@ -400,24 +400,39 @@ async fn a_cancelled_checkout_keeps_the_world_locked_until_its_files_finish() {
     );
 }
 
-/// A cancelled clone cannot stop its blocking passes either: the files it
-/// promised to write land anyway, even after the future is long gone.
+/// A cancelled clone leaves `out` incomplete, but never with a partial file:
+/// each write swaps a finished file into place, and the writes already
+/// running finish after the future is gone.
 ///
-/// The future is dropped as soon as a file is reported. A pass that stopped
-/// with it leaves the target short of the file it had queued, which on this
-/// host is `r.1.0.mca`.
+/// The future is dropped as soon as a file is reported. Once no write is
+/// left mid-swap, every region file in the target must match a full clone
+/// of the same commit byte for byte, and every reported file must be there.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_cancelled_clone_still_finishes_its_files() {
+async fn a_cancelled_clone_leaves_only_whole_files() {
     let fx = Fixture::new("cancel-clone").await;
-    let target = fx.root.join(format!(
-        "cloned-{}",
-        TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
+    let fresh_target = || {
+        fx.root.join(format!(
+            "cloned-{}",
+            TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ))
+    };
     // Not `HostWorldTree::new`: it creates its folder up front, and clone
     // only accepts an empty target.
+    let full = fresh_target();
+    fx.instance
+        .clone_to(
+            &HostWorldTree::new_legacy(&full),
+            fx.commit,
+            CloneOptions::default(),
+            Scope::World,
+            &(),
+        )
+        .await
+        .unwrap();
+
+    let target = fresh_target();
     let out = HostWorldTree::new_legacy(&target);
     let reported = Counted::default();
-
     let clone = fx.instance.clone_to(
         &out,
         fx.commit,
@@ -429,17 +444,32 @@ async fn a_cancelled_clone_still_finishes_its_files() {
     poll_until(&mut clone, || reported.count() >= 1).await;
     drop(clone);
 
-    // Nothing about the store is held, so readers keep working while the
-    // cancelled pass finishes.
-    fx.instance.list_commits().await.unwrap();
     let deadline = Instant::now() + Duration::from_secs(10);
-    while read_regions(&target) != vec!["r.0.0.mca", "r.1.0.mca"] {
-        assert!(
-            Instant::now() < deadline,
-            "the clone output was abandoned halfway"
-        );
+    while has_swap_in_flight(&target) {
+        assert!(Instant::now() < deadline, "a write never finished its swap");
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
+    let landed = read_regions(&target);
+    assert!(
+        landed.len() >= reported.count(),
+        "a reported file is missing: {landed:?}"
+    );
+    for name in &landed {
+        assert_eq!(
+            std::fs::read(target.join("region").join(name)).unwrap(),
+            std::fs::read(full.join("region").join(name)).unwrap(),
+            "{name} is not whole"
+        );
+    }
+}
+
+/// Whether a write is still between its temporary file and the swap.
+fn has_swap_in_flight(root: impl AsRef<Path>) -> bool {
+    std::fs::read_dir(root.as_ref().join("region")).is_ok_and(|entries| {
+        entries
+            .filter_map(Result::ok)
+            .any(|entry| entry.file_name().to_string_lossy().contains(".tmp-"))
+    })
 }
 
 /// Counts the events of a checkout or clone, readable while it runs.

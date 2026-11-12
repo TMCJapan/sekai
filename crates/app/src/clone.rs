@@ -7,14 +7,14 @@
 //! files; only vanilla namespaces are derivable (custom dimensions fail
 //! loudly with the offending coordinates, as in checkout).
 
-use std::any::Any;
-use std::collections::BTreeMap;
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::collections::{BTreeMap, HashMap};
+use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 
 use sekai_core::{ChunkCoord, ChunkHash, CommitId, RegionKey, Scope};
 use sekai_storage::{SekaiStore, StorageError};
 use sekai_world::{RegionFile, WorldTree};
+use tokio::task::{Id, JoinError, JoinSet};
 
 use crate::checkout::{MissingBlobPolicy, fetch_or_skip};
 use crate::error::AppError;
@@ -60,7 +60,8 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// `HostWorldTree::new_legacy` or `HostWorldTree::new_bukkit`). Only
     /// `scope` is cloned. `progress` fires as files complete, on the async
     /// side, counting them in the order their writes land, which need not
-    /// be plan order.
+    /// be plan order. A failed or cancelled clone leaves `out` incomplete,
+    /// but every file in it is whole.
     pub async fn clone_to<W: WorldTree>(
         &self,
         out: &W,
@@ -129,22 +130,16 @@ struct CloneJob<S: SekaiStore, W: WorldTree> {
     out: W,
 }
 
-/// One file's write, reported back from the blocking pool once it ends.
-struct LandedWrite {
-    /// Chunks the file holds, counted only if the write succeeded.
-    chunks: usize,
-    outcome: Result<(), AppError>,
-}
-
 /// Rebuild every commit region file under `out`.
 ///
-/// Blob fetches are async; each file's build and write runs on the blocking
-/// pool, never on an async worker.
+/// Blob fetches run here, one file at a time; each file's write runs on the
+/// blocking pool while the next file is fetched. A queued write holds a
+/// whole region image, so at most one per CPU is in flight. Writes are
+/// settled between files and at the end, in the order they land.
 ///
-/// Landed writes are drained once per queued file, so a write that lands or
-/// fails while the next file is fetched is reported only after that file is
-/// queued: a failure can let one more file reach `out`, and progress holds
-/// still for one file's fetch.
+/// Returning early or being cancelled drops the writes that have not
+/// started; those already running finish. Every write swaps a finished file
+/// into place, so `out` may be incomplete but never holds a partial file.
 async fn clone_files<S: SekaiStore, W: WorldTree>(
     job: CloneJob<S, W>,
     timestamp: u32,
@@ -165,11 +160,11 @@ where
         chunks_restored: 0,
     };
     let mut progress = progress.start(groups.len());
+    let limit = std::thread::available_parallelism().map_or(4, NonZeroUsize::get);
+    let mut writes = JoinSet::new();
+    // A panicking write reaches us as a bare task id; this names its file.
+    let mut files = HashMap::new();
     let mut blob_buf = Vec::new();
-    // Each write reports back as it lands, so nothing waits on an older
-    // write and no handle has to be kept around.
-    let (landed_tx, mut landed_rx) = tokio::sync::mpsc::unbounded_channel::<LandedWrite>();
-    let mut spawned = 0usize;
     for (key, rows) in &groups {
         let region = out.derive_region(*key)?;
         let mut writer = sekai_anvil::RegionBuilder::new(key.rx, key.rz, timestamp)?;
@@ -182,83 +177,52 @@ where
             chunks += 1;
         }
         let image = writer.image()?;
-        let key = *key;
-        let landed_tx = landed_tx.clone();
-        // Spawned as soon as its input is ready and detached at once: a
-        // cancelled future must not take a file it has already promised to
-        // write with it.
-        tokio::task::spawn_blocking(move || {
-            let outcome = catch_unwind(AssertUnwindSafe(|| region.write(&image)))
-                .map_err(|payload| {
-                    clone_worker_error(format!(
-                        "the write for {key:?} panicked: {}",
-                        panic_message(&*payload)
-                    ))
-                })
-                .and_then(|written| written.map_err(AppError::from));
-            // The receiver is gone only once the clone is abandoned.
-            let _ = landed_tx.send(LandedWrite { chunks, outcome });
+        let write = writes.spawn_blocking(move || {
+            region.write(&image).map_err(AppError::from)?;
+            Ok(chunks)
         });
-        spawned += 1;
-        while let Ok(landed) = landed_rx.try_recv() {
-            settle(&mut report, landed, &mut progress)?;
+        files.insert(write.id(), *key);
+
+        while let Some(landed) = writes.try_join_next_with_id() {
+            settle(landed, &mut files, &mut report, &mut progress)?;
+        }
+        if writes.len() >= limit
+            && let Some(landed) = writes.join_next_with_id().await
+        {
+            settle(landed, &mut files, &mut report, &mut progress)?;
         }
     }
-    drop(landed_tx);
-    while report.files_written < spawned {
-        // Every sender gone with writes unreported means the blocking pool
-        // dropped a write unrun (runtime shutdown).
-        let landed = landed_rx.recv().await.ok_or_else(|| {
-            clone_worker_error("a write stopped before reporting back".to_owned())
-        })?;
-        settle(&mut report, landed, &mut progress)?;
+    while let Some(landed) = writes.join_next_with_id().await {
+        settle(landed, &mut files, &mut report, &mut progress)?;
     }
     Ok(report)
 }
 
+/// Count one landed write, or turn its failure into the clone's error.
 fn settle(
+    landed: Result<(Id, Result<usize, AppError>), JoinError>,
+    files: &mut HashMap<Id, RegionKey>,
     report: &mut CloneReport,
-    landed: LandedWrite,
     progress: &mut impl Reporter,
 ) -> Result<(), AppError> {
-    landed.outcome?;
+    let chunks = match landed {
+        Ok((id, written)) => {
+            files.remove(&id);
+            written?
+        }
+        Err(err) => {
+            let file = files.remove(&err.id()).map_or_else(
+                || "a write".to_owned(),
+                |key| format!("the write for {key:?}"),
+            );
+            return Err(AppError::Storage(StorageError::backend(
+                "clone worker",
+                std::io::Error::other(format!("{file} stopped: {err}")),
+            )));
+        }
+    };
     report.files_written += 1;
-    report.chunks_restored += landed.chunks;
+    report.chunks_restored += chunks;
     progress.step(report.files_written);
     Ok(())
-}
-
-fn clone_worker_error(detail: String) -> AppError {
-    AppError::Storage(StorageError::backend(
-        "clone worker",
-        std::io::Error::other(detail),
-    ))
-}
-
-/// The message a panic was raised with: `panic!` carries a `&str` or a
-/// `String`; any other payload has nothing printable.
-fn panic_message(payload: &(dyn Any + Send)) -> &str {
-    payload
-        .downcast_ref::<&str>()
-        .copied()
-        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
-        .unwrap_or("non-string panic payload")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::panic_message;
-    use std::panic::catch_unwind;
-
-    #[test]
-    fn panic_message_reads_str_and_string_payloads() {
-        let literal = catch_unwind(|| panic!("disk on fire")).unwrap_err();
-        assert_eq!(panic_message(&*literal), "disk on fire");
-
-        let formatted = catch_unwind(|| panic!("region {}", 7)).unwrap_err();
-        assert_eq!(panic_message(&*formatted), "region 7");
-
-        let other = catch_unwind(|| std::panic::panic_any(7_u8)).unwrap_err();
-        assert_eq!(panic_message(&*other), "non-string panic payload");
-    }
 }
