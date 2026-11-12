@@ -417,9 +417,8 @@ where
         return Ok(());
     }
     let image = region.read(key)?;
-    let tombed: BTreeSet<(i32, i32)> = tombs
-        .map(|coords| coords.iter().map(|c| (c.x, c.z)).collect())
-        .unwrap_or_default();
+    let tombed: BTreeSet<(i32, i32)> =
+        tombs.map_or_default(|coords| coords.iter().map(|c| (c.x, c.z)).collect());
     let mut failed = None;
     image.visit_chunks(|chunk| {
         if restored.contains(&(chunk.x, chunk.z)) {

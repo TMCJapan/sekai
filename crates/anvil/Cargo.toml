@@ -3,7 +3,6 @@ name = "sekai-anvil"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-homepage.workspace = true
 repository.workspace = true
 description = "Pure no_std Anvil region-file codec and normalized chunk hashing used by Sekai"
 keywords = ["minecraft", "anvil"]

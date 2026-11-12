@@ -241,8 +241,7 @@ pub async fn record_commit<M: MetaStore>(
     let parents: Vec<CommitId> = previous
         .commit
         .as_ref()
-        .map(|commit| alloc::vec![commit.id])
-        .unwrap_or_default();
+        .map_or_default(|commit| alloc::vec![commit.id]);
     let outcome: ApplyOutcome = meta
         .apply_commit_incremental(created_at_ms, &parents, &staged.entries)
         .await?;

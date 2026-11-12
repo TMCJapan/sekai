@@ -3,7 +3,6 @@ name = "sekai-storage-local"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-homepage.workspace = true
 repository.workspace = true
 description = "Storage metadata and blob backend for Sekai"
 keywords = ["minecraft", "version-control", "storage"]
