@@ -6,7 +6,7 @@ use sekai_core::{
     BlobStore as _, ChunkCoord, ChunkHash, ChunkHistoryEntry, CommitEntry, Dimension,
     MetaStore as _, RegionKind, usecase::checkout::plan_checkout,
 };
-use sekai_storage_local::{init_sqlite, open_sqlite};
+use sekai_storage_local::{init_local, open_local};
 use std::path::Path;
 
 /// A temp dir whose name starts with the calling test's name (tempfile
@@ -21,7 +21,7 @@ fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
 }
 
 async fn init(dir: impl AsRef<Path>) -> sekai_storage_local::LocalStore {
-    init_sqlite(dir).await.unwrap()
+    init_local(dir).await.unwrap()
 }
 
 #[tokio::test]
@@ -185,7 +185,7 @@ async fn blob_database_is_created_and_version_gated() {
     // keyspace can be opened again.
     drop(versions);
     drop(db);
-    let err = open_sqlite(&dir).await.unwrap_err();
+    let err = open_local(&dir).await.unwrap_err();
     assert!(matches!(
         err,
         sekai_storage::StorageError::UnsupportedSchema {
@@ -201,7 +201,7 @@ async fn blob_database_is_created_and_version_gated() {
 async fn a_live_blob_keyspace_refuses_a_second_opener() {
     let (dir, _guard) = tempdir("exclusive");
     let store = init(&dir).await;
-    let err = open_sqlite(&dir).await.unwrap_err();
+    let err = open_local(&dir).await.unwrap_err();
     assert!(
         matches!(
             err,
@@ -213,26 +213,26 @@ async fn a_live_blob_keyspace_refuses_a_second_opener() {
         "unexpected error: {err}"
     );
     drop(store);
-    let _store = open_sqlite(&dir).await.unwrap();
+    let _store = open_local(&dir).await.unwrap();
 }
 
-/// Only `init_sqlite` materializes a store; `open_sqlite` must fail loudly on
+/// Only `init_local` materializes a store; `open_local` must fail loudly on
 /// a root that was never initialized and leave nothing behind (issue #80).
 #[tokio::test]
 async fn open_of_a_missing_store_fails_without_creating_it() {
     let (base, _guard) = tempdir("missing");
     let dir = base.join("store");
-    let err = open_sqlite(&dir).await.unwrap_err();
+    let err = open_local(&dir).await.unwrap_err();
     assert!(
         matches!(&err, sekai_storage::StorageError::StoreMissing { path } if path == &dir),
         "unexpected error: {err}"
     );
     assert!(!dir.exists(), "a failed open must not create anything");
 
-    let store = init_sqlite(&dir).await.unwrap();
+    let store = init_local(&dir).await.unwrap();
     assert!(dir.join("meta.sqlite").is_file());
     assert!(dir.join("blobs/conf").is_file());
     // The keyspace admits one opener: release the init handle first.
     drop(store);
-    let _store = open_sqlite(&dir).await.unwrap();
+    let _store = open_local(&dir).await.unwrap();
 }

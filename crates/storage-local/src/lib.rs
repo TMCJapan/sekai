@@ -19,7 +19,7 @@ pub type LocalStore = Store<SqliteMeta, SledBlob>;
 /// is the only path that materializes a store, reserved for first-time store
 /// creation. sled admits a single opener per keyspace, so a concurrent
 /// initialization of the same root fails loudly instead of racing.
-pub async fn init_sqlite(root: impl AsRef<Path>) -> Result<LocalStore, StorageError> {
+pub async fn init_local(root: impl AsRef<Path>) -> Result<LocalStore, StorageError> {
     std::fs::create_dir_all(root.as_ref()).map_err(|source| io_error(root.as_ref(), source))?;
     connect_sqlite(root).await
 }
@@ -29,7 +29,7 @@ pub async fn init_sqlite(root: impl AsRef<Path>) -> Result<LocalStore, StorageEr
 /// The layout is `<root>/meta.sqlite` plus the sled keyspace at
 /// `<root>/blobs`. Fails with [`StorageError::StoreMissing`] when the store
 /// was never initialized, without creating anything.
-pub async fn open_sqlite(root: impl AsRef<Path>) -> Result<LocalStore, StorageError> {
+pub async fn open_local(root: impl AsRef<Path>) -> Result<LocalStore, StorageError> {
     // `conf` is the config file sled writes on first open: the keyspace's
     // existence marker, checked without opening (and locking) anything.
     if !root.as_ref().join("meta.sqlite").is_file() || !root.as_ref().join("blobs/conf").is_file() {

@@ -38,15 +38,14 @@ pub trait SekaiStore: Send + Sync + Sized + 'static {
 
 /// Open or initialize a store of one concrete backend.
 ///
-/// The implementation owns its URL grammar: it recognizes the schemes that
-/// name it and rejects the others with
-/// [`StorageError::UnsupportedBackend`].
+/// The implementation owns the meaning of the location string; the local
+/// backend reads it as a store root directory.
 pub trait SekaiStoreOpener: SekaiStore {
-    /// Open the existing store named by `url`.
-    fn open(url: &str) -> impl Future<Output = Result<Self, StorageError>> + Send;
+    /// Open the existing store named by `location`.
+    fn open(location: &str) -> impl Future<Output = Result<Self, StorageError>> + Send;
 
-    /// Open the store named by `url`, creating it when missing.
-    fn init(url: &str) -> impl Future<Output = Result<Self, StorageError>> + Send;
+    /// Open the store named by `location`, creating it when missing.
+    fn init(location: &str) -> impl Future<Output = Result<Self, StorageError>> + Send;
 }
 
 impl<M, C> SekaiStore for Store<M, C>

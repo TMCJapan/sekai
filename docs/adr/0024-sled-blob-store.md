@@ -23,7 +23,6 @@ gate is load-bearing.
 
 Blobs live in `<root>/blobs`, a sled keyspace beside `meta.sqlite`.
 `SledBlob` replaces `SqliteBlob`; `LocalStore = Store<SqliteMeta, SledBlob>`.
-The opener names (`init_sqlite`/`open_sqlite`) stay.
 
 - **The default tree is the CAS.** Keys are the 32-byte chunk hashes,
   values the captured payloads. A reserved tree `__sekai_version` holds
@@ -45,7 +44,7 @@ The opener names (`init_sqlite`/`open_sqlite`) stay.
 - **One opener per keyspace.** sled takes an exclusive session lock at
   open, system-wide: a second open of the same path fails while the first
   handle lives, even in the same process. Clones share the session, so
-  ingest workers still share the CAS without exclusion. `open_sqlite`
+  ingest workers still share the CAS without exclusion. `open_local`
   detects an initialized store by `blobs/conf` (written on first open)
   without taking the lock.
 - **Every operation runs on the blocking pool.** sled is synchronous; each

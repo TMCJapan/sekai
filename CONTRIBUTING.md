@@ -143,10 +143,9 @@ any exception in the PR body.
   backend-neutral and owns the traits and locks; it holds no backend
   modules, so a mysql or postgres backend arrives as a sibling crate
   rather than as a stub.
-  Backend selection is URL-selected at runtime (`sqlite://...`,
-  `mysql://...`, `postgres://...`); requesting a backend this build does not
-  carry is a loud `UnsupportedBackend` error, and a build without
-  `backend-local` has no store-opening entry point at all.
+  Backend selection is compile-time via the `backend-local` feature;
+  `--store` names the local store's root directory directly. A build
+  without `backend-local` has no store-opening entry point at all.
 
 ## Coding Standards
 

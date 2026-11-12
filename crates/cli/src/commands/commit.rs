@@ -15,18 +15,6 @@ const fn options(jobs: usize) -> CommitOptions {
     CommitOptions { concurrency: jobs }
 }
 
-/// Whether the store directory already exists. Unknown URL schemes are
-/// treated as pre-existing so no note is printed for backends this
-/// helper cannot resolve to a path.
-fn store_preexists(store: &str) -> bool {
-    let path = match store.strip_prefix("sqlite://") {
-        Some(rest) => rest,
-        None if store.contains("://") => return true,
-        None => store,
-    };
-    std::path::Path::new(path).exists()
-}
-
 pub async fn run(
     store: &str,
     world_path: impl AsRef<Path>,
@@ -35,7 +23,6 @@ pub async fn run(
     selection: &Selection,
     out: ReportOut,
 ) -> anyhow::Result<()> {
-    let fresh_store = !store_preexists(store);
     let mut world = HostWorldTree::new(&world_path)
         .with_context(|| format!("failed to inspect world {}", world_path.as_ref().display()))?;
     let bar = BarProgress::new(progress, Unit::Files);
@@ -55,9 +42,6 @@ pub async fn run(
             envelope_ok("commit", &commit_payload(&report, &timings, out.timing))?
         );
         return Ok(());
-    }
-    if fresh_store {
-        eprintln!("store created at {store}");
     }
     let style = out.style;
     println!(
@@ -232,18 +216,5 @@ mod tests {
                 r#"{{"commit":"{id}","chunks":40,"new_blobs":2,"tombstones":0,"total_ms":100,"phases":{{"discover_ms":1,"universe_load_ms":2,"region_open_ms":4,"ingest_ms":50,"hash_ms":6,"cas_put_ms":7,"db_apply_ms":8}},"regions":[{{"path":"region/r.0.0.mca","chunks":32,"open_ms":4,"ingest_ms":5,"hash_ms":6,"cas_ms":7}}]}}"#
             )
         );
-    }
-
-    #[test]
-    fn detects_preexisting_stores() {
-        assert!(store_preexists(std::env::temp_dir().to_str().unwrap()));
-        assert!(!store_preexists(
-            std::env::temp_dir()
-                .join("sekai-missing-store-9d3f2b1a")
-                .to_str()
-                .unwrap()
-        ));
-        assert!(!store_preexists("sqlite:///definitely/missing/store"));
-        assert!(store_preexists("mysql://user@localhost/store"));
     }
 }

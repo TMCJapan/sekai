@@ -132,43 +132,41 @@ impl<T: SekaiStore> SekaiInstance<T> {
 
 #[cfg(feature = "backend-local")]
 impl SekaiInstance<sekai_storage_local::LocalStore> {
-    /// Open the existing store named by `store_url`.
+    /// Open the existing store rooted at `root`.
     ///
-    /// `sqlite://<dir>` (or a bare `<dir>`) opens a local store; anything
-    /// else fails loudly, including backends not compiled in. A store that
-    /// was never initialized fails without creating anything: only
-    /// [`Self::init`] materializes a store.
-    pub async fn open(store_url: &str) -> Result<Self, AppError> {
+    /// A store that was never initialized fails without creating anything:
+    /// only [`Self::init`] materializes a store.
+    pub async fn open(root: &str) -> Result<Self, AppError> {
         Ok(Self {
-            store: sekai_storage_local::open_sqlite(store_url).await?,
+            store: sekai_storage_local::open_local(root).await?,
         })
     }
 
-    /// Open the store named by `store_url`, initializing it when missing.
+    /// Open the store rooted at `root`, initializing it when missing.
     ///
     /// This is the creation path reserved for `commit`; every other command
     /// must go through [`Self::open`] so a missing store fails loudly instead
     /// of leaving an empty store behind.
-    pub async fn init(store_url: &str) -> Result<Self, AppError> {
+    pub async fn init(root: &str) -> Result<Self, AppError> {
         Ok(Self {
-            store: sekai_storage_local::init_sqlite(store_url).await?,
+            store: sekai_storage_local::init_local(root).await?,
         })
     }
 }
 
 impl<T: SekaiStore + SekaiStoreOpener> SekaiInstance<T> {
     /// Open the existing store of an explicitly chosen backend type.
-    pub async fn open_with(store_url: &str) -> Result<Self, AppError> {
+    pub async fn open_with(location: &str) -> Result<Self, AppError> {
         Ok(Self {
-            store: T::open(store_url).await?,
+            store: T::open(location).await?,
         })
     }
 
     /// Open the store of an explicitly chosen backend type, creating it
     /// when missing.
-    pub async fn init_with(store_url: &str) -> Result<Self, AppError> {
+    pub async fn init_with(location: &str) -> Result<Self, AppError> {
         Ok(Self {
-            store: T::init(store_url).await?,
+            store: T::init(location).await?,
         })
     }
 }

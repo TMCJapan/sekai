@@ -44,7 +44,7 @@ sekai-util (no_std, no tokio dependency: coordinates, chunk hashes,
 | `sekai-util`                      | `no_std`, no `std`/tokio dependencies | no                                           | Shared value types: coordinates, the chunk digest (`ChunkHash`, `hash_bytes`, `BytesHasher`), region/history/commit/gc records, hex errors. Pure data plus total validation only.                                                                                                                                                                                                                    |
 | `sekai-anvil`                     | `no_std` + `alloc`                    | no                                           | Pure Anvil sector codec including decompression and chunk NBT normalization. A stored sector payload becomes a `Chunk` whose `normalized_hash()` is the only public NBT-derived digest; the parser and normalized views stay internal. Also builds `Vec<u8>` images. Compression framing is MCA spec knowledge, so it lives here. No `Path`, no `fs`. Names custom dimensions with util `Dimension`. |
 | `sekai-core`                      | `no_std` + `alloc`                    | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_checkout`, `gc plan`/`apply`) plus storage ports. Composes `anvil` over util types and re-exports every util type at its root, so downstream paths stay stable.                                                                                                                                                                               |
-| `sekai-storage`                   | `std` + tokio                         | yes (RPITIT)                                 | Backend-neutral boundaries: async `BlobStore`/`MetaStore` traits (owned by `core::port`, re-exported from the `api` module), high-level `SekaiStore`/`SekaiStoreOpener` traits, and URL-based backend selection. Depends on `core`.                                                                                                                                                                  |
+| `sekai-storage`                   | `std` + tokio                         | yes (RPITIT)                                 | Backend-neutral boundaries: async `BlobStore`/`MetaStore` traits (owned by `core::port`, re-exported from the `api` module), high-level `SekaiStore`/`SekaiStoreOpener` traits, and shared storage errors. Depends on `core`.                                                                                                                                                                  |
 | `sekai-storage-local`             | `std` + tokio                         | yes                                          | Concrete local backend: `SqliteMeta` over sqlx plus `SledBlob` over sled, composed into `LocalStore`, both schema/version gates, and the openers. Implements the traits from `sekai-storage` (and `core::port`). Other backends become sibling crates without touching `core`/`app`.                                                                                                                  |
 | `sekai-world`                     | `std`                                 | yes (I/O) / sync pure helpers where trivial  | World access boundary: the `WorldTree` trait, the `RegionFile` handle, and the filesystem tree (`HostWorldTree`).                                                                                                                                                                                                                                                                                    |
 | `sekai-app`                       | `std` + tokio                         | yes                                          | Composition/orchestration library for third parties: parallel ingest, clocks, timing, progress callbacks.                                                                                                                                                                                                                                                                                            |
@@ -417,7 +417,7 @@ produced them. The scope is a filter, not a partition:
   `BlobStore`/`MetaStore` traits (RPITIT, `Send` bounds for tokio) still
   come from `core::port` and are re-exported from storage's `api` module.
   Storage adds the high-level `SekaiStore` (metadata + blobs) and
-  `SekaiStoreOpener` (URL selection). Blob adapters are async only and
+  `SekaiStoreOpener` (open/init entry points). Blob adapters are async only and
   `Clone`: the CAS is append-only, so ingest workers share it without
   exclusion and a cancelled future cannot strand a blob lock.
 - `sekai-storage-local` is the concrete local backend. It owns `SqliteMeta`
@@ -437,15 +437,13 @@ produced them. The scope is a filter, not a partition:
 
 ## Backend Selection
 
-Runtime-selected, with compile-time gating on the backend crate: `app`
-exposes a `backend-local` feature (default-on) that pulls in
-`sekai-storage-local`; `sekai-cli` inherits it through `sekai-app` and
-needs no features of its own. At runtime the connection URL picks the
-backend, and requesting a backend this build does not carry is a loud
-`UnsupportedBackend` error — never silent reinterpretation.
-`sekai-storage` keeps `BackendKind` and URL parsing; each
-backend crate implements `SekaiStoreOpener` for its store type, so the
-backend owns the grammar of the URLs that name it.
+Compile-time, gated on the backend crate: `app` exposes a `backend-local`
+feature (default-on) that pulls in `sekai-storage-local`; `sekai-cli`
+inherits it through `sekai-app` and needs no features of its own. The
+local backend is the only one shipped, and `--store` names its root
+directory directly; there is no runtime URL selection. A backend crate
+implements `SekaiStoreOpener` for its store type, so the backend owns
+the meaning of the location string that names it.
 
 A build without `backend-local` has no store-opening entry point at all:
 `sekai-storage` ships no stand-in store, so a build that carries no backend
