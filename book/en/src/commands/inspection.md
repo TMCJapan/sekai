@@ -3,7 +3,7 @@
 These commands never write to the world or the store.
 
 ```sh
-sekai list
+sekai log
 sekai status ./world
 sekai diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a --in overworld:0,0
 ```

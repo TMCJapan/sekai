@@ -41,8 +41,6 @@ Every invocation prints exactly one JSON object to stdout:
 ```
 
 `command` is one of `commit`, `status`, `checkout`, `log`, `ref`, `scope`, `prune`, `diff`, `gc`.
-The canonical name is used even when an alias (`backup`, `rollback`,
-`list`) invoked the command.
 The error string is the full anyhow context chain (outermost message
 first, then `Caused by:` lines), JSON-escaped.
 
