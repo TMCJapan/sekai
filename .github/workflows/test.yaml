@@ -17,7 +17,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   # Keep in sync with `rust-toolchain.toml`.
-  RUST_TOOLCHAIN: 1.99.1
+  RUST_TOOLCHAIN: 1.100.0
 
 # Split from `clippy.yaml` so nextest gets its own runner and timeout budget
 # instead of sharing a job with clippy.
