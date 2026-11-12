@@ -75,8 +75,8 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
     /// second file for one region.
     ///
     /// The file may not exist yet, so this never touches the filesystem:
-    /// the dimension only has to be part of the layout. Writing to the handle creates the directories the
-    /// file needs.
+    /// the dimension only has to be part of the layout. Writing to the
+    /// handle creates the directories the file needs.
     fn derive_region(&self, key: RegionKey) -> Result<Self::Region, Self::Error>;
 
     /// Handle of the region file that sits next to `region` in the same

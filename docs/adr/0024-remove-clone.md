@@ -30,8 +30,9 @@ Remove the command and everything that existed only for it:
 - JSON contract (ADR-0002): `clone` leaves the envelope's `command` set,
   and its payload and the `clone_files_ms` phase are gone.
 
-Earlier ADRs that mention `clone` (0003, 0014, 0018, 0021) stay as written:
-they record the decisions of their time.
+Earlier ADRs that mention `clone` or its earlier name `export` (0003,
+0009, 0011, 0013, 0014, 0015, 0018, 0021) stay as written: they record the
+decisions of their time.
 
 ## Consequences
 
