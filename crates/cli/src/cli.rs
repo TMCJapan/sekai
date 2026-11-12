@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Parser)]
 #[command(name = "sekai", version, about)]
 pub struct Cli {
-    /// Store directory (`commit` creates it when missing; other commands
-    /// fail). Defaults to `.sekai` when omitted.
+    /// Store directory (`init` creates it; every other command fails when
+    /// it is missing). Defaults to `.sekai` when omitted.
     #[arg(long, global = true, default_value = ".sekai")]
     pub store: String,
 
@@ -26,6 +26,13 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    /// Create a new store, or re-initialize an existing one. Every other
+    /// command requires a store created this way.
+    Init {
+        /// Emit output as JSON instead of human text. See docs/json.md.
+        #[arg(long)]
+        json: bool,
+    },
     /// Record the current world state as a new commit.
     Commit {
         /// World directory (the one containing `region/`, `DIM-1/`, or `dimensions/`).
@@ -165,6 +172,7 @@ impl Command {
     /// Stable command name for JSON envelopes and error objects.
     pub const fn name(&self) -> &'static str {
         match self {
+            Self::Init { .. } => "init",
             Self::Commit { .. } => "commit",
             Self::Status { .. } => "status",
             Self::Checkout { .. } => "checkout",
@@ -186,7 +194,7 @@ impl Command {
             | Self::Checkout { output, .. }
             | Self::Prune { output, .. }
             | Self::Gc { output, .. } => output.json,
-            Self::Log { json, .. } => *json,
+            Self::Init { json } | Self::Log { json, .. } => *json,
             Self::Ref { action } => action.output_json(),
             Self::Scope { action } => action.output_json(),
             Self::Diff(args) => args.output.json,

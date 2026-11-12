@@ -23,6 +23,9 @@ cargo install --git https://github.com/tmcjapan/sekai
 ## 使い方
 
 ```sh
+# ストアを作成（初回の一度だけ。他のコマンドより先に実行）
+sekai init
+
 # 現在のワールド状態を記録（事前にサーバーの書き込みを停止してください:
 # `save-off`、`save-all` を実行し、完了後に `save-on` で再開）
 sekai commit ./world
@@ -60,7 +63,9 @@ sekai prune --keep-last 10
 sekai gc
 ```
 
-すべてのコマンドは `--json` オプションに対応しており、単一の機械可読な JSON レポートを出力できます。また、`log` と `ref` を除くすべてのコマンドは `--timing` オプションでフェーズごとの処理時間内訳を表示できます（両方を組み合わせることで、所要時間付きの JSON が得られます）。さらに、`commit`、`status`、`checkout`、`diff`、`gc`、`prune` では `--progress` を指定すると標準エラー出力に進捗バーを表示できます（`--json` との併用は不可）。
+`--store` はストアディレクトリを指定します（`init` が作成し、他のコマンドはストアが存在しない場合に失敗します）。省略時のデフォルトは `.sekai` です。
+
+すべてのコマンドは `--json` オプションに対応しており、単一の機械可読な JSON レポートを出力できます。また、`log`、`ref`、`init` を除くすべてのコマンドは `--timing` オプションでフェーズごとの処理時間内訳を表示できます（両方を組み合わせることで、所要時間付きの JSON が得られます）。さらに、`commit`、`status`、`checkout`、`diff`、`gc`、`prune` では `--progress` を指定すると標準エラー出力に進捗バーを表示できます（`--json` との併用は不可）。
 
 `commit`、`status`、`checkout`、`diff` はスコープ（対象範囲）の絞り込みに対応しています。複数指定可能な `--in DIM[:x,z|x0,z0..x1,z1]`、`--region DIM:RX,RZ`、および複数指定可能な `--kind`（省略時はすべて）が利用可能です。スコープを指定しない場合は、ワールド全体が対象となります。`--scope NAME` を使うと、`scope create` で保存した範囲を名前で選択できます。出力フォーマットの仕様については `docs/json.md` を参照してください。
 

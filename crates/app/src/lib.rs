@@ -45,6 +45,8 @@ pub use sekai_core::{
     Scope, ScopeName, ScopeNameError,
 };
 pub use sekai_storage::{SekaiStore, SekaiStoreOpener};
+#[cfg(feature = "backend-local")]
+pub use sekai_storage_local::local_store_exists;
 pub use sekai_world::{
     HostRegion, HostWorldLock, HostWorldLockError, HostWorldTree, Region, RegionFile,
     UnguardedReason, WorldError, WorldLock, WorldLockMode, WorldLockState, WorldTree,

@@ -18,7 +18,7 @@ sekai diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a
 
 ## 名前付きスコープ
 
-繰り返し使う範囲は、一度 store に保存しておけば、`commit`、`status`、`checkout`、`diff` で `--scope` に名前を指定して選択できます。スコープは store に保存されるため、先に store が必要です。新しい store では、`scope create` の前に一度通常の `commit` を実行してください。
+繰り返し使う範囲は、一度 store に保存しておけば、`commit`、`status`、`checkout`、`diff` で `--scope` に名前を指定して選択できます。スコープは store に保存されるため、先に store が必要です。新しい store では、`scope create` の前に `sekai init` を実行してください。
 
 ```sh
 sekai scope create spawn --in overworld:-8,-8..7,7 --region nether:0,0

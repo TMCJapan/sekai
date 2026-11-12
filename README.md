@@ -27,6 +27,9 @@ The installed binary is named `sekai`.
 ## Usage
 
 ```sh
+# Create the store (once, before any other command)
+sekai init
+
 # Record the current world state (pause the server first:
 # `save-off`, `save-all`, then `save-on` afterwards)
 sekai commit ./world
@@ -60,11 +63,11 @@ sekai prune --keep-last 10
 sekai gc
 ```
 
-missing; every other command fails on a missing store) and defaults
-to `.sekai` when omitted.
+`--store` names the store directory (`init` creates it; every other
+command fails on a missing store) and defaults to `.sekai` when omitted.
 
 Every command accepts `--json` for a single-document machine-readable
-report, and every command except `log` and `ref` accepts
+report, and every command except `log`, `ref`, and `init` accepts
 `--timing`
 for a per-phase breakdown (combine both for timed JSON). `commit`,
 `status`, `checkout`, `diff`, `gc`, and `prune` also take

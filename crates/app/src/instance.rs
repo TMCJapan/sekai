@@ -142,11 +142,12 @@ impl SekaiInstance<sekai_storage_local::LocalStore> {
         })
     }
 
-    /// Open the store rooted at `root`, initializing it when missing.
+    /// Initialize the store rooted at `root` and open it.
     ///
-    /// This is the creation path reserved for `commit`; every other command
-    /// must go through [`Self::open`] so a missing store fails loudly instead
-    /// of leaving an empty store behind.
+    /// This is the creation path reserved for an explicit init (the CLI's
+    /// `sekai init`); every other command must go through [`Self::open`] so
+    /// a missing store fails loudly instead of leaving an empty store
+    /// behind. Initializing an existing store again is idempotent.
     pub async fn init(root: &str) -> Result<Self, AppError> {
         Ok(Self {
             store: sekai_storage_local::init_local(root).await?,
@@ -162,8 +163,9 @@ impl<T: SekaiStore + SekaiStoreOpener> SekaiInstance<T> {
         })
     }
 
-    /// Open the store of an explicitly chosen backend type, creating it
-    /// when missing.
+    /// Initialize the store of an explicitly chosen backend type and open
+    /// it; the only entry point that materializes a store. Initializing an
+    /// existing store again is idempotent.
     pub async fn init_with(location: &str) -> Result<Self, AppError> {
         Ok(Self {
             store: T::init(location).await?,

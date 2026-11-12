@@ -222,6 +222,7 @@ async fn a_live_blob_keyspace_refuses_a_second_opener() {
 async fn open_of_a_missing_store_fails_without_creating_it() {
     let (base, _guard) = tempdir("missing");
     let dir = base.join("store");
+    assert!(!sekai_storage_local::local_store_exists(&dir));
     let err = open_local(&dir).await.unwrap_err();
     assert!(
         matches!(&err, sekai_storage::StorageError::StoreMissing { path } if path == &dir),
@@ -232,6 +233,7 @@ async fn open_of_a_missing_store_fails_without_creating_it() {
     let store = init_local(&dir).await.unwrap();
     assert!(dir.join("meta.sqlite").is_file());
     assert!(dir.join("blobs/conf").is_file());
+    assert!(sekai_storage_local::local_store_exists(&dir));
     // The keyspace admits one opener: release the init handle first.
     drop(store);
     let _store = open_local(&dir).await.unwrap();
