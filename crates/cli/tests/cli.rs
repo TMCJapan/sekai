@@ -125,39 +125,6 @@ fn parses_progress_flag() {
 }
 
 #[test]
-fn legacy_command_names_still_parse() {
-    let cli = Cli::try_parse_from(["sekai", "backup", "world"]).expect("backup alias parses");
-    assert!(matches!(cli.command, Command::Commit { .. }));
-
-    let cli = Cli::try_parse_from(["sekai", "rollback", "w", H3]).expect("rollback alias parses");
-    assert!(matches!(&cli.command, Command::Checkout { commit, .. } if commit.as_str() == H3));
-
-    let cli = Cli::try_parse_from(["sekai", "list", "--json"]).expect("list alias parses");
-    assert!(matches!(cli.command, Command::Log { json: true, .. }));
-}
-
-#[test]
-fn legacy_keep_post_flags_still_parse() {
-    let cli = Cli::try_parse_from([
-        "sekai",
-        "checkout",
-        "w",
-        H3,
-        "--keep-post-snapshot-files",
-        "--keep-post-snapshot-chunks",
-    ])
-    .expect("legacy flag aliases parse");
-    assert!(matches!(
-        &cli.command,
-        Command::Checkout {
-            keep_post_commit_files: true,
-            keep_post_commit_chunks: true,
-            ..
-        }
-    ));
-}
-
-#[test]
 fn parses_diff_command() {
     let cli = Cli::try_parse_from(["sekai", "diff", H1, H2, "--in", "overworld:10,-5"])
         .expect("diff parses");
@@ -832,10 +799,10 @@ fn parses_color_flag() {
 
 #[test]
 fn reports_json_mode_per_command() {
-    let cli = Cli::try_parse_from(["sekai", "list"]).expect("parses");
+    let cli = Cli::try_parse_from(["sekai", "log"]).expect("parses");
     assert!(!cli.command.output_json());
 
-    let cli = Cli::try_parse_from(["sekai", "list", "--json"]).expect("parses");
+    let cli = Cli::try_parse_from(["sekai", "log", "--json"]).expect("parses");
     assert!(cli.command.output_json());
 
     let cli = Cli::try_parse_from(["sekai", "commit", "w"]).expect("parses");

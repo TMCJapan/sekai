@@ -27,7 +27,7 @@ async fn commands_on_a_missing_store_fail_without_creating_it() {
     let world = world.to_str().expect("temporary world path is UTF-8");
 
     for args in [
-        vec!["sekai", "--store", store, "list"],
+        vec!["sekai", "--store", store, "log"],
         vec!["sekai", "--store", store, "gc"],
         vec!["sekai", "--store", store, "prune", "--keep-last", "1"],
         vec!["sekai", "--store", store, "status", world],

@@ -76,10 +76,6 @@ nothing selected means the whole world. `--scope NAME` selects an area
 saved with `scope create` instead. See `docs/json.md` for the
 output contract.
 
-The git-style names are canonical; the previous ones still work as
-aliases: `backup` (`commit`), `rollback` (`checkout`), and `list`
-(`log`).
-
 > [!Note]
 > If you want to make a full secondary backup of all your commits and storage, 
 

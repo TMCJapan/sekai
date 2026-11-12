@@ -20,11 +20,9 @@ drifting.
 
 ## Decision
 
-Adopt git's vocabulary for the operations *and* for the history entity, and
-keep the old command names as visible aliases so existing scripts and
-muscle memory keep working.
+Adopt git's vocabulary for the operations *and* for the history entity.
 
-| Canonical | Alias | Operation |
+| Command | Replaces | Operation |
 |---|---|---|
 | `commit` | `backup` | record the current world state as a new commit |
 | `status` | - | preview what a commit would record (no writes) |
@@ -35,11 +33,9 @@ muscle memory keep working.
 | `prune` | - | retire old commits, folding their rows into retained ones |
 | `gc` | - | collect orphan blobs |
 
-The aliases are clap `visible_alias`es: they parse, and the help prints
-them next to the canonical name. The two flags renamed with the domain
-vocabulary keep hidden long aliases
-(`--keep-post-snapshot-files`, `--keep-post-snapshot-chunks`), so a script
-that still calls the old command with the old flags keeps working.
+Two flags follow the domain vocabulary:
+`--keep-post-snapshot-files` and `--keep-post-snapshot-chunks` become
+`--keep-post-commit-files` and `--keep-post-commit-chunks`.
 
 The domain follows the same vocabulary: `Snapshot`/`SnapshotId`/
 `SnapshotTag`/`SnapshotEntry`/`SnapshotStats` become `Commit`/`CommitId`/
@@ -60,15 +56,15 @@ applies: old stores are recreated, never migrated.
 The run marker becomes `commit.inflight` (ADR-0011 keeps its decision).
 
 The JSON contract follows the canonical names: the envelope carries
-`"command":"commit"` (an alias invocation still reports the canonical
-name), the commit report carries `"commit": 3` instead of `"snapshot": 3`,
+`"command":"commit"`, the commit report carries `"commit": 3` instead of `"snapshot": 3`,
 a ref record carries `"commit": 2`, and the timing phases are
 `checkout_files_ms` and `clone_files_ms`.
 
 ## Consequences
 
-Existing invocations keep working: `sekai backup ./world` is `sekai commit
-./world`, and the help says so. Scripts that parse the JSON payload must
+Existing invocations break: `sekai backup ./world` must become `sekai
+commit ./world`, and scripts using the old flags must switch to the new
+spellings. Scripts that parse the JSON payload must also
 follow (`snapshot` -> `commit`); `docs/json.md` and the golden tests in
 `crates/cli/src/commands/` change together.
 

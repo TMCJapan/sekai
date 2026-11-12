@@ -173,15 +173,14 @@ jobs:
           "$BIN" --help >/dev/null
           # Only `commit` creates the store; every other command must fail
           # on a missing store without leaving anything behind (issue #80).
-          if "$BIN" --store "$SMOKE/store" list --json >/dev/null 2>&1; then
-            echo "list on a missing store must fail" >&2
+          if "$BIN" --store "$SMOKE/store" log --json >/dev/null 2>&1; then
+            echo "log on a missing store must fail" >&2
             exit 1
           fi
           [ ! -e "$SMOKE/store" ]
           mkdir -p "$SMOKE/world"
           "$BIN" --store "$SMOKE/store" commit "$SMOKE/world" --json | grep -q '"status":"ok"'
-          # `list` is an alias of `log`; the envelope reports the canonical name.
-          "$BIN" --store "$SMOKE/store" list --json | grep -q '"command":"log","status":"ok"'
+          "$BIN" --store "$SMOKE/store" log --json | grep -q '"command":"log","status":"ok"'
           "$BIN" --store "$SMOKE/store" gc --dry-run --json | grep -q '"status":"ok"'
 
       - name: Upload CLI

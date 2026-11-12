@@ -27,7 +27,6 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Record the current world state as a new commit.
-    #[command(visible_alias = "backup")]
     Commit {
         /// World directory (the one containing `region/`, `DIM-1/`, or `dimensions/`).
         /// For Bukkit-family servers, pass the server root instead.
@@ -65,7 +64,6 @@ pub enum Command {
         jobs: usize,
     },
     /// Rebuild the world from a commit, overwriting region files.
-    #[command(visible_alias = "rollback")]
     Checkout {
         /// World directory to rebuild in place.
         world: PathBuf,
@@ -84,12 +82,12 @@ pub enum Command {
         selection: Selection,
         /// Keep region files unknown to the commit instead of deleting
         /// them (files created after the commit).
-        #[arg(long, alias = "keep-post-snapshot-files")]
+        #[arg(long)]
         keep_post_commit_files: bool,
         /// Keep live bytes for chunks unknown to the commit (created
         /// afterwards inside a commit-known region) instead of dropping
         /// them.
-        #[arg(long, alias = "keep-post-snapshot-chunks")]
+        #[arg(long)]
         keep_post_commit_chunks: bool,
         /// Keep live bytes for commit-tombstoned chunks instead of
         /// removing them. Fully tombstoned region files are left alone
@@ -105,7 +103,6 @@ pub enum Command {
         on_missing_file: OnMissingFile,
     },
     /// List recorded commits, oldest first.
-    #[command(visible_alias = "list")]
     Log {
         /// Emit commit list as JSON instead of human text.
         /// See docs/json.md.
