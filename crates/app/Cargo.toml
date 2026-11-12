@@ -12,14 +12,14 @@ keywords = ["minecraft", "version-control"]
 workspace = true
 
 [features]
-default = ["backend-sqlite"]
-backend-sqlite = ["dep:sekai-storage-sqlite"]
+default = ["backend-local"]
+backend-local = ["dep:sekai-storage-local"]
 
 [dependencies]
 sekai-anvil.workspace = true
 sekai-core.workspace = true
 sekai-storage.workspace = true
-sekai-storage-sqlite = { workspace = true, optional = true }
+sekai-storage-local = { workspace = true, optional = true }
 sekai-world.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
@@ -27,22 +27,22 @@ tokio.workspace = true
 [[bench]]
 name = "commit"
 harness = false
-required-features = ["backend-sqlite"]
+required-features = ["backend-local"]
 
 [[bench]]
 name = "checkout"
 harness = false
-required-features = ["backend-sqlite"]
+required-features = ["backend-local"]
 
 [[bench]]
 name = "diff"
 harness = false
-required-features = ["backend-sqlite"]
+required-features = ["backend-local"]
 
 [[bench]]
 name = "gc_scan"
 harness = false
-required-features = ["backend-sqlite"]
+required-features = ["backend-local"]
 
 [dev-dependencies]
 criterion.workspace = true

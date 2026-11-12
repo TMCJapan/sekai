@@ -271,7 +271,7 @@ fn custom_tree_reports_its_unguarded_answer() {
 
 /// Only the files a plan ingests are read: an out-of-scope file whose
 /// `read` fails cannot fail the run, while the same failure in scope does.
-#[cfg(feature = "backend-sqlite")]
+#[cfg(feature = "backend-local")]
 #[tokio::test]
 async fn only_planned_files_are_read() {
     let root = tempfile::Builder::new()

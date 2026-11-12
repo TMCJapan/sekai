@@ -1,8 +1,8 @@
-//! End-to-end named scope flows over SQLite stores.
+//! End-to-end named scope flows over local stores.
 //!
-//! Requires the `backend-sqlite` feature.
+//! Requires the `backend-local` feature.
 
-#![cfg(feature = "backend-sqlite")]
+#![cfg(feature = "backend-local")]
 
 mod fixtures;
 

@@ -9,7 +9,7 @@ This project is organized as a Cargo workspace under `crates/`:
     ├── anvil           # Pure Anvil sector codec, decompression, and normalized chunk hashing (no_std + alloc, ex-mca)
     ├── core            # Use-case policy API over shared types (no_std + alloc, depends on util/anvil)
     ├── storage         # Backend-neutral store traits and locks (std + tokio)
-    ├── storage-sqlite  # SQLite metadata + blob backend over sqlx (std + tokio)
+    ├── storage-local   # Local backend: SQLite metadata (sqlx) + sled blobs (std + tokio)
     ├── world           # World access boundary (std): WorldTree trait, RegionFile
     │                   # handle, and the host tree (filesystem)
     ├── app             # Composition/orchestration library for third parties (std + tokio)
@@ -21,11 +21,11 @@ This project is organized as a Cargo workspace under `crates/`:
 Keep dependencies strictly unidirectional (inward):
 
 ```text
-sekai (bin) -> app -> {core, world, storage, storage-sqlite}
+sekai (bin) -> app -> {core, world, storage, storage-local}
 app -> core -> anvil
 world -> {anvil, core}
 storage -> core (whose `port` module owns the async traits; backend crates implement them)
-storage-sqlite -> storage
+storage-local -> storage
 {anvil, core} -> util (world/storage/app reach shared types through `core` re-exports)
 ```
 
@@ -43,12 +43,12 @@ Rules:
   call `Chunk::normalized_hash()` and never see raw NBT types, so the
   parser cannot drift into a second public path. Compression framing and
   chunk schema knowledge both live in `anvil`.
-- `async`/tokio lives in `storage`, `storage-sqlite`, `world`, `app`, and the
+- `async`/tokio lives in `storage`, `storage-local`, `world`, `app`, and the
   binary only. `anvil` is sync-only; `core` policy is sync except for
   `async fn` in traits (RPITIT, see below).
 - `storage` owns backend-neutral boundaries (`api` / `store`);
   concrete database backends live in sibling crates such as
-  `storage-sqlite` and only communicate through the exported traits.
+  `storage-local` and only communicate through the exported traits.
   Backend crates must not reach into each other.
 
 ## Safety Invariants
@@ -92,8 +92,8 @@ any exception in the PR body.
   truth.
 - **Two-phase destructive operations**: GC and similar destructive
   operations keep a dry-run/plan phase separate from apply/execution.
-- **Crash order**: CAS blobs flushed + synced *before* DB metadata commit;
-  GC unlinks *after* metadata commit. The barrier calls live at the `app`
+- **Crash order**: CAS blobs flushed + synced _before_ DB metadata commit;
+  GC unlinks _after_ metadata commit. The barrier calls live at the `app`
   call site, never hidden inside adapters.
 
 # Development Guidelines
@@ -105,28 +105,28 @@ any exception in the PR body.
   with no `std`-only or async-runtime dependencies.
 - **Pure-crate dependency allowlist** (keep this list minimal and
   `no_std`-gated):
-  - `util`: `blake3` with `default-features = false` for the shared digest
-    primitive. Other new dependencies need explicit justification.
-  - `anvil`: `sekai-util` (shared dimension and region-kind codes),
-    `miniz_oxide` (zlib/raw-inflate), `crc32fast` (gzip footer),
-    `lz4_flex` block API (lz4-java stream bodies), `twox-hash` (lz4-java
-    block checksums), and `nanonbt` (chunk NBT parsing and normalized
-    views; private to the crate).
-  - `core`: `sekai-util` (shared types, re-exported at the root) plus
-    `anvil` (concrete composition target).
+    - `util`: `blake3` with `default-features = false` for the shared digest
+      primitive. Other new dependencies need explicit justification.
+    - `anvil`: `sekai-util` (shared dimension and region-kind codes),
+      `miniz_oxide` (zlib/raw-inflate), `crc32fast` (gzip footer),
+      `lz4_flex` block API (lz4-java stream bodies), `twox-hash` (lz4-java
+      block checksums), and `nanonbt` (chunk NBT parsing and normalized
+      views; private to the crate).
+    - `core`: `sekai-util` (shared types, re-exported at the root) plus
+      `anvil` (concrete composition target).
 - **Async policy**: `async fn` in traits via RPITIT (return-position
   `impl Future`, no `async-trait` macro, no boxing). All trait futures are
   `Send`-bounded for tokio. Static dispatch (`generics`) is preferred over
   `dyn Trait`; if `dyn` is ever needed, box at the outer (`app`) layer, not
   in `core`.
-- **Runtime**: tokio in `storage`, `storage-sqlite`, `world` (I/O parts),
+- **Runtime**: tokio in `storage`, `storage-local`, `world` (I/O parts),
   `app`, and the binary only.
 - **Portability targets**: CI lints the pure crates on every push and pull request.
 - `no_std`: `util`, `anvil`, `core` must keep linting clean for `thumbv7m-none-eabi`.
 - `wasm`: `util`, `anvil`, `core`, and the backend-neutral
   `storage` crate must keep linting clean for `wasm32-unknown-unknown`.
-  `world`, `storage-sqlite`, `app`, and the binary own host file I/O, locks,
-  and SQLite and are intentionally **not** wasm targets yet. The
+  `world`, `storage-local`, `app`, and the binary own host file I/O, locks,
+  and the databases (SQLite, sled) and are intentionally **not** wasm targets yet. The
   backend-neutral store traits exist so a wasm backend can be added as a
   sibling crate without touching `core`/`app`.
 - Neither target has a runner, so they are lint-only; the full workspace is
@@ -137,15 +137,15 @@ any exception in the PR body.
   `sekai-<target triple>`; because the upload step zips its input and drops
   file modes, the artifact wraps a `sekai-<target triple>.tar.gz` that keeps
   the binary executable.
-- **Storage backends**: this project ships SQLite only, in the
-  `sekai-storage-sqlite` crate (via sqlx, app feature `backend-sqlite`,
-  default-on). `sekai-storage` stays backend-neutral and owns the traits
-  and locks; it holds no backend modules, so a mysql or postgres
-  backend arrives as a sibling crate rather than as a stub.
-  Backend selection is URL-selected at runtime (`sqlite://...`,
-  `mysql://...`, `postgres://...`); requesting a backend this build does not
-  carry is a loud `UnsupportedBackend` error, and a build without
-  `backend-sqlite` has no store-opening entry point at all.
+- **Storage backends**: this project ships one local backend, in the
+  `sekai-storage-local` crate (SQLite metadata via sqlx, blobs via sled;
+  app feature `backend-local`, default-on). `sekai-storage` stays
+  backend-neutral and owns the traits and locks; it holds no backend
+  modules, so a mysql or postgres backend arrives as a sibling crate
+  rather than as a stub.
+  Backend selection is compile-time via the `backend-local` feature;
+  `--store` names the local store's root directory directly. A build
+  without `backend-local` has no store-opening entry point at all.
 
 ## Coding Standards
 
@@ -169,7 +169,6 @@ any exception in the PR body.
 
 Before submitting a Pull Request, make sure your changes pass all checks:
 
-
 ```bash
 # Format check
 cargo fmt --all -- --check
@@ -189,13 +188,13 @@ cargo nextest run --workspace
 # Feature-combination lint: default, none, each backend, all
 cargo hack --each-feature clippy --workspace --all-targets -- -D warnings
 
-# Feature-combination tests: the store-backed suites need `backend-sqlite`,
+# Feature-combination tests: the store-backed suites need `backend-local`,
 # so they are compiled out of the other combinations
 cargo hack --each-feature nextest run --workspace --all-targets
 
 # Backend matrix (when touching storage backends)
-cargo nextest run -p sekai-storage -p sekai-storage-sqlite
-cargo nextest run -p sekai-app --no-default-features --features backend-sqlite
+cargo nextest run -p sekai-storage -p sekai-storage-local
+cargo nextest run -p sekai-app --no-default-features --features backend-local
 
 # Run dependency, advisory, and license checks
 cargo deny check
@@ -212,14 +211,14 @@ cargo build -p sekai-cli --release
 
 - **Unit Tests**: Place in `src/` alongside the code. Ensure coverage for edge cases (corrupted headers, unexpected NBT structures, zero-length chunks).
 - **Integration Tests**: Place in `tests/` directories within crates. Test atomic operations (e.g., MCA writes, checkouts) using synthetic binary fixtures. The `test-world/` corpus (small real-data region files, see its README for provenance) is the exception: copy it into a temp dir first, never mutate it in place. Crash-order tests (torn commit leaves orphans, never dangling references) are mandatory for `app`/`world`/`storage` changes.
-- **Backend tests**: `sekai-storage-sqlite` must cover the version gate
+- **Backend tests**: `sekai-storage-local` must cover both version gates
   (`UnsupportedSchema`), the incremental-carry path, and derived-state
   wipe recovery. Future backend crates must run the same suite via the
   shared conformance flows.
 - **Benchmarks**: micro benches live beside their crates (`cargo bench -p
-  sekai-anvil -p sekai-core`); integration flows in
+sekai-anvil -p sekai-core`); integration flows in
   `crates/app/benches` (seeded worlds from `benches/common.rs`, `cargo
-  bench -p sekai-app --bench commit`). Record new baselines in
+bench -p sekai-app --bench commit`). Record new baselines in
   `docs/benchmarks.md` when a `perf` change lands. The `bench.yaml`
   workflow runs on schedule only, never as a merge gate.
 
@@ -266,7 +265,8 @@ Write [Conventional Commits](https://www.conventionalcommits.org/):
 ### Storage Schema Changes
 
 The metadata schema is backend-owned and versioned
-(`SCHEMA_VERSION` in `crates/storage-sqlite/src/sqlite.rs`).
+(`SCHEMA_VERSION` in `crates/storage-local/src/meta.rs`); the blob keyspace
+has its own gate (`SCHEMA_VERSION` in `crates/storage-local/src/blob.rs`).
 
 - Bump the version for any schema change and add a test pinning the version
   gate (old stores fail loudly with `UnsupportedSchema`). Fresh stores

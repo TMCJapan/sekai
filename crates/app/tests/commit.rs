@@ -1,8 +1,8 @@
-//! End-to-end commit flows over real world folders and SQLite stores.
+//! End-to-end commit flows over real world folders and local stores.
 //!
-//! Requires the `backend-sqlite` feature.
+//! Requires the `backend-local` feature.
 
-#![cfg(feature = "backend-sqlite")]
+#![cfg(feature = "backend-local")]
 
 mod fixtures;
 
@@ -769,11 +769,11 @@ async fn commit_records_no_diff_metadata() {
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
     let store_dir = root.join("store");
-    let store_url = store_dir.to_string_lossy().into_owned();
+    let store_path = store_dir.to_string_lossy().into_owned();
     let payload = chunk_nbt("minecraft:full");
     write_region(world_path.join("region/r.0.0.mca"), &[(0, 0, payload)]);
 
-    let mut instance = sekai_app::SekaiInstance::init(&store_url).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store_path).await.unwrap();
     let (report, _) = instance
         .world_mut(&mut world)
         .commit(options(), sekai_app::Scope::World, &())
@@ -782,8 +782,8 @@ async fn commit_records_no_diff_metadata() {
     assert_eq!(report.chunks, 1);
 
     let commits = instance.list_commits().await.unwrap();
-    let meta = sekai_storage_sqlite::open_sqlite(&store_dir).await.unwrap();
-    let row = meta
+    let row = instance
+        .store()
         .meta()
         .lookup_chunk(
             commits[0].id,

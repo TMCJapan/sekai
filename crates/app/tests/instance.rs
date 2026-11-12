@@ -1,9 +1,9 @@
 //! Store lifecycle: only `init` materializes a store, while `open` must fail
 //! loudly on a root that was never initialized (issue #80).
 //!
-//! Requires the `backend-sqlite` feature.
+//! Requires the `backend-local` feature.
 
-#![cfg(feature = "backend-sqlite")]
+#![cfg(feature = "backend-local")]
 
 /// A temp dir whose name starts with the calling test's name (tempfile
 /// appends a random suffix), removed when its guard is dropped at the end
@@ -33,7 +33,7 @@ async fn open_of_a_missing_store_fails_and_creates_nothing() {
 
     sekai_app::SekaiInstance::init(&url).await.unwrap();
     assert!(store.join("meta.sqlite").is_file());
-    assert!(store.join("blob.sqlite").is_file());
+    assert!(store.join("blobs/conf").is_file());
     sekai_app::SekaiInstance::open(&url).await.unwrap();
 }
 

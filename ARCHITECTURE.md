@@ -32,23 +32,23 @@ sekai (bin, thin: clap parse + print + exit code)
       -> sekai-anvil + sekai-core (types only)
     -> sekai-storage (std + tokio: store traits and locks)
       -> sekai-core
-    -> sekai-storage-sqlite (std + tokio: sqlx SQLite implementation)
+    -> sekai-storage-local (std + tokio: SQLite metadata + sled blobs)
       -> sekai-storage
 sekai-util (no_std, no tokio dependency: coordinates, chunk hashes,
   history value types) <- anvil, core (world/storage/app reach them
   through `core` re-exports)
 ```
 
-| Crate | `std` | `async` | Role |
-|---|---|---|---|
-| `sekai-util` | `no_std`, no `std`/tokio dependencies | no | Shared value types: coordinates, the chunk digest (`ChunkHash`, `hash_bytes`, `BytesHasher`), region/history/commit/gc records, hex errors. Pure data plus total validation only. |
-| `sekai-anvil` | `no_std` + `alloc` | no | Pure Anvil sector codec including decompression and chunk NBT normalization. A stored sector payload becomes a `Chunk` whose `normalized_hash()` is the only public NBT-derived digest; the parser and normalized views stay internal. Also builds `Vec<u8>` images. Compression framing is MCA spec knowledge, so it lives here. No `Path`, no `fs`. Names custom dimensions with util `Dimension`. |
-| `sekai-core` | `no_std` + `alloc` | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_checkout`, `gc plan`/`apply`) plus storage ports. Composes `anvil` over util types and re-exports every util type at its root, so downstream paths stay stable. |
-| `sekai-storage` | `std` + tokio | yes (RPITIT) | Backend-neutral boundaries: async `BlobStore`/`MetaStore` traits (owned by `core::port`, re-exported from the `api` module), high-level `SekaiStore`/`SekaiStoreOpener` traits, and URL-based backend selection. Depends on `core`. |
-| `sekai-storage-sqlite` | `std` + tokio | yes | Concrete SQLite implementation over sqlx: `SqliteMeta`/`SqliteBlob` plus the SQLite-backed `SqliteStore`, both schema/version gates, and the opener. Implements the traits from `sekai-storage` (and `core::port`). Other backends become sibling crates without touching `core`/`app`. |
-| `sekai-world` | `std` | yes (I/O) / sync pure helpers where trivial | World access boundary: the `WorldTree` trait, the `RegionFile` handle, and the filesystem tree (`HostWorldTree`). |
-| `sekai-app` | `std` + tokio | yes | Composition/orchestration library for third parties: parallel ingest, clocks, timing, progress callbacks. |
-| `sekai` bin (`sekai-cli` package) | `std` + tokio | yes | Thin clap wrapper over `sekai-app`. No logic. Binary name stays `sekai`; package name stays `sekai-cli` so existing CI/artifact names keep working. |
+| Crate                             | `std`                                 | `async`                                      | Role                                                                                                                                                                                                                                                                                                                                                                                                 |
+| --------------------------------- | ------------------------------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sekai-util`                      | `no_std`, no `std`/tokio dependencies | no                                           | Shared value types: coordinates, the chunk digest (`ChunkHash`, `hash_bytes`, `BytesHasher`), region/history/commit/gc records, hex errors. Pure data plus total validation only.                                                                                                                                                                                                                    |
+| `sekai-anvil`                     | `no_std` + `alloc`                    | no                                           | Pure Anvil sector codec including decompression and chunk NBT normalization. A stored sector payload becomes a `Chunk` whose `normalized_hash()` is the only public NBT-derived digest; the parser and normalized views stay internal. Also builds `Vec<u8>` images. Compression framing is MCA spec knowledge, so it lives here. No `Path`, no `fs`. Names custom dimensions with util `Dimension`. |
+| `sekai-core`                      | `no_std` + `alloc`                    | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_checkout`, `gc plan`/`apply`) plus storage ports. Composes `anvil` over util types and re-exports every util type at its root, so downstream paths stay stable.                                                                                                                                                                               |
+| `sekai-storage`                   | `std` + tokio                         | yes (RPITIT)                                 | Backend-neutral boundaries: async `BlobStore`/`MetaStore` traits (owned by `core::port`, re-exported from the `api` module), high-level `SekaiStore`/`SekaiStoreOpener` traits, and shared storage errors. Depends on `core`.                                                                                                                                                                  |
+| `sekai-storage-local`             | `std` + tokio                         | yes                                          | Concrete local backend: `SqliteMeta` over sqlx plus `SledBlob` over sled, composed into `LocalStore`, both schema/version gates, and the openers. Implements the traits from `sekai-storage` (and `core::port`). Other backends become sibling crates without touching `core`/`app`.                                                                                                                  |
+| `sekai-world`                     | `std`                                 | yes (I/O) / sync pure helpers where trivial  | World access boundary: the `WorldTree` trait, the `RegionFile` handle, and the filesystem tree (`HostWorldTree`).                                                                                                                                                                                                                                                                                    |
+| `sekai-app`                       | `std` + tokio                         | yes                                          | Composition/orchestration library for third parties: parallel ingest, clocks, timing, progress callbacks.                                                                                                                                                                                                                                                                                            |
+| `sekai` bin (`sekai-cli` package) | `std` + tokio                         | yes                                          | Thin clap wrapper over `sekai-app`. No logic. Binary name stays `sekai`; package name stays `sekai-cli` so existing CI/artifact names keep working.                                                                                                                                                                                                                                                  |
 
 ### Why `core` must not depend on `world`
 
@@ -264,12 +264,13 @@ surfaces as a diagnostic naming the chunk and region file.
 
 ## CAS Consistency
 
-Blobs live in their own SQLite database (`blob.sqlite`, one `WITHOUT ROWID`
-table keyed by the 32-byte hash) beside `meta.sqlite`, so a store is a single
-directory of database files and a blob write is durable before any metadata
-names it. Normalization rule updates affect only change detection - zero data
+Blobs live in their own sled keyspace (`blobs/`, the default tree keyed by
+the 32-byte hash) beside `meta.sqlite`, so a store is a single directory and
+a blob write is durable before any metadata names it: puts append to sled's
+log, and `sync` (a log flush) is the barrier the commit runs before recording
+rows. Normalization rule updates affect only change detection - zero data
 migration or blob re-indexing. See
-[ADR-0022](docs/adr/0022-sqlite-blob-store.md).
+[ADR-0024](docs/adr/0024-sled-blob-store.md).
 
 # History, State, and GC Model
 
@@ -302,7 +303,7 @@ sequence is never part of the public ID. See
 
 Ref objects are the store's movable pointers to commits: named
 branches. A ref names a commit and moves with the history it names; a
-ref without a commit is *unborn*. Exactly one ref is *active* - the one
+ref without a commit is _unborn_. Exactly one ref is _active_ - the one
 new commits hang from (the store's `HEAD`). A fresh store starts with
 one active ref, `main`, unborn.
 
@@ -348,7 +349,7 @@ writes one commit row and no chunk rows.
 Missing chunks are explicit `NULL`-blob rows, written once at the commit
 where they vanish: a coordinate already tombstoned records nothing further,
 because its absence already resolves through fallback. Change detection
-therefore compares the world against the effective *present* coordinate set
+therefore compares the world against the effective _present_ coordinate set
 of the latest commit, so a repeated commit of an unchanged world writes no
 chunk rows at all. Checkout onto tombstones removes sectors (fully
 tombstoned regions delete the file rather than leaving a header-only shell).
@@ -399,7 +400,8 @@ produced them. The scope is a filter, not a partition:
   duration, and `gc` refuses at plan and apply time while it is held,
   because a commit's blobs are in the CAS before the rows that reference
   them. Readers (`checkout`, `clone`, `diff`) never take it. Operations
-  otherwise never lock the store; exclusion is per world, through
+  otherwise never lock the store; the blob keyspace admits a single
+  opener (ADR-0024), and per-world exclusion runs through
   `WorldTree::lock` (ADR-0022).
 - **Commit pruning** (`prune`): oldest-first fold into the retained
   commit that continues the retired one, then delete. A commit that
@@ -415,35 +417,35 @@ produced them. The scope is a filter, not a partition:
   `BlobStore`/`MetaStore` traits (RPITIT, `Send` bounds for tokio) still
   come from `core::port` and are re-exported from storage's `api` module.
   Storage adds the high-level `SekaiStore` (metadata + blobs) and
-  `SekaiStoreOpener` (URL selection). Blob adapters are async only and
+  `SekaiStoreOpener` (open/init entry points). Blob adapters are async only and
   `Clone`: the CAS is append-only, so ingest workers share it without
   exclusion and a cancelled future cannot strand a blob lock.
-- `sekai-storage-sqlite` is the concrete sqlx backend. It owns `SqliteMeta`,
-  `SqliteBlob`, `SqliteStore`, both schemas, and both version gates, and
-  implements the storage/core traits. Removing sqlx from `sekai-storage`
-  keeps the abstraction crate free of a native database dependency.
+- `sekai-storage-local` is the concrete local backend. It owns `SqliteMeta`
+  (sqlx), `SledBlob` (sled), `LocalStore`, both schemas, and both version
+  gates, and implements the storage/core traits. Keeping sqlx and sled out
+  of `sekai-storage` keeps the abstraction crate free of native database
+  dependencies.
 - New backends (mysql, postgres, embedded, in-memory, wasm) become sibling
   crates implementing the same traits. `app` is generic over
   `SekaiInstance<T: SekaiStore>`, so adding a backend does not touch use-case
   policy. No generic `Any`-driver abstraction.
-- SQLite is the only backend shipped. `sekai-storage` holds no backend
-  modules at all: it owns the traits and the locks, and stays free of a
-  native database dependency. A mysql or postgres backend arrives as a
-  sibling crate, never as a stub inside `sekai-storage`.
+- The local backend (SQLite metadata + sled blobs) is the only one shipped.
+  `sekai-storage` holds no backend modules at all: it owns the traits and
+  the locks, and stays free of a native database dependency. A mysql or
+  postgres backend arrives as a sibling crate, never as a stub inside
+  `sekai-storage`.
 
 ## Backend Selection
 
-Runtime-selected, with compile-time gating on the backend crate: `app`
-exposes a `backend-sqlite` feature (default-on) that pulls in
-`sekai-storage-sqlite`; `sekai-cli` inherits it through `sekai-app` and
-needs no features of its own. At runtime the connection URL picks the
-backend, and requesting a backend this build does not carry is a loud
-`UnsupportedBackend` error — never silent reinterpretation.
-`sekai-storage` keeps `BackendKind` and URL parsing; each
-backend crate implements `SekaiStoreOpener` for its store type, so the
-backend owns the grammar of the URLs that name it.
+Compile-time, gated on the backend crate: `app` exposes a `backend-local`
+feature (default-on) that pulls in `sekai-storage-local`; `sekai-cli`
+inherits it through `sekai-app` and needs no features of its own. The
+local backend is the only one shipped, and `--store` names its root
+directory directly; there is no runtime URL selection. A backend crate
+implements `SekaiStoreOpener` for its store type, so the backend owns
+the meaning of the location string that names it.
 
-A build without `backend-sqlite` has no store-opening entry point at all:
+A build without `backend-local` has no store-opening entry point at all:
 `sekai-storage` ships no stand-in store, so a build that carries no backend
 cannot open one and says so at compile time.
 
@@ -455,20 +457,26 @@ of writes needs exclusion; `gc` keeps to its own run marker (ADR-0011).
 Metadata conflicts resolve transactionally at commit time, and content-
 addressed commit IDs keep concurrent backups from colliding.
 
-Only the world excludes, through `WorldTree::lock` (ADR-0014). A
-blocking file pass owns its share of that lock *inside* the blocking
-task, so a cancelled future cannot release the world while the pass
-still writes files.
+Opening the store is the one exclusive step: the blob keyspace takes a
+session lock that admits a single opener per store, system-wide, for as
+long as the handle lives (ADR-0024). Clones of an opened handle share
+that session, so ingest workers still share the CAS without exclusion.
+
+Only the world excludes per operation, through `WorldTree::lock`
+(ADR-0014). A blocking file pass owns its share of that lock _inside_
+the blocking task, so a cancelled future cannot release the world while
+the pass still writes files.
 
 ## Schema
 
-Owned by the backend crate (`crates/storage-sqlite/schema/sqlite.sql` for
-SQLite; `commits`, `commit_parents`, `chunk_history`, `refs`, `scopes`,
+Owned by the backend crate (`crates/storage-local/schema/sqlite.sql` for
+metadata; `commits`, `commit_parents`, `chunk_history`, `refs`, `scopes`,
 `scope_areas`; `SCHEMA_VERSION` gate; pre-release policy = recreate, don't
-migrate). The blob database (`blob.sqlite`, one `blobs` table) carries its own
-`user_version` gate; blob rows are opaque payloads, so it has no derived state
-to reinterpret. CAS stays behind the backend-neutral port, so an object-store
-backend swaps the adapter without touching metadata code.
+migrate). The blob keyspace (`blobs/`) carries its own version gate in a
+reserved sled tree (`__sekai_version`); blob values are opaque payloads, so
+it has no derived state to reinterpret. CAS stays behind the backend-neutral
+port, so an object-store backend swaps the adapter without touching metadata
+code.
 
 ## Async Policy
 
@@ -493,12 +501,11 @@ backend swaps the adapter without touching metadata code.
   corrupt runs still fail loudly with the file path attached. `world` never
   patches bytes.
 - **Crash consistency order**:
-  - **Write path**: CAS blob rows committed (WAL fsynced) *before* DB
-    metadata commit; the checkpoint afterwards manages WAL space, not
-    durability.
-  - **GC delete path**: DB metadata commit *before* blob unlink.
-  - **Prune path**: each commit's fold (row restamp/drop and commit
-    delete) commits atomically; blobs unlink only in a later `gc`.
+    - **Write path**: CAS blobs flushed (sled log fsynced) _before_ DB
+      metadata commit.
+    - **GC delete path**: DB metadata commit _before_ blob unlink.
+    - **Prune path**: each commit's fold (row restamp/drop and commit
+      delete) commits atomically; blobs unlink only in a later `gc`.
 - **No server orchestration in libraries**: `save-off`/`save-all`,
   scheduling, and process control belong to callers, never to `core`,
   `anvil`, `storage`, `world`, or `app` internals.

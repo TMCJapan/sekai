@@ -2,7 +2,14 @@
 version = 2
 # `paste` (unmaintained, not vulnerable) comes transitively via
 # pulp <- nanocesu8 <- nanonbt. Revisit once upstream drops it.
-ignore = ["RUSTSEC-2024-0436"]
+# `instant` (via parking_lot <- sled) and `fxhash` (via sled) are
+# unmaintained, not vulnerable; both are non-optional sled 0.34 deps.
+# Revisit once sled drops them.
+ignore = [
+  "RUSTSEC-2024-0436",
+  "RUSTSEC-2024-0384",
+  "RUSTSEC-2025-0057",
+]
 
 [sources]
 allow-git = [
@@ -12,7 +19,9 @@ allow-git = [
 
 [licenses]
 version = 2
-allow = ["MIT", "Apache-2.0", "Unicode-3.0", "Zlib"]
+# BSD-3-Clause covers `instant`, a non-optional transitive dep of sled
+# (parking_lot <- sled).
+allow = ["MIT", "Apache-2.0", "Unicode-3.0", "Zlib", "BSD-3-Clause"]
 
 [bans]
 multiple-versions = "warn"
