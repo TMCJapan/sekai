@@ -301,10 +301,10 @@ where
     /// CAS puts, no metadata commit, no region writes. Only lock files may
     /// be created (ADR-0014).
     ///
-    /// Only `scope` is previewed. `progress` reports as for
-    /// [`WorldHandleMut::commit`]. Staged rows are assembled exactly as
-    /// commit would, then counted instead of committed - so counts match a
-    /// subsequent commit unless the world changes in between.
+    /// Only `scope` is previewed. `progress` fires as changed files
+    /// complete. Staged rows are assembled exactly as commit would, then
+    /// counted instead of committed - so counts match a subsequent commit
+    /// unless the world changes in between.
     pub async fn status(
         &self,
         options: StatusOptions,
@@ -454,7 +454,8 @@ struct IngestTimings {
 /// is append-only, so concurrent puts never conflict. Nothing here syncs
 /// the store; the caller places that barrier before the metadata commit.
 ///
-/// `progress` fires per file as its task is joined, before that sync.
+/// `progress` fires per file as its task is joined, before the caller's
+/// sync.
 async fn ingest_changed<R: RegionFile, S: SekaiStore, L: WorldLock>(
     changed: Vec<(RegionKey, R)>,
     cas: S::Blobs,
