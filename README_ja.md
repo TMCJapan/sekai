@@ -58,19 +58,16 @@ sekai gc
 # 古いコミットを削除（最新 10 件を残す）し、不要になった Blob を回収
 sekai prune --keep-last 10
 sekai gc
-
-# 特定のコミットを新しいディレクトリに復元（稼働中のワールドには影響しません）
-sekai clone 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a ./restored
 ```
 
-すべてのコマンドは `--json` オプションに対応しており、単一の機械可読な JSON レポートを出力できます。また、`log` と `ref` を除くすべてのコマンドは `--timing` オプションでフェーズごとの処理時間内訳を表示できます（両方を組み合わせることで、所要時間付きの JSON が得られます）。さらに、`commit`、`status`、`checkout`、`diff`、`clone`、`gc`、`prune` では `--progress` を指定すると標準エラー出力に進捗バーを表示できます（`--json` との併用は不可）。
+すべてのコマンドは `--json` オプションに対応しており、単一の機械可読な JSON レポートを出力できます。また、`log` と `ref` を除くすべてのコマンドは `--timing` オプションでフェーズごとの処理時間内訳を表示できます（両方を組み合わせることで、所要時間付きの JSON が得られます）。さらに、`commit`、`status`、`checkout`、`diff`、`gc`、`prune` では `--progress` を指定すると標準エラー出力に進捗バーを表示できます（`--json` との併用は不可）。
 
-`commit`、`status`、`checkout`、`diff`、`clone` はスコープ（対象範囲）の絞り込みに対応しています。複数指定可能な `--in DIM[:x,z|x0,z0..x1,z1]`、`--region DIM:RX,RZ`、および複数指定可能な `--kind`（省略時はすべて）が利用可能です。スコープを指定しない場合は、ワールド全体が対象となります。`--scope NAME` を使うと、`scope create` で保存した範囲を名前で選択できます。出力フォーマットの仕様については `docs/json.md` を参照してください。
+`commit`、`status`、`checkout`、`diff` はスコープ（対象範囲）の絞り込みに対応しています。複数指定可能な `--in DIM[:x,z|x0,z0..x1,z1]`、`--region DIM:RX,RZ`、および複数指定可能な `--kind`（省略時はすべて）が利用可能です。スコープを指定しない場合は、ワールド全体が対象となります。`--scope NAME` を使うと、`scope create` で保存した範囲を名前で選択できます。出力フォーマットの仕様については `docs/json.md` を参照してください。
 
 > [!Note]
 > すべてのコミットとストレージの二次バックアップを作成したい場合は、
 
-git ライクなコマンド名が正式名称です。以前の名称もエイリアスとしてそのまま使用できます（`backup` → `commit`、`rollback` → `checkout`、`export` → `clone`、`list` → `log`）。
+git ライクなコマンド名が正式名称です。以前の名称もエイリアスとしてそのまま使用できます（`backup` → `commit`、`rollback` → `checkout`、`list` → `log`）。
 
 `sekai` はサーバープロセスを直接操作しません。コミット前後のセーブ停止や再開などの連携処理は、呼び出し側（スクリプトや管理者）で行ってください。
 

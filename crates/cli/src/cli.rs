@@ -115,34 +115,6 @@ pub enum Command {
         #[arg(long)]
         stat: bool,
     },
-    /// Rebuild a commit into a fresh directory (never touches the live world).
-    #[command(visible_alias = "export")]
-    Clone {
-        /// Commit reference to clone (`<64-char hash>` or a ref name, see `log`).
-        commit: CommitRef,
-        /// Directory to rebuild the commit into (created when missing;
-        /// must otherwise be empty).
-        out: PathBuf,
-        /// Directory layout for the rebuilt world.
-        #[arg(long, value_enum, default_value_t = CloneFlavor::Legacy)]
-        flavor: CloneFlavor,
-        /// Overworld folder name for `--flavor bukkit` (the `level-name`).
-        #[arg(long, default_value = "world")]
-        base: String,
-        /// How to handle a commit blob missing from CAS.
-        #[arg(long, value_enum, default_value_t = OnMissingBlob::Abort)]
-        on_missing_blob: OnMissingBlob,
-        /// World portion to clone (default: whole world).
-        #[command(flatten)]
-        selection: Selection,
-        /// Human or JSON rendering plus optional phase timings.
-        #[command(flatten)]
-        output: TimingArgs,
-        /// Show a progress bar on stderr. Refused with `--json`, and
-        /// silent without a stderr TTY.
-        #[arg(long, conflicts_with = "json")]
-        progress: bool,
-    },
     /// Manage refs: named, movable pointers to commits.
     Ref {
         #[command(subcommand)]
@@ -200,7 +172,6 @@ impl Command {
             Self::Status { .. } => "status",
             Self::Checkout { .. } => "checkout",
             Self::Log { .. } => "log",
-            Self::Clone { .. } => "clone",
             Self::Ref { .. } => "ref",
             Self::Scope { .. } => "scope",
             Self::Prune { .. } => "prune",
@@ -216,7 +187,6 @@ impl Command {
             Self::Commit { output, .. }
             | Self::Status { output, .. }
             | Self::Checkout { output, .. }
-            | Self::Clone { output, .. }
             | Self::Prune { output, .. }
             | Self::Gc { output, .. } => output.json,
             Self::Log { json, .. } => *json,
@@ -419,18 +389,6 @@ pub enum OnMissingFile {
     Error,
 }
 
-/// Directory layout for `clone` output.
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-pub enum CloneFlavor {
-    /// Single world folder (`region/`, `DIM-1/`, `DIM1/`).
-    Legacy,
-    /// Modern layout (`dimensions/minecraft/<name>/`, since 26.1).
-    New,
-    /// Bukkit-family split folders (`<base>/`, `<base>_nether/DIM-1/`,
-    /// `<base>_the_end/DIM1/`).
-    Bukkit,
-}
-
 #[derive(Debug, clap::Args)]
 pub struct DiffArgs {
     /// World directory to compare against a commit (if specified).
@@ -501,8 +459,8 @@ pub enum DiffTarget<'a> {
     },
 }
 
-/// World-portion selection shared by commit, status, checkout, diff, and
-/// clone: spelled inline, or named by a scope saved in the store.
+/// World-portion selection shared by commit, status, checkout, and diff:
+/// spelled inline, or named by a scope saved in the store.
 #[derive(Debug, Clone)]
 pub enum Selection {
     /// `--in`/`--region`/`--kind` spelled on the command line.

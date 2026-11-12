@@ -1,7 +1,6 @@
 //! Subcommand execution dispatcher and output control wrappers.
 
 mod checkout;
-mod clone;
 mod commit;
 mod diff;
 mod diff_render;
@@ -44,7 +43,7 @@ async fn resolve_selection<S: SekaiStore>(
 }
 
 /// Output controls shared by report commands (commit, status, checkout,
-/// clone, prune, gc).
+/// prune, gc).
 #[derive(Debug, Clone, Copy)]
 pub struct ReportOut {
     pub timing: bool,
@@ -132,31 +131,6 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
         Command::Log { json, stat } => log::run(&cli.store, *json, *stat, style).await,
         Command::Ref { action } => refs::run(&cli.store, action, style).await,
         Command::Scope { action } => scopes::run(&cli.store, action, style).await,
-        Command::Clone {
-            commit,
-            out,
-            flavor,
-            base,
-            on_missing_blob,
-            selection,
-            output,
-            progress,
-        } => {
-            clone::run(
-                &cli.store,
-                commit,
-                out,
-                *progress,
-                selection,
-                &clone::CloneFlags {
-                    flavor: *flavor,
-                    base: base.clone(),
-                    on_missing_blob: *on_missing_blob,
-                },
-                ReportOut::of(*output, style),
-            )
-            .await
-        }
         Command::Diff(args) => diff::run(&cli.store, args, style).await,
         Command::Prune {
             keep_last,

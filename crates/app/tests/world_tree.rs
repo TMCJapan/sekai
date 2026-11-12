@@ -139,10 +139,6 @@ impl WorldTree for FakeWorld {
     type Region = FakeRegion;
     type Lock = FakeLock;
 
-    fn is_empty(&self) -> Result<bool, Self::Error> {
-        Ok(true)
-    }
-
     fn get_dims(&self) -> Result<Vec<Dimension>, Self::Error> {
         Self::check(self.fail_dims).map(|()| vec![Dimension::OVERWORLD])
     }

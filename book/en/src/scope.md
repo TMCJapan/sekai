@@ -1,6 +1,6 @@
 # Scope selection
 
-`commit`, `checkout`, `diff`, and `clone` accept a scope: the whole
+`commit`, `checkout`, and `diff` accept a scope: the whole
 world by default, or per-dimension areas. Entries compose by union;
 `--kind` (repeatable, empty means all) applies to every area.
 
@@ -8,7 +8,6 @@ world by default, or per-dimension areas. Entries compose by union;
 sekai commit ./world --in overworld --kind region --kind entities
 sekai checkout ./world 3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d --in overworld:0,0..31,31
 sekai diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a --in overworld:0,0
-sekai clone 3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d ./restored --region overworld:0,0
 ```
 
 - `--in DIM` selects a whole dimension; `--in DIM:x,z` one chunk;
@@ -20,14 +19,14 @@ sekai clone 3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d ./r
 
 The scope is a filter, not a partition: a scoped commit reads as the
 truth for its scope only (out-of-scope coordinates record nothing and
-resolve through fallback), and a scoped checkout or clone never touches
+resolve through fallback), and a scoped checkout never touches
 files outside the scope. See [ADR-0003](https://github.com/tmcjapan/sekai/blob/main/docs/adr/0003-scope-as-filter.md).
 
 ## Named scopes
 
 An area you select over and over can be saved in the store once and
 selected by name with `--scope` on `commit`, `status`, `checkout`,
-`clone`, and `diff`. Scopes live in the store, so it must exist first:
+and `diff`. Scopes live in the store, so it must exist first:
 run one plain `commit` before `scope create` on a new store.
 
 ```sh

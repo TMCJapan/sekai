@@ -18,7 +18,6 @@ carries the bare result only.
 | `status` | preview (+timings with `--timing`) | table + JSON block | read-only: never writes to world or store |
 | `checkout` | report (+timings with `--timing`) | table + JSON block | |
 | `log` | commit array (+stats with `--stat`) | n/a | no phases exist |
-| `clone` | report (+timings with `--timing`) | table + JSON block | |
 | `ref` | record, deletion record, or ref array | n/a | no phases exist |
 | `scope` | record, deletion record, or scope array | n/a | no phases exist |
 | `diff` | single array, grouped array (multi), or timed object | table + JSON block | `--in`/`--region` select chunks; one chunk keeps the single shape |
@@ -28,7 +27,7 @@ carries the bare result only.
 Without `--timing`, `--json` emits the bare result. With `--timing`,
 the report that would be a bare array (`diff`) is promoted to an object
 holding the array (`diffs`) plus the timing block; object reports
-(commit/status/checkout/clone/gc/prune) append the block in place.
+(commit/status/checkout/gc/prune) append the block in place.
 
 ## Envelope
 
@@ -41,9 +40,9 @@ Every invocation prints exactly one JSON object to stdout:
 {"command": "<name>", "status": "error", "error": "<full context chain>"}
 ```
 
-`command` is one of `commit`, `status`, `checkout`, `log`, `clone`, `ref`, `scope`, `prune`, `diff`, `gc`.
+`command` is one of `commit`, `status`, `checkout`, `log`, `ref`, `scope`, `prune`, `diff`, `gc`.
 The canonical name is used even when an alias (`backup`, `rollback`,
-`export`, `list`) invoked the command.
+`list`) invoked the command.
 The error string is the full anyhow context chain (outermost message
 first, then `Caused by:` lines), JSON-escaped.
 
@@ -56,6 +55,10 @@ first, then `Caused by:` lines), JSON-escaped.
 | 2 | Usage error (unknown flags, bad values). clap prints its own human-readable error to stderr. |
 
 ## Compatibility
+
+Breaking change (ADR-0024): the `clone` command (alias `export`) is
+removed, so `command` no longer takes `clone` and its payload, including
+the `clone_files_ms` phase, is gone.
 
 Breaking change (ADR-0023): `commit --json` no longer carries
 `skipped_regions` or `carried_chunks` (always 0 since PR #151 removed
@@ -136,18 +139,6 @@ Restore strategy flags (`--keep-post-commit-files`,
 deleted, so the counts reflect the applied policy; the payload shape is
 unchanged.
 
-### `clone`
-
-```jsonc
-{
-  "files_written": 2, "chunks_restored": 90,
-  "total_ms": 200,
-  "phases": {"plan_ms": 50, "clone_files_ms": 140}
-}
-```
-
-The `total_ms`/`phases` block appears only with `--timing`.
-
 ### `log`
 
 ```jsonc
@@ -188,7 +179,7 @@ order:
 A ref created without a commit starts at the active ref's target. The
 active ref is the one new commits hang from; it is never removed.
 
-Commit arguments to `checkout`, `clone`, `diff`, `prune --before`, and
+Commit arguments to `checkout`, `diff`, `prune --before`, and
 `ref create` accept `<id>` or a bare ref name; payloads always carry the
 resolved numeric ID.
 
@@ -212,7 +203,7 @@ creation is not kept. A replacement (`--force`) keeps the original
 Deletion returns `{"name": "spawn"}`. `scope list` lists all scopes in
 name order as an array of records.
 
-`commit`, `status`, `checkout`, `clone`, and `diff` select a saved
+`commit`, `status`, `checkout`, and `diff` select a saved
 scope with `--scope NAME`; their payloads do not change.
 
 ### `diff`

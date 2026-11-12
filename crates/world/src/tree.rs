@@ -9,7 +9,7 @@ use crate::{WorldLock, WorldLockMode, WorldLockState};
 
 pub use hostworld::{HostRegion, HostWorldLock, HostWorldLockError, HostWorldTree};
 
-/// World access shared by commit, clone, checkout, and diff.
+/// World access shared by commit, checkout, and diff.
 ///
 /// Bundles region discovery and handle derivation so `sekai-app` operations
 /// can accept any world implementation. Handles are cheap to clone: blocking
@@ -34,8 +34,6 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
 
     /// Guard [`WorldTree::lock`] hands out.
     type Lock: WorldLock;
-
-    fn is_empty(&self) -> Result<bool, Self::Error>;
 
     /// Every dimension that may hold regions, ordered by ascending
     /// [`Dimension::raw`] code.
@@ -69,16 +67,15 @@ pub trait WorldTree: Sync + Send + Clone + 'static {
     ) -> Result<Vec<(RegionKey, Self::Region)>, Self::Error>;
 
     /// Layout-derived handle of one region file, whether or not it exists
-    /// yet (clone targets, checkout targets for missing files).
+    /// yet (checkout targets for missing files).
     ///
     /// The name is canonical (`r.<x>.<z>.mca`). A world that holds a
     /// non-canonical spelling of the same region must be restored through
     /// that file's own handle: deriving the name here would create a
     /// second file for one region.
     ///
-    /// Output trees may point at roots that do not exist before clone, so
-    /// this never touches the filesystem: the dimension only has to be part
-    /// of the layout. Writing to the handle creates the directories the
+    /// The file may not exist yet, so this never touches the filesystem:
+    /// the dimension only has to be part of the layout. Writing to the handle creates the directories the
     /// file needs.
     fn derive_region(&self, key: RegionKey) -> Result<Self::Region, Self::Error>;
 

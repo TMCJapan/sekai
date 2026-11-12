@@ -6,7 +6,7 @@
   the same hash, so an identical history in another store shares it.
 - `blob missing from CAS: <hex>` — store corruption (or a store copied
   incompletely). Checkout aborts rather than writing a partial world;
-  `--on-missing-blob skip-chunk` (checkout/clone) continues without the
+  `--on-missing-blob skip-chunk` (checkout) continues without the
   affected chunks. Restore the store from the secondary copy, then
   investigate.
 - `cannot derive region path for dim ...` (`UnknownRegionPath`) — a

@@ -24,15 +24,12 @@ sekai gc
 # 古いコミットを削除（最新 10 件を残す）し、不要になった Blob を回収
 sekai prune --keep-last 10
 sekai gc
-
-# タグ付けしたコミットを新しいディレクトリに復元（稼働中のワールドには影響しません）
-sekai clone 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a ./restored
 ```
 
 ストアはデフォルトで `.sekai` を使用します（別の場所を使う場合は [ストアの場所](store.md) を参照）。
 
 すべてのコマンドは機械可読な出力を得るための `--json` に対応しています。また、`log` と `ref` を除くすべてのコマンドは、フェーズごとの処理時間内訳を表示する `--timing` に対応しています。
 
-`commit`、`status`、`checkout`、`diff`、`clone`、`gc`、`prune` では、標準エラー出力に進捗バーを表示する `--progress` を利用できます（`--json` との併用は不可）。
+`commit`、`status`、`checkout`、`diff`、`gc`、`prune` では、標準エラー出力に進捗バーを表示する `--progress` を利用できます（`--json` との併用は不可）。
 
-`commit`、`status`、`checkout`、`diff`、`clone` はスコープ（`--in`, `--region`, `--kind`）による対象範囲の絞り込みに対応しています。スコープを指定しない場合はワールド全体が対象となります。
+`commit`、`status`、`checkout`、`diff` はスコープ（`--in`, `--region`, `--kind`）による対象範囲の絞り込みに対応しています。スコープを指定しない場合はワールド全体が対象となります。
