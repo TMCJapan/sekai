@@ -15,7 +15,7 @@ Dry runs by command:
 |---|---|
 | `status` | the whole command (commit has no `--dry-run` by design) |
 | `gc --dry-run`, `prune --dry-run` | plan only, nothing deleted |
-| `checkout`, `clone` | none (checkout is destructive by definition; clone targets an empty directory, so it is trivially reversible) |
+| `checkout` | none (checkout is destructive by definition) |
 
 The full contract — flag matrix, envelope, per-command payloads, and the
 compatibility promise — is [docs/json.md](https://github.com/tmcjapan/sekai/blob/main/docs/json.md). That page

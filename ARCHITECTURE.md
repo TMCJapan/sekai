@@ -399,7 +399,7 @@ produced them. The scope is a filter, not a partition:
   that writes blobs holds `commit.inflight` in the store root for its
   duration, and `gc` refuses at plan and apply time while it is held,
   because a commit's blobs are in the CAS before the rows that reference
-  them. Readers (`checkout`, `clone`, `diff`) never take it. Operations
+  them. Readers (`checkout`, `diff`) never take it. Operations
   otherwise never lock the store; the blob keyspace admits a single
   opener (ADR-0024), and per-world exclusion runs through
   `WorldTree::lock` (ADR-0022).

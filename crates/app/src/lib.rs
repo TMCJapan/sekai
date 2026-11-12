@@ -16,7 +16,6 @@
 //! filesystem runs the same flows as one that is.
 
 mod checkout;
-mod clone;
 mod commit;
 mod diff;
 mod error;
@@ -30,7 +29,6 @@ mod scopes;
 mod time;
 
 pub use checkout::{CheckoutOptions, CheckoutTimings, MissingBlobPolicy, MissingFilePolicy};
-pub use clone::{CloneOptions, CloneReport, CloneTimings};
 pub use commit::{
     CommitOptions, CommitTimings, RegionTiming, StatusOptions, StatusReport, StatusTimings,
 };

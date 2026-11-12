@@ -11,6 +11,6 @@ belongs to the caller or the administrator — never to the tool:
 Committing a world that is being written concurrently can capture torn
 sectors. Reads tolerate trailing partial sectors the way vanilla does,
 but genuinely corrupt runs fail loudly instead of being recorded
-silently. Checkout and clone read only from the store, so they need no
+silently. Checkout reads only from the store, so it needs no
 server coordination beyond stopping the server before you let players
 back in — checkout overwrites live region files.

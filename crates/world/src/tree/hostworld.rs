@@ -199,8 +199,9 @@ impl HostWorldTree {
         })
     }
 
-    /// Fresh output tree in the legacy single-folder layout (`region/`,
-    /// `DIM-1/`, `DIM1/`), for roots that do not exist yet (clone).
+    /// Tree in the legacy single-folder layout (`region/`, `DIM-1/`,
+    /// `DIM1/`), built without probing the filesystem. [`HostWorldTree::new`]
+    /// falls back to it when no layout is detected.
     pub fn new_legacy(root: impl AsRef<Path>) -> Self {
         let root = root.as_ref();
         Self {
@@ -214,51 +215,10 @@ impl HostWorldTree {
         }
     }
 
-    /// Fresh output tree in the 26.1 layout
-    /// (`dimensions/minecraft/<name>/`), for roots that do not exist yet
-    /// (clone).
-    pub fn new_dimensions(root: impl AsRef<Path>) -> Self {
-        let root = root.as_ref();
-        let minecraft = root.join("dimensions").join("minecraft");
-        Self {
-            root: root.to_path_buf(),
-            dirs: [
-                (Dimension::OVERWORLD, minecraft.join("overworld")),
-                (Dimension::NETHER, minecraft.join("the_nether")),
-                (Dimension::END, minecraft.join("the_end")),
-            ]
-            .into(),
-        }
-    }
-
-    /// Fresh output tree in the Bukkit split-folder layout around `base`
-    /// (`<base>/`, `<base>_nether/DIM-1/`, `<base>_the_end/DIM1/`), for
-    /// roots that do not exist yet (clone).
-    pub fn new_bukkit(root: impl AsRef<Path>, base: impl Into<String>) -> Self {
-        let root = root.as_ref();
-        let base = base.into();
-        Self {
-            root: root.to_path_buf(),
-            dirs: [
-                (Dimension::OVERWORLD, root.join(&base)),
-                (
-                    Dimension::NETHER,
-                    root.join(format!("{base}_nether")).join("DIM-1"),
-                ),
-                (
-                    Dimension::END,
-                    root.join(format!("{base}_the_end")).join("DIM1"),
-                ),
-            ]
-            .into(),
-        }
-    }
-
-    /// Fail when the root is missing: resolution treats one as an empty
-    /// legacy tree for fresh output, but dimension enumeration must not
-    /// silently answer "nothing" for a world that vanished. Region
-    /// enumeration stays a plain directory read instead, so output trees
-    /// can serve a root that does not exist yet.
+    /// Fail when the root is missing: [`HostWorldTree::new`] resolves one to
+    /// an empty legacy tree, but dimension enumeration must not silently
+    /// answer "nothing" for a world that vanished. Region enumeration stays
+    /// a plain directory read instead, so a missing root holds no regions.
     fn check_root(&self) -> Result<(), WorldError> {
         if self.root.is_dir() {
             return Ok(());
@@ -280,22 +240,6 @@ impl WorldTree for HostWorldTree {
     type Error = WorldError;
     type Region = HostRegion;
     type Lock = HostWorldLock;
-
-    fn is_empty(&self) -> Result<bool, Self::Error> {
-        for path in self.dirs.values() {
-            match std::fs::read_dir(path) {
-                Ok(mut entries) => {
-                    if entries.next().is_some() {
-                        return Ok(false);
-                    }
-                }
-                // A directory that does not exist yet holds nothing.
-                Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
-                Err(source) => return Err(WorldError::io(path, source)),
-            }
-        }
-        Ok(true)
-    }
 
     fn get_dims(&self) -> Result<Vec<Dimension>, Self::Error> {
         self.check_root()?;

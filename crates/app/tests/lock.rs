@@ -13,18 +13,15 @@ mod fixtures;
 use fixtures::chunk_nbt;
 
 use sekai_app::{
-    CheckoutOptions, ChunkHash, CloneOptions, CommitId, CommitOptions, Dimension, HostWorldTree,
-    ProgressBuilder, Rect, RefName, Reporter, Scope, ScopeName, SekaiInstance, StatusOptions,
-    WorldError, WorldLockMode, WorldTree,
+    CheckoutOptions, ChunkHash, CommitId, CommitOptions, Dimension, HostWorldTree, ProgressBuilder,
+    Rect, RefName, Reporter, Scope, ScopeName, SekaiInstance, StatusOptions, WorldError,
+    WorldLockMode, WorldTree,
 };
 use sekai_core::MetaStore as _;
 use sekai_storage_local::LocalStore;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-
-/// Distinguishes the clone targets one test creates inside a single root.
-static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn write_region(path: impl AsRef<Path>, payload: &[u8]) {
     let name = path.as_ref().file_name().unwrap().to_str().unwrap();
@@ -106,6 +103,18 @@ impl Fixture {
     fn other_world(&self) -> HostWorldTree {
         HostWorldTree::new(&self.world_path).unwrap()
     }
+
+    /// Region file names present under the world's `region` folder, sorted.
+    fn world_regions(&self) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(self.world_path.join("region"))
+            .expect("the region folder exists")
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| name.to_ascii_lowercase().ends_with(".mca"))
+            .collect();
+        names.sort();
+        names
+    }
 }
 
 const fn is_lock_error(err: &sekai_app::AppError) -> bool {
@@ -131,7 +140,6 @@ enum Op {
     CommitCoords,
     DiffBlobs,
     DiffChunks,
-    Clone,
     GcPlan,
     GcApply,
     Gc,
@@ -146,7 +154,7 @@ enum Op {
 }
 
 impl Op {
-    const ALL: [Self; 25] = [
+    const ALL: [Self; 24] = [
         Self::ListCommits,
         Self::LatestCommit,
         Self::ResolveRef,
@@ -160,7 +168,6 @@ impl Op {
         Self::CommitCoords,
         Self::DiffBlobs,
         Self::DiffChunks,
-        Self::Clone,
         Self::GcPlan,
         Self::GcApply,
         Self::Gc,
@@ -193,7 +200,6 @@ impl Op {
             | Self::CommitCoords
             | Self::DiffBlobs
             | Self::DiffChunks
-            | Self::Clone
             | Self::GcPlan
             | Self::GcApply
             | Self::Gc
@@ -242,17 +248,6 @@ impl Op {
             Self::CommitCoords => instance.commit_chunk_coords(id).await.map(drop),
             Self::DiffBlobs => instance.diff_blobs(&fx.blob, &fx.blob).await.map(drop),
             Self::DiffChunks => instance.diff_chunks(id, id, &[], &()).await.map(drop),
-            Self::Clone => {
-                let clone_dir = fx.root.join(format!(
-                    "clone-{}",
-                    TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-                ));
-                let out = HostWorldTree::new_legacy(clone_dir);
-                let outcome = instance
-                    .clone_to(&out, id, CloneOptions::default(), Scope::World, &())
-                    .await;
-                outcome.map(drop)
-            }
             Self::GcPlan => instance.gc_plan().await.map(drop),
             Self::GcApply => {
                 let plan = sekai_app::GcPlan::new(Vec::new(), 0);
@@ -394,86 +389,13 @@ async fn a_cancelled_checkout_keeps_the_world_locked_until_its_files_finish() {
         break;
     }
     assert_eq!(
-        read_regions(&fx.world_path),
+        fx.world_regions(),
         vec!["r.0.0.mca", "r.1.0.mca"],
         "a queued file was abandoned with the future"
     );
 }
 
-/// A cancelled clone leaves `out` incomplete, but never with a partial file:
-/// each write swaps a finished file into place, and the writes already
-/// running finish after the future is gone.
-///
-/// The future is dropped as soon as a file is reported. Once no write is
-/// left mid-swap, every region file in the target must match a full clone
-/// of the same commit byte for byte, and every reported file must be there.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_cancelled_clone_leaves_only_whole_files() {
-    let fx = Fixture::new("cancel-clone").await;
-    let fresh_target = || {
-        fx.root.join(format!(
-            "cloned-{}",
-            TMP_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ))
-    };
-    // Not `HostWorldTree::new`: it creates its folder up front, and clone
-    // only accepts an empty target.
-    let full = fresh_target();
-    fx.instance
-        .clone_to(
-            &HostWorldTree::new_legacy(&full),
-            fx.commit,
-            CloneOptions::default(),
-            Scope::World,
-            &(),
-        )
-        .await
-        .unwrap();
-
-    let target = fresh_target();
-    let out = HostWorldTree::new_legacy(&target);
-    let reported = Counted::default();
-    let clone = fx.instance.clone_to(
-        &out,
-        fx.commit,
-        CloneOptions::default(),
-        Scope::World,
-        &reported,
-    );
-    let mut clone = Box::pin(clone);
-    poll_until(&mut clone, || reported.count() >= 1).await;
-    drop(clone);
-
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while has_swap_in_flight(&target) {
-        assert!(Instant::now() < deadline, "a write never finished its swap");
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-    let landed = read_regions(&target);
-    assert!(
-        landed.len() >= reported.count(),
-        "a reported file is missing: {landed:?}"
-    );
-    for name in &landed {
-        assert_eq!(
-            std::fs::read(target.join("region").join(name)).unwrap(),
-            std::fs::read(full.join("region").join(name))
-                .unwrap_or_else(|err| panic!("the full clone lacks {name}: {err}")),
-            "{name} is not whole"
-        );
-    }
-}
-
-/// Whether a write is still between its temporary file and the swap.
-fn has_swap_in_flight(root: impl AsRef<Path>) -> bool {
-    std::fs::read_dir(root.as_ref().join("region")).is_ok_and(|entries| {
-        entries
-            .filter_map(Result::ok)
-            .any(|entry| entry.file_name().to_string_lossy().contains(".tmp-"))
-    })
-}
-
-/// Counts the events of a checkout or clone, readable while it runs.
+/// Counts the events of a checkout, readable while it runs.
 #[derive(Default)]
 struct Counted(AtomicUsize);
 
@@ -503,7 +425,7 @@ impl Reporter for Counter<'_> {
 /// drop is the cancellation. Each poll yields, so the steps it queued get a
 /// chance to run. A regression trips the deadline instead of hanging. A pass
 /// that finishes before reporting is not cancelled mid-run, so `ready` checks
-/// always include the outcome: a truncated world or output still fails.
+/// always include the outcome: a truncated world still fails.
 async fn poll_until<F>(fut: &mut std::pin::Pin<Box<F>>, ready: impl Fn() -> bool)
 where
     F: std::future::Future,
@@ -522,22 +444,6 @@ where
         assert!(Instant::now() < deadline, "the file pass never reported");
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
-}
-
-/// Region file names present under `root/region`, sorted.
-///
-/// Only the fixture's own world is a folder the test created: a clone target
-/// is whatever directory the tree derived, so callers pass that directory.
-fn read_regions(root: impl AsRef<Path>) -> Vec<String> {
-    let root = root.as_ref();
-    let mut names: Vec<String> = std::fs::read_dir(root.join("region"))
-        .expect("the region folder exists")
-        .filter_map(Result::ok)
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        .filter(|name| name.to_ascii_lowercase().ends_with(".mca"))
-        .collect();
-    names.sort();
-    names
 }
 
 /// A crashed run - or a pre-lock binary - leaves `commit.inflight` behind.

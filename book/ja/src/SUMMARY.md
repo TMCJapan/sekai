@@ -10,7 +10,6 @@
 - [スコープ（対象範囲）の選択](scope.md)
 - [コミット](commands/commit.md)
 - [チェックアウト](commands/checkout.md)
-- [クローン](commands/clone.md)
 - [Ref](commands/refs.md)
 - [メンテナンス](commands/maintenance.md)
 - [検証・検査](commands/inspection.md)

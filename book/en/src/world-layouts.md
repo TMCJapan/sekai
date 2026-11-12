@@ -3,7 +3,7 @@
 Three server families share the `.mca` format but not the directory
 layout. Sekai reads the path you pass through one detection step, turns
 the result into a *dimension map* (one directory per observed dimension),
-and everything else — commit, checkout, diff, and clone — works from that
+and everything else — commit, checkout, and diff — works from that
 map. Pass the same path on every run.
 
 ## Layouts
@@ -101,12 +101,12 @@ dimension dir ─▶ region/ entities/ poi/
 - Two spellings of the same coordinates (`r.0.0.mca` and `r.00.00.mca`)
   are ambiguous: the name alone does not say which one the game reads, so
   discovery fails instead of picking one and dropping the other.
-  `derive_region` still names the canonical `r.<x>.<z>.mca` for output
-  targets and for restoring a region whose file is missing.
+  `derive_region` still names the canonical `r.<x>.<z>.mca` for restoring
+  a region whose file is missing.
 - Symlinks are followed, like the game does; a missing kind directory is
   read as empty, but a missing world root or an unreadable directory fails
   loudly instead of silently dropping a dimension.
-- Checkout and clone derive their target paths from the map; when folders
+- Checkout derives its target paths from the map; when folders
   have moved since the commit, a missing region file is restored next to a
   live sibling of the same dimension, and when no observed location exists
   the run fails loudly (`UnknownRegionPath`) rather than writing somewhere

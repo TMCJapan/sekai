@@ -1147,28 +1147,8 @@ fn missing_world_is_an_error() {
     );
 }
 
-/// Clone builds `new_legacy`/`new_dimensions`/`new_bukkit` trees for
-/// roots that do not exist yet, so region enumeration must answer empty
-/// instead of failing while the root is still missing.
 #[test]
-fn output_trees_serve_no_regions_before_creation() {
-    let (root, _guard) = tempdir("output-missing");
-    let missing = root.join("not-yet");
-    for tree in [
-        HostWorldTree::new_legacy(&missing),
-        HostWorldTree::new_dimensions(&missing),
-        HostWorldTree::new_bukkit(&missing, "srv"),
-    ] {
-        assert_eq!(
-            tree.get_regions(Dimension::OVERWORLD, RegionKind::Region)
-                .unwrap(),
-            [] as [(RegionKey, HostRegion); 0]
-        );
-    }
-}
-
-#[test]
-fn derives_all_layouts() {
+fn derives_legacy_layout() {
     let legacy = HostWorldTree::new_legacy("/w");
     assert_eq!(
         legacy
@@ -1178,30 +1158,7 @@ fn derives_all_layouts() {
         Path::new("/w/DIM-1/region/r.-1.2.mca")
     );
 
-    let modern = HostWorldTree::new_dimensions("/w");
-    assert_eq!(
-        modern
-            .derive_region(RegionKey::new(Dimension::END, RegionKind::Poi, 0, 0))
-            .unwrap()
-            .as_path(),
-        Path::new("/w/dimensions/minecraft/the_end/poi/r.0.0.mca")
-    );
-
-    let bukkit = HostWorldTree::new_bukkit("/w", "srv");
-    assert_eq!(
-        bukkit
-            .derive_region(RegionKey::new(
-                Dimension::OVERWORLD,
-                RegionKind::Region,
-                0,
-                0
-            ))
-            .unwrap()
-            .as_path(),
-        Path::new("/w/srv/region/r.0.0.mca")
-    );
-
-    let err = modern
+    let err = legacy
         .derive_region(RegionKey::new(
             Dimension::new(4242),
             RegionKind::Region,
@@ -1217,43 +1174,6 @@ fn derives_all_layouts() {
             RegionKind::Region.raw()
         )
     );
-}
-
-/// Clone derives each stored region's path through a constructor tree
-/// (`new_legacy`, `new_dimensions`, `new_bukkit`), so the constructors have
-/// to key the vanilla trio exactly as discovery does for the same layout.
-#[test]
-fn output_trees_share_discovered_ids() {
-    let image = one_chunk_image();
-
-    let (legacy_path, _guard) = tempdir("output-ids-legacy");
-    write(legacy_path.join("region/r.0.0.mca"), &image);
-    write(legacy_path.join("DIM-1/region/r.-1.2.mca"), &image);
-    write(legacy_path.join("DIM1/poi/r.1.0.mca"), &image);
-
-    let (modern_path, _modern_guard) = tempdir("output-ids-26.1");
-    write(
-        modern_path.join("dimensions/minecraft/the_nether/region/r.2.0.mca"),
-        &image,
-    );
-
-    let (bukkit_path, _bukkit_guard) = tempdir("output-ids-bukkit");
-    write(bukkit_path.join("server.properties"), b"level-name=srv\n");
-    write(bukkit_path.join("srv/region/r.0.0.mca"), &image);
-    write(
-        bukkit_path.join("srv_nether/DIM-1/region/r.3.0.mca"),
-        &image,
-    );
-
-    for (root, out) in [
-        (&legacy_path, HostWorldTree::new_legacy(&legacy_path)),
-        (&modern_path, HostWorldTree::new_dimensions(&modern_path)),
-        (&bukkit_path, HostWorldTree::new_bukkit(&bukkit_path, "srv")),
-    ] {
-        let found = discover(&HostWorldTree::new(root).unwrap());
-        assert_ne!(found, [] as [(RegionKey, PathBuf); 0]);
-        assert_derives_back(&out, &found);
-    }
 }
 
 #[test]

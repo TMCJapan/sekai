@@ -58,10 +58,6 @@ sekai gc
 # Delete old commits (keep newest 10), then reclaim their blobs
 sekai prune --keep-last 10
 sekai gc
-
-# Rebuild a commit into a fresh directory (live world untouched)
-sekai clone 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a ./restored
-
 ```
 
 missing; every other command fails on a missing store) and defaults
@@ -71,18 +67,18 @@ Every command accepts `--json` for a single-document machine-readable
 report, and every command except `log` and `ref` accepts
 `--timing`
 for a per-phase breakdown (combine both for timed JSON). `commit`,
-`status`, `checkout`, `diff`, `clone`, `gc`, and `prune` also take
+`status`, `checkout`, `diff`, `gc`, and `prune` also take
 `--progress` for a stderr progress bar (refused with `--json`).
-Commit, status, checkout, diff,
-and clone accept a scope: repeatable `--in DIM[:x,z|x0,z0..x1,z1]`,
+Commit, status, checkout, and diff
+accept a scope: repeatable `--in DIM[:x,z|x0,z0..x1,z1]`,
 `--region DIM:RX,RZ`, and repeatable `--kind` (empty means all);
 nothing selected means the whole world. `--scope NAME` selects an area
 saved with `scope create` instead. See `docs/json.md` for the
 output contract.
 
 The git-style names are canonical; the previous ones still work as
-aliases: `backup` (`commit`), `rollback` (`checkout`), `export`
-(`clone`), and `list` (`log`).
+aliases: `backup` (`commit`), `rollback` (`checkout`), and `list`
+(`log`).
 
 > [!Note]
 > If you want to make a full secondary backup of all your commits and storage, 

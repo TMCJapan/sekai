@@ -26,16 +26,13 @@ sekai gc
 # Delete old commits (keep newest 10), then reclaim their blobs
 sekai prune --keep-last 10
 sekai gc
-
-# Rebuild a commit into a fresh directory (live world untouched)
-sekai clone 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a ./restored
 ```
 
 The store defaults to `.sekai`; see [Store location](store.md) for
 using another location. Every
 command accepts `--json` for machine-readable output and, except `log`,
 and `ref`, `--timing` for a per-phase breakdown. `commit`, `status`,
-`checkout`, `diff`, `clone`, `gc`, and `prune` take `--progress` for a
+`checkout`, `diff`, `gc`, and `prune` take `--progress` for a
 stderr progress bar (refused with `--json`). `commit`, `status`,
-`checkout`, `diff`, and `clone` accept a scope
+`checkout`, and `diff` accept a scope
 (`--in`, `--region`, `--kind`); nothing selected means the whole world.

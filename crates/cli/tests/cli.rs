@@ -6,8 +6,8 @@ const H3: &str = "03030303030303030303030303030303030303030303030303030303030303
 use sekai_app::{Dimension, Rect};
 use sekai_cli::{
     cli::{
-        Cli, CloneFlavor, Command, CommitRef, DiffArgs, InlineSelection, OnMissingBlob,
-        OnMissingFile, RefCommand, RegionSpec, ScopeCommand, Selection, TimingArgs,
+        Cli, Command, CommitRef, DiffArgs, InlineSelection, OnMissingBlob, OnMissingFile,
+        RefCommand, RegionSpec, ScopeCommand, Selection, TimingArgs,
     },
     style::ColorChoice,
 };
@@ -131,9 +131,6 @@ fn legacy_command_names_still_parse() {
 
     let cli = Cli::try_parse_from(["sekai", "rollback", "w", H3]).expect("rollback alias parses");
     assert!(matches!(&cli.command, Command::Checkout { commit, .. } if commit.as_str() == H3));
-
-    let cli = Cli::try_parse_from(["sekai", "export", H3, "out"]).expect("export alias parses");
-    assert!(matches!(&cli.command, Command::Clone { commit, .. } if commit.as_str() == H3));
 
     let cli = Cli::try_parse_from(["sekai", "list", "--json"]).expect("list alias parses");
     assert!(matches!(cli.command, Command::Log { json: true, .. }));
@@ -299,7 +296,6 @@ fn validates_commit_refs_at_parse_time() {
         vec!["sekai", "checkout", "w", "main/"],
         vec!["sekai", "checkout", "w", "a//b"],
         vec!["sekai", "checkout", "w", "a/../b"],
-        vec!["sekai", "clone", "bad name", "out"],
         vec!["sekai", "prune", "--before", "bad name"],
         vec!["sekai", "prune", "--before", "@stable"],
         vec!["sekai", "diff", H1, "bad name"],
@@ -320,7 +316,7 @@ fn validates_commit_refs_at_parse_time() {
     for args in [
         vec!["sekai", "checkout", "w", "main"],
         vec!["sekai", "checkout", "w", "feature/nightly"],
-        vec!["sekai", "clone", "v1.2_x-1", "out"],
+        vec!["sekai", "checkout", "w", "v1.2_x-1"],
         vec!["sekai", "prune", "--before", "main"],
         vec!["sekai", "diff", H1, H2],
         vec!["sekai", "ref", "create", "main"],
@@ -601,54 +597,6 @@ fn parses_timing_and_json_flags() {
         "unknown missing-blob policy is refused"
     );
 
-    let cli = Cli::try_parse_from(["sekai", "clone", H3, "out"]).expect("clone parses");
-    assert!(matches!(
-        &cli.command,
-        Command::Clone {
-            commit,
-            flavor: CloneFlavor::Legacy,
-            on_missing_blob: OnMissingBlob::Abort,
-            output: TimingArgs {
-                timing: false,
-                json: false,
-            },
-            ..
-        } if commit.as_str() == H3
-    ));
-
-    let cli = Cli::try_parse_from([
-        "sekai",
-        "clone",
-        H3,
-        "out",
-        "--flavor",
-        "bukkit",
-        "--base",
-        "myworld",
-        "--on-missing-blob",
-        "skip-chunk",
-        "--timing",
-        "--json",
-    ])
-    .expect("clone options parse");
-    assert!(matches!(
-        &cli.command,
-        Command::Clone {
-            commit,
-            flavor: CloneFlavor::Bukkit,
-            on_missing_blob: OnMissingBlob::SkipChunk,
-            output: TimingArgs {
-                timing: true,
-                json: true,
-            },
-            ..
-        } if commit.as_str() == H3
-    ));
-    assert!(
-        Cli::try_parse_from(["sekai", "clone", H3, "out", "--flavor", "tarball"]).is_err(),
-        "unknown clone flavor is refused"
-    );
-
     let cli = Cli::try_parse_from(["sekai", "ref", "create", "main"]).expect("ref create parses");
     assert!(matches!(
         &cli.command,
@@ -900,12 +848,12 @@ fn reports_json_mode_per_command() {
         Cli::try_parse_from(["sekai", "diff", "--in", "overworld:0,0", "--json"]).expect("parses");
     assert!(cli.command.output_json());
 
-    let cli = Cli::try_parse_from(["sekai", "clone", H3, "out"]).expect("parses");
+    let cli = Cli::try_parse_from(["sekai", "checkout", "w", H3]).expect("parses");
     assert!(!cli.command.output_json());
 
-    let cli = Cli::try_parse_from(["sekai", "clone", H3, "out", "--json"]).expect("parses");
+    let cli = Cli::try_parse_from(["sekai", "checkout", "w", H3, "--json"]).expect("parses");
     assert!(cli.command.output_json());
-    assert_eq!(cli.command.name(), "clone");
+    assert_eq!(cli.command.name(), "checkout");
 }
 
 #[test]
@@ -1021,7 +969,6 @@ fn parses_scope_selection_flag() {
         vec!["sekai", "commit", "w", "--scope", "spawn"],
         vec!["sekai", "status", "w", "--scope", "spawn"],
         vec!["sekai", "checkout", "w", H3, "--scope", "spawn"],
-        vec!["sekai", "clone", H3, "out", "--scope", "spawn"],
         vec!["sekai", "diff", "--scope", "spawn"],
     ] {
         let cli = Cli::try_parse_from(&args).expect("--scope parses");
@@ -1029,7 +976,6 @@ fn parses_scope_selection_flag() {
             Command::Commit { selection, .. }
             | Command::Status { selection, .. }
             | Command::Checkout { selection, .. }
-            | Command::Clone { selection, .. }
             | Command::Diff(DiffArgs { selection, .. }) => selection,
             other => panic!("unexpected command: {other:?}"),
         };
