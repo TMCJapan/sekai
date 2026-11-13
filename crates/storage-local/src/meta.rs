@@ -352,9 +352,18 @@ fn now_ms() -> Result<i64, StorageError> {
     i64::try_from(millis).map_err(|_| StorageError::InvalidTimestamp(millis))
 }
 
-/// Shared `chunk_history` insert used by single-row and batch commits.
+/// Single-row `chunk_history` insert for `record_chunk`.
 const INSERT_CHUNK_SQL: &str = "INSERT INTO chunk_history (commit_id, seq, dim, kind, cx, cz, blob)
              VALUES (?, ?, ?, ?, ?, ?, ?)";
+
+/// Rows per multi-row `chunk_history` insert in a commit.
+///
+/// Every statement is a round trip to sqlx's SQLite worker thread, which
+/// costs far more than SQLite's own insert, so a commit of a few hundred
+/// thousand chunks binds them in batches instead of one statement per
+/// row. Each row binds 7 parameters, keeping a batch well under SQLite's
+/// default limit of 32766 per statement.
+const CHUNK_INSERT_BATCH: usize = 1024;
 
 /// Ancestors of a commit: the commit itself plus every commit
 /// reachable through parent links.
@@ -688,18 +697,20 @@ impl sekai_core::MetaStore for SqliteMeta {
         let (seq, inserted) = insert_commit(&mut tx, commit, created_at_ms, parents).await?;
         let id_param = commit_param(commit);
         if inserted {
-            for entry in entries {
-                sqlx::query(INSERT_CHUNK_SQL)
-                    .bind(&id_param[..])
-                    .bind(seq)
-                    .bind(i64::from(entry.coord.dim.raw()))
-                    .bind(i64::from(entry.coord.kind.raw()))
-                    .bind(i64::from(entry.coord.x))
-                    .bind(i64::from(entry.coord.z))
-                    .bind(entry.blob.as_ref().map(|h| &h.as_bytes()[..]))
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(db_err)?;
+            let mut insert = sqlx::QueryBuilder::new(
+                "INSERT INTO chunk_history (commit_id, seq, dim, kind, cx, cz, blob) ",
+            );
+            for batch in entries.chunks(CHUNK_INSERT_BATCH) {
+                insert.reset().push_values(batch, |mut row, entry| {
+                    row.push_bind(&id_param[..])
+                        .push_bind(seq)
+                        .push_bind(i64::from(entry.coord.dim.raw()))
+                        .push_bind(i64::from(entry.coord.kind.raw()))
+                        .push_bind(i64::from(entry.coord.x))
+                        .push_bind(i64::from(entry.coord.z))
+                        .push_bind(entry.blob.as_ref().map(|h| &h.as_bytes()[..]));
+                });
+                insert.build().execute(&mut *tx).await.map_err(db_err)?;
             }
         }
         // The active ref moves onto the new commit, in the same
@@ -1395,6 +1406,36 @@ mod tests {
             meta.visit_fresh_rows(commit, |_| true).await,
             Err(StorageError::UnknownRegionKind { kind: 9 })
         ));
+    }
+
+    #[tokio::test]
+    async fn a_commit_spanning_insert_batches_records_every_row() {
+        use sekai_core::MetaStore as _;
+        let mut meta = memory_meta().await;
+        let rows = CHUNK_INSERT_BATCH * 2 + 3;
+        let entries: Vec<CommitEntry> = (0..rows)
+            .map(|i| {
+                let x = i32::try_from(i).unwrap();
+                let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, x, -x);
+                let blob =
+                    (i % 3 != 0).then(|| ChunkHash::new([u8::try_from(i % 251).unwrap(); 32]));
+                CommitEntry::new(coord, blob)
+            })
+            .collect();
+        let commit = meta.apply_commit(1_000, &[], &entries).await.unwrap();
+
+        let mut recorded = Vec::new();
+        meta.visit_commit_chunks(commit, |row| {
+            assert_eq!(row.commit, commit);
+            recorded.push(CommitEntry::new(row.coord, row.blob));
+            true
+        })
+        .await
+        .unwrap();
+        recorded.sort();
+        let mut expected = entries;
+        expected.sort();
+        assert_eq!(recorded, expected);
     }
 
     fn scope(name: &str) -> NamedScope {
