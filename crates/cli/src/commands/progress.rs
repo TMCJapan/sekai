@@ -1,5 +1,7 @@
 //! Opt-in stderr progress bars (`--progress`), shared by report commands.
 
+use std::fmt;
+
 use indicatif::{ProgressBar, ProgressStyle};
 use sekai_app::Progress;
 
@@ -10,12 +12,12 @@ pub enum Unit {
     Chunks,
 }
 
-impl Unit {
-    const fn label(self) -> &'static str {
-        match self {
+impl fmt::Display for Unit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
             Self::Files => "files",
             Self::Chunks => "chunks",
-        }
+        })
     }
 }
 
@@ -44,7 +46,7 @@ impl BarProgress {
             ProgressStyle::with_template("{bar:40} {pos}/{len} {msg}")
                 .unwrap_or_else(|_| ProgressStyle::default_bar()),
         );
-        bar.set_message(unit.label());
+        bar.set_message(unit.to_string());
         Self(bar)
     }
 
