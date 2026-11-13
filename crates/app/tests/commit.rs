@@ -859,13 +859,12 @@ async fn commit_records_no_diff_metadata() {
     assert!(row.blob.is_some());
 }
 
-/// Records every event of the runs it reports as `(done, total)`.
+/// Records every step of the one run it reports as `(done, total)`.
 #[derive(Default)]
 struct Recorded(Mutex<Recording>);
 
 #[derive(Default)]
 struct Recording {
-    done: usize,
     total: usize,
     events: Vec<(usize, usize)>,
 }
@@ -878,15 +877,12 @@ impl Recorded {
 
 impl Progress for Recorded {
     fn start(&self, total: usize) {
-        let mut recording = self.0.lock().unwrap();
-        recording.done = 0;
-        recording.total = total;
+        self.0.lock().unwrap().total = total;
     }
 
     fn step(&self) {
         let mut recording = self.0.lock().unwrap();
-        recording.done += 1;
-        let event = (recording.done, recording.total);
+        let event = (recording.events.len() + 1, recording.total);
         recording.events.push(event);
     }
 }
