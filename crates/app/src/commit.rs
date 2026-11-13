@@ -162,9 +162,9 @@ where
     ///
     /// Only `scope` is ingested: out-of-scope coordinates record no rows and
     /// no tombstones, resolving through fallback from earlier commits.
-    /// `progress` fires as changed files complete, possibly before their
-    /// blobs are synced: a full count does not mean the commit is durable
-    /// yet. The report is identical with or without timings.
+    /// `progress` counts changed files as they complete, possibly before
+    /// their blobs are synced: a full count does not mean the commit is
+    /// durable yet. The report is identical with or without timings.
     pub async fn commit(
         &mut self,
         options: CommitOptions,
@@ -299,7 +299,7 @@ where
     /// CAS puts, no metadata commit, no region writes. Only lock files may
     /// be created (ADR-0014).
     ///
-    /// Only `scope` is previewed. `progress` fires as changed files
+    /// Only `scope` is previewed. `progress` counts changed files as they
     /// complete. Staged rows are assembled exactly as commit would, then
     /// counted instead of committed - so counts match a subsequent commit
     /// unless the world changes in between.
@@ -452,8 +452,7 @@ struct IngestTimings {
 /// is append-only, so concurrent puts never conflict. Nothing here syncs
 /// the store; the caller places that barrier before the metadata commit.
 ///
-/// `progress` fires per file as its task is joined, before the caller's
-/// sync.
+/// `progress` steps as each file's task is joined.
 async fn ingest_changed<R: RegionFile, S: SekaiStore, L: WorldLock>(
     changed: Vec<(RegionKey, R)>,
     cas: S::Blobs,

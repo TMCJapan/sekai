@@ -98,9 +98,8 @@ where
     ///
     /// Only `scope` is rebuilt: region files outside the scope are never
     /// written, deleted, or otherwise touched. `progress` counts the files
-    /// to write or delete and fires as each one finishes, always on the
-    /// async side: a progress that works straight on the future's own state
-    /// must be safe to run there.
+    /// to write or delete, stepping on the async side as each one finishes,
+    /// never on the blocking pool.
     ///
     /// What each file needs is decided before any is touched, so refusing a
     /// missing file ([`MissingFilePolicy::Error`]) leaves the world as it
@@ -242,7 +241,7 @@ where
 
 /// Run every job as its own task, at most `options.concurrency` at once
 /// (one per CPU by default) since each holds a whole region image. A
-/// finished file frees its slot for the next, and `progress` fires as each
+/// finished file frees its slot for the next, and `progress` steps as each
 /// one is joined.
 ///
 /// Tasks hold the world lock only weakly while they fetch: a share is taken

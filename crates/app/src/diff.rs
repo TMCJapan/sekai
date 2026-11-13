@@ -157,7 +157,8 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// per-phase timings. Both sides compare the digests already recorded at
     /// commit time, so no blob is fetched or decoded. A chunk absent (or
     /// tombstoned) on both sides yields an empty [`ChunkPayloadDiff`]; present
-    /// on exactly one side keeps `None` for the other.
+    /// on exactly one side keeps `None` for the other. `progress` counts
+    /// `coords`.
     pub async fn diff_chunks(
         &self,
         old_commit: CommitId,
@@ -270,7 +271,7 @@ where
     /// commit the next one would continue. The commit side is a metadata
     /// lookup; the world side (region lookup, read, decompression, digesting)
     /// counts under `blob_fetch`, and comparing the two digests under
-    /// `diff_compute`.
+    /// `diff_compute`. `progress` counts `coords`.
     pub async fn diff_world_chunks(
         &self,
         commit: Option<CommitId>,
