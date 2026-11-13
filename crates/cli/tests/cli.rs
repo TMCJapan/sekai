@@ -47,6 +47,12 @@ fn parses_subcommands() {
 
     assert!(Cli::try_parse_from(["sekai", "checkout", "w"]).is_err());
 
+    let cli = Cli::try_parse_from(["sekai", "checkout", "w", H3]).expect("checkout parses");
+    assert!(matches!(cli.command, Command::Checkout { jobs: 0, .. }));
+    let cli = Cli::try_parse_from(["sekai", "checkout", "w", H3, "--jobs", "4"])
+        .expect("checkout --jobs parses");
+    assert!(matches!(cli.command, Command::Checkout { jobs: 4, .. }));
+
     let cli = Cli::try_parse_from(["sekai", "status", "w"]).expect("status parses");
     assert!(matches!(
         cli.command,

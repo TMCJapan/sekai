@@ -29,6 +29,8 @@ Each behavior is configurable without changing the default:
 | `--on-missing-blob skip-chunk` | skip chunks whose blob is missing (default `abort`) |
 | `--on-missing-file derived-only\|error` | ignore sibling folders, or fail, instead of guessing a location (default `sibling-first`) |
 
+- `--jobs N` sets how many files rebuild at once (`0` means one per
+  CPU).
 - Scope flags (`--in`, `--region`, `--kind`) rebuild and delete only
   inside the scope; see [Scope selection](../scope.md). Combine with
   `--timing`/`--json` as usual.

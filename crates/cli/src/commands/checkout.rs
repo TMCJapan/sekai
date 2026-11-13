@@ -17,6 +17,7 @@ pub struct CheckoutFlags {
     pub keep_tombstoned_chunks: bool,
     pub on_missing_blob: OnMissingBlob,
     pub on_missing_file: OnMissingFile,
+    pub jobs: usize,
 }
 
 const fn map_options(flags: &CheckoutFlags) -> sekai_app::CheckoutOptions {
@@ -33,6 +34,7 @@ const fn map_options(flags: &CheckoutFlags) -> sekai_app::CheckoutOptions {
             OnMissingFile::DerivedOnly => sekai_app::MissingFilePolicy::DerivedOnly,
             OnMissingFile::Error => sekai_app::MissingFilePolicy::Error,
         },
+        concurrency: flags.jobs,
     }
 }
 
@@ -220,6 +222,7 @@ mod tests {
             keep_tombstoned_chunks: false,
             on_missing_blob: OnMissingBlob::Abort,
             on_missing_file: OnMissingFile::SiblingFirst,
+            jobs: 0,
         };
         assert_eq!(map_options(&strict), sekai_app::CheckoutOptions::default());
 
@@ -229,6 +232,7 @@ mod tests {
             keep_tombstoned_chunks: true,
             on_missing_blob: OnMissingBlob::SkipChunk,
             on_missing_file: OnMissingFile::Error,
+            jobs: 3,
         };
         assert_eq!(
             map_options(&lenient),
@@ -238,6 +242,7 @@ mod tests {
                 keep_tombstoned_chunks: true,
                 on_missing_blob: sekai_app::MissingBlobPolicy::SkipChunk,
                 on_missing_file: sekai_app::MissingFilePolicy::Error,
+                concurrency: 3,
             }
         );
     }
@@ -250,6 +255,7 @@ mod tests {
             keep_tombstoned_chunks: false,
             on_missing_blob: OnMissingBlob::Abort,
             on_missing_file: OnMissingFile::SiblingFirst,
+            jobs: 0,
         };
         assert_eq!(policy_summary(&strict), "strict");
 
@@ -259,6 +265,7 @@ mod tests {
             keep_tombstoned_chunks: true,
             on_missing_blob: OnMissingBlob::SkipChunk,
             on_missing_file: OnMissingFile::Error,
+            jobs: 0,
         };
         assert_eq!(
             policy_summary(&lenient),

@@ -25,6 +25,7 @@ mod refs;
 mod regions;
 mod scopes;
 mod time;
+mod workers;
 
 pub use checkout::{CheckoutOptions, CheckoutTimings, MissingBlobPolicy, MissingFilePolicy};
 pub use commit::{
