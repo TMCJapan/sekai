@@ -2,11 +2,11 @@
 
 use std::num::NonZeroUsize;
 
-/// Resolve a requested worker count: `0` means one per CPU (or 4 when the
+/// Resolve a requested worker count: `0` means one per CPU (or 1 when the
 /// CPU count is unknown), anything else is taken as is.
 pub(crate) fn worker_slots(concurrency: usize) -> usize {
     match concurrency {
-        0 => std::thread::available_parallelism().map_or(4, NonZeroUsize::get),
+        0 => std::thread::available_parallelism().map_or(1, NonZeroUsize::get),
         n => n,
     }
 }
