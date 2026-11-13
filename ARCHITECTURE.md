@@ -28,7 +28,7 @@ sekai (bin, thin: clap parse + print + exit code)
   -> sekai-app (std + tokio: orchestration, parallelism, clocks, timing)
     -> sekai-core (no_std + alloc: use-case policy API over shared types)
       -> sekai-anvil (no_std + alloc: pure sector codec, decompress, NBT normalization)
-    -> sekai-world (std: world access boundary - WorldTree trait, RegionFile handle)
+    -> sekai-world (no_std + alloc: world access boundary - WorldTree trait, RegionFile handle)
       -> sekai-anvil + sekai-core (types only)
     -> sekai-world-local (std: host filesystem tree - discover/observe/swap, the world lock)
       -> sekai-world + sekai-anvil + sekai-core (types only)
@@ -48,19 +48,19 @@ sekai-util (no_std, no tokio dependency: coordinates, chunk hashes,
 | `sekai-core`                      | `no_std` + `alloc`                    | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_checkout`) plus storage ports. Composes `anvil` over util types and re-exports every util type at its root, so downstream paths stay stable.                                                                                                                                                                               |
 | `sekai-storage`                   | `std` + tokio                         | yes (RPITIT)                                 | Backend-neutral boundaries: async `BlobStore`/`MetaStore` traits (owned by `core::port`, re-exported from the `api` module), high-level `SekaiStore`/`SekaiStoreOpener` traits, and shared storage errors. Depends on `core`.                                                                                                                                                                  |
 | `sekai-storage-local`             | `std` + tokio                         | yes                                          | Concrete local backend: `SqliteMeta` over sqlx plus `SledBlob` over sled, composed into `LocalStore`, both schema/version gates, and the openers. Implements the traits from `sekai-storage` (and `core::port`). Other backends become sibling crates without touching `core`/`app`.                                                                                                                  |
-| `sekai-world`                     | `std`                                 | no                                           | World access boundary: the `WorldTree` trait, the `RegionFile` handle, and the `WorldLock` primitives. No filesystem code.                                                                                                                                                                                                                                                                                |
+| `sekai-world`                     | `no_std` + `alloc`                    | no                                           | World access boundary: the `WorldTree` trait, the `RegionFile` handle, and the `WorldLock` primitives. No filesystem code.                                                                                                                                                                                                                                                                                |
 | `sekai-world-local`               | `std`                                 | no                                           | Host filesystem tree: `HostWorldTree`, layout detection (vanilla, pre-26.1 Bukkit, plugin worlds), the `HostRegion` handles, the `.sekai.lock` file lock, atomic swaps, and the host `WorldError`.                                                                                                                                                                                                      |
 | `sekai-app`                       | `std` + tokio                         | yes                                          | Composition/orchestration library for third parties: parallel ingest, clocks, timing, progress callbacks.                                                                                                                                                                                                                                                                                            |
 | `sekai` bin (`sekai-cli` package) | `std` + tokio                         | yes                                          | Thin clap wrapper over `sekai-app`. No logic. Binary name stays `sekai`; package name stays `sekai-cli` so existing CI/artifact names keep working.                                                                                                                                                                                                                                                  |
 
 ### Why `core` must not depend on `world`
 
-- `core` is `no_std`; `world`/`world-local` are `std` for their host
-  context (`Path`, `fs`, `mtime`).
-  A `core -> world` edge would poison `core` with `std` and kill
+- `world` is `no_std` + `alloc` like `core`, but it already depends on
+  `core` types, so a reverse edge would be a package cycle (forbidden by
+  Cargo).
+- `world-local` is `std` for its host context (`Path`, `fs`, `mtime`); a
+  `core -> world-local` edge would poison `core` with `std` and kill
   `thumbv7m`/`wasm` portability and third-party embedding.
-- `world` already depends on `core` types, so the reverse edge would be a
-  package cycle (forbidden by Cargo).
 - Correct direction: `world-local` observes the filesystem and produces `core`
   input values (`RegionKey`) through the `WorldTree` boundary; `app` feeds
   them into `core::plan_*`. This is dependency inversion: `core` owns the shapes,

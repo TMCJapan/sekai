@@ -1,5 +1,7 @@
 //! Abstract world access boundary.
 
+use alloc::vec::Vec;
+
 use sekai_core::{Dimension, RegionKey, RegionKind};
 
 use crate::region::RegionFile;
@@ -23,7 +25,7 @@ use crate::{WorldLock, WorldLockMode, WorldLockState};
 /// `AppError: From<WorldTree::Error>`.
 pub trait WorldTree: Sync + Send + Clone + 'static {
     /// Failure type for every operation on this tree.
-    type Error: std::error::Error;
+    type Error: core::error::Error;
 
     /// Handle to one region file of this tree.
     type Region: RegionFile<Error = Self::Error>;

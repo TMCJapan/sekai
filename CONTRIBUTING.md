@@ -10,8 +10,8 @@ This project is organized as a Cargo workspace under `crates/`:
     ├── core            # Use-case policy API over shared types (no_std + alloc, depends on util/anvil)
     ├── storage         # Backend-neutral store traits and locks (std + tokio)
     ├── storage-local   # Local backend: SQLite metadata (sqlx) + sled blobs (std + tokio)
-    ├── world           # World access boundary (std): WorldTree trait, RegionFile
-    │                   # handle, WorldLock primitives
+    ├── world           # World access boundary (no_std + alloc): WorldTree trait,
+    │                   # RegionFile handle, WorldLock primitives
     ├── world-local     # Host filesystem tree (std): HostWorldTree, layout detection,
     │                   # region handles, the world file lock, atomic swaps
     ├── app             # Composition/orchestration library for third parties (std + tokio)
@@ -59,7 +59,8 @@ Rules:
 These hold for every change. The PR template asks for confirmation; explain
 any exception in the PR body.
 
-- **Pure-layer hygiene**: `util`, `anvil`, and `core` stay `no_std` + `alloc`.
+- **Pure-layer hygiene**: `util`, `anvil`, `core`, and `world` stay
+  `no_std` + `alloc`.
   No `std::fs`, `Path`, `std::time`, `std::io::Error`, or `thiserror` there;
   hand-written `core::fmt::Display` error enums only. No `tokio`, no
   `async-trait` macro.
@@ -105,8 +106,8 @@ any exception in the PR body.
 ## Tech Stack & Tooling
 
 - **Rust Edition**: 2024 (toolchain pinned in `rust-toolchain.toml`)
-- **Pure crates**: `util`, `anvil`, `core` must remain `no_std` + `alloc`
-  with no `std`-only or async-runtime dependencies.
+- **Pure crates**: `util`, `anvil`, `core`, and `world` must remain
+  `no_std` + `alloc` with no `std`-only or async-runtime dependencies.
 - **Pure-crate dependency allowlist** (keep this list minimal and
   `no_std`-gated):
     - `util`: `blake3` with `default-features = false` for the shared digest
@@ -118,16 +119,19 @@ any exception in the PR body.
       views; private to the crate).
     - `core`: `sekai-util` (shared types, re-exported at the root) plus
       `anvil` (concrete composition target).
+    - `world`: `sekai-anvil` (types only) plus `sekai-core`.
 - **Async policy**: `async fn` in traits via RPITIT (return-position
   `impl Future`, no `async-trait` macro, no boxing). All trait futures are
   `Send`-bounded for tokio. Static dispatch (`generics`) is preferred over
   `dyn Trait`; if `dyn` is ever needed, box at the outer (`app`) layer, not
   in `core`.
 - **Runtime**: tokio in `storage`, `storage-local`, `app`, and the binary
-  only; `world` and `world-local` are sync (blocking file I/O).
+  only; `world` and `world-local` are sync (blocking file I/O lives in
+  `world-local`).
 - **Portability targets**: CI lints the pure crates on every push and pull request.
-- `no_std`: `util`, `anvil`, `core` must keep linting clean for `thumbv7m-none-eabi`.
-- `wasm`: `util`, `anvil`, `core`, and the backend-neutral
+- `no_std`: `util`, `anvil`, `core`, and `world` must keep linting clean
+  for `thumbv7m-none-eabi`.
+- `wasm`: `util`, `anvil`, `core`, `world`, and the backend-neutral
   `storage` crate must keep linting clean for `wasm32-unknown-unknown`.
   `world-local`, `storage-local`, `app`, and the binary own host file I/O, locks,
   and the databases (SQLite, sled) and are intentionally **not** wasm targets yet. The
@@ -156,9 +160,9 @@ any exception in the PR body.
 - **Language**: Write all code comments, documentation, and commit messages in **English**.
 - **Comments**: Focus on rationale ("why", design trade-offs, `unsafe` safety specifications) rather than explaining obvious implementation details.
 - **Error Handling**:
-- For pure crates (`util`, `anvil`, `core`), use hand-written error types
+- For pure crates (`util`, `anvil`, `core`, `world`), use hand-written error types
   (`core::fmt::Display` without external dependencies).
-- For `std` library crates (`storage`, `world`, `world-local`, `app`), use `thiserror`.
+- For `std` library crates (`storage`, `world-local`, `app`), use `thiserror`.
 - For the binary, use `anyhow`.
 - Do **NOT** use `panic!`, `unwrap()`, or `expect()` in non-test library code.
 
@@ -181,10 +185,10 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 
 # Ensure the pure crates remain no_std
-cargo clippy -p sekai-util -p sekai-anvil -p sekai-core --target thumbv7m-none-eabi -- -D warnings
+cargo clippy -p sekai-util -p sekai-anvil -p sekai-core -p sekai-world --target thumbv7m-none-eabi -- -D warnings
 
 # Ensure the pure crates and backend-neutral storage stay lint-clean for wasm
-cargo clippy -p sekai-util -p sekai-anvil -p sekai-core -p sekai-storage --target wasm32-unknown-unknown --no-default-features -- -D warnings
+cargo clippy -p sekai-util -p sekai-anvil -p sekai-core -p sekai-world -p sekai-storage --target wasm32-unknown-unknown --no-default-features -- -D warnings
 
 # Run all unit and integration tests (default backend)
 cargo nextest run --workspace
