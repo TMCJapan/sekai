@@ -137,6 +137,43 @@ impl RegionFile for HostRegion {
         })
     }
 
+    fn chunk_coords(&self, key: RegionKey) -> Result<Vec<(i32, i32)>, WorldError> {
+        let spelled = self
+            .0
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .and_then(|name| sekai_anvil::parse_region_name(name).ok());
+        if spelled != Some((key.rx, key.rz)) {
+            return Err(WorldError::UnknownRegionPath {
+                dim: key.dim,
+                kind: key.kind,
+                region_x: key.rx,
+                region_z: key.rz,
+            });
+        }
+        let file_len = std::fs::metadata(&self.0)
+            .map_err(|source| WorldError::io(&self.0, source))?
+            .len();
+        if file_len < sekai_anvil::HEADER_LEN {
+            // Empty or truncated file: the full parser reports it exactly
+            // the way a read would.
+            let image = self.read(key)?;
+            let mut coords = Vec::new();
+            image.visit_chunks(|chunk| {
+                coords.push((chunk.x, chunk.z));
+                true
+            })?;
+            return Ok(coords);
+        }
+        let mut header = vec![0_u8; usize::try_from(sekai_anvil::HEADER_LEN).unwrap_or(8192)];
+        let mut file =
+            std::fs::File::open(&self.0).map_err(|source| WorldError::io(&self.0, source))?;
+        std::io::Read::read_exact(&mut file, &mut header)
+            .map_err(|source| WorldError::io(&self.0, source))?;
+        sekai_anvil::header_chunk_coords(&header, key.rx, key.rz)
+            .map_err(|source| WorldError::region_file(&self.0, source))
+    }
+
     fn size(&self) -> Result<u64, WorldError> {
         std::fs::metadata(&self.0)
             .map(|meta| meta.len())
