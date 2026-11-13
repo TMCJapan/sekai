@@ -1,8 +1,8 @@
 //! Progress reporting seam between the operations and their callers.
 //!
 //! An operation asks its [`ProgressBuilder`] for a reporter once it knows
-//! how many items the run holds, then reports the running count. What the
-//! items are is the caller's business: it chose the operation.
+//! how many items the run holds, then reports each item as it finishes.
+//! What the items are is the caller's business: it chose the operation.
 
 /// Hands an operation the reporter for its run, sized by the run's total.
 ///
@@ -13,11 +13,10 @@ pub trait ProgressBuilder: Sync {
     fn start(&self, total: usize) -> impl Reporter;
 }
 
-/// Receives one run's running count.
+/// Receives one run's finished items.
 pub trait Reporter: Send {
-    /// Record one finished item: `done` of the run's items have finished
-    /// so far.
-    fn step(&mut self, done: usize);
+    /// Record one more finished item.
+    fn step(&mut self);
 }
 
 impl ProgressBuilder for () {
@@ -25,5 +24,5 @@ impl ProgressBuilder for () {
 }
 
 impl Reporter for () {
-    fn step(&mut self, _: usize) {}
+    fn step(&mut self) {}
 }

@@ -285,7 +285,6 @@ where
     for job in queued.by_ref().take(slots) {
         spawn(&mut set, job);
     }
-    let mut files_done = 0usize;
     while let Some(joined) = set.join_next().await {
         match joined?? {
             Outcome::Written { chunks } => {
@@ -297,8 +296,7 @@ where
             // gone; only one left running after a return can.
             Outcome::AlreadyAbsent | Outcome::Abandoned => {}
         }
-        files_done += 1;
-        progress.step(files_done);
+        progress.step();
         if let Some(job) = queued.next() {
             spawn(&mut set, job);
         }

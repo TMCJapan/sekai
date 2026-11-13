@@ -871,6 +871,7 @@ impl Recorded {
 
 struct Recorder<'a> {
     events: &'a Mutex<Vec<(usize, usize)>>,
+    done: usize,
     total: usize,
 }
 
@@ -878,14 +879,16 @@ impl ProgressBuilder for Recorded {
     fn start(&self, total: usize) -> impl Reporter {
         Recorder {
             events: &self.0,
+            done: 0,
             total,
         }
     }
 }
 
 impl Reporter for Recorder<'_> {
-    fn step(&mut self, done: usize) {
-        self.events.lock().unwrap().push((done, self.total));
+    fn step(&mut self) {
+        self.done += 1;
+        self.events.lock().unwrap().push((self.done, self.total));
     }
 }
 

@@ -419,7 +419,7 @@ async fn diff_coords(
     timings: &mut DiffTimings,
 ) -> Result<Vec<ChunkDiff>, AppError> {
     let mut out = Vec::with_capacity(coords.len());
-    for (index, coord) in coords.iter().enumerate() {
+    for coord in coords {
         let started = Instant::now();
         let old_side = old.payload(coord).await?;
         let new_side = new.payload(coord).await?;
@@ -428,7 +428,7 @@ async fn diff_coords(
         let started = Instant::now();
         let entries = ChunkPayloadDiff::from_sides(old_side.digest?, new_side.digest?);
         timings.diff_compute += started.elapsed();
-        progress.step(index + 1);
+        progress.step();
         out.push(ChunkDiff {
             coord: *coord,
             entries,

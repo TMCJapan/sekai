@@ -64,7 +64,7 @@ impl ProgressBuilder for BarProgress {
 struct BarReporter<'a>(&'a ProgressBar);
 
 impl Reporter for BarReporter<'_> {
-    fn step(&mut self, done: usize) {
-        self.0.set_position(done as u64);
+    fn step(&mut self) {
+        self.0.inc(1);
     }
 }

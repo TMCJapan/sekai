@@ -485,15 +485,13 @@ where
     for file in queued.by_ref().take(slots) {
         spawn(&mut set, file);
     }
-    let mut files_done = 0usize;
     // Completion order surfaces a failed file at once; returning drops the
     // set, which aborts the files still in flight.
     while let Some(joined) = set.join_next().await {
         let outcome = joined.map_err(|source| {
             AppError::Storage(StorageError::backend("ingest worker", source))
         })??;
-        files_done += 1;
-        progress.step(files_done);
+        progress.step();
         merge_outcome(&mut walk, outcome);
         if let Some(file) = queued.next() {
             spawn(&mut set, file);
