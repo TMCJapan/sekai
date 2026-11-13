@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "World access boundary for Sekai: the WorldTree trait and region file handles"
+description = "Pure no_std world access boundary for Sekai: the WorldTree trait and region file handles"
 keywords = ["minecraft", "version-control"]
 
 [lints]

@@ -12,6 +12,10 @@
 //!
 //! The host filesystem implementation lives in `sekai-world-local`.
 
+#![no_std]
+
+extern crate alloc;
+
 mod lock;
 mod region;
 mod tree;

@@ -28,7 +28,7 @@ pub enum WorldLockMode {
 ///
 /// Dropping the guard releases the lock. Operations share it into the
 /// blocking tasks that touch files, so it must cross threads.
-pub trait WorldLock: std::fmt::Debug + Send + Sync + 'static {
+pub trait WorldLock: core::fmt::Debug + Send + Sync + 'static {
     /// The mode this guard holds the world in.
     fn mode(&self) -> WorldLockMode;
 }
@@ -72,7 +72,7 @@ impl<L> WorldLockState<L> {
 /// Why an operation runs without excluding against others.
 ///
 /// This is the documented opt-out, not a failure: the operation still
-/// runs, but without exclusion. It is an [`std::error::Error`] so a
+/// runs, but without exclusion. It is a [`core::error::Error`] so a
 /// caller can carry it through `?` when it wants an unguarded run to be
 /// loud.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,8 +83,8 @@ pub enum UnguardedReason {
     ReadOnlyWorld,
 }
 
-impl std::fmt::Display for UnguardedReason {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for UnguardedReason {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let reason = match self {
             Self::NothingToProtect => "the tree holds nothing to protect",
             Self::ReadOnlyWorld => "the world is read-only, so no lock file can be created in it",
@@ -93,11 +93,12 @@ impl std::fmt::Display for UnguardedReason {
     }
 }
 
-impl std::error::Error for UnguardedReason {}
+impl core::error::Error for UnguardedReason {}
 
 #[cfg(test)]
 mod tests {
     use super::{UnguardedReason, WorldLock, WorldLockMode, WorldLockState};
+    use alloc::string::ToString;
 
     #[derive(Debug)]
     struct TestLock;
