@@ -13,16 +13,15 @@ pub mod usecase;
 pub use port::{BlobStore, MetaStore};
 pub use sekai_util::{
     ApplyOutcome, Area, BytesHasher, ChunkCoord, ChunkHash, ChunkHistoryEntry, Commit, CommitEntry,
-    CommitId, CommitRef, DEFAULT_REF_NAME, Dimension, FoldOutcome, GcPlan, HexError, NamedScope,
-    NamedScopeError, Rect, RefName, RefNameError, RegionFingerprint, RegionKey, RegionKind, Scope,
-    ScopeName, ScopeNameError, UnknownRegionKind, hash_bytes,
+    CommitId, CommitRef, DEFAULT_REF_NAME, Dimension, HexError, NamedScope, NamedScopeError, Rect,
+    RefName, RefNameError, RegionFingerprint, RegionKey, RegionKind, Scope, ScopeName,
+    ScopeNameError, UnknownRegionKind, hash_bytes,
 };
 
 pub use usecase::{
     Assembled, CheckoutError, CheckoutPlan, CheckoutReport, ChunkPayloadDiff, CommitError,
-    CommitReport, CommitStats, DiffError, GcError, GcReport, Plan, Previous, PruneError, PrunePlan,
-    PruneReport, ResolveError, active_ref, commit_ancestors, commit_history, commit_parents,
-    diff_blobs, list_refs, list_scopes,
+    CommitReport, CommitStats, DiffError, Plan, Previous, ResolveError, active_ref,
+    commit_ancestors, commit_history, commit_parents, diff_blobs, list_refs, list_scopes,
 };
 
 pub use commit::commit_hash;

@@ -37,7 +37,6 @@ struct Fixture {
     /// Held so the root outlives the handles that point into it, and is
     /// removed on drop or when `new` unwinds.
     _guard: tempfile::TempDir,
-    root: PathBuf,
     world_path: PathBuf,
     world: HostWorldTree,
     instance: SekaiInstance<LocalStore>,
@@ -90,7 +89,6 @@ impl Fixture {
             .unwrap();
         Self {
             _guard: guard,
-            root,
             world_path,
             world,
             instance,
@@ -129,12 +127,6 @@ enum Op {
     CommitCoords,
     DiffBlobs,
     DiffChunks,
-    GcPlan,
-    GcApply,
-    Gc,
-    PrunePlan,
-    PruneApply,
-    Prune,
     Commit,
     Status,
     DiffWorld,
@@ -143,7 +135,7 @@ enum Op {
 }
 
 impl Op {
-    const ALL: [Self; 24] = [
+    const ALL: [Self; 18] = [
         Self::ListCommits,
         Self::LatestCommit,
         Self::ResolveRef,
@@ -157,12 +149,6 @@ impl Op {
         Self::CommitCoords,
         Self::DiffBlobs,
         Self::DiffChunks,
-        Self::GcPlan,
-        Self::GcApply,
-        Self::Gc,
-        Self::PrunePlan,
-        Self::PruneApply,
-        Self::Prune,
         Self::Commit,
         Self::Status,
         Self::DiffWorld,
@@ -188,20 +174,14 @@ impl Op {
             | Self::CommitStats
             | Self::CommitCoords
             | Self::DiffBlobs
-            | Self::DiffChunks
-            | Self::GcPlan
-            | Self::GcApply
-            | Self::Gc
-            | Self::PrunePlan
-            | Self::PruneApply
-            | Self::Prune => None,
+            | Self::DiffChunks => None,
         }
     }
 
     /// Payloads are minimal but valid, so an operation the held lock lets
-    /// through must succeed. State only grows across the matrix: prunes
-    /// keep every commit, commits add newer ones, and checkouts restore
-    /// the fixture commit, which every row keeps addressing.
+    /// through must succeed. State only grows across the matrix: commits
+    /// add newer ones, and checkouts restore the fixture commit, which
+    /// every row keeps addressing.
     async fn run(self, fx: &mut Fixture) -> Result<(), sekai_app::AppError> {
         let id = fx.commit;
         let instance = &mut fx.instance;
@@ -237,21 +217,6 @@ impl Op {
             Self::CommitCoords => instance.commit_chunk_coords(id).await.map(drop),
             Self::DiffBlobs => instance.diff_blobs(&fx.blob, &fx.blob).await.map(drop),
             Self::DiffChunks => instance.diff_chunks(id, id, &[], &()).await.map(drop),
-            Self::GcPlan => instance.gc_plan().await.map(drop),
-            Self::GcApply => {
-                let plan = sekai_app::GcPlan::new(Vec::new(), 0);
-                instance.gc_apply(&plan, &()).await.map(drop)
-            }
-            Self::Gc => instance.gc(&()).await.map(drop),
-            Self::PrunePlan => instance.prune_plan(Some(u64::MAX), None).await.map(drop),
-            Self::PruneApply => {
-                let plan = sekai_app::PrunePlan {
-                    delete: Vec::new(),
-                    retained: vec![id],
-                };
-                instance.prune_apply(&plan, &()).await.map(drop)
-            }
-            Self::Prune => instance.prune(Some(u64::MAX), None, &()).await.map(drop),
             Self::Commit => instance
                 .world_mut(&mut fx.world)
                 .commit(CommitOptions::default(), Scope::World, &())
@@ -320,18 +285,6 @@ async fn every_operation_takes_its_world_mode() {
         }
         drop(lock);
     }
-}
-
-#[tokio::test]
-async fn collection_and_pruning_do_not_trip_over_their_own_phases() {
-    let mut fx = Fixture::new("own-phases").await;
-    // `gc`/`prune` plan and apply under the lock they already hold;
-    // taking a phase's lock again inside the run (say, `gc` going through
-    // `gc_plan`) would conflict with that hold.
-    fx.instance.gc(&()).await.unwrap();
-    fx.instance.prune(Some(1), None, &()).await.unwrap();
-    let (plan, _) = fx.instance.gc_plan().await.unwrap();
-    fx.instance.gc_apply(&plan, &()).await.unwrap();
 }
 
 /// A cancelled checkout future cannot stop the writes already running on the
@@ -559,13 +512,4 @@ where
         assert!(Instant::now() < deadline, "the file pass never reported");
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
-}
-
-/// A crashed run - or a pre-lock binary - leaves `commit.inflight` behind.
-/// Nothing reads the marker anymore, so it must not block collection.
-#[tokio::test]
-async fn a_leftover_run_marker_is_ignored() {
-    let mut fx = Fixture::new("marker").await;
-    std::fs::write(fx.root.join("store/commit.inflight"), "12345 0\n").unwrap();
-    fx.instance.gc(&()).await.unwrap();
 }

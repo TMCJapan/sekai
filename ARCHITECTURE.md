@@ -12,7 +12,7 @@ software.
 - **In Scope**: Anvil sector parsing, chunk payload extraction, NBT
   decompression/normalization for diffing, content-addressed blob storage
   (CAS), history-graph metadata management over pluggable DB backends,
-  atomic checkout, and GC.
+  and atomic checkout.
 - **Out of Scope**: External process lifecycle, server I/O synchronization
   (`save-off`, `save-all`, `save-on`), and cron/scheduling. These belong
   exclusively to caller software or administrators - never to library crates.
@@ -41,9 +41,9 @@ sekai-util (no_std, no tokio dependency: coordinates, chunk hashes,
 
 | Crate                             | `std`                                 | `async`                                      | Role                                                                                                                                                                                                                                                                                                                                                                                                 |
 | --------------------------------- | ------------------------------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sekai-util`                      | `no_std`, no `std`/tokio dependencies | no                                           | Shared value types: coordinates, the chunk digest (`ChunkHash`, `hash_bytes`, `BytesHasher`), region/history/commit/gc records, hex errors. Pure data plus total validation only.                                                                                                                                                                                                                    |
+| `sekai-util`                      | `no_std`, no `std`/tokio dependencies | no                                           | Shared value types: coordinates, the chunk digest (`ChunkHash`, `hash_bytes`, `BytesHasher`), region/history/commit records, hex errors. Pure data plus total validation only.                                                                                                                                                                                                                    |
 | `sekai-anvil`                     | `no_std` + `alloc`                    | no                                           | Pure Anvil sector codec including decompression and chunk NBT normalization. A stored sector payload becomes a `Chunk` whose `normalized_hash()` is the only public NBT-derived digest; the parser and normalized views stay internal. Also builds `Vec<u8>` images. Compression framing is MCA spec knowledge, so it lives here. No `Path`, no `fs`. Names custom dimensions with util `Dimension`. |
-| `sekai-core`                      | `no_std` + `alloc`                    | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_checkout`, `gc plan`/`apply`) plus storage ports. Composes `anvil` over util types and re-exports every util type at its root, so downstream paths stay stable.                                                                                                                                                                               |
+| `sekai-core`                      | `no_std` + `alloc`                    | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_checkout`) plus storage ports. Composes `anvil` over util types and re-exports every util type at its root, so downstream paths stay stable.                                                                                                                                                                               |
 | `sekai-storage`                   | `std` + tokio                         | yes (RPITIT)                                 | Backend-neutral boundaries: async `BlobStore`/`MetaStore` traits (owned by `core::port`, re-exported from the `api` module), high-level `SekaiStore`/`SekaiStoreOpener` traits, and shared storage errors. Depends on `core`.                                                                                                                                                                  |
 | `sekai-storage-local`             | `std` + tokio                         | yes                                          | Concrete local backend: `SqliteMeta` over sqlx plus `SledBlob` over sled, composed into `LocalStore`, both schema/version gates, and the openers. Implements the traits from `sekai-storage` (and `core::port`). Other backends become sibling crates without touching `core`/`app`.                                                                                                                  |
 | `sekai-world`                     | `std`                                 | yes (I/O) / sync pure helpers where trivial  | World access boundary: the `WorldTree` trait, the `RegionFile` handle, and the filesystem tree (`HostWorldTree`).                                                                                                                                                                                                                                                                                    |
@@ -272,7 +272,7 @@ rows. Normalization rule updates affect only change detection - zero data
 migration or blob re-indexing. See
 [ADR-0024](docs/adr/0024-sled-blob-store.md).
 
-# History, State, and GC Model
+# History and State Model
 
 ## The Commit Graph
 
@@ -295,8 +295,8 @@ are not part of the logical delta. Input order never enters the hash -
 parents and entries are sorted before hashing - so equal commits produce
 equal IDs, and recording one twice is idempotent: the existing ID is
 returned without duplicating rows. Backends keep a separate local record
-sequence for traversal, latest-commit lookup, and fold ordering; that
-sequence is never part of the public ID. See
+sequence for traversal and latest-commit lookup; that sequence is never
+part of the public ID. See
 [ADR-0020](docs/adr/0020-content-addressed-commit-ids.md).
 
 ## Ref Objects
@@ -315,22 +315,8 @@ commit in the store. Commit references accept a `<64-char commit hash>`
 or a bare ref name.
 
 Refs point at commit hashes. Like Git, identity is derived from content;
-unlike Git, `prune` may fold a retired commit's rows into a retained
-successor. Folding changes where rows physically live, never the
-successor's logical delta or ID, so refs stay stable across a
-prune. See [ADR-0019](docs/adr/0019-ref-objects.md).
-
-One rule follows from the graph:
-
-- **Pruning folds into a descendant.** A retired commit hands its rows
-  to a retained commit that continues it, and a ref naming the retired
-  commit follows the fold. A commit that several branches continue
-  cannot be retired - folding it would strip the other branches of the
-  rows they inherit through it - so `prune` refuses and names it.
-
-Retiring a commit (`prune`) keeps the graph connected: the children of
-the retired commit continue the history of its own parents, so the
-surviving commits resolve to the same effective state as before.
+a recorded commit is immutable, so a ref's target keeps resolving to the
+same effective state. See [ADR-0019](docs/adr/0019-ref-objects.md).
 
 ## Delta History Storage
 
@@ -389,26 +375,6 @@ produced them. The scope is a filter, not a partition:
   fingerprint primitive stays for a tree-structured history
   ([ADR-0023](docs/adr/0023-drop-the-fingerprint-pass.md)).
 
-## Garbage Collection (GC)
-
-- **Reference scope**: global (all commits/dimensions/chunks), matching
-  global CAS dedup.
-- **Two-phase safety**: `gc plan` (read-only candidates) then `gc apply`
-  (re-verified unlink). No metadata writes in the orphan-only scope.
-- **Exclusivity**: `gc` keeps to its own run marker (ADR-0011): a run
-  that writes blobs holds `commit.inflight` in the store root for its
-  duration, and `gc` refuses at plan and apply time while it is held,
-  because a commit's blobs are in the CAS before the rows that reference
-  them. Readers (`checkout`, `diff`) never take it. Operations
-  otherwise never lock the store; the blob keyspace admits a single
-  opener (ADR-0024), and per-world exclusion runs through
-  `WorldTree::lock` (ADR-0022).
-- **Commit pruning** (`prune`): oldest-first fold into the retained
-  commit that continues the retired one, then delete. A commit that
-  several branches continue cannot be retired, so `prune` refuses and
-  names it. Pruning dereferences blobs only; `gc` reclaims them
-  afterwards.
-
 # Storage Backends
 
 ## Trait/Impl Split (backend crates)
@@ -453,7 +419,7 @@ cannot open one and says so at compile time.
 
 Operations never lock the store. Blobs are content-addressed and
 immutable, so a `put` of an existing hash is a no-op and no interleaving
-of writes needs exclusion; `gc` keeps to its own run marker (ADR-0011).
+of writes needs exclusion.
 Metadata conflicts resolve transactionally at commit time, and content-
 addressed commit IDs keep concurrent backups from colliding.
 
@@ -500,12 +466,9 @@ code.
   sector run is validated against exact byte bounds instead, and genuinely
   corrupt runs still fail loudly with the file path attached. `world` never
   patches bytes.
-- **Crash consistency order**:
-    - **Write path**: CAS blobs flushed (sled log fsynced) _before_ DB
-      metadata commit.
-    - **GC delete path**: DB metadata commit _before_ blob unlink.
-    - **Prune path**: each commit's fold (row restamp/drop and commit
-      delete) commits atomically; blobs unlink only in a later `gc`.
+- **Crash consistency order**: CAS blobs flushed (sled log fsynced)
+  _before_ DB metadata commit, so a torn commit leaves at most orphan
+  blobs, never dangling references.
 - **No server orchestration in libraries**: `save-off`/`save-all`,
   scheduling, and process control belong to callers, never to `core`,
   `anvil`, `storage`, `world`, or `app` internals.

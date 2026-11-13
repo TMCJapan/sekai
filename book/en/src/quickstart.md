@@ -21,21 +21,13 @@ sekai checkout ./world 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2
 
 # Compare chunk NBT between two commits (hashes from `log`)
 sekai diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a --in overworld:0,0
-
-# Preview unreferenced blobs, then collect them
-sekai gc --dry-run
-sekai gc
-
-# Delete old commits (keep newest 10), then reclaim their blobs
-sekai prune --keep-last 10
-sekai gc
 ```
 
 The store defaults to `.sekai`; see [Store location](store.md) for
 using another location. Every
 command accepts `--json` for machine-readable output and, except `log`,
 `ref`, and `init`, `--timing` for a per-phase breakdown. `commit`, `status`,
-`checkout`, `diff`, `gc`, and `prune` take `--progress` for a
+`checkout`, and `diff` take `--progress` for a
 stderr progress bar (refused with `--json`). `commit`, `status`,
 `checkout`, and `diff` accept a scope
 (`--in`, `--region`, `--kind`); nothing selected means the whole world.

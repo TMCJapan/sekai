@@ -128,8 +128,8 @@ async fn resolve_commit_pair(
     }
     /// Commit parents are stored sorted by ID in both backends, so this
     /// returns the lowest-ID parent. For the single-parent commits that
-    /// `commit` creates this is the continued commit; prune may produce
-    /// merges whose parents are reported in ID order.
+    /// `commit` creates this is the continued commit; a merge's parents
+    /// are reported in ID order.
     async fn lowest_id_parent(
         instance: &sekai_app::SekaiInstance<impl SekaiStore>,
         commit: CommitId,

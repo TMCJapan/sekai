@@ -452,22 +452,6 @@ mod tests {
     }
 
     #[test]
-    fn retiring_a_commit_hands_its_children_its_parents() {
-        let mut meta = MemMeta::default();
-        let root = block_on(meta.create_commit(100, &[])).unwrap();
-        let second = block_on(meta.create_commit(200, &[root])).unwrap();
-        let third = block_on(meta.create_commit(300, &[second])).unwrap();
-
-        block_on(meta.retire_commit(second, third)).unwrap();
-
-        // The retired commit leaves the graph; its child continues the
-        // history of the retired commit's own parent.
-        assert!(block_on(meta.lookup_commit(second)).unwrap().is_none());
-        assert_eq!(block_on(meta.commit_parents(third)).unwrap(), [root]);
-        assert_eq!(block_on(commit_ancestors(&meta, third)).unwrap(), [root]);
-    }
-
-    #[test]
     fn an_unknown_commit_is_not_a_root() {
         let meta = MemMeta::default();
         let id = CommitId([7; 32]);
@@ -501,47 +485,11 @@ mod tests {
     }
 
     #[test]
-    fn a_retirement_must_fold_into_a_descendant() {
-        use crate::support::MemError;
-        let mut meta = MemMeta::default();
-        let first = block_on(meta.create_commit(100, &[])).unwrap();
-        let second = block_on(meta.create_commit(200, &[first])).unwrap();
-        let other = block_on(meta.create_commit(300, &[])).unwrap();
-
-        // `other` is newer than `first` but descends from nothing:
-        // folding into it would graft rows it never had.
-        assert_eq!(
-            block_on(meta.retire_commit(first, other)).unwrap_err(),
-            MemError::InvalidRetirement {
-                from: first,
-                into: other
-            }
-        );
-        // The successor in the same history is fine.
-        assert!(block_on(meta.retire_commit(first, second)).is_ok());
-    }
-
-    #[test]
     fn repeating_a_commit_is_idempotent() {
         let mut meta = MemMeta::default();
         let first = block_on(meta.create_commit(100, &[])).unwrap();
         let again = block_on(meta.create_commit(100, &[])).unwrap();
         assert_eq!(first, again);
         assert_eq!(block_on(list_commits(&meta)).unwrap().len(), 1);
-    }
-
-    #[test]
-    fn a_retired_commit_can_be_recorded_again() {
-        let mut meta = MemMeta::default();
-        let first = block_on(meta.create_commit(100, &[])).unwrap();
-        let second = block_on(meta.create_commit(200, &[first])).unwrap();
-        block_on(meta.retire_commit(first, second)).unwrap();
-        // Retirement forgets the commit and its local position, so the
-        // same content-addressed commit can enter the store again.
-        assert!(block_on(meta.lookup_commit(first)).unwrap().is_none());
-        let again = block_on(meta.create_commit(100, &[])).unwrap();
-        assert_eq!(again, first);
-        assert!(block_on(meta.lookup_commit(first)).unwrap().is_some());
-        assert_eq!(block_on(list_commits(&meta)).unwrap().len(), 2);
     }
 }

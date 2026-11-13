@@ -32,4 +32,4 @@
 
 The authoritative definitions are in
 [ARCHITECTURE.md](https://github.com/tmcjapan/sekai/blob/main/ARCHITECTURE.md) ("Data & Hashing Model" and
-"History, State, and GC Model").
+"History and State Model").

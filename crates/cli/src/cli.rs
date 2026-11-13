@@ -131,41 +131,6 @@ pub enum Command {
     },
     /// Compare chunk NBT AST between two commits or between world state and a commit.
     Diff(DiffArgs),
-    /// Delete old commits, folding their rows into retained ones.
-    /// At least one of `--keep-last` / `--before` is required.
-    Prune {
-        /// Keep the newest N commits.
-        #[arg(long, required_unless_present = "before")]
-        keep_last: Option<u64>,
-        /// Retain this commit and everything newer (`<64-char hash>` or a ref name).
-        #[arg(long, required_unless_present = "keep_last")]
-        before: Option<CommitRef>,
-        /// Show what would be deleted without deleting anything.
-        #[arg(long)]
-        dry_run: bool,
-        /// Human or JSON rendering plus optional phase timings.
-        #[command(flatten)]
-        output: TimingArgs,
-        /// Show a progress bar on stderr. Refused with `--json`, and
-        /// silent without a stderr TTY. Refused with `--dry-run`, which
-        /// has no apply phase to report progress for.
-        #[arg(long, conflicts_with_all = ["json", "dry_run"])]
-        progress: bool,
-    },
-    /// Garbage collect unreferenced orphan blobs from the store.
-    Gc {
-        /// Inspect store and build plan without unlinking orphan blobs.
-        #[arg(long)]
-        dry_run: bool,
-        /// Human or JSON rendering plus optional phase timings.
-        #[command(flatten)]
-        output: TimingArgs,
-        /// Show a progress bar on stderr. Refused with `--json`, and
-        /// silent without a stderr TTY. Refused with `--dry-run`, which
-        /// has no apply phase to report progress for.
-        #[arg(long, conflicts_with_all = ["json", "dry_run"])]
-        progress: bool,
-    },
 }
 
 impl Command {
@@ -179,9 +144,7 @@ impl Command {
             Self::Log { .. } => "log",
             Self::Ref { .. } => "ref",
             Self::Scope { .. } => "scope",
-            Self::Prune { .. } => "prune",
             Self::Diff(_) => "diff",
-            Self::Gc { .. } => "gc",
         }
     }
 
@@ -191,9 +154,7 @@ impl Command {
         match self {
             Self::Commit { output, .. }
             | Self::Status { output, .. }
-            | Self::Checkout { output, .. }
-            | Self::Prune { output, .. }
-            | Self::Gc { output, .. } => output.json,
+            | Self::Checkout { output, .. } => output.json,
             Self::Init { json } | Self::Log { json, .. } => *json,
             Self::Ref { action } => action.output_json(),
             Self::Scope { action } => action.output_json(),

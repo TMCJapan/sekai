@@ -14,7 +14,6 @@
 | コマンド / オプション | 事前確認（dry-run）の動作 |
 |---|---|
 | `status` | コミット全体の記録予定内容をプレビュー（設計上、`commit --dry-run` オプションは存在せず、本コマンドがその役割を担います） |
-| `gc --dry-run`、`prune --dry-run` | 削除計画（plan）のみを表示し、実際のファイル削除は行わない |
 | `checkout` | dry-run なし（checkout は定義上破壊的処理であるため） |
 
 オプションの一覧、JSON エンベロープ形式、各コマンド固有のペイロード構造、下位互換性ポリシー（compatibility promise）などの完全な仕様については、[docs/json.md](https://github.com/tmcjapan/sekai/blob/main/docs/json.md) を参照してください。完全な仕様はそちらのリファレンスに定義されており、本ガイドでは重複する詳細説明を割愛しています。

@@ -11,7 +11,6 @@
 - [コミット](commands/commit.md)
 - [チェックアウト](commands/checkout.md)
 - [Ref](commands/refs.md)
-- [メンテナンス](commands/maintenance.md)
 - [検証・検査](commands/inspection.md)
 - [自動化](automation.md)
 - [トラブルシューティング](troubleshooting.md)

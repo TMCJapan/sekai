@@ -22,13 +22,11 @@ carries the bare result only.
 | `ref` | record, deletion record, or ref array | n/a | no phases exist |
 | `scope` | record, deletion record, or scope array | n/a | no phases exist |
 | `diff` | single array, grouped array (multi), or timed object | table + JSON block | `--in`/`--region` select chunks; one chunk keeps the single shape |
-| `gc` | report or dry-run plan (+timings with `--timing`) | table + JSON block | dry-run timings carry `plan_ms`; `apply_ms` is `0` |
-| `prune` | report or dry-run plan (+timings with `--timing`) | table + JSON block | dry-run lists IDs; blobs are never unlinked, run `gc` after |
 
 Without `--timing`, `--json` emits the bare result. With `--timing`,
 the report that would be a bare array (`diff`) is promoted to an object
 holding the array (`diffs`) plus the timing block; object reports
-(commit/status/checkout/gc/prune) append the block in place.
+(commit/status/checkout) append the block in place.
 
 ## Envelope
 
@@ -41,7 +39,7 @@ Every invocation prints exactly one JSON object to stdout:
 {"command": "<name>", "status": "error", "error": "<full context chain>"}
 ```
 
-`command` is one of `init`, `commit`, `status`, `checkout`, `log`, `ref`, `scope`, `prune`, `diff`, `gc`.
+`command` is one of `init`, `commit`, `status`, `checkout`, `log`, `ref`, `scope`, `diff`.
 The error string is the full anyhow context chain (outermost message
 first, then `Caused by:` lines), JSON-escaped.
 
@@ -193,9 +191,8 @@ order:
 A ref created without a commit starts at the active ref's target. The
 active ref is the one new commits hang from; it is never removed.
 
-Commit arguments to `checkout`, `diff`, `prune --before`, and
-`ref create` accept `<id>` or a bare ref name; payloads always carry the
-resolved numeric ID.
+Commit arguments to `checkout`, `diff`, and `ref create` accept `<id>`
+or a bare ref name; payloads always carry the resolved numeric ID.
 
 ### `scope`
 
@@ -266,60 +263,6 @@ acquisition; `decompress` world-side decompression and digesting (the
 commit side is a recorded digest, so it contributes nothing); `diff_compute`
 the digest comparison. Commit-ID resolution and coordinate enumeration stay
 outside the measured phases.
-
-### `gc`
-
-```jsonc
-{
-  "candidates": 10, "orphans": 4, "removed": 4, "total_ms": 30,
-  "phases": {"plan_ms": 20, "apply_ms": 8}
-}
-```
-
-The `total_ms`/`phases` block appears only with `--timing`.
-
-Dry-run (`gc --dry-run --json`):
-
-```jsonc
-{"orphans": 4, "examined": 100}
-```
-
-With `--timing` the plan timing block is appended (`apply_ms` is
-always `0`: dry-run never unlinks):
-
-```jsonc
-{
-  "orphans": 4, "examined": 100, "total_ms": 20,
-  "phases": {"plan_ms": 20, "apply_ms": 0}
-}
-```
-
-Note: dry-run reports the orphan *count*, never the hashes.
-
-### `prune`
-
-```jsonc
-{
-  "pruned": 2, "rows_folded": 5, "rows_dropped": 3, "total_ms": 30,
-  "phases": {"plan_ms": 20, "apply_ms": 8}
-}
-```
-
-The `total_ms`/`phases` block appears only with `--timing`.
-
-Dry-run (`prune --dry-run --json`) lists commit hashes instead;
-`--timing` appends the plan timing block (`apply_ms` is always `0`):
-
-```jsonc
-{
-  "delete": ["1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b", "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a"],
-  "retained": ["3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f", "4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e"], "total_ms": 20,
-  "phases": {"plan_ms": 20, "apply_ms": 0}
-}
-```
-
-Pruning never unlinks blobs: dereferenced payloads stay in CAS until
-the next `gc`.
 
 ## Compatibility promise
 

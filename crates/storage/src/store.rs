@@ -31,9 +31,6 @@ pub trait SekaiStore: Send + Sync + Sized + 'static {
 
     /// Mutable blob adapter.
     fn blob_mut(&mut self) -> &mut Self::Blobs;
-
-    /// Borrow both adapters for operations that need simultaneous access.
-    fn blob_and_meta(&mut self) -> (&mut Self::Blobs, &Self::Meta);
 }
 
 /// Open or initialize a store of one concrete backend.
@@ -79,9 +76,5 @@ where
 
     fn blob_mut(&mut self) -> &mut Self::Blobs {
         Self::blob_mut(self)
-    }
-
-    fn blob_and_meta(&mut self) -> (&mut Self::Blobs, &Self::Meta) {
-        Self::blob_and_meta(self)
     }
 }

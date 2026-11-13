@@ -3,8 +3,7 @@
 //! A ref names a commit and moves with the history it names. Exactly one
 //! ref is active: the one new commits hang from, and the only ref
 //! `delete_ref` refuses to remove. Refs carry no content of their own -
-//! they pin no commit and change nothing a checkout sees - and a retired
-//! commit hands its ref to the commit that folded it (pruning). Changing
+//! they pin no commit and change nothing a checkout sees. Changing
 //! the active ref decides where the next commit lands, so each mutation
 //! reads and writes inside one metadata transaction.
 

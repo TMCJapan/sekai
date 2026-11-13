@@ -27,6 +27,3 @@ with `*`.
 - Ref names allow ASCII alphanumerics plus `.`, `_`, `-`, and `/`, run
   1-64 bytes, and are never all digits, so a name cannot be confused
   with a commit ID. `HEAD` is reserved for the store's active ref.
-
-Refs are metadata only and constrain nothing: pruning a commit hands
-its ref to the commit that folded it.

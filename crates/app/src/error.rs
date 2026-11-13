@@ -40,12 +40,6 @@ pub enum AppError {
     /// Checkout plan could not be resolved.
     #[error("{0}")]
     Checkout(sekai_core::CheckoutError<sekai_storage::StorageError>),
-    /// Garbage collection failed.
-    #[error("{0}")]
-    Gc(sekai_core::GcError<sekai_storage::StorageError, sekai_storage::StorageError>),
-    /// Commit pruning failed.
-    #[error("{0}")]
-    Prune(sekai_core::PruneError<sekai_storage::StorageError>),
     /// Chunk hashing failed.
     #[error(transparent)]
     ChunkHash(#[from] sekai_anvil::ChunkHashError),
