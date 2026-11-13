@@ -21,7 +21,7 @@ pub(crate) fn duplicate_region(
 pub enum AppError {
     /// World filesystem operation failed.
     #[error(transparent)]
-    World(#[from] sekai_world::WorldError),
+    World(#[from] sekai_world_local::WorldError),
     /// Storage backend operation failed.
     #[error(transparent)]
     Storage(#[from] sekai_storage::StorageError),

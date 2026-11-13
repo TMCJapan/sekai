@@ -28,8 +28,10 @@ sekai (bin, thin: clap parse + print + exit code)
   -> sekai-app (std + tokio: orchestration, parallelism, clocks, timing)
     -> sekai-core (no_std + alloc: use-case policy API over shared types)
       -> sekai-anvil (no_std + alloc: pure sector codec, decompress, NBT normalization)
-    -> sekai-world (std: filesystem owner - discover/observe/swap)
+    -> sekai-world (std: world access boundary - WorldTree trait, RegionFile handle)
       -> sekai-anvil + sekai-core (types only)
+    -> sekai-world-local (std: host filesystem tree - discover/observe/swap, the world lock)
+      -> sekai-world + sekai-anvil + sekai-core (types only)
     -> sekai-storage (std + tokio: store traits and locks)
       -> sekai-core
     -> sekai-storage-local (std + tokio: SQLite metadata + sled blobs)
@@ -46,20 +48,22 @@ sekai-util (no_std, no tokio dependency: coordinates, chunk hashes,
 | `sekai-core`                      | `no_std` + `alloc`                    | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_checkout`) plus storage ports. Composes `anvil` over util types and re-exports every util type at its root, so downstream paths stay stable.                                                                                                                                                                               |
 | `sekai-storage`                   | `std` + tokio                         | yes (RPITIT)                                 | Backend-neutral boundaries: async `BlobStore`/`MetaStore` traits (owned by `core::port`, re-exported from the `api` module), high-level `SekaiStore`/`SekaiStoreOpener` traits, and shared storage errors. Depends on `core`.                                                                                                                                                                  |
 | `sekai-storage-local`             | `std` + tokio                         | yes                                          | Concrete local backend: `SqliteMeta` over sqlx plus `SledBlob` over sled, composed into `LocalStore`, both schema/version gates, and the openers. Implements the traits from `sekai-storage` (and `core::port`). Other backends become sibling crates without touching `core`/`app`.                                                                                                                  |
-| `sekai-world`                     | `std`                                 | yes (I/O) / sync pure helpers where trivial  | World access boundary: the `WorldTree` trait, the `RegionFile` handle, and the filesystem tree (`HostWorldTree`).                                                                                                                                                                                                                                                                                    |
+| `sekai-world`                     | `std`                                 | no                                           | World access boundary: the `WorldTree` trait, the `RegionFile` handle, and the `WorldLock` primitives. No filesystem code.                                                                                                                                                                                                                                                                                |
+| `sekai-world-local`               | `std`                                 | no                                           | Host filesystem tree: `HostWorldTree`, layout detection (vanilla, pre-26.1 Bukkit, plugin worlds), the `HostRegion` handles, the `.sekai.lock` file lock, atomic swaps, and the host `WorldError`.                                                                                                                                                                                                      |
 | `sekai-app`                       | `std` + tokio                         | yes                                          | Composition/orchestration library for third parties: parallel ingest, clocks, timing, progress callbacks.                                                                                                                                                                                                                                                                                            |
 | `sekai` bin (`sekai-cli` package) | `std` + tokio                         | yes                                          | Thin clap wrapper over `sekai-app`. No logic. Binary name stays `sekai`; package name stays `sekai-cli` so existing CI/artifact names keep working.                                                                                                                                                                                                                                                  |
 
 ### Why `core` must not depend on `world`
 
-- `core` is `no_std`; `world` is inherently `std` for its host
-  implementation (`Path`, `fs`, `mtime`).
+- `core` is `no_std`; `world`/`world-local` are `std` for their host
+  context (`Path`, `fs`, `mtime`).
   A `core -> world` edge would poison `core` with `std` and kill
   `thumbv7m`/`wasm` portability and third-party embedding.
 - `world` already depends on `core` types, so the reverse edge would be a
   package cycle (forbidden by Cargo).
-- Correct direction: `world` observes the filesystem and produces `core`
-  input values (`RegionKey`); `app` feeds them into `core::plan_*`. This is dependency inversion: `core` owns the shapes,
+- Correct direction: `world-local` observes the filesystem and produces `core`
+  input values (`RegionKey`) through the `WorldTree` boundary; `app` feeds
+  them into `core::plan_*`. This is dependency inversion: `core` owns the shapes,
   outer crates produce them.
 
 ### The world access boundary
@@ -68,7 +72,10 @@ sekai-util (no_std, no tokio dependency: coordinates, chunk hashes,
 touch. A `WorldTree` names the region files it holds, derives the ones
 that are missing, and hands out `RegionFile` handles: a handle reads,
 sizes, fingerprints, writes, and removes one region file, and nothing
-else. The
+else. `sekai-world` is the boundary alone (the `WorldTree` trait, the
+`RegionFile` handle, the `WorldLock` primitives); `sekai-world-local`
+holds the host filesystem tree (`HostWorldTree`) behind it, mirroring
+`sekai-storage`/`sekai-storage-local`. The
 operations never see a path, so the flows do not depend on the tree
 behind them. See
 [ADR-0015](docs/adr/0015-world-region-handles.md).
@@ -446,8 +453,8 @@ code.
 
 ## Async Policy
 
-- `async` lives in `storage`, `world`, `app`, and the bin - never in
-  `anvil`/`core` logic. `core` uses `async fn` in traits (RPITIT,
+- `async` lives in `storage`, `storage-local`, `app`, and the bin - never in
+  `anvil`/`core`/`world`/`world-local` logic. `core` uses `async fn` in traits (RPITIT,
   no `async-trait` macro, no boxing, static dispatch preserved) so
   implementations can be `tokio`-backed while policy stays runtime-free.
 - Pure orchestration steps (`assemble`, image building, canonical digest)
@@ -457,20 +464,20 @@ code.
 
 - **Atomic writes & cross-device safety**: `.mca` updates go to a temp file
   **in the same directory as the target** + `fsync` + `rename`. In-place
-  mutation is prohibited. `world::atomic_swap` is the single owner of this
+  mutation is prohibited. `sekai-world-local::atomic_swap` is the single owner of this
   path, reached through the region handle; `anvil` only builds the `Vec<u8>`
   image.
 - **Sector alignment**: writes always land on 4 KiB boundaries with header
   offset-table integrity. Reads tolerate trailing partial sectors (e.g. torn
   tails from interrupted saves, which vanilla also opens): every referenced
   sector run is validated against exact byte bounds instead, and genuinely
-  corrupt runs still fail loudly with the file path attached. `world` never
+  corrupt runs still fail loudly with the file path attached. `world-local` never
   patches bytes.
 - **Crash consistency order**: CAS blobs flushed (sled log fsynced)
   _before_ DB metadata commit, so a torn commit leaves at most orphan
   blobs, never dangling references.
 - **No server orchestration in libraries**: `save-off`/`save-all`,
   scheduling, and process control belong to callers, never to `core`,
-  `anvil`, `storage`, `world`, or `app` internals.
+  `anvil`, `storage`, `world`, `world-local`, or `app` internals.
 - **Two-phase destructive operations** (plan before apply) hold for every
   change.

@@ -481,7 +481,7 @@ where
     AppError: From<T::Error>,
 {
     match policy {
-        MissingFilePolicy::Error => Err(sekai_world::WorldError::UnknownRegionPath {
+        MissingFilePolicy::Error => Err(sekai_world_local::WorldError::UnknownRegionPath {
             dim: key.dim,
             kind: key.kind,
             region_x: key.rx,
