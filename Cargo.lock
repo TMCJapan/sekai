@@ -1252,6 +1252,7 @@ dependencies = [
  "sekai-storage",
  "sekai-storage-local",
  "sekai-world",
+ "sekai-world-local",
  "tempfile",
  "thiserror",
  "tokio",
@@ -1312,9 +1313,18 @@ dependencies = [
 name = "sekai-world"
 version = "0.1.0"
 dependencies = [
+ "sekai-anvil",
+ "sekai-core",
+]
+
+[[package]]
+name = "sekai-world-local"
+version = "0.1.0"
+dependencies = [
  "libc",
  "sekai-anvil",
  "sekai-core",
+ "sekai-world",
  "tempfile",
  "thiserror",
 ]

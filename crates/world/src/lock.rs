@@ -6,7 +6,8 @@
 //! takes it, and keeping the server quiet stays the caller's job.
 //!
 //! How a world is locked is the [`WorldTree`](crate::WorldTree)'s
-//! business; [`HostWorldLock`](crate::HostWorldLock) is the file-lock form.
+//! business; the host filesystem tree keeps its file-lock form in the
+//! `sekai-world-local` crate.
 
 /// How an operation uses a world.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

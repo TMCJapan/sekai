@@ -11,7 +11,9 @@ This project is organized as a Cargo workspace under `crates/`:
     ├── storage         # Backend-neutral store traits and locks (std + tokio)
     ├── storage-local   # Local backend: SQLite metadata (sqlx) + sled blobs (std + tokio)
     ├── world           # World access boundary (std): WorldTree trait, RegionFile
-    │                   # handle, and the host tree (filesystem)
+    │                   # handle, WorldLock primitives
+    ├── world-local     # Host filesystem tree (std): HostWorldTree, layout detection,
+    │                   # region handles, the world file lock, atomic swaps
     ├── app             # Composition/orchestration library for third parties (std + tokio)
     └── cli             # Thin clap binary over sekai-app (package sekai-cli, binary sekai, no logic)
 ```
@@ -21,12 +23,13 @@ This project is organized as a Cargo workspace under `crates/`:
 Keep dependencies strictly unidirectional (inward):
 
 ```text
-sekai (bin) -> app -> {core, world, storage, storage-local}
+sekai (bin) -> app -> {core, world, world-local, storage, storage-local}
 app -> core -> anvil
 world -> {anvil, core}
+world-local -> {world, anvil, core}
 storage -> core (whose `port` module owns the async traits; backend crates implement them)
 storage-local -> storage
-{anvil, core} -> util (world/storage/app reach shared types through `core` re-exports)
+{anvil, core} -> util (world/world-local/storage/app reach shared types through `core` re-exports)
 ```
 
 Rules:
@@ -43,7 +46,7 @@ Rules:
   call `Chunk::normalized_hash()` and never see raw NBT types, so the
   parser cannot drift into a second public path. Compression framing and
   chunk schema knowledge both live in `anvil`.
-- `async`/tokio lives in `storage`, `storage-local`, `world`, `app`, and the
+- `async`/tokio lives in `storage`, `storage-local`, `app`, and the
   binary only. `anvil` is sync-only; `core` policy is sync except for
   `async fn` in traits (RPITIT, see below).
 - `storage` owns backend-neutral boundaries (`api` / `store`);
@@ -66,15 +69,15 @@ any exception in the PR body.
   `BlobStore`/`MetaStore` ports (`port` module, RPITIT). Pluggability lives
   at those ports (implemented by `storage` backends) and at the `world`
   observation boundary - not at `RegionReader`/`Normalizer`-style traits.
-- **`core` never touches the filesystem**: `world` discovers the region
+- **`core` never touches the filesystem**: `world-local` discovers the region
   files; `app` feeds their `RegionKey`s into `core::plan_*`.
 - **The world boundary is path-free**: the operations receive `RegionFile`
-  handles (read, size, fingerprint, write, remove) and never a `Path`; only the
-  world crate knows where a region file lives. A tree outside this
+  handles (read, size, fingerprint, write, remove) and never a `Path`; only
+  `sekai-world-local` knows where a region file lives. A tree outside this
   workspace implements `WorldTree` plus one handle
   ([ADR-0015](docs/adr/0015-world-region-handles.md)).
 - **Atomic file I/O**: never overwrite `.mca` files in place. `anvil` builds
-  the `Vec<u8>` image; `world::atomic_swap` writes it to a temporary file
+  the `Vec<u8>` image; `sekai-world-local::atomic_swap` writes it to a temporary file
   in the same directory as the target and swaps via atomic `rename`.
 - **Captured-payload checkout**: store raw chunk payloads verbatim in CAS.
   A chunk's CAS key is its `Chunk::normalized_hash` digest, which is also
@@ -120,13 +123,13 @@ any exception in the PR body.
   `Send`-bounded for tokio. Static dispatch (`generics`) is preferred over
   `dyn Trait`; if `dyn` is ever needed, box at the outer (`app`) layer, not
   in `core`.
-- **Runtime**: tokio in `storage`, `storage-local`, `world` (I/O parts),
-  `app`, and the binary only.
+- **Runtime**: tokio in `storage`, `storage-local`, `app`, and the binary
+  only; `world` and `world-local` are sync (blocking file I/O).
 - **Portability targets**: CI lints the pure crates on every push and pull request.
 - `no_std`: `util`, `anvil`, `core` must keep linting clean for `thumbv7m-none-eabi`.
 - `wasm`: `util`, `anvil`, `core`, and the backend-neutral
   `storage` crate must keep linting clean for `wasm32-unknown-unknown`.
-  `world`, `storage-local`, `app`, and the binary own host file I/O, locks,
+  `world-local`, `storage-local`, `app`, and the binary own host file I/O, locks,
   and the databases (SQLite, sled) and are intentionally **not** wasm targets yet. The
   backend-neutral store traits exist so a wasm backend can be added as a
   sibling crate without touching `core`/`app`.
@@ -155,7 +158,7 @@ any exception in the PR body.
 - **Error Handling**:
 - For pure crates (`util`, `anvil`, `core`), use hand-written error types
   (`core::fmt::Display` without external dependencies).
-- For `std` library crates (`storage`, `world`, `app`), use `thiserror`.
+- For `std` library crates (`storage`, `world`, `world-local`, `app`), use `thiserror`.
 - For the binary, use `anyhow`.
 - Do **NOT** use `panic!`, `unwrap()`, or `expect()` in non-test library code.
 
@@ -211,7 +214,7 @@ cargo build -p sekai-cli --release
 ## Testing Standards
 
 - **Unit Tests**: Place in `src/` alongside the code. Ensure coverage for edge cases (corrupted headers, unexpected NBT structures, zero-length chunks).
-- **Integration Tests**: Place in `tests/` directories within crates. Test atomic operations (e.g., MCA writes, checkouts) using synthetic binary fixtures. The `test-world/` corpus (small real-data region files, see its README for provenance) is the exception: copy it into a temp dir first, never mutate it in place. Crash-order tests (torn commit leaves orphans, never dangling references) are mandatory for `app`/`world`/`storage` changes.
+- **Integration Tests**: Place in `tests/` directories within crates. Test atomic operations (e.g., MCA writes, checkouts) using synthetic binary fixtures. The `test-world/` corpus (small real-data region files, see its README for provenance) is the exception: copy it into a temp dir first, never mutate it in place. Crash-order tests (torn commit leaves orphans, never dangling references) are mandatory for `app`/`world-local`/`storage` changes.
 - **Backend tests**: `sekai-storage-local` must cover both version gates
   (`UnsupportedSchema`), the incremental-carry path, and derived-state
   wipe recovery. Future backend crates must run the same suite via the
@@ -260,7 +263,7 @@ Write [Conventional Commits](https://www.conventionalcommits.org/):
 
 - Format: `<type>(<scope>): <summary>` (e.g., `feat(storage): count carried chunks via effective-rows query`).
 - Types: `feat`, `fix`, `perf`, `refactor`, `test`, `docs`, `build`, `ci`, `chore`.
-- Scope is the crate or area (`core`, `anvil`, `world`, `app`, `storage`, `cli`, `docs`, `ci`).
+- Scope is the crate or area (`core`, `anvil`, `world`, `world-local`, `app`, `storage`, `cli`, `docs`, `ci`).
 - Summaries are imperative, lowercase, without a trailing period.
 
 ### Storage Schema Changes

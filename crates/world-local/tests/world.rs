@@ -1,9 +1,9 @@
 //! World filesystem behavior: discovery, fingerprints, swaps.
 
 use sekai_core::{Dimension, RegionKey, RegionKind};
-use sekai_world::{
-    HostRegion, HostWorldLock, HostWorldTree, WorldError, WorldLockMode, WorldTree, atomic_swap,
-    fingerprint_file, open_image,
+use sekai_world::{WorldLockMode, WorldTree};
+use sekai_world_local::{
+    HostRegion, HostWorldLock, HostWorldTree, WorldError, atomic_swap, fingerprint_file, open_image,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -834,7 +834,7 @@ fn an_unlistable_kind_directory_is_an_error() {
 
     assert!(matches!(
         HostWorldTree::new(&world_path),
-        Err(sekai_world::WorldError::Io { .. })
+        Err(sekai_world_local::WorldError::Io { .. })
     ));
 }
 
@@ -854,7 +854,10 @@ fn a_permission_denied_kind_directory_is_an_error() {
 
     std::fs::set_permissions(&region, std::fs::Permissions::from_mode(0o755)).unwrap();
     if denied {
-        assert!(matches!(result, Err(sekai_world::WorldError::Io { .. })));
+        assert!(matches!(
+            result,
+            Err(sekai_world_local::WorldError::Io { .. })
+        ));
     }
 }
 
@@ -1198,7 +1201,7 @@ fn fingerprints_are_stable_and_change_sensitive() {
     // Missing file is an I/O error, not a fingerprint.
     assert!(matches!(
         fingerprint_file(&path, key),
-        Err(sekai_world::WorldError::Io { .. })
+        Err(sekai_world_local::WorldError::Io { .. })
     ));
 }
 
@@ -1290,7 +1293,7 @@ fn atomic_swap_replaces_and_cleans_up() {
     // Missing source is an I/O error.
     assert!(matches!(
         open_image(&target),
-        Err(sekai_world::WorldError::Io { .. })
+        Err(sekai_world_local::WorldError::Io { .. })
     ));
 }
 
@@ -1335,7 +1338,7 @@ fn read_refuses_a_key_that_names_another_region() {
     let foreign = RegionKey { rx: 1, ..own };
     assert!(matches!(
         region.read(foreign),
-        Err(sekai_world::WorldError::UnknownRegionPath {
+        Err(sekai_world_local::WorldError::UnknownRegionPath {
             region_x: 1,
             region_z: 0,
             ..

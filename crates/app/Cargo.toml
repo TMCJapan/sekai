@@ -20,6 +20,7 @@ sekai-core.workspace = true
 sekai-storage.workspace = true
 sekai-storage-local = { workspace = true, optional = true }
 sekai-world.workspace = true
+sekai-world-local.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 
@@ -44,4 +45,4 @@ miniz_oxide.workspace = true
 tempfile.workspace = true
 
 [package.metadata.cargo-machete]
-ignored = ["sekai-core", "sekai-storage", "sekai-world"]
+ignored = ["sekai-core", "sekai-storage", "sekai-world", "sekai-world-local"]

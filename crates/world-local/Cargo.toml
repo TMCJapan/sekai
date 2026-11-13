@@ -1,0 +1,24 @@
+[package]
+name = "sekai-world-local"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Host filesystem world tree for Sekai: layout detection, region handles, and the world lock"
+keywords = ["minecraft", "version-control", "world"]
+
+[lints]
+workspace = true
+
+[dependencies]
+sekai-anvil.workspace = true
+sekai-core.workspace = true
+sekai-world.workspace = true
+thiserror.workspace = true
+
+# `O_NOFOLLOW`, so the world lock never lands on a symlink's target.
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

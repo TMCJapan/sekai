@@ -1,4 +1,8 @@
-//! Host-layout classification and dimension maps.
+//! Host filesystem world tree for Sekai.
+//!
+//! The `sekai-world` crate owns the boundary the operations talk to: the
+//! [`WorldTree`] trait and the [`RegionFile`] handle it hands out. This
+//! crate is the tree behind it on an ordinary filesystem.
 //!
 //! Three server families share the `.mca` format but not the directory
 //! layout: one vanilla world folder (`region/`, `DIM-1/`, `DIM1/`, or a
@@ -18,20 +22,24 @@
 
 mod bukkit;
 mod detect;
+mod error;
+mod fingerprint;
 mod lock;
+mod observation;
+mod swap;
 mod vanilla;
+
+pub use error::WorldError;
+pub use fingerprint::fingerprint_file;
+pub use lock::{HostWorldLock, HostWorldLockError};
+pub use swap::{atomic_swap, open_image};
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use sekai_anvil::RegionImage;
 use sekai_core::{Dimension, RegionFingerprint, RegionKey, RegionKind};
-
-use super::WorldTree;
-use crate::region::{Region, RegionFile};
-use crate::{WorldError, WorldLockMode, WorldLockState};
-
-pub use lock::{HostWorldLock, HostWorldLockError};
+use sekai_world::{Region, RegionFile, WorldLockMode, WorldLockState, WorldTree};
 
 /// Directory of `kind` under a dimension directory.
 const fn kind_dir(kind: RegionKind) -> &'static str {

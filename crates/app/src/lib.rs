@@ -44,6 +44,8 @@ pub use sekai_storage::{SekaiStore, SekaiStoreOpener};
 #[cfg(feature = "backend-local")]
 pub use sekai_storage_local::local_store_exists;
 pub use sekai_world::{
-    HostRegion, HostWorldLock, HostWorldLockError, HostWorldTree, Region, RegionFile,
-    UnguardedReason, WorldError, WorldLock, WorldLockMode, WorldLockState, WorldTree,
+    Region, RegionFile, UnguardedReason, WorldLock, WorldLockMode, WorldLockState, WorldTree,
+};
+pub use sekai_world_local::{
+    HostRegion, HostWorldLock, HostWorldLockError, HostWorldTree, WorldError,
 };

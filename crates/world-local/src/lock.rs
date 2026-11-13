@@ -21,7 +21,7 @@ use std::fs::{File, OpenOptions, TryLockError};
 use std::io;
 use std::path::Path;
 
-use crate::{UnguardedReason, WorldLock, WorldLockMode, WorldLockState};
+use sekai_world::{UnguardedReason, WorldLock, WorldLockMode, WorldLockState};
 
 /// [`WorldLock`] of a [`HostWorldTree`](crate::HostWorldTree): an OS file
 /// lock on [`Self::FILE_NAME`] in the world root.
