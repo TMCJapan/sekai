@@ -159,7 +159,7 @@ where
 }
 
 /// What one region file needs.
-enum FileJob<R> {
+enum FileJob<R: RegionFile> {
     Delete(R),
     Rebuild {
         key: RegionKey,
@@ -206,13 +206,18 @@ fn plan_file<T: WorldTree>(
 where
     AppError: From<T::Error>,
 {
-    let region = match (discovered.get(&key), &rows) {
-        (Some(region), _) => region.clone(),
-        // No rows and no file: nothing to do.
-        (None, None) => return Ok(None),
-        (None, Some(_)) => resolve_target(discovered, world, &key, options.on_missing_file)?,
-    };
-    let Some(rows) = rows else {
+    if let Some(rows) = rows {
+        let region = match discovered.get(&key) {
+            Some(region) => region.clone(),
+            None => resolve_target(discovered, world, &key, options.on_missing_file)?,
+        };
+        Ok(Some(FileJob::Rebuild {
+            key,
+            region,
+            rows,
+            tombs,
+        }))
+    } else {
         // No present rows: either fully tombstoned at the commit or created
         // afterwards. Keep-policies leave the live file alone; strict
         // checkout deletes it.
@@ -221,14 +226,12 @@ where
         } else {
             options.keep_post_commit_files
         };
-        return Ok((!keep).then_some(FileJob::Delete(region)));
-    };
-    Ok(Some(FileJob::Rebuild {
-        key,
-        region,
-        rows,
-        tombs,
-    }))
+        if keep {
+            Ok(None)
+        } else {
+            Ok(discovered.get(&key).cloned().map(FileJob::Delete))
+        }
+    }
 }
 
 /// Run every job as its own task, at most one per CPU since each holds a
