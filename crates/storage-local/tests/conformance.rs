@@ -3,8 +3,8 @@
 mod common;
 
 use sekai_core::{
-    BlobStore as _, ChunkCoord, ChunkHash, ChunkHistoryEntry, CommitEntry, Dimension,
-    MetaStore as _, RegionKind, usecase::checkout::plan_checkout,
+    BlobStore as _, ChunkCoord, ChunkHash, CommitEntry, Dimension, MetaStore as _, RegionKind,
+    usecase::checkout::plan_checkout,
 };
 use sekai_storage_local::{init_local, open_local};
 use std::path::Path;
@@ -45,8 +45,7 @@ async fn sqlite_fresh_stats() {
     common::fresh_stats(store.meta_mut()).await;
 }
 
-/// A vanished coordinate keeps resolving as a tombstone: the effective row
-/// is present at the new commit, the only fresh row is the tombstone, and a
+/// A vanished coordinate stops resolving: absence is the tombstone, and a
 /// checkout plan drops the coordinate instead of asking for a blob.
 #[tokio::test]
 async fn sqlite_tombstones_shape_and_checkout_drop() {
@@ -73,16 +72,11 @@ async fn sqlite_tombstones_shape_and_checkout_drop() {
         .unwrap()
         .id;
 
-    let row = meta.lookup_chunk(second, &gone).await.unwrap().unwrap();
-    assert!(row.is_tombstone());
-    let mut fresh = Vec::new();
-    meta.visit_fresh_rows(second, |row| {
-        fresh.push(*row);
-        true
-    })
-    .await
-    .unwrap();
-    assert_eq!(fresh, vec![ChunkHistoryEntry::new(gone, second, None)]);
+    assert!(meta.lookup_chunk(second, &gone).await.unwrap().is_none());
+    assert_eq!(
+        meta.lookup_chunk(second, &present).await.unwrap(),
+        Some(CommitEntry::new(present, Some(ChunkHash::new([1; 32]))))
+    );
 
     let plan = plan_checkout(&*meta, second).await.unwrap();
     let region = sekai_core::RegionKey::of(present);
@@ -90,7 +84,6 @@ async fn sqlite_tombstones_shape_and_checkout_drop() {
         plan.groups[&region],
         vec![(present, ChunkHash::new([1; 32]))]
     );
-    assert_eq!(plan.tombstones[&region], vec![gone]);
 }
 
 #[tokio::test]

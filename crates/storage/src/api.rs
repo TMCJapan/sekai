@@ -47,6 +47,15 @@ pub enum StorageError {
         /// Value read from storage.
         value: i64,
     },
+    /// A tree node named by its parent is absent from the store.
+    MissingTree {
+        /// Tree level.
+        level: &'static str,
+        /// Hash that named the node.
+        hash: String,
+    },
+    /// Stored tree bytes failed their canonical encoding or hash check.
+    Tree(sekai_core::TreeError),
     /// Stored ref name fails validation.
     InvalidRefName {
         /// Ref name that failed validation.
@@ -150,6 +159,10 @@ impl fmt::Display for StorageError {
                 f,
                 "stored history column {column} has out-of-range value: {value}"
             ),
+            Self::MissingTree { level, hash } => {
+                write!(f, "stored {level} tree node is missing: {hash}")
+            }
+            Self::Tree(err) => write!(f, "stored tree node is invalid: {err}"),
             Self::InvalidRefName { name } => write!(f, "stored ref name is invalid: {name}"),
             Self::InvalidScopeName { name } => write!(f, "stored scope name is invalid: {name}"),
             Self::EmptyScope { name } => write!(f, "stored scope has no area: {name}"),
@@ -185,8 +198,15 @@ impl core::error::Error for StorageError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::Io { source, .. } | Self::Backend { source, .. } => Some(source.as_ref()),
+            Self::Tree(source) => Some(source),
             _ => None,
         }
+    }
+}
+
+impl From<sekai_core::TreeError> for StorageError {
+    fn from(source: sekai_core::TreeError) -> Self {
+        Self::Tree(source)
     }
 }
 

@@ -25,13 +25,9 @@ pub struct CheckoutReport {
 pub struct CheckoutPlan {
     /// Commit creation time (unix millis, informational only).
     pub created_at_ms: u64,
-    /// Present rows grouped by region.
+    /// Present rows grouped by region. A region absent here has no chunks at
+    /// the commit: checkout deletes its file unless a keep-policy applies.
     pub groups: BTreeMap<RegionKey, Vec<(ChunkCoord, ChunkHash)>>,
-    /// Tombstoned coordinates grouped by region. Regions absent from both
-    /// `groups` and `tombstones` are unknown to the commit (created
-    /// afterwards); regions in `tombstones` but not `groups` are fully
-    /// tombstoned. Adapters need the distinction to apply keep-policies.
-    pub tombstones: BTreeMap<RegionKey, Vec<ChunkCoord>>,
 }
 
 /// Failures while resolving a checkout plan.
@@ -67,18 +63,12 @@ pub async fn plan_checkout<M: MetaStore>(
         .map(|c| c.created_at_ms)
         .ok_or(CheckoutError::UnknownCommit { id: commit })?;
     let mut groups: BTreeMap<RegionKey, Vec<(ChunkCoord, ChunkHash)>> = BTreeMap::new();
-    let mut tombstones: BTreeMap<RegionKey, Vec<ChunkCoord>> = BTreeMap::new();
     meta.visit_commit_chunks(commit, |entry| {
         if let Some(blob) = entry.blob {
             groups
                 .entry(RegionKey::of(entry.coord))
                 .or_default()
                 .push((entry.coord, blob));
-        } else {
-            tombstones
-                .entry(RegionKey::of(entry.coord))
-                .or_default()
-                .push(entry.coord);
         }
         true
     })
@@ -87,7 +77,6 @@ pub async fn plan_checkout<M: MetaStore>(
     Ok(CheckoutPlan {
         created_at_ms,
         groups,
-        tombstones,
     })
 }
 
@@ -126,9 +115,9 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert!(rows.contains(&(a, ChunkHash::new([1; 32]))));
         assert!(rows.contains(&(b, ChunkHash::new([2; 32]))));
-        assert_eq!(
-            plan.tombstones[&RegionKey::new(OVER, REGION, 0, 0)],
-            alloc::vec![gone]
+        assert!(
+            block_on(meta.lookup_chunk(id, &gone)).unwrap().is_none(),
+            "absence is the tombstone"
         );
     }
 

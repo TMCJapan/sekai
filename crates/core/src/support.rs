@@ -7,9 +7,10 @@ use core::pin::pin;
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use crate::port::MetaStore;
+use crate::{DimNode, RegionNode, RootNode, TreeError, TreeNodes};
 use sekai_util::{
-    ApplyOutcome, ChunkCoord, ChunkHash, ChunkHistoryEntry, Commit, CommitId, CommitRef,
-    NamedScope, RefName, ScopeName,
+    ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DimHash, NamedScope,
+    RefName, RegionHash, RootHash, ScopeName,
 };
 
 /// Fake backend failure.
@@ -25,6 +26,13 @@ pub enum MemError {
         /// Commit that was asked for.
         id: CommitId,
     },
+    /// A tree node named by a parent is absent.
+    MissingTree {
+        /// Tree level.
+        level: &'static str,
+    },
+    /// Stored tree bytes failed their canonical check.
+    CorruptTree(TreeError),
     /// The ref does not exist.
     UnknownRef {
         /// Ref that was asked for.
@@ -42,73 +50,6 @@ pub enum MemError {
         /// Ref that was asked for.
         name: RefName,
     },
-}
-
-/// Parent links by commit, for the walks over the history graph.
-fn parent_index(commits: &[Commit]) -> BTreeMap<CommitId, Vec<CommitId>> {
-    commits
-        .iter()
-        .map(|commit| (commit.id, commit.parents.clone()))
-        .collect()
-}
-
-/// Ancestors of `commit`: every commit reachable through parent
-/// links, the commit itself excluded.
-fn ancestor_ids(commits: &[Commit], commit: CommitId) -> BTreeSet<CommitId> {
-    let index = parent_index(commits);
-    let mut seen = BTreeSet::new();
-    let mut stack: Vec<CommitId> = index.get(&commit).cloned().unwrap_or_default();
-    while let Some(id) = stack.pop() {
-        if !seen.insert(id) {
-            continue;
-        }
-        if let Some(parents) = index.get(&id) {
-            stack.extend(parents.iter().copied());
-        }
-    }
-    seen
-}
-
-/// Effective rows at `commit`: exactly one row per coordinate known
-/// then, tombstones included. Mirrors the backend: the row introduced at
-/// the commit or at one of its ancestors, the nearest one winning.
-///
-/// "Nearest" follows the local sequence, never the commit hash: hashes
-/// carry no timeline order.
-fn effective_at(
-    rows: &[ChunkHistoryEntry],
-    commits: &[Commit],
-    seqs: &BTreeMap<CommitId, u64>,
-    commit: CommitId,
-) -> Vec<ChunkHistoryEntry> {
-    let ancestors = ancestor_ids(commits, commit);
-    let Some(target) = seqs.get(&commit).copied() else {
-        return Vec::new();
-    };
-    let mut latest: BTreeMap<ChunkCoord, (u64, ChunkHistoryEntry)> = BTreeMap::new();
-    for row in rows {
-        if row.commit != commit && !ancestors.contains(&row.commit) {
-            continue;
-        }
-        // A row whose commit has no local sequence is corruption; skip
-        // it defensively.
-        let Some(seq) = seqs.get(&row.commit).copied() else {
-            continue;
-        };
-        if seq > target {
-            continue;
-        }
-        latest
-            .entry(row.coord)
-            .and_modify(|(kept_seq, kept)| {
-                if seq > *kept_seq {
-                    *kept_seq = seq;
-                    *kept = *row;
-                }
-            })
-            .or_insert((seq, *row));
-    }
-    latest.into_values().map(|(_, row)| row).collect()
 }
 
 /// Drive an immediately-ready future without an executor.
@@ -136,8 +77,12 @@ pub fn block_on<F: Future>(fut: F) -> F::Output {
 pub struct MemMeta {
     /// Commits in local record order (oldest first).
     pub commits: Vec<Commit>,
-    /// Every recorded row.
-    pub rows: Vec<ChunkHistoryEntry>,
+    /// Root nodes by hash.
+    pub root_nodes: BTreeMap<RootHash, RootNode>,
+    /// Dimension nodes by hash.
+    pub dim_nodes: BTreeMap<DimHash, DimNode>,
+    /// Region nodes by hash.
+    pub region_nodes: BTreeMap<RegionHash, RegionNode>,
     /// Refs by name.
     pub refs: BTreeMap<RefName, CommitRef>,
     /// Named scopes by name.
@@ -155,14 +100,37 @@ impl MemMeta {
 
     /// Assign a local sequence and append the commit. Returns `false`
     /// when the content-addressed ID already exists.
-    fn insert_commit(&mut self, id: CommitId, created_at_ms: u64, parents: Vec<CommitId>) -> bool {
+    fn insert_commit(
+        &mut self,
+        id: CommitId,
+        created_at_ms: u64,
+        parents: Vec<CommitId>,
+        root: RootHash,
+    ) -> bool {
         if self.seqs.contains_key(&id) {
             return false;
         }
         self.next_seq += 1;
         self.seqs.insert(id, self.next_seq);
-        self.commits.push(Commit::new(id, created_at_ms, parents));
+        self.commits
+            .push(Commit::new(id, created_at_ms, parents, root));
         true
+    }
+
+    fn insert_nodes(&mut self, nodes: &TreeNodes) -> Result<(), MemError> {
+        for (hash, bytes) in &nodes.region {
+            let node = RegionNode::decode(bytes, *hash).map_err(MemError::CorruptTree)?;
+            self.region_nodes.insert(*hash, node);
+        }
+        for (hash, bytes) in &nodes.dim {
+            let node = DimNode::decode(bytes, *hash).map_err(MemError::CorruptTree)?;
+            self.dim_nodes.insert(*hash, node);
+        }
+        for (hash, bytes) in &nodes.root {
+            let node = RootNode::decode(bytes, *hash).map_err(MemError::CorruptTree)?;
+            self.root_nodes.insert(*hash, node);
+        }
+        Ok(())
     }
 
     /// Add an active ref, the way a fresh store looks: one ref, unborn,
@@ -199,8 +167,23 @@ impl MetaStore for MemMeta {
             unique.insert(*parent);
         }
         let canonical: Vec<CommitId> = unique.into_iter().collect();
-        let id = crate::commit::commit_hash(&canonical, created_at_ms, &[]);
-        self.insert_commit(id, created_at_ms, canonical);
+        // No snapshot changes: continue the first parent's tree, or start
+        // with the canonical empty root.
+        let (root, nodes) = canonical
+            .first()
+            .map_or_else(crate::tree::empty_tree, |parent| {
+                self.commits
+                    .iter()
+                    .find(|commit| commit.id == *parent)
+                    .map_or_else(crate::tree::empty_tree, |commit| {
+                        (commit.root, TreeNodes::default())
+                    })
+            });
+        let id = crate::commit::commit_hash(&canonical, created_at_ms, root);
+        if let Err(err) = self.insert_nodes(&nodes) {
+            return core::future::ready(Err(err));
+        }
+        self.insert_commit(id, created_at_ms, canonical, root);
         core::future::ready(Ok(id))
     }
 
@@ -216,43 +199,32 @@ impl MetaStore for MemMeta {
         core::future::ready(Ok(parents))
     }
 
-    fn record_chunk(
-        &mut self,
-        commit: CommitId,
-        coord: &ChunkCoord,
-        blob: Option<&ChunkHash>,
-    ) -> impl Future<Output = Result<(), MemError>> + Send {
-        self.rows
-            .push(ChunkHistoryEntry::new(*coord, commit, blob.copied()));
-        core::future::ready(Ok(()))
-    }
-
     fn lookup_chunk(
         &self,
         commit: CommitId,
         coord: &ChunkCoord,
-    ) -> impl Future<Output = Result<Option<ChunkHistoryEntry>, MemError>> + Send {
-        // The row introduced at the commit or at one of its ancestors,
-        // the nearest one winning (delta storage: unchanged chunks have
-        // no row at newer commits). Ordering uses the local sequence,
-        // never the commit hash.
-        let ancestors = ancestor_ids(&self.commits, commit);
-        let target = self.seq_of(commit);
-        let found = target.and_then(|target| {
-            self.rows
-                .iter()
-                .filter(|row| {
-                    (row.commit == commit || ancestors.contains(&row.commit)) && row.coord == *coord
-                })
-                .filter_map(|row| {
-                    self.seq_of(row.commit)
-                        .filter(|seq| *seq <= target)
-                        .map(|seq| (seq, row))
-                })
-                .max_by_key(|(seq, _)| *seq)
-                .map(|(_, row)| *row)
-        });
-        core::future::ready(Ok(found))
+    ) -> impl Future<Output = Result<Option<CommitEntry>, MemError>> + Send {
+        crate::tree::lookup_chunk(self, commit, coord)
+    }
+
+    fn visit_commit_chunks<F>(
+        &self,
+        commit: CommitId,
+        visit: F,
+    ) -> impl Future<Output = Result<(), MemError>> + Send
+    where
+        F: FnMut(&CommitEntry) -> bool + Send,
+    {
+        crate::tree::visit_chunks(self, commit, visit)
+    }
+
+    fn apply_commit_incremental(
+        &mut self,
+        created_at_ms: u64,
+        parents: &[CommitId],
+        entries: &[CommitEntry],
+    ) -> impl Future<Output = Result<ApplyOutcome, MemError>> + Send {
+        crate::tree::apply_entries(self, created_at_ms, parents, entries)
     }
 
     fn lookup_commit(
@@ -277,22 +249,6 @@ impl MetaStore for MemMeta {
         core::future::ready(Ok(latest))
     }
 
-    fn visit_commit_chunks<F>(
-        &self,
-        commit: CommitId,
-        mut visit: F,
-    ) -> impl Future<Output = Result<(), MemError>> + Send
-    where
-        F: FnMut(&ChunkHistoryEntry) -> bool + Send,
-    {
-        for row in effective_at(&self.rows, &self.commits, &self.seqs, commit) {
-            if !visit(&row) {
-                break;
-            }
-        }
-        core::future::ready(Ok(()))
-    }
-
     fn visit_commits<F>(&self, mut visit: F) -> impl Future<Output = Result<(), MemError>> + Send
     where
         F: FnMut(&Commit) -> bool + Send,
@@ -307,27 +263,48 @@ impl MetaStore for MemMeta {
         core::future::ready(Ok(()))
     }
 
-    fn visit_fresh_rows<F>(
+    fn read_root_node(
         &self,
-        commit: CommitId,
-        mut visit: F,
-    ) -> impl Future<Output = Result<(), MemError>> + Send
-    where
-        F: FnMut(&ChunkHistoryEntry) -> bool + Send,
-    {
-        for row in self.rows.iter().filter(|row| row.commit == commit) {
-            if !visit(row) {
-                break;
-            }
-        }
-        core::future::ready(Ok(()))
+        hash: RootHash,
+    ) -> impl Future<Output = Result<RootNode, MemError>> + Send {
+        let node = self
+            .root_nodes
+            .get(&hash)
+            .cloned()
+            .ok_or(MemError::MissingTree { level: "root" });
+        core::future::ready(node)
     }
 
-    fn apply_commit_incremental(
+    fn read_dim_node(
+        &self,
+        hash: DimHash,
+    ) -> impl Future<Output = Result<DimNode, MemError>> + Send {
+        let node = self
+            .dim_nodes
+            .get(&hash)
+            .cloned()
+            .ok_or(MemError::MissingTree { level: "dim" });
+        core::future::ready(node)
+    }
+
+    fn read_region_node(
+        &self,
+        hash: RegionHash,
+    ) -> impl Future<Output = Result<RegionNode, MemError>> + Send {
+        let node = self
+            .region_nodes
+            .get(&hash)
+            .cloned()
+            .ok_or(MemError::MissingTree { level: "region" });
+        core::future::ready(node)
+    }
+
+    fn commit_tree(
         &mut self,
         created_at_ms: u64,
         parents: &[CommitId],
-        entries: &[sekai_util::CommitEntry],
+        root: RootHash,
+        nodes: &TreeNodes,
     ) -> impl Future<Output = Result<ApplyOutcome, MemError>> + Send {
         // The active ref decides where the commit lands: bind it before
         // any write, so a store without one changes nothing (the backend
@@ -351,13 +328,6 @@ impl MetaStore for MemMeta {
         {
             return core::future::ready(Err(MemError::NotContinuing { base }));
         }
-        // The last `?` step: it runs before any row or state write, so a
-        // rejection leaves the store unchanged. Do not add fallible work
-        // after this point until the ref record is re-inserted.
-        //
-        // Panics (including allocation failure) are outside this fake's
-        // model: unlike SQLite's transaction, the in-memory writes cannot
-        // roll back.
         let mut unique: BTreeSet<CommitId> = BTreeSet::new();
         for parent in parents {
             if !self.commits.iter().any(|commit| commit.id == *parent) {
@@ -366,17 +336,13 @@ impl MetaStore for MemMeta {
             unique.insert(*parent);
         }
         let canonical: Vec<CommitId> = unique.into_iter().collect();
-        let id = crate::commit::commit_hash(&canonical, created_at_ms, entries);
-        if self.insert_commit(id, created_at_ms, canonical) {
-            for entry in entries {
-                self.rows
-                    .push(ChunkHistoryEntry::new(entry.coord, id, entry.blob));
-            }
+        let id = crate::commit::commit_hash(&canonical, created_at_ms, root);
+        if let Err(err) = self.insert_nodes(nodes) {
+            return core::future::ready(Err(err));
         }
+        self.insert_commit(id, created_at_ms, canonical, root);
         // The active ref moves onto the new commit, in the same step: a
         // ref that lags behind its history would fork the next commit.
-        // No fallible step follows the write phase; the bound record is
-        // re-inserted here, so the active ref cannot lag.
         record.commit = Some(id);
         self.refs.insert(active, record);
         core::future::ready(Ok(ApplyOutcome { id }))
@@ -394,7 +360,6 @@ impl MetaStore for MemMeta {
         {
             return core::future::ready(Err(MemError::UnknownCommit { id }));
         }
-        // Moving a ref keeps its creation time; only a new ref records one.
         let (active, created_at_ms) = self
             .refs
             .get(name)
@@ -419,7 +384,6 @@ impl MetaStore for MemMeta {
     where
         F: FnMut(&CommitRef) -> bool + Send,
     {
-        // BTreeMap iteration is name order, matching the backend query.
         for record in self.refs.values() {
             if !visit(record) {
                 break;
@@ -440,8 +404,7 @@ impl MetaStore for MemMeta {
 
     fn active_ref(&self) -> impl Future<Output = Result<Option<CommitRef>, MemError>> + Send {
         let active = self.refs.values().find(|record| record.active).cloned();
-        // Mirrors the backend: the target commit must exist. A dangling
-        // target is corruption, not an unborn ref.
+        // Mirrors the backend: the target commit must exist.
         if let Some(record) = &active
             && let Some(commit) = record.commit
             && !self.commits.iter().any(|held| held.id == commit)
@@ -473,7 +436,6 @@ impl MetaStore for MemMeta {
         &mut self,
         scope: &NamedScope,
     ) -> impl Future<Output = Result<(), MemError>> + Send {
-        // Replacing a scope keeps its creation time, as the backend does.
         let mut record = scope.clone();
         if let Some(existing) = self.scopes.get(&scope.name) {
             record.created_at_ms = existing.created_at_ms;
@@ -493,7 +455,6 @@ impl MetaStore for MemMeta {
     where
         F: FnMut(&NamedScope) -> bool + Send,
     {
-        // BTreeMap iteration is name order, matching the backend query.
         for scope in self.scopes.values() {
             if !visit(scope) {
                 break;

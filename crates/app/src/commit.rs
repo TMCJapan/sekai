@@ -1,9 +1,10 @@
 //! Recording a world state as a commit: discover files, ingest, filter the
-//! delta.
+//! snapshot changes.
 //!
 //! Rationale: this is the orchestration half of commit. All policy lives in
-//! [`core`](sekai_core::usecase::commit): the previous-state plan, per-chunk
-//! staging, delta filtering, tombstone assembly, and the atomic commit.
+//! [`core`](sekai_core::usecase::commit): the previous-snapshot plan,
+//! per-chunk staging, change filtering, absent-coordinate assembly, and the
+//! atomic commit.
 //! What stays here is mechanics `core` cannot own without breaking its
 //! `no_std` boundary: world discovery (filesystem), concurrent blob
 //! ingest, the wall clock, and timing collection for `--timing` output.
@@ -63,7 +64,8 @@ pub struct StatusReport {
     /// `None` when that ref is unborn, even if the store already holds
     /// commits from an earlier history.
     pub latest: Option<CommitId>,
-    /// In-scope regions with fresh rows (changed chunks or tombstones).
+    /// In-scope regions with snapshot changes (changed chunks or absent
+    /// coordinates).
     pub changed_regions: usize,
     /// Changed regions with no stored state.
     pub new_files: usize,
@@ -160,8 +162,8 @@ where
     /// The recorded timestamp is read after ingestion, when the metadata
     /// write begins.
     ///
-    /// Only `scope` is ingested: out-of-scope coordinates record no rows and
-    /// no tombstones, resolving through fallback from earlier commits.
+    /// Only `scope` is ingested: out-of-scope subtrees keep their parent
+    /// hashes, so no change or absence is recorded outside it.
     /// `progress_builder` counts changed files as they complete, possibly
     /// before their blobs are synced: a full count does not mean the commit
     /// is durable yet. The report is identical with or without timings.
@@ -411,7 +413,8 @@ where
 /// Staged result of walking all discovered regions.
 #[derive(Default)]
 struct RegionWalk {
-    /// Fresh history rows (ingested chunks; tombstones join at assembly).
+    /// Snapshot changes for ingested chunks; absent coordinates join at
+    /// assembly.
     entries: Vec<CommitEntry>,
     /// Coordinates present on disk.
     present: HashSet<ChunkCoord>,
@@ -532,10 +535,9 @@ fn merge_outcome(walk: &mut RegionWalk, outcome: FileOutcome) {
     walk.timings.push((outcome.key, outcome.timing));
 }
 
-/// Read, hash, and store one changed region file, staging its rows.
-/// Chunks outside `scope` are skipped before hashing: their history stays
-/// untouched and fallback keeps resolving them. Under `dry_run` blobs are
-/// probed, never stored.
+/// Read, hash, and store one changed region file, staging its changes.
+/// Chunks outside `scope` are skipped before hashing: their parent subtree
+/// hash stays untouched. Under `dry_run` blobs are probed, never stored.
 ///
 /// `key` names the file: discovery found it under that identity, and the
 /// timing row reports the same one.
@@ -634,10 +636,10 @@ where
     failure.map_or(Ok(staged), Err)
 }
 
-/// Hash one raw chunk and stage its history row.
+/// Hash one raw chunk and stage its snapshot change.
 ///
 /// The key is the chunk's normalized digest, so a server rewriting a
-/// volatile tag does not produce a new blob or history row. A payload with
+/// volatile tag does not produce a new blob or tree change. A payload with
 /// no normalized view (an unknown codec, a corrupt or non-chunk root) has no
 /// key: it fails the file instead of being stored under its raw bytes.
 fn stage_chunk(

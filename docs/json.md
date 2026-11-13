@@ -53,6 +53,17 @@ first, then `Caused by:` lines), JSON-escaped.
 
 ## Compatibility
 
+Breaking change (ADR-0027): metadata schema 16 replaces delta history
+with content-addressed snapshot trees. Old stores fail with an unsupported
+schema error and must be recreated; commit IDs change.
+`--keep-tombstoned-chunks` / `--keep-post-commit-chunks` both preserve
+live chunks absent from a commit-known region (absence alone no longer
+distinguishes a tombstone from a post-commit chunk).
+
+Breaking change: the `gc` and `prune` commands are removed; commits and
+blobs are append-only and the store never deletes either. `command` no
+longer takes the values `gc` or `prune`, and their payloads are gone.
+
 Breaking change (ADR-0026): store creation moves from `commit` to the new
 `init` command. `commit` (and every other command except `init`) now fails
 on a missing store instead of creating one; run `sekai init` first. The
@@ -167,9 +178,9 @@ With `--stat`, per-commit change statistics are appended in place:
   "effective_chunks": 2}]
 ```
 
-`fresh_chunks`/`fresh_tombstones` count rows introduced at the
-commit, `new_blobs` their distinct blobs, and `effective_chunks` the
-live chunks after fallback.
+`fresh_chunks`/`fresh_tombstones` count the tree diff against the
+commit's first parent, `new_blobs` its distinct new present blobs, and
+`effective_chunks` the live chunks in the snapshot.
 
 ### `ref`
 
