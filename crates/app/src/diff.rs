@@ -212,11 +212,12 @@ where
     let _lock = world.lock(WorldLockMode::Shared)?;
     let mut coords = Vec::new();
     for (key, region) in discover_regions(world)? {
-        let image = region.read(key)?;
-        image.visit_chunks(|chunk| {
-            coords.push(ChunkCoord::new(key.dim, key.kind, chunk.x, chunk.z));
-            true
-        })?;
+        coords.extend(
+            region
+                .chunk_coords(key)?
+                .into_iter()
+                .map(|(x, z)| ChunkCoord::new(key.dim, key.kind, x, z)),
+        );
     }
     coords.sort();
     coords.dedup();
