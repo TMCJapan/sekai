@@ -186,7 +186,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
         Ok((out, timings))
     }
 
-    /// Effective chunk coordinates of one commit (fallback-resolved set).
+    /// Effective chunk coordinates of one commit (snapshot set).
     pub async fn commit_chunk_coords(&self, commit: CommitId) -> Result<Vec<ChunkCoord>, AppError> {
         let mut coords = Vec::new();
         self.store

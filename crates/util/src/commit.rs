@@ -6,14 +6,15 @@ use core::str::FromStr;
 
 use crate::error::HexError;
 use crate::hash::{hex32_from, hex32_into};
+use crate::tree::RootHash;
 
 /// Content-addressed commit identifier.
 ///
 /// The identifier is the Blake3 hash of the commit object: its parents,
-/// creation time, and the logical delta recorded by the commit. Identical
-/// logical histories produce identical IDs, matching Git's commit-hash
-/// model. Backends keep a separate local sequence for timeline ordering;
-/// that sequence is never part of the public ID.
+/// creation time, and root snapshot tree. Identical logical histories
+/// produce identical IDs, matching Git's commit-hash model. Backends keep a
+/// separate local sequence for timeline ordering; that sequence is never
+/// part of the public ID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CommitId(pub [u8; 32]);
 
@@ -69,15 +70,23 @@ pub struct Commit {
     pub created_at_ms: u64,
     /// Commits this one descends from.
     pub parents: Vec<CommitId>,
+    /// Root of the complete snapshot tree this commit names.
+    pub root: RootHash,
 }
 
 impl Commit {
     /// Construct commit metadata.
-    pub const fn new(id: CommitId, created_at_ms: u64, parents: Vec<CommitId>) -> Self {
+    pub const fn new(
+        id: CommitId,
+        created_at_ms: u64,
+        parents: Vec<CommitId>,
+        root: RootHash,
+    ) -> Self {
         Self {
             id,
             created_at_ms,
             parents,
+            root,
         }
     }
 
@@ -95,12 +104,14 @@ mod tests {
     #[test]
     fn commit_ids_and_metadata() {
         let id = CommitId([7; 32]);
-        let commit = Commit::new(id, 1_700_000_000_000, alloc::vec![CommitId([6; 32])]);
+        let root = RootHash::new([8; 32]);
+        let commit = Commit::new(id, 1_700_000_000_000, alloc::vec![CommitId([6; 32])], root);
         assert_eq!(commit.id, id);
         assert_eq!(commit.created_at_ms, 1_700_000_000_000);
         assert_eq!(commit.parents, [CommitId([6; 32])]);
+        assert_eq!(commit.root, root);
         assert!(!commit.is_root());
-        assert!(Commit::new(id, 0, alloc::vec![]).is_root());
+        assert!(Commit::new(id, 0, alloc::vec![], root).is_root());
         assert!(CommitId([1; 32]) < CommitId([2; 32]));
     }
 

@@ -1,8 +1,9 @@
--- Schema version 16: the `idx_parents_parent` index on `commit_parents` was
--- removed. It served the commit-retirement sweep, which no longer exists;
--- every remaining parent-edge query resolves through the primary key. There
--- is no migration path from version 15: old stores are rejected via
--- `UnsupportedSchema`.
+-- Schema version 16: commits name content-addressed snapshot trees
+-- (ADR-0027); `chunk_history` is gone. The `idx_parents_parent` index on
+-- `commit_parents` is gone too: it served the commit-retirement sweep,
+-- which no longer exists, and every parent-edge query resolves through
+-- the primary key. There is no migration path from version 15: old stores
+-- are rejected via `UnsupportedSchema`.
 --
 -- Schema version 15: the `diff` column of `chunk_history` (cached volatile
 -- diff hashes) was removed. Change detection compares per-chunk history
@@ -21,15 +22,35 @@
 -- Schema version 12: `commit_tags` (snapshot tag references) was removed in
 -- favour of refs. That step also had no migration path.
 --
+-- Snapshot trees. Each row stores the exact canonical entry array that the
+-- node hash covers, so verification is one hash call. There are no keys
+-- between levels: the edges live inside the blobs. Nodes are append-only
+-- and shared by hash. A node's entries name only the next level down.
+CREATE TABLE root_tree(
+    hash BLOB NOT NULL PRIMARY KEY,
+    node BLOB NOT NULL
+);
+
+CREATE TABLE dim_tree(
+    hash BLOB NOT NULL PRIMARY KEY,
+    node BLOB NOT NULL
+);
+
+CREATE TABLE region_tree(
+    hash BLOB NOT NULL PRIMARY KEY,
+    node BLOB NOT NULL
+);
+
 -- Content-addressed commits live below. `id` is the public commit hash;
--- `seq` is a local ordering key used by MVCC queries. The sequence is never
--- part of the commit identity and may differ across replicas. Reads order
--- by it, so it must increase monotonically with record order inside a
--- store.
+-- `seq` is a local ordering key. The sequence is never part of the commit
+-- identity and may differ across replicas. Reads order by it, so it must
+-- increase monotonically with record order inside a store. `root_hash`
+-- anchors the commit to one complete snapshot tree.
 CREATE TABLE commits(
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     id BLOB NOT NULL UNIQUE,
-    created_at_ms INTEGER NOT NULL
+    created_at_ms INTEGER NOT NULL,
+    root_hash BLOB NOT NULL REFERENCES root_tree(hash)
 );
 
 -- History graph: which commits a commit continues. The root of a
@@ -42,20 +63,6 @@ CREATE TABLE commit_parents(
     parent_id BLOB NOT NULL REFERENCES commits(id),
     PRIMARY KEY(child_id, parent_id)
 );
-
-CREATE TABLE chunk_history(
-    commit_id BLOB NOT NULL REFERENCES commits(id),
-    seq INTEGER NOT NULL,
-    dim INTEGER NOT NULL,
-    kind INTEGER NOT NULL,
-    cx INTEGER NOT NULL,
-    cz INTEGER NOT NULL,
-    blob BLOB NULL,
-    PRIMARY KEY(commit_id, dim, kind, cx, cz)
-);
-
-CREATE INDEX idx_history_coord
-    ON chunk_history(dim, kind, cx, cz, seq);
 
 -- Named, movable pointers to commits: the store's branch model. A ref
 -- whose `commit_id` is NULL is unborn - it names a history without a

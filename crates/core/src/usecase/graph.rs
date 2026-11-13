@@ -1,12 +1,12 @@
 //! Commit-graph read operations: listing, parents, ancestors, history, and
 //! reference resolution.
 
-use alloc::collections::BTreeSet;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 use core::fmt;
 
 use crate::port::meta::MetaStore;
-use sekai_util::{Commit, CommitId, RefName};
+use sekai_util::{ChunkCoord, ChunkHash, Commit, CommitId, RefName};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommitError<M> {
@@ -137,49 +137,64 @@ async fn lookup_record<M: MetaStore>(
 /// Per-commit change statistics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CommitStats {
-    /// Fresh present rows introduced at the commit.
+    /// Present chunks whose blob differs from the first parent.
     pub fresh_chunks: usize,
-    /// Fresh tombstone rows introduced at the commit.
+    /// Coordinates present at the parent but absent from this commit.
     pub fresh_tombstones: usize,
-    /// Distinct new blobs among the fresh rows.
+    /// Distinct new blobs among the fresh chunks.
     pub new_blobs: usize,
-    /// Effective present chunks at the commit (fallback included).
+    /// Present chunks in the commit's snapshot.
     pub effective_chunks: usize,
 }
 
 /// Count fresh and effective rows for one commit.
+///
+/// Fresh rows are the tree diff against the first parent (the base the tree
+/// merge would have used); a root commit diffs against the empty snapshot.
 pub async fn commit_stats<M: MetaStore>(
     meta: &M,
     commit: CommitId,
 ) -> Result<CommitStats, CommitError<M::Error>> {
-    let mut fresh_chunks = 0usize;
-    let mut fresh_tombstones = 0usize;
-    let mut blobs = BTreeSet::new();
-    meta.visit_fresh_rows(commit, |entry| {
-        if let Some(blob) = entry.blob {
-            fresh_chunks += 1;
-            blobs.insert(blob);
-        } else {
-            fresh_tombstones += 1;
-        }
-        true
-    })
-    .await
-    .map_err(CommitError::Meta)?;
-    let mut effective_chunks = 0usize;
+    let record = lookup_record(meta, commit).await?;
+    let mut current: BTreeMap<ChunkCoord, ChunkHash> = BTreeMap::new();
     meta.visit_commit_chunks(commit, |entry| {
-        if entry.blob.is_some() {
-            effective_chunks += 1;
+        if let Some(blob) = entry.blob {
+            current.insert(entry.coord, blob);
         }
         true
     })
     .await
     .map_err(CommitError::Meta)?;
+
+    let mut previous: BTreeMap<ChunkCoord, ChunkHash> = BTreeMap::new();
+    if let Some(parent) = record.parents.first().copied() {
+        meta.visit_commit_chunks(parent, |entry| {
+            if let Some(blob) = entry.blob {
+                previous.insert(entry.coord, blob);
+            }
+            true
+        })
+        .await
+        .map_err(CommitError::Meta)?;
+    }
+
+    let mut fresh_chunks = 0usize;
+    let mut blobs = BTreeSet::new();
+    for (coord, hash) in &current {
+        if previous.get(coord) != Some(hash) {
+            fresh_chunks += 1;
+            blobs.insert(*hash);
+        }
+    }
+    let fresh_tombstones = previous
+        .keys()
+        .filter(|coord| !current.contains_key(coord))
+        .count();
     Ok(CommitStats {
         fresh_chunks,
         fresh_tombstones,
         new_blobs: blobs.len(),
-        effective_chunks,
+        effective_chunks: current.len(),
     })
 }
 
@@ -266,6 +281,7 @@ mod tests {
     use super::*;
     use crate::support::{MemMeta, block_on};
     use alloc::string::ToString;
+    use sekai_util::CommitEntry;
 
     #[test]
     fn lists_in_local_sequence_order() {
@@ -359,29 +375,38 @@ mod tests {
     fn counts_fresh_and_effective_rows() {
         use sekai_util::{ChunkCoord, ChunkHash, Dimension, RegionKind};
         let mut meta = MemMeta::default();
+        meta.with_active_ref(&RefName::parse("main").unwrap());
         let over = Dimension::OVERWORLD;
         let region = RegionKind::Region;
-        let first = block_on(meta.create_commit(100, &[])).unwrap();
-        block_on(meta.record_chunk(
-            first,
-            &ChunkCoord::new(over, region, 0, 0),
-            Some(&ChunkHash::new([1; 32])),
+        let first = block_on(meta.apply_commit_incremental(
+            100,
+            &[],
+            &[
+                CommitEntry::new(
+                    ChunkCoord::new(over, region, 0, 0),
+                    Some(ChunkHash::new([1; 32])),
+                ),
+                CommitEntry::new(
+                    ChunkCoord::new(over, region, 1, 0),
+                    Some(ChunkHash::new([1; 32])),
+                ),
+            ],
         ))
-        .unwrap();
-        block_on(meta.record_chunk(
-            first,
-            &ChunkCoord::new(over, region, 1, 0),
-            Some(&ChunkHash::new([1; 32])),
+        .unwrap()
+        .id;
+        let second = block_on(meta.apply_commit_incremental(
+            200,
+            &[first],
+            &[
+                CommitEntry::new(
+                    ChunkCoord::new(over, region, 0, 0),
+                    Some(ChunkHash::new([2; 32])),
+                ),
+                CommitEntry::new(ChunkCoord::new(over, region, 1, 0), None),
+            ],
         ))
-        .unwrap();
-        let second = block_on(meta.create_commit(200, &[first])).unwrap();
-        block_on(meta.record_chunk(
-            second,
-            &ChunkCoord::new(over, region, 0, 0),
-            Some(&ChunkHash::new([2; 32])),
-        ))
-        .unwrap();
-        block_on(meta.record_chunk(second, &ChunkCoord::new(over, region, 1, 0), None)).unwrap();
+        .unwrap()
+        .id;
 
         assert_eq!(
             block_on(commit_stats(&meta, first)).unwrap(),
@@ -432,22 +457,40 @@ mod tests {
     fn a_commit_only_inherits_from_its_own_ancestors() {
         use sekai_util::{ChunkCoord, ChunkHash, Dimension, RegionKind};
         let mut meta = MemMeta::default();
+        meta.with_active_ref(&RefName::parse("main").unwrap());
         let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
-        let first = block_on(meta.create_commit(100, &[])).unwrap();
-        block_on(meta.record_chunk(first, &coord, Some(&ChunkHash::new([1; 32])))).unwrap();
+        let first = block_on(meta.apply_commit_incremental(
+            100,
+            &[],
+            &[CommitEntry::new(coord, Some(ChunkHash::new([1; 32])))],
+        ))
+        .unwrap()
+        .id;
         // A second history: its root shares no ancestor with `first`.
-        let other = block_on(meta.create_commit(200, &[])).unwrap();
-        let child = block_on(meta.create_commit(300, &[other])).unwrap();
+        block_on(meta.set_ref(&RefName::parse("main").unwrap(), None, 150)).unwrap();
+        let other = block_on(meta.apply_commit_incremental(
+            200,
+            &[],
+            &[CommitEntry::new(coord, Some(ChunkHash::new([2; 32])))],
+        ))
+        .unwrap()
+        .id;
+        let child = block_on(meta.apply_commit_incremental(300, &[other], &[]))
+            .unwrap()
+            .id;
 
-        assert!(
+        // The child continues `other`, which holds a different blob.
+        assert_eq!(
             block_on(meta.lookup_chunk(child, &coord))
                 .unwrap()
-                .is_none()
+                .map(|entry| entry.blob),
+            Some(Some(ChunkHash::new([2; 32])))
         );
-        assert!(
+        assert_eq!(
             block_on(meta.lookup_chunk(first, &coord))
                 .unwrap()
-                .is_some()
+                .map(|entry| entry.blob),
+            Some(Some(ChunkHash::new([1; 32])))
         );
     }
 
