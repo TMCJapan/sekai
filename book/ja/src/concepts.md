@@ -7,4 +7,4 @@
 - **ツームストーン (Tombstone / 削除レコード)**: チャンクが存在しないことを明示的に表すレコードです。あるコミットから次のコミットまでの間に削除されたチャンクは、単に記録から消す（サイレントにする）のではなくツームストーンとして記録されます。これにより、チェックアウト時にそのチャンクを確実に再削除できます。
 - **導出状態テーブルなし**: リージョンのフィンガープリントは永続化されません。各コミットはスコープ内のファイルを毎回読み直し、Blob が変化したチャンクの行だけを書き込みます。再構築すべきキャッシュがないため、履歴は常に正しい状態を保ちます。
 
-正式な仕様や定義については、[ARCHITECTURE.md](https://github.com/tmcjapan/sekai/blob/main/ARCHITECTURE.md)（「Data & Hashing Model」および「History, State, and GC Model」）を参照してください。
+正式な仕様や定義については、[ARCHITECTURE.md](https://github.com/tmcjapan/sekai/blob/main/ARCHITECTURE.md)（「Data & Hashing Model」および「History and State Model」）を参照してください。

@@ -15,7 +15,7 @@
 //!
 //! Crash order mirrors the core contract: every blob is flushed to CAS
 //! *before* the single metadata batch commits, so a torn commit leaves at
-//! most orphan blobs (reclaimed by future GC), never dangling references.
+//! most orphan blobs, never dangling references.
 
 use std::collections::{BTreeSet, HashSet};
 use std::num::NonZeroUsize;

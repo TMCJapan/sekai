@@ -38,11 +38,6 @@ name = "diff"
 harness = false
 required-features = ["backend-local"]
 
-[[bench]]
-name = "gc_scan"
-harness = false
-required-features = ["backend-local"]
-
 [dev-dependencies]
 criterion.workspace = true
 miniz_oxide.workspace = true

@@ -9,7 +9,7 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use crate::port::{BlobStore, MetaStore};
 use sekai_util::{
     ApplyOutcome, ChunkCoord, ChunkHash, ChunkHistoryEntry, Commit, CommitId, CommitRef,
-    FoldOutcome, NamedScope, RefName, ScopeName,
+    NamedScope, RefName, ScopeName,
 };
 
 /// Fake backend failure.
@@ -26,13 +26,6 @@ pub enum MemError {
     UnknownCommit {
         /// Commit that was asked for.
         id: CommitId,
-    },
-    /// A retirement that does not follow the history.
-    InvalidRetirement {
-        /// Commit being retired.
-        from: CommitId,
-        /// Intended successor.
-        into: CommitId,
     },
     /// The ref does not exist.
     UnknownRef {
@@ -99,8 +92,8 @@ fn effective_at(
         if row.commit != commit && !ancestors.contains(&row.commit) {
             continue;
         }
-        // A row whose commit has no local sequence is corruption:
-        // retirement re-stamps or drops rows before forgetting a seq.
+        // A row whose commit has no local sequence is corruption; skip
+        // it defensively.
         let Some(seq) = seqs.get(&row.commit).copied() else {
             continue;
         };
@@ -151,8 +144,7 @@ pub struct MemMeta {
     pub refs: BTreeMap<RefName, CommitRef>,
     /// Named scopes by name.
     pub scopes: BTreeMap<ScopeName, NamedScope>,
-    /// Stable local sequence per commit hash. Retirement never renumbers
-    /// surviving commits.
+    /// Stable local sequence per commit hash.
     pub seqs: BTreeMap<CommitId, u64>,
     /// Next local sequence number to assign.
     next_seq: u64,
@@ -392,83 +384,6 @@ impl MetaStore for MemMeta {
         core::future::ready(Ok(ApplyOutcome { id }))
     }
 
-    fn retire_commit(
-        &mut self,
-        from: CommitId,
-        into: CommitId,
-    ) -> impl Future<Output = Result<FoldOutcome, MemError>> + Send {
-        // Mirrors the backend: a retirement folds into a strictly newer,
-        // existing commit that descends from the retired one. Folding
-        // into an unrelated history would graft rows the successor never
-        // had. "Newer" follows the local sequence, not the hash.
-        let (Some(from_seq), Some(into_seq)) = (self.seq_of(from), self.seq_of(into)) else {
-            return core::future::ready(Err(MemError::InvalidRetirement { from, into }));
-        };
-        if into_seq <= from_seq || !ancestor_ids(&self.commits, into).contains(&from) {
-            return core::future::ready(Err(MemError::InvalidRetirement { from, into }));
-        }
-        // Rows superseded by the history `into` continues are dropped;
-        // the survivors move onto it.
-        let mut superseding = ancestor_ids(&self.commits, into);
-        superseding.insert(into);
-        let mut folded = 0usize;
-        let mut dropped = 0usize;
-        let mut kept: Vec<ChunkHistoryEntry> = Vec::new();
-        for row in &self.rows {
-            if row.commit != from {
-                kept.push(*row);
-                continue;
-            }
-            let superseded = self.rows.iter().any(|other| {
-                other.coord == row.coord
-                    && self.seq_of(other.commit).is_some_and(|seq| seq > from_seq)
-                    && superseding.contains(&other.commit)
-            });
-            if superseded {
-                dropped += 1;
-            } else {
-                let mut moved = *row;
-                moved.commit = into;
-                kept.push(moved);
-                folded += 1;
-            }
-        }
-        self.rows = kept;
-        // The retired commit leaves the graph: its children continue the
-        // history of its own parents.
-        let from_parents = self
-            .commits
-            .iter()
-            .find(|c| c.id == from)
-            .map_or_default(|c| c.parents.clone());
-        for commit in &mut self.commits {
-            if !commit.parents.contains(&from) {
-                continue;
-            }
-            // The backend drops every edge naming the retired commit.
-            commit.parents.retain(|parent| *parent != from);
-            for parent in &from_parents {
-                if !commit.parents.contains(parent) {
-                    commit.parents.push(*parent);
-                }
-            }
-            commit.parents.sort();
-        }
-        self.commits.retain(|commit| commit.id != from);
-        // The ID may be recorded again later; forget its sequence so the
-        // re-added commit gets a fresh position at the end of the timeline.
-        self.seqs.remove(&from);
-        // A ref naming the retired commit follows the fold: the
-        // successor holds the same effective state, so the ref keeps
-        // naming it.
-        for record in self.refs.values_mut() {
-            if record.commit == Some(from) {
-                record.commit = Some(into);
-            }
-        }
-        core::future::ready(Ok(FoldOutcome { folded, dropped }))
-    }
-
     fn set_ref(
         &mut self,
         name: &RefName,
@@ -637,13 +552,6 @@ impl BlobStore for MemCas {
         };
         out.extend_from_slice(bytes);
         core::future::ready(Ok(()))
-    }
-
-    fn remove(
-        &mut self,
-        hash: &ChunkHash,
-    ) -> impl Future<Output = Result<bool, Self::Error>> + Send {
-        core::future::ready(Ok(self.blobs.remove(hash).is_some()))
     }
 
     fn visit_blobs<F>(&self, mut visit: F) -> impl Future<Output = Result<(), Self::Error>> + Send

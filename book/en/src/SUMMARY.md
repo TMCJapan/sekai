@@ -11,7 +11,6 @@
 - [Commit](commands/commit.md)
 - [Checkout](commands/checkout.md)
 - [Refs](commands/refs.md)
-- [Maintenance](commands/maintenance.md)
 - [Inspection](commands/inspection.md)
 - [Automation](automation.md)
 - [Troubleshooting](troubleshooting.md)

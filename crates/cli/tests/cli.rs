@@ -104,13 +104,11 @@ fn parses_progress_flag() {
 
     for args in [
         vec!["sekai", "checkout", "w", H3, "--progress"],
-        vec!["sekai", "gc", "--progress"],
         vec!["sekai", "diff", "--in", "overworld:0,0", "--progress"],
     ] {
         Cli::try_parse_from(args).expect("progress parses");
     }
     assert!(Cli::try_parse_from(["sekai", "checkout", "w", H3, "--progress", "--json"]).is_err());
-    assert!(Cli::try_parse_from(["sekai", "gc", "--progress", "--json"]).is_err());
     assert!(
         Cli::try_parse_from([
             "sekai",
@@ -263,8 +261,6 @@ fn validates_commit_refs_at_parse_time() {
         vec!["sekai", "checkout", "w", "main/"],
         vec!["sekai", "checkout", "w", "a//b"],
         vec!["sekai", "checkout", "w", "a/../b"],
-        vec!["sekai", "prune", "--before", "bad name"],
-        vec!["sekai", "prune", "--before", "@stable"],
         vec!["sekai", "diff", H1, "bad name"],
         vec!["sekai", "ref", "create", "main", "@stable"],
         vec!["sekai", "ref", "create", ""],
@@ -284,7 +280,6 @@ fn validates_commit_refs_at_parse_time() {
         vec!["sekai", "checkout", "w", "main"],
         vec!["sekai", "checkout", "w", "feature/nightly"],
         vec!["sekai", "checkout", "w", "v1.2_x-1"],
-        vec!["sekai", "prune", "--before", "main"],
         vec!["sekai", "diff", H1, H2],
         vec!["sekai", "ref", "create", "main"],
         vec![
@@ -699,107 +694,6 @@ fn parses_init_command() {
     // Init takes no world argument and has no phases to time.
     assert!(Cli::try_parse_from(["sekai", "init", "world"]).is_err());
     assert!(Cli::try_parse_from(["sekai", "init", "--timing"]).is_err());
-}
-
-#[test]
-fn parses_gc_command() {
-    let cli = Cli::try_parse_from(["sekai", "gc"]).expect("gc parses");
-    assert!(matches!(
-        cli.command,
-        Command::Gc {
-            dry_run: false,
-            output: TimingArgs {
-                timing: false,
-                json: false,
-            },
-            progress: false,
-        }
-    ));
-
-    let cli = Cli::try_parse_from(["sekai", "gc", "--dry-run", "--json"])
-        .expect("gc --dry-run --json parses");
-    assert!(matches!(
-        cli.command,
-        Command::Gc {
-            dry_run: true,
-            output: TimingArgs { json: true, .. },
-            ..
-        }
-    ));
-
-    let cli = Cli::try_parse_from(["sekai", "gc", "--timing", "--json"])
-        .expect("gc --timing --json parses");
-    assert!(matches!(
-        cli.command,
-        Command::Gc {
-            output: TimingArgs {
-                timing: true,
-                json: true,
-            },
-            ..
-        }
-    ));
-
-    Cli::try_parse_from(["sekai", "gc", "--dry-run", "--timing", "--json"])
-        .expect("gc --dry-run --timing --json parses");
-    assert!(
-        Cli::try_parse_from(["sekai", "gc", "--dry-run", "--progress"]).is_err(),
-        "gc --dry-run --progress is refused"
-    );
-}
-
-#[test]
-fn parses_prune_command() {
-    let cli = Cli::try_parse_from(["sekai", "prune", "--keep-last", "3"])
-        .expect("prune --keep-last parses");
-    assert!(matches!(
-        cli.command,
-        Command::Prune {
-            keep_last: Some(3),
-            before: None,
-            dry_run: false,
-            progress: false,
-            ..
-        }
-    ));
-    assert_eq!(cli.command.name(), "prune");
-    assert!(!cli.command.output_json());
-
-    let cli = Cli::try_parse_from(["sekai", "prune", "--before", "main", "--dry-run", "--json"])
-        .expect("prune --before --dry-run parses");
-    assert!(matches!(
-        &cli.command,
-        Command::Prune {
-            keep_last: None,
-            before: Some(_),
-            dry_run: true,
-            output: TimingArgs { json: true, .. },
-            ..
-        }
-    ));
-    assert!(cli.command.output_json());
-    if let Command::Prune { before, .. } = &cli.command {
-        assert_eq!(ref_str(before.as_ref()), Some("main"));
-    } else {
-        panic!("expected prune");
-    }
-
-    assert!(
-        Cli::try_parse_from(["sekai", "prune"]).is_err(),
-        "prune without a selector is refused"
-    );
-    assert!(
-        Cli::try_parse_from([
-            "sekai",
-            "prune",
-            "--keep-last",
-            H3,
-            "--dry-run",
-            "--progress"
-        ])
-        .is_err(),
-        "prune --dry-run --progress is refused"
-    );
 }
 
 #[test]

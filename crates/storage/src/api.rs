@@ -112,22 +112,6 @@ pub enum StorageError {
     /// Region file size does not fit `i64`.
     #[error("region size out of range: {0}")]
     InvalidSize(u64),
-    /// A retirement must fold a commit into a strictly newer one.
-    #[error("cannot retire commit {from} into {into}: the successor must be newer")]
-    InvalidRetirement {
-        /// Commit being retired.
-        from: CommitId,
-        /// Intended successor.
-        into: CommitId,
-    },
-    /// A retirement must fold a commit into one of its descendants.
-    #[error("cannot retire commit {from} into {into}: the successor must descend from it")]
-    UnrelatedRetirement {
-        /// Commit being retired.
-        from: CommitId,
-        /// Intended successor.
-        into: CommitId,
-    },
     /// The named commit does not exist.
     #[error("unknown commit: {id}")]
     UnknownCommit {
@@ -196,11 +180,6 @@ impl<M, C> Store<M, C> {
     pub const fn blob_mut(&mut self) -> &mut C {
         &mut self.blob
     }
-
-    /// Borrow both adapters for operations such as GC that need simultaneous access.
-    pub const fn blob_and_meta(&mut self) -> (&mut C, &M) {
-        (&mut self.blob, &self.meta)
-    }
 }
 
 /// Wrap an I/O failure together with the path that caused it.
@@ -254,9 +233,5 @@ mod tests {
 
         *store.meta_mut() = "new meta".to_owned();
         *store.blob_mut() = "new blob".to_owned();
-
-        let (blob, meta) = store.blob_and_meta();
-        assert_eq!(blob.as_str(), "new blob");
-        assert_eq!(meta.as_str(), "new meta");
     }
 }

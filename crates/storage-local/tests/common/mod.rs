@@ -4,8 +4,7 @@
 
 use sekai_core::{
     BlobStore, ChunkCoord, ChunkHash, CommitEntry, CommitId, Dimension, MetaStore, NamedScope,
-    Rect, RefName, RegionKind, ScopeName,
-    usecase::gc::{gc_apply, gc_plan},
+    Rect, RegionKind, ScopeName,
 };
 
 const OVER: Dimension = Dimension::OVERWORLD;
@@ -185,176 +184,6 @@ where
     );
 }
 
-/// Pruning folds oldest-first without changing retained effective states.
-pub async fn prune_flow<M>(meta: &mut M)
-where
-    M: MetaStore,
-    M::Error: core::fmt::Debug,
-{
-    use sekai_core::usecase::prune::{PruneReport, prune_apply, prune_plan, select_retained};
-    // S1: A@0,0 B@1,0 / S2: C@0,0 (B carried) / S3: D@2,0.
-    let first = meta.create_commit(1_000, &[]).await.unwrap();
-    meta.record_chunk(first, &coord(0, 0), Some(&ChunkHash::new([1; 32])))
-        .await
-        .unwrap();
-    meta.record_chunk(first, &coord(1, 0), Some(&ChunkHash::new([2; 32])))
-        .await
-        .unwrap();
-    let second = meta.create_commit(2_000, &[first]).await.unwrap();
-    meta.record_chunk(second, &coord(0, 0), Some(&ChunkHash::new([3; 32])))
-        .await
-        .unwrap();
-    let third = meta.create_commit(3_000, &[second]).await.unwrap();
-    meta.record_chunk(third, &coord(2, 0), Some(&ChunkHash::new([4; 32])))
-        .await
-        .unwrap();
-    let before: Vec<Vec<(ChunkCoord, Option<ChunkHash>)>> =
-        effective_rows(meta, &[first, second, third]).await;
-
-    let listed = sekai_core::usecase::graph::list_commits(&*meta)
-        .await
-        .unwrap();
-    let retained = select_retained(&listed, Some(2), None);
-    let plan = prune_plan(&*meta, &retained).await.unwrap();
-    assert_eq!(plan.delete, [first]);
-    assert_eq!(plan.retained, [second, third]);
-    let report = prune_apply(meta, &plan, |_, _| {}).await.unwrap();
-    assert_eq!(
-        report,
-        PruneReport {
-            pruned: 1,
-            rows_folded: 1,
-            rows_dropped: 1,
-        }
-    );
-
-    let after: Vec<Vec<(ChunkCoord, Option<ChunkHash>)>> =
-        effective_rows(meta, &[second, third]).await;
-    assert_eq!(after, before[1..]);
-    assert!(meta.lookup_commit(first).await.unwrap().is_none());
-
-    // A retirement into an older or equal commit, or into one that does
-    // not exist, is a backend error rather than a silent no-op: the first
-    // would retroactively attach later rows to an earlier commit.
-    for (from, into) in [
-        (second, first),
-        (first, first),
-        (second, second),
-        (second, CommitId([0xFF; 32])),
-        (CommitId([0xFF; 32]), third),
-    ] {
-        assert!(
-            meta.retire_commit(from, into).await.is_err(),
-            "retire {from:?} into {into:?} must fail"
-        );
-    }
-    // The rejected attempts changed nothing.
-    let after_failures: Vec<Vec<(ChunkCoord, Option<ChunkHash>)>> =
-        effective_rows(meta, &[second, third]).await;
-    assert_eq!(after_failures, after);
-}
-
-/// A whole chain retires into its tip: SQLite re-checks descent after each
-/// retirement, so the second fold must still see the survivor as its
-/// descendant once the first parent is gone. Refs that named a retired
-/// commit follow the fold, including the active head.
-pub async fn prune_chain_flow<M>(meta: &mut M)
-where
-    M: MetaStore,
-    M::Error: core::fmt::Debug,
-{
-    use sekai_core::usecase::prune::{prune_apply, prune_plan, select_retained};
-    // The production apply path requires an active ref; make that
-    // dependency explicit rather than relying on the runner's setup.
-    assert!(meta.active_ref().await.unwrap().is_some());
-    // Build the chain through the production apply path, so the active
-    // ref follows each commit rather than being positioned by hand.
-    let first = meta
-        .apply_commit_incremental(
-            1_000,
-            &[],
-            &[CommitEntry::new(coord(0, 0), Some(ChunkHash::new([1; 32])))],
-        )
-        .await
-        .unwrap()
-        .id;
-    let second = meta
-        .apply_commit_incremental(
-            2_000,
-            &[first],
-            &[CommitEntry::new(coord(1, 0), Some(ChunkHash::new([2; 32])))],
-        )
-        .await
-        .unwrap()
-        .id;
-    let third = meta
-        .apply_commit_incremental(
-            3_000,
-            &[second],
-            &[CommitEntry::new(coord(2, 0), Some(ChunkHash::new([3; 32])))],
-        )
-        .await
-        .unwrap()
-        .id;
-
-    // The active head names the tip; two more refs name commits the prune
-    // retires, so the flow exercises the re-pointing UPDATE.
-    let head = RefName::parse("main").unwrap();
-    let at_first = RefName::parse("at-first").unwrap();
-    let at_second = RefName::parse("at-second").unwrap();
-    assert_eq!(
-        meta.active_ref().await.unwrap().unwrap().commit,
-        Some(third)
-    );
-    meta.set_ref(&at_first, Some(first), 1_100).await.unwrap();
-    meta.set_ref(&at_second, Some(second), 2_100).await.unwrap();
-
-    let before = effective_rows(meta, &[third]).await;
-    let listed = sekai_core::usecase::graph::list_commits(&*meta)
-        .await
-        .unwrap();
-    let retained = select_retained(&listed, Some(1), None);
-    let plan = prune_plan(&*meta, &retained).await.unwrap();
-    assert_eq!(plan.delete, [first, second]);
-    assert_eq!(plan.retained, [third]);
-    let report = prune_apply(meta, &plan, |_, _| {}).await.unwrap();
-    assert_eq!(report.pruned, 2);
-    assert_eq!(effective_rows(meta, &[third]).await, before);
-    assert!(meta.lookup_commit(first).await.unwrap().is_none());
-    assert!(meta.lookup_commit(second).await.unwrap().is_none());
-    for name in [&at_first, &at_second] {
-        let record = meta.lookup_ref(name).await.unwrap().unwrap();
-        assert_eq!(
-            record.commit,
-            Some(third),
-            "ref {name} must follow the fold"
-        );
-    }
-    let active = meta.active_ref().await.unwrap().unwrap();
-    assert_eq!(active.name, head);
-    assert_eq!(active.commit, Some(third));
-}
-
-async fn effective_rows<M>(meta: &M, ids: &[CommitId]) -> Vec<Vec<(ChunkCoord, Option<ChunkHash>)>>
-where
-    M: MetaStore,
-    M::Error: core::fmt::Debug,
-{
-    let mut out = Vec::new();
-    for id in ids {
-        let mut rows = Vec::new();
-        meta.visit_commit_chunks(*id, |entry| {
-            rows.push((entry.coord, entry.blob));
-            true
-        })
-        .await
-        .unwrap();
-        rows.sort();
-        out.push(rows);
-    }
-    out
-}
-
 /// The history graph: parents, the walk back to the root, and the
 /// effective state that follows the graph rather than the identifier
 /// order.
@@ -436,40 +265,9 @@ where
             .collect::<Vec<_>>(),
         history
     );
-
-    // Retiring a commit hands its children the history of its own
-    // parents, so the graph stays connected.
-    meta.retire_commit(first, second).await.unwrap();
-    assert!(meta.lookup_commit(first).await.unwrap().is_none());
-    assert_eq!(meta.commit_parents(second).await.unwrap(), vec![]);
-    // The folded row still resolves at the surviving commit.
-    assert!(
-        meta.lookup_chunk(second, &coord(0, 0))
-            .await
-            .unwrap()
-            .is_some()
-    );
-
-    // Retiring the middle of a three-deep history hands the grandchild
-    // the retired commit's own parent, not a dangling edge.
-    let root = meta.create_commit(7_000, &[]).await.unwrap();
-    let middle = meta.create_commit(8_000, &[root]).await.unwrap();
-    let grandchild = meta.create_commit(9_000, &[middle]).await.unwrap();
-    meta.retire_commit(middle, grandchild).await.unwrap();
-    assert!(meta.lookup_commit(middle).await.unwrap().is_none());
-    assert_eq!(meta.commit_parents(grandchild).await.unwrap(), vec![root]);
-    assert_eq!(
-        commit_ancestors(meta, grandchild).await.unwrap(),
-        vec![root]
-    );
-
-    // Folding into a history that does not descend from the retired
-    // commit would graft rows the successor never had.
-    let unrelated = meta.create_commit(10_000, &[]).await.unwrap();
-    assert!(meta.retire_commit(root, unrelated).await.is_err());
 }
 
-/// CAS put/fetch/dedup/remove/visit contract.
+/// CAS put/fetch/dedup/visit contract.
 pub async fn cas_roundtrip<C>(cas: &mut C)
 where
     C: BlobStore,
@@ -494,14 +292,12 @@ where
     .await
     .unwrap();
     assert_eq!(count, 1);
-    assert!(cas.remove(&hash).await.unwrap());
-    assert!(!cas.remove(&hash).await.unwrap());
-    assert!(cas.fetch_into(&hash, &mut out).await.is_err());
 }
 
-/// Torn-commit simulation: an unreferenced blob is a GC orphan, a
-/// referenced one survives planning and applying.
-pub async fn torn_orphan_gc<S>(store: &mut S)
+/// Torn-commit simulation: the crash order (blobs synced before the
+/// metadata commit) keeps every referenced blob resolvable, while a blob
+/// whose commit never landed stays in the append-only CAS as an orphan.
+pub async fn torn_commit_leaves_orphans<S>(store: &mut S)
 where
     S: sekai_storage::SekaiStore,
 {
@@ -511,17 +307,29 @@ where
     assert!(store.blob_mut().put(&orphan, b"orphan").await.unwrap());
     // Sync-then-commit order: blobs are durable before metadata names them.
     store.blob_mut().sync().await.unwrap();
-    store
+    let commit = store
         .meta_mut()
         .apply_commit_incremental(1_000, &[], &[CommitEntry::new(coord(0, 0), Some(live))])
         .await
-        .unwrap();
+        .unwrap()
+        .id;
 
-    let plan = gc_plan(store.blob(), store.meta()).await.unwrap();
-    assert_eq!(plan.orphans, vec![orphan]);
-    let (cas, meta) = store.blob_and_meta();
-    let report = gc_apply(cas, meta, &plan, |_, _| {}).await.unwrap();
-    assert_eq!(report.removed, 1);
-    assert!(store.blob().contains(&live).await.unwrap());
-    assert!(!store.blob().contains(&orphan).await.unwrap());
+    // The referenced blob resolves through the committed row.
+    let row = store
+        .meta()
+        .lookup_chunk(commit, &coord(0, 0))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.blob, Some(live));
+    let mut out = Vec::new();
+    store.blob().fetch_into(&live, &mut out).await.unwrap();
+    assert_eq!(out, b"live");
+
+    // The orphan's commit never landed, but the append-only CAS keeps the
+    // payload: nothing reclaims it, and it never became a dangling
+    // reference.
+    assert!(store.blob().contains(&orphan).await.unwrap());
+    store.blob().fetch_into(&orphan, &mut out).await.unwrap();
+    assert_eq!(out, b"orphan");
 }

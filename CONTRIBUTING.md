@@ -90,11 +90,12 @@ any exception in the PR body.
 - **No persisted derived state**: commit decisions compare per-chunk
   history, so the schema holds no cache that can drift from the source of
   truth.
-- **Two-phase destructive operations**: GC and similar destructive
-  operations keep a dry-run/plan phase separate from apply/execution.
-- **Crash order**: CAS blobs flushed + synced _before_ DB metadata commit;
-  GC unlinks _after_ metadata commit. The barrier calls live at the `app`
-  call site, never hidden inside adapters.
+- **Two-phase destructive operations**: checkout and similar destructive
+  operations keep a plan phase separate from apply/execution.
+- **Crash order**: CAS blobs flushed + synced _before_ DB metadata commit,
+  so a torn commit leaves at most orphan blobs, never dangling references.
+  The barrier calls live at the `app` call site, never hidden inside
+  adapters.
 
 # Development Guidelines
 
@@ -237,7 +238,7 @@ Discussions, not issues.
 
 Branch from `main` using one of these prefixes:
 
-- `feature/<scope>`: new user-facing capability (e.g., `feature/gc-cli`).
+- `feature/<scope>`: new user-facing capability (e.g., `feature/scope-cli`).
 - `perf/<scope>`: measured speedup with before/after numbers (affected command's `--timing`; release build, reproduction steps included).
 - `fix/<scope>`: bug correction.
 - `refactor/<scope>`, `docs/<scope>`, `test/<scope>`: no behavior change.

@@ -34,7 +34,6 @@ read-only flows.
 | `checkout/corpus` | 19.0 ms | 1189 chunks rewrite |
 | `diff/small-all` | 72.6 ms | ~200 chunks, self-diff; per-chunk CAS opens dominate |
 | `diff/corpus-all` | 655 ms | 1189 chunks, self-diff |
-| `gc-plan/small` | 2.1 ms | read-only plan, repeatable |
 
 Rule-of-thumb estimates per subcommand (same machine class):
 
@@ -46,7 +45,6 @@ Rule-of-thumb estimates per subcommand (same machine class):
 - `checkout`: rewrite-bound, ~15–20 ms per 1K chunks.
 - `diff`: ~0.5 ms per chunk, dominated by per-chunk CAS file opens
   (batching opportunity, untracked).
-- `gc plan`: a few ms at small scale; grows with history length.
 
 ## World-level measurement
 

@@ -67,15 +67,6 @@ pub struct ApplyOutcome {
     pub id: CommitId,
 }
 
-/// Result of retiring one commit into its successor.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct FoldOutcome {
-    /// Rows re-stamped onto the successor commit.
-    pub folded: usize,
-    /// Rows superseded before the successor and removed.
-    pub dropped: usize,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

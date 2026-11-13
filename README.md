@@ -53,14 +53,6 @@ sekai ref activate feature
 # Save an area once, then select it by name
 sekai scope create spawn --in overworld:-8,-8..7,7
 sekai commit ./world --scope spawn
-
-# Preview unreferenced blobs, then collect them
-sekai gc --dry-run
-sekai gc
-
-# Delete old commits (keep newest 10), then reclaim their blobs
-sekai prune --keep-last 10
-sekai gc
 ```
 
 `--store` names the store directory (`init` creates it; every other
@@ -70,7 +62,7 @@ Every command accepts `--json` for a single-document machine-readable
 report, and every command except `log`, `ref`, and `init` accepts
 `--timing`
 for a per-phase breakdown (combine both for timed JSON). `commit`,
-`status`, `checkout`, `diff`, `gc`, and `prune` also take
+`status`, `checkout`, and `diff` also take
 `--progress` for a stderr progress bar (refused with `--json`).
 Commit, status, checkout, and diff
 accept a scope: repeatable `--in DIM[:x,z|x0,z0..x1,z1]`,

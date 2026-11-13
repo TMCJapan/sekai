@@ -1,5 +1,5 @@
 name: Performance report
-description: A commit, checkout, or GC run is slower than expected. Questions go to Discussions.
+description: A commit or checkout run is slower than expected. Questions go to Discussions.
 title: "[perf]: "
 labels: ["type:perf"]
 body:

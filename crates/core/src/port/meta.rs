@@ -11,7 +11,7 @@ use alloc::vec::Vec;
 use core::future::Future;
 use sekai_util::{
     ApplyOutcome, ChunkCoord, ChunkHash, ChunkHistoryEntry, Commit, CommitEntry, CommitId,
-    CommitRef, FoldOutcome, NamedScope, RefName, ScopeName,
+    CommitRef, NamedScope, RefName, ScopeName,
 };
 
 /// Commit metadata and per-chunk history storage.
@@ -135,23 +135,6 @@ pub trait MetaStore {
         parents: &[CommitId],
         entries: &[CommitEntry],
     ) -> impl Future<Output = Result<ApplyOutcome, Self::Error>> + Send;
-
-    /// Retire `from` into `into` (`into` must be retained and have a
-    /// larger local sequence than `from`):
-    /// rows superseded along the history `into` continues are removed,
-    /// surviving rows are re-stamped onto `into`, derived states follow,
-    /// and the commit row is deleted - all
-    /// atomically. The children of `from` continue the history of its
-    /// own parents, so the graph stays connected. Effective states of
-    /// retained commits never change.
-    ///
-    /// `into` must be a descendant of `from`: folding into an unrelated
-    /// history would graft rows the successor never had.
-    fn retire_commit(
-        &mut self,
-        from: CommitId,
-        into: CommitId,
-    ) -> impl Future<Output = Result<FoldOutcome, Self::Error>> + Send;
 
     /// Point `name` at `commit`, creating the ref when it does not exist.
     /// `commit = None` leaves the ref unborn: it names a history without
