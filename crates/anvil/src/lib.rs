@@ -20,7 +20,7 @@ mod writer;
 pub use codec::{Compression, compression_of, decompress_into};
 pub use error::{AnvilError, ChunkHashError, ChunkNbtError};
 pub use hash::{custom_dimension_id, custom_dimension_id_bytes};
-pub use reader::{Chunk, RegionImage, RegionImageIter};
+pub use reader::{Chunk, RegionImage, RegionImageIter, header_chunk_coords};
 pub use region::{
     FIRST_DATA_SECTOR, HEADER_LEN, MAX_SECTOR_OFFSET, MAX_SECTORS_PER_CHUNK, ROW_WIDTH, RegionLoc,
     SECTOR_LEN, TABLE_ENTRIES, base_coords, check_image_len, parse_region_name, sectors_for,
