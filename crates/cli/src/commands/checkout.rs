@@ -42,7 +42,6 @@ pub async fn run(
     store: &str,
     world_path: impl AsRef<Path>,
     commit: &CommitRef,
-    progress: bool,
     selection: &Selection,
     flags: &CheckoutFlags,
     out: ReportOut,
@@ -67,7 +66,7 @@ pub async fn run(
             policy_summary(flags),
         );
     }
-    let bar = BarProgress::new(progress, Unit::Files);
+    let bar = BarProgress::new(out.progress, Unit::Files);
     let (report, timings) = instance
         .world_mut(&mut world)
         .checkout(id, options, scope, &bar)

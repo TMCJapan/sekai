@@ -15,18 +15,17 @@ pub async fn run(
     store: &str,
     world_path: impl AsRef<Path>,
     jobs: usize,
-    progress: bool,
     selection: &Selection,
     out: ReportOut,
 ) -> anyhow::Result<()> {
     let world = HostWorldTree::new(&world_path)
         .with_context(|| format!("failed to inspect world {}", world_path.as_ref().display()))?;
-    let bar = BarProgress::new(progress, Unit::Files);
     let options = sekai_app::StatusOptions { concurrency: jobs };
     let instance = sekai_app::SekaiInstance::open(store)
         .await
         .with_context(|| format!("status of {} failed", world_path.as_ref().display()))?;
     let scope = resolve_selection(&instance, selection).await?;
+    let bar = BarProgress::new(out.progress, Unit::Files);
     let (report, timings) = instance
         .world(&world)
         .status(options, scope, &bar)

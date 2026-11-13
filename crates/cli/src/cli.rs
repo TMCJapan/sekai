@@ -44,10 +44,6 @@ pub enum Command {
         /// Ingest worker count. `0` means one per CPU.
         #[arg(long, default_value = "0")]
         jobs: usize,
-        /// Show a progress bar on stderr. Refused with `--json`, and
-        /// silent without a stderr TTY.
-        #[arg(long, conflicts_with = "json")]
-        progress: bool,
         /// World portion to record (default: whole world).
         #[command(flatten)]
         selection: Selection,
@@ -59,10 +55,6 @@ pub enum Command {
         /// Human or JSON rendering plus optional phase timings.
         #[command(flatten)]
         output: TimingArgs,
-        /// Show a progress bar on stderr. Refused with `--json`, and
-        /// silent without a stderr TTY.
-        #[arg(long, conflicts_with = "json")]
-        progress: bool,
         /// World portion to preview (default: whole world).
         #[command(flatten)]
         selection: Selection,
@@ -82,10 +74,6 @@ pub enum Command {
         /// Rebuild worker count. `0` means one per CPU.
         #[arg(long, default_value = "0")]
         jobs: usize,
-        /// Show a progress bar on stderr. Refused with `--json`, and
-        /// silent without a stderr TTY.
-        #[arg(long, conflicts_with = "json")]
-        progress: bool,
         /// World portion to rebuild (default: whole world). Files outside
         /// the selection are never written, deleted, or otherwise touched.
         #[command(flatten)]
@@ -325,8 +313,8 @@ impl std::str::FromStr for CommitRef {
     }
 }
 
-/// `--timing`/`--json` pair shared by every report command except `log`
-/// (which has no phases to time).
+/// `--timing`/`--json`/`--progress` flags shared by every report command
+/// except `log` (which has no phases to time or items to count).
 #[derive(Debug, Clone, Copy, clap::Args)]
 pub struct TimingArgs {
     /// Print a per-phase timing breakdown after the report.
@@ -336,6 +324,10 @@ pub struct TimingArgs {
     /// `--timing`, phase timings are included. See docs/json.md.
     #[arg(long)]
     pub json: bool,
+    /// Show a progress bar on stderr. Refused with `--json`, and
+    /// silent without a stderr TTY.
+    #[arg(long, conflicts_with = "json")]
+    pub progress: bool,
 }
 
 /// What to do when a commit blob is absent from CAS.
@@ -379,10 +371,6 @@ pub struct DiffArgs {
     /// Human or JSON rendering plus optional phase timings.
     #[command(flatten)]
     pub output: TimingArgs,
-    /// Show a progress bar on stderr. Refused with `--json`, and
-    /// silent without a stderr TTY.
-    #[arg(long, conflicts_with = "json")]
-    pub progress: bool,
     /// Accepted for compatibility; the chunk diff carries normalized
     /// hashes, not per-tag values, so this flag has no effect.
     #[arg(long)]
