@@ -1,5 +1,7 @@
 //! Region file handles: the read/write capability the world operations use.
 
+use alloc::vec::Vec;
+
 use sekai_core::{RegionFingerprint, RegionKey};
 
 /// One region file, as the only capability the composition layer gets.
@@ -26,6 +28,23 @@ pub trait RegionFile:
     ///
     /// `key` names the region the file holds, like [`RegionFile::fingerprint`].
     fn read(&self, key: RegionKey) -> Result<Self::RegionImage, Self::Error>;
+
+    /// List the coordinates of the present chunks without reading payload
+    /// sectors.
+    ///
+    /// Table-level corruption is reported; payload corruption is not
+    /// checked, and surfaces when the payload is actually read. The
+    /// default reads the image and walks its chunks; a tree that can
+    /// answer from the header alone overrides.
+    fn chunk_coords(&self, key: RegionKey) -> Result<Vec<(i32, i32)>, Self::Error> {
+        let image = self.read(key)?;
+        let mut coords = Vec::new();
+        image.visit_chunks(|chunk| {
+            coords.push((chunk.x, chunk.z));
+            true
+        })?;
+        Ok(coords)
+    }
 
     /// The file's size in bytes, from its metadata alone: the content is
     /// not read.
