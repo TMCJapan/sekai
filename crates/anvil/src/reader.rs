@@ -224,20 +224,7 @@ impl RegionImage {
     }
 
     fn entry(&self, index: u32) -> Result<(u64, u64), AnvilError> {
-        let offset = index as usize * 4;
-
-        let bytes = self
-            .bytes
-            .get(offset..offset + 4)
-            .ok_or(AnvilError::CorruptEntry {
-                index,
-                offset: 0,
-                sectors: 0,
-            })?;
-
-        let entry = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
-
-        Ok((u64::from(entry >> 8), u64::from(entry & 0xFF)))
+        table_entry(&self.bytes, index)
     }
 
     fn sector_payload(&self, index: u32, offset: u64, count: u64) -> Result<&[u8], AnvilError> {
@@ -344,6 +331,57 @@ impl<'this> IntoIterator for &'this RegionImage {
             done: false,
         }
     }
+}
+
+/// One table slot of a region image: the sector `offset` and sector
+/// `count` the slot names.
+fn table_entry(bytes: &[u8], index: u32) -> Result<(u64, u64), AnvilError> {
+    let offset = index as usize * 4;
+
+    let entry = bytes
+        .get(offset..offset + 4)
+        .ok_or(AnvilError::CorruptEntry {
+            index,
+            offset: 0,
+            sectors: 0,
+        })?;
+
+    let entry = u32::from_be_bytes([entry[0], entry[1], entry[2], entry[3]]);
+
+    Ok((u64::from(entry >> 8), u64::from(entry & 0xFF)))
+}
+
+/// Lists the coordinates of the present chunks from the location table
+/// alone, in table order.
+///
+/// `header` must hold at least the 8 KiB location table; anything past the
+/// table is ignored. An empty image yields no coordinates, mirroring
+/// [`RegionImage::visit_chunks`]. Table-level corruption is reported
+/// exactly as the image parser reports it; payload corruption is not
+/// checked, since no payload byte is read.
+pub fn header_chunk_coords(
+    header: &[u8],
+    region_x: i32,
+    region_z: i32,
+) -> Result<Vec<(i32, i32)>, AnvilError> {
+    if header.is_empty() {
+        return Ok(Vec::new());
+    }
+    crate::region::check_image_len(header.len() as u64)?;
+
+    let loc = RegionLoc::new(region_x, region_z)?;
+    let mut coords = Vec::new();
+    for index in 0..TABLE_ENTRIES {
+        let (offset, count) = table_entry(header, index)?;
+        if offset == 0 && count == 0 {
+            continue;
+        }
+        if offset < FIRST_DATA_SECTOR || count == 0 {
+            return Err(RegionImage::corrupt_entry(index, offset, count));
+        }
+        coords.push(loc.coord_at(index));
+    }
+    Ok(coords)
 }
 
 fn saturate(value: u64) -> u32 {
