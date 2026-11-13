@@ -63,20 +63,47 @@ impl<S: SekaiStore> SekaiInstance<S> {
 /// An absent region file or chunk entry is [`None`]; a corrupt file, payload,
 /// or undecodable chunk fails loudly. A digest that is returned goes through
 /// [`chunk_digest`], so it equals the CAS key ingest recorded.
-fn read_world_chunk<R: RegionFile>(regions: &BTreeMap<RegionKey, R>, coord: &ChunkCoord) -> Side
+fn read_world_chunk<R: RegionFile>(diff: &WorldDiff<R>, coord: &ChunkCoord) -> Side
 where
     AppError: From<R::Error>,
 {
     let key = RegionKey::of(*coord);
-    let Some(region) = regions.get(&key) else {
+    let Some(region) = diff.regions.get(&key) else {
         return Side::absent();
     };
 
-    let read = region.read(key).map_err(AppError::from);
-    let image = match read {
-        Ok(image) => image,
-        Err(error) => return Side::failed(error),
+    let mut cache = match diff.cache.lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
     };
+    if cache
+        .recent
+        .as_ref()
+        .is_none_or(|(cached, _)| *cached != key)
+    {
+        match region.read(key) {
+            Ok(image) => cache.recent = Some((key, image)),
+            // A read failure is confined to this coordinate; it is not
+            // cached, and the run aborts on it.
+            Err(error) => return Side::failed(error.into()),
+        }
+    }
+    match cache.recent.as_ref() {
+        Some((_, image)) => side_from_image::<R>(image, coord),
+        // The slot is always filled above on the success path; fall back
+        // to a fresh read rather than assume it.
+        None => match region.read(key) {
+            Ok(image) => side_from_image::<R>(&image, coord),
+            Err(error) => Side::failed(error.into()),
+        },
+    }
+}
+
+/// Digest the payload at `coord` holding on `image`.
+fn side_from_image<R: RegionFile>(image: &R::RegionImage, coord: &ChunkCoord) -> Side
+where
+    AppError: From<R::Error>,
+{
     let payload = match image.chunk_payload(coord.x, coord.z) {
         Ok(Some(payload)) => payload,
         Ok(None) => return Side::absent(),
@@ -304,6 +331,7 @@ where
             },
             WorldDiff {
                 regions: discover_regions(self.world)?,
+                cache: std::sync::Mutex::new(RegionImageCache::default()),
             },
             progress.start(coords.len()),
             &mut timings,
@@ -395,8 +423,27 @@ impl<S: SekaiStore> DiffSource for CommitDiff<'_, S> {
 /// One diff run's world side: region handles resolved once, not per chunk.
 /// The set is captured when the run starts, so a region created mid-run
 /// is treated as absent until the next diff.
-struct WorldDiff<R> {
+struct WorldDiff<R: RegionFile> {
     regions: BTreeMap<RegionKey, R>,
+    cache: std::sync::Mutex<RegionImageCache<R>>,
+}
+
+/// Single-slot region image cache.
+///
+/// Callers process coordinates grouped by region file (they sort), so
+/// caching the most recently read image turns the per-chunk re-read into
+/// one read per region. A corrupt region is deliberately not cached: the
+/// first unreadable chunk aborts the diff, so a cached failure would
+/// never be consulted. The lock is only held inside one coordinate's
+/// read; a poisoned guard is recovered, never propagated.
+struct RegionImageCache<R: RegionFile> {
+    recent: Option<(RegionKey, R::RegionImage)>,
+}
+
+impl<R: RegionFile> Default for RegionImageCache<R> {
+    fn default() -> Self {
+        Self { recent: None }
+    }
 }
 
 impl<R: RegionFile> DiffSource for WorldDiff<R>
@@ -405,7 +452,7 @@ where
 {
     fn payload(&self, coord: &ChunkCoord) -> impl Future<Output = Result<Side, AppError>> {
         // A world read failure is always confined to this coordinate.
-        std::future::ready(Ok(read_world_chunk(&self.regions, coord)))
+        std::future::ready(Ok(read_world_chunk(self, coord)))
     }
 }
 
