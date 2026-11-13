@@ -471,6 +471,19 @@ where
         timings: Vec::with_capacity(changed.len()),
         ..Default::default()
     };
+    // A dry run stages nothing, so blob existence is frozen for its whole
+    // duration: one pass over the CAS beats one blocking probe per chunk.
+    let existing: Option<Arc<HashSet<sekai_core::ChunkHash>>> = if dry_run {
+        let mut hashes = HashSet::new();
+        cas.visit_blobs(|hash| {
+            hashes.insert(*hash);
+            true
+        })
+        .await?;
+        Some(Arc::new(hashes))
+    } else {
+        None
+    };
     let slots = match options.concurrency {
         0 => std::thread::available_parallelism().map_or(4, NonZeroUsize::get),
         n => n,
@@ -480,7 +493,19 @@ where
         let mut cas = cas.clone();
         let scope = scope.clone();
         let guard = Arc::clone(guard);
-        set.spawn(async move { ingest_file(region, key, &mut cas, scope, dry_run, guard).await });
+        let existing = existing.clone();
+        set.spawn(async move {
+            ingest_file(
+                region,
+                key,
+                &mut cas,
+                scope,
+                dry_run,
+                guard,
+                existing.as_deref(),
+            )
+            .await
+        });
     };
 
     let mut queued = changed.into_iter();
@@ -540,6 +565,7 @@ async fn ingest_file<R: RegionFile, C: BlobStore<Error = StorageError>, L: World
     scope: Scope,
     dry_run: bool,
     guard: Arc<WorldGuard<L>>,
+    existing: Option<&HashSet<sekai_core::ChunkHash>>,
 ) -> Result<FileOutcome, AppError>
 where
     AppError: From<R::Error>,
@@ -558,10 +584,12 @@ where
     // failure; the rows it staged are discarded with the error.
     for write in staged.writes {
         let started = Instant::now();
-        let stored = if dry_run {
-            cas.contains(&write.hash).await.map(|exists| !exists)
-        } else {
-            cas.put(&write.hash, &write.payload).await
+        // A dry run resolves existence against the staged snapshot and
+        // never reaches the CAS write path.
+        let stored = match (dry_run, existing) {
+            (true, Some(set)) => Ok(!set.contains(&write.hash)),
+            (true, None) => cas.contains(&write.hash).await.map(|exists| !exists),
+            (false, _) => cas.put(&write.hash, &write.payload).await,
         };
         cas_elapsed += started.elapsed();
         new_blobs += usize::from(stored?);
