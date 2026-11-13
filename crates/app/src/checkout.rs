@@ -13,16 +13,17 @@
 //! [`CheckoutOptions`] relax each of those strict behaviors explicitly.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::num::NonZeroUsize;
+use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
 use sekai_core::{CheckoutReport, ChunkCoord, ChunkHash, CommitId, RegionKey, Scope};
 use sekai_storage::{SekaiStore, StorageError};
 use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
+use tokio::task::JoinSet;
 
 use crate::error::AppError;
-use crate::instance::{ExclusiveWorldGuard, WorldGuard, WorldHandleMut};
+use crate::instance::{WorldGuard, WorldHandleMut};
 use crate::progress::{ProgressBuilder, Reporter};
 use crate::regions::discover_regions;
 
@@ -91,9 +92,16 @@ where
     /// and per-phase timings.
     ///
     /// Only `scope` is rebuilt: region files outside the scope are never
-    /// written, deleted, or otherwise touched. `progress` fires as files
-    /// complete, always on the async side: a reporter that works straight
-    /// on the future's own state must be safe to run there.
+    /// written, deleted, or otherwise touched. `progress` counts the files
+    /// to write or delete and fires as each one finishes, always on the
+    /// async side: a reporter that works straight on the future's own state
+    /// must be safe to run there.
+    ///
+    /// What each file needs is decided before any is touched, so refusing a
+    /// missing file ([`MissingFilePolicy::Error`]) leaves the world as it
+    /// was. A later failure or a cancelled checkout leaves it partly
+    /// rebuilt, with every file either rebuilt or untouched, never partial;
+    /// the world stays locked until every write already running has ended.
     ///
     /// Rebuilding writes (and may delete) region files, so it goes through
     /// `&mut self`: only one write session per world can exist at a time.
@@ -104,8 +112,7 @@ where
         scope: Scope,
         progress: &impl ProgressBuilder,
     ) -> Result<(CheckoutReport, CheckoutTimings), AppError> {
-        let guard =
-            ExclusiveWorldGuard::acquire(self.world, WorldLockMode::Exclusive)?.into_shared();
+        let guard = WorldGuard::acquire(self.world, WorldLockMode::Exclusive)?;
         let store = &self.instance.store;
         let world = &*self.world;
         let total_started = Instant::now();
@@ -126,32 +133,18 @@ where
         let mut tombstones = plan.tombstones;
         tombstones.retain(|key, _| scope.matches_region(*key));
 
-        // Discovery walks the filesystem: clone the handle and run it on
-        // the blocking pool, owning a share of the world lock like every
-        // file pass.
+        // Discovery walks the filesystem, so it runs on the blocking pool
+        // with its own share of the world lock, like every file write.
         let discover_started = Instant::now();
         let world_handle = world.clone();
-        let discovery_guard = Arc::clone(&guard);
-        let mut discovered = tokio::task::spawn_blocking(move || {
-            let _guard = discovery_guard;
-            discover_regions(&world_handle)
-        })
-        .await??;
+        let mut discovered =
+            on_blocking_pool(Arc::clone(&guard), move || discover_regions(&world_handle)).await?;
         let discover_dt = discover_started.elapsed();
         discovered.retain(|key, _| scope.matches_region(*key));
 
-        let job: CheckoutJob<S, W> = CheckoutJob {
-            groups,
-            tombstones,
-            options,
-            cas: store.blob().clone(),
-            world: world.clone(),
-            discovered,
-            guard,
-        };
-
         let files_started = Instant::now();
-        let report = checkout_file_pass(job, timestamp, progress).await?;
+        let jobs = plan_files(groups, tombstones, &discovered, world, options)?;
+        let report = run_files(jobs, store.blob(), options, timestamp, &guard, progress).await?;
         let files_dt = files_started.elapsed();
 
         let timings = CheckoutTimings {
@@ -165,218 +158,247 @@ where
     }
 }
 
-/// Everything one checkout file pass needs.
-struct CheckoutJob<S: SekaiStore, T: WorldTree> {
-    groups: BTreeMap<RegionKey, Vec<(ChunkCoord, ChunkHash)>>,
-    tombstones: BTreeMap<RegionKey, Vec<ChunkCoord>>,
-    options: CheckoutOptions,
-    cas: S::Blobs,
-    world: T,
-    discovered: BTreeMap<RegionKey, T::Region>,
-    /// One share per blocking step: the world stays locked for as long as
-    /// *any* of them still runs, even after the future is cancelled.
-    guard: Arc<WorldGuard<T::Lock>>,
+/// What one region file needs.
+enum FileJob<R: RegionFile> {
+    Delete(R),
+    Rebuild {
+        key: RegionKey,
+        region: R,
+        rows: Vec<(ChunkCoord, ChunkHash)>,
+        tombs: Option<Vec<ChunkCoord>>,
+    },
 }
 
-/// Rebuild every region file: present rows from CAS blobs, tombstones and
-/// post-commit files deleted unless kept by [`CheckoutOptions`].
-///
-/// Blob fetches are async; `progress` fires between files on the async side.
-/// Each file's build and write runs on the blocking pool, never on an async
-/// worker, and reports completion through [`Completion`] so a parked
-/// reporter does not also hold a blocking thread.
-async fn checkout_file_pass<S: SekaiStore, T: WorldTree>(
-    job: CheckoutJob<S, T>,
-    timestamp: u32,
-    progress: &impl ProgressBuilder,
-) -> Result<CheckoutReport, AppError>
+/// Decide what every region file needs, without touching the disk: present
+/// rows are rebuilt from CAS blobs, tombstoned and post-commit files are
+/// deleted unless kept by [`CheckoutOptions`]. Files left alone get no job.
+fn plan_files<T: WorldTree>(
+    mut groups: BTreeMap<RegionKey, Vec<(ChunkCoord, ChunkHash)>>,
+    mut tombstones: BTreeMap<RegionKey, Vec<ChunkCoord>>,
+    discovered: &BTreeMap<RegionKey, T::Region>,
+    world: &T,
+    options: CheckoutOptions,
+) -> Result<Vec<FileJob<T::Region>>, AppError>
 where
     AppError: From<T::Error>,
 {
-    let CheckoutJob {
-        groups,
-        tombstones,
-        options,
-        cas,
-        world,
-        discovered,
-        guard,
-    } = job;
-    let mut key_set: BTreeSet<RegionKey> = discovered.keys().copied().collect();
-    key_set.extend(groups.keys().copied());
-    key_set.extend(tombstones.keys().copied());
-    let keys: Vec<RegionKey> = key_set.into_iter().collect();
+    let mut keys: BTreeSet<RegionKey> = discovered.keys().copied().collect();
+    keys.extend(groups.keys().copied());
+    keys.extend(tombstones.keys().copied());
+    keys.into_iter()
+        .filter_map(|key| {
+            let rows = groups.remove(&key);
+            let tombs = tombstones.remove(&key);
+            plan_file(key, rows, tombs, discovered, world, options).transpose()
+        })
+        .collect()
+}
 
+/// Decide what `key`'s file needs, or `None` when it is left alone.
+fn plan_file<T: WorldTree>(
+    key: RegionKey,
+    rows: Option<Vec<(ChunkCoord, ChunkHash)>>,
+    tombs: Option<Vec<ChunkCoord>>,
+    discovered: &BTreeMap<RegionKey, T::Region>,
+    world: &T,
+    options: CheckoutOptions,
+) -> Result<Option<FileJob<T::Region>>, AppError>
+where
+    AppError: From<T::Error>,
+{
+    if let Some(rows) = rows {
+        let region = if let Some(region) = discovered.get(&key) {
+            region.clone()
+        } else {
+            resolve_target(discovered, world, &key, options.on_missing_file)?
+        };
+        Ok(Some(FileJob::Rebuild {
+            key,
+            region,
+            rows,
+            tombs,
+        }))
+    } else {
+        // No present rows: either fully tombstoned at the commit or created
+        // afterwards. Keep-policies leave the live file alone; strict
+        // checkout deletes it.
+        let keep = if tombs.is_some() {
+            options.keep_tombstoned_chunks
+        } else {
+            options.keep_post_commit_files
+        };
+        if keep {
+            Ok(None)
+        } else {
+            Ok(discovered.get(&key).cloned().map(FileJob::Delete))
+        }
+    }
+}
+
+/// Run every job as its own task, at most one per CPU since each holds a
+/// whole region image. A finished file frees its slot for the next, and
+/// `progress` fires as each one is joined.
+///
+/// Tasks hold the world lock only weakly while they fetch: a share is taken
+/// just as a file's write or delete goes to the blocking pool. So when the
+/// run fails or is cancelled, the tasks still fetching are aborted without
+/// extending the lock, and only the writes already on the blocking pool
+/// keep the world locked until they end.
+async fn run_files<R, L, C>(
+    jobs: Vec<FileJob<R>>,
+    cas: &C,
+    options: CheckoutOptions,
+    timestamp: u32,
+    guard: &Arc<WorldGuard<L>>,
+    progress: &impl ProgressBuilder,
+) -> Result<CheckoutReport, AppError>
+where
+    R: RegionFile,
+    L: WorldLock,
+    C: sekai_core::BlobStore<Error = StorageError> + Clone + Send + Sync + 'static,
+    AppError: From<R::Error>,
+{
+    let mut progress = progress.start(jobs.len());
     let mut report = CheckoutReport {
         files_written: 0,
         files_deleted: 0,
         chunks_restored: 0,
     };
-    // Tracks the steps still queued: the last one out releases the world.
-    let pending = Arc::new(AtomicUsize::new(0));
-    let mut progress = progress.start(keys.len());
-    // Counted when a file starts, so each report carries the file it
-    // concludes.
-    let mut files_done = 0usize;
-    let mut blob_buf = Vec::new();
-    #[allow(clippy::explicit_counter_loop)]
-    for key in keys {
-        files_done += 1;
-        let rows = groups.get(&key);
-        let tombs = tombstones.get(&key);
-        let region = match discovered.get(&key) {
-            Some(region) => region.clone(),
-            None => match rows {
-                // No rows and no file: nothing to do.
-                None => {
-                    progress.step(files_done);
-                    continue;
-                }
-                Some(_) => resolve_target(&discovered, &world, &key, options.on_missing_file)?,
-            },
-        };
-        let Some(rows) = rows else {
-            // No present rows: either fully tombstoned at the commit or
-            // created afterwards. Keep-policies leave the live file alone;
-            // strict checkout deletes it.
-            let keep = if tombs.is_some() {
-                options.keep_tombstoned_chunks
-            } else {
-                options.keep_post_commit_files
-            };
-            let step = Step::start(
-                Arc::clone(&guard),
-                queued(
-                    Arc::clone(&pending),
-                    move |reported| -> Result<(), AppError> {
-                        let deleted = !keep && region.exists();
-                        if deleted {
-                            region.remove()?;
-                        }
-                        let _ = reported.send(deleted);
-                        Ok(())
-                    },
-                ),
-            );
-            report.files_deleted += usize::from(step.outcome().await?);
-            progress.step(files_done);
-            continue;
-        };
-        let mut writer = sekai_anvil::RegionBuilder::new(key.rx, key.rz, timestamp)?;
-        let mut restored: BTreeSet<(i32, i32)> = BTreeSet::new();
-        for (coord, hash) in rows {
-            if !fetch_or_skip(&cas, hash, options.on_missing_blob, &mut blob_buf).await? {
-                continue;
-            }
-            writer.stage_chunk(coord.x, coord.z, &blob_buf)?;
-            restored.insert((coord.x, coord.z));
-            report.chunks_restored += 1;
-        }
-        let keep_live = options.keep_post_commit_chunks || options.keep_tombstoned_chunks;
-        let to_merge = tombs.cloned();
-        let step = Step::start(
-            Arc::clone(&guard),
-            queued(
-                Arc::clone(&pending),
-                move |reported| -> Result<(), AppError> {
-                    if keep_live {
-                        merge_live_chunks(
-                            &region,
-                            key,
-                            &restored,
-                            to_merge.as_deref(),
-                            options,
-                            &mut writer,
-                        )?;
-                    }
-                    region.write(&writer.image()?)?;
-                    let _ = reported.send(());
-                    Ok(())
-                },
-            ),
-        );
-        step.outcome().await?;
-        report.files_written += 1;
-        progress.step(files_done);
+    let slots = std::thread::available_parallelism().map_or(4, NonZeroUsize::get);
+    let spawn = |set: &mut JoinSet<Result<Outcome, AppError>>, job: FileJob<R>| {
+        set.spawn(run_file(
+            job,
+            cas.clone(),
+            options,
+            timestamp,
+            Arc::downgrade(guard),
+        ));
+    };
+    let mut queued = jobs.into_iter();
+    let mut set = JoinSet::new();
+    for job in queued.by_ref().take(slots) {
+        spawn(&mut set, job);
     }
-    // Every step has been awaited, so nothing can start after this: release
-    // the world rather than waiting for the guard to drop with the future.
-    release_if_idle(&guard, &pending);
+    let mut files_done = 0usize;
+    while let Some(joined) = set.join_next().await {
+        match joined?? {
+            Outcome::Written { chunks } => {
+                report.files_written += 1;
+                report.chunks_restored += chunks;
+            }
+            Outcome::Deleted => report.files_deleted += 1,
+            // `guard` outlives this loop, so no joined task can find the run
+            // gone; only one left running after a return can.
+            Outcome::AlreadyAbsent | Outcome::Abandoned => {}
+        }
+        files_done += 1;
+        progress.step(files_done);
+        if let Some(job) = queued.next() {
+            spawn(&mut set, job);
+        }
+    }
     Ok(report)
 }
 
-/// Counts a step in as queued and closes over the exit that counts it out.
-///
-/// The counter lets a cancelled future - which never reaches its own
-/// release - still free the world once the last step is done. Counting
-/// inside the closure means a step torn down without running cannot leave
-/// the counter stuck.
-fn queued<R, F>(
-    pending: Arc<AtomicUsize>,
-    work: F,
-) -> impl FnOnce(tokio::sync::oneshot::Sender<R>) -> Result<(), AppError> + Send + 'static
+/// Carry out one file's job: fetch its blobs here, then write (or delete)
+/// it on the blocking pool.
+async fn run_file<R, L, C>(
+    job: FileJob<R>,
+    cas: C,
+    options: CheckoutOptions,
+    timestamp: u32,
+    lock: Weak<WorldGuard<L>>,
+) -> Result<Outcome, AppError>
 where
-    R: Send + 'static,
-    F: FnOnce(tokio::sync::oneshot::Sender<R>) -> Result<(), AppError> + Send + 'static,
+    R: RegionFile,
+    L: WorldLock,
+    C: sekai_core::BlobStore<Error = StorageError>,
+    AppError: From<R::Error>,
 {
-    pending.fetch_add(1, Ordering::SeqCst);
-    move |reported| {
-        let out = work(reported);
-        let _ = pending.fetch_sub(1, Ordering::SeqCst);
-        out
+    match job {
+        FileJob::Delete(region) => {
+            write_while_running(&lock, move || {
+                if !region.exists() {
+                    return Ok(Outcome::AlreadyAbsent);
+                }
+                region.remove()?;
+                Ok(Outcome::Deleted)
+            })
+            .await
+        }
+        FileJob::Rebuild {
+            key,
+            region,
+            rows,
+            tombs,
+        } => {
+            let mut builder = sekai_anvil::RegionBuilder::new(key.rx, key.rz, timestamp)?;
+            let mut restored: BTreeSet<(i32, i32)> = BTreeSet::new();
+            let mut blob_buf = Vec::new();
+            for (coord, hash) in &rows {
+                if fetch_or_skip(&cas, hash, options.on_missing_blob, &mut blob_buf).await? {
+                    builder.stage_chunk(coord.x, coord.z, &blob_buf)?;
+                    restored.insert((coord.x, coord.z));
+                }
+            }
+            let keep_live = options.keep_post_commit_chunks || options.keep_tombstoned_chunks;
+            write_while_running(&lock, move || {
+                if keep_live {
+                    merge_live_chunks(
+                        &region,
+                        key,
+                        &restored,
+                        tombs.as_deref(),
+                        options,
+                        &mut builder,
+                    )?;
+                }
+                region.write(&builder.image()?)?;
+                Ok(Outcome::Written {
+                    chunks: restored.len(),
+                })
+            })
+            .await
+        }
     }
 }
 
-/// Release the world when no step is queued any more.
-fn release_if_idle<L>(guard: &Arc<WorldGuard<L>>, pending: &AtomicUsize) {
-    if pending.load(Ordering::SeqCst) == 0 {
-        guard.release();
+/// Hand `work` to the blocking pool with a fresh share of the world lock,
+/// unless the run that spawned this task is already gone.
+async fn write_while_running<L: WorldLock>(
+    lock: &Weak<WorldGuard<L>>,
+    work: impl FnOnce() -> Result<Outcome, AppError> + Send + 'static,
+) -> Result<Outcome, AppError> {
+    match lock.upgrade() {
+        Some(guard) => on_blocking_pool(guard, work).await,
+        None => Ok(Outcome::Abandoned),
     }
 }
 
-/// One blocking file step and the result it reports.
-///
-/// The step owns a share of the world lock, so the lock outlives the future
-/// that started it. Completion travels over a oneshot instead of the join
-/// handle: a progress reporter parked on the async side would otherwise
-/// keep a blocking thread busy while the step is already done, and a
-/// cancelled future must still see the lock released.
-struct Step<R, T> {
-    finished: tokio::task::JoinHandle<Result<T, AppError>>,
-    reported: tokio::sync::oneshot::Receiver<R>,
+/// Run `work` on the blocking pool with its own share of the world lock:
+/// a cancelled future cannot stop it once started, so the world stays
+/// locked until it ends.
+async fn on_blocking_pool<L: WorldLock, T: Send + 'static>(
+    guard: Arc<WorldGuard<L>>,
+    work: impl FnOnce() -> Result<T, AppError> + Send + 'static,
+) -> Result<T, AppError> {
+    tokio::task::spawn_blocking(move || {
+        let _guard = guard;
+        work()
+    })
+    .await?
 }
 
-impl<R: Send + 'static, T: Send + 'static> Step<R, T> {
-    /// Run `work` on the blocking pool, holding a share of the world for its
-    /// duration.
-    ///
-    /// `work` sends its result through the oneshot, then returns. The share
-    /// keeps the lock alive if the future is dropped before this step ends.
-    fn start<L>(
-        guard: Arc<WorldGuard<L>>,
-        work: impl FnOnce(tokio::sync::oneshot::Sender<R>) -> Result<T, AppError> + Send + 'static,
-    ) -> Self
-    where
-        L: WorldLock + Send + 'static,
-    {
-        let (sender, reported) = tokio::sync::oneshot::channel();
-        let finished = tokio::task::spawn_blocking(move || {
-            let _guard = guard;
-            work(sender)
-        });
-        Self { finished, reported }
-    }
-
-    /// Wait for the step to end, then take its result.
-    async fn outcome(self) -> Result<R, AppError> {
-        self.finished.await??;
-        self.reported.await.map_err(|_| {
-            AppError::Storage(StorageError::backend(
-                "checkout worker",
-                std::io::Error::other("the file step stopped before reporting"),
-            ))
-        })
-    }
+/// What one file job did to its region file.
+enum Outcome {
+    /// Rebuilt from `chunks` restored chunks.
+    Written { chunks: usize },
+    /// Removed.
+    Deleted,
+    /// Due for deletion, but gone by the time its job ran.
+    AlreadyAbsent,
+    /// Not started: the run had already failed or been cancelled.
+    Abandoned,
 }
 
 /// Fetch one blob into `out`, honoring `policy` when CAS has no such blob.
@@ -399,7 +421,7 @@ async fn fetch_or_skip<C: sekai_core::BlobStore<Error = StorageError>>(
 }
 
 /// Merge live on-disk chunks that the commit does not restore into
-/// `writer`: tombstoned coordinates under `keep_tombstoned_chunks`,
+/// `builder`: tombstoned coordinates under `keep_tombstoned_chunks`,
 /// commit-unknown ones under `keep_post_commit_chunks`. Missing live
 /// files contribute nothing; corrupt ones fail loudly.
 fn merge_live_chunks<R: RegionFile>(
@@ -408,7 +430,7 @@ fn merge_live_chunks<R: RegionFile>(
     restored: &BTreeSet<(i32, i32)>,
     tombs: Option<&[ChunkCoord]>,
     options: CheckoutOptions,
-    writer: &mut sekai_anvil::RegionBuilder,
+    builder: &mut sekai_anvil::RegionBuilder,
 ) -> Result<(), AppError>
 where
     AppError: From<R::Error>,
@@ -429,7 +451,7 @@ where
         } else {
             options.keep_post_commit_chunks
         };
-        if keep && let Err(source) = writer.stage_chunk(chunk.x, chunk.z, chunk.payload) {
+        if keep && let Err(source) = builder.stage_chunk(chunk.x, chunk.z, chunk.payload) {
             failed = Some(source);
             return false;
         }
@@ -461,35 +483,19 @@ where
         }
         .into()),
         MissingFilePolicy::DerivedOnly => Ok(world.derive_region(*key)?),
-        MissingFilePolicy::SiblingFirst => sibling_or_derived(discovered, world, key),
+        // Folders may have moved since the commit (e.g. across a 26.1
+        // migration), so a same-dimension sibling's directory wins over
+        // the layout-derived one. Any sibling of that dimension and family
+        // serves - they share the directory. A tree that cannot name the
+        // sibling fails loudly: falling back to the derived handle would
+        // write the region somewhere else. Without a sibling, a namespace
+        // the layout cannot derive fails loudly as well.
+        MissingFilePolicy::SiblingFirst => match discovered
+            .iter()
+            .find(|(found, _)| found.dim == key.dim && found.kind == key.kind)
+        {
+            Some((_, sibling)) => Ok(world.sibling_region(sibling, *key)?),
+            None => Ok(world.derive_region(*key)?),
+        },
     }
-}
-
-/// Target region file for a commit-known region whose file is missing on
-/// disk.
-///
-/// Prefers a same-dimension sibling's directory (folders may have moved
-/// since the commit, e.g. across a 26.1 migration); only derives from the
-/// resolved layout when no sibling exists. Any sibling of that dimension
-/// and family serves - they share the directory - and the first one the
-/// map reports is taken. Non-derivable namespaces fail loudly instead of
-/// writing somewhere wrong.
-fn sibling_or_derived<T: WorldTree>(
-    discovered: &BTreeMap<RegionKey, T::Region>,
-    world: &T,
-    key: &RegionKey,
-) -> Result<T::Region, AppError>
-where
-    AppError: From<T::Error>,
-{
-    if let Some(sibling) = discovered
-        .iter()
-        .find(|(found, _)| found.dim == key.dim && found.kind == key.kind)
-        .map(|(_, region)| region)
-    {
-        // A tree that cannot name the sibling fails loudly: falling back
-        // to the derived handle would write the region somewhere else.
-        return Ok(world.sibling_region(sibling, *key)?);
-    }
-    Ok(world.derive_region(*key)?)
 }

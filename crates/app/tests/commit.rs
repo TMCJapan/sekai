@@ -672,17 +672,22 @@ async fn missing_blob_abort_is_default_and_skip_recovers() {
     }
 
     // Default policy aborts loudly, leaving the live file alone.
+    let error = instance
+        .world_mut(&mut world)
+        .checkout(
+            commits[0].id,
+            sekai_app::CheckoutOptions::default(),
+            sekai_app::Scope::World,
+            &(),
+        )
+        .await
+        .unwrap_err();
     assert!(
-        instance
-            .world_mut(&mut world)
-            .checkout(
-                commits[0].id,
-                sekai_app::CheckoutOptions::default(),
-                sekai_app::Scope::World,
-                &(),
-            )
-            .await
-            .is_err()
+        matches!(
+            error,
+            sekai_app::AppError::Storage(sekai_storage::StorageError::BlobMissing { .. })
+        ),
+        "unexpected error: {error}"
     );
     assert_eq!(read_coords(&region), vec![(0, 0)]);
 
@@ -720,7 +725,8 @@ async fn missing_file_error_policy_refuses_to_guess() {
     let commits = instance.list_commits().await.unwrap();
     std::fs::remove_file(&region).unwrap();
 
-    // Default policy recreates the file at the derived path.
+    // No sibling exists here, so the default sibling-first policy falls
+    // back to the derived path.
     let (checked_out, _) = instance
         .world_mut(&mut world)
         .checkout(
@@ -734,21 +740,27 @@ async fn missing_file_error_policy_refuses_to_guess() {
     assert_eq!(checked_out.files_written, 1);
     assert_eq!(read_coords(&region), vec![(0, 0)]);
 
-    // Error policy fails loudly instead.
+    // Error policy fails loudly instead, and writes nothing.
     std::fs::remove_file(&region).unwrap();
     let strict = CheckoutOptions {
         on_missing_file: MissingFilePolicy::Error,
         ..CheckoutOptions::default()
     };
+    let error = instance
+        .world_mut(&mut world)
+        .checkout(commits[0].id, strict, sekai_app::Scope::World, &())
+        .await
+        .unwrap_err();
     assert!(
-        instance
-            .world_mut(&mut world)
-            .checkout(commits[0].id, strict, sekai_app::Scope::World, &())
-            .await
-            .is_err()
+        matches!(
+            error,
+            sekai_app::AppError::World(sekai_app::WorldError::UnknownRegionPath { .. })
+        ),
+        "unexpected error: {error}"
     );
+    assert!(!region.exists());
 
-    // Derived-only policy recreates without consulting siblings.
+    // Derived-only policy recreates it at the derived path as well.
     let derived = CheckoutOptions {
         on_missing_file: MissingFilePolicy::DerivedOnly,
         ..CheckoutOptions::default()
@@ -760,6 +772,63 @@ async fn missing_file_error_policy_refuses_to_guess() {
         .unwrap();
     assert_eq!(checked_out.files_written, 1);
     assert_eq!(read_coords(&region), vec![(0, 0)]);
+}
+
+/// Refusing a missing file happens before any file is touched: diverged
+/// files that sort first, and would be rebuilt first, keep their live bytes.
+///
+/// More files come first than the pass runs at once, so a pass that wrote
+/// as it went would have finished some of them before reaching the refusal.
+#[tokio::test]
+async fn missing_file_refusal_leaves_the_world_untouched() {
+    use sekai_app::{CheckoutOptions, MissingFilePolicy};
+    const PRESENT: i32 = 40;
+    let (root, _guard) = tempdir("missing-file-untouched");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    let region = |rx: i32| world_path.join(format!("region/r.{rx}.0.mca"));
+    for rx in 0..=PRESENT {
+        write_region(region(rx), &[(rx * 32, 0, chunk_nbt("marker-1"))]);
+    }
+
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    instance
+        .world_mut(&mut world)
+        .commit(options(), sekai_app::Scope::World, &())
+        .await
+        .unwrap();
+    let commits = instance.list_commits().await.unwrap();
+    for rx in 0..PRESENT {
+        write_region(region(rx), &[(rx * 32, 0, chunk_nbt("marker-9"))]);
+    }
+    let missing = region(PRESENT);
+    std::fs::remove_file(&missing).unwrap();
+
+    let strict = CheckoutOptions {
+        on_missing_file: MissingFilePolicy::Error,
+        ..CheckoutOptions::default()
+    };
+    let error = instance
+        .world_mut(&mut world)
+        .checkout(commits[0].id, strict, sekai_app::Scope::World, &())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            error,
+            sekai_app::AppError::World(sekai_app::WorldError::UnknownRegionPath { .. })
+        ),
+        "unexpected error: {error}"
+    );
+    assert!(!missing.exists());
+    for rx in 0..PRESENT {
+        assert_eq!(
+            chunk_map(region(rx))[&(rx * 32, 0)],
+            chunk_nbt("marker-9"),
+            "r.{rx}.0 was touched"
+        );
+    }
 }
 
 #[tokio::test]
@@ -870,18 +939,22 @@ async fn errors_surface_loudly() {
             .is_err()
     );
     // Unknown commit (empty store is created on open, then lookup fails).
+    // The world exists, so the lookup is what fails, not the world lock.
+    std::fs::create_dir_all(root.join("world")).unwrap();
     let mut world = HostWorldTree::new(root.join("world")).unwrap();
+    let error = instance
+        .world_mut(&mut world)
+        .checkout(
+            CommitId([99; 32]),
+            sekai_app::CheckoutOptions::default(),
+            sekai_app::Scope::World,
+            &(),
+        )
+        .await
+        .unwrap_err();
     assert!(
-        instance
-            .world_mut(&mut world)
-            .checkout(
-                CommitId([99; 32]),
-                sekai_app::CheckoutOptions::default(),
-                sekai_app::Scope::World,
-                &(),
-            )
-            .await
-            .is_err()
+        matches!(error, sekai_app::AppError::Checkout(_)),
+        "unexpected error: {error:?}"
     );
 }
 
@@ -1019,7 +1092,9 @@ async fn checkout_progress_completes_for_tombstone_only_region() {
     assert_eq!(report.files_deleted, 0);
     assert!(!doomed.exists());
 
-    assert_eq!(recorded.events(), [(1, 2), (2, 2)]);
+    // The tombstone-only region has nothing to write or delete, so the
+    // run counts only the rebuilt file, and still reaches its total.
+    assert_eq!(recorded.events(), [(1, 1)]);
 }
 
 #[tokio::test]
@@ -1564,6 +1639,12 @@ async fn all_kinds_round_trip() {
             .await
             .unwrap();
         assert_eq!(checked_out.chunks_restored, 1);
+        assert_eq!(
+            chunk_map(&file)[&(0, 0)],
+            chunk_nbt("minecraft:full"),
+            "kind {}",
+            kind_dir(kind)
+        );
     }
 }
 
@@ -1697,6 +1778,10 @@ async fn real_world_corpus_round_trip() {
             (path, chunks)
         })
         .collect();
+    // Empty every file, so a checkout that wrote nothing cannot pass.
+    for (path, _) in &before {
+        write_region(path, &[]);
+    }
     let (checked_out, _) = instance
         .world_mut(&mut world)
         .checkout(
