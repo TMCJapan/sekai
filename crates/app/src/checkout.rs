@@ -207,9 +207,10 @@ where
     AppError: From<T::Error>,
 {
     if let Some(rows) = rows {
-        let region = match discovered.get(&key) {
-            Some(region) => region.clone(),
-            None => resolve_target(discovered, world, &key, options.on_missing_file)?,
+        let region = if let Some(region) = discovered.get(&key) {
+            region.clone()
+        } else {
+            resolve_target(discovered, world, &key, options.on_missing_file)?
         };
         Ok(Some(FileJob::Rebuild {
             key,
