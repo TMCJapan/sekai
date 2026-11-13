@@ -94,3 +94,44 @@ impl std::fmt::Display for UnguardedReason {
 }
 
 impl std::error::Error for UnguardedReason {}
+
+#[cfg(test)]
+mod tests {
+    use super::{UnguardedReason, WorldLock, WorldLockMode, WorldLockState};
+
+    #[derive(Debug)]
+    struct TestLock;
+
+    impl WorldLock for TestLock {
+        fn mode(&self) -> WorldLockMode {
+            WorldLockMode::Exclusive
+        }
+    }
+
+    #[test]
+    fn a_guarded_state_yields_its_guard() {
+        let state = WorldLockState::Guarded(TestLock);
+        assert!(state.is_guarded());
+        assert_eq!(state.unguarded_reason(), None);
+        assert!(state.guard().is_ok());
+    }
+
+    #[test]
+    fn an_unguarded_state_names_the_reason() {
+        let reason = UnguardedReason::ReadOnlyWorld;
+        let state: WorldLockState<TestLock> = WorldLockState::Unguarded(reason);
+        assert!(!state.is_guarded());
+        assert_eq!(state.unguarded_reason(), Some(reason));
+        assert_eq!(state.guard().unwrap_err(), reason);
+    }
+
+    #[test]
+    fn unguarded_reasons_render_as_an_explanation() {
+        for reason in [
+            UnguardedReason::NothingToProtect,
+            UnguardedReason::ReadOnlyWorld,
+        ] {
+            assert_ne!(reason.to_string(), "");
+        }
+    }
+}
