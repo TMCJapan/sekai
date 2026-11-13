@@ -1,6 +1,6 @@
 //! Named scopes: store-saved world areas selected by name.
 //!
-//! A scope names no commit: `prune` and `gc` never read it, and deleting
+//! A scope names no commit: history reads never touch it, and deleting
 //! one changes no history. It is resolved when a command runs, not when a
 //! commit is recorded, so replacing a scope changes what later runs select
 //! and never what earlier commits hold.

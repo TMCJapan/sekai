@@ -14,7 +14,6 @@ Dry runs by command:
 | Preview | Dry-run means |
 |---|---|
 | `status` | the whole command (commit has no `--dry-run` by design) |
-| `gc --dry-run`, `prune --dry-run` | plan only, nothing deleted |
 | `checkout` | none (checkout is destructive by definition) |
 
 The full contract — flag matrix, envelope, per-command payloads, and the

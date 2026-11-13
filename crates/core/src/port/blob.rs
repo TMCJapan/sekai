@@ -2,8 +2,7 @@
 //!
 //! Blobs must be durable before metadata references them. The store is
 //! append-only by nature: keys are content hashes and a stored blob never
-//! changes, so concurrent readers and writers need no lock - only `remove`
-//! (GC) takes blobs away, and GC keeps to its own exclusion.
+//! changes or disappears, so concurrent readers and writers need no lock.
 //!
 //! Backends that perform blocking work (filesystem or database calls) must
 //! run it on the runtime's blocking pool at the app layer, never inline on
@@ -53,12 +52,6 @@ pub trait BlobStore {
         hash: &ChunkHash,
         out: &mut Vec<u8>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
-
-    /// Remove a blob; return `false` when it is already absent.
-    fn remove(
-        &mut self,
-        hash: &ChunkHash,
-    ) -> impl Future<Output = Result<bool, Self::Error>> + Send;
 
     /// Visit every stored blob hash in an implementation-defined order.
     /// Return `false` to stop early.

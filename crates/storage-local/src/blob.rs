@@ -8,9 +8,7 @@
 //! Durability follows the architecture's crash order. A `put` appends to
 //! sled's log without fsyncing on its own; `sync` is the batched barrier
 //! (`sled::Db::flush`), which callers run before any metadata commit names
-//! the new blobs. `remove` is batched the same way: a crash may resurrect a
-//! removed blob, which is an orphan for the next GC, never a dangling
-//! reference.
+//! the new blobs.
 //!
 //! sled admits a single opener per keyspace: `open` takes an exclusive
 //! session lock, and opening the same path again fails while the first
@@ -179,14 +177,6 @@ impl BlobStore for SledBlob {
         .await
     }
 
-    async fn remove(&mut self, hash: &ChunkHash) -> Result<bool, Self::Error> {
-        let key = *hash.as_bytes();
-        blocking(self.db.clone(), move |db| {
-            db.remove(key).map_err(db_err).map(|prev| prev.is_some())
-        })
-        .await
-    }
-
     /// Batched durability barrier: fsync sled's log.
     ///
     /// `put` only appends to the log, so this is what makes the blobs
@@ -200,8 +190,8 @@ impl BlobStore for SledBlob {
         F: FnMut(&ChunkHash) -> bool + Send,
     {
         // The visitor is not `'static`, so it cannot cross into the blocking
-        // task: collect the hashes there (sled iterates in key order, the
-        // stable hash order GC expects) and visit them on this side.
+        // task: collect the hashes there (sled iterates in stable key order)
+        // and visit them on this side.
         let hashes = blocking(self.db.clone(), |db| {
             let mut hashes = Vec::new();
             for entry in db.iter() {

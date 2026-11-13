@@ -654,22 +654,12 @@ async fn missing_blob_abort_is_default_and_skip_recovers() {
         .unwrap();
     let commits = instance.list_commits().await.unwrap();
 
-    // Corrupt the CAS by removing every stored blob.
-    let mut blobs = Vec::new();
-    sekai_core::BlobStore::visit_blobs(instance.store().blob(), |hash| {
-        blobs.push(*hash);
-        true
-    })
-    .await
-    .unwrap();
-    assert_eq!(blobs.len(), 1, "one chunk was committed");
-    for hash in &blobs {
-        assert!(
-            sekai_core::BlobStore::remove(instance.store_mut().blob_mut(), hash)
-                .await
-                .unwrap()
-        );
-    }
+    // Corrupt the CAS by deleting the whole keyspace: an idempotent
+    // re-init recreates it empty while the metadata keeps naming the
+    // committed blob.
+    drop(instance);
+    std::fs::remove_dir_all(store_dir.join("blobs")).unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
 
     // Default policy aborts loudly, leaving the live file alone.
     let error = instance
@@ -959,35 +949,7 @@ async fn errors_surface_loudly() {
 }
 
 #[tokio::test]
-async fn gc_runs_and_returns_timings() {
-    let (root, _guard) = tempdir("gc");
-    let world_path = root.join("world");
-    let mut world = HostWorldTree::new(&world_path).unwrap();
-    let store = root.join("store").to_string_lossy().into_owned();
-    write_region(
-        world_path.join("region/r.0.0.mca"),
-        &[(0, 0, chunk_nbt("marker-1"))],
-    );
-
-    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
-    instance
-        .world_mut(&mut world)
-        .commit(options(), sekai_app::Scope::World, &())
-        .await
-        .unwrap();
-
-    let (plan, plan_timings) = instance.gc_plan().await.unwrap();
-    assert_eq!(plan.orphans, [] as [sekai_app::ChunkHash; 0]);
-    assert_eq!(plan_timings.apply, std::time::Duration::ZERO);
-
-    let (report, timings) = instance.gc(&()).await.unwrap();
-    assert_eq!(report.candidates, 0);
-    assert_eq!(report.removed, 0);
-    assert!(timings.total >= timings.plan + timings.apply);
-}
-
-#[tokio::test]
-async fn progress_events_cover_checkout_diff_and_gc() {
+async fn progress_events_cover_checkout_and_diff() {
     let (root, _guard) = tempdir("progress-events");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -1035,11 +997,6 @@ async fn progress_events_cover_checkout_diff_and_gc() {
         .unwrap();
     assert!(diffs.iter().all(|diff| diff.entries.is_empty()));
     assert_eq!(recorded.events(), [(1, 1)]);
-
-    let recorded = Recorded::default();
-    let (report, _) = instance.gc(&recorded).await.unwrap();
-    assert_eq!(report.candidates, 0);
-    assert_eq!(recorded.events(), []);
 }
 
 #[tokio::test]

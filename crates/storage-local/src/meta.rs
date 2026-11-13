@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use sekai_core::{
     ApplyOutcome, ChunkCoord, ChunkHash, ChunkHistoryEntry, Commit, CommitEntry, CommitId,
-    CommitRef, DEFAULT_REF_NAME, Dimension, FoldOutcome, MetaStore, NamedScope, NamedScopeError,
-    Rect, RefName, RegionKind, ScopeName, commit_hash,
+    CommitRef, DEFAULT_REF_NAME, Dimension, MetaStore, NamedScope, NamedScopeError, Rect, RefName,
+    RegionKind, ScopeName, commit_hash,
 };
 use sqlx::Row as _;
 use sqlx::sqlite::{
@@ -20,7 +20,7 @@ use sqlx::sqlite::{
 use sekai_storage::StorageError;
 
 /// Managed schema version (`PRAGMA user_version`).
-pub const SCHEMA_VERSION: i64 = 15;
+pub const SCHEMA_VERSION: i64 = 16;
 
 const SCHEMA: &str = include_str!("../schema/sqlite.sql");
 
@@ -415,33 +415,6 @@ SELECT dim, kind, cx, cz, blob, commit_id FROM (
 ) WHERE rn = 1 ORDER BY dim, kind, cx, cz"
 );
 
-/// Rows of a retired commit that the history of its successor already
-/// supersedes. `?1` is the retired commit, `?2` the successor, `?3` the
-/// retired commit's local sequence.
-///
-/// Soundness depends on the retired commit preceding every superseding
-/// row in local *record* order: a commit must be recorded before any of
-/// its successors' rows are. Prune always retires an older commit into a
-/// newer (larger-sequence) descendant, so the invariant holds for a
-/// single store; a store whose sequence order diverges from graph order
-/// could drop surviving rows here.
-const RETIRE_SUPERSEDED_SQL: &str = concat!(
-    ancestor_cte!("?2"),
-    "
-DELETE FROM chunk_history WHERE commit_id = ?1
- AND (dim, kind, cx, cz) IN (
-     SELECT dim, kind, cx, cz FROM chunk_history
-     WHERE seq > ?3 AND commit_id IN (SELECT id FROM ancestors)
- )"
-);
-
-/// Whether one commit descends from another: the ancestor set of the
-/// successor (`?1`) contains the retired commit (`?2`).
-const DESCENDS_SQL: &str = concat!(
-    ancestor_cte!("?1"),
-    "SELECT COUNT(*) FROM ancestors WHERE id = ?2"
-);
-
 /// Decode one `commits` row.
 fn decode_commit(
     row: &sqlx::sqlite::SqliteRow,
@@ -631,7 +604,7 @@ impl sekai_core::MetaStore for SqliteMeta {
         // keep the query portable across backends. A single fetch beats
         // paged window queries (which recompute the aggregation per page),
         // and every caller materializes the full effective set anyway
-        // (checkout groups, GC sets, plan universes).
+        // (checkout groups, plan universes).
         let rows = sqlx::query(VISIT_CHUNKS_SQL)
             .bind(commit_param(commit))
             .fetch_all(&self.pool)
@@ -692,108 +665,6 @@ impl sekai_core::MetaStore for SqliteMeta {
             }
         }
         Ok(())
-    }
-
-    async fn retire_commit(
-        &mut self,
-        from: CommitId,
-        into: CommitId,
-    ) -> Result<FoldOutcome, StorageError> {
-        // Preconditions are cheap to check and expensive to get wrong:
-        // folding a commit into an older or equal one rewrites history
-        // (a chunk first seen later becomes visible at the earlier
-        // commit), and a missing target silently no-ops. "Newer" follows
-        // the local sequence, not the content hash.
-        let from_seq: Option<i64> = sqlx::query_scalar("SELECT seq FROM commits WHERE id = ?")
-            .bind(commit_param(from))
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(db_err)?;
-        let from_seq = from_seq.ok_or(StorageError::UnknownCommit { id: from })?;
-        let into_seq: Option<i64> = sqlx::query_scalar("SELECT seq FROM commits WHERE id = ?")
-            .bind(commit_param(into))
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(db_err)?;
-        let into_seq = into_seq.ok_or(StorageError::UnknownCommit { id: into })?;
-        if into_seq <= from_seq {
-            return Err(StorageError::InvalidRetirement { from, into });
-        }
-        // The successor must descend from the retired commit: folding
-        // into an unrelated history would graft rows the successor never
-        // had.
-        let descends: i64 = sqlx::query_scalar(DESCENDS_SQL)
-            .bind(commit_param(into))
-            .bind(commit_param(from))
-            .fetch_one(&self.pool)
-            .await
-            .map_err(db_err)?;
-        if descends == 0 {
-            return Err(StorageError::UnrelatedRetirement { from, into });
-        }
-        let from_blob = commit_param(from);
-        let into_blob = commit_param(into);
-        let mut tx = self.pool.begin().await.map_err(db_err)?;
-        // Rows already superseded along the history the successor continues
-        // vanish; survivors move onto it. Positional convention: `?1` is the
-        // retired commit, `?2` the successor; `?3` is the retired commit's
-        // local sequence in RETIRE_SUPERSEDED_SQL and the successor's local
-        // sequence in the chunk_history UPDATE below.
-        let dropped = sqlx::query(RETIRE_SUPERSEDED_SQL)
-            .bind(&from_blob[..])
-            .bind(&into_blob[..])
-            .bind(from_seq)
-            .execute(&mut *tx)
-            .await
-            .map_err(db_err)?
-            .rows_affected();
-        let folded =
-            sqlx::query("UPDATE chunk_history SET commit_id = ?2, seq = ?3 WHERE commit_id = ?1")
-                .bind(&from_blob[..])
-                .bind(&into_blob[..])
-                .bind(into_seq)
-                .execute(&mut *tx)
-                .await
-                .map_err(db_err)?
-                .rows_affected();
-        // A ref naming the retired commit follows the fold: the
-        // successor continues the retired history, so the ref keeps
-        // naming it. The update runs before the commit row goes away -
-        // the foreign key would refuse the delete otherwise.
-        sqlx::query("UPDATE refs SET commit_id = ?2 WHERE commit_id = ?1")
-            .bind(&from_blob[..])
-            .bind(&into_blob[..])
-            .execute(&mut *tx)
-            .await
-            .map_err(db_err)?;
-        // The retired commit leaves the graph: its children continue the
-        // history of its own parents, so the graph stays connected and no
-        // edge points at a deleted commit.
-        sqlx::query(
-            "INSERT OR IGNORE INTO commit_parents (child_id, parent_id)
-             SELECT child.child_id, parent.parent_id
-             FROM commit_parents AS child, commit_parents AS parent
-             WHERE parent.child_id = ?1 AND child.parent_id = ?1",
-        )
-        .bind(&from_blob[..])
-        .execute(&mut *tx)
-        .await
-        .map_err(db_err)?;
-        sqlx::query("DELETE FROM commit_parents WHERE child_id = ?1 OR parent_id = ?1")
-            .bind(&from_blob[..])
-            .execute(&mut *tx)
-            .await
-            .map_err(db_err)?;
-        sqlx::query("DELETE FROM commits WHERE id = ?")
-            .bind(&from_blob[..])
-            .execute(&mut *tx)
-            .await
-            .map_err(db_err)?;
-        tx.commit().await.map_err(db_err)?;
-        Ok(FoldOutcome {
-            folded: usize::try_from(folded).unwrap_or(usize::MAX),
-            dropped: usize::try_from(dropped).unwrap_or(usize::MAX),
-        })
     }
 
     async fn apply_commit_incremental(
@@ -1305,16 +1176,6 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(commits, [first]);
-
-        // Existence is the commit row, not a cached hash: a retired
-        // commit can be recorded again and gets a fresh local position.
-        let second = meta.create_commit(2_000, &[first]).await.unwrap();
-        meta.retire_commit(first, second).await.unwrap();
-        assert!(meta.lookup_commit(first).await.unwrap().is_none());
-        let again = meta.create_commit(1_000, &[]).await.unwrap();
-        assert_eq!(again, first);
-        assert!(meta.lookup_commit(first).await.unwrap().is_some());
-        assert_eq!(meta.latest_commit().await.unwrap().unwrap().id, first);
     }
 
     #[tokio::test]
@@ -1342,31 +1203,6 @@ mod tests {
             .unwrap()
             .id;
         assert_ne!(next, root);
-    }
-
-    #[tokio::test]
-    async fn retiring_the_active_ref_target_moves_the_active_flag() {
-        let mut meta = memory_meta().await;
-        let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
-        let root = meta
-            .apply_commit_incremental(1_000, &[], &[])
-            .await
-            .unwrap()
-            .id;
-        let second = meta
-            .apply_commit_incremental(2_000, &[root], &[])
-            .await
-            .unwrap()
-            .id;
-        // Point the active ref back at the root: retiring it must move the
-        // active row, not only inactive refs.
-        meta.set_ref(&main, Some(root), 1_500).await.unwrap();
-
-        meta.retire_commit(root, second).await.unwrap();
-        let active = meta.active_ref().await.unwrap().unwrap();
-        assert_eq!(active.name, main);
-        assert_eq!(active.commit, Some(second));
-        assert!(active.active);
     }
 
     #[tokio::test]
@@ -1469,45 +1305,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_retired_commit_hands_its_ref_to_the_successor() {
-        let mut meta = memory_meta().await;
-        let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
-        let feature = RefName::parse("feature").unwrap();
-        let root = meta
-            .apply_commit_incremental(1_000, &[], &[])
-            .await
-            .unwrap()
-            .id;
-        let second = meta
-            .apply_commit_incremental(2_000, &[root], &[])
-            .await
-            .unwrap()
-            .id;
-        // A second ref names the root of the history.
-        meta.set_ref(&feature, Some(root), 1_500).await.unwrap();
-
-        // Retiring the root folds it into its successor, and the ref
-        // that named it follows: the successor holds the same state.
-        meta.retire_commit(root, second).await.unwrap();
-        assert_eq!(
-            meta.lookup_ref(&feature).await.unwrap().unwrap().commit,
-            Some(second)
-        );
-        assert_eq!(
-            meta.lookup_ref(&main).await.unwrap().unwrap().commit,
-            Some(second)
-        );
-
-        // The successor the refs followed is a valid active target:
-        // activating the ref names it, not the retired commit.
-        meta.activate_ref(&feature).await.unwrap();
-        assert_eq!(
-            meta.active_ref().await.unwrap().unwrap().commit,
-            Some(second)
-        );
-    }
-
-    #[tokio::test]
     async fn a_commit_cannot_name_a_missing_commit_as_parent() {
         let mut meta = memory_meta().await;
         let missing = CommitId([9; 32]);
@@ -1564,12 +1361,12 @@ mod tests {
     }
 
     /// The version gate rejects any store whose `user_version` is not
-    /// `SCHEMA_VERSION` (15) before any table is touched. The immediately
-    /// previous store version, 14, is refused with `UnsupportedSchema
-    /// { found: 14, supported: SCHEMA_VERSION }`.
+    /// `SCHEMA_VERSION` (16) before any table is touched. The immediately
+    /// previous store version, 15, is refused with `UnsupportedSchema
+    /// { found: 15, supported: SCHEMA_VERSION }`.
     #[tokio::test]
     async fn a_store_from_the_previous_schema_version_is_refused() {
-        let (dir, _guard) = tempdir("version-14");
+        let (dir, _guard) = tempdir("version-15");
         let path = dir.join("meta.sqlite");
         let mut seed = SqliteConnectOptions::new()
             .filename(&path)
@@ -1578,7 +1375,7 @@ mod tests {
             .await
             .unwrap();
         sqlx::query(SCHEMA).execute(&mut seed).await.unwrap();
-        sqlx::query("PRAGMA user_version=14")
+        sqlx::query("PRAGMA user_version=15")
             .execute(&mut seed)
             .await
             .unwrap();
@@ -1586,7 +1383,7 @@ mod tests {
         assert!(matches!(
             SqliteMeta::open(&path).await,
             Err(StorageError::UnsupportedSchema {
-                found: 14,
+                found: 15,
                 supported: SCHEMA_VERSION,
             })
         ));

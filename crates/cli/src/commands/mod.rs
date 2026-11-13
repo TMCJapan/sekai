@@ -4,11 +4,9 @@ mod checkout;
 mod commit;
 mod diff;
 mod diff_render;
-mod gc;
 mod init;
 mod log;
 mod progress;
-mod prune;
 mod refs;
 mod scopes;
 mod status;
@@ -43,8 +41,7 @@ async fn resolve_selection<S: SekaiStore>(
     }
 }
 
-/// Output controls shared by report commands (commit, status, checkout,
-/// prune, gc).
+/// Output controls shared by report commands (commit, status, checkout).
 #[derive(Debug, Clone, Copy)]
 pub struct ReportOut {
     pub timing: bool,
@@ -134,35 +131,5 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
         Command::Ref { action } => refs::run(&cli.store, action, style).await,
         Command::Scope { action } => scopes::run(&cli.store, action, style).await,
         Command::Diff(args) => diff::run(&cli.store, args, style).await,
-        Command::Prune {
-            keep_last,
-            before,
-            dry_run,
-            output,
-            progress,
-        } => {
-            prune::run(
-                &cli.store,
-                *keep_last,
-                before.as_ref(),
-                *dry_run,
-                *progress,
-                ReportOut::of(*output, style),
-            )
-            .await
-        }
-        Command::Gc {
-            dry_run,
-            output,
-            progress,
-        } => {
-            gc::run(
-                &cli.store,
-                *dry_run,
-                *progress,
-                ReportOut::of(*output, style),
-            )
-            .await
-        }
     }
 }

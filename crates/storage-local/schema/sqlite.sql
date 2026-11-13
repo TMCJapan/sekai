@@ -1,3 +1,9 @@
+-- Schema version 16: the `idx_parents_parent` index on `commit_parents` was
+-- removed. It served the commit-retirement sweep, which no longer exists;
+-- every remaining parent-edge query resolves through the primary key. There
+-- is no migration path from version 15: old stores are rejected via
+-- `UnsupportedSchema`.
+--
 -- Schema version 15: the `diff` column of `chunk_history` (cached volatile
 -- diff hashes) was removed. Change detection compares per-chunk history
 -- directly, so no derived column remains. There is no migration path from
@@ -30,18 +36,12 @@ CREATE TABLE commits(
 -- history has no row, an ordinary commit one, a merge several. The
 -- graph - not the local record order - decides what a commit inherits.
 -- `parent_id` has no cascade on purpose: deleting a commit that
--- children still point at fails loudly, so a retirement rewires the
--- children before it drops the row.
+-- children still point at fails loudly, keeping the graph consistent.
 CREATE TABLE commit_parents(
     child_id BLOB NOT NULL REFERENCES commits(id) ON DELETE CASCADE,
     parent_id BLOB NOT NULL REFERENCES commits(id),
     PRIMARY KEY(child_id, parent_id)
 );
-
--- Serves the retirement sweep that drops the edges naming a retired
--- commit; child lookups use the primary key.
-CREATE INDEX idx_parents_parent
-    ON commit_parents(parent_id);
 
 CREATE TABLE chunk_history(
     commit_id BLOB NOT NULL REFERENCES commits(id),
@@ -62,8 +62,7 @@ CREATE INDEX idx_history_coord
 -- commit yet. At most one ref is active, enforced by the partial index
 -- below; the application keeps exactly one, because new commits hang
 -- from it (the store's HEAD). `commit_id` has no cascade: the default
--- `NO ACTION` blocks deleting a commit a ref still names, so
--- `retire_commit` re-points refs onto the successor before the row goes.
+-- `NO ACTION` blocks deleting a commit a ref still names.
 -- Names are byte-wise and case-sensitive: `main` and `Main` are distinct,
 -- and `ORDER BY name` follows that byte order. Only the reserved `HEAD`
 -- spelling in the validator ignores case.

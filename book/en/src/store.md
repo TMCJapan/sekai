@@ -8,7 +8,6 @@ from every command:
 sekai init
 sekai commit ./world
 sekai log
-sekai gc
 ```
 
 Pass `--store` only when you want a store somewhere else:
@@ -28,3 +27,11 @@ on a missing store and asks you to run `sekai init` first.
 
 Like `git init`, re-running `init` on an existing store is safe: it
 reports a re-initialization and leaves the recorded history untouched.
+
+## Secondary backups
+
+For a full secondary backup of everything — commits, metadata, and
+blobs — copy or archive the entire store directory to an external
+location. Store writes are crash-ordered (CAS blobs flushed before the
+metadata commit that references them), so a copied store is
+self-consistent.

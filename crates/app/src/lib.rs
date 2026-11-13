@@ -6,7 +6,7 @@
 //! binary.
 //!
 //! Store-scoped operations hang off [`SekaiInstance`] (open once, then
-//! `gc`, `prune`, `list_commits`, ...); operations that touch a world
+//! `list_commits`, ...); operations that touch a world
 //! hang off the handles it hands out: [`WorldHandle`] for read-only work
 //! (`status`, `diff_world_*`) and [`WorldHandleMut`] for `commit` and
 //! `checkout`.
@@ -19,10 +19,8 @@ mod checkout;
 mod commit;
 mod diff;
 mod error;
-mod gc;
 mod instance;
 mod progress;
-mod prune;
 mod refs;
 mod regions;
 mod scopes;
@@ -34,15 +32,12 @@ pub use commit::{
 };
 pub use diff::{ChunkDiff, DiffTimings, world_chunk_coords};
 pub use error::AppError;
-pub use gc::GcTimings;
 pub use instance::{SekaiInstance, WorldHandle, WorldHandleMut};
 pub use progress::{ProgressBuilder, Reporter};
-pub use prune::PruneTimings;
 pub use sekai_core::{
     Area, CheckoutReport, ChunkCoord, ChunkHash, Commit, CommitId, CommitRef, CommitReport,
-    CommitStats, DEFAULT_REF_NAME, Dimension, GcPlan, GcReport, NamedScope, NamedScopeError,
-    PrunePlan, PruneReport, Rect, RefName, RefNameError, RegionFingerprint, RegionKey, RegionKind,
-    Scope, ScopeName, ScopeNameError,
+    CommitStats, DEFAULT_REF_NAME, Dimension, NamedScope, NamedScopeError, Rect, RefName,
+    RefNameError, RegionFingerprint, RegionKey, RegionKind, Scope, ScopeName, ScopeNameError,
 };
 pub use sekai_storage::{SekaiStore, SekaiStoreOpener};
 #[cfg(feature = "backend-local")]

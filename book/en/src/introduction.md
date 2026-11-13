@@ -18,6 +18,6 @@ Sekai ships two things:
   (`cargo doc`); this book covers operating the CLI only.
 
 Design background lives in [ARCHITECTURE.md](https://github.com/tmcjapan/sekai/blob/main/ARCHITECTURE.md):
-layering, the two-layer hashing model, and the commit-graph/GC data
+layering, the two-layer hashing model, and the commit-graph data
 model. The machine-readable output contract lives in
 [docs/json.md](https://github.com/tmcjapan/sekai/blob/main/docs/json.md).

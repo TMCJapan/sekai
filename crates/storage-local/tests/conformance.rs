@@ -94,20 +94,6 @@ async fn sqlite_tombstones_shape_and_checkout_drop() {
 }
 
 #[tokio::test]
-async fn sqlite_prune_flow() {
-    let (dir, _guard) = tempdir("prune");
-    let mut store = init(&dir).await;
-    common::prune_flow(store.meta_mut()).await;
-}
-
-#[tokio::test]
-async fn sqlite_prune_chain_flow() {
-    let (dir, _guard) = tempdir("prune-chain");
-    let mut store = init(&dir).await;
-    common::prune_chain_flow(store.meta_mut()).await;
-}
-
-#[tokio::test]
 async fn sqlite_history_graph() {
     let (dir, _guard) = tempdir("graph");
     let mut store = init(&dir).await;
@@ -122,10 +108,10 @@ async fn sqlite_cas_roundtrip() {
 }
 
 #[tokio::test]
-async fn sqlite_torn_orphan_gc() {
-    let (dir, _guard) = tempdir("gc");
+async fn sqlite_torn_commit_leaves_orphans() {
+    let (dir, _guard) = tempdir("torn-commit");
     let mut store = init(&dir).await;
-    common::torn_orphan_gc(&mut store).await;
+    common::torn_commit_leaves_orphans(&mut store).await;
 }
 
 #[tokio::test]

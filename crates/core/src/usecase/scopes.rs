@@ -1,8 +1,8 @@
 //! Named scopes: store-saved world areas selected by name.
 //!
-//! A scope names no commit, so history operations (`prune`, `gc`) never
-//! read it. Reads here are pure lookups; the mutations live in the
-//! storage port and the app layer.
+//! A scope names no commit, so history reads never touch it. Reads here
+//! are pure lookups; the mutations live in the storage port and the app
+//! layer.
 
 use alloc::vec::Vec;
 

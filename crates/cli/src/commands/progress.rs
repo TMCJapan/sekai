@@ -8,8 +8,6 @@ use sekai_app::{ProgressBuilder, Reporter};
 pub enum Unit {
     Files,
     Chunks,
-    Blobs,
-    Commits,
 }
 
 impl Unit {
@@ -17,8 +15,6 @@ impl Unit {
         match self {
             Self::Files => "files",
             Self::Chunks => "chunks",
-            Self::Blobs => "blobs",
-            Self::Commits => "commits",
         }
     }
 }
