@@ -79,6 +79,9 @@ pub enum Command {
         /// Human or JSON rendering plus optional phase timings.
         #[command(flatten)]
         output: TimingArgs,
+        /// Rebuild worker count. `0` means one per CPU.
+        #[arg(long, default_value = "0")]
+        jobs: usize,
         /// Show a progress bar on stderr. Refused with `--json`, and
         /// silent without a stderr TTY.
         #[arg(long, conflicts_with = "json")]

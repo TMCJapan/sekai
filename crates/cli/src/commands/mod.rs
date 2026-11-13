@@ -102,6 +102,7 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
             world,
             commit,
             output,
+            jobs,
             progress,
             selection,
             keep_post_commit_files,
@@ -122,6 +123,7 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
                     keep_tombstoned_chunks: *keep_tombstoned_chunks,
                     on_missing_blob: *on_missing_blob,
                     on_missing_file: *on_missing_file,
+                    jobs: *jobs,
                 },
                 ReportOut::of(*output, style),
             )

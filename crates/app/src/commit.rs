@@ -18,7 +18,6 @@
 //! most orphan blobs, never dangling references.
 
 use std::collections::{BTreeSet, HashSet};
-use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -36,6 +35,7 @@ use crate::instance::{WorldGuard, WorldHandle, WorldHandleMut};
 use crate::progress::{ProgressBuilder, Reporter};
 use crate::regions::discover_regions;
 use crate::time::now_ms;
+use crate::workers::worker_slots;
 
 /// Commit behavior knobs.
 #[derive(Debug, Clone, Default)]
@@ -471,10 +471,7 @@ where
         timings: Vec::with_capacity(changed.len()),
         ..Default::default()
     };
-    let slots = match options.concurrency {
-        0 => std::thread::available_parallelism().map_or(4, NonZeroUsize::get),
-        n => n,
-    };
+    let slots = worker_slots(options.concurrency);
     let spawn = |set: &mut JoinSet<Result<FileOutcome, AppError>>,
                  (key, region): (RegionKey, R)| {
         let mut cas = cas.clone();

@@ -13,7 +13,6 @@
 //! [`CheckoutOptions`] relax each of those strict behaviors explicitly.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::num::NonZeroUsize;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
@@ -26,6 +25,7 @@ use crate::error::AppError;
 use crate::instance::{WorldGuard, WorldHandleMut};
 use crate::progress::{ProgressBuilder, Reporter};
 use crate::regions::discover_regions;
+use crate::workers::worker_slots;
 
 /// Per-phase timings for checkout execution.
 #[derive(Debug, Clone, Default)]
@@ -64,9 +64,11 @@ pub enum MissingFilePolicy {
     Error,
 }
 
-/// Checkout restore policy. `Default` is strict: commit-unknown files
-/// are deleted, tombstoned chunks vanish, missing blobs abort, and
-/// missing files resolve sibling-first.
+/// Checkout restore policy and worker count.
+///
+/// `Default` is strict: commit-unknown files are deleted, tombstoned
+/// chunks vanish, missing blobs abort, and missing files resolve
+/// sibling-first. It rebuilds up to one file per CPU at once.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CheckoutOptions {
     /// Keep region files unknown to the commit instead of deleting them.
@@ -82,6 +84,9 @@ pub struct CheckoutOptions {
     pub on_missing_blob: MissingBlobPolicy,
     /// Where to rebuild a commit-known region whose file is missing.
     pub on_missing_file: MissingFilePolicy,
+    /// How many files rebuild at once. `0` means one per CPU, `1` stays
+    /// sequential.
+    pub concurrency: usize,
 }
 
 impl<W: WorldTree, S: SekaiStore> WorldHandleMut<'_, W, S>
@@ -235,9 +240,10 @@ where
     }
 }
 
-/// Run every job as its own task, at most one per CPU since each holds a
-/// whole region image. A finished file frees its slot for the next, and
-/// `progress` fires as each one is joined.
+/// Run every job as its own task, at most `options.concurrency` at once
+/// (one per CPU by default) since each holds a whole region image. A
+/// finished file frees its slot for the next, and `progress` fires as each
+/// one is joined.
 ///
 /// Tasks hold the world lock only weakly while they fetch: a share is taken
 /// just as a file's write or delete goes to the blocking pool. So when the
@@ -264,7 +270,7 @@ where
         files_deleted: 0,
         chunks_restored: 0,
     };
-    let slots = std::thread::available_parallelism().map_or(4, NonZeroUsize::get);
+    let slots = worker_slots(options.concurrency);
     let spawn = |set: &mut JoinSet<Result<Outcome, AppError>>, job: FileJob<R>| {
         set.spawn(run_file(
             job,
