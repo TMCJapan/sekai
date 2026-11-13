@@ -31,24 +31,22 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
 
     let (diffs, timings) = match args.target() {
         DiffTarget::World { world, commit } => {
+            // Resolve the commit before scanning the world: an empty store
+            // or an unborn active ref fails the diff no matter what the
+            // world holds, and the failure must not wait on a full world
+            // read.
+            let commit_id = resolve_world_commit(&instance, commit)
+                .await
+                .with_context(|| "failed to compute chunk diffs between world state and commit")?;
             let world = HostWorldTree::new(world)
                 .with_context(|| format!("failed to inspect world {}", world.display()))?;
             if broad {
                 coords.append(&mut sekai_app::world_chunk_coords(&world)?);
             }
             let coords = scoped_coords(coords, &scope);
-            let commit_id = match commit {
-                Some(raw) => Some(
-                    instance
-                        .resolve_commit_ref(raw.as_str())
-                        .await
-                        .with_context(|| format!("commit {raw} failed to resolve"))?,
-                ),
-                None => None,
-            };
             instance
                 .world(&world)
-                .diff_world_chunks(commit_id, &coords, &bar)
+                .diff_world_chunks(Some(commit_id), &coords, &bar)
                 .await
                 .with_context(|| "failed to compute chunk diffs between world state and commit")?
         }
@@ -100,6 +98,28 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
         print_diff_timing_table(&timings, diffs.len(), style);
     }
     Ok(())
+}
+
+/// Resolve the commit a world diff compares against.
+///
+/// Fails when an explicit reference does not resolve, or when the active
+/// ref is unborn: either way the diff is impossible, so the error must
+/// surface before the world is scanned.
+async fn resolve_world_commit(
+    instance: &sekai_app::SekaiInstance<impl SekaiStore>,
+    commit: Option<&CommitRef>,
+) -> anyhow::Result<CommitId> {
+    match commit {
+        Some(raw) => instance
+            .resolve_commit_ref(raw.as_str())
+            .await
+            .with_context(|| format!("commit {raw} failed to resolve")),
+        None => instance
+            .current_commit_id()
+            .await
+            .with_context(|| "failed to resolve the active ref")?
+            .ok_or(AppError::NoCommits.into()),
+    }
 }
 
 async fn resolve_commit_pair(
