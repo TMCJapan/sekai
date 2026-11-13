@@ -195,17 +195,12 @@ impl<S: SekaiStore> SekaiInstance<S> {
     ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
         let total_started = Instant::now();
         let mut timings = DiffTimings::default();
+        let coord_len = coords.len();
         let out = diff_coords(
             coords,
-            CommitDiff {
-                store: &self.store,
-                id: old_commit,
-            },
-            CommitDiff {
-                store: &self.store,
-                id: new_commit,
-            },
-            progress.start(coords.len()),
+            CommitDiff::new(&self.store, old_commit, coord_len),
+            CommitDiff::new(&self.store, new_commit, coord_len),
+            progress.start(coord_len),
             &mut timings,
         )
         .await?;
@@ -271,6 +266,12 @@ async fn commit_chunk_hash<S: SekaiStore>(
     Ok(Some(hash))
 }
 
+/// Above this many coordinates, the commit side is answered from one
+/// effective-set query instead of one lookup per coordinate: the per-coord
+/// query carries a window function per probe, and a whole-world diff probes
+/// millions of coordinates.
+const COMMIT_BULK_THRESHOLD: usize = 1024;
+
 impl<W: WorldTree, S: SekaiStore> WorldHandle<'_, W, S>
 where
     AppError: From<W::Error>,
@@ -320,17 +321,15 @@ where
         };
 
         let mut timings = DiffTimings::default();
+        let coord_len = coords.len();
         let out = diff_coords(
             coords,
-            CommitDiff {
-                store: &self.instance.store,
-                id: commit_id,
-            },
+            CommitDiff::new(&self.instance.store, commit_id, coord_len),
             WorldDiff {
                 regions: discover_regions(self.world)?,
                 cache: std::sync::Mutex::new(RegionImageCache::default()),
             },
-            progress.start(coords.len()),
+            progress.start(coord_len),
             &mut timings,
         )
         .await?;
@@ -405,10 +404,50 @@ trait DiffSource {
 struct CommitDiff<'a, S> {
     store: &'a S,
     id: CommitId,
+    /// Materialize the commit's effective chunk set on the first probe
+    /// and answer the rest from memory; see [`COMMIT_BULK_THRESHOLD`].
+    bulk: bool,
+    digests: std::cell::RefCell<Option<std::collections::HashMap<ChunkCoord, Option<ChunkHash>>>>,
+}
+
+impl<S: SekaiStore> CommitDiff<'_, S> {
+    const fn new(store: &S, id: CommitId, coords: usize) -> CommitDiff<'_, S> {
+        CommitDiff {
+            store,
+            id,
+            bulk: coords >= COMMIT_BULK_THRESHOLD,
+            digests: std::cell::RefCell::new(None),
+        }
+    }
 }
 
 impl<S: SekaiStore> DiffSource for CommitDiff<'_, S> {
     async fn payload(&self, coord: &ChunkCoord) -> Result<Side, AppError> {
+        if self.bulk {
+            if self.digests.borrow().is_none() {
+                let mut digests = std::collections::HashMap::new();
+                self.store
+                    .meta()
+                    .visit_commit_chunks(self.id, |entry| {
+                        digests.insert(entry.coord, entry.blob);
+                        true
+                    })
+                    .await?;
+                *self.digests.borrow_mut() = Some(digests);
+            }
+            let digest = self
+                .digests
+                .borrow()
+                .as_ref()
+                .and_then(|digests| digests.get(coord))
+                .copied()
+                .flatten();
+            return Ok(Side {
+                digest: Ok(digest),
+                // The digest is recorded, not recomputed: nothing to prepare.
+                prepare: Duration::ZERO,
+            });
+        }
         Ok(Side {
             digest: commit_chunk_hash(self.store, self.id, coord).await,
             // The digest is recorded, not recomputed: nothing to prepare.
