@@ -23,7 +23,7 @@ use tokio::task::JoinSet;
 
 use crate::error::AppError;
 use crate::instance::{WorldGuard, WorldHandleMut};
-use crate::progress::{ProgressBuilder, Reporter};
+use crate::progress::Progress;
 use crate::regions::discover_regions;
 use crate::workers::worker_slots;
 
@@ -99,7 +99,7 @@ where
     /// Only `scope` is rebuilt: region files outside the scope are never
     /// written, deleted, or otherwise touched. `progress` counts the files
     /// to write or delete and fires as each one finishes, always on the
-    /// async side: a reporter that works straight on the future's own state
+    /// async side: a progress that works straight on the future's own state
     /// must be safe to run there.
     ///
     /// What each file needs is decided before any is touched, so refusing a
@@ -115,7 +115,7 @@ where
         commit: CommitId,
         options: CheckoutOptions,
         scope: Scope,
-        progress: &impl ProgressBuilder,
+        progress: &impl Progress,
     ) -> Result<(CheckoutReport, CheckoutTimings), AppError> {
         let guard = WorldGuard::acquire(self.world, WorldLockMode::Exclusive)?;
         let store = &self.instance.store;
@@ -256,7 +256,7 @@ async fn run_files<R, L, C>(
     options: CheckoutOptions,
     timestamp: u32,
     guard: &Arc<WorldGuard<L>>,
-    progress: &impl ProgressBuilder,
+    progress: &impl Progress,
 ) -> Result<CheckoutReport, AppError>
 where
     R: RegionFile,
@@ -264,7 +264,7 @@ where
     C: sekai_core::BlobStore<Error = StorageError> + Clone + Send + Sync + 'static,
     AppError: From<R::Error>,
 {
-    let mut progress = progress.start(jobs.len());
+    progress.start(jobs.len());
     let mut report = CheckoutReport {
         files_written: 0,
         files_deleted: 0,

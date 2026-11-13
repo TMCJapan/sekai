@@ -12,7 +12,7 @@ use sekai_world::{Region, RegionFile, WorldLockMode, WorldTree};
 
 use crate::error::AppError;
 use crate::instance::{SekaiInstance, WorldGuard, WorldHandle, WorldHandleMut};
-use crate::progress::{ProgressBuilder, Reporter};
+use crate::progress::Progress;
 use crate::regions::discover_regions;
 
 /// Per-phase timings for chunk AST diffs. Informational only; never
@@ -163,7 +163,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
         old_commit: CommitId,
         new_commit: CommitId,
         coords: &[ChunkCoord],
-        progress: &impl ProgressBuilder,
+        progress: &impl Progress,
     ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
         let total_started = Instant::now();
         let mut timings = DiffTimings::default();
@@ -177,7 +177,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
                 store: &self.store,
                 id: new_commit,
             },
-            progress.start(coords.len()),
+            progress,
             &mut timings,
         )
         .await?;
@@ -275,7 +275,7 @@ where
         &self,
         commit: Option<CommitId>,
         coords: &[ChunkCoord],
-        progress: &impl ProgressBuilder,
+        progress: &impl Progress,
     ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
         // Held across resolution and the reads below: the world snapshot
         // must outlive the operation.
@@ -300,7 +300,7 @@ where
             WorldDiff {
                 regions: discover_regions(self.world)?,
             },
-            progress.start(coords.len()),
+            progress,
             &mut timings,
         )
         .await?;
@@ -329,7 +329,7 @@ where
         &self,
         commit: Option<CommitId>,
         coords: &[ChunkCoord],
-        progress: &impl ProgressBuilder,
+        progress: &impl Progress,
     ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
         self.view()
             .diff_world_chunks(commit, coords, progress)
@@ -415,9 +415,10 @@ async fn diff_coords(
     coords: &[ChunkCoord],
     old: impl DiffSource,
     new: impl DiffSource,
-    mut progress: impl Reporter,
+    progress: &impl Progress,
     timings: &mut DiffTimings,
 ) -> Result<Vec<ChunkDiff>, AppError> {
+    progress.start(coords.len());
     let mut out = Vec::with_capacity(coords.len());
     for coord in coords {
         let started = Instant::now();

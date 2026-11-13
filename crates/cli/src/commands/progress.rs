@@ -1,7 +1,7 @@
 //! Opt-in stderr progress bars (`--progress`), shared by report commands.
 
 use indicatif::{ProgressBar, ProgressStyle};
-use sekai_app::{ProgressBuilder, Reporter};
+use sekai_app::Progress;
 
 /// What a bar counts, shown after its counters.
 #[derive(Debug, Clone, Copy)]
@@ -54,17 +54,12 @@ impl BarProgress {
     }
 }
 
-impl ProgressBuilder for BarProgress {
-    fn start(&self, total: usize) -> impl Reporter {
+impl Progress for BarProgress {
+    fn start(&self, total: usize) {
         self.0.set_length(total as u64);
-        BarReporter(&self.0)
     }
-}
 
-struct BarReporter<'a>(&'a ProgressBar);
-
-impl Reporter for BarReporter<'_> {
-    fn step(&mut self) {
+    fn step(&self) {
         self.0.inc(1);
     }
 }

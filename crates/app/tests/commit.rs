@@ -8,7 +8,7 @@ mod fixtures;
 
 use fixtures::chunk_nbt;
 
-use sekai_app::{CommitId, CommitOptions, ProgressBuilder, RegionKind, Reporter, Scope};
+use sekai_app::{CommitId, CommitOptions, Progress, RegionKind, Scope};
 use sekai_app::{HostWorldTree, WorldTree};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -861,34 +861,33 @@ async fn commit_records_no_diff_metadata() {
 
 /// Records every event of the runs it reports as `(done, total)`.
 #[derive(Default)]
-struct Recorded(Mutex<Vec<(usize, usize)>>);
+struct Recorded(Mutex<Recording>);
+
+#[derive(Default)]
+struct Recording {
+    done: usize,
+    total: usize,
+    events: Vec<(usize, usize)>,
+}
 
 impl Recorded {
     fn events(&self) -> Vec<(usize, usize)> {
-        self.0.lock().unwrap().clone()
+        self.0.lock().unwrap().events.clone()
     }
 }
 
-struct Recorder<'a> {
-    events: &'a Mutex<Vec<(usize, usize)>>,
-    done: usize,
-    total: usize,
-}
-
-impl ProgressBuilder for Recorded {
-    fn start(&self, total: usize) -> impl Reporter {
-        Recorder {
-            events: &self.0,
-            done: 0,
-            total,
-        }
+impl Progress for Recorded {
+    fn start(&self, total: usize) {
+        let mut recording = self.0.lock().unwrap();
+        recording.done = 0;
+        recording.total = total;
     }
-}
 
-impl Reporter for Recorder<'_> {
-    fn step(&mut self) {
-        self.done += 1;
-        self.events.lock().unwrap().push((self.done, self.total));
+    fn step(&self) {
+        let mut recording = self.0.lock().unwrap();
+        recording.done += 1;
+        let event = (recording.done, recording.total);
+        recording.events.push(event);
     }
 }
 

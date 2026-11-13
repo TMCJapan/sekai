@@ -32,7 +32,7 @@ use tokio::task::JoinSet;
 
 use crate::error::AppError;
 use crate::instance::{WorldGuard, WorldHandle, WorldHandleMut};
-use crate::progress::{ProgressBuilder, Reporter};
+use crate::progress::Progress;
 use crate::regions::discover_regions;
 use crate::time::now_ms;
 use crate::workers::worker_slots;
@@ -169,7 +169,7 @@ where
         &mut self,
         options: CommitOptions,
         scope: Scope,
-        progress: &impl ProgressBuilder,
+        progress: &impl Progress,
     ) -> Result<(CommitReport, CommitTimings), AppError> {
         let total = Instant::now();
         // The world stays stable for the whole read pass; the store needs no
@@ -232,14 +232,14 @@ struct Prepared {
 /// changed files - the whole pipeline `commit` and `status` share.
 ///
 /// Under `dry_run` blobs are probed instead of stored, so the staged rows
-/// are the same numbers a real commit would commit. The reporter is built
-/// from `progress` once the number of files to ingest is known.
+/// are the same numbers a real commit would commit. `progress` counts the
+/// files to ingest.
 async fn prepare<W: WorldTree, S: SekaiStore>(
     store: &S,
     world: &W,
     options: &CommitOptions,
     scope: &Scope,
-    progress: &impl ProgressBuilder,
+    progress: &impl Progress,
     dry_run: bool,
     guard: &Arc<WorldGuard<W::Lock>>,
 ) -> Result<Prepared, AppError>
@@ -270,13 +270,12 @@ where
         .filter_map(|key| regions.remove_entry(key))
         .collect();
 
-    let reporter = progress.start(changed.len());
     let (ingested, walk) = ingest_changed::<W::Region, S, W::Lock>(
         changed,
         store.blob().clone(),
         options,
         scope.clone(),
-        reporter,
+        progress,
         dry_run,
         guard,
     )
@@ -308,7 +307,7 @@ where
         &self,
         options: StatusOptions,
         scope: Scope,
-        progress: &impl ProgressBuilder,
+        progress: &impl Progress,
     ) -> Result<(StatusReport, StatusTimings), AppError> {
         let guard = WorldGuard::acquire(self.world, WorldLockMode::Shared)?;
         status_impl(
@@ -332,7 +331,7 @@ where
         &self,
         options: StatusOptions,
         scope: Scope,
-        progress: &impl ProgressBuilder,
+        progress: &impl Progress,
     ) -> Result<(StatusReport, StatusTimings), AppError> {
         self.view().status(options, scope, progress).await
     }
@@ -344,7 +343,7 @@ async fn status_impl<W: WorldTree, S: SekaiStore>(
     world: &W,
     options: StatusOptions,
     scope: Scope,
-    progress: &impl ProgressBuilder,
+    progress: &impl Progress,
     guard: &Arc<WorldGuard<W::Lock>>,
 ) -> Result<(StatusReport, StatusTimings), AppError>
 where
@@ -460,13 +459,14 @@ async fn ingest_changed<R: RegionFile, S: SekaiStore, L: WorldLock>(
     cas: S::Blobs,
     options: &CommitOptions,
     scope: Scope,
-    mut progress: impl Reporter,
+    progress: &impl Progress,
     dry_run: bool,
     guard: &Arc<WorldGuard<L>>,
 ) -> Result<(Ingested, IngestTimings), AppError>
 where
     AppError: From<R::Error>,
 {
+    progress.start(changed.len());
     let mut walk = RegionWalk {
         timings: Vec::with_capacity(changed.len()),
         ..Default::default()

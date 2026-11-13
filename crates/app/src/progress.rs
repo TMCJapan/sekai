@@ -1,28 +1,24 @@
 //! Progress reporting seam between the operations and their callers.
 //!
-//! An operation asks its [`ProgressBuilder`] for a reporter once it knows
-//! how many items the run holds, then reports each item as it finishes.
-//! What the items are is the caller's business: it chose the operation.
+//! An operation tells its [`Progress`] how many items the run holds once it
+//! knows, then reports each item as it finishes. What the items are is the
+//! caller's business: it chose the operation.
 
-/// Hands an operation the reporter for its run, sized by the run's total.
+/// Receives one run's size and its finished items.
 ///
-/// `()` is the builder to pass when no progress is wanted. A reporter may
-/// borrow the builder: the operation holds it only while it runs.
-pub trait ProgressBuilder: Sync {
-    /// Reporter for one run over `total` items.
-    fn start(&self, total: usize) -> impl Reporter;
-}
+/// `()` is the progress to pass when none is wanted. Methods take `&self`
+/// because the operation only borrows its progress; an implementation that
+/// keeps state needs interior mutability.
+pub trait Progress: Sync {
+    /// The run holds `total` items. Called once, before any [`step`](Self::step).
+    fn start(&self, total: usize);
 
-/// Receives one run's finished items.
-pub trait Reporter: Send {
     /// Record one more finished item.
-    fn step(&mut self);
+    fn step(&self);
 }
 
-impl ProgressBuilder for () {
-    fn start(&self, _: usize) -> impl Reporter {}
-}
+impl Progress for () {
+    fn start(&self, _: usize) {}
 
-impl Reporter for () {
-    fn step(&mut self) {}
+    fn step(&self) {}
 }
