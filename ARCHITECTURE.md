@@ -19,15 +19,15 @@ software.
 
 ## Layer Architecture
 
-Dependencies point inward. `core` never depends on `world`, `storage`, or
-`app`; `util` is a dependency leaf (nothing in the workspace depends on
-anything through it).
+Dependencies point inward. `core` never depends on `anvil`, `world`,
+`storage`, or `app`; `util` is a dependency leaf (nothing in the workspace
+depends on anything through it).
 
 ```text
 sekai (bin, thin: clap parse + print + exit code)
   -> sekai-app (std + tokio: orchestration, parallelism, clocks, timing)
     -> sekai-core (no_std + alloc: use-case policy API over shared types)
-      -> sekai-anvil (no_std + alloc: pure sector codec, decompress, NBT normalization)
+    -> sekai-anvil (no_std + alloc: pure sector codec, decompress, NBT normalization)
     -> sekai-world (no_std + alloc: world access boundary - WorldTree trait, RegionFile handle)
       -> sekai-anvil + sekai-core (types only)
     -> sekai-world-local (std: host filesystem tree - discover/observe/swap, the world lock)
@@ -44,8 +44,8 @@ sekai-util (no_std, no tokio dependency: coordinates, chunk hashes,
 | Crate                             | `std`                                 | `async`                                      | Role                                                                                                                                                                                                                                                                                                                                                                                                 |
 | --------------------------------- | ------------------------------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `sekai-util`                      | `no_std`, no `std`/tokio dependencies | no                                           | Shared value types: coordinates, the chunk digest (`ChunkHash`, `hash_bytes`, `BytesHasher`), region/history/commit records, hex errors. Pure data plus total validation only.                                                                                                                                                                                                                    |
-| `sekai-anvil`                     | `no_std` + `alloc`                    | no                                           | Pure Anvil sector codec including decompression and chunk NBT normalization. A stored sector payload becomes a `Chunk` whose `normalized_hash()` is the only public NBT-derived digest; the parser and normalized views stay internal. Also builds `Vec<u8>` images. Compression framing is MCA spec knowledge, so it lives here. No `Path`, no `fs`. Names custom dimensions with util `Dimension`. |
-| `sekai-core`                      | `no_std` + `alloc`                    | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_checkout`) plus storage ports. Composes `anvil` over util types and re-exports every util type at its root, so downstream paths stay stable.                                                                                                                                                                               |
+| `sekai-anvil`                     | `no_std` + `alloc`                    | no                                           | Pure Anvil sector codec including decompression and chunk NBT normalization. A stored sector payload becomes a `Chunk` whose `normalized_hash()` is the only public NBT-derived digest; the parser and normalized views stay internal. Owns `ChunkPayloadDiff`, the two-sided digest comparison diff flows report. Also builds `Vec<u8>` images. Compression framing is MCA spec knowledge, so it lives here. No `Path`, no `fs`. Names custom dimensions with util `Dimension`. |
+| `sekai-core`                      | `no_std` + `alloc`                    | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_checkout`) plus storage ports, over util types only. Re-exports every util type at its root, so downstream paths stay stable. `app` composes it with `anvil` for payload digests and diffs.                                                                                                                                                                               |
 | `sekai-storage`                   | `std` + tokio                         | yes (RPITIT)                                 | Backend-neutral boundaries: async `BlobStore`/`MetaStore` traits (owned by `core::port`, re-exported from the `api` module), high-level `SekaiStore`/`SekaiStoreOpener` traits, and shared storage errors. Depends on `core`.                                                                                                                                                                  |
 | `sekai-storage-local`             | `std` + tokio                         | yes                                          | Concrete local backend: `SqliteMeta` over sqlx plus `SledBlob` over sled, composed into `LocalStore`, both schema/version gates, and the openers. Implements the traits from `sekai-storage` (and `core::port`). Other backends become sibling crates without touching `core`/`app`.                                                                                                                  |
 | `sekai-world`                     | `no_std` + `alloc`                    | no                                           | World access boundary: the `WorldTree` trait, the `RegionFile` handle, and the `WorldLock` primitives. No filesystem code.                                                                                                                                                                                                                                                                                |
@@ -83,15 +83,16 @@ behind them. See
 ### Shared value types (`sekai-util`)
 
 Coordinates, hashes, and history records live in a leaf crate so
-`anvil` can name the same types as `core` without a package cycle
-(`core -> anvil -> core` is forbidden by Cargo). The boundary rules:
+`anvil` and `core` name the same types without depending on each other.
+The boundary rules:
 
 - `util` holds pure data plus total validation only: no codecs, no ports,
   no orchestration. It owns the one Blake3 primitive (`hash_bytes`,
   `BytesHasher`) so every digest in the system comes from the same
   function; `anvil` builds on it instead of linking its own.
 - `anvil` implements over util types (`Dimension` custom ids, `RegionKind`
-  chunk families); `core` composes it (storage ports, use cases).
+  chunk families); `core` owns the storage ports and use-case policy over
+  those same types, and `app` composes the two.
 - `core` re-exports every util type at its root, so downstream paths
   (`sekai_core::ChunkCoord`, ...) keep working; `world`/`storage`/`app`
   continue to import through `core`.

@@ -7,7 +7,7 @@ This project is organized as a Cargo workspace under `crates/`:
 └── crates
     ├── util            # Shared value types: coordinates, hashes, history records (no_std, zero dependencies)
     ├── anvil           # Pure Anvil sector codec, decompression, and normalized chunk hashing (no_std + alloc, ex-mca)
-    ├── core            # Use-case policy API over shared types (no_std + alloc, depends on util/anvil)
+    ├── core            # Use-case policy API over shared types (no_std + alloc, depends on util)
     ├── storage         # Backend-neutral store traits and locks (std + tokio)
     ├── storage-local   # Local backend: SQLite metadata (sqlx) + sled blobs (std + tokio)
     ├── world           # World access boundary (no_std + alloc): WorldTree trait,
@@ -24,7 +24,7 @@ Keep dependencies strictly unidirectional (inward):
 
 ```text
 sekai (bin) -> app -> {core, world, world-local, storage, storage-local}
-app -> core -> anvil
+app -> {core, anvil}
 world -> {anvil, core}
 world-local -> {world, anvil, core}
 storage -> core (whose `port` module owns the async traits; backend crates implement them)
@@ -40,10 +40,11 @@ Rules:
 - `util` is a dependency leaf: pure data plus total validation only, plus
   the shared Blake3 primitive (`hash_bytes`, `BytesHasher`). It owns no
   codecs, ports, or orchestration. `anvil` names util types directly
-  (`Dimension` custom ids, `RegionKind`); `core` composes it and re-exports
-  every util type at its root so downstream paths stay stable.
-- NBT parsing and normalized views are private to `anvil`. `core`/`app`
-  call `Chunk::normalized_hash()` and never see raw NBT types, so the
+  (`Dimension` custom ids, `RegionKind`); `core` re-exports every util type
+  at its root so downstream paths stay stable, and `app` composes `core`
+  policy with the `anvil` codec.
+- NBT parsing and normalized views are private to `anvil`. `app` calls
+  `Chunk::normalized_hash()` and never sees raw NBT types, so the
   parser cannot drift into a second public path. Compression framing and
   chunk schema knowledge both live in `anvil`.
 - `async`/tokio lives in `storage`, `storage-local`, `app`, and the
@@ -64,12 +65,13 @@ any exception in the PR body.
   No `std::fs`, `Path`, `std::time`, `std::io::Error`, or `thiserror` there;
   hand-written `core::fmt::Display` error enums only. No `tokio`, no
   `async-trait` macro.
-- **`core` is an API layer and the port hub**: it composes the concrete
-  pure crate (`anvil`) over shared `util` types for sector/diff logic,
-  re-exports every util type at its root, and owns the async
-  `BlobStore`/`MetaStore` ports (`port` module, RPITIT). Pluggability lives
-  at those ports (implemented by `storage` backends) and at the `world`
-  observation boundary - not at `RegionReader`/`Normalizer`-style traits.
+- **`core` is an API layer and the port hub**: it owns the use-case policy
+  over shared `util` types, re-exports every util type at its root, and
+  owns the async `BlobStore`/`MetaStore` ports (`port` module, RPITIT).
+  `app` composes it with the `anvil` codec for payload digests and diffs.
+  Pluggability lives at those ports (implemented by `storage` backends)
+  and at the `world` observation boundary - not at
+  `RegionReader`/`Normalizer`-style traits.
 - **`core` never touches the filesystem**: `world-local` discovers the region
   files; `app` feeds their `RegionKey`s into `core::plan_*`.
 - **The world boundary is path-free**: the operations receive `RegionFile`
@@ -117,8 +119,7 @@ any exception in the PR body.
       `lz4_flex` block API (lz4-java stream bodies), `twox-hash` (lz4-java
       block checksums), and `nanonbt` (chunk NBT parsing and normalized
       views; private to the crate).
-    - `core`: `sekai-util` (shared types, re-exported at the root) plus
-      `anvil` (concrete composition target).
+    - `core`: `sekai-util` (shared types, re-exported at the root).
     - `world`: `sekai-anvil` (types only) plus `sekai-core`.
 - **Async policy**: `async fn` in traits via RPITIT (return-position
   `impl Future`, no `async-trait` macro, no boxing). All trait futures are

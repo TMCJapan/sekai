@@ -19,9 +19,9 @@ pub use sekai_util::{
 };
 
 pub use usecase::{
-    Assembled, CheckoutError, CheckoutPlan, CheckoutReport, ChunkPayloadDiff, CommitError,
-    CommitReport, CommitStats, DiffError, Plan, Previous, ResolveError, active_ref,
-    commit_ancestors, commit_history, commit_parents, diff_blobs, list_refs, list_scopes,
+    Assembled, CheckoutError, CheckoutPlan, CheckoutReport, CommitError, CommitReport, CommitStats,
+    Plan, Previous, ResolveError, active_ref, commit_ancestors, commit_history, commit_parents,
+    list_refs, list_scopes,
 };
 
 pub use commit::commit_hash;

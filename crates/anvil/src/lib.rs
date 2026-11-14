@@ -10,6 +10,7 @@
 extern crate alloc;
 
 mod codec;
+mod diff;
 mod error;
 mod hash;
 mod nbt;
@@ -18,6 +19,7 @@ mod region;
 mod writer;
 
 pub use codec::{Compression, compression_of, decompress_into};
+pub use diff::ChunkPayloadDiff;
 pub use error::{AnvilError, ChunkHashError, ChunkNbtError};
 pub use hash::{custom_dimension_id, custom_dimension_id_bytes};
 pub use reader::{Chunk, RegionImage, RegionImageIter};
