@@ -508,8 +508,8 @@ impl sekai_core::MetaStore for SqliteMeta {
         created_at_ms: u64,
         parents: &[CommitId],
     ) -> Result<CommitId, StorageError> {
-        // No snapshot changes: continue the first parent's tree, or start
-        // with the canonical empty root.
+        // No snapshot changes: continue the lowest-hash parent's tree, or
+        // start with the canonical empty root.
         let mut canonical_parents = parents.to_vec();
         canonical_parents.sort();
         canonical_parents.dedup();
