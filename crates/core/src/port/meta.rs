@@ -96,6 +96,26 @@ pub trait MetaStore {
         hash: RegionHash,
     ) -> impl Future<Output = Result<RegionNode, Self::Error>> + Send;
 
+    /// Read and verify several dimension nodes in one backend read.
+    ///
+    /// Returns one node per input hash, in input order; a repeated hash
+    /// yields a repeated node. A missing or corrupt node is a backend
+    /// error, never an empty tree. An empty input reads nothing.
+    fn read_dim_nodes(
+        &self,
+        hashes: &[DimHash],
+    ) -> impl Future<Output = Result<Vec<DimNode>, Self::Error>> + Send;
+
+    /// Read and verify several region nodes in one backend read.
+    ///
+    /// Returns one node per input hash, in input order; a repeated hash
+    /// yields a repeated node. A missing or corrupt node is a backend
+    /// error, never an empty tree. An empty input reads nothing.
+    fn read_region_nodes(
+        &self,
+        hashes: &[RegionHash],
+    ) -> impl Future<Output = Result<Vec<RegionNode>, Self::Error>> + Send;
+
     /// Record a commit whose root tree and newly written nodes are already
     /// built.
     ///

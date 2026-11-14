@@ -45,6 +45,13 @@ async fn sqlite_fresh_stats() {
     common::fresh_stats(store.meta_mut()).await;
 }
 
+#[tokio::test]
+async fn sqlite_tree_bulk_reads() {
+    let (dir, _guard) = tempdir("bulk-reads");
+    let mut store = init(&dir).await;
+    common::tree_bulk_reads(store.meta_mut()).await;
+}
+
 /// A vanished coordinate stops resolving: absence is the tombstone, and a
 /// checkout plan drops the coordinate instead of asking for a blob.
 #[tokio::test]
