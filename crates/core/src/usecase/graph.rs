@@ -459,10 +459,14 @@ mod tests {
         let mut meta = MemMeta::default();
         meta.with_active_ref(&RefName::parse("main").unwrap());
         let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
+        let first_only = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 1, 0);
         let first = block_on(meta.apply_commit_incremental(
             100,
             &[],
-            &[CommitEntry::new(coord, Some(ChunkHash::new([1; 32])))],
+            &[
+                CommitEntry::new(coord, Some(ChunkHash::new([1; 32]))),
+                CommitEntry::new(first_only, Some(ChunkHash::new([3; 32]))),
+            ],
         ))
         .unwrap()
         .id;
@@ -485,6 +489,18 @@ mod tests {
                 .unwrap()
                 .map(|entry| entry.blob),
             Some(Some(ChunkHash::new([2; 32])))
+        );
+        // A sibling history's chunk never leaks into the child, even one
+        // the child's own history never recorded.
+        assert!(
+            block_on(meta.lookup_chunk(child, &first_only))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            block_on(meta.lookup_chunk(first, &first_only))
+                .unwrap()
+                .is_some()
         );
         assert_eq!(
             block_on(meta.lookup_chunk(first, &coord))
