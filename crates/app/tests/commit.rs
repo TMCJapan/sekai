@@ -1046,8 +1046,8 @@ async fn checkout_progress_completes_for_tombstone_only_region() {
     assert_eq!(report.files_deleted, 0);
     assert!(!doomed.exists());
 
-    // The tombstone-only region has nothing to write or delete, so the
-    // run counts only the rebuilt file, and still reaches its total.
+    // Absence is the tombstone: a region that left the snapshot and the
+    // disk needs no delete step, so only the live region is visited.
     assert_eq!(recorded.events(), [(1, 1)]);
 }
 

@@ -40,8 +40,10 @@ Rule-of-thumb estimates per subcommand (same machine class):
 - `commit` full: ~500 ms for ~7K chunks; dominated by `db_apply`
   (WAL Full + per-blob fsync). A no-change commit has no file-level
   skip: it reads, decompresses, and hashes every in-scope region file,
-  and writes only the commit row. Nothing is read before ingest, and only
-  the files to ingest are stat'd; see [ADR-0023](adr/0023-drop-the-fingerprint-pass.md).
+  but reuses the whole parent tree and writes only the commit row. Nothing
+  is read before ingest, and only the files to ingest are stat'd; see
+  [ADR-0023](adr/0023-drop-the-fingerprint-pass.md) and
+  [ADR-0027](adr/0027-content-addressed-snapshot-trees.md).
 - `checkout`: rewrite-bound, ~15–20 ms per 1K chunks.
 - `diff`: ~0.5 ms per chunk, dominated by per-chunk CAS file opens
   (batching opportunity, untracked).

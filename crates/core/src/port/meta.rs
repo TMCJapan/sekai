@@ -1,31 +1,31 @@
-//! Commit metadata and per-chunk history storage.
+//! Commit metadata and snapshot-tree storage.
 //!
 //! Commits form a history graph: every commit names the commits it
-//! continues (`parents`). A store therefore answers "what did this
-//! commit inherit?" by walking parent links, not by comparing
-//! identifiers. Commit IDs are content-addressed hashes; backends keep a
-//! local record order for traversal and tie-breaking but never expose it
-//! as an ID.
+//! continues (`parents`) and one content-addressed root snapshot tree.
+//! Backends store each tree level as opaque canonical bytes; the codec lives
+//! in [`crate::tree`]. Reads follow root -> dim -> region -> CAS leaf.
 
 use alloc::vec::Vec;
 use core::future::Future;
 use sekai_util::{
-    ApplyOutcome, ChunkCoord, ChunkHash, ChunkHistoryEntry, Commit, CommitEntry, CommitId,
-    CommitRef, NamedScope, RefName, ScopeName,
+    ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DimHash, NamedScope,
+    RefName, RegionHash, RootHash, ScopeName,
 };
 
-/// Commit metadata and per-chunk history storage.
+use crate::{DimNode, RegionNode, RootNode, TreeNodes};
+
+/// Commit metadata and snapshot-tree storage.
 pub trait MetaStore {
     /// Backend failure (query errors, constraint violations, ...).
     type Error;
 
-    /// Append a commit continuing `parents`; an empty list starts a
-    /// history.
+    /// Append a commit continuing `parents` with no snapshot changes; an empty
+    /// parent list starts a history with the empty tree.
     ///
-    /// The ID is derived from the commit's canonical content, so
-    /// recording the same logical commit twice returns the existing ID
-    /// instead of adding a row. Every parent must exist and a parent
-    /// listed twice is recorded once.
+    /// The ID is derived from the commit's canonical content, so recording
+    /// the same logical commit twice returns the existing ID instead of
+    /// adding a row. Every parent must exist and a parent listed twice is
+    /// recorded once.
     fn create_commit(
         &mut self,
         created_at_ms: u64,
@@ -34,32 +34,21 @@ pub trait MetaStore {
 
     /// Direct parents of `commit`; empty for the root of a history.
     ///
-    /// An unknown commit yields an empty list: the port reports what
-    /// is stored, not what exists. The use cases above it check for
-    /// existence first.
+    /// An unknown commit yields an empty list: the port reports what is
+    /// stored, not what exists. The use cases above it check for existence
+    /// first.
     fn commit_parents(
         &self,
         commit: CommitId,
     ) -> impl Future<Output = Result<Vec<CommitId>, Self::Error>> + Send;
 
-    /// Record one chunk's state at the commit `commit`. `blob = None` is a
-    /// tombstone.
-    fn record_chunk(
-        &mut self,
-        commit: CommitId,
-        coord: &ChunkCoord,
-        blob: Option<&ChunkHash>,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
-
-    /// Effective row for (`commit`, `coord`): the row introduced at
-    /// `commit` or at one of its ancestors. Of the ancestor rows, the
-    /// most recently recorded one wins, or `None` when no ancestor ever
-    /// recorded the coordinate.
+    /// Effective present entry for (`commit`, `coord`), or `None` when the
+    /// snapshot has no chunk there. Absence is the tombstone.
     fn lookup_chunk(
         &self,
         commit: CommitId,
         coord: &ChunkCoord,
-    ) -> impl Future<Output = Result<Option<ChunkHistoryEntry>, Self::Error>> + Send;
+    ) -> impl Future<Output = Result<Option<CommitEntry>, Self::Error>> + Send;
 
     /// Commit metadata for `id`, or `None` when it does not exist.
     fn lookup_commit(
@@ -71,32 +60,20 @@ pub trait MetaStore {
     /// commit has been recorded yet.
     fn latest_commit(&self) -> impl Future<Output = Result<Option<Commit>, Self::Error>> + Send;
 
-    /// Visit effective rows of one commit: exactly one row per
-    /// coordinate known at `commit` (the row introduced at it or at one
-    /// of its ancestors, the most recently recorded winning), including
-    /// tombstones. Return `false` to stop early.
+    /// Visit every present chunk of one commit's snapshot, in global
+    /// coordinate order. Absent coordinates are never visited. Return
+    /// `false` to stop early.
     ///
-    /// The effective set is materialized before the visitor runs, so the
-    /// early return saves iteration, not the read. Resolving it costs
-    /// the ancestry of the commit: a caller that walks many commits
-    /// pays for the history depth per commit.
+    /// The snapshot is materialized before the visitor runs, so the early
+    /// return saves iteration, not the read: the walk costs the whole tree
+    /// no matter where the visitor stops.
     fn visit_commit_chunks<F>(
         &self,
         commit: CommitId,
         visit: F,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send
     where
-        F: FnMut(&ChunkHistoryEntry) -> bool + Send;
-
-    /// Visit the rows introduced at exactly `commit` (fresh ingests plus
-    /// tombstones, no ancestor fallback). Return `false` to stop early.
-    fn visit_fresh_rows<F>(
-        &self,
-        commit: CommitId,
-        visit: F,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send
-    where
-        F: FnMut(&ChunkHistoryEntry) -> bool + Send;
+        F: FnMut(&CommitEntry) -> bool + Send;
 
     /// Visit commits in local record order (oldest first). Return `false`
     /// to stop early.
@@ -104,31 +81,72 @@ pub trait MetaStore {
     where
         F: FnMut(&Commit) -> bool + Send;
 
-    /// Record a commit whose `entries` are the fresh rows and tombstones
-    /// of its delta.
+    /// Read and verify one root node. A missing or corrupt node is a
+    /// backend error, never an empty tree.
+    fn read_root_node(
+        &self,
+        hash: RootHash,
+    ) -> impl Future<Output = Result<RootNode, Self::Error>> + Send;
+
+    /// Read and verify one dimension node.
+    fn read_dim_node(
+        &self,
+        hash: DimHash,
+    ) -> impl Future<Output = Result<DimNode, Self::Error>> + Send;
+
+    /// Read and verify one region node.
+    fn read_region_node(
+        &self,
+        hash: RegionHash,
+    ) -> impl Future<Output = Result<RegionNode, Self::Error>> + Send;
+
+    /// Read and verify several dimension nodes in one backend read.
     ///
-    /// The new commit continues `parents`; an empty list starts a
-    /// history. As in [`Self::create_commit`], every parent must exist
-    /// and a parent listed twice is recorded once. Recording a commit
-    /// whose hash already exists is idempotent: the existing ID is
-    /// returned and no fresh rows are written, while the active ref still
-    /// moves onto that commit.
+    /// Returns one node per input hash, in input order; a repeated hash
+    /// yields a repeated node. A missing or corrupt node is a backend
+    /// error, never an empty tree. An empty input reads nothing.
+    fn read_dim_nodes(
+        &self,
+        hashes: &[DimHash],
+    ) -> impl Future<Output = Result<Vec<DimNode>, Self::Error>> + Send;
+
+    /// Read and verify several region nodes in one backend read.
     ///
-    /// The new commit must continue the active ref's target: when the
-    /// ref is born, `parents` includes its commit, and backends reject a
-    /// mismatch instead of silently forking the ref onto another
-    /// history. The active ref moves onto the new commit in the same
-    /// transaction, since a ref lagging behind its history would fork
-    /// the next commit. A store without an active ref has nowhere to put
-    /// the commit and fails.
+    /// Returns one node per input hash, in input order; a repeated hash
+    /// yields a repeated node. A missing or corrupt node is a backend
+    /// error, never an empty tree. An empty input reads nothing.
+    fn read_region_nodes(
+        &self,
+        hashes: &[RegionHash],
+    ) -> impl Future<Output = Result<Vec<RegionNode>, Self::Error>> + Send;
+
+    /// Record a commit whose root tree and newly written nodes are already
+    /// built.
     ///
-    /// A store with no active ref fails with the backend's no-active-ref
-    /// error before any parent check. An unborn active ref imposes no
-    /// parent constraint: the new commit starts its history. Only a born
-    /// active ref whose target is absent from `parents` fails as "not
-    /// continuing".
+    /// Nodes are inserted children-first, child before parent, in the same
+    /// transaction as the commit row. Unchanged subtrees are shared by hash
+    /// and not re-inserted. The new commit continues `parents`; an empty
+    /// list starts a history. Recording a commit whose hash already exists
+    /// is idempotent: the existing ID is returned, while the active ref
+    /// still moves onto that commit.
+    ///
+    /// The new commit must continue the active ref's target: when the ref is
+    /// born, `parents` includes its commit, and backends reject a mismatch
+    /// instead of silently forking the ref onto another history. The active
+    /// ref moves onto the new commit in the same transaction. A store
+    /// without an active ref has nowhere to put the commit and fails.
     ///
     /// Referenced blobs must already be flushed to CAS.
+    fn commit_tree(
+        &mut self,
+        created_at_ms: u64,
+        parents: &[CommitId],
+        root: RootHash,
+        nodes: &TreeNodes,
+    ) -> impl Future<Output = Result<ApplyOutcome, Self::Error>> + Send;
+
+    /// Apply fresh entries to the parent snapshot, insert the resulting
+    /// nodes, and record the commit atomically.
     fn apply_commit_incremental(
         &mut self,
         created_at_ms: u64,
@@ -137,20 +155,12 @@ pub trait MetaStore {
     ) -> impl Future<Output = Result<ApplyOutcome, Self::Error>> + Send;
 
     /// Point `name` at `commit`, creating the ref when it does not exist.
-    /// `commit = None` leaves the ref unborn: it names a history without
-    /// a commit, and the next commit starts a new root from it. That is
-    /// the state a fresh store starts in, so moving the active ref to
-    /// unborn is allowed and is not the dangling target
-    /// [`Self::active_ref`] rejects: an unborn active ref reads back as
-    /// a valid ref whose `commit` is `None`. A non-`None` target must name
-    /// an existing commit; otherwise the backend fails with its
-    /// unknown-commit error.
+    /// `commit = None` leaves the ref unborn: it names a history without a
+    /// commit, and the next commit starts a new root from it.
     ///
-    /// A new ref starts inactive; moving an existing one leaves its flag
-    /// and creation time untouched. `created_at_ms` is stored only when
-    /// the ref is first created; an existing name keeps its original
-    /// timestamp even though the argument must still be storable by the
-    /// backend.
+    /// A new ref starts inactive; moving an existing one leaves its flag and
+    /// creation time untouched. `created_at_ms` is stored only when the ref
+    /// is first created.
     fn set_ref(
         &mut self,
         name: &RefName,
@@ -164,80 +174,49 @@ pub trait MetaStore {
         name: &RefName,
     ) -> impl Future<Output = Result<Option<CommitRef>, Self::Error>> + Send;
 
-    /// Visit refs in name order - the order [`RefName`]'s `Ord` yields -
-    /// so every backend lists them alike. Return `false` to stop early;
-    /// `Ok(())` only reports that the visit ran without error. Early
-    /// stopping is not signalled: a caller that needs a complete set must
-    /// keep returning `true`.
+    /// Visit refs in name order.
     fn visit_refs<F>(&self, visit: F) -> impl Future<Output = Result<(), Self::Error>> + Send
     where
         F: FnMut(&CommitRef) -> bool + Send;
 
-    /// Remove `name`. Returns whether a ref was removed: `false` means
-    /// no ref of that name exists.
+    /// Remove `name`. Returns whether a ref was removed.
     ///
-    /// The active ref is never removed: a store without one would have
-    /// nowhere to hang new commits from. Asking to remove it is an
-    /// error, not a `false` result. The check is part of the delete
-    /// itself, so callers need not read the active ref first (and doing
-    /// so races against a concurrent [`Self::activate_ref`]).
+    /// The active ref is never removed.
     fn delete_ref(
         &mut self,
         name: &RefName,
     ) -> impl Future<Output = Result<bool, Self::Error>> + Send;
 
-    /// The active ref - the one new commits hang from - or `None` when
-    /// the store has none.
-    ///
-    /// The commit it names must exist: a dangling target is corruption,
-    /// not an unborn ref, and fails with the backend's unknown-commit
-    /// error.
+    /// The active ref - the one new commits hang from - or `None` when the
+    /// store has none.
     fn active_ref(&self) -> impl Future<Output = Result<Option<CommitRef>, Self::Error>> + Send;
 
-    /// Make `name` the active ref. The name must exist; a missing name
-    /// fails with the backend's unknown-ref error. A non-`None` target
-    /// must also exist: activating a ref whose target is dangling is
-    /// corruption, and the backend fails with its unknown-commit error
-    /// rather than making a headless store.
-    ///
-    /// The previous active ref is cleared before `name` is set: a store
-    /// holds at most one active ref. Backends keep that order; SQLite
-    /// enforces it with a partial unique index, so setting without
-    /// clearing fails on the constraint.
+    /// Make `name` the active ref. The name and its non-`None` target must
+    /// exist.
     fn activate_ref(
         &mut self,
         name: &RefName,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
-    /// Store `scope`, replacing every area of an existing scope of the
-    /// same name in one atomic step.
-    ///
-    /// `created_at_ms` is stored only when the scope is first created; a
-    /// replacement keeps the original timestamp, as [`Self::set_ref`]
-    /// does. Refusing an existing name is the caller's policy.
+    /// Store `scope`, replacing every area of an existing scope of the same
+    /// name in one atomic step.
     fn set_scope(
         &mut self,
         scope: &NamedScope,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// The scope with this name, or `None` when it does not exist.
-    ///
-    /// A stored scope that fails [`NamedScope`]'s rules (an invalid name,
-    /// or no area) is corruption and fails with a backend error.
     fn lookup_scope(
         &self,
         name: &ScopeName,
     ) -> impl Future<Output = Result<Option<NamedScope>, Self::Error>> + Send;
 
-    /// Visit scopes in name order - the order [`ScopeName`]'s `Ord`
-    /// yields. Return `false` to stop early; as with
-    /// [`Self::visit_refs`], early stopping is not signalled.
+    /// Visit scopes in name order.
     fn visit_scopes<F>(&self, visit: F) -> impl Future<Output = Result<(), Self::Error>> + Send
     where
         F: FnMut(&NamedScope) -> bool + Send;
 
-    /// Remove `name` with all its areas. Returns whether a scope was
-    /// removed: `false` means no scope of that name exists.
+    /// Remove `name` with all its areas. Returns whether a scope was removed.
     fn delete_scope(
         &mut self,
         name: &ScopeName,

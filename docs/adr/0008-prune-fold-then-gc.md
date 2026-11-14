@@ -1,6 +1,6 @@
 # ADR-0008: Prune folds into the next retained snapshot, `gc` reclaims blobs
 
-- Status: Accepted
+- Status: Superseded by ADR-0027; `gc` and `prune` have since been removed (the store is append-only)
 - Date: 2026-09-18
 
 ## Context

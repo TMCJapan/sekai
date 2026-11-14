@@ -37,8 +37,9 @@ pub use instance::{SekaiInstance, WorldHandle, WorldHandleMut};
 pub use progress::{BuildProgress, Progress};
 pub use sekai_core::{
     Area, CheckoutReport, ChunkCoord, ChunkHash, Commit, CommitId, CommitRef, CommitReport,
-    CommitStats, DEFAULT_REF_NAME, Dimension, NamedScope, NamedScopeError, Rect, RefName,
-    RefNameError, RegionFingerprint, RegionKey, RegionKind, Scope, ScopeName, ScopeNameError,
+    CommitStats, DEFAULT_REF_NAME, DimHash, Dimension, NamedScope, NamedScopeError, Rect, RefName,
+    RefNameError, RegionFingerprint, RegionHash, RegionKey, RegionKind, RootHash, Scope, ScopeName,
+    ScopeNameError,
 };
 pub use sekai_storage::{SekaiStore, SekaiStoreOpener};
 #[cfg(feature = "backend-local")]

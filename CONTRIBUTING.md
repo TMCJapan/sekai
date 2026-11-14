@@ -5,7 +5,7 @@ This project is organized as a Cargo workspace under `crates/`:
 ```text
 .
 └── crates
-    ├── util            # Shared value types: coordinates, hashes, history records (no_std, zero dependencies)
+    ├── util            # Shared value types: coordinates, hashes, snapshot records (no_std, zero dependencies)
     ├── anvil           # Pure Anvil sector codec, decompression, and normalized chunk hashing (no_std + alloc, ex-mca)
     ├── core            # Use-case policy API over shared types (no_std + alloc, depends on util)
     ├── storage         # Backend-neutral store traits and locks (std + tokio)
@@ -93,9 +93,12 @@ any exception in the PR body.
   the commit, it does not preserve their live values.
 - **No server orchestration in libraries**: `save-off`/`save-all`, process
   control, and scheduling belong to the caller, never to library crates.
-- **No persisted derived state**: commit decisions compare per-chunk
-  history, so the schema holds no cache that can drift from the source of
-  truth.
+- **No persisted derived state**: commit decisions compare chunk hashes
+  through the snapshot tree, so the schema holds no cache that can drift
+  from the source of truth.
+- **Canonical snapshot trees**: every tree node is stored as the exact
+  sorted entry array its hash covers, and a node may name only the level
+  below it. Empty child nodes are never written; absence is the tombstone.
 - **Two-phase destructive operations**: checkout and similar destructive
   operations keep a plan phase separate from apply/execution.
 - **Crash order**: CAS blobs flushed + synced _before_ DB metadata commit,
@@ -221,9 +224,9 @@ cargo build -p sekai-cli --release
 - **Unit Tests**: Place in `src/` alongside the code. Ensure coverage for edge cases (corrupted headers, unexpected NBT structures, zero-length chunks).
 - **Integration Tests**: Place in `tests/` directories within crates. Test atomic operations (e.g., MCA writes, checkouts) using synthetic binary fixtures. The `test-world/` corpus (small real-data region files, see its README for provenance) is the exception: copy it into a temp dir first, never mutate it in place. Crash-order tests (torn commit leaves orphans, never dangling references) are mandatory for `app`/`world-local`/`storage` changes.
 - **Backend tests**: `sekai-storage-local` must cover both version gates
-  (`UnsupportedSchema`), the incremental-carry path, and derived-state
-  wipe recovery. Future backend crates must run the same suite via the
-  shared conformance flows.
+  (`UnsupportedSchema`), snapshot-tree path reads and shared-subtree reuse,
+  and the no-derived-state recovery guarantees. Future backend crates must
+  run the same suite via the shared conformance flows.
 - **Benchmarks**: micro benches live beside their crates (`cargo bench -p
 sekai-anvil -p sekai-core`); integration flows in
   `crates/app/benches` (seeded worlds from `benches/common.rs`, `cargo
@@ -283,6 +286,7 @@ has its own gate (`SCHEMA_VERSION` in `crates/storage-local/src/blob.rs`).
   sufficient.
 - The project is pre-release: old stores are recreated, not migrated. Never
   silently reinterpret an unknown version.
-- The schema keeps only source-of-truth history. Derived data (fingerprints,
-  cached counts) stays out of the database so no rebuild path can drift;
-  cover commit decisions with tests against `chunk_history` itself.
+- The schema keeps only source-of-truth history and snapshot trees. Derived
+  data (fingerprints, cached counts) stays out of the database so no rebuild
+  path can drift; cover commit decisions with tests against the tree tables
+  themselves.

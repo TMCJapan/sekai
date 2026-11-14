@@ -36,6 +36,17 @@ pub enum StorageError {
     /// Stored history integer does not fit its domain type.
     #[error("stored history column {column} has out-of-range value: {value}")]
     InvalidHistoryValue { column: &'static str, value: i64 },
+    /// A tree node named by its parent is absent from the store.
+    #[error("stored {level} tree node is missing: {hash}")]
+    MissingTree {
+        /// Tree level.
+        level: &'static str,
+        /// Hash that named the node.
+        hash: String,
+    },
+    /// Stored tree bytes failed their canonical encoding or hash check.
+    #[error("stored tree node is invalid: {0}")]
+    Tree(#[from] sekai_core::TreeError),
     /// Stored ref name fails validation.
     #[error("stored ref name is invalid: {name}")]
     InvalidRefName {
@@ -91,7 +102,7 @@ pub enum StorageError {
     /// Stored region-family code does not name a known kind.
     #[error("stored region kind is unknown: {kind}")]
     UnknownRegionKind {
-        /// Code read from the `kind` column.
+        /// Code read from the `kind` column or a dim-tree node entry.
         kind: i32,
     },
     /// Millisecond timestamp does not fit `i64`.

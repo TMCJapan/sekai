@@ -45,8 +45,8 @@ pub trait BlobStore {
     /// Load the blob into `out`, clearing it first.
     ///
     /// Errors when the blob is missing; callers treat a missing blob as
-    /// database corruption, never as a tombstone (tombstones are `None`
-    /// history rows, not absent blobs).
+    /// database corruption, never as an absence record (absence is recorded
+    /// by the snapshot tree, not by an absent blob).
     fn fetch_into(
         &self,
         hash: &ChunkHash,

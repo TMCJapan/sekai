@@ -1,4 +1,4 @@
-//! SQLite commit metadata: the history graph and per-chunk history.
+//! SQLite commit metadata: the history graph and snapshot trees.
 //!
 //! Recording a commit uses one transaction; blob durability is established
 //! before the metadata commit by the caller. The pool has one connection.
@@ -8,9 +8,9 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use sekai_core::{
-    ApplyOutcome, ChunkCoord, ChunkHash, ChunkHistoryEntry, Commit, CommitEntry, CommitId,
-    CommitRef, DEFAULT_REF_NAME, Dimension, MetaStore, NamedScope, NamedScopeError, Rect, RefName,
-    RegionKind, ScopeName, commit_hash,
+    ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DEFAULT_REF_NAME, DimHash,
+    DimNode, Dimension, MetaStore, NamedScope, NamedScopeError, Rect, RefName, RegionHash,
+    RegionNode, RootHash, RootNode, ScopeName, TreeNodes, commit_hash,
 };
 use sqlx::Row as _;
 use sqlx::sqlite::{
@@ -20,7 +20,7 @@ use sqlx::sqlite::{
 use sekai_storage::StorageError;
 
 /// Managed schema version (`PRAGMA user_version`).
-pub const SCHEMA_VERSION: i64 = 16;
+pub const SCHEMA_VERSION: i64 = 17;
 
 const SCHEMA: &str = include_str!("../schema/sqlite.sql");
 
@@ -29,7 +29,7 @@ fn db_err(source: sqlx::Error) -> StorageError {
     StorageError::backend("sqlite", source)
 }
 
-/// SQLite-backed commit metadata: the history graph and per-chunk rows.
+/// SQLite-backed commit metadata: the history graph and snapshot trees.
 #[derive(Debug, Clone)]
 pub struct SqliteMeta {
     pool: SqlitePool,
@@ -193,15 +193,6 @@ fn i32_col(row: &sqlx::sqlite::SqliteRow, column: &'static str) -> Result<i32, S
     i64_to_i32(value, column)
 }
 
-/// Read a region-kind column, rejecting codes the enum cannot represent.
-fn kind_col(
-    row: &sqlx::sqlite::SqliteRow,
-    column: &'static str,
-) -> Result<RegionKind, StorageError> {
-    let value = i32_col(row, column)?;
-    RegionKind::new(value).map_err(|_| StorageError::UnknownRegionKind { kind: value })
-}
-
 /// Read a 32-byte hash column.
 fn hash32(bytes: Vec<u8>) -> Result<[u8; 32], StorageError> {
     bytes
@@ -209,35 +200,23 @@ fn hash32(bytes: Vec<u8>) -> Result<[u8; 32], StorageError> {
         .map_err(|bytes: Vec<u8>| StorageError::InvalidHashLength { len: bytes.len() })
 }
 
-/// Read an optional `ChunkHash` from a 32-byte hash column.
-fn hash_col(
-    row: &sqlx::sqlite::SqliteRow,
-    column: &'static str,
-) -> Result<Option<ChunkHash>, StorageError> {
-    let bytes: Option<Vec<u8>> = row.try_get(column).map_err(db_err)?;
-    bytes
-        .map(|bytes| hash32(bytes).map(ChunkHash::new))
-        .transpose()
+/// Decode a 32-byte root hash BLOB.
+fn root_hash_from_blob(bytes: Vec<u8>) -> Result<RootHash, StorageError> {
+    hash32(bytes).map(RootHash::new)
+}
+
+/// Map a tree codec failure into the storage error surface.
+const fn tree_err(err: sekai_core::TreeError) -> StorageError {
+    match err {
+        sekai_core::TreeError::UnknownKind { kind } => StorageError::UnknownRegionKind { kind },
+        other => StorageError::Tree(other),
+    }
 }
 
 /// Read a millisecond timestamp column.
 fn millis_col(row: &sqlx::sqlite::SqliteRow, column: &'static str) -> Result<u64, StorageError> {
     let value: i64 = row.try_get(column).map_err(db_err)?;
     i64_to_u64(value, column)
-}
-
-/// Decode one `chunk_history` row.
-fn decode_history(row: &sqlx::sqlite::SqliteRow) -> Result<ChunkHistoryEntry, StorageError> {
-    let coord = ChunkCoord::new(
-        Dimension::new(i32_col(row, "dim")?),
-        kind_col(row, "kind")?,
-        i32_col(row, "cx")?,
-        i32_col(row, "cz")?,
-    );
-    let blob = hash_col(row, "blob")?;
-    let commit_raw: Vec<u8> = row.try_get("commit_id").map_err(db_err)?;
-    let commit = commit_id_from_blob(commit_raw)?;
-    Ok(ChunkHistoryEntry::new(coord, commit, blob))
 }
 
 /// Decode one `refs` row. Stored names always re-validate: anything
@@ -352,79 +331,18 @@ fn now_ms() -> Result<i64, StorageError> {
     i64::try_from(millis).map_err(|_| StorageError::InvalidTimestamp(millis))
 }
 
-/// Single-row `chunk_history` insert for `record_chunk`.
-const INSERT_CHUNK_SQL: &str = "INSERT INTO chunk_history (commit_id, seq, dim, kind, cx, cz, blob)
-             VALUES (?, ?, ?, ?, ?, ?, ?)";
-
-/// Rows per multi-row `chunk_history` insert in a commit.
-///
-/// Every statement is a round trip to sqlx's SQLite worker thread, which
-/// costs far more than SQLite's own insert, so a commit of a few hundred
-/// thousand chunks binds them in batches instead of one statement per
-/// row. Each row binds 7 parameters, keeping a batch well under SQLite's
-/// default limit of 32766 per statement.
-const CHUNK_INSERT_BATCH: usize = 1024;
-
-/// Ancestors of a commit: the commit itself plus every commit
-/// reachable through parent links.
-///
-/// The recursive term walks the history graph upwards, so the set
-/// answers "what does this commit inherit?" without relying on the
-/// local record order. `UNION` (not `UNION ALL`) keeps the walk finite even
-/// if the graph ever holds a cycle. The seed parameter is the commit
-/// the walk starts at; `head`/`tail` split it around the seed for the
-/// queries that build their SQL piece by piece.
-macro_rules! ancestor_cte {
-    (head) => {
-        "WITH RECURSIVE ancestors(id) AS (
-    SELECT "
-    };
-    (tail) => {
-        "
-    UNION
-    SELECT sp.parent_id FROM commit_parents sp
-    JOIN ancestors ON sp.child_id = ancestors.id
-)"
-    };
-    ($seed:literal) => {
-        concat!(ancestor_cte!(head), $seed, ancestor_cte!(tail))
-    };
-}
-
-/// Effective row of one coordinate at a commit: the nearest row
-/// introduced at the commit or at one of its ancestors.
-const LOOKUP_CHUNK_SQL: &str = concat!(
-    ancestor_cte!("?"),
-    "
-SELECT commit_id, dim, kind, cx, cz, blob FROM chunk_history
-WHERE dim = ? AND kind = ? AND cx = ? AND cz = ?
-  AND commit_id IN (SELECT id FROM ancestors)
-ORDER BY seq DESC LIMIT 1"
-);
-
-/// Effective rows of every coordinate at a commit.
-const VISIT_CHUNKS_SQL: &str = concat!(
-    ancestor_cte!("?"),
-    "
-SELECT dim, kind, cx, cz, blob, commit_id FROM (
-   SELECT dim, kind, cx, cz, blob, commit_id,
-     ROW_NUMBER() OVER (
-       PARTITION BY dim, kind, cx, cz ORDER BY seq DESC
-     ) AS rn
-   FROM chunk_history WHERE commit_id IN (SELECT id FROM ancestors)
-) WHERE rn = 1 ORDER BY dim, kind, cx, cz"
-);
-
 /// Decode one `commits` row.
 fn decode_commit(
     row: &sqlx::sqlite::SqliteRow,
     parents: &[CommitId],
 ) -> Result<Commit, StorageError> {
     let id: Vec<u8> = row.try_get("id").map_err(db_err)?;
+    let root: Vec<u8> = row.try_get("root_hash").map_err(db_err)?;
     Ok(Commit::new(
         commit_id_from_blob(id)?,
         millis_col(row, "created_at_ms")?,
         parents.to_vec(),
+        root_hash_from_blob(root)?,
     ))
 }
 
@@ -440,6 +358,7 @@ async fn insert_commit(
     id: CommitId,
     created_at_ms: u64,
     parents: &[CommitId],
+    root: RootHash,
 ) -> Result<(i64, bool), StorageError> {
     // One query for the whole list, so a merge does not cost a round
     // trip per parent.
@@ -465,13 +384,16 @@ async fn insert_commit(
             return Err(StorageError::UnknownCommit { id: *parent });
         }
     }
-    let inserted = sqlx::query("INSERT OR IGNORE INTO commits (id, created_at_ms) VALUES (?, ?)")
-        .bind(commit_param(id))
-        .bind(millis_param(created_at_ms)?)
-        .execute(&mut **tx)
-        .await
-        .map_err(db_err)?
-        .rows_affected()
+    let inserted = sqlx::query(
+        "INSERT OR IGNORE INTO commits (id, created_at_ms, root_hash) VALUES (?, ?, ?)",
+    )
+    .bind(commit_param(id))
+    .bind(millis_param(created_at_ms)?)
+    .bind(&root.as_bytes()[..])
+    .execute(&mut **tx)
+    .await
+    .map_err(db_err)?
+    .rows_affected()
         > 0;
     let seq: i64 = sqlx::query_scalar("SELECT seq FROM commits WHERE id = ?")
         .bind(commit_param(id))
@@ -489,6 +411,139 @@ async fn insert_commit(
     Ok((seq, inserted))
 }
 
+/// Rows per bulk node insert.
+///
+/// Each row binds two parameters and SQLite caps a statement's parameter
+/// count (32766 by default), so large inserts bind in batches. Every batch
+/// is one round trip to sqlx's SQLite worker thread, which costs far more
+/// than SQLite's own insert.
+const NODE_INSERT_BATCH: usize = 1024;
+
+/// Insert tree nodes children-first, ignoring hashes the store already has.
+async fn insert_tree_nodes(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    nodes: &TreeNodes,
+) -> Result<(), StorageError> {
+    insert_node_rows(
+        tx,
+        "INSERT OR IGNORE INTO region_tree (hash, node) ",
+        &nodes.region,
+        RegionHash::as_bytes,
+    )
+    .await?;
+    insert_node_rows(
+        tx,
+        "INSERT OR IGNORE INTO dim_tree (hash, node) ",
+        &nodes.dim,
+        DimHash::as_bytes,
+    )
+    .await?;
+    insert_node_rows(
+        tx,
+        "INSERT OR IGNORE INTO root_tree (hash, node) ",
+        &nodes.root,
+        RootHash::as_bytes,
+    )
+    .await?;
+    Ok(())
+}
+
+/// Insert one table's nodes in `NODE_INSERT_BATCH`-row statements.
+async fn insert_node_rows<H: Ord>(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    prefix: &'static str,
+    nodes: &BTreeMap<H, Vec<u8>>,
+    key: fn(&H) -> &[u8; 32],
+) -> Result<(), StorageError> {
+    let mut insert = sqlx::QueryBuilder::new(prefix);
+    let mut rows = nodes.iter().peekable();
+    while rows.peek().is_some() {
+        insert.reset().push_values(
+            rows.by_ref().take(NODE_INSERT_BATCH),
+            |mut row, (hash, node)| {
+                row.push_bind(&key(hash)[..]).push_bind(node);
+            },
+        );
+        insert.build().execute(&mut **tx).await.map_err(db_err)?;
+    }
+    Ok(())
+}
+
+/// Hashes per bulk node read.
+///
+/// Each hash binds one parameter and SQLite caps a statement's parameter
+/// count (32766 by default), so large reads bind in batches. Every batch
+/// is one round trip to sqlx's SQLite worker thread, which costs far more
+/// than SQLite's own lookup.
+const NODE_READ_BATCH: usize = 1024;
+
+/// The tree table a node read targets. An enum keeps an unknown table
+/// unrepresentable: no string fallback can quietly read the wrong level.
+#[derive(Clone, Copy)]
+enum TreeTable {
+    Root,
+    Dim,
+    Region,
+}
+
+impl TreeTable {
+    const fn select_node(self) -> &'static str {
+        match self {
+            Self::Root => "SELECT node FROM root_tree WHERE hash = ?",
+            Self::Dim => "SELECT node FROM dim_tree WHERE hash = ?",
+            Self::Region => "SELECT node FROM region_tree WHERE hash = ?",
+        }
+    }
+
+    const fn select_nodes(self) -> &'static str {
+        match self {
+            Self::Root => "SELECT hash, node FROM root_tree WHERE hash IN (",
+            Self::Dim => "SELECT hash, node FROM dim_tree WHERE hash IN (",
+            Self::Region => "SELECT hash, node FROM region_tree WHERE hash IN (",
+        }
+    }
+}
+
+impl SqliteMeta {
+    async fn node_bytes(
+        &self,
+        table: TreeTable,
+        hash: &[u8; 32],
+    ) -> Result<Option<Vec<u8>>, StorageError> {
+        sqlx::query(table.select_node())
+            .bind(&hash[..])
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db_err)?
+            .map(|row| row.try_get("node").map_err(db_err))
+            .transpose()
+    }
+
+    /// Fetch many nodes by hash, one `IN (...)` query per batch.
+    async fn node_bytes_many(
+        &self,
+        table: TreeTable,
+        hashes: &[[u8; 32]],
+    ) -> Result<BTreeMap<[u8; 32], Vec<u8>>, StorageError> {
+        let select = table.select_nodes();
+        let mut nodes = BTreeMap::new();
+        for batch in hashes.chunks(NODE_READ_BATCH) {
+            let mut query = sqlx::QueryBuilder::new(select);
+            let mut separated = query.separated(", ");
+            for hash in batch {
+                separated.push_bind(&hash[..]);
+            }
+            separated.push_unseparated(")");
+            let rows = query.build().fetch_all(&self.pool).await.map_err(db_err)?;
+            for row in &rows {
+                let hash: Vec<u8> = row.try_get("hash").map_err(db_err)?;
+                let node: Vec<u8> = row.try_get("node").map_err(db_err)?;
+                nodes.insert(hash32(hash)?, node);
+            }
+        }
+        Ok(nodes)
+    }
+}
 impl sekai_core::MetaStore for SqliteMeta {
     type Error = StorageError;
 
@@ -497,9 +552,28 @@ impl sekai_core::MetaStore for SqliteMeta {
         created_at_ms: u64,
         parents: &[CommitId],
     ) -> Result<CommitId, StorageError> {
-        let id = commit_hash(parents, created_at_ms, &[]);
+        // No snapshot changes: continue the lowest-hash parent's tree, or
+        // start with the canonical empty root.
+        let mut canonical_parents = parents.to_vec();
+        canonical_parents.sort();
+        canonical_parents.dedup();
+        let parent_root = match canonical_parents.first() {
+            Some(parent) => sqlx::query_scalar("SELECT root_hash FROM commits WHERE id = ?")
+                .bind(commit_param(*parent))
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(db_err)?
+                .map(root_hash_from_blob)
+                .transpose()?,
+            None => None,
+        };
+        let (root, nodes) = parent_root.map_or_else(sekai_core::tree::empty_tree, |root| {
+            (root, TreeNodes::default())
+        });
+        let id = commit_hash(parents, created_at_ms, root);
         let mut tx = self.pool.begin().await.map_err(db_err)?;
-        insert_commit(&mut tx, id, created_at_ms, parents).await?;
+        insert_tree_nodes(&mut tx, &nodes).await?;
+        insert_commit(&mut tx, id, created_at_ms, parents, root).await?;
         tx.commit().await.map_err(db_err)?;
         Ok(id)
     }
@@ -517,56 +591,95 @@ impl sekai_core::MetaStore for SqliteMeta {
             .collect()
     }
 
-    async fn record_chunk(
-        &mut self,
-        commit: CommitId,
-        coord: &ChunkCoord,
-        blob: Option<&ChunkHash>,
-    ) -> Result<(), StorageError> {
-        let mut tx = self.pool.begin().await.map_err(db_err)?;
-        let seq: i64 = sqlx::query_scalar("SELECT seq FROM commits WHERE id = ?")
-            .bind(commit_param(commit))
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(db_err)?
-            .ok_or(StorageError::UnknownCommit { id: commit })?;
-        sqlx::query(INSERT_CHUNK_SQL)
-            .bind(commit_param(commit))
-            .bind(seq)
-            .bind(i64::from(coord.dim.raw()))
-            .bind(i64::from(coord.kind.raw()))
-            .bind(i64::from(coord.x))
-            .bind(i64::from(coord.z))
-            .bind(blob.map(|h| &h.as_bytes()[..]))
-            .execute(&mut *tx)
-            .await
-            .map_err(db_err)?;
-        tx.commit().await.map_err(db_err)?;
-        Ok(())
-    }
-
     async fn lookup_chunk(
         &self,
         commit: CommitId,
         coord: &ChunkCoord,
-    ) -> Result<Option<ChunkHistoryEntry>, StorageError> {
-        // The nearest row introduced at the commit or at one of its
-        // ancestors: unchanged chunks have no row at newer commits
-        // (delta storage). The coord index serves the point lookup.
-        let row = sqlx::query(LOOKUP_CHUNK_SQL)
-            .bind(commit_param(commit))
-            .bind(i64::from(coord.dim.raw()))
-            .bind(i64::from(coord.kind.raw()))
-            .bind(i64::from(coord.x))
-            .bind(i64::from(coord.z))
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(db_err)?;
-        row.map(|row| decode_history(&row)).transpose()
+    ) -> Result<Option<CommitEntry>, StorageError> {
+        sekai_core::tree::lookup_chunk(self, commit, coord).await
+    }
+
+    async fn visit_commit_chunks<F>(&self, commit: CommitId, visit: F) -> Result<(), StorageError>
+    where
+        F: FnMut(&CommitEntry) -> bool + Send,
+    {
+        sekai_core::tree::visit_chunks(self, commit, visit).await
+    }
+
+    async fn read_root_node(&self, hash: RootHash) -> Result<RootNode, StorageError> {
+        let bytes = self
+            .node_bytes(TreeTable::Root, hash.as_bytes())
+            .await?
+            .ok_or_else(|| StorageError::MissingTree {
+                level: "root",
+                hash: hash.to_string(),
+            })?;
+        RootNode::decode(&bytes, hash).map_err(tree_err)
+    }
+
+    async fn read_dim_node(&self, hash: DimHash) -> Result<DimNode, StorageError> {
+        let bytes = self
+            .node_bytes(TreeTable::Dim, hash.as_bytes())
+            .await?
+            .ok_or_else(|| StorageError::MissingTree {
+                level: "dim",
+                hash: hash.to_string(),
+            })?;
+        DimNode::decode(&bytes, hash).map_err(tree_err)
+    }
+
+    async fn read_region_node(&self, hash: RegionHash) -> Result<RegionNode, StorageError> {
+        let bytes = self
+            .node_bytes(TreeTable::Region, hash.as_bytes())
+            .await?
+            .ok_or_else(|| StorageError::MissingTree {
+                level: "region",
+                hash: hash.to_string(),
+            })?;
+        RegionNode::decode(&bytes, hash).map_err(tree_err)
+    }
+
+    async fn read_dim_nodes(&self, hashes: &[DimHash]) -> Result<Vec<DimNode>, StorageError> {
+        let keys: Vec<[u8; 32]> = hashes.iter().map(|hash| *hash.as_bytes()).collect();
+        let nodes = self.node_bytes_many(TreeTable::Dim, &keys).await?;
+        hashes
+            .iter()
+            .map(|hash| {
+                let bytes =
+                    nodes
+                        .get(hash.as_bytes())
+                        .ok_or_else(|| StorageError::MissingTree {
+                            level: "dim",
+                            hash: hash.to_string(),
+                        })?;
+                DimNode::decode(bytes, *hash).map_err(tree_err)
+            })
+            .collect()
+    }
+
+    async fn read_region_nodes(
+        &self,
+        hashes: &[RegionHash],
+    ) -> Result<Vec<RegionNode>, StorageError> {
+        let keys: Vec<[u8; 32]> = hashes.iter().map(|hash| *hash.as_bytes()).collect();
+        let nodes = self.node_bytes_many(TreeTable::Region, &keys).await?;
+        hashes
+            .iter()
+            .map(|hash| {
+                let bytes =
+                    nodes
+                        .get(hash.as_bytes())
+                        .ok_or_else(|| StorageError::MissingTree {
+                            level: "region",
+                            hash: hash.to_string(),
+                        })?;
+                RegionNode::decode(bytes, *hash).map_err(tree_err)
+            })
+            .collect()
     }
 
     async fn lookup_commit(&self, id: CommitId) -> Result<Option<Commit>, StorageError> {
-        let row = sqlx::query("SELECT id, created_at_ms FROM commits WHERE id = ?")
+        let row = sqlx::query("SELECT id, created_at_ms, root_hash FROM commits WHERE id = ?")
             .bind(commit_param(id))
             .fetch_optional(&self.pool)
             .await
@@ -579,10 +692,12 @@ impl sekai_core::MetaStore for SqliteMeta {
     }
 
     async fn latest_commit(&self) -> Result<Option<Commit>, StorageError> {
-        let row = sqlx::query("SELECT id, created_at_ms FROM commits ORDER BY seq DESC LIMIT 1")
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(db_err)?;
+        let row = sqlx::query(
+            "SELECT id, created_at_ms, root_hash FROM commits ORDER BY seq DESC LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_err)?;
         let Some(row) = row else {
             return Ok(None);
         };
@@ -591,38 +706,11 @@ impl sekai_core::MetaStore for SqliteMeta {
         Ok(Some(decode_commit(&row, &parents)?))
     }
 
-    async fn visit_commit_chunks<F>(
-        &self,
-        commit: CommitId,
-        mut visit: F,
-    ) -> Result<(), StorageError>
-    where
-        F: FnMut(&ChunkHistoryEntry) -> bool + Send,
-    {
-        // Effective rows at `commit`: the newest row introduced at it or
-        // at one of its ancestors, tombstones included. Window functions
-        // keep the query portable across backends. A single fetch beats
-        // paged window queries (which recompute the aggregation per page),
-        // and every caller materializes the full effective set anyway
-        // (checkout groups, plan universes).
-        let rows = sqlx::query(VISIT_CHUNKS_SQL)
-            .bind(commit_param(commit))
-            .fetch_all(&self.pool)
-            .await
-            .map_err(db_err)?;
-        for row in &rows {
-            if !visit(&decode_history(row)?) {
-                break;
-            }
-        }
-        Ok(())
-    }
-
     async fn visit_commits<F>(&self, mut visit: F) -> Result<(), StorageError>
     where
         F: FnMut(&Commit) -> bool + Send,
     {
-        let rows = sqlx::query("SELECT id, created_at_ms FROM commits ORDER BY seq")
+        let rows = sqlx::query("SELECT id, created_at_ms, root_hash FROM commits ORDER BY seq")
             .fetch_all(&self.pool)
             .await
             .map_err(db_err)?;
@@ -647,33 +735,23 @@ impl sekai_core::MetaStore for SqliteMeta {
         Ok(())
     }
 
-    async fn visit_fresh_rows<F>(&self, commit: CommitId, mut visit: F) -> Result<(), StorageError>
-    where
-        F: FnMut(&ChunkHistoryEntry) -> bool + Send,
-    {
-        let rows = sqlx::query(
-            "SELECT commit_id, dim, kind, cx, cz, blob FROM chunk_history
-             WHERE commit_id = ?",
-        )
-        .bind(commit_param(commit))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db_err)?;
-        for row in &rows {
-            if !visit(&decode_history(row)?) {
-                break;
-            }
-        }
-        Ok(())
-    }
-
     async fn apply_commit_incremental(
         &mut self,
         created_at_ms: u64,
         parents: &[CommitId],
         entries: &[CommitEntry],
     ) -> Result<ApplyOutcome, StorageError> {
-        let commit = commit_hash(parents, created_at_ms, entries);
+        sekai_core::tree::apply_entries(self, created_at_ms, parents, entries).await
+    }
+
+    async fn commit_tree(
+        &mut self,
+        created_at_ms: u64,
+        parents: &[CommitId],
+        root: RootHash,
+        nodes: &TreeNodes,
+    ) -> Result<ApplyOutcome, StorageError> {
+        let commit = commit_hash(parents, created_at_ms, root);
         let mut tx = self.pool.begin().await.map_err(db_err)?;
         // The new commit must continue the active ref's target: moving the
         // ref onto an unrelated history would fork it. Read the target
@@ -694,25 +772,9 @@ impl sekai_core::MetaStore for SqliteMeta {
                 return Err(StorageError::NotContinuing { base });
             }
         }
-        let (seq, inserted) = insert_commit(&mut tx, commit, created_at_ms, parents).await?;
+        insert_tree_nodes(&mut tx, nodes).await?;
+        insert_commit(&mut tx, commit, created_at_ms, parents, root).await?;
         let id_param = commit_param(commit);
-        if inserted {
-            let mut insert = sqlx::QueryBuilder::new(
-                "INSERT INTO chunk_history (commit_id, seq, dim, kind, cx, cz, blob) ",
-            );
-            for batch in entries.chunks(CHUNK_INSERT_BATCH) {
-                insert.reset().push_values(batch, |mut row, entry| {
-                    row.push_bind(&id_param[..])
-                        .push_bind(seq)
-                        .push_bind(i64::from(entry.coord.dim.raw()))
-                        .push_bind(i64::from(entry.coord.kind.raw()))
-                        .push_bind(i64::from(entry.coord.x))
-                        .push_bind(i64::from(entry.coord.z))
-                        .push_bind(entry.blob.as_ref().map(|h| &h.as_bytes()[..]));
-                });
-                insert.build().execute(&mut *tx).await.map_err(db_err)?;
-            }
-        }
         // The active ref moves onto the new commit, in the same
         // transaction: a ref lagging behind its history would fork the
         // next commit.
@@ -992,7 +1054,6 @@ impl sekai_core::MetaStore for SqliteMeta {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sekai_core::{RegionKind, usecase::commit::stage_present};
     use sqlx::ConnectOptions as _;
     use sqlx::Connection as _;
     /// A temp dir whose name starts with the calling test's name
@@ -1361,12 +1422,14 @@ mod tests {
     }
 
     /// The version gate rejects any store whose `user_version` is not
-    /// `SCHEMA_VERSION` (16) before any table is touched. The immediately
-    /// previous store version, 15, is refused with `UnsupportedSchema
-    /// { found: 15, supported: SCHEMA_VERSION }`.
+    /// `SCHEMA_VERSION` (17) before any table is touched. A store from the
+    /// immediately previous version (16: delta history, `commits` without
+    /// `root_hash`) is refused with `UnsupportedSchema { found: 16,
+    /// supported: SCHEMA_VERSION }`, never opened and failed on the first
+    /// query.
     #[tokio::test]
     async fn a_store_from_the_previous_schema_version_is_refused() {
-        let (dir, _guard) = tempdir("version-15");
+        let (dir, _guard) = tempdir("version-16");
         let path = dir.join("meta.sqlite");
         let mut seed = SqliteConnectOptions::new()
             .filename(&path)
@@ -1374,8 +1437,28 @@ mod tests {
             .connect()
             .await
             .unwrap();
-        sqlx::query(SCHEMA).execute(&mut seed).await.unwrap();
-        sqlx::query("PRAGMA user_version=15")
+        // The schema 16 layout as shipped: delta history, no tree tables.
+        sqlx::query(
+            "CREATE TABLE commits(
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                id BLOB NOT NULL UNIQUE,
+                created_at_ms INTEGER NOT NULL
+            );
+            CREATE TABLE chunk_history(
+                commit_id BLOB NOT NULL REFERENCES commits(id),
+                seq INTEGER NOT NULL,
+                dim INTEGER NOT NULL,
+                kind INTEGER NOT NULL,
+                cx INTEGER NOT NULL,
+                cz INTEGER NOT NULL,
+                blob BLOB NULL,
+                PRIMARY KEY(commit_id, dim, kind, cx, cz)
+            );",
+        )
+        .execute(&mut seed)
+        .await
+        .unwrap();
+        sqlx::query("PRAGMA user_version=16")
             .execute(&mut seed)
             .await
             .unwrap();
@@ -1383,51 +1466,98 @@ mod tests {
         assert!(matches!(
             SqliteMeta::open(&path).await,
             Err(StorageError::UnsupportedSchema {
-                found: 15,
+                found: 16,
                 supported: SCHEMA_VERSION,
             })
         ));
     }
 
     #[tokio::test]
-    async fn unknown_stored_kind_fails_loudly() {
-        use sekai_core::MetaStore as _;
+    async fn commit_rows_store_canonical_tree_bytes() {
+        use sekai_core::{ChunkHash, Dimension, RegionKind};
         let mut meta = memory_meta().await;
-        let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
-        let commit = meta
-            .apply_commit(1_000, &[], &[stage_present(coord, ChunkHash::new([1; 32]))])
+        let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 5, 5);
+        let id = meta
+            .apply_commit_incremental(
+                1_000,
+                &[],
+                &[sekai_core::CommitEntry::new(
+                    coord,
+                    Some(ChunkHash::new([1; 32])),
+                )],
+            )
+            .await
+            .unwrap()
+            .id;
+        let record = meta.lookup_commit(id).await.unwrap().unwrap();
+
+        let root_bytes: Vec<u8> = sqlx::query_scalar("SELECT node FROM root_tree WHERE hash = ?")
+            .bind(&record.root.as_bytes()[..])
+            .fetch_one(&meta.pool)
             .await
             .unwrap();
-        sqlx::query("UPDATE chunk_history SET kind = 9")
-            .execute(&meta.pool)
+        let root = RootNode::decode(&root_bytes, record.root).unwrap();
+        let dim_hash = root.get(Dimension::OVERWORLD.raw()).unwrap();
+        let dim_bytes: Vec<u8> = sqlx::query_scalar("SELECT node FROM dim_tree WHERE hash = ?")
+            .bind(&dim_hash.as_bytes()[..])
+            .fetch_one(&meta.pool)
             .await
             .unwrap();
-        assert!(matches!(
-            meta.visit_fresh_rows(commit, |_| true).await,
-            Err(StorageError::UnknownRegionKind { kind: 9 })
-        ));
+        let dim = DimNode::decode(&dim_bytes, dim_hash).unwrap();
+        let region_hash = dim.get(RegionKind::Region, 0, 0).unwrap();
+        let region_bytes: Vec<u8> =
+            sqlx::query_scalar("SELECT node FROM region_tree WHERE hash = ?")
+                .bind(&region_hash.as_bytes()[..])
+                .fetch_one(&meta.pool)
+                .await
+                .unwrap();
+        let region = RegionNode::decode(&region_bytes, region_hash).unwrap();
+        assert_eq!(region.get(5, 5), Some(ChunkHash::new([1; 32])));
     }
 
     #[tokio::test]
-    async fn a_commit_spanning_insert_batches_records_every_row() {
+    async fn stored_tree_corruption_fails_loudly() {
         use sekai_core::MetaStore as _;
+        let meta = memory_meta().await;
+        let hash = RootHash::new([9; 32]);
+        sqlx::query("INSERT INTO root_tree (hash, node) VALUES (?, ?)")
+            .bind(&hash.as_bytes()[..])
+            .bind(Vec::<u8>::new())
+            .execute(&meta.pool)
+            .await
+            .unwrap();
+        let err = meta.read_root_node(hash).await.unwrap_err();
+        assert!(
+            matches!(
+                err,
+                StorageError::Tree(sekai_core::TreeError::HashMismatch { .. })
+            ),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_commit_spanning_node_insert_batches_records_every_region() {
+        use sekai_core::{ChunkHash, MetaStore as _, RegionKind};
         let mut meta = memory_meta().await;
-        let rows = CHUNK_INSERT_BATCH * 2 + 3;
+        // One chunk per region, so the region table alone spans three batches.
+        // Region nodes are content-addressed: a repeating blob would collapse
+        // same-slot regions into one node, so every blob must be distinct.
+        let rows = NODE_INSERT_BATCH * 2 + 3;
         let entries: Vec<CommitEntry> = (0..rows)
             .map(|i| {
-                let x = i32::try_from(i).unwrap();
+                let x = i32::try_from(i).unwrap() * 32;
                 let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, x, -x);
-                let blob =
-                    (i % 3 != 0).then(|| ChunkHash::new([u8::try_from(i % 251).unwrap(); 32]));
-                CommitEntry::new(coord, blob)
+                let mut hash = [0u8; 32];
+                hash[..2].copy_from_slice(&u16::try_from(i).unwrap().to_le_bytes());
+                CommitEntry::new(coord, Some(ChunkHash::new(hash)))
             })
             .collect();
         let commit = meta.apply_commit(1_000, &[], &entries).await.unwrap();
 
         let mut recorded = Vec::new();
-        meta.visit_commit_chunks(commit, |row| {
-            assert_eq!(row.commit, commit);
-            recorded.push(CommitEntry::new(row.coord, row.blob));
+        meta.visit_commit_chunks(commit, |entry| {
+            recorded.push(*entry);
             true
         })
         .await

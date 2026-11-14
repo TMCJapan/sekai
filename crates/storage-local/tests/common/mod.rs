@@ -4,7 +4,7 @@
 
 use sekai_core::{
     BlobStore, ChunkCoord, ChunkHash, CommitEntry, CommitId, Dimension, MetaStore, NamedScope,
-    Rect, RegionKind, ScopeName,
+    Rect, RefName, RegionKind, ScopeName,
 };
 
 const OVER: Dimension = Dimension::OVERWORLD;
@@ -12,6 +12,10 @@ const REGION: RegionKind = RegionKind::Region;
 
 pub const fn coord(x: i32, z: i32) -> ChunkCoord {
     ChunkCoord::new(OVER, REGION, x, z)
+}
+
+const fn present(x: i32, z: i32, byte: u8) -> CommitEntry {
+    CommitEntry::new(coord(x, z), Some(ChunkHash::new([byte; 32])))
 }
 
 /// Named scope CRUD: create, replace, list in name order, delete.
@@ -116,7 +120,11 @@ where
     M::Error: core::fmt::Debug,
 {
     assert!(meta.latest_commit().await.unwrap().is_none());
-    let id = meta.create_commit(1_000, &[]).await.unwrap();
+    let id = meta
+        .apply_commit_incremental(1_000, &[], &[present(0, 0, 1)])
+        .await
+        .unwrap()
+        .id;
     assert_eq!(meta.latest_commit().await.unwrap().unwrap().id, id);
     assert!(
         meta.lookup_commit(CommitId([0xFF; 32]))
@@ -124,9 +132,6 @@ where
             .unwrap()
             .is_none()
     );
-    meta.record_chunk(id, &coord(0, 0), Some(&ChunkHash::new([1; 32])))
-        .await
-        .unwrap();
     let row = meta.lookup_chunk(id, &coord(0, 0)).await.unwrap().unwrap();
     assert_eq!(row.blob, Some(ChunkHash::new([1; 32])));
     assert!(meta.lookup_chunk(id, &coord(1, 0)).await.unwrap().is_none());
@@ -136,34 +141,28 @@ where
     assert_eq!(listed.len(), 1);
 }
 
-/// Fresh-row visits and per-commit statistics.
+/// Per-commit statistics: fresh chunks, fresh tombstones, and new blobs.
 pub async fn fresh_stats<M>(meta: &mut M)
 where
     M: MetaStore,
     M::Error: core::fmt::Debug,
 {
     use sekai_core::usecase::graph::{CommitStats, commit_stats};
-    let first = meta.create_commit(1_000, &[]).await.unwrap();
-    meta.record_chunk(first, &coord(0, 0), Some(&ChunkHash::new([1; 32])))
+    let first = meta
+        .apply_commit_incremental(1_000, &[], &[present(0, 0, 1), present(1, 0, 1)])
         .await
-        .unwrap();
-    meta.record_chunk(first, &coord(1, 0), Some(&ChunkHash::new([1; 32])))
+        .unwrap()
+        .id;
+    let second = meta
+        .apply_commit_incremental(
+            2_000,
+            &[first],
+            &[present(0, 0, 2), CommitEntry::new(coord(1, 0), None)],
+        )
         .await
-        .unwrap();
-    let second = meta.create_commit(2_000, &[first]).await.unwrap();
-    meta.record_chunk(second, &coord(0, 0), Some(&ChunkHash::new([2; 32])))
-        .await
-        .unwrap();
-    meta.record_chunk(second, &coord(1, 0), None).await.unwrap();
+        .unwrap()
+        .id;
 
-    let mut fresh = 0usize;
-    meta.visit_fresh_rows(second, |_| {
-        fresh += 1;
-        true
-    })
-    .await
-    .unwrap();
-    assert_eq!(fresh, 2);
     assert_eq!(
         commit_stats(&*meta, first).await.unwrap(),
         CommitStats {
@@ -184,9 +183,95 @@ where
     );
 }
 
+/// Bulk tree reads: one node per input hash in input order, repeated
+/// hashes repeat nodes, unknown hashes fail, and a wide walk visits
+/// every chunk exactly once in coordinate order.
+pub async fn tree_bulk_reads<M>(meta: &mut M)
+where
+    M: MetaStore,
+    M::Error: core::fmt::Debug,
+{
+    use sekai_core::{DimHash, RegionHash};
+
+    let nether = ChunkCoord::new(Dimension::NETHER, REGION, 0, 0);
+    // The two overworld regions hold identical chunks, so they share
+    // one region node hash.
+    let id = meta
+        .apply_commit_incremental(
+            1_000,
+            &[],
+            &[
+                present(0, 0, 1),
+                present(32, 0, 1),
+                CommitEntry::new(nether, Some(ChunkHash::new([2; 32]))),
+            ],
+        )
+        .await
+        .unwrap()
+        .id;
+    let root = meta.lookup_commit(id).await.unwrap().unwrap().root;
+    let root_node = meta.read_root_node(root).await.unwrap();
+    let over_dim = root_node.get(OVER.raw()).unwrap();
+    let nether_dim = root_node.get(Dimension::NETHER.raw()).unwrap();
+
+    let dims = meta
+        .read_dim_nodes(&[nether_dim, over_dim, nether_dim])
+        .await
+        .unwrap();
+    assert_eq!(dims.len(), 3);
+    assert_eq!(dims[0], dims[2]);
+    assert_ne!(dims[0], dims[1]);
+    assert_eq!(dims[1], meta.read_dim_node(over_dim).await.unwrap());
+
+    let over = meta.read_dim_node(over_dim).await.unwrap();
+    let a = over.get(REGION, 0, 0).unwrap();
+    let b = over.get(REGION, 1, 0).unwrap();
+    assert_eq!(a, b, "identical regions share one node hash");
+    let regions = meta.read_region_nodes(&[a, b]).await.unwrap();
+    assert_eq!(regions.len(), 2);
+    assert_eq!(regions[0], regions[1]);
+    assert_eq!(regions[0].get(0, 0), Some(ChunkHash::new([1; 32])));
+
+    assert_eq!(meta.read_dim_nodes(&[]).await.unwrap(), []);
+    assert_eq!(meta.read_region_nodes(&[]).await.unwrap(), []);
+    assert!(
+        meta.read_dim_nodes(&[DimHash::new([0xFF; 32])])
+            .await
+            .is_err()
+    );
+    assert!(
+        meta.read_region_nodes(&[RegionHash::new([0xFF; 32])])
+            .await
+            .is_err()
+    );
+
+    // A walk spanning the backend's read batches visits every chunk
+    // exactly once, in coordinate order.
+    let many: Vec<CommitEntry> = (0..1_100)
+        .map(|i| present(i * 32, 0, u8::try_from(i % 251).unwrap()))
+        .collect();
+    let big = meta
+        .apply_commit_incremental(2_000, &[id], &many)
+        .await
+        .unwrap()
+        .id;
+    let mut coords = Vec::new();
+    meta.visit_commit_chunks(big, |entry| {
+        coords.push(entry.coord);
+        true
+    })
+    .await
+    .unwrap();
+    assert_eq!(
+        coords.len(),
+        1_101,
+        "1100 overworld chunks plus the nether one"
+    );
+    assert!(coords.windows(2).all(|pair| pair[0] < pair[1]));
+}
+
 /// The history graph: parents, the walk back to the root, and the
-/// effective state that follows the graph rather than the identifier
-/// order.
+/// snapshot inherited through the graph rather than identifier order.
 pub async fn history_graph<M>(meta: &mut M)
 where
     M: MetaStore,
@@ -194,15 +279,30 @@ where
 {
     use sekai_core::usecase::graph::{commit_ancestors, commit_history};
 
+    let main = RefName::parse("main").unwrap();
     // Two independent histories: the second root shares no ancestor with
-    // the first.
-    let first = meta.create_commit(1_000, &[]).await.unwrap();
-    meta.record_chunk(first, &coord(0, 0), Some(&ChunkHash::new([1; 32])))
+    // the first. Pointing the active ref back to unborn starts it.
+    let first = meta
+        .apply_commit_incremental(1_000, &[], &[present(0, 0, 1)])
         .await
-        .unwrap();
-    let second = meta.create_commit(2_000, &[first]).await.unwrap();
-    let other = meta.create_commit(3_000, &[]).await.unwrap();
-    let child = meta.create_commit(4_000, &[other]).await.unwrap();
+        .unwrap()
+        .id;
+    let second = meta
+        .apply_commit_incremental(2_000, &[first], &[])
+        .await
+        .unwrap()
+        .id;
+    meta.set_ref(&main, None, 2_500).await.unwrap();
+    let other = meta
+        .apply_commit_incremental(3_000, &[], &[])
+        .await
+        .unwrap()
+        .id;
+    let child = meta
+        .apply_commit_incremental(4_000, &[other], &[])
+        .await
+        .unwrap()
+        .id;
 
     // The graph, not the local record order, decides what a commit
     // inherits: the chunk of `first` is invisible from `child`.
@@ -314,7 +414,7 @@ where
         .unwrap()
         .id;
 
-    // The referenced blob resolves through the committed row.
+    // The referenced blob resolves through the committed snapshot.
     let row = store
         .meta()
         .lookup_chunk(commit, &coord(0, 0))
