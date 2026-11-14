@@ -1,6 +1,7 @@
 # ADR-0013: Parse-time CLI validation and tag subcommands
 
-- Status: Accepted
+- Status: Amended by ADR-0029 (`branch` and `tag` use Git's mode
+  options instead of subcommands)
 - Date: 2026-10-02
 
 ## Context
