@@ -515,25 +515,56 @@ pub async fn build_update<M: MetaStore>(
             .insert(local_slot(coord), entry.blob);
     }
 
+    // Prefetch every node the merge touches, one bulk read per level: a
+    // full-world commit must not pay a backend round trip per region.
+    let mut dims = Vec::new();
+    let mut dim_hashes = Vec::new();
+    for dim in changes.keys() {
+        if let Some(hash) = root_entries.get(dim).copied() {
+            dims.push(*dim);
+            dim_hashes.push(hash);
+        }
+    }
+    let mut old_dims: BTreeMap<i32, DimNode> = BTreeMap::new();
+    for (dim, node) in dims
+        .into_iter()
+        .zip(meta.read_dim_nodes(&dim_hashes).await?)
+    {
+        old_dims.insert(dim, node);
+    }
+
+    let mut dim_entries: BTreeMap<i32, BTreeMap<RegionKeyParts, RegionHash>> = BTreeMap::new();
+    let mut region_hashes = Vec::new();
+    for (dim, region_changes) in &changes {
+        let entries: BTreeMap<RegionKeyParts, RegionHash> =
+            old_dims.get(dim).map_or_default(|node| {
+                node.entries()
+                    .iter()
+                    .map(|entry| ((entry.kind, entry.rx, entry.rz), entry.hash))
+                    .collect()
+            });
+        for region_key in region_changes.keys() {
+            if let Some(hash) = entries.get(region_key).copied() {
+                region_hashes.push(hash);
+            }
+        }
+        dim_entries.insert(*dim, entries);
+    }
+    let region_nodes = meta.read_region_nodes(&region_hashes).await?;
+    let old_regions: BTreeMap<RegionHash, RegionNode> =
+        region_hashes.into_iter().zip(region_nodes).collect();
+
     let mut nodes = TreeNodes::default();
     for (dim, region_changes) in changes {
         let old_dim_hash = root_entries.get(&dim).copied();
-        let old_dim = match old_dim_hash {
-            Some(hash) => meta.read_dim_node(hash).await?,
-            None => DimNode::default(),
-        };
-        let mut dim_entries: BTreeMap<RegionKeyParts, RegionHash> = old_dim
-            .entries()
-            .iter()
-            .map(|entry| ((entry.kind, entry.rx, entry.rz), entry.hash))
-            .collect();
+        let mut dim_entries = dim_entries.remove(&dim).unwrap_or_default();
         for (region_key, slot_changes) in region_changes {
             let (kind, rx, rz) = region_key;
             let old_region_hash = dim_entries.get(&region_key).copied();
-            let old_region = match old_region_hash {
-                Some(hash) => meta.read_region_node(hash).await?,
-                None => RegionNode::default(),
-            };
+            let old_region = old_region_hash
+                .and_then(|hash| old_regions.get(&hash))
+                .cloned()
+                .unwrap_or_default();
             let mut slots: BTreeMap<(u8, u8), ChunkHash> = old_region
                 .entries()
                 .iter()
@@ -647,22 +678,31 @@ where
         return Ok(());
     };
     let root = meta.read_root_node(record.root).await?;
-    let mut entries = Vec::new();
-    for root_entry in root.entries() {
-        let dim = meta.read_dim_node(root_entry.hash).await?;
+    // One bulk read per level: the walk costs a constant number of
+    // backend reads, not one per dimension or region.
+    let dim_hashes: Vec<DimHash> = root.entries().iter().map(|entry| entry.hash).collect();
+    let dims = meta.read_dim_nodes(&dim_hashes).await?;
+    let mut owners = Vec::new();
+    let mut region_hashes = Vec::new();
+    for (root_entry, dim) in root.entries().iter().zip(&dims) {
         for dim_entry in dim.entries() {
-            let region = meta.read_region_node(dim_entry.hash).await?;
-            for region_entry in region.entries() {
-                let coord = coord_from_parts(
-                    root_entry.dim,
-                    dim_entry.kind,
-                    dim_entry.rx,
-                    dim_entry.rz,
-                    region_entry.cx,
-                    region_entry.cz,
-                );
-                entries.push(CommitEntry::new(coord, Some(region_entry.hash)));
-            }
+            owners.push((root_entry.dim, *dim_entry));
+            region_hashes.push(dim_entry.hash);
+        }
+    }
+    let regions = meta.read_region_nodes(&region_hashes).await?;
+    let mut entries = Vec::new();
+    for ((dim, dim_entry), region) in owners.into_iter().zip(regions) {
+        for region_entry in region.entries() {
+            let coord = coord_from_parts(
+                dim,
+                dim_entry.kind,
+                dim_entry.rx,
+                dim_entry.rz,
+                region_entry.cx,
+                region_entry.cz,
+            );
+            entries.push(CommitEntry::new(coord, Some(region_entry.hash)));
         }
     }
     entries.sort_by_key(|entry| entry.coord);

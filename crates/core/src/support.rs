@@ -299,6 +299,38 @@ impl MetaStore for MemMeta {
         core::future::ready(node)
     }
 
+    fn read_dim_nodes(
+        &self,
+        hashes: &[DimHash],
+    ) -> impl Future<Output = Result<Vec<DimNode>, MemError>> + Send {
+        let nodes = hashes
+            .iter()
+            .map(|hash| {
+                self.dim_nodes
+                    .get(hash)
+                    .cloned()
+                    .ok_or(MemError::MissingTree { level: "dim" })
+            })
+            .collect();
+        core::future::ready(nodes)
+    }
+
+    fn read_region_nodes(
+        &self,
+        hashes: &[RegionHash],
+    ) -> impl Future<Output = Result<Vec<RegionNode>, MemError>> + Send {
+        let nodes = hashes
+            .iter()
+            .map(|hash| {
+                self.region_nodes
+                    .get(hash)
+                    .cloned()
+                    .ok_or(MemError::MissingTree { level: "region" })
+            })
+            .collect();
+        core::future::ready(nodes)
+    }
+
     fn commit_tree(
         &mut self,
         created_at_ms: u64,

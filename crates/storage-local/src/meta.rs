@@ -443,6 +443,14 @@ async fn insert_tree_nodes(
     Ok(())
 }
 
+/// Hashes per bulk node read.
+///
+/// Each hash binds one parameter and SQLite caps a statement's parameter
+/// count (32766 by default), so large reads bind in batches. Every batch
+/// is one round trip to sqlx's SQLite worker thread, which costs far more
+/// than SQLite's own lookup.
+const NODE_READ_BATCH: usize = 1024;
+
 impl SqliteMeta {
     async fn node_bytes(
         &self,
@@ -461,6 +469,35 @@ impl SqliteMeta {
             .map_err(db_err)?
             .map(|row| row.try_get("node").map_err(db_err))
             .transpose()
+    }
+
+    /// Fetch many nodes by hash, one `IN (...)` query per batch.
+    async fn node_bytes_many(
+        &self,
+        table: &'static str,
+        hashes: &[[u8; 32]],
+    ) -> Result<BTreeMap<[u8; 32], Vec<u8>>, StorageError> {
+        let select = match table {
+            "root_tree" => "SELECT hash, node FROM root_tree WHERE hash IN (",
+            "dim_tree" => "SELECT hash, node FROM dim_tree WHERE hash IN (",
+            _ => "SELECT hash, node FROM region_tree WHERE hash IN (",
+        };
+        let mut nodes = BTreeMap::new();
+        for batch in hashes.chunks(NODE_READ_BATCH) {
+            let mut query = sqlx::QueryBuilder::new(select);
+            let mut separated = query.separated(", ");
+            for hash in batch {
+                separated.push_bind(&hash[..]);
+            }
+            separated.push_unseparated(")");
+            let rows = query.build().fetch_all(&self.pool).await.map_err(db_err)?;
+            for row in &rows {
+                let hash: Vec<u8> = row.try_get("hash").map_err(db_err)?;
+                let node: Vec<u8> = row.try_get("node").map_err(db_err)?;
+                nodes.insert(hash32(hash)?, node);
+            }
+        }
+        Ok(nodes)
     }
 }
 impl sekai_core::MetaStore for SqliteMeta {
@@ -556,6 +593,45 @@ impl sekai_core::MetaStore for SqliteMeta {
                 hash: hash.to_string(),
             })?;
         RegionNode::decode(&bytes, hash).map_err(tree_err)
+    }
+
+    async fn read_dim_nodes(&self, hashes: &[DimHash]) -> Result<Vec<DimNode>, StorageError> {
+        let keys: Vec<[u8; 32]> = hashes.iter().map(|hash| *hash.as_bytes()).collect();
+        let nodes = self.node_bytes_many("dim_tree", &keys).await?;
+        hashes
+            .iter()
+            .map(|hash| {
+                let bytes =
+                    nodes
+                        .get(hash.as_bytes())
+                        .ok_or_else(|| StorageError::MissingTree {
+                            level: "dim",
+                            hash: hash.to_string(),
+                        })?;
+                DimNode::decode(bytes, *hash).map_err(tree_err)
+            })
+            .collect()
+    }
+
+    async fn read_region_nodes(
+        &self,
+        hashes: &[RegionHash],
+    ) -> Result<Vec<RegionNode>, StorageError> {
+        let keys: Vec<[u8; 32]> = hashes.iter().map(|hash| *hash.as_bytes()).collect();
+        let nodes = self.node_bytes_many("region_tree", &keys).await?;
+        hashes
+            .iter()
+            .map(|hash| {
+                let bytes =
+                    nodes
+                        .get(hash.as_bytes())
+                        .ok_or_else(|| StorageError::MissingTree {
+                            level: "region",
+                            hash: hash.to_string(),
+                        })?;
+                RegionNode::decode(bytes, *hash).map_err(tree_err)
+            })
+            .collect()
     }
 
     async fn lookup_commit(&self, id: CommitId) -> Result<Option<Commit>, StorageError> {
