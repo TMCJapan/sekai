@@ -14,7 +14,7 @@ use sekai_util::{ChunkCoord, ChunkHash, CommitId, RegionKey};
 pub struct CheckoutReport {
     /// Region files rewritten.
     pub files_written: usize,
-    /// Region files deleted (post-commit or fully tombstoned).
+    /// Region files deleted (absent from the commit's snapshot).
     pub files_deleted: usize,
     /// Chunks restored from CAS blobs.
     pub chunks_restored: usize,
