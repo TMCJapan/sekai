@@ -32,7 +32,7 @@ use tokio::task::JoinSet;
 
 use crate::error::AppError;
 use crate::instance::{WorldGuard, WorldHandle, WorldHandleMut};
-use crate::progress::{ProgressBuilder, Reporter};
+use crate::progress::{BuildProgress, Progress};
 use crate::regions::discover_regions;
 use crate::time::now_ms;
 use crate::workers::worker_slots;
@@ -162,14 +162,14 @@ where
     ///
     /// Only `scope` is ingested: out-of-scope coordinates record no rows and
     /// no tombstones, resolving through fallback from earlier commits.
-    /// `progress` fires as changed files complete, possibly before their
-    /// blobs are synced: a full count does not mean the commit is durable
-    /// yet. The report is identical with or without timings.
+    /// `progress_builder` counts changed files as they complete, possibly
+    /// before their blobs are synced: a full count does not mean the commit
+    /// is durable yet. The report is identical with or without timings.
     pub async fn commit(
         &mut self,
         options: CommitOptions,
         scope: Scope,
-        progress: &impl ProgressBuilder,
+        progress_builder: &impl BuildProgress,
     ) -> Result<(CommitReport, CommitTimings), AppError> {
         let total = Instant::now();
         // The world stays stable for the whole read pass; the store needs no
@@ -183,7 +183,16 @@ where
             walk,
             discover,
             universe_load,
-        } = prepare(store, self.world, &options, &scope, progress, false, &guard).await?;
+        } = prepare(
+            store,
+            self.world,
+            &options,
+            &scope,
+            progress_builder,
+            false,
+            &guard,
+        )
+        .await?;
 
         let created_at_ms = now_ms()?;
         // Persist blob writes before the metadata commit: puts only append
@@ -232,14 +241,14 @@ struct Prepared {
 /// changed files - the whole pipeline `commit` and `status` share.
 ///
 /// Under `dry_run` blobs are probed instead of stored, so the staged rows
-/// are the same numbers a real commit would commit. The reporter is built
-/// from `progress` once the number of files to ingest is known.
+/// are the same numbers a real commit would commit. `progress_builder`
+/// counts the files to ingest.
 async fn prepare<W: WorldTree, S: SekaiStore>(
     store: &S,
     world: &W,
     options: &CommitOptions,
     scope: &Scope,
-    progress: &impl ProgressBuilder,
+    progress_builder: &impl BuildProgress,
     dry_run: bool,
     guard: &Arc<WorldGuard<W::Lock>>,
 ) -> Result<Prepared, AppError>
@@ -270,13 +279,12 @@ where
         .filter_map(|key| regions.remove_entry(key))
         .collect();
 
-    let reporter = progress.start(changed.len());
     let (ingested, walk) = ingest_changed::<W::Region, S, W::Lock>(
         changed,
         store.blob().clone(),
         options,
         scope.clone(),
-        reporter,
+        progress_builder,
         dry_run,
         guard,
     )
@@ -300,15 +308,15 @@ where
     /// CAS puts, no metadata commit, no region writes. Only lock files may
     /// be created (ADR-0014).
     ///
-    /// Only `scope` is previewed. `progress` fires as changed files
-    /// complete. Staged rows are assembled exactly as commit would, then
+    /// Only `scope` is previewed. `progress_builder` counts changed files as
+    /// they complete. Staged rows are assembled exactly as commit would, then
     /// counted instead of committed - so counts match a subsequent commit
     /// unless the world changes in between.
     pub async fn status(
         &self,
         options: StatusOptions,
         scope: Scope,
-        progress: &impl ProgressBuilder,
+        progress_builder: &impl BuildProgress,
     ) -> Result<(StatusReport, StatusTimings), AppError> {
         let guard = WorldGuard::acquire(self.world, WorldLockMode::Shared)?;
         status_impl(
@@ -316,7 +324,7 @@ where
             self.world,
             options,
             scope,
-            progress,
+            progress_builder,
             &guard,
         )
         .await
@@ -332,9 +340,9 @@ where
         &self,
         options: StatusOptions,
         scope: Scope,
-        progress: &impl ProgressBuilder,
+        progress_builder: &impl BuildProgress,
     ) -> Result<(StatusReport, StatusTimings), AppError> {
-        self.view().status(options, scope, progress).await
+        self.view().status(options, scope, progress_builder).await
     }
 }
 
@@ -344,7 +352,7 @@ async fn status_impl<W: WorldTree, S: SekaiStore>(
     world: &W,
     options: StatusOptions,
     scope: Scope,
-    progress: &impl ProgressBuilder,
+    progress_builder: &impl BuildProgress,
     guard: &Arc<WorldGuard<W::Lock>>,
 ) -> Result<(StatusReport, StatusTimings), AppError>
 where
@@ -362,7 +370,16 @@ where
         walk,
         discover,
         universe_load,
-    } = prepare(store, world, &preview, &scope, progress, true, guard).await?;
+    } = prepare(
+        store,
+        world,
+        &preview,
+        &scope,
+        progress_builder,
+        true,
+        guard,
+    )
+    .await?;
 
     let new_chunks = staged.entries.iter().filter(|e| e.blob.is_some()).count();
     let changed_regions: BTreeSet<RegionKey> = staged
@@ -453,20 +470,20 @@ struct IngestTimings {
 /// is append-only, so concurrent puts never conflict. Nothing here syncs
 /// the store; the caller places that barrier before the metadata commit.
 ///
-/// `progress` fires per file as its task is joined, before the caller's
-/// sync.
+/// `progress` steps as each file's task is joined.
 async fn ingest_changed<R: RegionFile, S: SekaiStore, L: WorldLock>(
     changed: Vec<(RegionKey, R)>,
     cas: S::Blobs,
     options: &CommitOptions,
     scope: Scope,
-    mut progress: impl Reporter,
+    progress_builder: &impl BuildProgress,
     dry_run: bool,
     guard: &Arc<WorldGuard<L>>,
 ) -> Result<(Ingested, IngestTimings), AppError>
 where
     AppError: From<R::Error>,
 {
+    let mut progress = progress_builder.build_progress(changed.len());
     let mut walk = RegionWalk {
         timings: Vec::with_capacity(changed.len()),
         ..Default::default()
@@ -485,15 +502,13 @@ where
     for file in queued.by_ref().take(slots) {
         spawn(&mut set, file);
     }
-    let mut files_done = 0usize;
     // Completion order surfaces a failed file at once; returning drops the
     // set, which aborts the files still in flight.
     while let Some(joined) = set.join_next().await {
         let outcome = joined.map_err(|source| {
             AppError::Storage(StorageError::backend("ingest worker", source))
         })??;
-        files_done += 1;
-        progress.step(files_done);
+        progress.step();
         merge_outcome(&mut walk, outcome);
         if let Some(file) = queued.next() {
             spawn(&mut set, file);

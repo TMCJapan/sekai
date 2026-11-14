@@ -12,7 +12,7 @@ use sekai_world::{Region, RegionFile, WorldLockMode, WorldTree};
 
 use crate::error::AppError;
 use crate::instance::{SekaiInstance, WorldGuard, WorldHandle, WorldHandleMut};
-use crate::progress::{ProgressBuilder, Reporter};
+use crate::progress::{BuildProgress, Progress};
 use crate::regions::discover_regions;
 
 /// Per-phase timings for chunk AST diffs. Informational only; never
@@ -157,13 +157,14 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// per-phase timings. Both sides compare the digests already recorded at
     /// commit time, so no blob is fetched or decoded. A chunk absent (or
     /// tombstoned) on both sides yields an empty [`ChunkPayloadDiff`]; present
-    /// on exactly one side keeps `None` for the other.
+    /// on exactly one side keeps `None` for the other. `progress_builder`
+    /// counts `coords`.
     pub async fn diff_chunks(
         &self,
         old_commit: CommitId,
         new_commit: CommitId,
         coords: &[ChunkCoord],
-        progress: &impl ProgressBuilder,
+        progress_builder: &impl BuildProgress,
     ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
         let total_started = Instant::now();
         let mut timings = DiffTimings::default();
@@ -177,7 +178,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
                 store: &self.store,
                 id: new_commit,
             },
-            progress.start(coords.len()),
+            progress_builder,
             &mut timings,
         )
         .await?;
@@ -270,12 +271,12 @@ where
     /// commit the next one would continue. The commit side is a metadata
     /// lookup; the world side (region lookup, read, decompression, digesting)
     /// counts under `blob_fetch`, and comparing the two digests under
-    /// `diff_compute`.
+    /// `diff_compute`. `progress_builder` counts `coords`.
     pub async fn diff_world_chunks(
         &self,
         commit: Option<CommitId>,
         coords: &[ChunkCoord],
-        progress: &impl ProgressBuilder,
+        progress_builder: &impl BuildProgress,
     ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
         // Held across resolution and the reads below: the world snapshot
         // must outlive the operation.
@@ -300,7 +301,7 @@ where
             WorldDiff {
                 regions: discover_regions(self.world)?,
             },
-            progress.start(coords.len()),
+            progress_builder,
             &mut timings,
         )
         .await?;
@@ -329,10 +330,10 @@ where
         &self,
         commit: Option<CommitId>,
         coords: &[ChunkCoord],
-        progress: &impl ProgressBuilder,
+        progress_builder: &impl BuildProgress,
     ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
         self.view()
-            .diff_world_chunks(commit, coords, progress)
+            .diff_world_chunks(commit, coords, progress_builder)
             .await
     }
 }
@@ -415,11 +416,12 @@ async fn diff_coords(
     coords: &[ChunkCoord],
     old: impl DiffSource,
     new: impl DiffSource,
-    mut progress: impl Reporter,
+    progress_builder: &impl BuildProgress,
     timings: &mut DiffTimings,
 ) -> Result<Vec<ChunkDiff>, AppError> {
+    let mut progress = progress_builder.build_progress(coords.len());
     let mut out = Vec::with_capacity(coords.len());
-    for (index, coord) in coords.iter().enumerate() {
+    for coord in coords {
         let started = Instant::now();
         let old_side = old.payload(coord).await?;
         let new_side = new.payload(coord).await?;
@@ -428,7 +430,7 @@ async fn diff_coords(
         let started = Instant::now();
         let entries = ChunkPayloadDiff::from_sides(old_side.digest?, new_side.digest?);
         timings.diff_compute += started.elapsed();
-        progress.step(index + 1);
+        progress.step();
         out.push(ChunkDiff {
             coord: *coord,
             entries,

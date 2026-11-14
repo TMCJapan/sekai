@@ -34,7 +34,7 @@ pub use commit::{
 pub use diff::{ChunkDiff, DiffTimings, world_chunk_coords};
 pub use error::AppError;
 pub use instance::{SekaiInstance, WorldHandle, WorldHandleMut};
-pub use progress::{ProgressBuilder, Reporter};
+pub use progress::{BuildProgress, Progress};
 pub use sekai_core::{
     Area, CheckoutReport, ChunkCoord, ChunkHash, Commit, CommitId, CommitRef, CommitReport,
     CommitStats, DEFAULT_REF_NAME, Dimension, NamedScope, NamedScopeError, Rect, RefName,

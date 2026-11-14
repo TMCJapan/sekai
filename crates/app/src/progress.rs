@@ -1,29 +1,29 @@
 //! Progress reporting seam between the operations and their callers.
 //!
-//! An operation asks its [`ProgressBuilder`] for a reporter once it knows
-//! how many items the run holds, then reports the running count. What the
-//! items are is the caller's business: it chose the operation.
+//! An operation asks its [`BuildProgress`] for a [`Progress`] once it knows
+//! how many items the run holds, then advances that progress as items
+//! finish. What the items are is the caller's business: it chose the
+//! operation.
 
-/// Hands an operation the reporter for its run, sized by the run's total.
+/// Hands an operation the [`Progress`] for its run, sized by the run's total.
 ///
-/// `()` is the builder to pass when no progress is wanted. A reporter may
-/// borrow the builder: the operation holds it only while it runs.
-pub trait ProgressBuilder: Sync {
-    /// Reporter for one run over `total` items.
-    fn start(&self, total: usize) -> impl Reporter;
+/// Pass `()` when no progress is wanted. The progress may borrow its
+/// builder: the operation holds it only while it runs.
+pub trait BuildProgress: Sync {
+    /// Progress for one run over `total` items.
+    fn build_progress(&self, total: usize) -> impl Progress;
 }
 
-/// Receives one run's running count.
-pub trait Reporter: Send {
-    /// Record one finished item: `done` of the run's items have finished
-    /// so far.
-    fn step(&mut self, done: usize);
+/// Receives one run's finished items.
+pub trait Progress: Send {
+    /// Record one more finished item.
+    fn step(&mut self);
 }
 
-impl ProgressBuilder for () {
-    fn start(&self, _: usize) -> impl Reporter {}
+impl BuildProgress for () {
+    fn build_progress(&self, _: usize) -> impl Progress {}
 }
 
-impl Reporter for () {
-    fn step(&mut self, _: usize) {}
+impl Progress for () {
+    fn step(&mut self) {}
 }

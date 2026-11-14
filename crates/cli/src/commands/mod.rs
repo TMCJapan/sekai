@@ -46,6 +46,7 @@ async fn resolve_selection<S: SekaiStore>(
 pub struct ReportOut {
     pub timing: bool,
     pub json: bool,
+    pub progress: bool,
     pub style: Styler,
 }
 
@@ -54,6 +55,7 @@ impl ReportOut {
         Self {
             timing: output.timing,
             json: output.json,
+            progress: output.progress,
             style,
         }
     }
@@ -68,14 +70,12 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
             world,
             output,
             jobs,
-            progress,
             selection,
         } => {
             commit::run(
                 &cli.store,
                 world,
                 *jobs,
-                *progress,
                 selection,
                 ReportOut::of(*output, style),
             )
@@ -84,7 +84,6 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
         Command::Status {
             world,
             output,
-            progress,
             selection,
             jobs,
         } => {
@@ -92,7 +91,6 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
                 &cli.store,
                 world,
                 *jobs,
-                *progress,
                 selection,
                 ReportOut::of(*output, style),
             )
@@ -103,7 +101,6 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
             commit,
             output,
             jobs,
-            progress,
             selection,
             keep_post_commit_files,
             keep_post_commit_chunks,
@@ -115,7 +112,6 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
                 &cli.store,
                 world,
                 commit,
-                *progress,
                 selection,
                 &checkout::CheckoutFlags {
                     keep_post_commit_files: *keep_post_commit_files,

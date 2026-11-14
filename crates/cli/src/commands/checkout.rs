@@ -5,7 +5,7 @@ use sekai_app::{CheckoutReport, CheckoutTimings, HostWorldTree};
 use serde::Serialize;
 use std::path::Path;
 
-use super::progress::{BarProgress, Unit};
+use super::progress::{Bars, Unit};
 use super::{ReportOut, resolve_selection};
 use crate::cli::{CommitRef, OnMissingBlob, OnMissingFile, Selection};
 use crate::envelope::envelope_ok;
@@ -42,7 +42,6 @@ pub async fn run(
     store: &str,
     world_path: impl AsRef<Path>,
     commit: &CommitRef,
-    progress: bool,
     selection: &Selection,
     flags: &CheckoutFlags,
     out: ReportOut,
@@ -67,10 +66,10 @@ pub async fn run(
             policy_summary(flags),
         );
     }
-    let bar = BarProgress::new(progress, Unit::Files);
+    let bars = Bars::new(out.progress, Unit::Files);
     let (report, timings) = instance
         .world_mut(&mut world)
-        .checkout(id, options, scope, &bar)
+        .checkout(id, options, scope, &bars)
         .await
         .with_context(|| {
             format!(
@@ -78,7 +77,6 @@ pub async fn run(
                 world_path.as_ref().display()
             )
         })?;
-    bar.finish();
     if out.json {
         println!(
             "{}",

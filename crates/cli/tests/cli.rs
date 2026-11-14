@@ -57,11 +57,11 @@ fn parses_subcommands() {
     assert!(matches!(
         cli.command,
         Command::Status {
-            progress: false,
             jobs: 0,
             output: TimingArgs {
                 timing: false,
                 json: false,
+                progress: false,
             },
             ..
         }
@@ -78,6 +78,7 @@ fn parses_subcommands() {
             output: TimingArgs {
                 timing: true,
                 json: true,
+                ..
             },
             ..
         }
@@ -91,14 +92,20 @@ fn parses_progress_flag() {
         .expect("commit --progress parses");
     assert!(matches!(
         cli.command,
-        Command::Commit { progress: true, .. }
+        Command::Commit {
+            output: TimingArgs { progress: true, .. },
+            ..
+        }
     ));
 
     let cli = Cli::try_parse_from(["sekai", "commit", "world"]).expect("commit parses");
     assert!(matches!(
         cli.command,
         Command::Commit {
-            progress: false,
+            output: TimingArgs {
+                progress: false,
+                ..
+            },
             ..
         }
     ));
@@ -141,6 +148,7 @@ fn parses_diff_command() {
             output: TimingArgs {
                 timing: false,
                 json: false,
+                progress: false,
             },
             show_values: false,
             ..
@@ -182,6 +190,7 @@ fn parses_diff_command() {
             output: TimingArgs {
                 timing: false,
                 json: false,
+                progress: false,
             },
             show_values: false,
             ..
@@ -497,6 +506,7 @@ fn parses_timing_and_json_flags() {
             output: TimingArgs {
                 timing: true,
                 json: true,
+                ..
             },
             ..
         }
@@ -677,6 +687,7 @@ fn parses_timing_and_json_flags() {
             output: TimingArgs {
                 timing: true,
                 json: true,
+                ..
             },
             ..
         })
