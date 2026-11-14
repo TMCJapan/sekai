@@ -46,6 +46,7 @@ pub use sekai_storage_local::local_store_exists;
 pub use sekai_world::{
     Region, RegionFile, UnguardedReason, WorldLock, WorldLockMode, WorldLockState, WorldTree,
 };
+#[cfg(feature = "backend-local")]
 pub use sekai_world_local::{
     HostRegion, HostWorldLock, HostWorldLockError, HostWorldTree, WorldError,
 };

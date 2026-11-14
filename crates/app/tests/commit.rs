@@ -742,10 +742,7 @@ async fn missing_file_error_policy_refuses_to_guess() {
         .await
         .unwrap_err();
     assert!(
-        matches!(
-            error,
-            sekai_app::AppError::World(sekai_app::WorldError::UnknownRegionPath { .. })
-        ),
+        matches!(error, sekai_app::AppError::MissingRegionFile { .. }),
         "unexpected error: {error}"
     );
     assert!(!region.exists());
@@ -805,10 +802,7 @@ async fn missing_file_refusal_leaves_the_world_untouched() {
         .await
         .unwrap_err();
     assert!(
-        matches!(
-            error,
-            sekai_app::AppError::World(sekai_app::WorldError::UnknownRegionPath { .. })
-        ),
+        matches!(error, sekai_app::AppError::MissingRegionFile { .. }),
         "unexpected error: {error}"
     );
     assert!(!missing.exists());

@@ -20,6 +20,7 @@ pub(crate) fn duplicate_region(
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     /// World filesystem operation failed.
+    #[cfg(feature = "backend-local")]
     #[error(transparent)]
     World(#[from] sekai_world_local::WorldError),
     /// Storage backend operation failed.
@@ -40,6 +41,13 @@ pub enum AppError {
     /// Checkout plan could not be resolved.
     #[error("{0}")]
     Checkout(sekai_core::CheckoutError<sekai_storage::StorageError>),
+    /// A commit-known region file is missing on disk and the checkout
+    /// policy refuses to guess where to rebuild it.
+    #[error("region file r.{region_x}.{region_z}.mca of dim {dim_code}, kind {kind_code} is missing and the checkout policy refuses to derive its location", dim_code = key.dim.raw(), kind_code = key.kind.raw(), region_x = key.rx, region_z = key.rz)]
+    MissingRegionFile {
+        /// Identity of the missing region file.
+        key: RegionKey,
+    },
     /// Chunk hashing failed.
     #[error(transparent)]
     ChunkHash(#[from] sekai_anvil::ChunkHashError),

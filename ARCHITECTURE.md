@@ -412,16 +412,18 @@ produced them. The scope is a filter, not a partition:
 ## Backend Selection
 
 Compile-time, gated on the backend crate: `app` exposes a `backend-local`
-feature (default-on) that pulls in `sekai-storage-local`; `sekai-cli`
-inherits it through `sekai-app` and needs no features of its own. The
-local backend is the only one shipped, and `--store` names its root
-directory directly; there is no runtime URL selection. A backend crate
-implements `SekaiStoreOpener` for its store type, so the backend owns
-the meaning of the location string that names it.
+feature (default-on) that pulls in `sekai-storage-local` and
+`sekai-world-local`; `sekai-cli` inherits it through `sekai-app` and needs
+no features of its own. The local backend is the only one shipped, and
+`--store` names its root directory directly; there is no runtime URL
+selection. A backend crate implements `SekaiStoreOpener` for its store
+type, so the backend owns the meaning of the location string that names it.
 
 A build without `backend-local` has no store-opening entry point at all:
 `sekai-storage` ships no stand-in store, so a build that carries no backend
-cannot open one and says so at compile time.
+cannot open one and says so at compile time. The host world tree and its
+`WorldError` are gated the same way; the world operations themselves stay
+generic over `WorldTree` and run on any tree a caller supplies.
 
 ## Store Exclusion
 

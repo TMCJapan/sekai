@@ -486,13 +486,7 @@ where
     AppError: From<T::Error>,
 {
     match policy {
-        MissingFilePolicy::Error => Err(sekai_world_local::WorldError::UnknownRegionPath {
-            dim: key.dim,
-            kind: key.kind,
-            region_x: key.rx,
-            region_z: key.rz,
-        }
-        .into()),
+        MissingFilePolicy::Error => Err(AppError::MissingRegionFile { key: *key }),
         MissingFilePolicy::DerivedOnly => Ok(world.derive_region(*key)?),
         // Folders may have moved since the commit (e.g. across a 26.1
         // migration), so a same-dimension sibling's directory wins over
