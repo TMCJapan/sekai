@@ -23,7 +23,7 @@ use tokio::task::JoinSet;
 
 use crate::error::AppError;
 use crate::instance::{WorldGuard, WorldHandleMut};
-use crate::progress::Progress;
+use crate::progress::{BuildProgress, Progress};
 use crate::regions::discover_regions;
 use crate::workers::worker_slots;
 
@@ -97,9 +97,9 @@ where
     /// and per-phase timings.
     ///
     /// Only `scope` is rebuilt: region files outside the scope are never
-    /// written, deleted, or otherwise touched. `progress` counts the files
-    /// to write or delete, stepping on the async side as each one finishes,
-    /// never on the blocking pool.
+    /// written, deleted, or otherwise touched. `progress_builder` counts the
+    /// files to write or delete, stepping on the async side as each one
+    /// finishes, never on the blocking pool.
     ///
     /// What each file needs is decided before any is touched, so refusing a
     /// missing file ([`MissingFilePolicy::Error`]) leaves the world as it
@@ -114,7 +114,7 @@ where
         commit: CommitId,
         options: CheckoutOptions,
         scope: Scope,
-        progress: &impl Progress,
+        progress_builder: &impl BuildProgress,
     ) -> Result<(CheckoutReport, CheckoutTimings), AppError> {
         let guard = WorldGuard::acquire(self.world, WorldLockMode::Exclusive)?;
         let store = &self.instance.store;
@@ -148,7 +148,15 @@ where
 
         let files_started = Instant::now();
         let jobs = plan_files(groups, tombstones, &discovered, world, options)?;
-        let report = run_files(jobs, store.blob(), options, timestamp, &guard, progress).await?;
+        let report = run_files(
+            jobs,
+            store.blob(),
+            options,
+            timestamp,
+            &guard,
+            progress_builder,
+        )
+        .await?;
         let files_dt = files_started.elapsed();
 
         let timings = CheckoutTimings {
@@ -255,7 +263,7 @@ async fn run_files<R, L, C>(
     options: CheckoutOptions,
     timestamp: u32,
     guard: &Arc<WorldGuard<L>>,
-    progress: &impl Progress,
+    progress_builder: &impl BuildProgress,
 ) -> Result<CheckoutReport, AppError>
 where
     R: RegionFile,
@@ -263,7 +271,7 @@ where
     C: sekai_core::BlobStore<Error = StorageError> + Clone + Send + Sync + 'static,
     AppError: From<R::Error>,
 {
-    progress.start(jobs.len());
+    let mut progress = progress_builder.build_progress(jobs.len());
     let mut report = CheckoutReport {
         files_written: 0,
         files_deleted: 0,

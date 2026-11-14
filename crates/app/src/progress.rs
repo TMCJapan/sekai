@@ -1,23 +1,29 @@
 //! Progress reporting seam between the operations and their callers.
 //!
-//! What the counted items are is the caller's business: it chose the
+//! An operation asks its [`BuildProgress`] for a [`Progress`] once it knows
+//! how many items the run holds, then advances that progress as items
+//! finish. What the items are is the caller's business: it chose the
 //! operation.
 
-/// Receives one run's size and its finished items.
+/// Hands an operation the [`Progress`] for its run, sized by the run's total.
 ///
-/// Pass `()` when no progress is wanted. Methods take `&self` because the
-/// operation only borrows its progress, so a stateful implementation needs
-/// interior mutability.
-pub trait Progress: Sync {
-    /// The run holds `total` items. Called once, before any [`step`](Self::step).
-    fn start(&self, total: usize);
+/// Pass `()` when no progress is wanted. The progress may borrow its
+/// builder: the operation holds it only while it runs.
+pub trait BuildProgress: Sync {
+    /// Progress for one run over `total` items.
+    fn build_progress(&self, total: usize) -> impl Progress;
+}
 
+/// Receives one run's finished items.
+pub trait Progress: Send {
     /// Record one more finished item.
-    fn step(&self);
+    fn step(&mut self);
+}
+
+impl BuildProgress for () {
+    fn build_progress(&self, _: usize) -> impl Progress {}
 }
 
 impl Progress for () {
-    fn start(&self, _: usize) {}
-
-    fn step(&self) {}
+    fn step(&mut self) {}
 }

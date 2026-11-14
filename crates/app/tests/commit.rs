@@ -8,7 +8,7 @@ mod fixtures;
 
 use fixtures::chunk_nbt;
 
-use sekai_app::{CommitId, CommitOptions, Progress, RegionKind, Scope};
+use sekai_app::{BuildProgress, CommitId, CommitOptions, Progress, RegionKind, Scope};
 use sekai_app::{HostWorldTree, WorldTree};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -875,12 +875,17 @@ impl Recorded {
     }
 }
 
-impl Progress for Recorded {
-    fn start(&self, total: usize) {
+impl BuildProgress for Recorded {
+    fn build_progress(&self, total: usize) -> impl Progress {
         self.0.lock().unwrap().total = total;
+        RecordedRun(&self.0)
     }
+}
 
-    fn step(&self) {
+struct RecordedRun<'a>(&'a Mutex<Recording>);
+
+impl Progress for RecordedRun<'_> {
+    fn step(&mut self) {
         let mut recording = self.0.lock().unwrap();
         let event = (recording.events.len() + 1, recording.total);
         recording.events.push(event);

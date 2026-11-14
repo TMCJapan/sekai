@@ -3,7 +3,7 @@
 use std::{fmt, time::Duration};
 
 use indicatif::{ProgressBar, ProgressStyle};
-use sekai_app::Progress;
+use sekai_app::{BuildProgress, Progress};
 
 const TEMPLATE: &str =
     "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} {msg} ({eta})";
@@ -42,7 +42,7 @@ impl BarProgress {
         if !enabled {
             return Self(ProgressBar::hidden());
         }
-        // No length until `start`: a zero length would draw a full bar
+        // No length until `build_progress`: a zero length would draw a full bar
         // while the operation is still scanning for its items.
         let bar = ProgressBar::no_length()
             .with_style(style())
@@ -59,12 +59,15 @@ impl BarProgress {
     }
 }
 
-impl Progress for BarProgress {
-    fn start(&self, total: usize) {
+impl BuildProgress for BarProgress {
+    fn build_progress(&self, total: usize) -> impl Progress {
         self.0.set_length(total as u64);
+        self
     }
+}
 
-    fn step(&self) {
+impl Progress for &BarProgress {
+    fn step(&mut self) {
         self.0.inc(1);
     }
 }
