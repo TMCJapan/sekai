@@ -35,7 +35,8 @@ pub struct CommitReport {
     pub chunks: usize,
     /// Blobs newly written to CAS (the rest deduplicated).
     pub new_blobs: usize,
-    /// Tombstone rows recorded for vanished chunks.
+    /// Vanished chunks removed from the snapshot (a diff count; no
+    /// tombstone rows are stored).
     pub tombstones: usize,
 }
 
