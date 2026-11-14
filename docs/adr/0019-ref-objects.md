@@ -1,6 +1,6 @@
 # ADR-0019: Ref objects - named, movable pointers to commits
 
-- Status: Superseded by ADR-0027
+- Status: Superseded by ADR-0028
 - Date: 2026-10-22
 
 ## Context

@@ -1,4 +1,4 @@
-# ADR-0027: Git-modelled refs, worktrees, and reflogs
+# ADR-0028: Git-modelled refs, worktrees, and reflogs
 
 - Status: Accepted
 - Date: 2026-11-14

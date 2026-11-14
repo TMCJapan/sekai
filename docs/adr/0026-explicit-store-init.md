@@ -1,6 +1,6 @@
 # ADR-0026: Explicit store initialization
 
-- Status: Amended by ADR-0027 (`init` registers a world as the first
+- Status: Amended by ADR-0028 (`init` registers a world as the first
   worktree, `--store` defaults to `<world>/.sekai`, and no ref is
   seeded)
 - Date: 2026-11-12
