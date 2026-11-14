@@ -63,6 +63,10 @@ pub trait MetaStore {
     /// Visit every present chunk of one commit's snapshot, in global
     /// coordinate order. Absent coordinates are never visited. Return
     /// `false` to stop early.
+    ///
+    /// The snapshot is materialized before the visitor runs, so the early
+    /// return saves iteration, not the read: the walk costs the whole tree
+    /// no matter where the visitor stops.
     fn visit_commit_chunks<F>(
         &self,
         commit: CommitId,
