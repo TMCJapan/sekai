@@ -125,7 +125,7 @@ like the commits that name them: the crash order (blobs synced before
 the metadata commit) means a torn commit leaves at most orphan nodes
 and blobs, never dangling references, and nothing reclaims them.
 
-The metadata schema bumps to version 16; old stores are rejected
+The metadata schema bumps to version 17; old stores are rejected
 (`UnsupportedSchema`) and recreated, per the pre-release policy.
 
 ## Consequences
@@ -149,6 +149,6 @@ The metadata schema bumps to version 16; old stores are rejected
 - Tree nodes and blobs are append-only: a torn commit leaves orphans
   that nothing reclaims, and the JSON contract (`docs/json.md`) loses
   the `gc` and `prune` payloads.
-- Breaking: schema 16 rejects old stores, commit IDs change, and the
+- Breaking: schema 17 rejects old stores, commit IDs change, and the
   port reshapes. Merges stay representable through `parents`; a tree
   merge policy is out of scope until something creates merges.
