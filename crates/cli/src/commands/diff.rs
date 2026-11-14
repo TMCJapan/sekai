@@ -6,7 +6,7 @@ use sekai_app::{AppError, ChunkCoord, ChunkDiff, CommitId, HostWorldTree, Scope,
 use super::diff_render::{
     TimedDiffs, diff_group_payload, print_diff_timing_table, render_diff_coords,
 };
-use super::progress::{BarProgress, Unit};
+use super::progress::{Bars, Unit};
 use super::resolve_selection;
 use crate::cli::{CommitRef, DiffArgs, DiffTarget, Selection};
 use crate::envelope::envelope_ok;
@@ -27,7 +27,7 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
     };
     let instance = sekai_app::SekaiInstance::open(store).await?;
     let scope = resolve_selection(&instance, &args.selection).await?;
-    let bar = BarProgress::new(args.output.progress, Unit::Chunks);
+    let bars = Bars::new(args.output.progress, Unit::Chunks);
 
     let (diffs, timings) = match args.target() {
         DiffTarget::World { world, commit } => {
@@ -46,7 +46,7 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
             let coords = scoped_coords(coords, &scope);
             instance
                 .world(&world)
-                .diff_world_chunks(Some(commit_id), &coords, &bar)
+                .diff_world_chunks(Some(commit_id), &coords, &bars)
                 .await
                 .with_context(|| "failed to compute chunk diffs between world state and commit")?
         }
@@ -59,14 +59,13 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
             }
             let coords = scoped_coords(coords, &scope);
             instance
-                .diff_chunks(old_id, new_id, &coords, &bar)
+                .diff_chunks(old_id, new_id, &coords, &bars)
                 .await
                 .with_context(|| {
                     format!("failed to compute chunk diffs between commit {old_id} and {new_id}")
                 })?
         }
     };
-    bar.finish();
 
     let nonempty: Vec<&ChunkDiff> = diffs
         .iter()

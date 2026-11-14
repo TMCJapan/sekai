@@ -5,7 +5,7 @@ use sekai_app::{HostWorldTree, StatusReport, StatusTimings};
 use serde::Serialize;
 use std::path::Path;
 
-use super::progress::{BarProgress, Unit};
+use super::progress::{Bars, Unit};
 use super::{ReportOut, resolve_selection};
 use crate::cli::Selection;
 use crate::envelope::envelope_ok;
@@ -25,13 +25,12 @@ pub async fn run(
         .await
         .with_context(|| format!("status of {} failed", world_path.as_ref().display()))?;
     let scope = resolve_selection(&instance, selection).await?;
-    let bar = BarProgress::new(out.progress, Unit::Files);
+    let bars = Bars::new(out.progress, Unit::Files);
     let (report, timings) = instance
         .world(&world)
-        .status(options, scope, &bar)
+        .status(options, scope, &bars)
         .await
         .with_context(|| format!("status of {} failed", world_path.as_ref().display()))?;
-    bar.finish();
     if out.json {
         println!(
             "{}",
