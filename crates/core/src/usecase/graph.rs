@@ -1,12 +1,12 @@
 //! Commit-graph read operations: listing, parents, ancestors, history, and
 //! reference resolution.
 
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use core::fmt;
 
 use crate::port::meta::MetaStore;
-use sekai_util::{ChunkCoord, ChunkHash, Commit, CommitId, RefName};
+use sekai_util::{Commit, CommitId, RefName};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommitError<M> {
@@ -147,54 +147,28 @@ pub struct CommitStats {
     pub effective_chunks: usize,
 }
 
-/// Count fresh and effective rows for one commit.
+/// Count fresh and effective chunks for one commit.
 ///
-/// Fresh rows are the tree diff against the first parent (the base the tree
-/// merge would have used); a root commit diffs against the empty snapshot.
+/// Fresh chunks are the tree diff against the first parent (the base the
+/// tree merge would have used); a root commit diffs against the empty
+/// snapshot. Subtrees whose hashes match are skipped, not materialized.
 pub async fn commit_stats<M: MetaStore>(
     meta: &M,
     commit: CommitId,
 ) -> Result<CommitStats, CommitError<M::Error>> {
     let record = lookup_record(meta, commit).await?;
-    let mut current: BTreeMap<ChunkCoord, ChunkHash> = BTreeMap::new();
-    meta.visit_commit_chunks(commit, |entry| {
-        if let Some(blob) = entry.blob {
-            current.insert(entry.coord, blob);
-        }
-        true
-    })
-    .await
-    .map_err(CommitError::Meta)?;
-
-    let mut previous: BTreeMap<ChunkCoord, ChunkHash> = BTreeMap::new();
-    if let Some(parent) = record.parents.first().copied() {
-        meta.visit_commit_chunks(parent, |entry| {
-            if let Some(blob) = entry.blob {
-                previous.insert(entry.coord, blob);
-            }
-            true
-        })
+    let base = match record.parents.first().copied() {
+        Some(parent) => Some(lookup_record(meta, parent).await?.root),
+        None => None,
+    };
+    let stats = crate::tree::diff_stats(meta, record.root, base)
         .await
         .map_err(CommitError::Meta)?;
-    }
-
-    let mut fresh_chunks = 0usize;
-    let mut blobs = BTreeSet::new();
-    for (coord, hash) in &current {
-        if previous.get(coord) != Some(hash) {
-            fresh_chunks += 1;
-            blobs.insert(*hash);
-        }
-    }
-    let fresh_tombstones = previous
-        .keys()
-        .filter(|coord| !current.contains_key(coord))
-        .count();
     Ok(CommitStats {
-        fresh_chunks,
-        fresh_tombstones,
-        new_blobs: blobs.len(),
-        effective_chunks: current.len(),
+        fresh_chunks: stats.fresh_chunks,
+        fresh_tombstones: stats.fresh_tombstones,
+        new_blobs: stats.new_blobs,
+        effective_chunks: stats.effective_chunks,
     })
 }
 
@@ -424,6 +398,77 @@ mod tests {
                 fresh_tombstones: 1,
                 new_blobs: 1,
                 effective_chunks: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn counts_vanished_regions_and_dimensions() {
+        use sekai_util::{ChunkCoord, ChunkHash, Dimension, RegionKind};
+        let mut meta = MemMeta::default();
+        meta.with_active_ref(&RefName::parse("main").unwrap());
+        let over = Dimension::OVERWORLD;
+        let nether = Dimension::NETHER;
+        let region = RegionKind::Region;
+        let entry = |dim, x, blob: Option<[u8; 32]>| {
+            CommitEntry::new(ChunkCoord::new(dim, region, x, 0), blob.map(ChunkHash::new))
+        };
+        // Two overworld regions share one node by content, and the nether
+        // starts its own dimension.
+        let first = block_on(meta.apply_commit_incremental(
+            100,
+            &[],
+            &[
+                entry(over, 0, Some([1; 32])),
+                entry(over, 1, Some([2; 32])),
+                entry(over, 32, Some([3; 32])),
+                entry(over, 64, Some([1; 32])),
+                entry(over, 65, Some([2; 32])),
+                entry(nether, 0, Some([4; 32])),
+            ],
+        ))
+        .unwrap()
+        .id;
+        // Change one region, drop another whole; the shared node and the
+        // nether stay untouched.
+        let second = block_on(meta.apply_commit_incremental(
+            200,
+            &[first],
+            &[entry(over, 0, Some([5; 32])), entry(over, 32, None)],
+        ))
+        .unwrap()
+        .id;
+        // Drop the nether's last chunk: the whole dimension vanishes.
+        let third =
+            block_on(meta.apply_commit_incremental(300, &[second], &[entry(nether, 0, None)]))
+                .unwrap()
+                .id;
+
+        assert_eq!(
+            block_on(commit_stats(&meta, first)).unwrap(),
+            CommitStats {
+                fresh_chunks: 6,
+                fresh_tombstones: 0,
+                new_blobs: 4,
+                effective_chunks: 6,
+            }
+        );
+        assert_eq!(
+            block_on(commit_stats(&meta, second)).unwrap(),
+            CommitStats {
+                fresh_chunks: 1,
+                fresh_tombstones: 1,
+                new_blobs: 1,
+                effective_chunks: 5,
+            }
+        );
+        assert_eq!(
+            block_on(commit_stats(&meta, third)).unwrap(),
+            CommitStats {
+                fresh_chunks: 0,
+                fresh_tombstones: 1,
+                new_blobs: 0,
+                effective_chunks: 4,
             }
         );
     }

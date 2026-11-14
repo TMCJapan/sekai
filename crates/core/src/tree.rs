@@ -5,7 +5,7 @@
 //! Nodes only name the level below, so the reference graph is a layered DAG by
 //! construction.
 
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 use core::fmt;
 
@@ -714,6 +714,148 @@ where
     }
     Ok(())
 }
+
+/// Change statistics of a snapshot against a base root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DiffStats {
+    /// Present chunks whose blob differs from the base.
+    pub fresh_chunks: usize,
+    /// Chunks present in the base but absent from the snapshot.
+    pub fresh_tombstones: usize,
+    /// Distinct blobs among the fresh chunks.
+    pub new_blobs: usize,
+    /// Present chunks in the snapshot.
+    pub effective_chunks: usize,
+}
+
+/// Diff a snapshot against its base region-by-region.
+///
+/// A matching subtree hash proves the whole subtree is unchanged, so the
+/// base side is read only along changed paths; a `None` base diffs against
+/// the empty snapshot. The current side is read whole because no node
+/// carries a chunk count, and effective chunks need every region's size.
+pub async fn diff_stats<M: MetaStore>(
+    meta: &M,
+    root: RootHash,
+    base: Option<RootHash>,
+) -> Result<DiffStats, M::Error> {
+    let current = meta.read_root_node(root).await?;
+    let previous = match base {
+        Some(hash) => Some(meta.read_root_node(hash).await?),
+        None => None,
+    };
+
+    let dim_hashes: Vec<DimHash> = current.entries().iter().map(|entry| entry.hash).collect();
+    let dims: BTreeMap<i32, DimNode> = current
+        .entries()
+        .iter()
+        .map(|entry| entry.dim)
+        .zip(meta.read_dim_nodes(&dim_hashes).await?)
+        .collect();
+    let mut region_hashes: Vec<RegionHash> = dims
+        .values()
+        .flat_map(|dim| dim.entries().iter().map(|entry| entry.hash))
+        .collect();
+    region_hashes.sort();
+    region_hashes.dedup();
+    let regions: BTreeMap<RegionHash, RegionNode> = region_hashes
+        .iter()
+        .copied()
+        .zip(meta.read_region_nodes(&region_hashes).await?)
+        .collect();
+
+    // Base dims whose hash differs from the current side, vanished dims
+    // included; a matching hash skips the whole subtree.
+    let changed: Vec<RootEntry> = previous.as_ref().map_or_default(|prev| {
+        prev.entries()
+            .iter()
+            .filter(|entry| current.get(entry.dim) != Some(entry.hash))
+            .copied()
+            .collect()
+    });
+    let base_dim_hashes: Vec<DimHash> = changed.iter().map(|entry| entry.hash).collect();
+    let base_dims: BTreeMap<i32, DimNode> = changed
+        .iter()
+        .map(|entry| entry.dim)
+        .zip(meta.read_dim_nodes(&base_dim_hashes).await?)
+        .collect();
+    let mut base_region_hashes: Vec<RegionHash> = Vec::new();
+    for (dim, node) in &base_dims {
+        for entry in node.entries() {
+            let current_hash = dims
+                .get(dim)
+                .and_then(|dim| dim.get(entry.kind, entry.rx, entry.rz));
+            if current_hash != Some(entry.hash) {
+                base_region_hashes.push(entry.hash);
+            }
+        }
+    }
+    base_region_hashes.sort();
+    base_region_hashes.dedup();
+    let base_regions: BTreeMap<RegionHash, RegionNode> = base_region_hashes
+        .iter()
+        .copied()
+        .zip(meta.read_region_nodes(&base_region_hashes).await?)
+        .collect();
+
+    let mut stats = DiffStats::default();
+    let mut blobs = BTreeSet::new();
+    for root_entry in current.entries() {
+        let Some(dim) = dims.get(&root_entry.dim) else {
+            continue;
+        };
+        let unchanged = previous
+            .as_ref()
+            .is_some_and(|prev| prev.get(root_entry.dim) == Some(root_entry.hash));
+        let base_dim = base_dims.get(&root_entry.dim);
+        for entry in dim.entries() {
+            let Some(region) = regions.get(&entry.hash) else {
+                continue;
+            };
+            stats.effective_chunks += region.entries().len();
+            let base_hash = if unchanged {
+                Some(entry.hash)
+            } else {
+                base_dim.and_then(|dim| dim.get(entry.kind, entry.rx, entry.rz))
+            };
+            if base_hash == Some(entry.hash) {
+                continue;
+            }
+            let base_region = base_hash.and_then(|hash| base_regions.get(&hash));
+            for slot in region.entries() {
+                if base_region.and_then(|node| node.get(slot.cx, slot.cz)) != Some(slot.hash) {
+                    stats.fresh_chunks += 1;
+                    blobs.insert(slot.hash);
+                }
+            }
+            if let Some(base_region) = base_region {
+                for slot in base_region.entries() {
+                    if region.get(slot.cx, slot.cz).is_none() {
+                        stats.fresh_tombstones += 1;
+                    }
+                }
+            }
+        }
+    }
+    // Regions absent from the current side take every chunk below them
+    // with them: a changed dim may drop regions wholesale, and a vanished
+    // dim drops all of them. Changed regions already counted their slot
+    // tombstones in the walk above.
+    for (dim, node) in &base_dims {
+        let current_dim = dims.get(dim);
+        for entry in node.entries() {
+            if current_dim.is_some_and(|dim| dim.get(entry.kind, entry.rx, entry.rz).is_some()) {
+                continue;
+            }
+            if let Some(region) = base_regions.get(&entry.hash) {
+                stats.fresh_tombstones += region.entries().len();
+            }
+        }
+    }
+    stats.new_blobs = blobs.len();
+    Ok(stats)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
