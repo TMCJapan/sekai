@@ -119,7 +119,7 @@ impl SledBlob {
         let path = path.as_ref().to_path_buf();
         if !path.parent().is_some_and(Path::is_dir) {
             return Err(io_error(
-                &path,
+                path.display().to_string(),
                 std::io::Error::new(
                     std::io::ErrorKind::NotFound,
                     "parent directory does not exist",

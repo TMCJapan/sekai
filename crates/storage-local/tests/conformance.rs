@@ -211,7 +211,7 @@ async fn open_of_a_missing_store_fails_without_creating_it() {
     assert!(!sekai_storage_local::local_store_exists(&dir));
     let err = open_local(&dir).await.unwrap_err();
     assert!(
-        matches!(&err, sekai_storage::StorageError::StoreMissing { path } if path == &dir),
+        matches!(&err, sekai_storage::StorageError::StoreMissing { path } if Path::new(path) == dir),
         "unexpected error: {err}"
     );
     assert!(!dir.exists(), "a failed open must not create anything");

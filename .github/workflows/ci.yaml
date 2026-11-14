@@ -88,7 +88,7 @@ jobs:
         include:
           - name: no_std (thumbv7m-none-eabi)
             target: thumbv7m-none-eabi
-            packages: -p sekai-util -p sekai-core -p sekai-anvil -p sekai-world
+            packages: -p sekai-util -p sekai-core -p sekai-anvil -p sekai-world -p sekai-storage
           - name: wasm (wasm32-unknown-unknown)
             target: wasm32-unknown-unknown
             packages: -p sekai-util -p sekai-core -p sekai-anvil -p sekai-world -p sekai-storage
