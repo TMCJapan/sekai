@@ -26,7 +26,8 @@ impl fmt::Display for Unit {
 }
 
 /// Progress bar for `--progress`, drawn on stderr only when it is a TTY,
-/// so piped output stays clean.
+/// so piped output stays clean. The TTY check is indicatif's: its default
+/// stderr target hides itself off a terminal or under `TERM=dumb`.
 ///
 /// A disabled bar is indicatif's hidden bar rather than an absent one, so
 /// every update stays unconditional and simply draws nothing.
@@ -41,7 +42,9 @@ impl BarProgress {
         if !enabled {
             return Self(ProgressBar::hidden());
         }
-        let bar = ProgressBar::new(0)
+        // No length until `start`: a zero length would draw a full bar
+        // while the operation is still scanning for its items.
+        let bar = ProgressBar::no_length()
             .with_style(style())
             .with_message(unit.to_string());
         // Without a ticker the spinner, elapsed time and ETA redraw only on
