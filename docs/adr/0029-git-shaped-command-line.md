@@ -18,9 +18,7 @@ ADR says otherwise. Every deviation from Git is marked
 
 ### Locating the store and the worktree
 
-- Three global options locate the store and the worktree:
-  - `-C <path>` runs sekai as if it started in `<path>`. It applies
-    before every other path option.
+- Two global options locate the store and the worktree:
   - `--world <world>` starts discovery at `<world>` instead of the
     current directory (ADR-0028).
   - `--store <store>` overrides the store location (ADR-0028).
@@ -300,5 +298,5 @@ Out of scope:
 - merges and `show`;
 - splitting `checkout` into `switch` and `restore`;
 - `@{<date>}` and `<a>...<b>`;
-- environment variables;
+- `-C` and environment variables;
 - abbreviated commit IDs, commit messages, and remotes.
