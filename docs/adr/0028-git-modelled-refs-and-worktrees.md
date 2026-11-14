@@ -61,6 +61,8 @@ deviation from Git is marked **(deviation)**.
   - A rename rewrites every `head_ref` that names the branch. Renaming
     an unborn branch rewrites only `head_ref`.
   - The directory and file conflict rule from *Refs* applies.
+  - A linked worktree's path never equals the main worktree's world
+    root.
 - On a commit, HEAD's commit becomes the first parent. When HEAD is
   unborn, the commit has no parents. In the same transaction, the
   commit moves the branch (creating it when HEAD is unborn), or it moves
@@ -143,14 +145,19 @@ sekai worktree add [-b <new> | --detach] <path> [<commit-ish>]
   that are invalid in a ref component. A clash gets a numeric suffix.
 - The main worktree has a name too. In Git the main worktree has no ID
   **(deviation)**.
-- `path` holds the absolute world root. Only `move` and `repair` update
-  it.
+- `path` holds the absolute world root of a linked worktree. Only
+  `move` and `repair` update it.
+- The main worktree's `path` is NULL, and at most one row has a NULL
+  `path`. Its world root is the directory that holds the store, so
+  moving the world together with the store needs no repair. Git also
+  records paths only for linked worktrees.
 - Commands identify a worktree by its path, or by trailing path
   components that are unique among worktrees.
 - `.sekai` sits at the world root. For Bukkit layouts, the world root is
   the server directory.
   - **A directory** at `.sekai` is the store. Its world is the main
-    worktree. A store outside every world has no main worktree.
+    worktree, which is the row with a NULL `path`. A store outside
+    every world has no main worktree.
   - **A file** at `.sekai` is a link file, which `init --store` and
     `worktree add` write:
 
@@ -160,6 +167,9 @@ sekai worktree add [-b <new> | --detach] <path> [<commit-ish>]
     ```
 - Discovery walks up from the current directory, or from `--world`, to
   the first `.sekai`. It stops at a filesystem boundary.
+- Discovery never falls back to matching paths. Without a `.sekai`, a
+  command fails, and the error names `worktree repair <path>`, which
+  rewrites a lost link file from another worktree.
 - `--store` overrides the store location. The worktree name still comes
   from the link file, whereas Git ignores the gitfile **(deviation)**.
 - World scanning ignores `.sekai`.
@@ -205,11 +215,15 @@ CREATE TABLE refs(
 -- `head_ref` has no foreign key: an unborn HEAD names a missing branch.
 CREATE TABLE worktrees(
     name TEXT NOT NULL COLLATE BINARY PRIMARY KEY,
-    path TEXT NOT NULL UNIQUE,
+    path TEXT NULL UNIQUE,
     head_ref TEXT NULL CHECK (head_ref GLOB 'refs/heads/?*'),
     head_commit BLOB NULL REFERENCES commits(id),
     CHECK ((head_ref IS NULL) != (head_commit IS NULL))
 ) WITHOUT ROWID;
+
+-- A NULL `path` marks the main worktree, and only one row may have it.
+CREATE UNIQUE INDEX idx_worktrees_main
+    ON worktrees((path IS NULL)) WHERE path IS NULL;
 
 CREATE UNIQUE INDEX idx_worktrees_head_ref
     ON worktrees(head_ref) WHERE head_ref IS NOT NULL;
@@ -252,7 +266,8 @@ CREATE INDEX idx_head_log_worktree ON head_log(worktree, seq);
 
 - One store backs up several worlds, and a world can be checked out at
   a tag or at a commit.
-- Four ref rules live in application code rather than in the schema.
+- Four ref rules and one worktree rule live in application code rather
+  than in the schema.
 - `worktree add` copies the whole copy root, including logs and caches.
   The copied non-region files reflect the source as it is now.
 - A world copied by hand shares the original's HEAD, and sekai does not
