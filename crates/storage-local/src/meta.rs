@@ -20,7 +20,7 @@ use sqlx::sqlite::{
 use sekai_storage::StorageError;
 
 /// Managed schema version (`PRAGMA user_version`).
-pub const SCHEMA_VERSION: i64 = 16;
+pub const SCHEMA_VERSION: i64 = 17;
 
 const SCHEMA: &str = include_str!("../schema/sqlite.sql");
 
@@ -1302,12 +1302,14 @@ mod tests {
     }
 
     /// The version gate rejects any store whose `user_version` is not
-    /// `SCHEMA_VERSION` (16) before any table is touched. The immediately
-    /// previous store version, 15, is refused with `UnsupportedSchema
-    /// { found: 15, supported: SCHEMA_VERSION }`.
+    /// `SCHEMA_VERSION` (17) before any table is touched. A store from the
+    /// immediately previous version (16: delta history, `commits` without
+    /// `root_hash`) is refused with `UnsupportedSchema { found: 16,
+    /// supported: SCHEMA_VERSION }`, never opened and failed on the first
+    /// query.
     #[tokio::test]
     async fn a_store_from_the_previous_schema_version_is_refused() {
-        let (dir, _guard) = tempdir("version-15");
+        let (dir, _guard) = tempdir("version-16");
         let path = dir.join("meta.sqlite");
         let mut seed = SqliteConnectOptions::new()
             .filename(&path)
@@ -1315,8 +1317,28 @@ mod tests {
             .connect()
             .await
             .unwrap();
-        sqlx::query(SCHEMA).execute(&mut seed).await.unwrap();
-        sqlx::query("PRAGMA user_version=15")
+        // The schema 16 layout as shipped: delta history, no tree tables.
+        sqlx::query(
+            "CREATE TABLE commits(
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                id BLOB NOT NULL UNIQUE,
+                created_at_ms INTEGER NOT NULL
+            );
+            CREATE TABLE chunk_history(
+                commit_id BLOB NOT NULL REFERENCES commits(id),
+                seq INTEGER NOT NULL,
+                dim INTEGER NOT NULL,
+                kind INTEGER NOT NULL,
+                cx INTEGER NOT NULL,
+                cz INTEGER NOT NULL,
+                blob BLOB NULL,
+                PRIMARY KEY(commit_id, dim, kind, cx, cz)
+            );",
+        )
+        .execute(&mut seed)
+        .await
+        .unwrap();
+        sqlx::query("PRAGMA user_version=16")
             .execute(&mut seed)
             .await
             .unwrap();
@@ -1324,7 +1346,7 @@ mod tests {
         assert!(matches!(
             SqliteMeta::open(&path).await,
             Err(StorageError::UnsupportedSchema {
-                found: 15,
+                found: 16,
                 supported: SCHEMA_VERSION,
             })
         ));

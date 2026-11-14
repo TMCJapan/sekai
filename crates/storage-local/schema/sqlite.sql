@@ -1,9 +1,11 @@
--- Schema version 16: commits name content-addressed snapshot trees
--- (ADR-0027); `chunk_history` is gone. The `idx_parents_parent` index on
--- `commit_parents` is gone too: it served the commit-retirement sweep,
--- which no longer exists, and every parent-edge query resolves through
--- the primary key. There is no migration path from version 15: old stores
--- are rejected via `UnsupportedSchema`.
+-- Schema version 17: commits name content-addressed snapshot trees
+-- (ADR-0027); `chunk_history` is gone. There is no migration path from
+-- version 16: old stores are rejected via `UnsupportedSchema`.
+--
+-- Schema version 16: the `idx_parents_parent` index on `commit_parents`
+-- was removed. It served the commit-retirement sweep, which no longer
+-- exists; every remaining parent-edge query resolves through the primary
+-- key.
 --
 -- Schema version 15: the `diff` column of `chunk_history` (cached volatile
 -- diff hashes) was removed. Change detection compares per-chunk history

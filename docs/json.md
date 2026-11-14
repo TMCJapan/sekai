@@ -53,7 +53,7 @@ first, then `Caused by:` lines), JSON-escaped.
 
 ## Compatibility
 
-Breaking change (ADR-0027): metadata schema 16 replaces delta history
+Breaking change (ADR-0027): metadata schema 17 replaces delta history
 with content-addressed snapshot trees. Old stores fail with an unsupported
 schema error and must be recreated; commit IDs change.
 `--keep-tombstoned-chunks` / `--keep-post-commit-chunks` both preserve
