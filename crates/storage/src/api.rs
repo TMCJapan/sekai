@@ -102,7 +102,7 @@ pub enum StorageError {
     /// Stored region-family code does not name a known kind.
     #[error("stored region kind is unknown: {kind}")]
     UnknownRegionKind {
-        /// Code read from the `kind` column.
+        /// Code read from the `kind` column or a dim-tree node entry.
         kind: i32,
     },
     /// Millisecond timestamp does not fit `i64`.
