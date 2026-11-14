@@ -15,10 +15,9 @@ deviation from Git is marked **(deviation)**.
 
 ### Refs
 
-- `refs` holds branches (`heads/<name>`) and lightweight tags
-  (`tags/<name>`), each keyed by its full name. The key drops Git's
-  `refs/` prefix **(deviation)**. Every ref names a commit, and an
-  unborn branch has no row.
+- `refs` holds branches (`refs/heads/<name>`) and lightweight tags
+  (`refs/tags/<name>`), each keyed by its full Git refname. Every ref
+  names a commit, and an unborn branch has no row.
 - `RefName` is checked as follows:
   - **Length.** Up to 255 bytes. Git sets no limit **(deviation)**.
     `ScopeName` gets the same limit.
@@ -30,22 +29,17 @@ deviation from Git is marked **(deviation)**.
   - **Reserved name.** Only the exact name `HEAD` is reserved. The
     match is case-sensitive.
 - A ref cannot be created where it would conflict with another ref as a
-  directory and a file would conflict. For example, `heads/df` and
-  `heads/df/sub` cannot both exist.
+  directory and a file would conflict. For example, `refs/heads/df` and
+  `refs/heads/df/sub` cannot both exist.
 
 ### Resolution
 
-- A commit reference resolves by the first rule that matches:
-  1. Input that starts with `refs/` drops the prefix and matches only
-     the exact key.
-  2. A 64-character hex string is a commit ID. If a ref has the same
-     name, sekai warns.
-  3. The input matches an exact key, such as `heads/v1`.
-  4. `tags/<input>` matches.
-  5. `heads/<input>` matches.
-
-  When more than one rule matches, sekai warns and takes the first
-  match.
+- A 64-character hex string is a commit ID. If a ref resolves from the
+  same string, sekai warns.
+- Any other input resolves as gitrevisions describes: the first
+  existing key among `<input>`, `refs/<input>`, `refs/tags/<input>`,
+  and `refs/heads/<input>`. When more than one exists, sekai warns and
+  takes the first.
 - An argument that names a branch, such as the branch for `checkout`
   or `worktree add`, is a branch name. It is not resolved by the rules
   above.
@@ -83,7 +77,7 @@ sekai init [--store <store>] [--world <world>]
 - `--store` defaults to `<world>/.sekai`.
 - `init` registers the world as a worktree and leaves the world's files
   untouched.
-- HEAD starts unborn on `heads/main`. Git 2.53 starts on `master`
+- HEAD starts unborn on `refs/heads/main`. Git 2.53 starts on `master`
   **(deviation)**.
 - When the store already exists, the result depends on the world:
   - With the same world, `init` reinitializes the store and changes
@@ -189,7 +183,7 @@ sekai worktree add [-b <new> | --detach] <path> [<commit-ish>]
   - It is dropped with its worktree.
 - Tags are not logged.
 - An `old_commit` of NULL marks a creation.
-- Messages use Git's forms with sekai's ref keys:
+- Messages use Git's forms:
   - `commit (initial): `
   - `commit: `
   - `checkout: moving from <a> to <b>`
@@ -205,14 +199,14 @@ sekai worktree add [-b <new> | --detach] <path> [<commit-ish>]
 CREATE TABLE refs(
     name TEXT NOT NULL COLLATE BINARY PRIMARY KEY,
     commit_id BLOB NOT NULL REFERENCES commits(id),
-    CHECK (name GLOB 'heads/?*' OR name GLOB 'tags/?*')
+    CHECK (name GLOB 'refs/heads/?*' OR name GLOB 'refs/tags/?*')
 ) WITHOUT ROWID;
 
 -- `head_ref` has no foreign key: an unborn HEAD names a missing branch.
 CREATE TABLE worktrees(
     name TEXT NOT NULL COLLATE BINARY PRIMARY KEY,
     path TEXT NOT NULL UNIQUE,
-    head_ref TEXT NULL CHECK (head_ref GLOB 'heads/?*'),
+    head_ref TEXT NULL CHECK (head_ref GLOB 'refs/heads/?*'),
     head_commit BLOB NULL REFERENCES commits(id),
     CHECK ((head_ref IS NULL) != (head_commit IS NULL))
 ) WITHOUT ROWID;
@@ -224,7 +218,7 @@ CREATE TABLE ref_log(
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL COLLATE BINARY
         REFERENCES refs(name) ON DELETE CASCADE ON UPDATE CASCADE
-        CHECK (name GLOB 'heads/?*'),
+        CHECK (name GLOB 'refs/heads/?*'),
     old_commit BLOB NULL REFERENCES commits(id),
     new_commit BLOB NOT NULL REFERENCES commits(id),
     message TEXT NOT NULL,
