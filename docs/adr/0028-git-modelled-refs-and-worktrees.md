@@ -90,7 +90,7 @@ sekai init [--store <store>] [--world <world>]
 #### `worktree add`
 
 ```text
-sekai worktree add [-b <new> | --detach] <path> [<commit-ish>]
+sekai worktree add [-b <new> | -B <branch> | --detach] <path> [<commit-ish>]
 ```
 
 - The target must be empty or missing.
@@ -104,12 +104,15 @@ sekai worktree add [-b <new> | --detach] <path> [<commit-ish>]
     of `<path>`. If no such branch exists, sekai creates it at the
     source's HEAD.
 - `-b` creates a branch, and fails if the branch already exists.
+  `-B` creates the branch, or moves it to `<commit-ish>` when it
+  exists. Both start at the source's HEAD when `<commit-ish>` is
+  omitted, and `-B` fails when the branch is checked out elsewhere.
   `--detach` detaches HEAD, at the source's HEAD when `<commit-ish>` is
   omitted.
 - A source with an unborn HEAD is an error. Git would infer `--orphan`
   **(deviation)**.
-- `-f`, `-B`, `--orphan`, `--no-checkout`, and `--track` are not
-  adopted **(deviation)**.
+- `-f`, `--orphan`, `--no-checkout`, and `--track` are not adopted
+  **(deviation)**.
 - Region files come from the commit. Everything else under the copy
   root is copied from the source, except for:
   - the region files that the commit restores;
@@ -198,6 +201,7 @@ sekai worktree add [-b <new> | --detach] <path> [<commit-ish>]
   - `commit: `
   - `checkout: moving from <a> to <b>`
   - `branch: Created from <x>`
+  - `branch: Reset to <x>`
   - `Branch: renamed <a> to <b>`
 - Deleting a branch prints `Deleted branch <name> (was <hash>)` with the
   full hash, because sekai does not accept abbreviated IDs
