@@ -822,18 +822,22 @@ mod tests {
         assert_ne!(root, old_root);
         assert_eq!(nodes.region.len(), 1, "one changed region node");
         assert_eq!(nodes.dim.len(), 1, "one changed dimension node");
-        assert!(nodes.root.contains_key(&root));
+        let root_node = RootNode::decode(&nodes.root[&root], root).unwrap();
         assert_eq!(
-            RootNode::new(vec![RootEntry {
-                dim: OVER.raw(),
-                hash: over_hash,
-            }])
-            .entries()
-            .len(),
-            1,
+            root_node.get(OVER.raw()),
+            Some(over_hash),
             "the untouched dimension is reused by hash"
         );
-        assert!(meta.region_nodes.len() >= region_nodes_before);
+        assert_ne!(
+            root_node.get(NETHER.raw()),
+            old_root_node.get(NETHER.raw()),
+            "the changed dimension gets a new node"
+        );
+        assert_eq!(
+            meta.region_nodes.len(),
+            region_nodes_before,
+            "build_update writes nothing to the store"
+        );
     }
 
     #[test]
