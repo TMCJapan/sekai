@@ -141,7 +141,7 @@ where
     assert_eq!(listed.len(), 1);
 }
 
-/// Fresh-row visits and per-commit statistics.
+/// Per-commit statistics: fresh chunks, fresh tombstones, and new blobs.
 pub async fn fresh_stats<M>(meta: &mut M)
 where
     M: MetaStore,
