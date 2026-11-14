@@ -3,10 +3,9 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use sekai_anvil::{Chunk, ChunkHashError};
+use sekai_anvil::{Chunk, ChunkHashError, ChunkPayloadDiff};
 use sekai_core::{
-    BlobStore as _, ChunkCoord, ChunkHash, ChunkPayloadDiff, CommitId, MetaStore, RegionKey,
-    RegionKind,
+    BlobStore as _, ChunkCoord, ChunkHash, CommitId, MetaStore, RegionKey, RegionKind,
 };
 use sekai_storage::SekaiStore;
 use sekai_world::{Region, RegionFile, WorldLockMode, WorldTree};

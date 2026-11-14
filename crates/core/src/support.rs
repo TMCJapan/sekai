@@ -6,7 +6,7 @@ use core::future::Future;
 use core::pin::pin;
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
-use crate::port::{BlobStore, MetaStore};
+use crate::port::MetaStore;
 use sekai_util::{
     ApplyOutcome, ChunkCoord, ChunkHash, ChunkHistoryEntry, Commit, CommitId, CommitRef,
     NamedScope, RefName, ScopeName,
@@ -15,8 +15,6 @@ use sekai_util::{
 /// Fake backend failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MemError {
-    /// The blob is absent from the fake store.
-    MissingBlob,
     /// A named parent does not exist.
     UnknownParent {
         /// Parent that was asked for.
@@ -509,60 +507,5 @@ impl MetaStore for MemMeta {
         name: &ScopeName,
     ) -> impl Future<Output = Result<bool, MemError>> + Send {
         core::future::ready(Ok(self.scopes.remove(name).is_some()))
-    }
-}
-
-/// In-memory [`BlobStore`].
-#[derive(Debug, Default)]
-pub struct MemCas {
-    blobs: BTreeMap<ChunkHash, Vec<u8>>,
-}
-
-impl BlobStore for MemCas {
-    type Error = MemError;
-
-    fn contains(&self, hash: &ChunkHash) -> impl Future<Output = Result<bool, Self::Error>> + Send {
-        core::future::ready(Ok(self.blobs.contains_key(hash)))
-    }
-
-    fn put(
-        &mut self,
-        hash: &ChunkHash,
-        payload: &[u8],
-    ) -> impl Future<Output = Result<bool, Self::Error>> + Send {
-        if self.blobs.contains_key(hash) {
-            return core::future::ready(Ok(false));
-        }
-        self.blobs.insert(*hash, payload.to_vec());
-        core::future::ready(Ok(true))
-    }
-
-    fn sync(&mut self) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        core::future::ready(Ok(()))
-    }
-
-    fn fetch_into(
-        &self,
-        hash: &ChunkHash,
-        out: &mut Vec<u8>,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send {
-        out.clear();
-        let Some(bytes) = self.blobs.get(hash) else {
-            return core::future::ready(Err(MemError::MissingBlob));
-        };
-        out.extend_from_slice(bytes);
-        core::future::ready(Ok(()))
-    }
-
-    fn visit_blobs<F>(&self, mut visit: F) -> impl Future<Output = Result<(), Self::Error>> + Send
-    where
-        F: FnMut(&ChunkHash) -> bool + Send,
-    {
-        for hash in self.blobs.keys() {
-            if !visit(hash) {
-                break;
-            }
-        }
-        core::future::ready(Ok(()))
     }
 }

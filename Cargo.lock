@@ -1278,7 +1278,6 @@ name = "sekai-core"
 version = "0.1.0"
 dependencies = [
  "criterion",
- "sekai-anvil",
  "sekai-util",
 ]
 
