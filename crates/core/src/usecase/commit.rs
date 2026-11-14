@@ -45,9 +45,10 @@ pub struct Previous {
     /// The commit the new one continues: the target of the active ref,
     /// when the store has one (`None` on an unborn ref).
     pub commit: Option<Commit>,
-    /// Effective present rows of the base commit, tombstones excluded
-    /// (empty on an unborn ref). Keyed by coordinate; the row carries the
-    /// blob hash used for chunk-level change detection.
+    /// Effective present entries of the base commit (empty on an unborn
+    /// ref). Keyed by coordinate; the entry carries the blob hash used
+    /// for chunk-level change detection. Absent coordinates are not part
+    /// of the snapshot, so they never appear here.
     pub state: BTreeMap<ChunkCoord, CommitEntry>,
 }
 
@@ -113,14 +114,10 @@ pub async fn plan_commit<M: MetaStore>(
     };
     let mut state: BTreeMap<ChunkCoord, CommitEntry> = BTreeMap::new();
     if let Some(base) = base.as_ref() {
+        // The port visits present entries only: absence is the tombstone,
+        // so a vanished coordinate never reaches the state map.
         meta.visit_commit_chunks(base.id, |entry| {
-            // Present rows only. A tombstoned coordinate is already absent
-            // from the effective state, so keeping it would re-record the
-            // same tombstone row on every later commit and count a vanished
-            // chunk as present.
-            if entry.blob.is_some() {
-                state.insert(entry.coord, *entry);
-            }
+            state.insert(entry.coord, *entry);
             true
         })
         .await?;
