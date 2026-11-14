@@ -475,10 +475,11 @@ type RegionChanges = BTreeMap<RegionKeyParts, SlotChanges>;
 
 /// Build the nodes a commit writes by merging `entries` into its parent tree.
 ///
-/// The first parent is the base when a merge carries several parents; tree
-/// merge policy is out of scope until something creates merges. Out-of-scope
-/// subtrees are never read: only the changed regions and their dim nodes are
-/// loaded, and every unchanged hash is reused.
+/// The canonical (lowest-hash) parent is the base when a merge carries
+/// several parents; tree merge policy is out of scope until something
+/// creates merges. Out-of-scope subtrees are never read: only the changed
+/// regions and their dim nodes are loaded, and every unchanged hash is
+/// reused.
 pub async fn build_update<M: MetaStore>(
     meta: &M,
     parents: &[CommitId],

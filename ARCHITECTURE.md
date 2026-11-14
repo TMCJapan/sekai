@@ -345,9 +345,10 @@ and a region missing from its dim node is gone. Empty child nodes are never
 written; a fully emptied region leaves its dim node, and an empty dim
 leaves the root. The root node itself is the commit's anchor, so an empty
 world stores one canonical empty root row. Reads probe root, dim, region, and slot; commit merges
-only the changed subtree paths, reusing every untouched hash. The first
-parent is the base when a merge carries several parents; a tree merge
-policy is out of scope until something creates merges.
+only the changed subtree paths, reusing every untouched hash. The
+canonical (lowest-hash) parent is the base when a merge carries several
+parents; a tree merge policy is out of scope until something creates
+merges.
 
 A scoped commit merges the parent tree with its in-scope changes only:
 out-of-scope subtrees are reused by hash, never re-read. Every in-scope

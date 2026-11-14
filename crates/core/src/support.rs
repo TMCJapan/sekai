@@ -167,8 +167,8 @@ impl MetaStore for MemMeta {
             unique.insert(*parent);
         }
         let canonical: Vec<CommitId> = unique.into_iter().collect();
-        // No snapshot changes: continue the first parent's tree, or start
-        // with the canonical empty root.
+        // No snapshot changes: continue the lowest-hash parent's tree, or
+        // start with the canonical empty root.
         let (root, nodes) = canonical
             .first()
             .map_or_else(crate::tree::empty_tree, |parent| {
