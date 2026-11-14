@@ -193,7 +193,7 @@ pub fn assemble(plan: Plan, previous: &Previous, ingested: Ingested, scope: &Sco
                 .is_none_or(|base| base.blob != entry.blob)
         })
         .collect();
-    // An empty file contributes no rows and is not part of the logical
+    // An empty file contributes no entries and is not part of the logical
     // world state, so it must not keep the preview permanently dirty.
     let new_files: BTreeSet<RegionKey> = fresh
         .iter()
