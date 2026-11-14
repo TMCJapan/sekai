@@ -451,18 +451,40 @@ async fn insert_tree_nodes(
 /// than SQLite's own lookup.
 const NODE_READ_BATCH: usize = 1024;
 
+/// The tree table a node read targets. An enum keeps an unknown table
+/// unrepresentable: no string fallback can quietly read the wrong level.
+#[derive(Clone, Copy)]
+enum TreeTable {
+    Root,
+    Dim,
+    Region,
+}
+
+impl TreeTable {
+    const fn select_node(self) -> &'static str {
+        match self {
+            Self::Root => "SELECT node FROM root_tree WHERE hash = ?",
+            Self::Dim => "SELECT node FROM dim_tree WHERE hash = ?",
+            Self::Region => "SELECT node FROM region_tree WHERE hash = ?",
+        }
+    }
+
+    const fn select_nodes(self) -> &'static str {
+        match self {
+            Self::Root => "SELECT hash, node FROM root_tree WHERE hash IN (",
+            Self::Dim => "SELECT hash, node FROM dim_tree WHERE hash IN (",
+            Self::Region => "SELECT hash, node FROM region_tree WHERE hash IN (",
+        }
+    }
+}
+
 impl SqliteMeta {
     async fn node_bytes(
         &self,
-        table: &'static str,
+        table: TreeTable,
         hash: &[u8; 32],
     ) -> Result<Option<Vec<u8>>, StorageError> {
-        let sql = match table {
-            "root_tree" => "SELECT node FROM root_tree WHERE hash = ?",
-            "dim_tree" => "SELECT node FROM dim_tree WHERE hash = ?",
-            _ => "SELECT node FROM region_tree WHERE hash = ?",
-        };
-        sqlx::query(sql)
+        sqlx::query(table.select_node())
             .bind(&hash[..])
             .fetch_optional(&self.pool)
             .await
@@ -474,14 +496,10 @@ impl SqliteMeta {
     /// Fetch many nodes by hash, one `IN (...)` query per batch.
     async fn node_bytes_many(
         &self,
-        table: &'static str,
+        table: TreeTable,
         hashes: &[[u8; 32]],
     ) -> Result<BTreeMap<[u8; 32], Vec<u8>>, StorageError> {
-        let select = match table {
-            "root_tree" => "SELECT hash, node FROM root_tree WHERE hash IN (",
-            "dim_tree" => "SELECT hash, node FROM dim_tree WHERE hash IN (",
-            _ => "SELECT hash, node FROM region_tree WHERE hash IN (",
-        };
+        let select = table.select_nodes();
         let mut nodes = BTreeMap::new();
         for batch in hashes.chunks(NODE_READ_BATCH) {
             let mut query = sqlx::QueryBuilder::new(select);
@@ -564,7 +582,7 @@ impl sekai_core::MetaStore for SqliteMeta {
 
     async fn read_root_node(&self, hash: RootHash) -> Result<RootNode, StorageError> {
         let bytes = self
-            .node_bytes("root_tree", hash.as_bytes())
+            .node_bytes(TreeTable::Root, hash.as_bytes())
             .await?
             .ok_or_else(|| StorageError::MissingTree {
                 level: "root",
@@ -575,7 +593,7 @@ impl sekai_core::MetaStore for SqliteMeta {
 
     async fn read_dim_node(&self, hash: DimHash) -> Result<DimNode, StorageError> {
         let bytes = self
-            .node_bytes("dim_tree", hash.as_bytes())
+            .node_bytes(TreeTable::Dim, hash.as_bytes())
             .await?
             .ok_or_else(|| StorageError::MissingTree {
                 level: "dim",
@@ -586,7 +604,7 @@ impl sekai_core::MetaStore for SqliteMeta {
 
     async fn read_region_node(&self, hash: RegionHash) -> Result<RegionNode, StorageError> {
         let bytes = self
-            .node_bytes("region_tree", hash.as_bytes())
+            .node_bytes(TreeTable::Region, hash.as_bytes())
             .await?
             .ok_or_else(|| StorageError::MissingTree {
                 level: "region",
@@ -597,7 +615,7 @@ impl sekai_core::MetaStore for SqliteMeta {
 
     async fn read_dim_nodes(&self, hashes: &[DimHash]) -> Result<Vec<DimNode>, StorageError> {
         let keys: Vec<[u8; 32]> = hashes.iter().map(|hash| *hash.as_bytes()).collect();
-        let nodes = self.node_bytes_many("dim_tree", &keys).await?;
+        let nodes = self.node_bytes_many(TreeTable::Dim, &keys).await?;
         hashes
             .iter()
             .map(|hash| {
@@ -618,7 +636,7 @@ impl sekai_core::MetaStore for SqliteMeta {
         hashes: &[RegionHash],
     ) -> Result<Vec<RegionNode>, StorageError> {
         let keys: Vec<[u8; 32]> = hashes.iter().map(|hash| *hash.as_bytes()).collect();
-        let nodes = self.node_bytes_many("region_tree", &keys).await?;
+        let nodes = self.node_bytes_many(TreeTable::Region, &keys).await?;
         hashes
             .iter()
             .map(|hash| {
