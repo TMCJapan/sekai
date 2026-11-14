@@ -13,10 +13,14 @@
   affected chunks. Restore the store from the secondary copy, then
   investigate.
 - `cannot derive region path for dim ...` (`UnknownRegionPath`) — a
-  custom-dimension region whose folder is unknown, or
-  `--on-missing-file error` refusing to guess. Run it against a world
-  tree with the same folder layout the commit came from so sibling
-  derivation can work, or accept that the region cannot be placed.
+  custom-dimension region whose folder the world's layout cannot map.
+  Run it against a world tree with the same folder layout the commit
+  came from so derivation (and sibling lookup) can work.
+- `region file r.<x>.<z>.mca ... is missing ... refuses to derive its
+  location` (`MissingRegionFile`) — `--on-missing-file error`: the commit
+  rebuilds a region whose file no longer exists, and the `error` policy
+  forbids guessing where to rebuild it. Run it against the original
+  layout, or drop the flag to recreate the file at the derived location.
 - `unsupported schema version` — the store was written by a newer (or
   older) binary. The project is pre-release: recreate the store, don't
   migrate.
