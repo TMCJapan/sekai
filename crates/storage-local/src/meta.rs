@@ -411,34 +411,60 @@ async fn insert_commit(
     Ok((seq, inserted))
 }
 
+/// Rows per bulk node insert.
+///
+/// Each row binds two parameters and SQLite caps a statement's parameter
+/// count (32766 by default), so large inserts bind in batches. Every batch
+/// is one round trip to sqlx's SQLite worker thread, which costs far more
+/// than SQLite's own insert.
+const NODE_INSERT_BATCH: usize = 1024;
+
 /// Insert tree nodes children-first, ignoring hashes the store already has.
 async fn insert_tree_nodes(
     tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
     nodes: &TreeNodes,
 ) -> Result<(), StorageError> {
-    for (hash, node) in &nodes.region {
-        sqlx::query("INSERT OR IGNORE INTO region_tree (hash, node) VALUES (?, ?)")
-            .bind(&hash.as_bytes()[..])
-            .bind(node)
-            .execute(&mut **tx)
-            .await
-            .map_err(db_err)?;
-    }
-    for (hash, node) in &nodes.dim {
-        sqlx::query("INSERT OR IGNORE INTO dim_tree (hash, node) VALUES (?, ?)")
-            .bind(&hash.as_bytes()[..])
-            .bind(node)
-            .execute(&mut **tx)
-            .await
-            .map_err(db_err)?;
-    }
-    for (hash, node) in &nodes.root {
-        sqlx::query("INSERT OR IGNORE INTO root_tree (hash, node) VALUES (?, ?)")
-            .bind(&hash.as_bytes()[..])
-            .bind(node)
-            .execute(&mut **tx)
-            .await
-            .map_err(db_err)?;
+    insert_node_rows(
+        tx,
+        "INSERT OR IGNORE INTO region_tree (hash, node) ",
+        &nodes.region,
+        RegionHash::as_bytes,
+    )
+    .await?;
+    insert_node_rows(
+        tx,
+        "INSERT OR IGNORE INTO dim_tree (hash, node) ",
+        &nodes.dim,
+        DimHash::as_bytes,
+    )
+    .await?;
+    insert_node_rows(
+        tx,
+        "INSERT OR IGNORE INTO root_tree (hash, node) ",
+        &nodes.root,
+        RootHash::as_bytes,
+    )
+    .await?;
+    Ok(())
+}
+
+/// Insert one table's nodes in `NODE_INSERT_BATCH`-row statements.
+async fn insert_node_rows<H: Ord>(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    prefix: &'static str,
+    nodes: &BTreeMap<H, Vec<u8>>,
+    key: fn(&H) -> &[u8; 32],
+) -> Result<(), StorageError> {
+    let mut insert = sqlx::QueryBuilder::new(prefix);
+    let mut rows = nodes.iter().peekable();
+    while rows.peek().is_some() {
+        insert.reset().push_values(
+            rows.by_ref().take(NODE_INSERT_BATCH),
+            |mut row, (hash, node)| {
+                row.push_bind(&key(hash)[..]).push_bind(node);
+            },
+        );
+        insert.build().execute(&mut **tx).await.map_err(db_err)?;
     }
     Ok(())
 }
@@ -1508,6 +1534,38 @@ mod tests {
             ),
             "unexpected error: {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_commit_spanning_node_insert_batches_records_every_region() {
+        use sekai_core::{ChunkHash, MetaStore as _, RegionKind};
+        let mut meta = memory_meta().await;
+        // One chunk per region, so the region table alone spans three batches.
+        // Region nodes are content-addressed: a repeating blob would collapse
+        // same-slot regions into one node, so every blob must be distinct.
+        let rows = NODE_INSERT_BATCH * 2 + 3;
+        let entries: Vec<CommitEntry> = (0..rows)
+            .map(|i| {
+                let x = i32::try_from(i).unwrap() * 32;
+                let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, x, -x);
+                let mut hash = [0u8; 32];
+                hash[..2].copy_from_slice(&u16::try_from(i).unwrap().to_le_bytes());
+                CommitEntry::new(coord, Some(ChunkHash::new(hash)))
+            })
+            .collect();
+        let commit = meta.apply_commit(1_000, &[], &entries).await.unwrap();
+
+        let mut recorded = Vec::new();
+        meta.visit_commit_chunks(commit, |entry| {
+            recorded.push(*entry);
+            true
+        })
+        .await
+        .unwrap();
+        recorded.sort();
+        let mut expected = entries;
+        expected.sort();
+        assert_eq!(recorded, expected);
     }
 
     fn scope(name: &str) -> NamedScope {
