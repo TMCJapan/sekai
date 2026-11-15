@@ -1,6 +1,6 @@
 # ADR-0020: Commit IDs are content-addressed hashes
 
-- Status: Accepted
+- Status: Superseded by ADR-0027 (IDs stay content-addressed; the preimage is now the root tree)
 - Date: 2026-10-24
 
 ## Context

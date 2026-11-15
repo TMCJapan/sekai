@@ -110,11 +110,13 @@ mod tests {
                 id: first,
                 created_at_ms: 1_700_000_000_000,
                 parents: vec![],
+                root: sekai_app::RootHash::new([1; 32]),
             },
             sekai_app::Commit {
                 id: second,
                 created_at_ms: 1_700_000_001_000,
                 parents: vec![first],
+                root: sekai_app::RootHash::new([2; 32]),
             },
         ];
         assert_eq!(

@@ -6,9 +6,9 @@
 //! derivation, and the atomic MCA rewrite itself. Region files are rebuilt
 //! wholesale from CAS blobs (never patched). Under the default
 //! [`CheckoutOptions`] on-disk chunks unknown to the commit (created
-//! later) vanish along with post-commit regions, all-tombstone regions
-//! delete their file instead of leaving a header-only shell, and a blob
-//! missing from CAS aborts loudly: that is corruption, and writing a
+//! later) vanish along with post-commit regions, regions absent from the
+//! snapshot delete their file instead of leaving a header-only shell, and a
+//! blob missing from CAS aborts loudly: that is corruption, and writing a
 //! partial world would be worse than writing none. Keep-policies in
 //! [`CheckoutOptions`] relax each of those strict behaviors explicitly.
 
@@ -134,8 +134,6 @@ where
         // from both sides, so the passes below cannot tell they exist.
         let mut groups = plan.groups;
         groups.retain(|key, _| scope.matches_region(*key));
-        let mut tombstones = plan.tombstones;
-        tombstones.retain(|key, _| scope.matches_region(*key));
 
         // Discovery walks the filesystem, so it runs on the blocking pool
         // with its own share of the world lock, like every file write.
@@ -147,7 +145,7 @@ where
         discovered.retain(|key, _| scope.matches_region(*key));
 
         let files_started = Instant::now();
-        let jobs = plan_files(groups, tombstones, &discovered, world, options)?;
+        let jobs = plan_files(groups, &discovered, world, options)?;
         let report = run_files(
             jobs,
             store.blob(),
@@ -177,16 +175,14 @@ enum FileJob<R: RegionFile> {
         key: RegionKey,
         region: R,
         rows: Vec<(ChunkCoord, ChunkHash)>,
-        tombs: Option<Vec<ChunkCoord>>,
     },
 }
 
 /// Decide what every region file needs, without touching the disk: present
-/// rows are rebuilt from CAS blobs, tombstoned and post-commit files are
+/// rows are rebuilt from CAS blobs, absent and post-commit files are
 /// deleted unless kept by [`CheckoutOptions`]. Files left alone get no job.
 fn plan_files<T: WorldTree>(
     mut groups: BTreeMap<RegionKey, Vec<(ChunkCoord, ChunkHash)>>,
-    mut tombstones: BTreeMap<RegionKey, Vec<ChunkCoord>>,
     discovered: &BTreeMap<RegionKey, T::Region>,
     world: &T,
     options: CheckoutOptions,
@@ -196,12 +192,10 @@ where
 {
     let mut keys: BTreeSet<RegionKey> = discovered.keys().copied().collect();
     keys.extend(groups.keys().copied());
-    keys.extend(tombstones.keys().copied());
     keys.into_iter()
         .filter_map(|key| {
             let rows = groups.remove(&key);
-            let tombs = tombstones.remove(&key);
-            plan_file(key, rows, tombs, discovered, world, options).transpose()
+            plan_file(key, rows, discovered, world, options).transpose()
         })
         .collect()
 }
@@ -210,7 +204,6 @@ where
 fn plan_file<T: WorldTree>(
     key: RegionKey,
     rows: Option<Vec<(ChunkCoord, ChunkHash)>>,
-    tombs: Option<Vec<ChunkCoord>>,
     discovered: &BTreeMap<RegionKey, T::Region>,
     world: &T,
     options: CheckoutOptions,
@@ -224,21 +217,13 @@ where
         } else {
             resolve_target(discovered, world, &key, options.on_missing_file)?
         };
-        Ok(Some(FileJob::Rebuild {
-            key,
-            region,
-            rows,
-            tombs,
-        }))
+        Ok(Some(FileJob::Rebuild { key, region, rows }))
     } else {
-        // No present rows: either fully tombstoned at the commit or created
-        // afterwards. Keep-policies leave the live file alone; strict
-        // checkout deletes it.
-        let keep = if tombs.is_some() {
-            options.keep_tombstoned_chunks
-        } else {
-            options.keep_post_commit_files
-        };
+        // No present rows: the region is absent from the snapshot, whether
+        // fully tombstoned at the commit or created afterwards. Absence is
+        // the tombstone, so the two cannot be distinguished; either
+        // keep-policy preserves the live file, strict checkout deletes it.
+        let keep = options.keep_tombstoned_chunks || options.keep_post_commit_files;
         if keep {
             Ok(None)
         } else {
@@ -337,12 +322,7 @@ where
             })
             .await
         }
-        FileJob::Rebuild {
-            key,
-            region,
-            rows,
-            tombs,
-        } => {
+        FileJob::Rebuild { key, region, rows } => {
             let mut builder = sekai_anvil::RegionBuilder::new(key.rx, key.rz, timestamp)?;
             let mut restored: BTreeSet<(i32, i32)> = BTreeSet::new();
             let mut blob_buf = Vec::new();
@@ -355,14 +335,7 @@ where
             let keep_live = options.keep_post_commit_chunks || options.keep_tombstoned_chunks;
             write_while_running(&lock, move || {
                 if keep_live {
-                    merge_live_chunks(
-                        &region,
-                        key,
-                        &restored,
-                        tombs.as_deref(),
-                        options,
-                        &mut builder,
-                    )?;
+                    merge_live_chunks(&region, key, &restored, options, &mut builder)?;
                 }
                 region.write(&builder.image()?)?;
                 Ok(Outcome::Written {
@@ -432,14 +405,14 @@ async fn fetch_or_skip<C: sekai_core::BlobStore<Error = StorageError>>(
 }
 
 /// Merge live on-disk chunks that the commit does not restore into
-/// `builder`: tombstoned coordinates under `keep_tombstoned_chunks`,
-/// commit-unknown ones under `keep_post_commit_chunks`. Missing live
-/// files contribute nothing; corrupt ones fail loudly.
+/// `builder`: a chunk absent from a commit-known region is absent from the
+/// snapshot, and absence cannot distinguish a tombstone from a post-commit
+/// chunk, so either keep-policy preserves it. Missing live files contribute
+/// nothing; corrupt ones fail loudly.
 fn merge_live_chunks<R: RegionFile>(
     region: &R,
     key: RegionKey,
     restored: &BTreeSet<(i32, i32)>,
-    tombs: Option<&[ChunkCoord]>,
     options: CheckoutOptions,
     builder: &mut sekai_anvil::RegionBuilder,
 ) -> Result<(), AppError>
@@ -450,18 +423,12 @@ where
         return Ok(());
     }
     let image = region.read(key)?;
-    let tombed: BTreeSet<(i32, i32)> =
-        tombs.map_or_default(|coords| coords.iter().map(|c| (c.x, c.z)).collect());
     let mut failed = None;
     image.visit_chunks(|chunk| {
         if restored.contains(&(chunk.x, chunk.z)) {
             return true;
         }
-        let keep = if tombed.contains(&(chunk.x, chunk.z)) {
-            options.keep_tombstoned_chunks
-        } else {
-            options.keep_post_commit_chunks
-        };
+        let keep = options.keep_tombstoned_chunks || options.keep_post_commit_chunks;
         if keep && let Err(source) = builder.stage_chunk(chunk.x, chunk.z, chunk.payload) {
             failed = Some(source);
             return false;

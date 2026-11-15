@@ -107,6 +107,8 @@ commit:
   world: region handle -> Vec<u8> image
     -> anvil: image -> chunk payloads (captured bytes)
     -> Chunk::normalized_hash -> ChunkHash -> storage CAS put
+    -> core: merge changed chunks into the parent snapshot tree
+    -> metadata: region -> dim -> root nodes + commit row
 
 checkout:
   core::plan_checkout -> groups of (coord, ChunkHash)
@@ -183,7 +185,7 @@ different name.
 - **Chunk digest -> CAS key**: `normalized_hash` through `hash_bytes` is the
   `ChunkHash`. The very same digest drives `diff` output. Because volatile
   tags never enter it, a server rewriting them neither adds a blob nor
-  records a history row; checkout still writes the captured bytes back
+  changes the snapshot tree; checkout still writes the captured bytes back
   verbatim.
 
 `entities`/`poi` payloads have no level-chunk schema to normalize, so they
@@ -196,9 +198,11 @@ read - is an error at ingest rather than a raw-byte fallback, so a damaged
 chunk cannot hide behind a byte-level identity that later normalizes
 differently. An unknown compression codec fails the same way.
 
-Commit IDs hash a canonical byte encoding of the logical delta
-([ADR-0020](docs/adr/0020-content-addressed-commit-ids.md)) with the same
-`hash_bytes` primitive: a different preimage, not a second hashing layer.
+Commit IDs hash a canonical byte encoding of the parents, creation time,
+and root snapshot hash
+([ADR-0027](docs/adr/0027-content-addressed-snapshot-trees.md)) with the
+same `hash_bytes` primitive: a different preimage, not a second hashing
+layer.
 
 ## Chunk Codec Support
 
@@ -276,7 +280,7 @@ Blobs live in their own sled keyspace (`blobs/`, the default tree keyed by
 the 32-byte hash) beside `meta.sqlite`, so a store is a single directory and
 a blob write is durable before any metadata names it: puts append to sled's
 log, and `sync` (a log flush) is the barrier the commit runs before recording
-rows. Normalization rule updates affect only change detection - zero data
+metadata. Normalization rule updates affect only change detection - zero data
 migration or blob re-indexing. See
 [ADR-0024](docs/adr/0024-sled-blob-store.md).
 
@@ -286,9 +290,10 @@ migration or blob re-indexing. See
 
 Commits form a history graph, not a timeline: every commit names the
 commits it continues in `parents` (empty for the root of a history, one
-entry for an ordinary commit, several for a merge). The graph - not the
-local record order - decides what a commit inherits, so a commit never
-sees rows introduced by a history it does not descend from.
+entry for an ordinary commit, several for a merge). Each commit also names
+its complete snapshot by root hash. The graph - not the local record order
+- decides which histories a commit descends from, while its root hash
+alone defines the world it restores.
 
 Parent links are written with the commit row, in the same transaction,
 and read back through the `MetaStore` port (`commit_parents`) or walked
@@ -297,15 +302,15 @@ to the root by the core use cases (`usecase::graph::commit_ancestors`
 is recorded once.
 
 Commit IDs are content-addressed: a Blake3 digest over the canonical
-parents, creation time, and fresh history rows (present or tombstone).
-Observation metadata and storage representation are excluded because they
-are not part of the logical delta. Input order never enters the hash -
-parents and entries are sorted before hashing - so equal commits produce
-equal IDs, and recording one twice is idempotent: the existing ID is
-returned without duplicating rows. Backends keep a separate local record
+parents, creation time, and root snapshot hash. Observation metadata and
+storage representation are excluded because they are not part of the
+logical state. Input order never enters the hash - parents are sorted
+before hashing - so equal worlds at equal times produce equal IDs, and
+recording one twice is idempotent: the existing ID is returned without
+duplicating rows or tree nodes. Backends keep a separate local record
 sequence for traversal and latest-commit lookup; that sequence is never
 part of the public ID. See
-[ADR-0020](docs/adr/0020-content-addressed-commit-ids.md).
+[ADR-0027](docs/adr/0027-content-addressed-snapshot-trees.md).
 
 ## Ref Objects
 
@@ -324,29 +329,32 @@ or a bare ref name.
 
 Refs point at commit hashes. Like Git, identity is derived from content;
 a recorded commit is immutable, so a ref's target keeps resolving to the
-same effective state. See [ADR-0019](docs/adr/0019-ref-objects.md).
+same snapshot tree. See [ADR-0019](docs/adr/0019-ref-objects.md).
 
-## Delta History Storage
+## Snapshot Tree Storage
 
-Commits store only fresh rows (changed chunks plus tombstones).
-Unchanged chunks have no row at newer commits; reads resolve effective
-state through the graph - `lookup_chunk` returns the row introduced at
-the commit or at one of its ancestors (the nearest one wins),
-`visit_commit_chunks` synthesizes one effective row per known
-coordinate. Every in-scope file is reread on commit; a row is written
-only when its blob differs from the base commit. Every commit therefore
-grows metadata with changes, not with universe size - an unchanged commit
-writes one commit row and no chunk rows.
+Every commit names one complete snapshot through a root hash; trees add no
+second chunk-hashing layer. Three Merkle levels below the root use
+`hash_bytes` with distinct domain tags: root (dimension -> dim node), dim
+(region kind and coordinates -> region node), and region (local chunk
+coordinates -> `ChunkHash`). Entries sort by coordinate, and a node's
+stored bytes are exactly its hash preimage.
 
-## Tombstones
+Absence is the tombstone. A chunk missing from its region node is gone,
+and a region missing from its dim node is gone. Empty child nodes are never
+written; a fully emptied region leaves its dim node, and an empty dim
+leaves the root. The root node itself is the commit's anchor, so an empty
+world stores one canonical empty root row. Reads probe root, dim, region, and slot; commit merges
+only the changed subtree paths, reusing every untouched hash. The
+canonical (lowest-hash) parent is the base when a merge carries several
+parents; a tree merge policy is out of scope until something creates
+merges.
 
-Missing chunks are explicit `NULL`-blob rows, written once at the commit
-where they vanish: a coordinate already tombstoned records nothing further,
-because its absence already resolves through fallback. Change detection
-therefore compares the world against the effective _present_ coordinate set
-of the latest commit, so a repeated commit of an unchanged world writes no
-chunk rows at all. Checkout onto tombstones removes sectors (fully
-tombstoned regions delete the file rather than leaving a header-only shell).
+A scoped commit merges the parent tree with its in-scope changes only:
+out-of-scope subtrees are reused by hash, never re-read. Every in-scope
+file is reread on commit; a chunk whose blob matches the parent writes no
+new node, so an unchanged world records one commit row and reuses the
+whole tree.
 
 ## Scoped Operations
 
@@ -361,13 +369,13 @@ with `--scope NAME` (ADR-0021); the CLI resolves the name to the same
 filter when the command runs, so commits never record which scope
 produced them. The scope is a filter, not a partition:
 
-- Scoped commit ingests and tombstones only inside the scope.
-  Out-of-scope coordinates record no rows and no tombstones, resolving
-  through fallback from earlier commits. A scoped commit therefore reads
-  as the truth for its scope only - a file deleted inside the scope
-  tombstones its chunks, while anything outside is untouched. A file the
-  scope covers only partly records only its in-scope changes; the next
-  commit that reaches it rereads the whole file and picks up the rest.
+- Scoped commit ingests and applies changes only inside the scope.
+  Out-of-scope subtrees are reused by hash from the parent snapshot, never
+  reread. A scoped commit therefore reads as the truth for its scope only -
+  a file deleted inside the scope removes its chunks, while anything outside
+  is untouched. A file the scope covers only partly records only its
+  in-scope changes; the next commit that reaches it rereads the whole file
+  and picks up the rest.
 - Scoped checkout rebuilds and deletes only inside the scope; files
   outside are never written, deleted, or otherwise touched.
 - Multi-chunk diff resolves coordinates from the commits (or world
@@ -376,11 +384,12 @@ produced them. The scope is a filter, not a partition:
 ## Single Source of Truth
 
 - **Source of truth**: metadata history (`commits`, `commit_parents`,
-  `chunk_history`) in the selected DB backend + CAS blobs.
+  `root_tree`, `dim_tree`, `region_tree`) in the selected DB backend + CAS
+  blobs.
 - **No persisted derived state**: region fingerprints are neither stored
-  nor computed. Commit decisions compare per-chunk history, so there is
-  no cache to wipe and no derived table to keep consistent. The
-  fingerprint primitive stays for a tree-structured history
+  nor computed. Commit decisions compare chunk hashes through the snapshot
+  tree, so there is no cache to wipe and no derived table to keep
+  consistent. The fingerprint primitive stays for a tree-structured history
   ([ADR-0023](docs/adr/0023-drop-the-fingerprint-pass.md)).
 
 # Storage Backends
@@ -446,9 +455,11 @@ the pass still writes files.
 ## Schema
 
 Owned by the backend crate (`crates/storage-local/schema/sqlite.sql` for
-metadata; `commits`, `commit_parents`, `chunk_history`, `refs`, `scopes`,
-`scope_areas`; `SCHEMA_VERSION` gate; pre-release policy = recreate, don't
-migrate). The blob keyspace (`blobs/`) carries its own version gate in a
+metadata; `commits`, `commit_parents`, `root_tree`, `dim_tree`,
+`region_tree`, `refs`, `scopes`, `scope_areas`; `SCHEMA_VERSION` gate;
+pre-release policy = recreate, don't migrate). Each tree table stores the
+canonical node bytes under their hash; paths are three primary-key probes.
+The blob keyspace (`blobs/`) carries its own version gate in a
 reserved sled tree (`__sekai_version`); blob values are opaque payloads, so
 it has no derived state to reinterpret. CAS stays behind the backend-neutral
 port, so an object-store backend swaps the adapter without touching metadata

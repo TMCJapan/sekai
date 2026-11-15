@@ -1,21 +1,21 @@
 //! Recording a world state as a commit, over abstract ports.
 //!
-//! Chunk normalization happens in the adapter's ingest pass, before rows are
-//! staged here; `diff` is not computed during commit. This module only merges
-//! the normalized rows into the delta.
+//! Chunk normalization happens in the adapter's ingest pass, before changes
+//! are staged here; `diff` is not computed during commit. This module only
+//! merges normalized chunk facts into the parent snapshot.
 //!
-//! The policy is stated in ARCHITECTURE.md ("Delta History Storage" and
-//! "Tombstones"): chunks unchanged since the base commit write no fresh
-//! rows, vanished coordinates tombstone once, and everything else resolves
-//! through fallback. This module is the orchestration split that keeps
-//! adapters out of `core`:
+//! The policy is stated in ARCHITECTURE.md ("Snapshot Tree Storage"):
+//! chunks unchanged since the base commit reuse their subtree hash, vanished
+//! coordinates simply leave the tree, and a scoped commit reuses every
+//! out-of-scope subtree by hash. This module is the orchestration split that
+//! keeps adapters out of `core`:
 //!
 //! ```text
-//! plan_commit    read the base state and list in-scope regions to ingest
+//! plan_commit    read the base snapshot and list in-scope regions to ingest
 //!   -> adapter ingests every in-scope region (hash + CAS put per chunk)
-//! assemble       drop unchanged rows, add tombstones (pure)
+//! assemble       drop unchanged chunks, add absent coordinates (pure)
 //!   -> adapter flushes CAS (durability barrier before metadata)
-//! record_commit  record the commit atomically (single metadata batch)
+//! record_commit  merge the tree and record the commit atomically
 //! ```
 
 use alloc::collections::{BTreeMap, BTreeSet};
@@ -23,8 +23,7 @@ use alloc::vec::Vec;
 
 use crate::port::meta::MetaStore;
 use sekai_util::{
-    ApplyOutcome, ChunkCoord, ChunkHash, ChunkHistoryEntry, Commit, CommitEntry, CommitId,
-    RegionKey, Scope,
+    ApplyOutcome, ChunkCoord, ChunkHash, Commit, CommitEntry, CommitId, RegionKey, Scope,
 };
 
 /// Outcome of one commit run.
@@ -36,7 +35,8 @@ pub struct CommitReport {
     pub chunks: usize,
     /// Blobs newly written to CAS (the rest deduplicated).
     pub new_blobs: usize,
-    /// Tombstone rows recorded for vanished chunks.
+    /// Vanished chunks removed from the snapshot (a diff count; no
+    /// tombstone rows are stored).
     pub tombstones: usize,
 }
 
@@ -46,10 +46,11 @@ pub struct Previous {
     /// The commit the new one continues: the target of the active ref,
     /// when the store has one (`None` on an unborn ref).
     pub commit: Option<Commit>,
-    /// Effective present rows of the base commit, tombstones excluded
-    /// (empty on an unborn ref). Keyed by coordinate; the row carries the
-    /// blob hash used for chunk-level change detection.
-    pub state: BTreeMap<ChunkCoord, ChunkHistoryEntry>,
+    /// Effective present entries of the base commit (empty on an unborn
+    /// ref). Keyed by coordinate; the entry carries the blob hash used
+    /// for chunk-level change detection. Absent coordinates are not part
+    /// of the snapshot, so they never appear here.
+    pub state: BTreeMap<ChunkCoord, CommitEntry>,
 }
 
 /// Staged commit decision: what to ingest or report as gone.
@@ -63,19 +64,19 @@ pub struct Plan {
     pub discovered: BTreeSet<RegionKey>,
 }
 
-/// Merged rows ready to commit.
+/// Merged changes ready to commit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Assembled {
-    /// Fresh history rows (changed chunks plus tombstones).
+    /// Fresh snapshot changes (changed chunks plus absent coordinates).
     pub entries: Vec<CommitEntry>,
     /// Coordinates present on disk.
     pub chunks: usize,
     /// Blobs newly written to CAS.
     pub new_blobs: usize,
-    /// Tombstone rows recorded for vanished chunks.
+    /// Vanished chunks removed from the snapshot.
     pub tombstones: usize,
-    /// In-scope files that contributed a chunk with no row at the base
-    /// commit.
+    /// In-scope files that contributed a chunk absent from the base
+    /// snapshot.
     pub new_files: usize,
     /// Stored regions gone from disk.
     pub removed: Vec<RegionKey>,
@@ -98,8 +99,7 @@ pub struct Assembled {
 ///
 /// `discovered` lists every region file found on disk. Every in-scope
 /// file is ingested - there is no file-level skip - and [`assemble`]
-/// keeps the history a delta by dropping rows whose blob matches the base
-/// commit.
+/// drops chunk facts whose blob already matches the base snapshot.
 pub async fn plan_commit<M: MetaStore>(
     meta: &M,
     discovered: &[RegionKey],
@@ -113,16 +113,12 @@ pub async fn plan_commit<M: MetaStore>(
         Some(id) => meta.lookup_commit(id).await?,
         None => None,
     };
-    let mut state: BTreeMap<ChunkCoord, ChunkHistoryEntry> = BTreeMap::new();
+    let mut state: BTreeMap<ChunkCoord, CommitEntry> = BTreeMap::new();
     if let Some(base) = base.as_ref() {
+        // The port visits present entries only: absence is the tombstone,
+        // so a vanished coordinate never reaches the state map.
         meta.visit_commit_chunks(base.id, |entry| {
-            // Present rows only. A tombstoned coordinate is already absent
-            // from the effective state, so keeping it would re-record the
-            // same tombstone row on every later commit and count a vanished
-            // chunk as present.
-            if entry.blob.is_some() {
-                state.insert(entry.coord, *entry);
-            }
+            state.insert(entry.coord, *entry);
             true
         })
         .await?;
@@ -153,7 +149,7 @@ pub async fn plan_commit<M: MetaStore>(
     Ok((previous, plan))
 }
 
-/// Stage an ingested chunk as a fresh history row.
+/// Stage an ingested chunk as a snapshot change.
 pub const fn stage_present(coord: ChunkCoord, hash: ChunkHash) -> CommitEntry {
     CommitEntry::new(coord, Some(hash))
 }
@@ -161,25 +157,25 @@ pub const fn stage_present(coord: ChunkCoord, hash: ChunkHash) -> CommitEntry {
 /// What the adapter's ingest pass produced for the in-scope files.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Ingested {
-    /// Fresh history rows for every chunk read.
+    /// Snapshot changes for every chunk read.
     pub entries: Vec<CommitEntry>,
-    /// Coordinates those rows cover.
+    /// Coordinates those entries cover.
     pub present: BTreeSet<ChunkCoord>,
     /// Blobs newly written to CAS.
     pub new_blobs: usize,
 }
 
-/// Merge fresh rows with tombstones.
+/// Merge ingested changes with absent coordinates.
 ///
 /// Previously present coordinates inside `scope` but not present in the new
-/// scan become tombstones; out-of-scope coordinates keep resolving through
-/// fallback, so scoped commits never record spurious tombstones. Coordinates
-/// already tombstoned at the previous commit are absent from
-/// `Previous::state` and therefore never re-tombstoned.
+/// scan leave the snapshot; out-of-scope subtrees are reused by hash, so
+/// scoped commits never drop anything outside the scope. Coordinates already
+/// absent from the parent snapshot are not in `Previous::state` and therefore
+/// record no further change.
 ///
-/// Rows whose blob matches the base commit are dropped: the file was
-/// reread, but its content did not change, so writing the row again would
-/// bloat history without changing the effective state.
+/// Entries whose blob matches the base commit are dropped: the file was
+/// reread, but its content did not change, so the tree would keep the same
+/// hash without the patch.
 pub fn assemble(plan: Plan, previous: &Previous, ingested: Ingested, scope: &Scope) -> Assembled {
     let Ingested {
         entries,
@@ -195,7 +191,7 @@ pub fn assemble(plan: Plan, previous: &Previous, ingested: Ingested, scope: &Sco
                 .is_none_or(|base| base.blob != entry.blob)
         })
         .collect();
-    // An empty file contributes no rows and is not part of the logical
+    // An empty file contributes no entries and is not part of the logical
     // world state, so it must not keep the preview permanently dirty.
     let new_files: BTreeSet<RegionKey> = fresh
         .iter()
@@ -221,15 +217,15 @@ pub fn assemble(plan: Plan, previous: &Previous, ingested: Ingested, scope: &Sco
     }
 }
 
-/// Record assembled rows as one commit.
+/// Record assembled changes as one commit.
 ///
 /// CAS must be synced first so every referenced blob is durable before the
 /// metadata transaction is committed.
 ///
 /// The new commit continues the history it was planned against: its
 /// parent is `previous.commit` - the target of the active ref, which is
-/// also the base its delta was computed from. The active ref moves onto
-/// the new commit in the same transaction. Plan and commit must not be
+/// also the base tree its changes were computed against. The active ref moves
+/// onto the new commit in the same transaction. Plan and commit must not be
 /// interleaved with another commit; the app holds the store's writer
 /// lock for the whole run.
 pub async fn record_commit<M: MetaStore>(
@@ -257,7 +253,7 @@ pub async fn record_commit<M: MetaStore>(
 mod tests {
     use super::*;
     use crate::support::{MemError, MemMeta};
-    use sekai_util::{Area, ChunkHistoryEntry, Dimension, Rect, RefName, RegionKind};
+    use sekai_util::{Area, Dimension, Rect, RefName, RegionKind};
 
     const OVER: Dimension = Dimension::OVERWORLD;
     const NETHER: Dimension = Dimension::NETHER;
@@ -506,7 +502,10 @@ mod tests {
         assert_ne!(report.commit, first.commit);
         assert_eq!(report.new_blobs, 0);
         assert_eq!(report.tombstones, 0);
-        assert!(meta.rows.iter().all(|row| row.commit != report.commit));
+        let kept = crate::support::block_on(meta.lookup_chunk(report.commit, &coord(0, 0)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(kept.blob, Some(ChunkHash::new([1; 32])));
     }
 
     #[test]
@@ -588,10 +587,9 @@ mod tests {
         let report =
             crate::support::block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
         assert_eq!(report.tombstones, 2);
-        let tomb = crate::support::block_on(meta.lookup_chunk(report.commit, &coord(0, 0)))
-            .unwrap()
-            .unwrap();
-        assert!(tomb.is_tombstone());
+        let tomb =
+            crate::support::block_on(meta.lookup_chunk(report.commit, &coord(0, 0))).unwrap();
+        assert!(tomb.is_none(), "absence is the tombstone");
     }
 
     #[test]
@@ -656,7 +654,15 @@ mod tests {
             crate::support::block_on(record_commit(&mut meta, &previous, &staged, 3_000)).unwrap();
         assert_eq!(report.tombstones, 0);
         assert_eq!(report.chunks, 1);
-        assert!(meta.rows.iter().all(|row| row.commit != report.commit));
+        assert!(
+            crate::support::block_on(meta.lookup_chunk(report.commit, &coord(0, 0)))
+                .unwrap()
+                .is_none()
+        );
+        let kept = crate::support::block_on(meta.lookup_chunk(report.commit, &coord(32, 0)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(kept.blob, Some(ChunkHash::new([2; 32])));
     }
 
     #[test]
@@ -811,19 +817,19 @@ mod tests {
     #[test]
     fn mem_meta_satisfies_lookup_contract() {
         let mut meta = store_with_ref();
-        let id = crate::support::block_on(meta.create_commit(5, &[])).unwrap();
-        crate::support::block_on(meta.record_chunk(
-            id,
-            &coord(0, 0),
-            Some(&ChunkHash::new([3; 32])),
+        let id = crate::support::block_on(meta.apply_commit_incremental(
+            5,
+            &[],
+            &[stage_present(coord(0, 0), ChunkHash::new([3; 32]))],
         ))
-        .unwrap();
+        .unwrap()
+        .id;
         let row = crate::support::block_on(meta.lookup_chunk(id, &coord(0, 0)))
             .unwrap()
             .unwrap();
         assert_eq!(
             row,
-            ChunkHistoryEntry::new(coord(0, 0), id, Some(ChunkHash::new([3; 32])))
+            CommitEntry::new(coord(0, 0), Some(ChunkHash::new([3; 32])))
         );
         assert!(
             crate::support::block_on(meta.lookup_commit(CommitId([0xFF; 32])))
