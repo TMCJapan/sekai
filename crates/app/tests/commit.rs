@@ -981,19 +981,33 @@ async fn progress_events_cover_checkout_and_diff() {
         .unwrap();
     assert_eq!(recorded.events(), [(1, 2), (2, 2)]);
 
-    let coord = sekai_app::ChunkCoord::new(
-        sekai_app::Dimension::OVERWORLD,
-        sekai_app::RegionKind::Region,
-        0,
-        0,
-    );
+    // Three chunks spanning two region files, deliberately unsorted: diff
+    // progress steps per file, as commit does, not per chunk.
+    let coord = |x, z| {
+        sekai_app::ChunkCoord::new(
+            sekai_app::Dimension::OVERWORLD,
+            sekai_app::RegionKind::Region,
+            x,
+            z,
+        )
+    };
+    let coords = [coord(32, 0), coord(0, 0), coord(1, 0)];
     let recorded = Recorded::default();
     let (diffs, _) = instance
-        .diff_chunks(commits[0].id, commits[0].id, &[coord], &recorded)
+        .diff_chunks(commits[0].id, commits[0].id, &coords, &recorded)
         .await
         .unwrap();
     assert!(diffs.iter().all(|diff| diff.entries.is_empty()));
-    assert_eq!(recorded.events(), [(1, 1)]);
+    assert_eq!(recorded.events(), [(1, 2), (2, 2)]);
+
+    let recorded = Recorded::default();
+    let (diffs, _) = instance
+        .world(&world)
+        .diff_world_chunks(Some(commits[0].id), &coords, &recorded)
+        .await
+        .unwrap();
+    assert!(diffs.iter().all(|diff| diff.entries.is_empty()));
+    assert_eq!(recorded.events(), [(1, 2), (2, 2)]);
 }
 
 #[tokio::test]

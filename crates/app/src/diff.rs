@@ -156,7 +156,8 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// commit time, so no blob is fetched or decoded. A chunk absent (or
     /// tombstoned) on both sides yields an empty [`ChunkPayloadDiff`]; present
     /// on exactly one side keeps `None` for the other. `progress_builder`
-    /// counts `coords`.
+    /// counts the region files `coords` span, stepping as each file's last
+    /// chunk completes.
     pub async fn diff_chunks(
         &self,
         old_commit: CommitId,
@@ -269,7 +270,8 @@ where
     /// commit the next one would continue. The commit side is a metadata
     /// lookup; the world side (region lookup, read, decompression, digesting)
     /// counts under `blob_fetch`, and comparing the two digests under
-    /// `diff_compute`. `progress_builder` counts `coords`.
+    /// `diff_compute`. `progress_builder` counts the region files `coords`
+    /// span, stepping as each file's last chunk completes.
     pub async fn diff_world_chunks(
         &self,
         commit: Option<CommitId>,
@@ -410,6 +412,10 @@ where
 /// [`ChunkPayloadDiff::from_sides`] for the cases. Both sides are always
 /// consulted before either failure is reported, so a per-chunk read error
 /// still leaves the other side's outcome known.
+///
+/// Progress counts region files, as commit does: a file steps once its last
+/// coordinate finishes. Coords need not arrive sorted, so the run tracks
+/// each file's remaining chunks instead of watching for region boundaries.
 async fn diff_coords(
     coords: &[ChunkCoord],
     old: impl DiffSource,
@@ -417,7 +423,11 @@ async fn diff_coords(
     progress_builder: &impl BuildProgress,
     timings: &mut DiffTimings,
 ) -> Result<Vec<ChunkDiff>, AppError> {
-    let mut progress = progress_builder.build_progress(coords.len());
+    let mut pending: BTreeMap<RegionKey, usize> = BTreeMap::new();
+    for coord in coords {
+        *pending.entry(RegionKey::of(*coord)).or_default() += 1;
+    }
+    let mut progress = progress_builder.build_progress(pending.len());
     let mut out = Vec::with_capacity(coords.len());
     for coord in coords {
         let started = Instant::now();
@@ -428,7 +438,12 @@ async fn diff_coords(
         let started = Instant::now();
         let entries = ChunkPayloadDiff::from_sides(old_side.digest?, new_side.digest?);
         timings.diff_compute += started.elapsed();
-        progress.step();
+        if let Some(left) = pending.get_mut(&RegionKey::of(*coord)) {
+            *left -= 1;
+            if *left == 0 {
+                progress.step();
+            }
+        }
         out.push(ChunkDiff {
             coord: *coord,
             entries,
