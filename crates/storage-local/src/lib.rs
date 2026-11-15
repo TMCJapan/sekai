@@ -21,7 +21,8 @@ pub type LocalStore = Store<SqliteMeta, SledBlob>;
 /// opener per keyspace, so a concurrent initialization of the same root
 /// fails loudly instead of racing.
 pub async fn init_local(root: impl AsRef<Path>) -> Result<LocalStore, StorageError> {
-    std::fs::create_dir_all(root.as_ref()).map_err(|source| io_error(root.as_ref(), source))?;
+    std::fs::create_dir_all(root.as_ref())
+        .map_err(|source| io_error(root.as_ref().display().to_string(), source))?;
     connect_sqlite(root).await
 }
 
@@ -33,7 +34,7 @@ pub async fn init_local(root: impl AsRef<Path>) -> Result<LocalStore, StorageErr
 pub async fn open_local(root: impl AsRef<Path>) -> Result<LocalStore, StorageError> {
     if !markers_present(root.as_ref()) {
         return Err(StorageError::StoreMissing {
-            path: root.as_ref().to_path_buf(),
+            path: root.as_ref().display().to_string(),
         });
     }
     connect_sqlite(root).await

@@ -2,48 +2,57 @@
 //!
 //! `Store` keeps a backend's metadata and blob adapters together.
 
-use std::path::{Path, PathBuf};
+use alloc::boxed::Box;
+use alloc::string::String;
+use core::fmt;
 
 pub use sekai_core::{BlobStore, CommitId, MetaStore};
 
 /// Failures while storing blobs or metadata.
-#[derive(Debug, thiserror::Error)]
+///
+/// Paths are plain strings and sources are boxed [`core::error::Error`]s so
+/// every backend shares one error surface, whether it runs on a host
+/// filesystem or a `no_std` target.
+#[derive(Debug)]
 pub enum StorageError {
-    #[error("file I/O failed for {path}: {source}", path = path.display())]
+    /// An I/O operation failed at `path`.
     Io {
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
+        /// Location the failing operation targeted.
+        path: String,
+        /// Underlying I/O failure.
+        source: Box<dyn core::error::Error + Send + Sync>,
     },
     /// Requested blob is absent from CAS; this is corruption because tombstones
     /// are represented in metadata.
-    #[error("blob missing from CAS: {hex}")]
-    BlobMissing { hex: String },
+    BlobMissing {
+        /// Hex-encoded hash of the absent blob.
+        hex: String,
+    },
     /// The root holds no initialized store. Only an explicit init creates
     /// one; every other operation must fail here instead of materializing
     /// an empty store as a side effect.
-    #[error(
-        "no store at {path}: run 'sekai init' to create one",
-        path = path.display()
-    )]
     StoreMissing {
         /// Store root that was expected to hold `meta.sqlite` and the `blobs` keyspace.
-        path: PathBuf,
+        path: String,
     },
     /// Stored hash bytes are not 32 bytes long.
-    #[error("stored hash has invalid length: {len} bytes, expected 32")]
-    InvalidHashLength { len: usize },
+    InvalidHashLength {
+        /// Byte length read from storage.
+        len: usize,
+    },
     /// Stored history integer does not fit its domain type.
-    #[error("stored history column {column} has out-of-range value: {value}")]
-    InvalidHistoryValue { column: &'static str, value: i64 },
+    InvalidHistoryValue {
+        /// Column that carried the out-of-range value.
+        column: &'static str,
+        /// Value read from storage.
+        value: i64,
+    },
     /// Stored ref name fails validation.
-    #[error("stored ref name is invalid: {name}")]
     InvalidRefName {
         /// Ref name that failed validation.
         name: String,
     },
     /// Stored scope name fails validation.
-    #[error("stored scope name is invalid: {name}")]
     InvalidScopeName {
         /// Scope name that failed validation.
         name: String,
@@ -51,7 +60,6 @@ pub enum StorageError {
     /// Stored scope has no area: `NamedScope::new` refuses an empty area
     /// set, so `set_scope` never writes one and a scope without area rows
     /// is corruption.
-    #[error("stored scope has no area: {name}")]
     EmptyScope {
         /// Scope that has no area.
         name: String,
@@ -61,14 +69,12 @@ pub enum StorageError {
     /// Emitted by operations that require the ref to exist
     /// (`activate_ref`); lookups and `delete_ref` report absence as
     /// `None`/`false` instead.
-    #[error("unknown ref: {name}")]
     UnknownRef {
         /// Requested ref name.
         name: String,
     },
     /// The active ref cannot be removed: a store without one would have
     /// nowhere to hang new commits from.
-    #[error("cannot remove the active ref: {name}")]
     ActiveRefProtected {
         /// Ref that was asked for.
         name: String,
@@ -79,59 +85,109 @@ pub enum StorageError {
     /// name the caller passed. A backend checks for the active ref before
     /// its parent constraint, so `NoActiveRef` takes priority over
     /// [`Self::NotContinuing`] when both conditions hold.
-    #[error("store has no active ref: a new commit has nowhere to hang from")]
     NoActiveRef,
     /// A new commit does not continue the active ref's target, which
     /// would fork the ref onto another history.
-    #[error("new commit does not continue the active ref's target {base}")]
     NotContinuing {
         /// Target commit ID the new commit had to include as a parent.
         base: CommitId,
     },
     /// Stored region-family code does not name a known kind.
-    #[error("stored region kind is unknown: {kind}")]
     UnknownRegionKind {
         /// Code read from the `kind` column.
         kind: i32,
     },
     /// Millisecond timestamp does not fit `i64`.
-    #[error("timestamp out of range: {0}")]
     InvalidTimestamp(u64),
     /// The system clock is before the Unix epoch.
     ///
     /// Raised when a millisecond reading of the system clock cannot be
     /// represented as a non-negative `u64` timestamp.
-    #[error("system clock is before the Unix epoch")]
     ClockBeforeEpoch,
     /// The system clock is past the representable range.
     ///
     /// Raised when a millisecond reading of the system clock does not fit
     /// the timestamp range the backend stores.
-    #[error("system clock is out of range")]
     ClockOutOfRange,
     /// Region file size does not fit `i64`.
-    #[error("region size out of range: {0}")]
     InvalidSize(u64),
     /// The named commit does not exist.
-    #[error("unknown commit: {id}")]
     UnknownCommit {
         /// Requested commit ID.
         id: CommitId,
     },
     /// Database schema version is not supported.
-    #[error(
-        "unsupported schema version: {found}, this binary supports {supported} (recreate the store; pre-release stores are not migrated)"
-    )]
-    UnsupportedSchema { found: i64, supported: i64 },
+    UnsupportedSchema {
+        /// Version found in the store.
+        found: i64,
+        /// Version this binary supports.
+        supported: i64,
+    },
     /// A backend-specific operation failed.
-    #[error("{backend} failed: {source}")]
     Backend {
         /// Backend name used in diagnostics.
         backend: &'static str,
         /// Underlying backend failure.
-        #[source]
         source: Box<dyn core::error::Error + Send + Sync>,
     },
+}
+
+impl fmt::Display for StorageError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io { path, source } => write!(f, "file I/O failed for {path}: {source}"),
+            Self::BlobMissing { hex } => write!(f, "blob missing from CAS: {hex}"),
+            Self::StoreMissing { path } => {
+                write!(f, "no store at {path}: run 'sekai init' to create one")
+            }
+            Self::InvalidHashLength { len } => {
+                write!(
+                    f,
+                    "stored hash has invalid length: {len} bytes, expected 32"
+                )
+            }
+            Self::InvalidHistoryValue { column, value } => write!(
+                f,
+                "stored history column {column} has out-of-range value: {value}"
+            ),
+            Self::InvalidRefName { name } => write!(f, "stored ref name is invalid: {name}"),
+            Self::InvalidScopeName { name } => write!(f, "stored scope name is invalid: {name}"),
+            Self::EmptyScope { name } => write!(f, "stored scope has no area: {name}"),
+            Self::UnknownRef { name } => write!(f, "unknown ref: {name}"),
+            Self::ActiveRefProtected { name } => {
+                write!(f, "cannot remove the active ref: {name}")
+            }
+            Self::NoActiveRef => {
+                f.write_str("store has no active ref: a new commit has nowhere to hang from")
+            }
+            Self::NotContinuing { base } => {
+                write!(
+                    f,
+                    "new commit does not continue the active ref's target {base}"
+                )
+            }
+            Self::UnknownRegionKind { kind } => write!(f, "stored region kind is unknown: {kind}"),
+            Self::InvalidTimestamp(millis) => write!(f, "timestamp out of range: {millis}"),
+            Self::ClockBeforeEpoch => f.write_str("system clock is before the Unix epoch"),
+            Self::ClockOutOfRange => f.write_str("system clock is out of range"),
+            Self::InvalidSize(size) => write!(f, "region size out of range: {size}"),
+            Self::UnknownCommit { id } => write!(f, "unknown commit: {id}"),
+            Self::UnsupportedSchema { found, supported } => write!(
+                f,
+                "unsupported schema version: {found}, this binary supports {supported} (recreate the store; pre-release stores are not migrated)"
+            ),
+            Self::Backend { backend, source } => write!(f, "{backend} failed: {source}"),
+        }
+    }
+}
+
+impl core::error::Error for StorageError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Io { source, .. } | Self::Backend { source, .. } => Some(source.as_ref()),
+            _ => None,
+        }
+    }
 }
 
 impl StorageError {
@@ -184,28 +240,47 @@ impl<M, C> Store<M, C> {
 
 /// Wrap an I/O failure together with the path that caused it.
 ///
-/// Backend crates build [`StorageError::Io`] through this so the path
-/// handling stays in one place.
-pub fn io_error(path: impl AsRef<Path>, source: std::io::Error) -> StorageError {
+/// Backend crates build [`StorageError::Io`] through this so the error
+/// construction stays in one place. The path is a display string: the
+/// boundary never interprets it, only the backend does.
+pub fn io_error(
+    path: impl Into<String>,
+    source: impl core::error::Error + Send + Sync + 'static,
+) -> StorageError {
     StorageError::Io {
-        path: path.as_ref().to_path_buf(),
-        source,
+        path: path.into(),
+        source: Box::new(source),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::error::Error as _;
+    use alloc::borrow::ToOwned;
+    use alloc::string::ToString;
+    use core::error::Error as _;
+
+    /// Stand-in backend failure: the boundary only needs `Display` plus
+    /// `Error`, never a concrete host I/O type.
+    #[derive(Debug)]
+    struct TestSource(&'static str);
+
+    impl fmt::Display for TestSource {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+
+    impl core::error::Error for TestSource {}
 
     #[test]
     fn io_error_keeps_path_and_source() {
-        let err = io_error("store/meta.sqlite", std::io::Error::other("disk full"));
+        let err = io_error("store/meta.sqlite", TestSource("disk full"));
         let StorageError::Io { path, source } = &err else {
             panic!("io_error must build the Io variant");
         };
 
-        assert_eq!(path, Path::new("store/meta.sqlite"));
+        assert_eq!(path, "store/meta.sqlite");
         assert_eq!(source.to_string(), "disk full");
         assert_eq!(
             err.to_string(),
@@ -215,7 +290,7 @@ mod tests {
 
     #[test]
     fn backend_error_carries_name_and_source() {
-        let err = StorageError::backend("sled", std::io::Error::other("corrupt tree"));
+        let err = StorageError::backend("sled", TestSource("corrupt tree"));
 
         assert_eq!(err.to_string(), "sled failed: corrupt tree");
         assert_eq!(

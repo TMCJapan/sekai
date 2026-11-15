@@ -14,4 +14,3 @@ workspace = true
 
 [dependencies]
 sekai-core.workspace = true
-thiserror.workspace = true
