@@ -817,7 +817,7 @@ async fn missing_file_refusal_leaves_the_world_untouched() {
 
 #[tokio::test]
 async fn commit_records_no_diff_metadata() {
-    use sekai_core::MetaStore as _;
+    use sekai_storage::MetaStore as _;
     let (root, _guard) = tempdir("diff");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();

@@ -20,8 +20,8 @@
 
 use std::path::{Path, PathBuf};
 
-use sekai_core::{BlobStore, ChunkHash};
-use sekai_storage::{StorageError, io_error};
+use sekai_core::ChunkHash;
+use sekai_storage::{BlobStore, StorageError, io_error};
 
 /// Version of the blob keyspace format.
 ///

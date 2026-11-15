@@ -6,7 +6,9 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use core::fmt;
 
-pub use sekai_core::{BlobStore, CommitId, MetaStore};
+pub use sekai_util::CommitId;
+
+pub use crate::{BlobStore, MetaStore};
 
 /// Failures while storing blobs or metadata.
 ///
@@ -55,7 +57,7 @@ pub enum StorageError {
         hash: String,
     },
     /// Stored tree bytes failed their canonical encoding or hash check.
-    Tree(sekai_core::TreeError),
+    Tree(crate::TreeError),
     /// Stored ref name fails validation.
     InvalidRefName {
         /// Ref name that failed validation.
@@ -204,8 +206,8 @@ impl core::error::Error for StorageError {
     }
 }
 
-impl From<sekai_core::TreeError> for StorageError {
-    fn from(source: sekai_core::TreeError) -> Self {
+impl From<crate::TreeError> for StorageError {
+    fn from(source: crate::TreeError) -> Self {
         Self::Tree(source)
     }
 }

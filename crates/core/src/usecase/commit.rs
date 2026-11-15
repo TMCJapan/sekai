@@ -1,4 +1,4 @@
-//! Recording a world state as a commit, over abstract ports.
+//! Recording a world state as a commit, over the abstract storage traits.
 //!
 //! Chunk normalization happens in the adapter's ingest pass, before changes
 //! are staged here; `diff` is not computed during commit. This module only
@@ -21,7 +21,7 @@
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
-use crate::port::meta::MetaStore;
+use sekai_storage::MetaStore;
 use sekai_util::{
     ApplyOutcome, ChunkCoord, ChunkHash, Commit, CommitEntry, CommitId, RegionKey, Scope,
 };
@@ -106,7 +106,7 @@ pub async fn plan_commit<M: MetaStore>(
     scope: &Scope,
 ) -> Result<(Previous, Plan), M::Error> {
     let active = meta.active_ref().await?;
-    // `MetaStore::active_ref` rejects a dangling target (the port's
+    // `MetaStore::active_ref` rejects a dangling target (the trait's
     // contract), so the lookup below always finds the commit the ref
     // names: a `None` here is an unborn ref.
     let base = match active.as_ref().and_then(|r| r.commit) {
@@ -115,7 +115,7 @@ pub async fn plan_commit<M: MetaStore>(
     };
     let mut state: BTreeMap<ChunkCoord, CommitEntry> = BTreeMap::new();
     if let Some(base) = base.as_ref() {
-        // The port visits present entries only: absence is the tombstone,
+        // The trait visits present entries only: absence is the tombstone,
         // so a vanished coordinate never reaches the state map.
         meta.visit_commit_chunks(base.id, |entry| {
             state.insert(entry.coord, *entry);

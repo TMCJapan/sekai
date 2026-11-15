@@ -6,7 +6,7 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::fmt;
 
-use crate::port::meta::MetaStore;
+use sekai_storage::MetaStore;
 use sekai_util::{ChunkCoord, ChunkHash, CommitId, RegionKey};
 
 /// Outcome of one checkout run.

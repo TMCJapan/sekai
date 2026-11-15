@@ -253,7 +253,7 @@ async fn run_files<R, L, C>(
 where
     R: RegionFile,
     L: WorldLock,
-    C: sekai_core::BlobStore<Error = StorageError> + Clone + Send + Sync + 'static,
+    C: sekai_storage::BlobStore<Error = StorageError> + Clone + Send + Sync + 'static,
     AppError: From<R::Error>,
 {
     let mut progress = progress_builder.build_progress(jobs.len());
@@ -308,7 +308,7 @@ async fn run_file<R, L, C>(
 where
     R: RegionFile,
     L: WorldLock,
-    C: sekai_core::BlobStore<Error = StorageError>,
+    C: sekai_storage::BlobStore<Error = StorageError>,
     AppError: From<R::Error>,
 {
     match job {
@@ -389,13 +389,13 @@ enum Outcome {
 ///
 /// `false` means the chunk must be skipped; under
 /// [`MissingBlobPolicy::Abort`] a missing blob is corruption and propagates.
-async fn fetch_or_skip<C: sekai_core::BlobStore<Error = StorageError>>(
+async fn fetch_or_skip<C: sekai_storage::BlobStore<Error = StorageError>>(
     cas: &C,
     hash: &ChunkHash,
     policy: MissingBlobPolicy,
     out: &mut Vec<u8>,
 ) -> Result<bool, AppError> {
-    match sekai_core::BlobStore::fetch_into(cas, hash, out).await {
+    match sekai_storage::BlobStore::fetch_into(cas, hash, out).await {
         Ok(()) => Ok(true),
         Err(StorageError::BlobMissing { .. }) if policy == MissingBlobPolicy::SkipChunk => {
             Ok(false)

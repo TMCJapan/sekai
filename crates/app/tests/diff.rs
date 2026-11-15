@@ -10,8 +10,7 @@ mod fixtures;
 use fixtures::chunk_nbt;
 use sekai_anvil::ChunkHashError;
 use sekai_app::{AppError, ChunkHash, RegionKind, SekaiInstance};
-use sekai_core::BlobStore as _;
-use sekai_storage::StorageError;
+use sekai_storage::{BlobStore as _, StorageError};
 use sekai_storage_local::LocalStore;
 
 async fn instance(name: &str) -> (SekaiInstance<LocalStore>, tempfile::TempDir) {

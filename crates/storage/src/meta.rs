@@ -34,7 +34,7 @@ pub trait MetaStore {
 
     /// Direct parents of `commit`; empty for the root of a history.
     ///
-    /// An unknown commit yields an empty list: the port reports what is
+    /// An unknown commit yields an empty list: the trait reports what is
     /// stored, not what exists. The use cases above it check for existence
     /// first.
     fn commit_parents(

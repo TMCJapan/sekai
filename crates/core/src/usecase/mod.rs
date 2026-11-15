@@ -1,7 +1,7 @@
 //! Application use cases: commit, checkout, commit-graph reads, refs,
 //! and named scopes.
 //!
-//! Use cases coordinate storage ports and enforce application-level policy.
+//! Use cases coordinate the storage traits and enforce application-level policy.
 //! They own ordering and decisions such as change filtering, snapshot
 //! merging, and restore.
 //! Backends own SQLite, CAS layout, threading, and clocks. Policy here is

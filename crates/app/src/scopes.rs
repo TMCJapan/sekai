@@ -5,8 +5,8 @@
 //! commit is recorded, so replacing a scope changes what later runs select
 //! and never what earlier commits hold.
 
-use sekai_core::{Dimension, MetaStore as _, NamedScope, Rect, Scope, ScopeName};
-use sekai_storage::SekaiStore;
+use sekai_core::{Dimension, NamedScope, Rect, Scope, ScopeName};
+use sekai_storage::{MetaStore as _, SekaiStore};
 
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
@@ -21,7 +21,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// it; a replacement keeps the original creation time and swaps every
     /// area at once. Returns the record as stored.
     ///
-    /// `force` is a policy of this layer: the port's `set_scope` always
+    /// `force` is a policy of this layer: the trait's `set_scope` always
     /// replaces.
     pub async fn create_scope(
         &mut self,
