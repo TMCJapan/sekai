@@ -9,7 +9,7 @@ This project is organized as a Cargo workspace under `crates/`:
     ├── anvil           # Pure Anvil sector codec, decompression, and normalized chunk hashing (no_std + alloc, ex-mca)
     ├── core            # Use-case policy API over shared types (no_std + alloc, depends on storage + util)
     ├── storage         # Backend-neutral store traits (no_std + alloc)
-    ├── storage-local   # Local backend: SQLite metadata (sqlx) + sled blobs (std + tokio)
+    ├── storage-local   # Local backend: SQLite metadata (sqlx) + sled blobs + sled region-image cache (std + tokio)
     ├── world           # World access boundary (no_std + alloc): WorldTree trait,
     │                   # RegionFile handle, WorldLock primitives
     ├── world-local     # Host filesystem tree (std): HostWorldTree, layout detection,
@@ -52,10 +52,10 @@ Rules:
   `anvil` is sync-only; `core` and `storage` carry no runtime: `async fn`
   appears only in the `storage` traits (RPITIT, see below) and the `core`
   use cases generic over them.
-- `storage` owns backend-neutral boundaries (`blob` / `meta` / `tree` /
-  `api` / `store`); concrete database backends live in sibling crates such
-  as `storage-local` and only communicate through the exported traits.
-  Backend crates must not reach into each other.
+- `storage` owns backend-neutral boundaries (`blob` / `meta` / `cache` /
+  `tree` / `api` / `store`); concrete database backends live in sibling
+  crates such as `storage-local` and only communicate through the exported
+  traits. Backend crates must not reach into each other.
 
 ## Safety Invariants
 
@@ -69,8 +69,8 @@ any exception in the PR body.
   `async-trait` macro.
 - **`core` is the API layer; `storage` is the trait hub**: `core` owns the
   use-case policy over shared `util` types and re-exports every util type
-  at its root; `storage` owns the async `BlobStore`/`MetaStore` traits
-  (RPITIT) and the canonical snapshot-tree codec. `app` composes `core`
+  at its root; `storage` owns the async `BlobStore`/`MetaStore`/`CacheStore`
+  traits (RPITIT) and the canonical snapshot-tree codec. `app` composes `core`
   with the `anvil` codec for payload digests and diffs. Pluggability lives
   at the storage traits (implemented by backend crates) and at the `world`
   observation boundary - not at `RegionReader`/`Normalizer`-style traits.
@@ -95,9 +95,11 @@ any exception in the PR body.
   the commit, it does not preserve their live values.
 - **No server orchestration in libraries**: `save-off`/`save-all`, process
   control, and scheduling belong to the caller, never to library crates.
-- **No persisted derived state**: commit decisions compare chunk hashes
-  through the snapshot tree, so the schema holds no cache that can drift
-  from the source of truth.
+- **No derived state in the source of truth**: commit decisions compare
+  chunk hashes through the snapshot tree, so the metadata schema holds no
+  cache that can drift. The region-image cache is derived but lives outside
+  that schema and is always rebuildable, so wiping it costs performance
+  only ([ADR-0029](docs/adr/0029-region-image-cache.md)).
 - **Canonical snapshot trees**: every tree node is stored as the exact
   sorted entry array its hash covers, and a node may name only the level
   below it. Empty child nodes are never written; absence is the tombstone.
@@ -154,8 +156,9 @@ any exception in the PR body.
   file modes, the artifact wraps a `sekai-<target triple>.tar.gz` that keeps
   the binary executable.
 - **Storage backends**: this project ships one local backend, in the
-  `sekai-storage-local` crate (SQLite metadata via sqlx, blobs via sled;
-  app feature `backend-local`, default-on). `sekai-storage` stays
+  `sekai-storage-local` crate (SQLite metadata via sqlx, blobs and the
+  region-image cache via sled; app feature `backend-local`, default-on).
+  `sekai-storage` stays
   backend-neutral and owns the traits and locks; it holds no backend
   modules, so a mysql or postgres backend arrives as a sibling crate
   rather than as a stub.
@@ -228,10 +231,11 @@ cargo build -p sekai-cli --release
 
 - **Unit Tests**: Place in `src/` alongside the code. Ensure coverage for edge cases (corrupted headers, unexpected NBT structures, zero-length chunks).
 - **Integration Tests**: Place in `tests/` directories within crates. Test atomic operations (e.g., MCA writes, checkouts) using synthetic binary fixtures. The `test-world/` corpus (small real-data region files, see its README for provenance) is the exception: copy it into a temp dir first, never mutate it in place. Crash-order tests (torn commit leaves orphans, never dangling references) are mandatory for `app`/`world-local`/`storage` changes.
-- **Backend tests**: `sekai-storage-local` must cover both version gates
-  (`UnsupportedSchema`), snapshot-tree path reads and shared-subtree reuse,
-  and the no-derived-state recovery guarantees. Future backend crates must
-  run the same suite via the shared conformance flows.
+- **Backend tests**: `sekai-storage-local` must cover all three version
+  gates (metadata, blobs, cache; `UnsupportedSchema`), snapshot-tree path
+  reads and shared-subtree reuse, the cache roundtrip, and the
+  source-of-truth recovery guarantees. Future backend crates must run the
+  same suite via the shared conformance flows.
 - **Benchmarks**: micro benches live beside their crates (`cargo bench -p
 sekai-anvil -p sekai-core`); integration flows in
   `crates/app/benches` (seeded worlds from `benches/common.rs`, `cargo
@@ -282,8 +286,9 @@ Write [Conventional Commits](https://www.conventionalcommits.org/):
 ### Storage Schema Changes
 
 The metadata schema is backend-owned and versioned
-(`SCHEMA_VERSION` in `crates/storage-local/src/meta.rs`); the blob keyspace
-has its own gate (`SCHEMA_VERSION` in `crates/storage-local/src/blob.rs`).
+(`SCHEMA_VERSION` in `crates/storage-local/src/meta.rs`); the blob and
+cache keyspaces each have their own gate (`SCHEMA_VERSION` in
+`crates/storage-local/src/blob.rs` and `cache.rs`).
 
 - Bump the version for any schema change and add a test pinning the version
   gate (old stores fail loudly with `UnsupportedSchema`). Fresh stores
@@ -291,7 +296,9 @@ has its own gate (`SCHEMA_VERSION` in `crates/storage-local/src/blob.rs`).
   sufficient.
 - The project is pre-release: old stores are recreated, not migrated. Never
   silently reinterpret an unknown version.
-- The schema keeps only source-of-truth history and snapshot trees. Derived
-  data (fingerprints, cached counts) stays out of the database so no rebuild
-  path can drift; cover commit decisions with tests against the tree tables
-  themselves.
+- The metadata schema keeps only source-of-truth history and snapshot
+  trees. Derived data (fingerprints, cached counts) stays out of it so no
+  rebuild path can drift; cover commit decisions with tests against the
+  tree tables themselves. The region-image cache is derived but lives in
+  its own keyspace, rebuildable and outside this schema
+  ([ADR-0029](docs/adr/0029-region-image-cache.md)).
