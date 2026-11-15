@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Backend-neutral metadata and blob storage boundaries for Sekai"
+description = "Backend-neutral metadata, blob, and cache storage boundaries for Sekai"
 keywords = ["minecraft", "version-control", "storage"]
 
 [lints]
