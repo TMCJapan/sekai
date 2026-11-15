@@ -14,7 +14,7 @@ use sekai_util::{
 };
 
 #[allow(clippy::cast_possible_truncation)]
-const fn local_slot(coord: ChunkCoord) -> (u8, u8) {
+pub(crate) const fn local_slot(coord: ChunkCoord) -> (u8, u8) {
     // `rem_euclid(32)` is always in `0..32`, so the cast cannot truncate.
     (coord.x.rem_euclid(32) as u8, coord.z.rem_euclid(32) as u8)
 }

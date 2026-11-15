@@ -66,6 +66,10 @@ pub struct McaFile {
 impl Region for McaFile {
     type Error = WorldError;
 
+    fn image(&self) -> &[u8] {
+        self.image.image()
+    }
+
     fn visit_chunks<F>(&self, visit: F) -> Result<(), Self::Error>
     where
         F: FnMut(sekai_anvil::Chunk<'_>) -> bool,

@@ -82,6 +82,7 @@ struct CommitPhases {
     hash_ms: u128,
     cas_put_ms: u128,
     db_apply_ms: u128,
+    cache_ms: u128,
 }
 
 /// One region row of the `--timing` JSON (`docs/json.md`).
@@ -119,6 +120,7 @@ fn commit_payload(report: &CommitReport, timings: &CommitTimings, timing: bool) 
                 hash_ms: timings.hash.as_millis(),
                 cas_put_ms: timings.cas_put.as_millis(),
                 db_apply_ms: timings.db_apply.as_millis(),
+                cache_ms: timings.cache.as_millis(),
             },
             regions: timings
                 .regions
@@ -140,7 +142,7 @@ fn print_timing_table(timings: &CommitTimings, style: Styler) {
     println!(
         "{}",
         style.dim(&format!(
-            "timing total={}ms discover={}ms universe={}ms open={}ms ingest={}ms (hash={}ms cas={}ms) db={}ms ingested_files={}",
+            "timing total={}ms discover={}ms universe={}ms open={}ms ingest={}ms (hash={}ms cas={}ms) db={}ms cache={}ms ingested_files={}",
             timings.total.as_millis(),
             timings.discover.as_millis(),
             timings.universe_load.as_millis(),
@@ -149,6 +151,7 @@ fn print_timing_table(timings: &CommitTimings, style: Styler) {
             timings.hash.as_millis(),
             timings.cas_put.as_millis(),
             timings.db_apply.as_millis(),
+            timings.cache.as_millis(),
             timings.regions.len(),
         ))
     );
@@ -192,6 +195,7 @@ mod tests {
             hash: Duration::from_millis(6),
             cas_put: Duration::from_millis(7),
             db_apply: Duration::from_millis(8),
+            cache: Duration::from_millis(9),
             regions: vec![sekai_app::RegionTiming {
                 location: "region/r.0.0.mca".to_owned(),
                 chunks: 32,
@@ -211,7 +215,7 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&payload_timed).unwrap(),
             format!(
-                r#"{{"commit":"{id}","chunks":40,"new_blobs":2,"tombstones":0,"total_ms":100,"phases":{{"discover_ms":1,"universe_load_ms":2,"region_open_ms":4,"ingest_ms":50,"hash_ms":6,"cas_put_ms":7,"db_apply_ms":8}},"regions":[{{"path":"region/r.0.0.mca","chunks":32,"open_ms":4,"ingest_ms":5,"hash_ms":6,"cas_ms":7}}]}}"#
+                r#"{{"commit":"{id}","chunks":40,"new_blobs":2,"tombstones":0,"total_ms":100,"phases":{{"discover_ms":1,"universe_load_ms":2,"region_open_ms":4,"ingest_ms":50,"hash_ms":6,"cas_put_ms":7,"db_apply_ms":8,"cache_ms":9}},"regions":[{{"path":"region/r.0.0.mca","chunks":32,"open_ms":4,"ingest_ms":5,"hash_ms":6,"cas_ms":7}}]}}"#
             )
         );
     }

@@ -208,11 +208,12 @@ impl Scope {
 
     /// Whether the scope contains every chunk of a region file.
     ///
-    /// No flow asks today. A file-level skip may only stand for a fully
-    /// covered file: a partial ingest leaves out-of-scope chunks
-    /// unrecorded (ADR-0023). Coverage by the union of several areas is
-    /// reported as partial, which costs a re-ingest rather than
-    /// correctness.
+    /// The commit's cache pass asks: only a fully covered file can
+    /// produce its committed region node, so only such files become
+    /// region-image cache candidates (ADR-0029, ADR-0030). A partial
+    /// ingest leaves out-of-scope chunks unrecorded (ADR-0023). Coverage
+    /// by the union of several areas is reported as partial, which costs
+    /// a re-ingest rather than correctness.
     pub fn covers_region(&self, key: RegionKey) -> bool {
         match self {
             Self::World => true,

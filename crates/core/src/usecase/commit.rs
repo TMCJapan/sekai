@@ -16,15 +16,19 @@
 //! assemble       drop unchanged chunks, add absent coordinates (pure)
 //!   -> adapter flushes CAS (durability barrier before metadata)
 //! record_commit  merge the tree and record the commit atomically
+//!   -> adapter populates the region-image cache (derived, best-effort)
 //! ```
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
-use sekai_storage::MetaStore;
+use sekai_storage::{DimNode, MetaStore, RegionEntry, RegionNode};
 use sekai_util::{
-    ApplyOutcome, ChunkCoord, ChunkHash, Commit, CommitEntry, CommitId, RegionKey, Scope,
+    ApplyOutcome, ChunkCoord, ChunkHash, Commit, CommitEntry, CommitId, DimHash, RegionHash,
+    RegionKey, Scope,
 };
+
+use crate::tree::local_slot;
 
 /// Outcome of one commit run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -247,6 +251,78 @@ pub async fn record_commit<M: MetaStore>(
         new_blobs: staged.new_blobs,
         tombstones: staged.tombstones,
     })
+}
+
+/// The region node hash one file's ingested chunks produce, or `None`
+/// when the file holds no chunks.
+///
+/// The entries are the present chunks of a single file, so this is the
+/// hash the file itself would name as its region node: the cache
+/// candidate of ADR-0029. Entries without a blob name no chunk and are
+/// skipped.
+pub fn file_region_hash(entries: &[CommitEntry]) -> Option<RegionHash> {
+    let slots: Vec<RegionEntry> = entries
+        .iter()
+        .filter_map(|entry| {
+            let (cx, cz) = local_slot(entry.coord);
+            Some(RegionEntry {
+                cx,
+                cz,
+                hash: entry.blob?,
+            })
+        })
+        .collect();
+    if slots.is_empty() {
+        return None;
+    }
+    Some(RegionNode::new(slots).hash())
+}
+
+/// The candidates the recorded commit confirms, in candidate order.
+///
+/// A candidate matches when the commit names exactly its hash for the
+/// region key: the committed region node is then the file's own
+/// normalization, so the image the chunks were read from produced the
+/// committed hash and may be cached under it (ADR-0029). A mismatch
+/// means the merge carried state the file did not produce - a partial
+/// scope, or an out-of-scope chunk reused from the parent - and the file
+/// must not be cached under the committed hash. An unknown commit
+/// confirms nothing.
+pub async fn cacheable_regions<M: MetaStore>(
+    meta: &M,
+    commit: CommitId,
+    candidates: &[(RegionKey, RegionHash)],
+) -> Result<Vec<(RegionKey, RegionHash)>, M::Error> {
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+    let Some(record) = meta.lookup_commit(commit).await? else {
+        return Ok(Vec::new());
+    };
+    let root = meta.read_root_node(record.root).await?;
+    // One bulk read per level, like the other tree walks: only the
+    // dimensions the candidates name are loaded.
+    let mut wanted: BTreeMap<i32, DimHash> = BTreeMap::new();
+    for (key, _) in candidates {
+        if let Some(hash) = root.get(key.dim.raw()) {
+            wanted.insert(key.dim.raw(), hash);
+        }
+    }
+    let hashes: Vec<DimHash> = wanted.values().copied().collect();
+    let dims: BTreeMap<i32, DimNode> = wanted
+        .keys()
+        .copied()
+        .zip(meta.read_dim_nodes(&hashes).await?)
+        .collect();
+    Ok(candidates
+        .iter()
+        .filter(|(key, hash)| {
+            dims.get(&key.dim.raw())
+                .and_then(|dim| dim.get(key.kind, key.rx, key.rz))
+                == Some(*hash)
+        })
+        .copied()
+        .collect())
 }
 
 #[cfg(test)]
@@ -836,5 +912,92 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn file_region_hash_is_the_canonical_node_of_the_chunks() {
+        let entries = [
+            stage_present(coord(1, 0), ChunkHash::new([2; 32])),
+            stage_present(coord(0, 0), ChunkHash::new([1; 32])),
+        ];
+        let expected = RegionNode::new(alloc::vec![
+            RegionEntry {
+                cx: 0,
+                cz: 0,
+                hash: ChunkHash::new([1; 32]),
+            },
+            RegionEntry {
+                cx: 1,
+                cz: 0,
+                hash: ChunkHash::new([2; 32]),
+            },
+        ])
+        .hash();
+        assert_eq!(file_region_hash(&entries), Some(expected));
+        assert_eq!(file_region_hash(&[]), None);
+        // A tombstone names no chunk of the file.
+        assert_eq!(
+            file_region_hash(&[CommitEntry::new(coord(0, 0), None)]),
+            None
+        );
+    }
+
+    #[test]
+    fn cacheable_regions_confirm_only_matching_candidates() {
+        let mut meta = store_with_ref();
+        let entries = [
+            stage_present(coord(0, 0), ChunkHash::new([1; 32])),
+            stage_present(coord(1, 0), ChunkHash::new([2; 32])),
+        ];
+        let id = crate::support::block_on(meta.apply_commit_incremental(1_000, &[], &entries))
+            .unwrap()
+            .id;
+
+        let full = file_region_hash(&entries).unwrap();
+        let partial = file_region_hash(&entries[..1]).unwrap();
+        let absent = RegionHash::new([9; 32]);
+        let candidates = [(key(0, 0), full), (key(0, 0), partial), (key(9, 9), absent)];
+        let confirmed =
+            crate::support::block_on(cacheable_regions(&meta, id, &candidates)).unwrap();
+        assert_eq!(confirmed, [(key(0, 0), full)]);
+
+        assert_eq!(
+            crate::support::block_on(cacheable_regions(&meta, id, &[])).unwrap(),
+            []
+        );
+        assert_eq!(
+            crate::support::block_on(cacheable_regions(&meta, CommitId([0xFF; 32]), &candidates))
+                .unwrap(),
+            []
+        );
+    }
+
+    /// A partial-scope commit merges the parent's out-of-scope chunk into
+    /// the region node: the ingested file did not produce that node, so
+    /// its candidate must not be confirmed.
+    #[test]
+    fn a_merged_region_confirms_no_file_candidate() {
+        let mut meta = store_with_ref();
+        let first = crate::support::block_on(meta.apply_commit_incremental(
+            1_000,
+            &[],
+            &[
+                stage_present(coord(0, 0), ChunkHash::new([1; 32])),
+                stage_present(coord(1, 0), ChunkHash::new([2; 32])),
+            ],
+        ))
+        .unwrap()
+        .id;
+        // Only (0,0) was ingested; (1,0) is carried from the parent.
+        let scoped = [stage_present(coord(0, 0), ChunkHash::new([9; 32]))];
+        let second =
+            crate::support::block_on(meta.apply_commit_incremental(2_000, &[first], &scoped))
+                .unwrap()
+                .id;
+        let candidate = file_region_hash(&scoped).unwrap();
+        let confirmed =
+            crate::support::block_on(cacheable_regions(&meta, second, &[(key(0, 0), candidate)]))
+                .unwrap();
+        assert_eq!(confirmed, []);
     }
 }

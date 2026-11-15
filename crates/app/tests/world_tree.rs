@@ -55,6 +55,10 @@ struct FakeRegionImage;
 impl Region for FakeRegionImage {
     type Error = FakeError;
 
+    fn image(&self) -> &[u8] {
+        unreachable!("fake image serves no bytes")
+    }
+
     fn visit_chunks<F>(&self, _visit: F) -> Result<(), Self::Error>
     where
         F: FnMut(sekai_anvil::Chunk<'_>) -> bool,
