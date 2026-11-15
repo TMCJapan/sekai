@@ -1,7 +1,7 @@
 //! Content-addressed snapshot tree hashes.
 //!
 //! Every level has its own hash type so a node can only name the level below
-//! it. The codec that produces these hashes lives in `sekai-core`; this
+//! it. The codec that produces these hashes lives in `sekai-storage`; this
 //! module only owns the shared vocabulary.
 
 use alloc::string::String;

@@ -2,7 +2,7 @@
 
 use core::future::Future;
 
-use sekai_core::{BlobStore, MetaStore};
+use crate::{BlobStore, MetaStore};
 
 use crate::api::{StorageError, Store};
 

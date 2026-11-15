@@ -7,8 +7,8 @@
 //! the active ref decides where the next commit lands, so each mutation
 //! reads and writes inside one metadata transaction.
 
-use sekai_core::{CommitId, CommitRef, MetaStore as _, RefName};
-use sekai_storage::{SekaiStore, StorageError};
+use sekai_core::{CommitId, CommitRef, RefName};
+use sekai_storage::{MetaStore as _, SekaiStore, StorageError};
 
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
@@ -22,7 +22,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// name fails with [`AppError::RefExists`] unless `force` moves it; a
     /// move keeps the ref's active flag and creation time.
     ///
-    /// `force` is a policy of this layer: the port's `set_ref` always
+    /// `force` is a policy of this layer: the trait's `set_ref` always
     /// moves the ref.
     pub async fn create_ref(
         &mut self,
@@ -43,7 +43,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
                 name: name.as_str().to_owned(),
             });
         }
-        // The port's contract fixes what is stored: a new ref starts
+        // The trait's contract fixes what is stored: a new ref starts
         // inactive, and a move keeps the existing flag and creation time.
         let (active, created_at_ms) = match existing {
             Some(record) => (record.active, record.created_at_ms),
@@ -66,7 +66,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// no ref had that name, not that the removal failed.
     ///
     /// The active ref is never removed: a store without one would have
-    /// nowhere to hang new commits from. The port is the guard and returns
+    /// nowhere to hang new commits from. The trait is the guard and returns
     /// the protected name, so the app can say which ref to activate
     /// instead.
     pub async fn delete_ref(&mut self, name: &RefName) -> Result<bool, AppError> {
@@ -89,7 +89,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
 
     /// Make `name` the active ref: the one new commits hang from.
     ///
-    /// The port validates both the name and its target, then moves the
+    /// The trait validates both the name and its target, then moves the
     /// flag. The record is read back after activation so the caller sees
     /// what the store actually holds, not a copy staged before the write.
     pub async fn activate_ref(&mut self, name: &RefName) -> Result<CommitRef, AppError> {

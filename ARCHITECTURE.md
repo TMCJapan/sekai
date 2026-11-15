@@ -19,25 +19,26 @@ software.
 
 ## Layer Architecture
 
-Dependencies point inward. `core` never depends on `anvil`, `world`,
-`storage`, or `app`; `util` is a dependency leaf (nothing in the workspace
-depends on anything through it).
+Dependencies point inward. `core` never depends on `anvil`, `world`, or
+`app`; it composes the `storage` traits. `util` is a dependency leaf
+(nothing in the workspace depends on anything through it).
 
 ```text
 sekai (bin, thin: clap parse + print + exit code)
   -> sekai-app (std + tokio: orchestration, parallelism, clocks, timing)
     -> sekai-core (no_std + alloc: use-case policy API over shared types)
+      -> sekai-storage + sekai-util
     -> sekai-anvil (no_std + alloc: pure sector codec, decompress, NBT normalization)
     -> sekai-world (no_std + alloc: world access boundary - WorldTree trait, RegionFile handle)
       -> sekai-anvil + sekai-core (types only)
     -> sekai-world-local (std: host filesystem tree - discover/observe/swap, the world lock)
       -> sekai-world + sekai-anvil + sekai-core (types only)
-    -> sekai-storage (no_std + alloc: store traits)
-      -> sekai-core
+    -> sekai-storage (no_std + alloc: store traits + canonical snapshot-tree codec)
+      -> sekai-util
     -> sekai-storage-local (std + tokio: SQLite metadata + sled blobs)
       -> sekai-storage
 sekai-util (no_std, no tokio dependency: coordinates, chunk hashes,
-  history value types) <- anvil, core (world/storage/app reach them
+  history value types) <- anvil, core, storage (world/app reach them
   through `core` re-exports)
 ```
 
@@ -45,9 +46,9 @@ sekai-util (no_std, no tokio dependency: coordinates, chunk hashes,
 | --------------------------------- | ------------------------------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `sekai-util`                      | `no_std`, no `std`/tokio dependencies | no                                           | Shared value types: coordinates, the chunk digest (`ChunkHash`, `hash_bytes`, `BytesHasher`), region/history/commit records, hex errors. Pure data plus total validation only.                                                                                                                                                                                                                    |
 | `sekai-anvil`                     | `no_std` + `alloc`                    | no                                           | Pure Anvil sector codec including decompression and chunk NBT normalization. A stored sector payload becomes a `Chunk` whose `normalized_hash()` is the only public NBT-derived digest; the parser and normalized views stay internal. Owns `ChunkPayloadDiff`, the two-sided digest comparison diff flows report. Also builds `Vec<u8>` images. Compression framing is MCA spec knowledge, so it lives here. No `Path`, no `fs`. Names custom dimensions with util `Dimension`. |
-| `sekai-core`                      | `no_std` + `alloc`                    | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_checkout`) plus storage ports, over util types only. Re-exports every util type at its root, so downstream paths stay stable. `app` composes it with `anvil` for payload digests and diffs.                                                                                                                                                                               |
-| `sekai-storage`                   | `no_std` + `alloc`                    | yes (RPITIT)                                 | Backend-neutral boundaries: async `BlobStore`/`MetaStore` traits (owned by `core::port`, re-exported from the `api` module), high-level `SekaiStore`/`SekaiStoreOpener` traits, and shared storage errors. Depends on `core`.                                                                                                                                                                  |
-| `sekai-storage-local`             | `std` + tokio                         | yes                                          | Concrete local backend: `SqliteMeta` over sqlx plus `SledBlob` over sled, composed into `LocalStore`, both schema/version gates, and the openers. Implements the traits from `sekai-storage` (and `core::port`). Other backends become sibling crates without touching `core`/`app`.                                                                                                                  |
+| `sekai-core`                      | `no_std` + `alloc`                    | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_checkout`) over the `storage` traits and util types. Re-exports every util type at its root, so downstream paths stay stable. `app` composes it with `anvil` for payload digests and diffs.                                                                                                                                                                               |
+| `sekai-storage`                   | `no_std` + `alloc`                    | yes (RPITIT)                                 | Backend-neutral boundaries: async `BlobStore`/`MetaStore` traits, the canonical snapshot-tree codec they exchange, high-level `SekaiStore`/`SekaiStoreOpener` traits, and shared storage errors. Depends on `util` only.                                                                                                                                                                  |
+| `sekai-storage-local`             | `std` + tokio                         | yes                                          | Concrete local backend: `SqliteMeta` over sqlx plus `SledBlob` over sled, composed into `LocalStore`, both schema/version gates, and the openers. Implements the traits from `sekai-storage`. Other backends become sibling crates without touching `core`/`app`.                                                                                                                  |
 | `sekai-world`                     | `no_std` + `alloc`                    | no                                           | World access boundary: the `WorldTree` trait, the `RegionFile` handle, and the `WorldLock` primitives. No filesystem code.                                                                                                                                                                                                                                                                                |
 | `sekai-world-local`               | `std`                                 | no                                           | Host filesystem tree: `HostWorldTree`, layout detection (vanilla, pre-26.1 Bukkit, plugin worlds), the `HostRegion` handles, the `.sekai.lock` file lock, atomic swaps, and the host `WorldError`.                                                                                                                                                                                                      |
 | `sekai-app`                       | `std` + tokio                         | yes                                          | Composition/orchestration library for third parties: parallel ingest, clocks, timing, progress callbacks.                                                                                                                                                                                                                                                                                            |
@@ -86,16 +87,18 @@ Coordinates, hashes, and history records live in a leaf crate so
 `anvil` and `core` name the same types without depending on each other.
 The boundary rules:
 
-- `util` holds pure data plus total validation only: no codecs, no ports,
-  no orchestration. It owns the one Blake3 primitive (`hash_bytes`,
+- `util` holds pure data plus total validation only: no codecs, no store
+  traits, no orchestration. It owns the one Blake3 primitive (`hash_bytes`,
   `BytesHasher`) so every digest in the system comes from the same
   function; `anvil` builds on it instead of linking its own.
 - `anvil` implements over util types (`Dimension` custom ids, `RegionKind`
-  chunk families); `core` owns the storage ports and use-case policy over
-  those same types, and `app` composes the two.
+  chunk families); `storage` owns the store traits and the canonical tree
+  codec over those same types, `core` owns the use-case policy, and `app`
+  composes them.
 - `core` re-exports every util type at its root, so downstream paths
-  (`sekai_core::ChunkCoord`, ...) keep working; `world`/`storage`/`app`
-  continue to import through `core`.
+  (`sekai_core::ChunkCoord`, ...) keep working; `world`/`app` continue to
+  import shared types through `core`, while `storage` names `util`
+  directly.
 - Codec and NBT errors (`UnknownCompression`, `CustomCompression`,
   `ExternalBody`, decompression failures, invalid chunk NBT) are `anvil`
   errors: compression framing and chunk schema knowledge both live there.
@@ -296,7 +299,7 @@ its complete snapshot by root hash. The graph - not the local record order
 alone defines the world it restores.
 
 Parent links are written with the commit row, in the same transaction,
-and read back through the `MetaStore` port (`commit_parents`) or walked
+and read back through `MetaStore` (`commit_parents`) or walked
 to the root by the core use cases (`usecase::graph::commit_ancestors`
 / `commit_history`). Every parent must exist, and a parent listed twice
 is recorded once.
@@ -320,7 +323,7 @@ ref without a commit is _unborn_. Exactly one ref is _active_ - the one
 new commits hang from (the store's `HEAD`). A fresh store starts with
 one active ref, `main`, unborn.
 
-A new commit continues the target of the active ref - the port rejects
+A new commit continues the target of the active ref - the trait rejects
 one whose parents omit it - and the active ref moves onto the new commit
 in the same transaction. Switching the active ref forks the history: the
 next commit continues the ref it was planned against, not the newest
@@ -396,16 +399,16 @@ produced them. The scope is a filter, not a partition:
 
 ## Trait/Impl Split (backend crates)
 
-- `sekai-storage` owns the backend-neutral boundaries. The async
-  `BlobStore`/`MetaStore` traits (RPITIT, `Send` bounds for tokio) still
-  come from `core::port` and are re-exported from storage's `api` module.
-  Storage adds the high-level `SekaiStore` (metadata + blobs) and
-  `SekaiStoreOpener` (open/init entry points). Blob adapters are async only and
+- `sekai-storage` owns the backend-neutral boundaries: the async
+  `BlobStore`/`MetaStore` traits (RPITIT, `Send` bounds for tokio), the
+  canonical snapshot-tree codec they exchange, the high-level `SekaiStore`
+  (metadata + blobs) and `SekaiStoreOpener` (open/init entry points), and
+  the shared `StorageError`. Blob adapters are async only and
   `Clone`: the CAS is append-only, so ingest workers share it without
   exclusion and a cancelled future cannot strand a blob lock.
 - `sekai-storage-local` is the concrete local backend. It owns `SqliteMeta`
   (sqlx), `SledBlob` (sled), `LocalStore`, both schemas, and both version
-  gates, and implements the storage/core traits. Keeping sqlx and sled out
+  gates, and implements the storage traits. Keeping sqlx and sled out
   of `sekai-storage` keeps the abstraction crate free of native database
   dependencies.
 - New backends (mysql, postgres, embedded, in-memory, wasm) become sibling
@@ -462,15 +465,16 @@ canonical node bytes under their hash; paths are three primary-key probes.
 The blob keyspace (`blobs/`) carries its own version gate in a
 reserved sled tree (`__sekai_version`); blob values are opaque payloads, so
 it has no derived state to reinterpret. CAS stays behind the backend-neutral
-port, so an object-store backend swaps the adapter without touching metadata
+trait, so an object-store backend swaps the adapter without touching metadata
 code.
 
 ## Async Policy
 
 - `async` lives in `storage`, `storage-local`, `app`, and the bin - never in
-  `anvil`/`core`/`world`/`world-local` logic. `core` uses `async fn` in traits (RPITIT,
-  no `async-trait` macro, no boxing, static dispatch preserved) so
-  implementations can be `tokio`-backed while policy stays runtime-free.
+  `anvil`/`world`/`world-local` logic. `storage` defines `async fn` in traits (RPITIT,
+  no `async-trait` macro, no boxing, static dispatch preserved); `core` use
+  cases are generic over them, so implementations can be `tokio`-backed
+  while policy stays runtime-free.
 - Pure orchestration steps (`assemble`, image building, canonical digest)
   stay synchronous.
 

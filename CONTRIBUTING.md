@@ -7,7 +7,7 @@ This project is organized as a Cargo workspace under `crates/`:
 └── crates
     ├── util            # Shared value types: coordinates, hashes, snapshot records (no_std, zero dependencies)
     ├── anvil           # Pure Anvil sector codec, decompression, and normalized chunk hashing (no_std + alloc, ex-mca)
-    ├── core            # Use-case policy API over shared types (no_std + alloc, depends on util)
+    ├── core            # Use-case policy API over shared types (no_std + alloc, depends on storage + util)
     ├── storage         # Backend-neutral store traits (no_std + alloc)
     ├── storage-local   # Local backend: SQLite metadata (sqlx) + sled blobs (std + tokio)
     ├── world           # World access boundary (no_std + alloc): WorldTree trait,
@@ -27,19 +27,20 @@ sekai (bin) -> app -> {core, world, world-local, storage, storage-local}
 app -> {core, anvil}
 world -> {anvil, core}
 world-local -> {world, anvil, core}
-storage -> core (whose `port` module owns the async traits; backend crates implement them)
+core -> storage (which owns the async store traits and the canonical tree codec)
+storage -> util
 storage-local -> storage
-{anvil, core} -> util (world/world-local/storage/app reach shared types through `core` re-exports)
+{anvil, core, storage} -> util (world/world-local/app reach shared types through `core` re-exports)
 ```
 
 Rules:
 
-- `core` never depends on `world`, `storage`, `app`, or the binary.
-  `world` already depends on `core` types, so the reverse edge would be a
-  Cargo package cycle.
+- `core` never depends on `world`, `app`, or the binary; it composes the
+  `storage` traits. `world` already depends on `core` types, so the reverse
+  edge would be a Cargo package cycle.
 - `util` is a dependency leaf: pure data plus total validation only, plus
   the shared Blake3 primitive (`hash_bytes`, `BytesHasher`). It owns no
-  codecs, ports, or orchestration. `anvil` names util types directly
+  codecs, store traits, or orchestration. `anvil` names util types directly
   (`Dimension` custom ids, `RegionKind`); `core` re-exports every util type
   at its root so downstream paths stay stable, and `app` composes `core`
   policy with the `anvil` codec.
@@ -48,11 +49,12 @@ Rules:
   parser cannot drift into a second public path. Compression framing and
   chunk schema knowledge both live in `anvil`.
 - `async`/tokio lives in `storage-local`, `app`, and the binary only.
-  `anvil` is sync-only; `core` and `storage` are sync except for
-  `async fn` in traits (RPITIT, see below).
-- `storage` owns backend-neutral boundaries (`api` / `store`);
-  concrete database backends live in sibling crates such as
-  `storage-local` and only communicate through the exported traits.
+  `anvil` is sync-only; `core` and `storage` carry no runtime: `async fn`
+  appears only in the `storage` traits (RPITIT, see below) and the `core`
+  use cases generic over them.
+- `storage` owns backend-neutral boundaries (`blob` / `meta` / `tree` /
+  `api` / `store`); concrete database backends live in sibling crates such
+  as `storage-local` and only communicate through the exported traits.
   Backend crates must not reach into each other.
 
 ## Safety Invariants
@@ -65,13 +67,13 @@ any exception in the PR body.
   No `std::fs`, `Path`, `std::time`, `std::io::Error`, or `thiserror` there;
   hand-written `core::fmt::Display` error enums only. No `tokio`, no
   `async-trait` macro.
-- **`core` is an API layer and the port hub**: it owns the use-case policy
-  over shared `util` types, re-exports every util type at its root, and
-  owns the async `BlobStore`/`MetaStore` ports (`port` module, RPITIT).
-  `app` composes it with the `anvil` codec for payload digests and diffs.
-  Pluggability lives at those ports (implemented by `storage` backends)
-  and at the `world` observation boundary - not at
-  `RegionReader`/`Normalizer`-style traits.
+- **`core` is the API layer; `storage` is the trait hub**: `core` owns the
+  use-case policy over shared `util` types and re-exports every util type
+  at its root; `storage` owns the async `BlobStore`/`MetaStore` traits
+  (RPITIT) and the canonical snapshot-tree codec. `app` composes `core`
+  with the `anvil` codec for payload digests and diffs. Pluggability lives
+  at the storage traits (implemented by backend crates) and at the `world`
+  observation boundary - not at `RegionReader`/`Normalizer`-style traits.
 - **`core` never touches the filesystem**: `world-local` discovers the region
   files; `app` feeds their `RegionKey`s into `core::plan_*`.
 - **The world boundary is path-free**: the operations receive `RegionFile`
@@ -122,8 +124,9 @@ any exception in the PR body.
       `lz4_flex` block API (lz4-java stream bodies), `twox-hash` (lz4-java
       block checksums), and `nanonbt` (chunk NBT parsing and normalized
       views; private to the crate).
-    - `core`: `sekai-util` (shared types, re-exported at the root).
-    - `storage`: `sekai-core` (ports and shared types).
+    - `core`: `sekai-util` (shared types, re-exported at the root) and
+      `sekai-storage` (store traits and the canonical tree codec).
+    - `storage`: `sekai-util` (shared types).
     - `world`: `sekai-anvil` (types only) plus `sekai-core`.
 - **Async policy**: `async fn` in traits via RPITIT (return-position
   `impl Future`, no `async-trait` macro, no boxing). All trait futures are

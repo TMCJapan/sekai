@@ -42,7 +42,7 @@ const fn options() -> sekai_app::StatusOptions {
 /// keyspace admits one opener, so a second handle cannot exist.
 async fn blob_count(store: &sekai_storage_local::LocalStore) -> usize {
     let mut count = 0usize;
-    sekai_core::BlobStore::visit_blobs(store.blob(), |_| {
+    sekai_storage::BlobStore::visit_blobs(store.blob(), |_| {
         count += 1;
         true
     })

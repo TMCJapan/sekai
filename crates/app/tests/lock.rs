@@ -17,7 +17,7 @@ use sekai_app::{
     HostWorldTree, Rect, RefName, RegionFile, RegionFingerprint, RegionKey, RegionKind, Scope,
     ScopeName, SekaiInstance, StatusOptions, WorldError, WorldLockMode, WorldLockState, WorldTree,
 };
-use sekai_core::MetaStore as _;
+use sekai_storage::MetaStore as _;
 use sekai_storage_local::LocalStore;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};

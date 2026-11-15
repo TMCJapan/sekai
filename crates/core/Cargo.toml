@@ -11,6 +11,7 @@ keywords = ["minecraft", "version-control"]
 workspace = true
 
 [dependencies]
+sekai-storage.workspace = true
 sekai-util.workspace = true
 
 [[bench]]

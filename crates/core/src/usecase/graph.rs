@@ -5,7 +5,7 @@ use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use core::fmt;
 
-use crate::port::meta::MetaStore;
+use sekai_storage::MetaStore;
 use sekai_util::{Commit, CommitId, RefName};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

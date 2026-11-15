@@ -1,12 +1,12 @@
 //! Named scopes: store-saved world areas selected by name.
 //!
 //! A scope names no commit, so history reads never touch it. Reads here
-//! are pure lookups; the mutations live in the storage port and the app
+//! are pure lookups; the mutations live in `MetaStore` and the app
 //! layer.
 
 use alloc::vec::Vec;
 
-use crate::port::meta::MetaStore;
+use sekai_storage::MetaStore;
 use sekai_util::NamedScope;
 
 /// List all scopes in name order (byte-wise, the order `ScopeName`

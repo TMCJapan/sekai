@@ -1,11 +1,12 @@
 //! Shared backend conformance flows.
 //!
-//! The flows target `sekai-core` traits; backend-specific setup stays in each runner.
+//! The flows target `sekai-storage` traits; backend-specific setup stays in each runner.
 
 use sekai_core::{
-    BlobStore, ChunkCoord, ChunkHash, CommitEntry, CommitId, Dimension, MetaStore, NamedScope,
-    Rect, RefName, RegionKind, ScopeName,
+    ChunkCoord, ChunkHash, CommitEntry, CommitId, Dimension, NamedScope, Rect, RefName, RegionKind,
+    ScopeName,
 };
+use sekai_storage::{BlobStore, MetaStore};
 
 const OVER: Dimension = Dimension::OVERWORLD;
 const REGION: RegionKind = RegionKind::Region;

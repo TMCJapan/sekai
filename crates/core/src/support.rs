@@ -1,4 +1,4 @@
-//! In-memory port fakes used by tests.
+//! In-memory `MetaStore` fake used by tests.
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
@@ -6,8 +6,7 @@ use core::future::Future;
 use core::pin::pin;
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
-use crate::port::MetaStore;
-use crate::{DimNode, RegionNode, RootNode, TreeError, TreeNodes};
+use sekai_storage::{DimNode, MetaStore, RegionNode, RootNode, TreeError, TreeNodes};
 use sekai_util::{
     ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DimHash, NamedScope,
     RefName, RegionHash, RootHash, ScopeName,
@@ -169,16 +168,17 @@ impl MetaStore for MemMeta {
         let canonical: Vec<CommitId> = unique.into_iter().collect();
         // No snapshot changes: continue the lowest-hash parent's tree, or
         // start with the canonical empty root.
-        let (root, nodes) = canonical
-            .first()
-            .map_or_else(crate::tree::empty_tree, |parent| {
-                self.commits
-                    .iter()
-                    .find(|commit| commit.id == *parent)
-                    .map_or_else(crate::tree::empty_tree, |commit| {
-                        (commit.root, TreeNodes::default())
-                    })
-            });
+        let (root, nodes) =
+            canonical
+                .first()
+                .map_or_else(sekai_storage::tree::empty_tree, |parent| {
+                    self.commits
+                        .iter()
+                        .find(|commit| commit.id == *parent)
+                        .map_or_else(sekai_storage::tree::empty_tree, |commit| {
+                            (commit.root, TreeNodes::default())
+                        })
+                });
         let id = crate::commit::commit_hash(&canonical, created_at_ms, root);
         if let Err(err) = self.insert_nodes(&nodes) {
             return core::future::ready(Err(err));

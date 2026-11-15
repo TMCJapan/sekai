@@ -3,9 +3,9 @@
 mod common;
 
 use sekai_core::{
-    BlobStore as _, ChunkCoord, ChunkHash, CommitEntry, Dimension, MetaStore as _, RegionKind,
-    usecase::checkout::plan_checkout,
+    ChunkCoord, ChunkHash, CommitEntry, Dimension, RegionKind, usecase::checkout::plan_checkout,
 };
+use sekai_storage::{BlobStore as _, MetaStore as _};
 use sekai_storage_local::{init_local, open_local};
 use std::path::Path;
 

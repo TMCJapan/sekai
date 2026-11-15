@@ -9,15 +9,14 @@ use std::time::{Duration, Instant};
 
 use sekai_core::{
     ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DEFAULT_REF_NAME, DimHash,
-    DimNode, Dimension, MetaStore, NamedScope, NamedScopeError, Rect, RefName, RegionHash,
-    RegionNode, RootHash, RootNode, ScopeName, TreeNodes, commit_hash,
+    Dimension, NamedScope, NamedScopeError, Rect, RefName, RegionHash, RootHash, ScopeName,
+    commit_hash,
 };
+use sekai_storage::{DimNode, MetaStore, RegionNode, RootNode, StorageError, TreeNodes};
 use sqlx::Row as _;
 use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
 };
-
-use sekai_storage::StorageError;
 
 /// Managed schema version (`PRAGMA user_version`).
 pub const SCHEMA_VERSION: i64 = 17;
@@ -206,9 +205,9 @@ fn root_hash_from_blob(bytes: Vec<u8>) -> Result<RootHash, StorageError> {
 }
 
 /// Map a tree codec failure into the storage error surface.
-const fn tree_err(err: sekai_core::TreeError) -> StorageError {
+const fn tree_err(err: sekai_storage::TreeError) -> StorageError {
     match err {
-        sekai_core::TreeError::UnknownKind { kind } => StorageError::UnknownRegionKind { kind },
+        sekai_storage::TreeError::UnknownKind { kind } => StorageError::UnknownRegionKind { kind },
         other => StorageError::Tree(other),
     }
 }
@@ -544,7 +543,7 @@ impl SqliteMeta {
         Ok(nodes)
     }
 }
-impl sekai_core::MetaStore for SqliteMeta {
+impl sekai_storage::MetaStore for SqliteMeta {
     type Error = StorageError;
 
     async fn create_commit(
@@ -567,7 +566,7 @@ impl sekai_core::MetaStore for SqliteMeta {
                 .transpose()?,
             None => None,
         };
-        let (root, nodes) = parent_root.map_or_else(sekai_core::tree::empty_tree, |root| {
+        let (root, nodes) = parent_root.map_or_else(sekai_storage::tree::empty_tree, |root| {
             (root, TreeNodes::default())
         });
         let id = commit_hash(parents, created_at_ms, root);
@@ -1517,7 +1516,7 @@ mod tests {
 
     #[tokio::test]
     async fn stored_tree_corruption_fails_loudly() {
-        use sekai_core::MetaStore as _;
+        use sekai_storage::MetaStore as _;
         let meta = memory_meta().await;
         let hash = RootHash::new([9; 32]);
         sqlx::query("INSERT INTO root_tree (hash, node) VALUES (?, ?)")
@@ -1530,7 +1529,7 @@ mod tests {
         assert!(
             matches!(
                 err,
-                StorageError::Tree(sekai_core::TreeError::HashMismatch { .. })
+                StorageError::Tree(sekai_storage::TreeError::HashMismatch { .. })
             ),
             "unexpected error: {err}"
         );
@@ -1538,7 +1537,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_commit_spanning_node_insert_batches_records_every_region() {
-        use sekai_core::{ChunkHash, MetaStore as _, RegionKind};
+        use sekai_core::{ChunkHash, RegionKind};
+        use sekai_storage::MetaStore as _;
         let mut meta = memory_meta().await;
         // One chunk per region, so the region table alone spans three batches.
         // Region nodes are content-addressed: a repeating blob would collapse

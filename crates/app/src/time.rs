@@ -8,7 +8,7 @@ use crate::error::AppError;
 ///
 /// A clock before the epoch returns [`AppError::Clock`]; a reading beyond
 /// `u64` milliseconds returns [`AppError::ClockOutOfRange`]. Neither is a
-/// sentinel timestamp: the port requires `created_at_ms` to be storable,
+/// sentinel timestamp: the trait requires `created_at_ms` to be storable,
 /// and substituting a value would hide the anomaly.
 ///
 /// The app's `ClockOutOfRange` covers only the `u64` conversion. A

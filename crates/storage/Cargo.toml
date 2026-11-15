@@ -13,4 +13,4 @@ workspace = true
 [features]
 
 [dependencies]
-sekai-core.workspace = true
+sekai-util.workspace = true
