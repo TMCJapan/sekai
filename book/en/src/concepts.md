@@ -28,7 +28,8 @@
   checkout delete it again faithfully.
 - **No derived state table**: region fingerprints are not persisted. Every
   commit rereads in-scope files and writes rows only for chunks whose blob
-  changed, so history stays correct without a cache to rebuild.
+  changed. The region-image cache is derived state outside the metadata
+  schema: wiping it costs performance only, never history correctness.
 
 The authoritative definitions are in
 [ARCHITECTURE.md](https://github.com/tmcjapan/sekai/blob/main/ARCHITECTURE.md) ("Data & Hashing Model" and
