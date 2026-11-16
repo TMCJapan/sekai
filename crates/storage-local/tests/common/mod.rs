@@ -6,7 +6,7 @@ use sekai_core::{
     ChunkCoord, ChunkHash, CommitEntry, CommitId, Dimension, NamedScope, Rect, RefName, RegionKind,
     ScopeName,
 };
-use sekai_storage::{BlobStore, MetaStore};
+use sekai_storage::{BlobStore, CacheStore, MetaStore};
 
 const OVER: Dimension = Dimension::OVERWORLD;
 const REGION: RegionKind = RegionKind::Region;
@@ -393,6 +393,49 @@ where
     .await
     .unwrap();
     assert_eq!(count, 1);
+}
+
+/// Region-image cache contract: cold misses, put/fetch/hash roundtrip,
+/// first-image-wins dedup, and a buffer-clearing fetch.
+pub async fn cache_roundtrip<K>(cache: &mut K)
+where
+    K: CacheStore,
+    K::Error: core::fmt::Debug,
+{
+    use sekai_core::RegionHash;
+
+    let region = RegionHash::new([0x42; 32]);
+    let image = b"undecomposed mca bytes";
+    let mca_hash = sekai_core::hash_bytes(image);
+
+    // A cold cache answers absence, never an error.
+    assert_eq!(cache.mca_hash(region).await.unwrap(), None);
+    let mut out = vec![1u8, 2, 3];
+    assert!(!cache.fetch_image(region, &mut out).await.unwrap());
+    assert!(out.is_empty(), "a miss clears the buffer");
+
+    assert!(cache.put(region, mca_hash, image).await.unwrap());
+    assert_eq!(cache.mca_hash(region).await.unwrap(), Some(mca_hash));
+    assert!(cache.fetch_image(region, &mut out).await.unwrap());
+    assert_eq!(out, image);
+    // `fetch_image` clears the buffer first.
+    assert!(cache.fetch_image(region, &mut out).await.unwrap());
+    assert_eq!(out, image);
+
+    // First image wins: a different raw file normalizing to the same
+    // region node must not replace the stored pair.
+    let other = b"a different raw image";
+    assert!(
+        !cache
+            .put(region, sekai_core::hash_bytes(other), other)
+            .await
+            .unwrap()
+    );
+    assert_eq!(cache.mca_hash(region).await.unwrap(), Some(mca_hash));
+    assert!(cache.fetch_image(region, &mut out).await.unwrap());
+    assert_eq!(out, image);
+
+    cache.sync().await.unwrap();
 }
 
 /// Torn-commit simulation: the crash order (blobs synced before the

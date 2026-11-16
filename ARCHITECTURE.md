@@ -35,7 +35,7 @@ sekai (bin, thin: clap parse + print + exit code)
       -> sekai-world + sekai-anvil + sekai-core (types only)
     -> sekai-storage (no_std + alloc: store traits + canonical snapshot-tree codec)
       -> sekai-util
-    -> sekai-storage-local (std + tokio: SQLite metadata + sled blobs)
+    -> sekai-storage-local (std + tokio: SQLite metadata + sled blobs + sled region-image cache)
       -> sekai-storage
 sekai-util (no_std, no tokio dependency: coordinates, chunk hashes,
   history value types) <- anvil, core, storage (world/app reach them
@@ -47,8 +47,8 @@ sekai-util (no_std, no tokio dependency: coordinates, chunk hashes,
 | `sekai-util`                      | `no_std`, no `std`/tokio dependencies | no                                           | Shared value types: coordinates, the chunk digest (`ChunkHash`, `hash_bytes`, `BytesHasher`), region/history/commit records, hex errors. Pure data plus total validation only.                                                                                                                                                                                                                    |
 | `sekai-anvil`                     | `no_std` + `alloc`                    | no                                           | Pure Anvil sector codec including decompression and chunk NBT normalization. A stored sector payload becomes a `Chunk` whose `normalized_hash()` is the only public NBT-derived digest; the parser and normalized views stay internal. Owns `ChunkPayloadDiff`, the two-sided digest comparison diff flows report. Also builds `Vec<u8>` images. Compression framing is MCA spec knowledge, so it lives here. No `Path`, no `fs`. Names custom dimensions with util `Dimension`. |
 | `sekai-core`                      | `no_std` + `alloc`                    | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_checkout`) over the `storage` traits and util types. Re-exports every util type at its root, so downstream paths stay stable. `app` composes it with `anvil` for payload digests and diffs.                                                                                                                                                                               |
-| `sekai-storage`                   | `no_std` + `alloc`                    | yes (RPITIT)                                 | Backend-neutral boundaries: async `BlobStore`/`MetaStore` traits, the canonical snapshot-tree codec they exchange, high-level `SekaiStore`/`SekaiStoreOpener` traits, and shared storage errors. Depends on `util` only.                                                                                                                                                                  |
-| `sekai-storage-local`             | `std` + tokio                         | yes                                          | Concrete local backend: `SqliteMeta` over sqlx plus `SledBlob` over sled, composed into `LocalStore`, both schema/version gates, and the openers. Implements the traits from `sekai-storage`. Other backends become sibling crates without touching `core`/`app`.                                                                                                                  |
+| `sekai-storage`                   | `no_std` + `alloc`                    | yes (RPITIT)                                 | Backend-neutral boundaries: async `BlobStore`/`MetaStore`/`CacheStore` traits, the canonical snapshot-tree codec they exchange, high-level `SekaiStore`/`SekaiStoreOpener` traits, and shared storage errors. Depends on `util` only.                                                                                                                                                                  |
+| `sekai-storage-local`             | `std` + tokio                         | yes                                          | Concrete local backend: `SqliteMeta` over sqlx plus `SledBlob` and `SledCache` over sled, composed into `LocalStore`, all three schema/version gates, and the openers. Implements the traits from `sekai-storage`. Other backends become sibling crates without touching `core`/`app`.                                                                                                                  |
 | `sekai-world`                     | `no_std` + `alloc`                    | no                                           | World access boundary: the `WorldTree` trait, the `RegionFile` handle, and the `WorldLock` primitives. No filesystem code.                                                                                                                                                                                                                                                                                |
 | `sekai-world-local`               | `std`                                 | no                                           | Host filesystem tree: `HostWorldTree`, layout detection (vanilla, pre-26.1 Bukkit, plugin worlds), the `HostRegion` handles, the `.sekai.lock` file lock, atomic swaps, and the host `WorldError`.                                                                                                                                                                                                      |
 | `sekai-app`                       | `std` + tokio                         | yes                                          | Composition/orchestration library for third parties: parallel ingest, clocks, timing, progress callbacks.                                                                                                                                                                                                                                                                                            |
@@ -287,6 +287,27 @@ metadata. Normalization rule updates affect only change detection - zero data
 migration or blob re-indexing. See
 [ADR-0024](docs/adr/0024-sled-blob-store.md).
 
+## Region Image Cache
+
+The cache is a third keyspace (`cache/`) beside `blobs/`, mapping a region
+node hash (the `region_tree` primary key) to the undecomposed `.mca` image
+that produced it plus that image's content hash. It exists for the
+file-level change check ADR-0023 left open: given a commit's region hash, a
+caller reads the cached content hash without touching the image bytes,
+hashes the live file, and compares - proving a fully covered region
+unchanged without decompressing or normalizing a single chunk. A mismatch
+or a miss falls back to the full per-chunk path.
+
+The cache is derived state, never truth. Entries are written after the
+metadata commit names their region hash, the cache records no absence and
+never decides a commit on its own, and every entry can be recomputed from
+the world and the snapshot tree. A torn write or a wiped cache therefore
+costs performance only, and `sync` is advisory rather than a crash-order
+barrier - the opposite of the blob store, whose `sync` guards the commit.
+The image and its hash are written as one atomic pair, and the first image
+wins for a given region hash (different raw files can normalize to the same
+region node). See [ADR-0029](docs/adr/0029-region-image-cache.md).
+
 # History and State Model
 
 ## The Commit Graph
@@ -389,10 +410,14 @@ produced them. The scope is a filter, not a partition:
 - **Source of truth**: metadata history (`commits`, `commit_parents`,
   `root_tree`, `dim_tree`, `region_tree`) in the selected DB backend + CAS
   blobs.
-- **No persisted derived state**: region fingerprints are neither stored
-  nor computed. Commit decisions compare chunk hashes through the snapshot
-  tree, so there is no cache to wipe and no derived table to keep
-  consistent. The fingerprint primitive stays for a tree-structured history
+- **No derived state in the source of truth**: commit decisions compare
+  chunk hashes through the snapshot tree, so the metadata schema holds no
+  cache or derived table that can drift. The region-image cache is derived
+  but lives outside that schema and is always rebuildable, so wiping it
+  costs performance only
+  ([ADR-0029](docs/adr/0029-region-image-cache.md)). Region fingerprints
+  are neither stored nor computed; the primitive stays for a
+  tree-structured history
   ([ADR-0023](docs/adr/0023-drop-the-fingerprint-pass.md)).
 
 # Storage Backends
@@ -400,26 +425,27 @@ produced them. The scope is a filter, not a partition:
 ## Trait/Impl Split (backend crates)
 
 - `sekai-storage` owns the backend-neutral boundaries: the async
-  `BlobStore`/`MetaStore` traits (RPITIT, `Send` bounds for tokio), the
-  canonical snapshot-tree codec they exchange, the high-level `SekaiStore`
-  (metadata + blobs) and `SekaiStoreOpener` (open/init entry points), and
-  the shared `StorageError`. Blob adapters are async only and
-  `Clone`: the CAS is append-only, so ingest workers share it without
-  exclusion and a cancelled future cannot strand a blob lock.
+  `BlobStore`/`MetaStore`/`CacheStore` traits (RPITIT, `Send` bounds for
+  tokio), the canonical snapshot-tree codec they exchange, the high-level
+  `SekaiStore` (metadata + blobs + cache) and `SekaiStoreOpener` (open/init
+  entry points), and the shared `StorageError`. Blob and cache adapters are
+  async only and `Clone`: the CAS is append-only and the cache is derived,
+  so workers share them without exclusion and a cancelled future cannot
+  strand a lock.
 - `sekai-storage-local` is the concrete local backend. It owns `SqliteMeta`
-  (sqlx), `SledBlob` (sled), `LocalStore`, both schemas, and both version
-  gates, and implements the storage traits. Keeping sqlx and sled out
-  of `sekai-storage` keeps the abstraction crate free of native database
-  dependencies.
+  (sqlx), `SledBlob` and `SledCache` (sled), `LocalStore`, all three schemas
+  and version gates, and implements the storage traits. Keeping sqlx and
+  sled out of `sekai-storage` keeps the abstraction crate free of native
+  database dependencies.
 - New backends (mysql, postgres, embedded, in-memory, wasm) become sibling
   crates implementing the same traits. `app` is generic over
   `SekaiInstance<T: SekaiStore>`, so adding a backend does not touch use-case
   policy. No generic `Any`-driver abstraction.
-- The local backend (SQLite metadata + sled blobs) is the only one shipped.
-  `sekai-storage` holds no backend modules at all: it owns the traits and
-  the locks, and stays free of a native database dependency. A mysql or
-  postgres backend arrives as a sibling crate, never as a stub inside
-  `sekai-storage`.
+- The local backend (SQLite metadata + sled blobs + sled cache) is the only
+  one shipped. `sekai-storage` holds no backend modules at all: it owns the
+  traits and the locks, and stays free of a native database dependency. A
+  mysql or postgres backend arrives as a sibling crate, never as a stub
+  inside `sekai-storage`.
 
 ## Backend Selection
 
@@ -440,15 +466,17 @@ generic over `WorldTree` and run on any tree a caller supplies.
 ## Store Exclusion
 
 Operations never lock the store. Blobs are content-addressed and
-immutable, so a `put` of an existing hash is a no-op and no interleaving
-of writes needs exclusion.
+immutable, so a `put` of an existing hash is a no-op; cache puts are
+insert-if-absent (the first image wins). No interleaving of writes needs
+exclusion.
 Metadata conflicts resolve transactionally at commit time, and content-
 addressed commit IDs keep concurrent backups from colliding.
 
-Opening the store is the one exclusive step: the blob keyspace takes a
-session lock that admits a single opener per store, system-wide, for as
-long as the handle lives (ADR-0024). Clones of an opened handle share
-that session, so ingest workers still share the CAS without exclusion.
+Opening the store is the one exclusive step: the blob and cache keyspaces
+each take a session lock that admits a single opener per store,
+system-wide, for as long as the handle lives (ADR-0024, ADR-0029). Clones
+of an opened handle share that session, so ingest workers still share the
+CAS and the cache without exclusion.
 
 Only the world excludes per operation, through `WorldTree::lock`
 (ADR-0014). A blocking file pass owns its share of that lock _inside_
@@ -464,7 +492,10 @@ pre-release policy = recreate, don't migrate). Each tree table stores the
 canonical node bytes under their hash; paths are three primary-key probes.
 The blob keyspace (`blobs/`) carries its own version gate in a
 reserved sled tree (`__sekai_version`); blob values are opaque payloads, so
-it has no derived state to reinterpret. CAS stays behind the backend-neutral
+it has no derived state to reinterpret. The cache keyspace (`cache/`)
+carries an independent gate the same way; its entries are derived and
+rebuildable, so a version bump recreates them without touching the source
+of truth. CAS stays behind the backend-neutral
 trait, so an object-store backend swaps the adapter without touching metadata
 code.
 

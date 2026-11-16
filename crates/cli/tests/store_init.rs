@@ -78,6 +78,7 @@ async fn init_creates_the_store_every_other_command_opens() {
     assert!(sekai_app::local_store_exists(store));
     assert!(root.join("store/meta.sqlite").is_file());
     assert!(root.join("store/blobs/conf").is_file());
+    assert!(root.join("store/cache/conf").is_file());
 
     // Re-initializing an existing store is idempotent, like `git init`.
     run(&["sekai", "--store", store, "init", "--json"])

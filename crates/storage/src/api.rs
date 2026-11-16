@@ -34,7 +34,8 @@ pub enum StorageError {
     /// one; every other operation must fail here instead of materializing
     /// an empty store as a side effect.
     StoreMissing {
-        /// Store root that was expected to hold `meta.sqlite` and the `blobs` keyspace.
+        /// Store root that was expected to hold `meta.sqlite` and the
+        /// `blobs` and `cache` keyspaces.
         path: String,
     },
     /// Stored hash bytes are not 32 bytes long.
@@ -226,17 +227,18 @@ impl StorageError {
     }
 }
 
-/// Metadata and blob adapters owned by one store handle.
+/// Metadata, blob, and cache adapters owned by one store handle.
 #[derive(Debug, Clone)]
-pub struct Store<M, C> {
+pub struct Store<M, C, K> {
     meta: M,
     blob: C,
+    cache: K,
 }
 
-impl<M, C> Store<M, C> {
+impl<M, C, K> Store<M, C, K> {
     /// Compose an opened store from its adapters.
-    pub const fn new(meta: M, blob: C) -> Self {
-        Self { meta, blob }
+    pub const fn new(meta: M, blob: C, cache: K) -> Self {
+        Self { meta, blob, cache }
     }
 
     /// Metadata adapter.
@@ -257,6 +259,16 @@ impl<M, C> Store<M, C> {
     /// Mutable blob adapter.
     pub const fn blob_mut(&mut self) -> &mut C {
         &mut self.blob
+    }
+
+    /// Cache adapter.
+    pub const fn cache(&self) -> &K {
+        &self.cache
+    }
+
+    /// Mutable cache adapter.
+    pub const fn cache_mut(&mut self) -> &mut K {
+        &mut self.cache
     }
 }
 
@@ -322,13 +334,15 @@ mod tests {
     }
 
     #[test]
-    fn store_exposes_both_adapters() {
-        let mut store = Store::new("meta".to_owned(), "blob".to_owned());
+    fn store_exposes_all_adapters() {
+        let mut store = Store::new("meta".to_owned(), "blob".to_owned(), "cache".to_owned());
 
         assert_eq!(store.meta().as_str(), "meta");
         assert_eq!(store.blob().as_str(), "blob");
+        assert_eq!(store.cache().as_str(), "cache");
 
         *store.meta_mut() = "new meta".to_owned();
         *store.blob_mut() = "new blob".to_owned();
+        *store.cache_mut() = "new cache".to_owned();
     }
 }

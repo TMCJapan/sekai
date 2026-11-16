@@ -3,9 +3,10 @@
 mod common;
 
 use sekai_core::{
-    ChunkCoord, ChunkHash, CommitEntry, Dimension, RegionKind, usecase::checkout::plan_checkout,
+    ChunkCoord, ChunkHash, CommitEntry, Dimension, RegionHash, RegionKind,
+    usecase::checkout::plan_checkout,
 };
-use sekai_storage::{BlobStore as _, MetaStore as _};
+use sekai_storage::{BlobStore as _, CacheStore as _, MetaStore as _};
 use sekai_storage_local::{init_local, open_local};
 use std::path::Path;
 
@@ -108,6 +109,13 @@ async fn sqlite_cas_roundtrip() {
 }
 
 #[tokio::test]
+async fn cache_roundtrip() {
+    let (dir, _guard) = tempdir("cache");
+    let mut store = init(&dir).await;
+    common::cache_roundtrip(store.cache_mut()).await;
+}
+
+#[tokio::test]
 async fn sqlite_torn_commit_leaves_orphans() {
     let (dir, _guard) = tempdir("torn-commit");
     let mut store = init(&dir).await;
@@ -181,6 +189,76 @@ async fn blob_database_is_created_and_version_gated() {
     ));
 }
 
+/// The cache keyspace is its own versioned sled directory beside
+/// `meta.sqlite`, with the image in the default tree and its hash in a
+/// side tree.
+#[tokio::test]
+async fn cache_database_is_created_and_version_gated() {
+    let (dir, _guard) = tempdir("cache-schema");
+    let mut store = init(&dir).await;
+    let region = RegionHash::new([7; 32]);
+    let image = b"mca image";
+    let mca_hash = sekai_core::hash_bytes(image);
+    assert!(
+        store
+            .cache_mut()
+            .put(region, mca_hash, image)
+            .await
+            .unwrap()
+    );
+    store.cache_mut().sync().await.unwrap();
+    drop(store);
+
+    let cache_path = dir.join("cache");
+    assert!(cache_path.is_dir());
+    // The tree and key names pin the on-disk format: the version marker in
+    // a reserved tree, the image in the default tree, its hash in the side
+    // tree so a hash lookup never reads image bytes.
+    let db = sled::open(&cache_path).unwrap();
+    let versions = db.open_tree("__sekai_version").unwrap();
+    let stored = versions.get("schema").unwrap().unwrap();
+    let version = i64::from_le_bytes(stored.as_ref().try_into().unwrap());
+    assert_eq!(version, 1);
+    assert_eq!(db.get(region.as_bytes()).unwrap().unwrap().as_ref(), image);
+    let hashes = db.open_tree("mca_hashes").unwrap();
+    assert_eq!(
+        hashes.get(region.as_bytes()).unwrap().unwrap().as_ref(),
+        &mca_hash[..]
+    );
+
+    // A future version is refused loudly instead of reinterpreted.
+    versions.insert("schema", &99i64.to_le_bytes()[..]).unwrap();
+    db.flush().unwrap();
+    // Every tree handle shares the session: all of them must go before the
+    // keyspace can be opened again.
+    drop(hashes);
+    drop(versions);
+    drop(db);
+    let err = open_local(&dir).await.unwrap_err();
+    assert!(matches!(
+        err,
+        sekai_storage::StorageError::UnsupportedSchema {
+            found: 99,
+            supported: 1
+        }
+    ));
+}
+
+/// A store from before the cache existed is refused, not silently
+/// upgraded: pre-release policy recreates instead of migrating.
+#[tokio::test]
+async fn open_of_a_pre_cache_store_fails() {
+    let (dir, _guard) = tempdir("pre-cache");
+    let store = init(&dir).await;
+    drop(store);
+    std::fs::remove_dir_all(dir.join("cache")).unwrap();
+    let err = open_local(&dir).await.unwrap_err();
+    assert!(
+        matches!(err, sekai_storage::StorageError::StoreMissing { .. }),
+        "unexpected error: {err}"
+    );
+}
+
 /// sled admits a single opener per keyspace: a second open fails while the
 /// first handle lives, and succeeds once it is gone.
 #[tokio::test]
@@ -219,6 +297,7 @@ async fn open_of_a_missing_store_fails_without_creating_it() {
     let store = init_local(&dir).await.unwrap();
     assert!(dir.join("meta.sqlite").is_file());
     assert!(dir.join("blobs/conf").is_file());
+    assert!(dir.join("cache/conf").is_file());
     assert!(sekai_storage_local::local_store_exists(&dir));
     // The keyspace admits one opener: release the init handle first.
     drop(store);
