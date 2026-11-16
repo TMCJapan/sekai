@@ -13,8 +13,8 @@ mod fixtures;
 use fixtures::chunk_nbt;
 
 use sekai_app::{
-    Area, CommitId, CommitOptions, Dimension, HostWorldTree, Rect, RegionHash, RegionKey,
-    RegionKind, Scope, SekaiStore, StatusOptions,
+    Area, CacheUpdateOptions, CommitId, CommitOptions, Dimension, HostWorldTree, Rect, RegionHash,
+    RegionKey, RegionKind, Scope, SekaiStore, StatusOptions,
 };
 use sekai_core::hash_bytes;
 use sekai_storage::{CacheStore as _, MetaStore as _, RegionEntry, RegionNode};
@@ -53,6 +53,10 @@ fn write_region_at(path: impl AsRef<Path>, chunks: &[(i32, i32, Vec<u8>)], times
 
 const fn options() -> CommitOptions {
     CommitOptions { concurrency: 2 }
+}
+
+const fn update_options() -> CacheUpdateOptions {
+    CacheUpdateOptions { concurrency: 2 }
 }
 
 /// The region node hash the commit names for `key`, if any.
@@ -475,4 +479,178 @@ async fn wiped_cache_is_rebuilt_on_the_next_commit() {
         .unwrap();
     assert_eq!(hash, again);
     assert_cached(instance.store(), hash, &image).await;
+}
+
+/// `update_cache` populates the cache from the live world without recording
+/// a commit or writing a single blob: the entry is keyed by the file's own
+/// region node, which a later commit of the unchanged file names exactly.
+#[tokio::test]
+async fn update_cache_populates_without_recording_a_commit() {
+    let (root, _guard) = tempdir("cache-update-nocommit");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    let path = world_path.join("region/r.0.0.mca");
+    write_region(&path, &[(0, 0, chunk_nbt("marker-1"))]);
+    let image = std::fs::read(&path).unwrap();
+    let expected = file_region_hash(&path);
+
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let (report, _) = instance
+        .world_mut(&mut world)
+        .update_cache(update_options(), &())
+        .await
+        .unwrap();
+    assert_eq!(report.files, 1);
+    assert_eq!(report.chunks, 1);
+    assert_eq!(report.entries, 1);
+    assert_eq!(report.existing, 0);
+    assert_eq!(report.empty, 0);
+
+    // Nothing was recorded, and the entry sits under the file's own node.
+    assert_eq!(instance.list_commits().await.unwrap(), []);
+    assert_cached(instance.store(), expected, &image).await;
+
+    // No blob was written: the next commit stores the chunk fresh and names
+    // exactly the hash the update already cached, keeping the cached image.
+    let (commit, _) = instance
+        .world_mut(&mut world)
+        .commit(options(), Scope::World, &())
+        .await
+        .unwrap();
+    assert_eq!(commit.new_blobs, 1);
+    let key = RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
+    let hash = committed_region_hash(instance.store(), commit.commit, key)
+        .await
+        .unwrap();
+    assert_eq!(hash, expected);
+    assert_cached(instance.store(), hash, &image).await;
+}
+
+/// A repeated update is idempotent: a new header timestamp changes the raw
+/// bytes but not the normalized chunk hashes, so the same region node is
+/// produced and first-image-wins keeps the original representative.
+#[tokio::test]
+async fn update_cache_is_idempotent_and_keeps_the_first_image() {
+    let (root, _guard) = tempdir("cache-update-idempotent");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    let path = world_path.join("region/r.0.0.mca");
+    let chunks = [(0, 0, chunk_nbt("marker-1")), (1, 0, chunk_nbt("marker-2"))];
+    write_region(&path, &chunks);
+    let first_image = std::fs::read(&path).unwrap();
+    let expected = file_region_hash(&path);
+
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let (first, _) = instance
+        .world_mut(&mut world)
+        .update_cache(update_options(), &())
+        .await
+        .unwrap();
+    assert_eq!(first.entries, 1);
+    assert_cached(instance.store(), expected, &first_image).await;
+
+    write_region_at(&path, &chunks, 7);
+    let second_image = std::fs::read(&path).unwrap();
+    assert_ne!(first_image, second_image);
+    let (second, _) = instance
+        .world_mut(&mut world)
+        .update_cache(update_options(), &())
+        .await
+        .unwrap();
+    assert_eq!(second.entries, 0);
+    assert_eq!(second.existing, 1);
+    assert_eq!(file_region_hash(&path), expected);
+    assert_cached(instance.store(), expected, &first_image).await;
+    assert_eq!(instance.list_commits().await.unwrap(), []);
+}
+
+/// An empty region file holds no chunks, names no region node, and is
+/// counted as empty rather than cached.
+#[tokio::test]
+async fn update_cache_skips_empty_region_files() {
+    let (root, _guard) = tempdir("cache-update-empty");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    write_region(world_path.join("region/r.0.0.mca"), &[]);
+
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let (report, _) = instance
+        .world_mut(&mut world)
+        .update_cache(update_options(), &())
+        .await
+        .unwrap();
+    assert_eq!(report.files, 1);
+    assert_eq!(report.chunks, 0);
+    assert_eq!(report.entries, 0);
+    assert_eq!(report.empty, 1);
+    let empty = RegionNode::new(Vec::new()).hash();
+    assert_eq!(
+        instance.store().cache().mca_hash(empty).await.unwrap(),
+        None
+    );
+    assert_eq!(instance.list_commits().await.unwrap(), []);
+}
+
+/// An update visits every dimension and region family, caching each file
+/// under the node a commit later names, without writing blobs or commits.
+#[tokio::test]
+async fn update_cache_caches_every_region_family() {
+    let (root, _guard) = tempdir("cache-update-families");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    let files = [
+        ("region/r.0.0.mca", Dimension::OVERWORLD, RegionKind::Region),
+        (
+            "DIM-1/region/r.0.0.mca",
+            Dimension::NETHER,
+            RegionKind::Region,
+        ),
+        ("poi/r.0.0.mca", Dimension::OVERWORLD, RegionKind::Poi),
+        (
+            "entities/r.0.0.mca",
+            Dimension::OVERWORLD,
+            RegionKind::Entities,
+        ),
+    ];
+    // Distinct content per file: the cache is content-addressed, so equal
+    // chunks would collapse to one region node across dimensions and kinds.
+    for (i, (name, _, _)) in files.iter().enumerate() {
+        write_region(
+            world_path.join(name),
+            &[(0, 0, chunk_nbt(&format!("marker-{i}")))],
+        );
+    }
+
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let (report, _) = instance
+        .world_mut(&mut world)
+        .update_cache(update_options(), &())
+        .await
+        .unwrap();
+    assert_eq!(report.files, 4);
+    assert_eq!(report.chunks, 4);
+    assert_eq!(report.entries, 4);
+    assert_eq!(report.empty, 0);
+    assert_eq!(instance.list_commits().await.unwrap(), []);
+
+    // The commit stores every blob fresh (the update wrote none) and names
+    // the hashes the update cached; the cached images survive untouched.
+    let (commit, _) = instance
+        .world_mut(&mut world)
+        .commit(options(), Scope::World, &())
+        .await
+        .unwrap();
+    assert_eq!(commit.new_blobs, 4);
+    for (name, dim, kind) in files {
+        let key = RegionKey::new(dim, kind, 0, 0);
+        let hash = committed_region_hash(instance.store(), commit.commit, key)
+            .await
+            .unwrap_or_else(|| panic!("no committed region node for {name}"));
+        let image = std::fs::read(world_path.join(name)).unwrap();
+        assert_cached(instance.store(), hash, &image).await;
+    }
 }

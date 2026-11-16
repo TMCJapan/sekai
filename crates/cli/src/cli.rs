@@ -285,6 +285,22 @@ pub enum CacheCommand {
         #[arg(long)]
         json: bool,
     },
+    /// Hash the live world's region files and populate the cache without
+    /// recording a commit. Reads and hashes every file; writes only cache
+    /// entries, never the CAS or metadata.
+    Update {
+        /// World directory to hash (the one containing `region/`, `DIM-1/`,
+        /// or `dimensions/`). For Bukkit-family servers, pass the server
+        /// root instead. Defaults to the current directory.
+        #[arg(long, value_name = "PATH", default_value = ".")]
+        world: PathBuf,
+        /// Human or JSON rendering plus optional phase timings.
+        #[command(flatten)]
+        output: TimingArgs,
+        /// Hashing worker count. `0` means one per CPU.
+        #[arg(long, default_value = "0")]
+        jobs: usize,
+    },
 }
 
 impl CacheCommand {
@@ -292,6 +308,7 @@ impl CacheCommand {
     pub const fn output_json(&self) -> bool {
         match self {
             Self::Clean { json } => *json,
+            Self::Update { output, .. } => output.json,
         }
     }
 }
