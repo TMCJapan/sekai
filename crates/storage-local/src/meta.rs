@@ -1488,7 +1488,7 @@ mod tests {
 
     /// Stamp a foreign schema version into a fresh file, then close it so
     /// the gate can reopen it.
-    fn seed_version(path: &Path, version: i64) {
+    fn seed_version(path: impl AsRef<Path>, version: i64) {
         let seed = Database::create(path).unwrap();
         let tx = seed.begin_write().unwrap();
         let mut state = tx.open_table(STATE).unwrap();
