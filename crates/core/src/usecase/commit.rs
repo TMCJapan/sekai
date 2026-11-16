@@ -325,6 +325,51 @@ pub async fn cacheable_regions<M: MetaStore>(
         .collect())
 }
 
+/// The region node hashes a commit names for `keys`, keyed by region.
+///
+/// The consumer-side counterpart of [`cacheable_regions`]: a caller that
+/// holds a live file can compare its bytes against the image cached under
+/// the hash returned here, proving the whole region unchanged without
+/// decoding a single chunk (ADR-0029). One bulk read per tree level, like
+/// the other tree walks: only the dimensions the keys name are loaded.
+/// A key the commit's tree does not name - an unknown commit, a region
+/// absent from the snapshot - simply has no entry.
+pub async fn commit_region_hashes<M: MetaStore>(
+    meta: &M,
+    commit: CommitId,
+    keys: &[RegionKey],
+) -> Result<BTreeMap<RegionKey, RegionHash>, M::Error> {
+    if keys.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+    let Some(record) = meta.lookup_commit(commit).await? else {
+        return Ok(BTreeMap::new());
+    };
+    let root = meta.read_root_node(record.root).await?;
+    let mut wanted: BTreeMap<i32, DimHash> = BTreeMap::new();
+    for key in keys {
+        if let Some(hash) = root.get(key.dim.raw()) {
+            wanted.insert(key.dim.raw(), hash);
+        }
+    }
+    let hashes: Vec<DimHash> = wanted.values().copied().collect();
+    let dims: BTreeMap<i32, DimNode> = wanted
+        .keys()
+        .copied()
+        .zip(meta.read_dim_nodes(&hashes).await?)
+        .collect();
+    let mut out = BTreeMap::new();
+    for key in keys {
+        if let Some(hash) = dims
+            .get(&key.dim.raw())
+            .and_then(|dim| dim.get(key.kind, key.rx, key.rz))
+        {
+            out.insert(*key, hash);
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -999,5 +1044,41 @@ mod tests {
             crate::support::block_on(cacheable_regions(&meta, second, &[(key(0, 0), candidate)]))
                 .unwrap();
         assert_eq!(confirmed, []);
+    }
+
+    #[test]
+    fn commit_region_hashes_names_only_stored_regions() {
+        let mut meta = store_with_ref();
+        let entries = [
+            stage_present(coord(0, 0), ChunkHash::new([1; 32])),
+            stage_present(coord(1, 0), ChunkHash::new([2; 32])),
+            stage_present(nether_coord(0, 0), ChunkHash::new([3; 32])),
+        ];
+        let id = crate::support::block_on(meta.apply_commit_incremental(1_000, &[], &entries))
+            .unwrap()
+            .id;
+
+        let keys = [key(0, 0), nether_key(0, 0), key(9, 9)];
+        let hashes = crate::support::block_on(commit_region_hashes(&meta, id, &keys)).unwrap();
+        assert_eq!(
+            hashes.get(&key(0, 0)),
+            Some(&file_region_hash(&entries[..2]).unwrap())
+        );
+        assert_eq!(
+            hashes.get(&nether_key(0, 0)),
+            Some(&file_region_hash(&entries[2..]).unwrap())
+        );
+        assert!(!hashes.contains_key(&key(9, 9)));
+
+        assert!(
+            crate::support::block_on(commit_region_hashes(&meta, id, &[]))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            crate::support::block_on(commit_region_hashes(&meta, CommitId([0xFF; 32]), &keys))
+                .unwrap()
+                .is_empty()
+        );
     }
 }
