@@ -21,6 +21,7 @@ carries the bare result only.
 | `log` | commit array (+stats with `--stat`) | n/a | no phases exist |
 | `ref` | record, deletion record, or ref array | n/a | no phases exist |
 | `scope` | record, deletion record, or scope array | n/a | no phases exist |
+| `cache` | clean record | n/a | no phases exist |
 | `diff` | single array, grouped array (multi), or timed object | table + JSON block | `--in`/`--region` select chunks; one chunk keeps the single shape |
 
 Without `--timing`, `--json` emits the bare result. With `--timing`,
@@ -39,7 +40,7 @@ Every invocation prints exactly one JSON object to stdout:
 {"command": "<name>", "status": "error", "error": "<full context chain>"}
 ```
 
-`command` is one of `init`, `commit`, `status`, `checkout`, `log`, `ref`, `scope`, `diff`.
+`command` is one of `init`, `commit`, `status`, `checkout`, `log`, `ref`, `scope`, `cache`, `diff`.
 The error string is the full anyhow context chain (outermost message
 first, then `Caused by:` lines), JSON-escaped.
 
@@ -228,6 +229,20 @@ name order as an array of records.
 
 `commit`, `status`, `checkout`, and `diff` select a saved
 scope with `--scope NAME`; their payloads do not change.
+
+### `cache`
+
+Clean (`cache clean`) returns the number of removed entries:
+
+```jsonc
+{"entries": 3}
+```
+
+The region-image cache is derived state (ADR-0029): cleaning it only costs
+performance on later commits, never changes what a commit or checkout
+reads or writes, so it is always safe to run for capacity reduction. The
+next commit rebuilds the entries it needs. `entries` is `0` when the cache
+was already empty; cleaning is idempotent.
 
 ### `diff`
 

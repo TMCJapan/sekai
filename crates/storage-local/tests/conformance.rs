@@ -244,6 +244,28 @@ async fn cache_database_is_created_and_version_gated() {
     ));
 }
 
+/// A wiped cache keeps its version marker and stays openable: `clear`
+/// removes entries, never the keyspace format.
+#[tokio::test]
+async fn cache_clear_keeps_the_version_marker() {
+    let (dir, _guard) = tempdir("cache-clear");
+    let mut store = init(&dir).await;
+    let region = RegionHash::new([7; 32]);
+    let image = b"mca image";
+    assert!(
+        store
+            .cache_mut()
+            .put(region, sekai_core::hash_bytes(image), image)
+            .await
+            .unwrap()
+    );
+    assert_eq!(store.cache_mut().clear().await.unwrap(), 1);
+    drop(store);
+
+    let store = open_local(&dir).await.unwrap();
+    assert_eq!(store.cache().mca_hash(region).await.unwrap(), None);
+}
+
 /// A store from before the cache existed is refused, not silently
 /// upgraded: pre-release policy recreates instead of migrating.
 #[tokio::test]

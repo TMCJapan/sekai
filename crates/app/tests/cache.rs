@@ -389,6 +389,51 @@ async fn empty_region_is_not_cached() {
     );
 }
 
+/// `clean_cache` wipes every entry and reports the count; the store keeps
+/// working and the next commit rebuilds the cache, so the wipe costs
+/// performance only. An empty cache cleans to zero.
+#[tokio::test]
+async fn clean_cache_wipes_entries_and_the_next_commit_rebuilds_them() {
+    let (root, _guard) = tempdir("cache-clean");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    let path = world_path.join("region/r.0.0.mca");
+    write_region(&path, &[(0, 0, chunk_nbt("marker-1"))]);
+    let image = std::fs::read(&path).unwrap();
+
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    assert_eq!(instance.clean_cache().await.unwrap(), 0);
+    let (first, _) = instance
+        .world_mut(&mut world)
+        .commit(options(), Scope::World, &())
+        .await
+        .unwrap();
+    let key = RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
+    let hash = committed_region_hash(instance.store(), first.commit, key)
+        .await
+        .unwrap();
+    assert_cached(instance.store(), hash, &image).await;
+
+    assert_eq!(instance.clean_cache().await.unwrap(), 1);
+    assert_eq!(instance.store().cache().mca_hash(hash).await.unwrap(), None);
+    assert_eq!(instance.clean_cache().await.unwrap(), 0);
+
+    // The commit graph is untouched: the same world state commits cleanly
+    // and repopulates the wiped entry.
+    let (second, _) = instance
+        .world_mut(&mut world)
+        .commit(options(), Scope::World, &())
+        .await
+        .unwrap();
+    assert_eq!(second.new_blobs, 0);
+    let again = committed_region_hash(instance.store(), second.commit, key)
+        .await
+        .unwrap();
+    assert_eq!(hash, again);
+    assert_cached(instance.store(), hash, &image).await;
+}
+
 /// The cache is derived state: wiping it costs performance only, and the
 /// next commit rebuilds every entry even without world changes.
 #[tokio::test]

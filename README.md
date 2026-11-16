@@ -53,13 +53,16 @@ sekai ref activate feature
 # Save an area once, then select it by name
 sekai scope create spawn --in overworld:-8,-8..7,7
 sekai commit ./world --scope spawn
+
+# Reclaim space: wipe the rebuildable region-image cache (behavior unchanged)
+sekai cache clean
 ```
 
 `--store` names the store directory (`init` creates it; every other
 command fails on a missing store) and defaults to `.sekai` when omitted.
 
 Every command accepts `--json` for a single-document machine-readable
-report, and every command except `log`, `ref`, and `init` accepts
+report, and every command except `log`, `ref`, `init`, and `cache` accepts
 `--timing`
 for a per-phase breakdown (combine both for timed JSON). `commit`,
 `status`, `checkout`, and `diff` also take

@@ -396,7 +396,8 @@ where
 }
 
 /// Region-image cache contract: cold misses, put/fetch/hash roundtrip,
-/// first-image-wins dedup, and a buffer-clearing fetch.
+/// first-image-wins dedup, a buffer-clearing fetch, and a wipe that leaves
+/// the cache cold but usable.
 pub async fn cache_roundtrip<K>(cache: &mut K)
 where
     K: CacheStore,
@@ -434,6 +435,19 @@ where
     assert_eq!(cache.mca_hash(region).await.unwrap(), Some(mca_hash));
     assert!(cache.fetch_image(region, &mut out).await.unwrap());
     assert_eq!(out, image);
+
+    // A wipe removes every entry and reports the count; the cache stays
+    // cold-but-usable, and an empty wipe is a zero, never an error.
+    let second = RegionHash::new([0x43; 32]);
+    assert!(cache.put(second, mca_hash, image).await.unwrap());
+    assert_eq!(cache.clear().await.unwrap(), 2);
+    assert_eq!(cache.mca_hash(region).await.unwrap(), None);
+    assert_eq!(cache.mca_hash(second).await.unwrap(), None);
+    assert!(!cache.fetch_image(region, &mut out).await.unwrap());
+    assert!(out.is_empty(), "a miss clears the buffer");
+    assert_eq!(cache.clear().await.unwrap(), 0);
+    assert!(cache.put(region, mca_hash, image).await.unwrap());
+    assert_eq!(cache.mca_hash(region).await.unwrap(), Some(mca_hash));
 
     cache.sync().await.unwrap();
 }

@@ -120,6 +120,11 @@ pub enum Command {
         #[command(subcommand)]
         action: ScopeCommand,
     },
+    /// Manage the rebuildable region-image cache.
+    Cache {
+        #[command(subcommand)]
+        action: CacheCommand,
+    },
     /// Compare chunk NBT AST between two commits or between world state and a commit.
     Diff(DiffArgs),
 }
@@ -135,6 +140,7 @@ impl Command {
             Self::Log { .. } => "log",
             Self::Ref { .. } => "ref",
             Self::Scope { .. } => "scope",
+            Self::Cache { .. } => "cache",
             Self::Diff(_) => "diff",
         }
     }
@@ -149,6 +155,7 @@ impl Command {
             Self::Init { json } | Self::Log { json, .. } => *json,
             Self::Ref { action } => action.output_json(),
             Self::Scope { action } => action.output_json(),
+            Self::Cache { action } => action.output_json(),
             Self::Diff(args) => args.output.json,
         }
     }
@@ -262,6 +269,29 @@ impl ScopeCommand {
     pub const fn output_json(&self) -> bool {
         match self {
             Self::Create { json, .. } | Self::Delete { json, .. } | Self::List { json } => *json,
+        }
+    }
+}
+
+/// Cache operations (ADR-0029). The cache is derived state: every
+/// operation here is safe at any time and costs performance only, never
+/// changing what a commit or checkout reads or writes.
+#[derive(Debug, Subcommand)]
+pub enum CacheCommand {
+    /// Remove every cached region image to reclaim space. The cache
+    /// rebuilds itself on later commits; behavior is unchanged.
+    Clean {
+        /// Emit output as JSON instead of human text. See docs/json.md.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+impl CacheCommand {
+    /// Whether the operation runs in JSON mode (`--json`).
+    pub const fn output_json(&self) -> bool {
+        match self {
+            Self::Clean { json } => *json,
         }
     }
 }

@@ -39,6 +39,7 @@ async fn commands_on_a_missing_store_fail_without_creating_it() {
         vec!["sekai", "--store", store, "checkout", world, HASH],
         vec!["sekai", "--store", store, "ref", "list"],
         vec!["sekai", "--store", store, "scope", "list"],
+        vec!["sekai", "--store", store, "cache", "clean"],
         vec!["sekai", "--store", store, "scope", "delete", "spawn"],
         vec![
             "sekai", "--store", store, "scope", "create", "spawn", "--in", "ow:0,0",

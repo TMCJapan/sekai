@@ -28,4 +28,5 @@ tokio.workspace = true
 ignored = ["sekai-app"]
 
 [dev-dependencies]
+sekai-anvil.workspace = true
 tempfile.workspace = true

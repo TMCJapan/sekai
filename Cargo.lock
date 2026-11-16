@@ -1267,6 +1267,7 @@ dependencies = [
  "chrono",
  "clap",
  "indicatif",
+ "sekai-anvil",
  "sekai-app",
  "serde",
  "serde_json",

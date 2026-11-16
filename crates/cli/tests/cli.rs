@@ -6,8 +6,8 @@ const H3: &str = "03030303030303030303030303030303030303030303030303030303030303
 use sekai_app::{Dimension, Rect};
 use sekai_cli::{
     cli::{
-        Cli, Command, CommitRef, DiffArgs, InlineSelection, OnMissingBlob, OnMissingFile,
-        RefCommand, RegionSpec, ScopeCommand, Selection, TimingArgs,
+        CacheCommand, Cli, Command, CommitRef, DiffArgs, InlineSelection, OnMissingBlob,
+        OnMissingFile, RefCommand, RegionSpec, ScopeCommand, Selection, TimingArgs,
     },
     style::ColorChoice,
 };
@@ -751,6 +751,52 @@ fn reports_json_mode_per_command() {
     let cli = Cli::try_parse_from(["sekai", "checkout", "w", H3, "--json"]).expect("parses");
     assert!(cli.command.output_json());
     assert_eq!(cli.command.name(), "checkout");
+
+    let cli = Cli::try_parse_from(["sekai", "cache", "clean"]).expect("parses");
+    assert!(!cli.command.output_json());
+
+    let cli = Cli::try_parse_from(["sekai", "cache", "clean", "--json"]).expect("parses");
+    assert!(cli.command.output_json());
+    assert_eq!(cli.command.name(), "cache");
+}
+
+#[test]
+fn parses_cache_subcommands() {
+    let cli = Cli::try_parse_from(["sekai", "--store", "s", "cache", "clean"])
+        .expect("cache clean parses");
+    assert!(matches!(
+        cli.command,
+        Command::Cache {
+            action: CacheCommand::Clean { json: false }
+        }
+    ));
+    assert_eq!(cli.command.name(), "cache");
+    assert!(!cli.command.output_json());
+    assert_eq!(cli.store, "s");
+
+    let cli =
+        Cli::try_parse_from(["sekai", "cache", "clean", "--json"]).expect("cache clean --json");
+    assert!(matches!(
+        cli.command,
+        Command::Cache {
+            action: CacheCommand::Clean { json: true }
+        }
+    ));
+    assert!(cli.command.output_json());
+
+    for args in [
+        // The subcommand is required; there is no bare `cache` run.
+        vec!["sekai", "cache"],
+        vec!["sekai", "cache", "bogus"],
+        // Clean takes no world argument and has no phases to time.
+        vec!["sekai", "cache", "clean", "world"],
+        vec!["sekai", "cache", "clean", "--timing"],
+    ] {
+        assert!(
+            Cli::try_parse_from(&args).is_err(),
+            "{args:?} must be refused"
+        );
+    }
 }
 
 #[test]
