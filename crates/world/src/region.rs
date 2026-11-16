@@ -27,6 +27,20 @@ pub trait RegionFile:
     /// `key` names the region the file holds, like [`RegionFile::fingerprint`].
     fn read(&self, key: RegionKey) -> Result<Self::RegionImage, Self::Error>;
 
+    /// Visit the global coordinates of every present chunk, in table order.
+    ///
+    /// This answers "which chunks exist" without decoding any payload, so a
+    /// tree that can read just the location table should override it to avoid
+    /// a full file read. The default reads the whole image and visits it.
+    /// Returning `false` from `visit` stops the walk.
+    fn visit_present<F>(&self, key: RegionKey, mut visit: F) -> Result<(), Self::Error>
+    where
+        F: FnMut(i32, i32) -> bool,
+    {
+        let image = self.read(key)?;
+        image.visit_chunks(|chunk| visit(chunk.x, chunk.z))
+    }
+
     /// The file's size in bytes, from its metadata alone: the content is
     /// not read.
     ///

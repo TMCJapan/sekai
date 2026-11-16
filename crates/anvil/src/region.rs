@@ -109,6 +109,44 @@ pub fn base_coords(region_x: i32, region_z: i32) -> Result<(i32, i32), AnvilErro
     ))
 }
 
+/// Visits the present chunk coordinates of a region from its location table
+/// alone, without the sector data.
+///
+/// `table` is the 4 KiB location table (the first 1024 four-byte entries of
+/// the header). A slot whose offset is non-zero names a stored chunk; the
+/// sector payload is never touched, so this answers "which chunks exist"
+/// from an 8 KiB header read instead of the whole file. It is a superset of
+/// what a full [`crate::RegionImage::visit_chunks`] yields: a corrupt entry
+/// is still named here and fails loudly when the payload is actually read.
+///
+/// Returning `false` from `visit` stops the walk.
+pub fn visit_present_coords<F>(
+    table: &[u8],
+    region_x: i32,
+    region_z: i32,
+    mut visit: F,
+) -> Result<(), AnvilError>
+where
+    F: FnMut(i32, i32) -> bool,
+{
+    let loc = RegionLoc::new(region_x, region_z)?;
+    for index in 0..TABLE_ENTRIES {
+        let start = index as usize * 4;
+        let Some(entry) = table.get(start..start + 4) else {
+            break;
+        };
+        let offset = u32::from_be_bytes([entry[0], entry[1], entry[2], entry[3]]) >> 8;
+        if offset == 0 {
+            continue;
+        }
+        let (x, z) = loc.coord_at(index);
+        if !visit(x, z) {
+            break;
+        }
+    }
+    Ok(())
+}
+
 /// Validates an image length.
 ///
 /// Accepts empty images and anything at least as long as the 8 KiB header.

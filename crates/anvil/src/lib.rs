@@ -26,5 +26,6 @@ pub use reader::{Chunk, RegionImage, RegionImageIter};
 pub use region::{
     FIRST_DATA_SECTOR, HEADER_LEN, MAX_SECTOR_OFFSET, MAX_SECTORS_PER_CHUNK, ROW_WIDTH, RegionLoc,
     SECTOR_LEN, TABLE_ENTRIES, base_coords, check_image_len, parse_region_name, sectors_for,
+    visit_present_coords,
 };
 pub use writer::RegionBuilder;

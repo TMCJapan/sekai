@@ -1,18 +1,21 @@
 //! Chunk AST diff operations over CAS and metadata stores.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use sekai_anvil::{Chunk, ChunkHashError, ChunkPayloadDiff};
 use sekai_core::{ChunkCoord, ChunkHash, CommitId, RegionKey, RegionKind};
-use sekai_storage::{BlobStore as _, MetaStore, RegionNode, SekaiStore};
-use sekai_world::{Region, RegionFile, WorldLockMode, WorldTree};
+use sekai_storage::{BlobStore as _, MetaStore, RegionNode, SekaiStore, StorageError};
+use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
+use tokio::task::JoinSet;
 
 use crate::cache::prove_regions_unchanged;
 use crate::error::AppError;
 use crate::instance::{SekaiInstance, WorldGuard, WorldHandle, WorldHandleMut};
 use crate::progress::{BuildProgress, Progress};
 use crate::regions::discover_regions;
+use crate::workers::worker_slots;
 
 /// Per-phase timings for chunk AST diffs. Informational only; never
 /// changes diff semantics.
@@ -53,39 +56,6 @@ impl<S: SekaiStore> SekaiInstance<S> {
         let old = Chunk::new(RegionKind::Region, 0, 0, &old_compressed).normalized_hash()?;
         let new = Chunk::new(RegionKind::Region, 0, 0, &new_compressed).normalized_hash()?;
         Ok(ChunkPayloadDiff::from_sides(Some(old), Some(new)))
-    }
-}
-
-/// Digest a world chunk as `commit` would have.
-///
-/// An absent region file or chunk entry is [`None`]; a corrupt file, payload,
-/// or undecodable chunk fails loudly. A digest that is returned goes through
-/// [`chunk_digest`], so it equals the CAS key ingest recorded.
-fn read_world_chunk<R: RegionFile>(regions: &BTreeMap<RegionKey, R>, coord: &ChunkCoord) -> Side
-where
-    AppError: From<R::Error>,
-{
-    let key = RegionKey::of(*coord);
-    let Some(region) = regions.get(&key) else {
-        return Side::absent();
-    };
-
-    let read = region.read(key).map_err(AppError::from);
-    let image = match read {
-        Ok(image) => image,
-        Err(error) => return Side::failed(error),
-    };
-    let payload = match image.chunk_payload(coord.x, coord.z) {
-        Ok(Some(payload)) => payload,
-        Ok(None) => return Side::absent(),
-        Err(error) => return Side::failed(error.into()),
-    };
-
-    let started = Instant::now();
-    let digest = chunk_digest(*coord, payload);
-    Side {
-        digest: digest.map(Some),
-        prepare: started.elapsed(),
     }
 }
 
@@ -216,9 +186,8 @@ where
     let _lock = world.lock(WorldLockMode::Shared)?;
     let mut coords = Vec::new();
     for (key, region) in discover_regions(world)? {
-        let image = region.read(key)?;
-        image.visit_chunks(|chunk| {
-            coords.push(ChunkCoord::new(key.dim, key.kind, chunk.x, chunk.z));
+        region.visit_present(key, |x, z| {
+            coords.push(ChunkCoord::new(key.dim, key.kind, x, z));
             true
         })?;
     }
@@ -255,7 +224,7 @@ where
     /// and a commit.
     ///
     /// If `commit` is `None`, the active ref's target is used; an unborn
-    /// active ref fails with [`AppError::NoCommits`].
+    /// active ref diffs against the empty snapshot (the chunk is added).
     pub async fn diff_world_chunk(
         &self,
         commit: Option<CommitId>,
@@ -272,15 +241,19 @@ where
     /// world state and a commit, additionally returning per-phase timings.
     ///
     /// If `commit` is `None`, the active ref's target is used - the
-    /// commit the next one would continue. The commit side is a metadata
-    /// lookup; the world side (region lookup, read, decompression, digesting)
-    /// counts under `blob_fetch`, and comparing the two digests under
-    /// `diff_compute`. `progress_builder` counts the region files `coords`
-    /// span, stepping as each file's last chunk completes.
+    /// commit the next one would continue. An unborn active ref (a store with
+    /// no commit to continue) diffs against the empty snapshot: every chunk
+    /// the world holds is reported as added. The commit side is a metadata
+    /// lookup; the world side reads each region file once and digests its
+    /// requested chunks, fanned out across the blocking pool. Decompression
+    /// and digesting count under `decompress`, the reads and metadata lookups
+    /// under `blob_fetch`, and comparing the two digests under `diff_compute`.
+    /// `progress_builder` counts the region files `coords` span, stepping once
+    /// per file as it completes.
     ///
     /// Regions proven unchanged through the region-image cache answer both
-    /// sides from the committed region node, skipping the per-chunk world
-    /// read; the proof itself counts under `blob_fetch` (ADR-0029).
+    /// sides from the committed region node, skipping the world read; the
+    /// proof itself counts under `blob_fetch` (ADR-0029).
     pub async fn diff_world_chunks(
         &self,
         commit: Option<CommitId>,
@@ -291,41 +264,75 @@ where
         // must outlive the operation.
         let guard = WorldGuard::acquire(self.world, WorldLockMode::Shared)?;
         let total_started = Instant::now();
-        let commit_id = match commit {
-            Some(id) => id,
-            None => self
-                .instance
-                .current_commit_id()
-                .await?
-                .ok_or(AppError::NoCommits)?,
+        let base = match commit {
+            Some(id) => Some(id),
+            None => self.instance.current_commit_id().await?,
         };
 
         let regions = discover_regions(self.world)?;
         let mut timings = DiffTimings::default();
+
+        // Group the requested coordinates by region, keeping their positions
+        // so the result stays in input order however the reads complete.
+        let mut by_region: BTreeMap<RegionKey, Vec<usize>> = BTreeMap::new();
+        for (index, coord) in coords.iter().enumerate() {
+            by_region
+                .entry(RegionKey::of(*coord))
+                .or_default()
+                .push(index);
+        }
+
         // Only the regions `coords` span are worth proving: a single-chunk
         // diff must not re-hash the whole world.
         let prepass_started = Instant::now();
-        let mut keys: Vec<RegionKey> = coords.iter().map(|coord| RegionKey::of(*coord)).collect();
-        keys.sort_unstable();
-        keys.dedup();
-        let proven =
-            prove_regions_unchanged(&self.instance.store, commit_id, &regions, &keys, &guard).await;
+        let keys: Vec<RegionKey> = by_region.keys().copied().collect();
+        let proven = match base {
+            Some(id) => {
+                prove_regions_unchanged(&self.instance.store, id, &regions, &keys, &guard).await
+            }
+            None => BTreeMap::new(),
+        };
         timings.blob_fetch += prepass_started.elapsed();
-        let out = diff_coords(
+
+        // Commit side: recorded digests, indexed by coordinate position.
+        let mut old_side: Vec<Option<ChunkHash>> = vec![None; coords.len()];
+        commit_sides(
+            &self.instance.store,
+            base,
             coords,
-            CommitDiff {
-                store: &self.instance.store,
-                id: commit_id,
-                proven: &proven,
-            },
-            WorldDiff {
-                regions,
-                proven: &proven,
-            },
-            progress_builder,
+            &by_region,
+            &proven,
+            &mut old_side,
             &mut timings,
         )
         .await?;
+
+        // World side: one file read per unproven region; proven regions answer
+        // from their committed node without a read.
+        let mut new_side: Vec<Option<ChunkHash>> = vec![None; coords.len()];
+        let mut progress = progress_builder.build_progress(by_region.len());
+        world_sides(
+            &regions,
+            coords,
+            &by_region,
+            &proven,
+            &mut new_side,
+            &guard,
+            &mut progress,
+            &mut timings,
+        )
+        .await?;
+
+        let combine_started = Instant::now();
+        let out = coords
+            .iter()
+            .zip(old_side.iter().zip(new_side.iter()))
+            .map(|(coord, (old, new))| ChunkDiff {
+                coord: *coord,
+                entries: ChunkPayloadDiff::from_sides(*old, *new),
+            })
+            .collect();
+        timings.diff_compute += combine_started.elapsed();
         timings.total = total_started.elapsed();
         drop(guard);
         Ok((out, timings))
@@ -359,6 +366,181 @@ where
     }
 }
 
+/// Above this many unproven coordinates the commit side answers from one
+/// materialized tree walk instead of a metadata lookup per chunk.
+const BULK_COMMIT_THRESHOLD: usize = 1024;
+
+/// Diff fans out one task per region file. The work is dominated by
+/// decompression and hashing, so oversubscribing the blocking pool keeps
+/// every CPU busy while some tasks wait on reads.
+fn diff_worker_slots() -> usize {
+    worker_slots(0).saturating_mul(2)
+}
+
+/// One region's world-side outcome: each requested coordinate's digest
+/// with its position in the input, plus the phase timings of the run that
+/// produced them.
+struct RegionSide {
+    digests: Vec<(usize, Option<ChunkHash>)>,
+    read: Duration,
+    prepare: Duration,
+}
+
+/// Fill the commit side: recorded digests, indexed by input position.
+///
+/// An unborn base (`None`) is the empty snapshot: every coordinate stays
+/// absent. Proven regions answer from their committed node; the rest come
+/// from metadata lookups, or one bulk tree walk when there are enough of
+/// them to amortize materializing the snapshot.
+async fn commit_sides<S: SekaiStore>(
+    store: &S,
+    base: Option<CommitId>,
+    coords: &[ChunkCoord],
+    by_region: &BTreeMap<RegionKey, Vec<usize>>,
+    proven: &BTreeMap<RegionKey, RegionNode>,
+    old_side: &mut [Option<ChunkHash>],
+    timings: &mut DiffTimings,
+) -> Result<(), AppError> {
+    let Some(id) = base else {
+        return Ok(());
+    };
+    let started = Instant::now();
+    let mut unproven = Vec::new();
+    for (key, indices) in by_region {
+        if let Some(node) = proven.get(key) {
+            for &index in indices {
+                let (cx, cz) = local_slot(coords[index]);
+                old_side[index] = node.get(cx, cz);
+            }
+        } else {
+            unproven.extend(indices.iter().copied());
+        }
+    }
+    if unproven.len() >= BULK_COMMIT_THRESHOLD {
+        let needed: BTreeSet<ChunkCoord> = unproven.iter().map(|&i| coords[i]).collect();
+        let mut recorded = BTreeMap::new();
+        store
+            .meta()
+            .visit_commit_chunks(id, |entry| {
+                if needed.contains(&entry.coord) {
+                    recorded.insert(entry.coord, entry.blob);
+                }
+                true
+            })
+            .await?;
+        for index in unproven {
+            old_side[index] = recorded.get(&coords[index]).copied().flatten();
+        }
+    } else {
+        for index in unproven {
+            old_side[index] = commit_chunk_hash(store, id, &coords[index]).await?;
+        }
+    }
+    timings.blob_fetch += started.elapsed();
+    Ok(())
+}
+
+/// Fill the world side, stepping `progress` once per region file.
+///
+/// Proven regions answer from their committed node and step at once; a
+/// region whose file is gone leaves its coordinates absent and steps too.
+/// Every remaining file is read once on the blocking pool, its requested
+/// chunks digested there; results scatter back into input positions as
+/// tasks complete, so the output order never depends on completion order.
+#[allow(clippy::too_many_arguments)]
+async fn world_sides<R: RegionFile, L: WorldLock>(
+    regions: &BTreeMap<RegionKey, R>,
+    coords: &[ChunkCoord],
+    by_region: &BTreeMap<RegionKey, Vec<usize>>,
+    proven: &BTreeMap<RegionKey, RegionNode>,
+    new_side: &mut [Option<ChunkHash>],
+    guard: &Arc<WorldGuard<L>>,
+    progress: &mut impl Progress,
+    timings: &mut DiffTimings,
+) -> Result<(), AppError>
+where
+    AppError: From<R::Error>,
+{
+    let mut spawnable = Vec::new();
+    for (key, indices) in by_region {
+        if let Some(node) = proven.get(key) {
+            for &index in indices {
+                let (cx, cz) = local_slot(coords[index]);
+                new_side[index] = node.get(cx, cz);
+            }
+            progress.step();
+        } else if let Some(region) = regions.get(key) {
+            let items = indices.iter().map(|&i| (i, coords[i])).collect();
+            spawnable.push((*key, region.clone(), items));
+        } else {
+            // The file is gone: every requested chunk there is absent.
+            progress.step();
+        }
+    }
+
+    // Same bounded fan-out as ingest: a finished file frees its slot.
+    // Returning on error drops the set, aborting the files still queued.
+    let mut queued = spawnable.into_iter();
+    let mut set = JoinSet::new();
+    for file in queued.by_ref().take(diff_worker_slots()) {
+        set.spawn(read_region_side(file, Arc::clone(guard)));
+    }
+    while let Some(joined) = set.join_next().await {
+        let side = joined
+            .map_err(|source| AppError::Storage(StorageError::backend("diff worker", source)))??;
+        for (index, digest) in side.digests {
+            new_side[index] = digest;
+        }
+        timings.blob_fetch += side.read;
+        timings.decompress += side.prepare;
+        progress.step();
+        if let Some(file) = queued.next() {
+            set.spawn(read_region_side(file, Arc::clone(guard)));
+        }
+    }
+    Ok(())
+}
+
+/// Read one region file once and digest every requested chunk it holds.
+///
+/// Runs on the blocking pool holding a share of the world lock until it
+/// ends (ADR-0022): an abandoned diff cannot free the world while a file
+/// is still being read. The read counts under `blob_fetch`; decompression
+/// and digesting under `decompress`.
+async fn read_region_side<R: RegionFile, L: WorldLock>(
+    file: (RegionKey, R, Vec<(usize, ChunkCoord)>),
+    guard: Arc<WorldGuard<L>>,
+) -> Result<RegionSide, AppError>
+where
+    AppError: From<R::Error>,
+{
+    tokio::task::spawn_blocking(move || {
+        let _guard = guard;
+        let (key, region, items) = file;
+        let started = Instant::now();
+        let image = region.read(key)?;
+        let read = started.elapsed();
+        let mut digests = Vec::with_capacity(items.len());
+        let mut prepare = Duration::ZERO;
+        for (index, coord) in items {
+            let started = Instant::now();
+            let digest = match image.chunk_payload(coord.x, coord.z)? {
+                Some(payload) => Some(chunk_digest(coord, payload)?),
+                None => None,
+            };
+            prepare += started.elapsed();
+            digests.push((index, digest));
+        }
+        Ok(RegionSide {
+            digests,
+            read,
+            prepare,
+        })
+    })
+    .await
+    .map_err(|source| AppError::Storage(StorageError::backend("diff worker", source)))?
+}
+
 /// What one source has to say about a chunk.
 struct Side {
     /// The [`ChunkHash`] the side's payload digests to, `None` when it holds
@@ -368,24 +550,6 @@ struct Side {
     /// Time spent turning the stored payload into that digest: decompression
     /// and hashing. Zero for a recorded digest.
     prepare: Duration,
-}
-
-impl Side {
-    /// No chunk on this side.
-    const fn absent() -> Self {
-        Self {
-            digest: Ok(None),
-            prepare: Duration::ZERO,
-        }
-    }
-
-    /// The payload exists but could not be read.
-    const fn failed(error: AppError) -> Self {
-        Self {
-            digest: Err(error),
-            prepare: Duration::ZERO,
-        }
-    }
 }
 
 trait DiffSource {
@@ -412,29 +576,6 @@ impl<S: SekaiStore> DiffSource for CommitDiff<'_, S> {
             // The digest is recorded, not recomputed: nothing to prepare.
             prepare: Duration::ZERO,
         })
-    }
-}
-
-/// One diff run's world side: region handles resolved once, not per chunk.
-/// The set is captured when the run starts, so a region created mid-run
-/// is treated as absent until the next diff.
-struct WorldDiff<'a, R> {
-    regions: BTreeMap<RegionKey, R>,
-    /// Regions proven byte-identical to the commit's cached image: the
-    /// committed node answers every coordinate without a file read.
-    proven: &'a BTreeMap<RegionKey, RegionNode>,
-}
-
-impl<R: RegionFile> DiffSource for WorldDiff<'_, R>
-where
-    AppError: From<R::Error>,
-{
-    fn payload(&self, coord: &ChunkCoord) -> impl Future<Output = Result<Side, AppError>> {
-        if let Some(node) = self.proven.get(&RegionKey::of(*coord)) {
-            return std::future::ready(Ok(proven_side(node, coord)));
-        }
-        // A world read failure is always confined to this coordinate.
-        std::future::ready(Ok(read_world_chunk(&self.regions, coord)))
     }
 }
 

@@ -31,10 +31,10 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
 
     let (diffs, timings) = match args.target() {
         DiffTarget::World { world, commit } => {
-            // Resolve the commit before scanning the world: an empty store
-            // or an unborn active ref fails the diff no matter what the
-            // world holds, and the failure must not wait on a full world
-            // read.
+            // Resolve an explicit reference before scanning the world: a
+            // bad reference must fail without waiting on a full world
+            // read. No reference means the active ref, which may be
+            // unborn: the diff then runs against the empty snapshot.
             let commit_id = resolve_world_commit(&instance, commit)
                 .await
                 .with_context(|| "failed to compute chunk diffs between world state and commit")?;
@@ -46,7 +46,7 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
             let coords = scoped_coords(coords, &scope);
             instance
                 .world(&world)
-                .diff_world_chunks(Some(commit_id), &coords, &bars)
+                .diff_world_chunks(commit_id, &coords, &bars)
                 .await
                 .with_context(|| "failed to compute chunk diffs between world state and commit")?
         }
@@ -101,23 +101,23 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
 
 /// Resolve the commit a world diff compares against.
 ///
-/// Fails when an explicit reference does not resolve, or when the active
-/// ref is unborn: either way the diff is impossible, so the error must
-/// surface before the world is scanned.
+/// An explicit reference must resolve before the world is scanned. `None`
+/// keeps meaning "the active ref"; an unborn active ref yields `None`
+/// again, and the diff runs against the empty snapshot (ADR-0006).
 async fn resolve_world_commit(
     instance: &sekai_app::SekaiInstance<impl SekaiStore>,
     commit: Option<&CommitRef>,
-) -> anyhow::Result<CommitId> {
+) -> anyhow::Result<Option<CommitId>> {
     match commit {
         Some(raw) => instance
             .resolve_commit_ref(raw.as_str())
             .await
+            .map(Some)
             .with_context(|| format!("commit {raw} failed to resolve")),
         None => instance
             .current_commit_id()
             .await
-            .with_context(|| "failed to resolve the active ref")?
-            .ok_or(AppError::NoCommits.into()),
+            .with_context(|| "failed to resolve the active ref"),
     }
 }
 
