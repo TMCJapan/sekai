@@ -276,7 +276,10 @@ where
         // so the result stays in input order however the reads complete.
         let mut by_region: BTreeMap<RegionKey, Vec<usize>> = BTreeMap::new();
         for (index, coord) in coords.iter().enumerate() {
-            by_region.entry(RegionKey::of(*coord)).or_default().push(index);
+            by_region
+                .entry(RegionKey::of(*coord))
+                .or_default()
+                .push(index);
         }
 
         // Only the regions `coords` span are worth proving: a single-chunk
@@ -483,9 +486,8 @@ where
         set.spawn(read_region_side(file, Arc::clone(guard)));
     }
     while let Some(joined) = set.join_next().await {
-        let side = joined.map_err(|source| {
-            AppError::Storage(StorageError::backend("diff worker", source))
-        })??;
+        let side = joined
+            .map_err(|source| AppError::Storage(StorageError::backend("diff worker", source)))??;
         for (index, digest) in side.digests {
             new_side[index] = digest;
         }
