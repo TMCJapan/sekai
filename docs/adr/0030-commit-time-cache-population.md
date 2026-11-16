@@ -73,5 +73,6 @@ memory stays bounded by the fan-out, so the streaming design wins.
   the confirming tree reads; no chunk is decompressed or normalized
   twice.
 - The consumer side - the file-level change check that skips unchanged
-  regions - remains a follow-up; this ADR only populates the data it
-  needs.
+  regions - is implemented for diff and the status preview in
+  [ADR-0031](0031-cache-query-region-proofs.md). Commit ingest is unchanged,
+  so this population pass keeps every candidate.

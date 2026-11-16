@@ -51,9 +51,9 @@ A third store adapter, the cache, maps a `RegionHash` to the undecomposed
 
 - The file-level change check ADR-0023 left open now has its data: given a
   commit's region hash, read the cached content hash, hash the live file,
-  compare. Wiring it into commit/diff is a follow-up; it needs the raw
-  image and the committed region hash at the call site and must respect
-  partial scope (only files the scope fully covers).
+  compare. The consumer side is wired into diff and the status preview by
+  [ADR-0031](0031-cache-query-region-proofs.md); commit ingest still reads
+  every file, so cache population keeps its candidates.
 - The store gains a third keyspace (`meta.sqlite` + `blobs/` + `cache/`),
   still one directory moved and backed up as a unit. `open_local` detects
   an initialized store by `cache/conf` too; a pre-cache store fails
