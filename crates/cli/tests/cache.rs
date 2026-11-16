@@ -89,7 +89,7 @@ fn write_region(path: impl AsRef<std::path::Path>) {
 async fn cache_clean_wipes_the_store_cache_and_commits_keep_working() {
     let (root, _guard) = tempdir("cache-clean");
     let world = root.join("world");
-    write_region(&world.join("region/r.0.0.mca"));
+    write_region(world.join("region/r.0.0.mca"));
     let store = root.join("store");
     let store = store.to_str().expect("temporary store path is UTF-8");
     let world = world.to_str().expect("temporary world path is UTF-8");
