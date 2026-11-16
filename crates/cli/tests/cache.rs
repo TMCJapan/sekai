@@ -77,7 +77,8 @@ fn chunk_nbt(marker: &str) -> Vec<u8> {
 }
 
 /// Write one region image holding a single chunk through the real builder.
-fn write_region(path: &std::path::Path) {
+fn write_region(path: impl AsRef<std::path::Path>) {
+    let path = path.as_ref();
     let mut builder = sekai_anvil::RegionBuilder::new(0, 0, 0).unwrap();
     builder.stage_chunk(0, 0, &chunk_nbt("marker-1")).unwrap();
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
