@@ -34,5 +34,6 @@ For a full secondary backup of everything — commits, metadata, blobs,
 and the region-image cache — copy or archive the entire store directory
 to an external location. Store writes are crash-ordered (CAS blobs
 flushed before the metadata commit that references them), so a copied
-store is self-consistent. The cache is derived and rebuildable, so
-leaving it out of a backup only costs performance on the next run.
+store is self-consistent. The [cache](commands/cache.md) is derived and
+rebuildable, so leaving it out of a backup only costs performance on the
+next run.
