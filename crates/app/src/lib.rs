@@ -15,6 +15,7 @@
 //! through [`RegionFile`] handles, so a tree that is not backed by a
 //! filesystem runs the same flows as one that is.
 
+mod cache;
 mod checkout;
 mod commit;
 mod diff;
