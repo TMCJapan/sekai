@@ -11,10 +11,12 @@ keywords = ["minecraft", "version-control", "storage"]
 workspace = true
 
 [dependencies]
+redb.workspace = true
 sekai-core.workspace = true
 sekai-storage.workspace = true
 sled.workspace = true
-sqlx = { workspace = true, features = ["sqlite"] }
+# `time` is unused here but kept for feature unification: sekai-app's tests
+# use tokio::time without declaring the feature themselves.
 tokio = { workspace = true, features = ["time"] }
 
 [dev-dependencies]

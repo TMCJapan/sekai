@@ -32,7 +32,7 @@ async fn open_of_a_missing_store_fails_and_creates_nothing() {
     assert!(!store.exists(), "a failed open must not create anything");
 
     sekai_app::SekaiInstance::init(&url).await.unwrap();
-    assert!(store.join("meta.sqlite").is_file());
+    assert!(store.join("meta.redb").is_file());
     assert!(store.join("blobs/conf").is_file());
     assert!(store.join("cache/conf").is_file());
     sekai_app::SekaiInstance::open(&url).await.unwrap();
@@ -46,5 +46,5 @@ async fn init_is_idempotent_on_an_existing_store() {
 
     sekai_app::SekaiInstance::init(&url).await.unwrap();
     sekai_app::SekaiInstance::init(&url).await.unwrap();
-    assert!(store.join("meta.sqlite").is_file());
+    assert!(store.join("meta.redb").is_file());
 }

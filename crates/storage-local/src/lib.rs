@@ -1,4 +1,4 @@
-//! Local storage backend for Sekai: SQLite metadata, sled blobs, and a
+//! Local storage backend for Sekai: redb metadata, sled blobs, and a
 //! sled region-image cache.
 
 mod blob;
@@ -7,17 +7,17 @@ mod meta;
 
 pub use blob::SledBlob;
 pub use cache::SledCache;
-pub use meta::{SCHEMA_VERSION, SqliteMeta};
+pub use meta::{RedbMeta, SCHEMA_VERSION};
 
 use std::path::Path;
 
 use sekai_storage::{StorageError, Store, io_error};
 
-pub type LocalStore = Store<SqliteMeta, SledBlob, SledCache>;
+pub type LocalStore = Store<RedbMeta, SledBlob, SledCache>;
 
 /// Initialize the store rooted at `root` and open it.
 ///
-/// The layout is `<root>/meta.sqlite` plus the sled keyspaces at
+/// The layout is `<root>/meta.redb` plus the sled keyspaces at
 /// `<root>/blobs` and `<root>/cache`; initializing an existing store again
 /// is idempotent, like `git init`. This is the only path that materializes
 /// a store, reserved for an explicit init (the CLI's `sekai init`). sled
@@ -26,12 +26,12 @@ pub type LocalStore = Store<SqliteMeta, SledBlob, SledCache>;
 pub async fn init_local(root: impl AsRef<Path>) -> Result<LocalStore, StorageError> {
     std::fs::create_dir_all(root.as_ref())
         .map_err(|source| io_error(root.as_ref().display().to_string(), source))?;
-    connect(root).await
+    connect_local(root).await
 }
 
 /// Open the existing store rooted at `root`.
 ///
-/// The layout is `<root>/meta.sqlite` plus the sled keyspaces at
+/// The layout is `<root>/meta.redb` plus the sled keyspaces at
 /// `<root>/blobs` and `<root>/cache`. Fails with
 /// [`StorageError::StoreMissing`] when the store was never initialized,
 /// without creating anything.
@@ -41,7 +41,7 @@ pub async fn open_local(root: impl AsRef<Path>) -> Result<LocalStore, StorageErr
             path: root.as_ref().display().to_string(),
         });
     }
-    connect(root).await
+    connect_local(root).await
 }
 
 /// Whether `root` already holds an initialized store, checked without
@@ -55,17 +55,17 @@ pub fn local_store_exists(root: impl AsRef<Path>) -> bool {
 /// existence marker, checked without opening (and locking) anything.
 fn markers_present(root: impl AsRef<Path>) -> bool {
     let root = root.as_ref();
-    root.join("meta.sqlite").is_file()
+    root.join("meta.redb").is_file()
         && root.join("blobs/conf").is_file()
         && root.join("cache/conf").is_file()
 }
 
 /// Attach the metadata, blob, and cache adapters to an existing store root;
-/// the root directory must already hold `meta.sqlite` and the `blobs` and
+/// the root directory must already hold `meta.redb` and the `blobs` and
 /// `cache` keyspaces.
-async fn connect(root: impl AsRef<Path>) -> Result<LocalStore, StorageError> {
+async fn connect_local(root: impl AsRef<Path>) -> Result<LocalStore, StorageError> {
     let blob = SledBlob::open(root.as_ref().join("blobs")).await?;
     let cache = SledCache::open(root.as_ref().join("cache")).await?;
-    let meta = SqliteMeta::open(root.as_ref().join("meta.sqlite")).await?;
+    let meta = RedbMeta::open(root.as_ref().join("meta.redb")).await?;
     Ok(LocalStore::new(meta, blob, cache))
 }

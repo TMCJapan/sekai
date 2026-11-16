@@ -12,10 +12,7 @@ ignore = [
 ]
 
 [sources]
-allow-git = [
-  "https://github.com/TMCJapan/nanonbt",
-  "https://github.com/launchbadge/sqlx",
-]
+allow-git = ["https://github.com/TMCJapan/nanonbt"]
 
 [licenses]
 version = 2
@@ -25,7 +22,3 @@ allow = ["MIT", "Apache-2.0", "Unicode-3.0", "Zlib", "BSD-3-Clause"]
 
 [bans]
 multiple-versions = "warn"
-skip = [
-  { name = "hashbrown", version = "0.16.1" },
-  { name = "syn", version = "2.0.119" },
-]

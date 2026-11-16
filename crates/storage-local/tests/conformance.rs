@@ -26,28 +26,28 @@ async fn init(dir: impl AsRef<Path>) -> sekai_storage_local::LocalStore {
 }
 
 #[tokio::test]
-async fn sqlite_commit_lifecycle() {
+async fn redb_commit_lifecycle() {
     let (dir, _guard) = tempdir("lifecycle");
     let mut store = init(&dir).await;
     common::commit_lifecycle(store.meta_mut()).await;
 }
 
 #[tokio::test]
-async fn sqlite_scope_flow() {
+async fn redb_scope_flow() {
     let (dir, _guard) = tempdir("scopes");
     let mut store = init(&dir).await;
     common::scope_flow(store.meta_mut()).await;
 }
 
 #[tokio::test]
-async fn sqlite_fresh_stats() {
+async fn redb_fresh_stats() {
     let (dir, _guard) = tempdir("fresh");
     let mut store = init(&dir).await;
     common::fresh_stats(store.meta_mut()).await;
 }
 
 #[tokio::test]
-async fn sqlite_tree_bulk_reads() {
+async fn redb_tree_bulk_reads() {
     let (dir, _guard) = tempdir("bulk-reads");
     let mut store = init(&dir).await;
     common::tree_bulk_reads(store.meta_mut()).await;
@@ -56,7 +56,7 @@ async fn sqlite_tree_bulk_reads() {
 /// A vanished coordinate stops resolving: absence is the tombstone, and a
 /// checkout plan drops the coordinate instead of asking for a blob.
 #[tokio::test]
-async fn sqlite_tombstones_shape_and_checkout_drop() {
+async fn redb_tombstones_shape_and_checkout_drop() {
     let (dir, _guard) = tempdir("tombstones");
     let mut store = init(&dir).await;
     let meta = store.meta_mut();
@@ -95,14 +95,14 @@ async fn sqlite_tombstones_shape_and_checkout_drop() {
 }
 
 #[tokio::test]
-async fn sqlite_history_graph() {
+async fn redb_history_graph() {
     let (dir, _guard) = tempdir("graph");
     let mut store = init(&dir).await;
     common::history_graph(store.meta_mut()).await;
 }
 
 #[tokio::test]
-async fn sqlite_cas_roundtrip() {
+async fn redb_cas_roundtrip() {
     let (dir, _guard) = tempdir("cas");
     let mut store = init(&dir).await;
     common::cas_roundtrip(store.blob_mut()).await;
@@ -116,7 +116,7 @@ async fn cache_roundtrip() {
 }
 
 #[tokio::test]
-async fn sqlite_torn_commit_leaves_orphans() {
+async fn redb_torn_commit_leaves_orphans() {
     let (dir, _guard) = tempdir("torn-commit");
     let mut store = init(&dir).await;
     common::torn_commit_leaves_orphans(&mut store).await;
@@ -152,7 +152,7 @@ async fn visit_lists_stored_hashes_and_missing_fetch_clears() {
     assert!(out.is_empty(), "a failed fetch clears the buffer");
 }
 
-/// The blob keyspace is its own versioned sled directory beside `meta.sqlite`.
+/// The blob keyspace is its own versioned sled directory beside `meta.redb`.
 #[tokio::test]
 async fn blob_database_is_created_and_version_gated() {
     let (dir, _guard) = tempdir("blob-schema");
@@ -190,7 +190,7 @@ async fn blob_database_is_created_and_version_gated() {
 }
 
 /// The cache keyspace is its own versioned sled directory beside
-/// `meta.sqlite`, with the image in the default tree and its hash in a
+/// `meta.redb`, with the image in the default tree and its hash in a
 /// side tree.
 #[tokio::test]
 async fn cache_database_is_created_and_version_gated() {
@@ -295,7 +295,7 @@ async fn open_of_a_missing_store_fails_without_creating_it() {
     assert!(!dir.exists(), "a failed open must not create anything");
 
     let store = init_local(&dir).await.unwrap();
-    assert!(dir.join("meta.sqlite").is_file());
+    assert!(dir.join("meta.redb").is_file());
     assert!(dir.join("blobs/conf").is_file());
     assert!(dir.join("cache/conf").is_file());
     assert!(sekai_storage_local::local_store_exists(&dir));

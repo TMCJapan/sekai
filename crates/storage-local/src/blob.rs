@@ -2,7 +2,7 @@
 //!
 //! Blobs are the raw sector payloads ingest captured, keyed by their hash and
 //! never rewritten. They live in the default tree of a sled keyspace beside
-//! `meta.sqlite`, so the store stays a single directory, moved and backed up
+//! `meta.redb`, so the store stays a single directory, moved and backed up
 //! as a unit; a reserved tree holds the format version.
 //!
 //! Durability follows the architecture's crash order. A `put` appends to
