@@ -5,11 +5,15 @@ sekai commit ./world
 ```
 
 Records the current world state as a new commit and prints the
-commit hash, chunk/blob counts, tombstones, skipped regions, and carried
-chunks. Recording an identical commit again returns the existing hash
-without adding rows.
+commit hash, chunk/blob counts, and tombstones. Recording an identical
+commit again returns the existing hash without adding rows.
 
-- `--jobs N` sets the ingest worker count (`0` means one per CPU).
+Before recording, the command runs the same pass as `cache update` over
+the whole world, warming the region-image cache so `diff` and `status`
+can prove unchanged regions right away (see [Cache](cache.md)). With
+`--timing`, `cache_ms` measures that pass and the total spans both.
+
+- `--jobs N` sets the worker count for both passes (`0` means one per CPU).
 - `--progress` shows a stderr progress bar (refused with `--json`).
 - Scope flags (`--in`, `--region`, `--kind`) restrict what is recorded;
   see [Scope selection](../scope.md).

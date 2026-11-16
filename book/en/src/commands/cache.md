@@ -34,12 +34,14 @@ from the world and the snapshot tree.
   ```
 
   It reads and hashes every chunk exactly as a commit would, but writes
-  only cache entries — no blobs, no metadata, no commit. Use it to warm
-  the cache after `cache clean`, or before the first commit, so `diff`
-  and `status` can prove unchanged regions right away. `--world` defaults
-  to the current directory; `--jobs` sets the hashing worker count (`0`
-  means one per CPU). The whole world is hashed: a corrupt or unsupported
-  chunk fails the run loudly, and entries already written stay.
+  only cache entries — no blobs, no metadata, no commit. `sekai commit`
+  runs this same pass before recording; use the standalone command to
+  warm the cache after `cache clean`, or before the first commit, so
+  `diff` and `status` can prove unchanged regions right away. `--world`
+  defaults to the current directory; `--jobs` sets the hashing worker
+  count (`0` means one per CPU). The whole world is hashed: a corrupt or
+  unsupported chunk fails the run loudly, and entries already written
+  stay.
 - Use `clean` to reclaim space. Commits and blobs are append-only and are
   never deleted, so the cache is the only part of the store you can
   shrink. Cleaning before a [secondary backup](../store.md) keeps the

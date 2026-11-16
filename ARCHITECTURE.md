@@ -106,13 +106,14 @@ The boundary rules:
 ## Data Flow
 
 ```text
-commit:
-  world: region handle -> Vec<u8> image
-    -> anvil: image -> chunk payloads (captured bytes)
-    -> Chunk::normalized_hash -> ChunkHash -> storage CAS put
-    -> core: merge changed chunks into the parent snapshot tree
-    -> metadata: region -> dim -> root nodes + commit row
-    -> cache: confirmed region hashes <- re-read raw image (best-effort)
+commit (sekai commit = update_cache, then commit):
+  cache update: world read -> normalized region node hash -> cache put
+  commit:
+    world: region handle -> Vec<u8> image
+      -> anvil: image -> chunk payloads (captured bytes)
+      -> Chunk::normalized_hash -> ChunkHash -> storage CAS put
+      -> core: merge changed chunks into the parent snapshot tree
+      -> metadata: region -> dim -> root nodes + commit row
 
 checkout:
   core::plan_checkout -> groups of (coord, ChunkHash)
@@ -303,30 +304,31 @@ hashes the live file, and compares - proving a fully covered region
 unchanged without decompressing or normalizing a single chunk. A mismatch
 or a miss falls back to the full per-chunk path.
 
-The cache is derived state, never truth. Entries are written after the
-metadata commit names their region hash, the cache records no absence and
-never decides a commit on its own, and every entry can be recomputed from
-the world and the snapshot tree. A torn write or a wiped cache therefore
-costs performance only, and `sync` is advisory rather than a crash-order
-barrier - the opposite of the blob store, whose `sync` guards the commit.
-The image and its hash are written as one atomic pair, and the first image
-wins for a given region hash (different raw files can normalize to the same
-region node). `sekai cache clean` exposes the wipe as a capacity-reduction
-operation: it removes every entry, keeps the keyspace format, and reports
-the count; later commits rebuild what they need.
+The cache is derived state, never truth. Entries are keyed by
+construction - the region node hash the file's own chunks produce - so
+the cache records no absence and never decides a commit on its own, and
+every entry can be recomputed from the world. A torn write or a wiped
+cache therefore costs performance only, and `sync` is advisory rather
+than a crash-order barrier - the opposite of the blob store, whose `sync`
+guards the commit. The image and its hash are written as one atomic pair,
+and the first image wins for a given region hash (different raw files can
+normalize to the same region node). `sekai cache clean` exposes the wipe
+as a capacity-reduction operation: it removes every entry, keeps the
+keyspace format, and reports the count; a later update pass rebuilds what
+callers need.
 See [ADR-0029](docs/adr/0029-region-image-cache.md).
 
-Commit populates the cache as its final, best-effort pass. Ingest keeps a
-candidate per fully covered file - the region node hash its own chunks
-produce plus the raw image's content digest, 32 bytes, no retained image.
-After the metadata commit, core confirms each candidate against the
-committed tree (a partial scope's merged node confirms nothing), then the
-adapter re-reads each confirmed file raw through its discovered handle,
-verifies the digest still matches, and puts the (image, hash) pair. Any
-failure leaves the entry absent and never fails the recorded commit; a
-repeated commit re-puts idempotently, so a wiped cache rebuilds on the next
-commit even without world changes. See
-[ADR-0030](docs/adr/0030-commit-time-cache-population.md).
+`WorldHandleMut::update_cache` is the only population path: it reads and
+normalizes every discovered file exactly as commit ingest does, retains
+each image from the read through its cache write, and puts the (image,
+hash) pair under the file's own region node - no committed tree is needed
+to confirm it, and the pass works on an unborn store. It fails loudly on
+an unhashable payload or a cache write failure, since updating the cache
+is its whole point. Commit itself records history only; `sekai commit`
+composes the two operations, running the update pass before recording, so
+a stable world leaves the commit naming exactly the hashes just cached.
+See [ADR-0033](docs/adr/0033-cache-update-commit-free-population.md) and
+[ADR-0034](docs/adr/0034-commit-as-cache-update-plus-record.md).
 
 Diff and the status preview consume the cache as a best-effort proof pass:
 core reads the region hashes the commit names (`commit_region_hashes`), the
@@ -334,8 +336,8 @@ app queries each cached content hash, re-reads the live file raw, and
 compares. A match proves the whole region unchanged, and a proven region
 answers from its committed node without decoding a chunk - both diff sides,
 or the preview's staged rows. Only the regions the operation touches are
-proven, any miss or mismatch falls back to the per-chunk path, and commit
-ingest itself is unchanged so cache population keeps every candidate. See
+proven, and any miss or mismatch falls back to the per-chunk path; a real
+commit always ingests its changed files. See
 [ADR-0031](docs/adr/0031-cache-query-region-proofs.md).
 
 # History and State Model

@@ -1,8 +1,12 @@
-//! Region-image cache population at commit time (ADR-0029, ADR-0030).
+//! Region-image cache population through the commit-free update pass
+//! (ADR-0029, ADR-0033, ADR-0034).
 //!
-//! Every fully covered region file is cached under the region node hash
-//! the commit names for it; partial scopes, previews, and empty files
-//! cache nothing, and wiping the cache costs performance only.
+//! `update_cache` keys every file under the region node its own chunks
+//! produce; commit records history only and writes no cache entries.
+//! `sekai commit` composes the two passes, so the flows here warm the
+//! cache with `update_cache` before committing. Partial scopes, previews,
+//! and empty files cache nothing, and wiping the cache costs performance
+//! only.
 //!
 //! Requires the `backend-local` feature.
 
@@ -104,10 +108,39 @@ async fn assert_cached<S: SekaiStore>(store: &S, hash: RegionHash, image: &[u8])
     assert_eq!(fetched, image);
 }
 
-/// A full commit caches every fully covered region, across dimensions
-/// and region families.
+/// Commit records history only: the region hashes it names stay uncached
+/// until an update pass runs (ADR-0034).
 #[tokio::test]
-async fn full_commit_caches_every_covered_region() {
+async fn commit_records_history_without_writing_cache_entries() {
+    let (root, _guard) = tempdir("cache-commit-only");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    write_region(
+        world_path.join("region/r.0.0.mca"),
+        &[(0, 0, chunk_nbt("marker-1"))],
+    );
+
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let (report, _) = instance
+        .world_mut(&mut world)
+        .commit(options(), Scope::World, &())
+        .await
+        .unwrap();
+    assert_eq!(report.chunks, 1);
+
+    let key = RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
+    let hash = committed_region_hash(instance.store(), report.commit, key)
+        .await
+        .unwrap();
+    assert_eq!(instance.store().cache().mca_hash(hash).await.unwrap(), None);
+}
+
+/// The update pass before a full commit caches every fully covered
+/// region, across dimensions and region families, under the hashes the
+/// commit names.
+#[tokio::test]
+async fn update_cache_then_commit_caches_every_covered_region() {
     let (root, _guard) = tempdir("cache-full");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -126,11 +159,21 @@ async fn full_commit_caches_every_covered_region() {
             RegionKind::Entities,
         ),
     ];
-    for (name, _, _) in files {
-        write_region(world_path.join(name), &[(0, 0, chunk_nbt("marker-1"))]);
+    // Distinct content per file: the cache is content-addressed, so equal
+    // chunks would collapse to one region node across dimensions and kinds.
+    for (i, (name, _, _)) in files.iter().enumerate() {
+        write_region(
+            world_path.join(name),
+            &[(0, 0, chunk_nbt(&format!("marker-{i}")))],
+        );
     }
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    instance
+        .world_mut(&mut world)
+        .update_cache(update_options(), &())
+        .await
+        .unwrap();
     let (report, _) = instance
         .world_mut(&mut world)
         .commit(options(), Scope::World, &())
@@ -148,12 +191,12 @@ async fn full_commit_caches_every_covered_region() {
     }
 }
 
-/// A repeated commit keeps the first cached image: a new header timestamp
-/// changes the raw bytes but not the normalized chunk hashes, so the same
-/// region node is confirmed again and first-image-wins keeps the original
-/// representative.
+/// A repeated update and commit keep the first cached image: a new header
+/// timestamp changes the raw bytes but not the normalized chunk hashes,
+/// so the same region node is produced and first-image-wins keeps the
+/// original representative.
 #[tokio::test]
-async fn repeated_commit_keeps_the_first_image() {
+async fn repeated_update_and_commit_keep_the_first_image() {
     let (root, _guard) = tempdir("cache-first-image");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -164,6 +207,11 @@ async fn repeated_commit_keeps_the_first_image() {
     let first_image = std::fs::read(&path).unwrap();
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    instance
+        .world_mut(&mut world)
+        .update_cache(update_options(), &())
+        .await
+        .unwrap();
     let (first, _) = instance
         .world_mut(&mut world)
         .commit(options(), Scope::World, &())
@@ -178,6 +226,11 @@ async fn repeated_commit_keeps_the_first_image() {
     write_region_at(&path, &chunks, 7);
     let second_image = std::fs::read(&path).unwrap();
     assert_ne!(first_image, second_image);
+    instance
+        .world_mut(&mut world)
+        .update_cache(update_options(), &())
+        .await
+        .unwrap();
     let (second, _) = instance
         .world_mut(&mut world)
         .commit(options(), Scope::World, &())
@@ -204,6 +257,11 @@ async fn changed_region_gets_a_new_entry() {
     let first_image = std::fs::read(&path).unwrap();
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    instance
+        .world_mut(&mut world)
+        .update_cache(update_options(), &())
+        .await
+        .unwrap();
     let (first, _) = instance
         .world_mut(&mut world)
         .commit(options(), Scope::World, &())
@@ -217,6 +275,11 @@ async fn changed_region_gets_a_new_entry() {
 
     write_region(&path, &[(0, 0, chunk_nbt("marker-2"))]);
     let second_image = std::fs::read(&path).unwrap();
+    instance
+        .world_mut(&mut world)
+        .update_cache(update_options(), &())
+        .await
+        .unwrap();
     let (second, _) = instance
         .world_mut(&mut world)
         .commit(options(), Scope::World, &())
@@ -231,8 +294,10 @@ async fn changed_region_gets_a_new_entry() {
 }
 
 /// A partial scope merges the parent's out-of-scope chunks into the
-/// region node: the live file did not produce that node, so it must not
-/// be cached under it (ADR-0029 soundness).
+/// region node: when the live file did not produce that node, it must not
+/// be cached under it (ADR-0029 soundness). The update pass keys the file
+/// under its own whole-file node, which stays distinct from the merged
+/// one as long as an out-of-scope chunk changed too.
 #[tokio::test]
 async fn partial_scope_does_not_cache_the_merged_region() {
     let (root, _guard) = tempdir("cache-partial");
@@ -247,6 +312,11 @@ async fn partial_scope_does_not_cache_the_merged_region() {
     let first_image = std::fs::read(&path).unwrap();
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    instance
+        .world_mut(&mut world)
+        .update_cache(update_options(), &())
+        .await
+        .unwrap();
     let (first, _) = instance
         .world_mut(&mut world)
         .commit(options(), Scope::World, &())
@@ -258,12 +328,19 @@ async fn partial_scope_does_not_cache_the_merged_region() {
         .unwrap();
     assert_cached(instance.store(), first_hash, &first_image).await;
 
-    // Change only (0,0), then commit just that chunk: (1,0) is carried
-    // from the parent, so the merged node is not the file's own.
+    // Change both chunks, then commit just (0,0): (1,0) is carried from
+    // the parent, so the merged node is not the file's own.
     write_region(
         &path,
-        &[(0, 0, chunk_nbt("marker-9")), (1, 0, chunk_nbt("marker-2"))],
+        &[(0, 0, chunk_nbt("marker-9")), (1, 0, chunk_nbt("marker-3"))],
     );
+    let second_image = std::fs::read(&path).unwrap();
+    let file_hash = file_region_hash(&path);
+    instance
+        .world_mut(&mut world)
+        .update_cache(update_options(), &())
+        .await
+        .unwrap();
     let scope = Scope::Select {
         kinds: Scope::all_kinds(),
         areas: vec![(Dimension::OVERWORLD, Area::Rect(Rect::new(0, 0, 0, 0)))],
@@ -277,6 +354,7 @@ async fn partial_scope_does_not_cache_the_merged_region() {
         .await
         .unwrap();
     assert_ne!(first_hash, second_hash);
+    assert_ne!(file_hash, second_hash);
     assert_eq!(
         instance
             .store()
@@ -286,11 +364,13 @@ async fn partial_scope_does_not_cache_the_merged_region() {
             .unwrap(),
         None
     );
+    // The file's own node is cached soundly, and the old entry stays.
+    assert_cached(instance.store(), file_hash, &second_image).await;
     assert_cached(instance.store(), first_hash, &first_image).await;
 }
 
 /// A rectangle covering the whole region file is a full cover: the
-/// scoped commit caches it just like `Scope::World` would.
+/// scoped commit names the file's own node, which the update pass cached.
 #[tokio::test]
 async fn fully_covered_rect_caches_the_region() {
     let (root, _guard) = tempdir("cache-rect");
@@ -308,6 +388,11 @@ async fn fully_covered_rect_caches_the_region() {
     let image = std::fs::read(&path).unwrap();
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    instance
+        .world_mut(&mut world)
+        .update_cache(update_options(), &())
+        .await
+        .unwrap();
     let scope = Scope::Select {
         kinds: Scope::all_kinds(),
         areas: vec![(Dimension::OVERWORLD, Area::Rect(Rect::region(0, 0)))],
@@ -324,9 +409,10 @@ async fn fully_covered_rect_caches_the_region() {
     assert_cached(instance.store(), hash, &image).await;
 }
 
-/// The status preview prepares no cache data and writes nothing.
+/// The status preview writes nothing, and neither does the commit that
+/// follows it: only the update pass populates the cache (ADR-0034).
 #[tokio::test]
-async fn status_writes_no_cache_entries() {
+async fn status_and_commit_write_no_cache_entries() {
     let (root, _guard) = tempdir("cache-status");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -349,7 +435,7 @@ async fn status_writes_no_cache_entries() {
         None
     );
 
-    // The hash the preview would have cached is the one commit names.
+    // The commit names the file's own node but caches nothing itself.
     let (commit, _) = instance
         .world_mut(&mut world)
         .commit(options(), Scope::World, &())
@@ -360,6 +446,17 @@ async fn status_writes_no_cache_entries() {
         .await
         .unwrap();
     assert_eq!(hash, expected);
+    assert_eq!(
+        instance.store().cache().mca_hash(expected).await.unwrap(),
+        None
+    );
+
+    // The update pass keys exactly the hash the commit named.
+    instance
+        .world_mut(&mut world)
+        .update_cache(update_options(), &())
+        .await
+        .unwrap();
     assert_cached(instance.store(), hash, &image).await;
 }
 
@@ -394,10 +491,10 @@ async fn empty_region_is_not_cached() {
 }
 
 /// `clean_cache` wipes every entry and reports the count; the store keeps
-/// working and the next commit rebuilds the cache, so the wipe costs
+/// working and the next update pass rebuilds the cache, so the wipe costs
 /// performance only. An empty cache cleans to zero.
 #[tokio::test]
-async fn clean_cache_wipes_entries_and_the_next_commit_rebuilds_them() {
+async fn clean_cache_wipes_entries_and_the_next_update_rebuilds_them() {
     let (root, _guard) = tempdir("cache-clean");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -408,6 +505,11 @@ async fn clean_cache_wipes_entries_and_the_next_commit_rebuilds_them() {
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     assert_eq!(instance.clean_cache().await.unwrap(), 0);
+    instance
+        .world_mut(&mut world)
+        .update_cache(update_options(), &())
+        .await
+        .unwrap();
     let (first, _) = instance
         .world_mut(&mut world)
         .commit(options(), Scope::World, &())
@@ -424,7 +526,12 @@ async fn clean_cache_wipes_entries_and_the_next_commit_rebuilds_them() {
     assert_eq!(instance.clean_cache().await.unwrap(), 0);
 
     // The commit graph is untouched: the same world state commits cleanly
-    // and repopulates the wiped entry.
+    // and the update pass repopulates the wiped entry.
+    instance
+        .world_mut(&mut world)
+        .update_cache(update_options(), &())
+        .await
+        .unwrap();
     let (second, _) = instance
         .world_mut(&mut world)
         .commit(options(), Scope::World, &())
@@ -439,9 +546,9 @@ async fn clean_cache_wipes_entries_and_the_next_commit_rebuilds_them() {
 }
 
 /// The cache is derived state: wiping it costs performance only, and the
-/// next commit rebuilds every entry even without world changes.
+/// next update pass rebuilds every entry even without world changes.
 #[tokio::test]
-async fn wiped_cache_is_rebuilt_on_the_next_commit() {
+async fn wiped_cache_is_rebuilt_on_the_next_update() {
     let (root, _guard) = tempdir("cache-wiped");
     let world_path = root.join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -452,6 +559,11 @@ async fn wiped_cache_is_rebuilt_on_the_next_commit() {
     let image = std::fs::read(&path).unwrap();
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    instance
+        .world_mut(&mut world)
+        .update_cache(update_options(), &())
+        .await
+        .unwrap();
     let (first, _) = instance
         .world_mut(&mut world)
         .commit(options(), Scope::World, &())
@@ -468,6 +580,11 @@ async fn wiped_cache_is_rebuilt_on_the_next_commit() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     assert_eq!(instance.store().cache().mca_hash(hash).await.unwrap(), None);
 
+    instance
+        .world_mut(&mut world)
+        .update_cache(update_options(), &())
+        .await
+        .unwrap();
     let (second, _) = instance
         .world_mut(&mut world)
         .commit(options(), Scope::World, &())

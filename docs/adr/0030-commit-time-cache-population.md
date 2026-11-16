@@ -1,6 +1,6 @@
 # ADR-0030: Commit-time population of the region-image cache
 
-- Status: Accepted
+- Status: Superseded by ADR-0034
 - Date: 2026-11-16
 
 ## Context

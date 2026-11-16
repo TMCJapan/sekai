@@ -1,21 +1,23 @@
 //! The region-image cache: best-effort change proofs and commit-free
-//! population (ADR-0029, ADR-0030, ADR-0033).
+//! population (ADR-0029, ADR-0033, ADR-0034).
 //!
-//! A commit caches each fully covered file under the region node hash it
-//! names, and only when the image it read produced exactly that hash. So
-//! a live file whose bytes hash to the cached image digest holds exactly
-//! the chunks the committed region node names: the whole region is proven
-//! unchanged without decompressing or normalizing a single chunk.
+//! An entry stores a fully covered file under the region node hash its
+//! own chunks produce, and only when the image it read produced exactly
+//! that hash. So a live file whose bytes hash to the cached image digest
+//! holds exactly the chunks the committed region node names: the whole
+//! region is proven unchanged without decompressing or normalizing a
+//! single chunk.
 //!
 //! The proof side ([`prove_regions_unchanged`]) is an optimization, never a
 //! decision: a cache miss, a byte mismatch, or any read failure leaves the
 //! region unproven and the caller falls back to its per-chunk path. It
 //! never writes to the cache.
 //!
-//! The population side ([`WorldHandleMut::update_cache`]) runs the same
-//! hash-and-store work a commit does, without recording a commit: it keys
-//! each file under the region node its own chunks produce, so the entry is
-//! sound by construction and ready for the next commit that names it.
+//! The population side ([`WorldHandleMut::update_cache`]) is the only
+//! writer: it keys each file under the region node its own chunks produce,
+//! so the entry is sound by construction and ready for the next commit
+//! that names it. Commit itself records history only; `sekai commit` runs
+//! the update pass before recording (ADR-0034).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -178,7 +180,9 @@ where
     AppError: From<W::Error>,
 {
     /// Populate the region-image cache from the live world without
-    /// recording a commit (ADR-0033).
+    /// recording a commit (ADR-0033). This is the cache's only population
+    /// path: commit records history only, and `sekai commit` runs this
+    /// pass before recording (ADR-0034).
     ///
     /// Every discovered file is read and its chunks normalized exactly as
     /// commit ingest does, but nothing reaches the CAS or the metadata: the
@@ -188,9 +192,8 @@ where
     /// by construction - no committed tree is needed to confirm it, and the
     /// run works on an unborn store too.
     ///
-    /// Unlike the commit-time pass, the image stays in hand from the read
-    /// through the cache write: there is no metadata commit between them,
-    /// so the bytes hashed are the bytes stored and no verifying re-read is
+    /// The image stays in hand from the read through the cache write: the
+    /// bytes hashed are the bytes stored and no verifying re-read is
     /// needed. Memory stays bounded by the fan-out, one image per worker.
     ///
     /// The world stays stable for the read pass under a shared lock.
