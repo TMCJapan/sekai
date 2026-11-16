@@ -68,7 +68,9 @@ pub trait RegionFile:
 ///
 /// Callers ask it questions in global chunk coordinates and never rebuild a
 /// parser image from raw bytes themselves: the handle that read the file
-/// owns the conversion and attaches its location to parse failures.
+/// owns the conversion and attaches its location to parse failures. The
+/// undecomposed bytes stay reachable through [`Region::image`] for the
+/// region-image cache, which stores whole files (ADR-0029).
 ///
 /// The signatures mirror [`sekai_anvil::RegionImage`]. The error type is not
 /// tied to the backing parser, so a tree that is not the host tree (an
@@ -76,6 +78,9 @@ pub trait RegionFile:
 pub trait Region {
     /// Failure type for every query on this image.
     type Error;
+
+    /// The undecomposed file bytes this image was parsed from.
+    fn image(&self) -> &[u8];
 
     /// Visits all present chunks in table order.
     ///

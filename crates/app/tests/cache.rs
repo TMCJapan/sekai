@@ -1,0 +1,433 @@
+//! Region-image cache population at commit time (ADR-0029, ADR-0030).
+//!
+//! Every fully covered region file is cached under the region node hash
+//! the commit names for it; partial scopes, previews, and empty files
+//! cache nothing, and wiping the cache costs performance only.
+//!
+//! Requires the `backend-local` feature.
+
+#![cfg(feature = "backend-local")]
+
+mod fixtures;
+
+use fixtures::chunk_nbt;
+
+use sekai_app::{
+    Area, CommitId, CommitOptions, Dimension, HostWorldTree, Rect, RegionHash, RegionKey,
+    RegionKind, Scope, SekaiStore, StatusOptions,
+};
+use sekai_core::hash_bytes;
+use sekai_storage::{CacheStore as _, MetaStore as _, RegionEntry, RegionNode};
+use std::path::Path;
+
+/// A temp dir whose name starts with the calling test's name (tempfile
+/// appends a random suffix), removed when its guard is dropped at the end
+/// of the test, panics included.
+fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
+    let guard = tempfile::Builder::new()
+        .prefix(&format!("sekai-app-{name}-"))
+        .tempdir()
+        .unwrap();
+    (guard.path().to_path_buf(), guard)
+}
+
+/// Write a region image through the real builder, deriving the region
+/// coordinates from the file name.
+fn write_region(path: impl AsRef<Path>, chunks: &[(i32, i32, Vec<u8>)]) {
+    write_region_at(path, chunks, 0);
+}
+
+/// Write a region image with an explicit header timestamp: the raw bytes
+/// change while the normalized chunk hashes stay put.
+fn write_region_at(path: impl AsRef<Path>, chunks: &[(i32, i32, Vec<u8>)], timestamp: u32) {
+    let name = path.as_ref().file_name().unwrap().to_str().unwrap();
+    let (rx, rz) = sekai_anvil::parse_region_name(name).unwrap();
+    let mut builder = sekai_anvil::RegionBuilder::new(rx, rz, timestamp).unwrap();
+    for (x, z, payload) in chunks {
+        builder.stage_chunk(*x, *z, payload).unwrap();
+    }
+    let image = builder.image().unwrap();
+    std::fs::create_dir_all(path.as_ref().parent().unwrap()).unwrap();
+    std::fs::write(path, image).unwrap();
+}
+
+const fn options() -> CommitOptions {
+    CommitOptions { concurrency: 2 }
+}
+
+/// The region node hash the commit names for `key`, if any.
+async fn committed_region_hash<S: SekaiStore>(
+    store: &S,
+    commit: CommitId,
+    key: RegionKey,
+) -> Option<RegionHash> {
+    let meta = store.meta();
+    let record = meta.lookup_commit(commit).await.unwrap()?;
+    let root = meta.read_root_node(record.root).await.unwrap();
+    let dim_hash = root.get(key.dim.raw())?;
+    let dims = meta.read_dim_nodes(&[dim_hash]).await.unwrap();
+    dims[0].get(key.kind, key.rx, key.rz)
+}
+
+/// The region node hash the file's own chunks produce, computed straight
+/// from the image: the cache key a full commit of this file must name.
+fn file_region_hash(path: impl AsRef<Path>) -> RegionHash {
+    let name = path.as_ref().file_name().unwrap().to_str().unwrap();
+    let (rx, rz) = sekai_anvil::parse_region_name(name).unwrap();
+    let bytes = std::fs::read(path).unwrap();
+    let image = sekai_anvil::RegionImage::from_bytes(bytes, rx, rz).unwrap();
+    let mut entries = Vec::new();
+    image
+        .visit_chunks(|chunk| {
+            entries.push(RegionEntry {
+                cx: u8::try_from(chunk.x.rem_euclid(32)).unwrap(),
+                cz: u8::try_from(chunk.z.rem_euclid(32)).unwrap(),
+                hash: chunk.normalized_hash().unwrap(),
+            });
+            true
+        })
+        .unwrap();
+    RegionNode::new(entries).hash()
+}
+
+/// Assert the cache holds exactly `image` (and its content hash) under
+/// `hash`.
+async fn assert_cached<S: SekaiStore>(store: &S, hash: RegionHash, image: &[u8]) {
+    let cache = store.cache();
+    assert_eq!(cache.mca_hash(hash).await.unwrap(), Some(hash_bytes(image)));
+    let mut fetched = Vec::new();
+    assert!(cache.fetch_image(hash, &mut fetched).await.unwrap());
+    assert_eq!(fetched, image);
+}
+
+/// A full commit caches every fully covered region, across dimensions
+/// and region families.
+#[tokio::test]
+async fn full_commit_caches_every_covered_region() {
+    let (root, _guard) = tempdir("cache-full");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    let files = [
+        ("region/r.0.0.mca", Dimension::OVERWORLD, RegionKind::Region),
+        (
+            "DIM-1/region/r.0.0.mca",
+            Dimension::NETHER,
+            RegionKind::Region,
+        ),
+        ("poi/r.0.0.mca", Dimension::OVERWORLD, RegionKind::Poi),
+        (
+            "entities/r.0.0.mca",
+            Dimension::OVERWORLD,
+            RegionKind::Entities,
+        ),
+    ];
+    for (name, _, _) in files {
+        write_region(world_path.join(name), &[(0, 0, chunk_nbt("marker-1"))]);
+    }
+
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let (report, _) = instance
+        .world_mut(&mut world)
+        .commit(options(), Scope::World, &())
+        .await
+        .unwrap();
+    assert_eq!(report.chunks, 4);
+
+    for (name, dim, kind) in files {
+        let key = RegionKey::new(dim, kind, 0, 0);
+        let hash = committed_region_hash(instance.store(), report.commit, key)
+            .await
+            .unwrap_or_else(|| panic!("no committed region node for {name}"));
+        let image = std::fs::read(world_path.join(name)).unwrap();
+        assert_cached(instance.store(), hash, &image).await;
+    }
+}
+
+/// A repeated commit keeps the first cached image: a new header timestamp
+/// changes the raw bytes but not the normalized chunk hashes, so the same
+/// region node is confirmed again and first-image-wins keeps the original
+/// representative.
+#[tokio::test]
+async fn repeated_commit_keeps_the_first_image() {
+    let (root, _guard) = tempdir("cache-first-image");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    let path = world_path.join("region/r.0.0.mca");
+    let chunks = [(0, 0, chunk_nbt("marker-1")), (1, 0, chunk_nbt("marker-2"))];
+    write_region(&path, &chunks);
+    let first_image = std::fs::read(&path).unwrap();
+
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let (first, _) = instance
+        .world_mut(&mut world)
+        .commit(options(), Scope::World, &())
+        .await
+        .unwrap();
+    let key = RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
+    let hash = committed_region_hash(instance.store(), first.commit, key)
+        .await
+        .unwrap();
+    assert_cached(instance.store(), hash, &first_image).await;
+
+    write_region_at(&path, &chunks, 7);
+    let second_image = std::fs::read(&path).unwrap();
+    assert_ne!(first_image, second_image);
+    let (second, _) = instance
+        .world_mut(&mut world)
+        .commit(options(), Scope::World, &())
+        .await
+        .unwrap();
+    assert_eq!(second.new_blobs, 0);
+    let again = committed_region_hash(instance.store(), second.commit, key)
+        .await
+        .unwrap();
+    assert_eq!(hash, again);
+    assert_cached(instance.store(), hash, &first_image).await;
+}
+
+/// A changed region gets a new entry under its new node hash; the old
+/// entry stays, since the cache never deletes.
+#[tokio::test]
+async fn changed_region_gets_a_new_entry() {
+    let (root, _guard) = tempdir("cache-changed");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    let path = world_path.join("region/r.0.0.mca");
+    write_region(&path, &[(0, 0, chunk_nbt("marker-1"))]);
+    let first_image = std::fs::read(&path).unwrap();
+
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let (first, _) = instance
+        .world_mut(&mut world)
+        .commit(options(), Scope::World, &())
+        .await
+        .unwrap();
+    let key = RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
+    let first_hash = committed_region_hash(instance.store(), first.commit, key)
+        .await
+        .unwrap();
+    assert_cached(instance.store(), first_hash, &first_image).await;
+
+    write_region(&path, &[(0, 0, chunk_nbt("marker-2"))]);
+    let second_image = std::fs::read(&path).unwrap();
+    let (second, _) = instance
+        .world_mut(&mut world)
+        .commit(options(), Scope::World, &())
+        .await
+        .unwrap();
+    let second_hash = committed_region_hash(instance.store(), second.commit, key)
+        .await
+        .unwrap();
+    assert_ne!(first_hash, second_hash);
+    assert_cached(instance.store(), second_hash, &second_image).await;
+    assert_cached(instance.store(), first_hash, &first_image).await;
+}
+
+/// A partial scope merges the parent's out-of-scope chunks into the
+/// region node: the live file did not produce that node, so it must not
+/// be cached under it (ADR-0029 soundness).
+#[tokio::test]
+async fn partial_scope_does_not_cache_the_merged_region() {
+    let (root, _guard) = tempdir("cache-partial");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    let path = world_path.join("region/r.0.0.mca");
+    write_region(
+        &path,
+        &[(0, 0, chunk_nbt("marker-1")), (1, 0, chunk_nbt("marker-2"))],
+    );
+    let first_image = std::fs::read(&path).unwrap();
+
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let (first, _) = instance
+        .world_mut(&mut world)
+        .commit(options(), Scope::World, &())
+        .await
+        .unwrap();
+    let key = RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
+    let first_hash = committed_region_hash(instance.store(), first.commit, key)
+        .await
+        .unwrap();
+    assert_cached(instance.store(), first_hash, &first_image).await;
+
+    // Change only (0,0), then commit just that chunk: (1,0) is carried
+    // from the parent, so the merged node is not the file's own.
+    write_region(
+        &path,
+        &[(0, 0, chunk_nbt("marker-9")), (1, 0, chunk_nbt("marker-2"))],
+    );
+    let scope = Scope::Select {
+        kinds: Scope::all_kinds(),
+        areas: vec![(Dimension::OVERWORLD, Area::Rect(Rect::new(0, 0, 0, 0)))],
+    };
+    let (second, _) = instance
+        .world_mut(&mut world)
+        .commit(options(), scope, &())
+        .await
+        .unwrap();
+    let second_hash = committed_region_hash(instance.store(), second.commit, key)
+        .await
+        .unwrap();
+    assert_ne!(first_hash, second_hash);
+    assert_eq!(
+        instance
+            .store()
+            .cache()
+            .mca_hash(second_hash)
+            .await
+            .unwrap(),
+        None
+    );
+    assert_cached(instance.store(), first_hash, &first_image).await;
+}
+
+/// A rectangle covering the whole region file is a full cover: the
+/// scoped commit caches it just like `Scope::World` would.
+#[tokio::test]
+async fn fully_covered_rect_caches_the_region() {
+    let (root, _guard) = tempdir("cache-rect");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    let path = world_path.join("region/r.0.0.mca");
+    write_region(
+        &path,
+        &[
+            (0, 0, chunk_nbt("marker-1")),
+            (31, 31, chunk_nbt("marker-2")),
+        ],
+    );
+    let image = std::fs::read(&path).unwrap();
+
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let scope = Scope::Select {
+        kinds: Scope::all_kinds(),
+        areas: vec![(Dimension::OVERWORLD, Area::Rect(Rect::region(0, 0)))],
+    };
+    let (report, _) = instance
+        .world_mut(&mut world)
+        .commit(options(), scope, &())
+        .await
+        .unwrap();
+    let key = RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
+    let hash = committed_region_hash(instance.store(), report.commit, key)
+        .await
+        .unwrap();
+    assert_cached(instance.store(), hash, &image).await;
+}
+
+/// The status preview prepares no cache data and writes nothing.
+#[tokio::test]
+async fn status_writes_no_cache_entries() {
+    let (root, _guard) = tempdir("cache-status");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    let path = world_path.join("region/r.0.0.mca");
+    write_region(&path, &[(0, 0, chunk_nbt("marker-1"))]);
+    let image = std::fs::read(&path).unwrap();
+    let expected = file_region_hash(&path);
+
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let (report, _) = instance
+        .world(&world)
+        .status(StatusOptions::default(), Scope::World, &())
+        .await
+        .unwrap();
+    assert!(!report.clean);
+    assert_eq!(instance.list_commits().await.unwrap(), []);
+    assert_eq!(
+        instance.store().cache().mca_hash(expected).await.unwrap(),
+        None
+    );
+
+    // The hash the preview would have cached is the one commit names.
+    let (commit, _) = instance
+        .world_mut(&mut world)
+        .commit(options(), Scope::World, &())
+        .await
+        .unwrap();
+    let key = RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
+    let hash = committed_region_hash(instance.store(), commit.commit, key)
+        .await
+        .unwrap();
+    assert_eq!(hash, expected);
+    assert_cached(instance.store(), hash, &image).await;
+}
+
+/// An empty region file holds no chunks, names no region node, and is
+/// never cached.
+#[tokio::test]
+async fn empty_region_is_not_cached() {
+    let (root, _guard) = tempdir("cache-empty");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    write_region(world_path.join("region/r.0.0.mca"), &[]);
+
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let (report, _) = instance
+        .world_mut(&mut world)
+        .commit(options(), Scope::World, &())
+        .await
+        .unwrap();
+    assert_eq!(report.chunks, 0);
+    let key = RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
+    assert!(
+        committed_region_hash(instance.store(), report.commit, key)
+            .await
+            .is_none()
+    );
+    let empty = RegionNode::new(Vec::new()).hash();
+    assert_eq!(
+        instance.store().cache().mca_hash(empty).await.unwrap(),
+        None
+    );
+}
+
+/// The cache is derived state: wiping it costs performance only, and the
+/// next commit rebuilds every entry even without world changes.
+#[tokio::test]
+async fn wiped_cache_is_rebuilt_on_the_next_commit() {
+    let (root, _guard) = tempdir("cache-wiped");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store_dir = root.join("store");
+    let store = store_dir.to_string_lossy().into_owned();
+    let path = world_path.join("region/r.0.0.mca");
+    write_region(&path, &[(0, 0, chunk_nbt("marker-1"))]);
+    let image = std::fs::read(&path).unwrap();
+
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let (first, _) = instance
+        .world_mut(&mut world)
+        .commit(options(), Scope::World, &())
+        .await
+        .unwrap();
+    let key = RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
+    let hash = committed_region_hash(instance.store(), first.commit, key)
+        .await
+        .unwrap();
+    assert_cached(instance.store(), hash, &image).await;
+
+    drop(instance);
+    std::fs::remove_dir_all(store_dir.join("cache")).unwrap();
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    assert_eq!(instance.store().cache().mca_hash(hash).await.unwrap(), None);
+
+    let (second, _) = instance
+        .world_mut(&mut world)
+        .commit(options(), Scope::World, &())
+        .await
+        .unwrap();
+    assert_eq!(second.new_blobs, 0);
+    let again = committed_region_hash(instance.store(), second.commit, key)
+        .await
+        .unwrap();
+    assert_eq!(hash, again);
+    assert_cached(instance.store(), hash, &image).await;
+}

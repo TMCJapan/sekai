@@ -112,6 +112,7 @@ commit:
     -> Chunk::normalized_hash -> ChunkHash -> storage CAS put
     -> core: merge changed chunks into the parent snapshot tree
     -> metadata: region -> dim -> root nodes + commit row
+    -> cache: confirmed region hashes <- re-read raw image (best-effort)
 
 checkout:
   core::plan_checkout -> groups of (coord, ChunkHash)
@@ -307,6 +308,18 @@ barrier - the opposite of the blob store, whose `sync` guards the commit.
 The image and its hash are written as one atomic pair, and the first image
 wins for a given region hash (different raw files can normalize to the same
 region node). See [ADR-0029](docs/adr/0029-region-image-cache.md).
+
+Commit populates the cache as its final, best-effort pass. Ingest keeps a
+candidate per fully covered file - the region node hash its own chunks
+produce plus the raw image's content digest, 32 bytes, no retained image.
+After the metadata commit, core confirms each candidate against the
+committed tree (a partial scope's merged node confirms nothing), then the
+adapter re-reads each confirmed file raw through its discovered handle,
+verifies the digest still matches, and puts the (image, hash) pair. Any
+failure leaves the entry absent and never fails the recorded commit; a
+repeated commit re-puts idempotently, so a wiped cache rebuilds on the next
+commit even without world changes. See
+[ADR-0030](docs/adr/0030-commit-time-cache-population.md).
 
 # History and State Model
 

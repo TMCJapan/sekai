@@ -116,7 +116,8 @@ With `--timing` the `total_ms`/`phases`/`regions` block is appended:
   "tombstones": 0, "total_ms": 123,
   "phases": {
     "discover_ms": 1, "universe_load_ms": 10, "region_open_ms": 3,
-    "ingest_ms": 40, "hash_ms": 5, "cas_put_ms": 30, "db_apply_ms": 20
+    "ingest_ms": 40, "hash_ms": 5, "cas_put_ms": 30, "db_apply_ms": 20,
+    "cache_ms": 12
   },
   "regions": [
     {"path": "/w/region/r.0.0.mca", "chunks": 60,
