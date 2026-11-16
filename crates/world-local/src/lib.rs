@@ -35,6 +35,7 @@ pub use lock::{HostWorldLock, HostWorldLockError};
 pub use swap::{atomic_swap, open_image};
 
 use std::collections::BTreeMap;
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use sekai_anvil::RegionImage;
@@ -108,6 +109,28 @@ impl HostRegion {
     pub fn as_path(&self) -> &Path {
         &self.0
     }
+
+    /// The image takes its coordinates from the caller's key, so a key
+    /// naming another region would answer for that region instead: refuse
+    /// a handle whose file name disagrees with the key. A path the same
+    /// dimension resolves to is the mismatch, so the error carries no
+    /// second location.
+    fn check_key(&self, key: RegionKey) -> Result<(), WorldError> {
+        let spelled = self
+            .0
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .and_then(|name| sekai_anvil::parse_region_name(name).ok());
+        if spelled != Some((key.rx, key.rz)) {
+            return Err(WorldError::UnknownRegionPath {
+                dim: key.dim,
+                kind: key.kind,
+                region_x: key.rx,
+                region_z: key.rz,
+            });
+        }
+        Ok(())
+    }
 }
 
 impl std::fmt::Display for HostRegion {
@@ -122,24 +145,7 @@ impl RegionFile for HostRegion {
     type RegionImage = McaFile;
 
     fn read(&self, key: RegionKey) -> Result<Self::RegionImage, WorldError> {
-        // The image takes its coordinates from the caller's key, so a key
-        // naming another region would answer for that region instead: refuse
-        // a handle whose file name disagrees with the key. A path the same
-        // dimension resolves to is the mismatch, so the error carries no
-        // second location.
-        let spelled = self
-            .0
-            .file_name()
-            .and_then(std::ffi::OsStr::to_str)
-            .and_then(|name| sekai_anvil::parse_region_name(name).ok());
-        if spelled != Some((key.rx, key.rz)) {
-            return Err(WorldError::UnknownRegionPath {
-                dim: key.dim,
-                kind: key.kind,
-                region_x: key.rx,
-                region_z: key.rz,
-            });
-        }
+        self.check_key(key)?;
         let bytes = crate::swap::open_image(&self.0)?;
         let image = RegionImage::from_bytes_with_kind(bytes, key.rx, key.rz, key.kind)
             .map_err(|source| WorldError::region_file(&self.0, source))?;
@@ -147,6 +153,32 @@ impl RegionFile for HostRegion {
             image,
             path: self.0.clone(),
         })
+    }
+
+    fn visit_present<F>(&self, key: RegionKey, visit: F) -> Result<(), WorldError>
+    where
+        F: FnMut(i32, i32) -> bool,
+    {
+        self.check_key(key)?;
+        // Presence lives in the location table, so read only the 8 KiB
+        // header instead of the whole file: enumerating a world's chunks
+        // costs a header per region, not its full sector data.
+        let mut header = Vec::new();
+        std::fs::File::open(&self.0)
+            .map_err(|source| WorldError::io(&self.0, source))?
+            .take(sekai_anvil::HEADER_LEN)
+            .read_to_end(&mut header)
+            .map_err(|source| WorldError::io(&self.0, source))?;
+        sekai_anvil::check_image_len(header.len() as u64)
+            .map_err(|source| WorldError::region_file(&self.0, source))?;
+        let table_len = sekai_anvil::TABLE_ENTRIES as usize * 4;
+        let table = if header.is_empty() {
+            &[][..]
+        } else {
+            &header[..table_len]
+        };
+        sekai_anvil::visit_present_coords(table, key.rx, key.rz, visit)
+            .map_err(|source| WorldError::region_file(&self.0, source))
     }
 
     fn size(&self) -> Result<u64, WorldError> {
