@@ -122,7 +122,9 @@ checkout:
 diff:
   cache proof: committed region hash vs live file digest (best-effort)
     -> proven region: the committed region node answers both sides
-  fallback: CAS blob or world payload -> Chunk::normalized_hash -> in-memory digest
+  fallback: one world read per region file (blocking pool, fanned out)
+    -> Chunk::normalized_hash per requested chunk; commit side: recorded digests
+  unborn active ref: the empty snapshot is the base (every chunk added)
 ```
 
 A chunk has exactly one hash: the `Chunk::normalized_hash` digest of its
