@@ -120,7 +120,9 @@ checkout:
     -> world: region handle <- atomic swap(target, image)
 
 diff:
-  CAS blob or world payload -> Chunk::normalized_hash -> in-memory digest
+  cache proof: committed region hash vs live file digest (best-effort)
+    -> proven region: the committed region node answers both sides
+  fallback: CAS blob or world payload -> Chunk::normalized_hash -> in-memory digest
 ```
 
 A chunk has exactly one hash: the `Chunk::normalized_hash` digest of its
@@ -320,6 +322,16 @@ failure leaves the entry absent and never fails the recorded commit; a
 repeated commit re-puts idempotently, so a wiped cache rebuilds on the next
 commit even without world changes. See
 [ADR-0030](docs/adr/0030-commit-time-cache-population.md).
+
+Diff and the status preview consume the cache as a best-effort proof pass:
+core reads the region hashes the commit names (`commit_region_hashes`), the
+app queries each cached content hash, re-reads the live file raw, and
+compares. A match proves the whole region unchanged, and a proven region
+answers from its committed node without decoding a chunk - both diff sides,
+or the preview's staged rows. Only the regions the operation touches are
+proven, any miss or mismatch falls back to the per-chunk path, and commit
+ingest itself is unchanged so cache population keeps every candidate. See
+[ADR-0031](docs/adr/0031-cache-query-region-proofs.md).
 
 # History and State Model
 

@@ -29,10 +29,11 @@ use sekai_core::{
     Assembled, ChunkCoord, CommitEntry, CommitId, CommitReport, Previous, RegionHash, RegionKey,
     Scope, hash_bytes,
 };
-use sekai_storage::{BlobStore, CacheStore, SekaiStore, StorageError};
+use sekai_storage::{BlobStore, CacheStore, RegionNode, SekaiStore, StorageError};
 use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
 use tokio::task::JoinSet;
 
+use crate::cache::prove_regions_unchanged;
 use crate::error::AppError;
 use crate::instance::{WorldGuard, WorldHandle, WorldHandleMut};
 use crate::progress::{BuildProgress, Progress};
@@ -361,8 +362,10 @@ struct Prepared<R> {
 /// changed files - the whole pipeline `commit` and `status` share.
 ///
 /// Under `dry_run` blobs are probed instead of stored, so the staged rows
-/// are the same numbers a real commit would commit. `progress_builder`
-/// counts the files to ingest.
+/// are the same numbers a real commit would commit. Files proven unchanged
+/// through the region-image cache stage straight from the committed region
+/// nodes; a real commit always ingests, so its cache population keeps every
+/// candidate (ADR-0030). `progress_builder` counts the files to ingest.
 async fn prepare<W: WorldTree, S: SekaiStore>(
     store: &S,
     world: &W,
@@ -391,6 +394,12 @@ where
     let keys: Vec<RegionKey> = regions.keys().copied().collect();
     let (previous, plan) =
         sekai_core::usecase::commit::plan_commit(store.meta(), &keys, scope).await?;
+    // The proof needs the discovered handles, so it runs before the ingest
+    // list takes them out of the map.
+    let proven = match previous.commit.as_ref().filter(|_| dry_run) {
+        Some(base) => prove_regions_unchanged(store, base.id, &regions, &plan.ingest, guard).await,
+        None => BTreeMap::new(),
+    };
     let universe_load = universe_started.elapsed();
 
     let changed: Vec<(RegionKey, W::Region)> = plan
@@ -417,6 +426,7 @@ where
         store.blob().clone(),
         options,
         scope.clone(),
+        &proven,
         progress_builder,
         dry_run,
         guard,
@@ -610,12 +620,18 @@ struct IngestTimings {
 /// is append-only, so concurrent puts never conflict. Nothing here syncs
 /// the store; the caller places that barrier before the metadata commit.
 ///
-/// `progress` steps as each file's task is joined.
+/// Proven-unchanged files stage straight from their committed region node
+/// and step at once; `progress` steps as each remaining file's task is
+/// joined.
+// The proof map joins the existing ingest inputs rather than splitting the
+// shared commit/status pipeline into two functions.
+#[allow(clippy::too_many_arguments)]
 async fn ingest_changed<R: RegionFile, S: SekaiStore, L: WorldLock>(
     changed: Vec<(RegionKey, R)>,
     cas: S::Blobs,
     options: &CommitOptions,
     scope: Scope,
+    proven: &BTreeMap<RegionKey, RegionNode>,
     progress_builder: &impl BuildProgress,
     dry_run: bool,
     guard: &Arc<WorldGuard<L>>,
@@ -628,6 +644,15 @@ where
         timings: Vec::with_capacity(changed.len()),
         ..Default::default()
     };
+    let mut spawnable = Vec::with_capacity(changed.len());
+    for (key, region) in changed {
+        if let Some(node) = proven.get(&key) {
+            progress.step();
+            merge_outcome(&mut walk, proven_outcome(key, &region, node, &scope));
+        } else {
+            spawnable.push((key, region));
+        }
+    }
     let slots = worker_slots(options.concurrency);
     let spawn = |set: &mut JoinSet<Result<FileOutcome, AppError>>,
                  (key, region): (RegionKey, R)| {
@@ -637,7 +662,7 @@ where
         set.spawn(async move { ingest_file(region, key, &mut cas, scope, dry_run, guard).await });
     };
 
-    let mut queued = changed.into_iter();
+    let mut queued = spawnable.into_iter();
     let mut set = JoinSet::new();
     for file in queued.by_ref().take(slots) {
         spawn(&mut set, file);
@@ -671,6 +696,54 @@ fn merge_outcome(walk: &mut RegionWalk, outcome: FileOutcome) {
     walk.hash += outcome.timing.hash;
     walk.cas += outcome.timing.cas;
     walk.timings.push((outcome.key, outcome.timing));
+}
+
+/// The outcome a proven-unchanged file stages without being read: its
+/// chunks are exactly the committed region node's entries, all already
+/// stored, so no blob is new and no work is timed. The present coordinates
+/// still matter: assembly tombstones any in-scope coordinate they miss.
+fn proven_outcome<R: RegionFile>(
+    key: RegionKey,
+    region: &R,
+    node: &RegionNode,
+    scope: &Scope,
+) -> FileOutcome {
+    let mut entries = Vec::new();
+    let mut present = HashSet::new();
+    for entry in node.entries() {
+        let coord = slot_coord(key, entry.cx, entry.cz);
+        if !scope.contains(coord) {
+            continue;
+        }
+        entries.push(CommitEntry::new(coord, Some(entry.hash)));
+        present.insert(coord);
+    }
+    let chunks = present.len();
+    FileOutcome {
+        key,
+        entries,
+        present,
+        new_blobs: 0,
+        cache: None,
+        timing: RegionTiming {
+            location: region.to_string(),
+            chunks,
+            open: Duration::ZERO,
+            ingest: Duration::ZERO,
+            hash: Duration::ZERO,
+            cas: Duration::ZERO,
+        },
+    }
+}
+
+/// The global coordinate of a region node's local slot.
+fn slot_coord(key: RegionKey, cx: u8, cz: u8) -> ChunkCoord {
+    ChunkCoord::new(
+        key.dim,
+        key.kind,
+        key.rx * 32 + i32::from(cx),
+        key.rz * 32 + i32::from(cz),
+    )
 }
 
 /// Read, hash, and store one changed region file, staging its changes.

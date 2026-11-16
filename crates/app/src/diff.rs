@@ -5,9 +5,10 @@ use std::time::{Duration, Instant};
 
 use sekai_anvil::{Chunk, ChunkHashError, ChunkPayloadDiff};
 use sekai_core::{ChunkCoord, ChunkHash, CommitId, RegionKey, RegionKind};
-use sekai_storage::{BlobStore as _, MetaStore, SekaiStore};
+use sekai_storage::{BlobStore as _, MetaStore, RegionNode, SekaiStore};
 use sekai_world::{Region, RegionFile, WorldLockMode, WorldTree};
 
+use crate::cache::prove_regions_unchanged;
 use crate::error::AppError;
 use crate::instance::{SekaiInstance, WorldGuard, WorldHandle, WorldHandleMut};
 use crate::progress::{BuildProgress, Progress};
@@ -167,15 +168,19 @@ impl<S: SekaiStore> SekaiInstance<S> {
     ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
         let total_started = Instant::now();
         let mut timings = DiffTimings::default();
+        // Both sides are recorded digests: no world file to prove.
+        let proven = BTreeMap::new();
         let out = diff_coords(
             coords,
             CommitDiff {
                 store: &self.store,
                 id: old_commit,
+                proven: &proven,
             },
             CommitDiff {
                 store: &self.store,
                 id: new_commit,
+                proven: &proven,
             },
             progress_builder,
             &mut timings,
@@ -272,6 +277,10 @@ where
     /// counts under `blob_fetch`, and comparing the two digests under
     /// `diff_compute`. `progress_builder` counts the region files `coords`
     /// span, stepping as each file's last chunk completes.
+    ///
+    /// Regions proven unchanged through the region-image cache answer both
+    /// sides from the committed region node, skipping the per-chunk world
+    /// read; the proof itself counts under `blob_fetch` (ADR-0029).
     pub async fn diff_world_chunks(
         &self,
         commit: Option<CommitId>,
@@ -291,15 +300,27 @@ where
                 .ok_or(AppError::NoCommits)?,
         };
 
+        let regions = discover_regions(self.world)?;
         let mut timings = DiffTimings::default();
+        // Only the regions `coords` span are worth proving: a single-chunk
+        // diff must not re-hash the whole world.
+        let prepass_started = Instant::now();
+        let mut keys: Vec<RegionKey> = coords.iter().map(|coord| RegionKey::of(*coord)).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        let proven =
+            prove_regions_unchanged(&self.instance.store, commit_id, &regions, &keys, &guard).await;
+        timings.blob_fetch += prepass_started.elapsed();
         let out = diff_coords(
             coords,
             CommitDiff {
                 store: &self.instance.store,
                 id: commit_id,
+                proven: &proven,
             },
             WorldDiff {
-                regions: discover_regions(self.world)?,
+                regions,
+                proven: &proven,
             },
             progress_builder,
             &mut timings,
@@ -376,10 +397,16 @@ trait DiffSource {
 struct CommitDiff<'a, S> {
     store: &'a S,
     id: CommitId,
+    /// Regions proven unchanged against `id`: their committed node answers
+    /// every coordinate without a metadata lookup.
+    proven: &'a BTreeMap<RegionKey, RegionNode>,
 }
 
 impl<S: SekaiStore> DiffSource for CommitDiff<'_, S> {
     async fn payload(&self, coord: &ChunkCoord) -> Result<Side, AppError> {
+        if let Some(node) = self.proven.get(&RegionKey::of(*coord)) {
+            return Ok(proven_side(node, coord));
+        }
         Ok(Side {
             digest: commit_chunk_hash(self.store, self.id, coord).await,
             // The digest is recorded, not recomputed: nothing to prepare.
@@ -391,18 +418,41 @@ impl<S: SekaiStore> DiffSource for CommitDiff<'_, S> {
 /// One diff run's world side: region handles resolved once, not per chunk.
 /// The set is captured when the run starts, so a region created mid-run
 /// is treated as absent until the next diff.
-struct WorldDiff<R> {
+struct WorldDiff<'a, R> {
     regions: BTreeMap<RegionKey, R>,
+    /// Regions proven byte-identical to the commit's cached image: the
+    /// committed node answers every coordinate without a file read.
+    proven: &'a BTreeMap<RegionKey, RegionNode>,
 }
 
-impl<R: RegionFile> DiffSource for WorldDiff<R>
+impl<R: RegionFile> DiffSource for WorldDiff<'_, R>
 where
     AppError: From<R::Error>,
 {
     fn payload(&self, coord: &ChunkCoord) -> impl Future<Output = Result<Side, AppError>> {
+        if let Some(node) = self.proven.get(&RegionKey::of(*coord)) {
+            return std::future::ready(Ok(proven_side(node, coord)));
+        }
         // A world read failure is always confined to this coordinate.
         std::future::ready(Ok(read_world_chunk(&self.regions, coord)))
     }
+}
+
+/// The answer a proven region's committed node gives for `coord`: the
+/// live file holds exactly the node's chunks, so the digest is read, not
+/// recomputed.
+fn proven_side(node: &RegionNode, coord: &ChunkCoord) -> Side {
+    let (cx, cz) = local_slot(*coord);
+    Side {
+        digest: Ok(node.get(cx, cz)),
+        prepare: Duration::ZERO,
+    }
+}
+
+#[allow(clippy::cast_possible_truncation)]
+const fn local_slot(coord: ChunkCoord) -> (u8, u8) {
+    // `rem_euclid(32)` is always in `0..32`, so the cast cannot truncate.
+    (coord.x.rem_euclid(32) as u8, coord.z.rem_euclid(32) as u8)
 }
 
 /// Diff every coordinate of `old` against `new`, accumulating phase timings.

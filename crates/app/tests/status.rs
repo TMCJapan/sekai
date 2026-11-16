@@ -137,3 +137,175 @@ async fn status_reports_a_clean_world_after_commit() {
         "total timing must cover its phases"
     );
 }
+
+/// A clean preview answers proven-unchanged files from the committed
+/// region nodes: no chunk is visited or hashed (ADR-0029).
+#[tokio::test]
+async fn status_proves_a_clean_world_without_hashing() {
+    let (root, _guard) = tempdir("proof-clean");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    write_region(
+        world_path.join("region/r.0.0.mca"),
+        &[(0, 0, chunk_nbt("marker-1")), (1, 0, chunk_nbt("marker-2"))],
+    );
+
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    instance
+        .world_mut(&mut world)
+        .commit(
+            sekai_app::CommitOptions::default(),
+            sekai_app::Scope::World,
+            &(),
+        )
+        .await
+        .unwrap();
+
+    let (report, timings) = instance
+        .world(&world)
+        .status(options(), sekai_app::Scope::World, &())
+        .await
+        .unwrap();
+    assert!(report.clean);
+    assert!(
+        timings.hash.is_zero(),
+        "a proven region must not hash chunks: {:?}",
+        timings.hash
+    );
+    assert!(timings.ingest.is_zero());
+    assert!(timings.region_open.is_zero());
+}
+
+/// The cache is derived state: wiping it costs performance only. The
+/// preview stays clean but falls back to visiting and hashing chunks.
+#[tokio::test]
+async fn status_wiped_cache_falls_back_to_hashing() {
+    let (root, _guard) = tempdir("proof-wiped");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store_dir = root.join("store");
+    let store = store_dir.to_string_lossy().into_owned();
+    write_region(
+        world_path.join("region/r.0.0.mca"),
+        &[(0, 0, chunk_nbt("marker-1"))],
+    );
+
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    instance
+        .world_mut(&mut world)
+        .commit(
+            sekai_app::CommitOptions::default(),
+            sekai_app::Scope::World,
+            &(),
+        )
+        .await
+        .unwrap();
+    drop(instance);
+    std::fs::remove_dir_all(store_dir.join("cache")).unwrap();
+    let instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+
+    let (report, timings) = instance
+        .world(&world)
+        .status(options(), sekai_app::Scope::World, &())
+        .await
+        .unwrap();
+    assert!(report.clean);
+    assert!(
+        !timings.hash.is_zero(),
+        "a cold cache must fall back to chunk hashing"
+    );
+}
+
+/// A partial scope still proves the whole file unchanged: only in-scope
+/// coordinates are staged, and the out-of-scope chunk must not become a
+/// false tombstone.
+#[tokio::test]
+async fn status_partial_scope_proves_without_false_tombstones() {
+    let (root, _guard) = tempdir("proof-partial");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    write_region(
+        world_path.join("region/r.0.0.mca"),
+        &[(0, 0, chunk_nbt("marker-1")), (1, 0, chunk_nbt("marker-2"))],
+    );
+
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    instance
+        .world_mut(&mut world)
+        .commit(
+            sekai_app::CommitOptions::default(),
+            sekai_app::Scope::World,
+            &(),
+        )
+        .await
+        .unwrap();
+
+    let scope = sekai_app::Scope::Select {
+        kinds: sekai_app::Scope::all_kinds(),
+        areas: vec![(
+            sekai_app::Dimension::OVERWORLD,
+            sekai_app::Area::Rect(sekai_app::Rect::new(0, 0, 0, 0)),
+        )],
+    };
+    let (report, timings) = instance
+        .world(&world)
+        .status(options(), scope, &())
+        .await
+        .unwrap();
+    assert!(report.clean);
+    assert_eq!(report.tombstones, 0);
+    assert_eq!(report.new_chunks, 0);
+    assert!(timings.hash.is_zero());
+}
+
+/// A change outside the previewed scope fails the whole-file proof, so
+/// the file falls back to ingest - which stages only the in-scope chunk
+/// and still reports clean.
+#[tokio::test]
+async fn status_out_of_scope_change_falls_back_and_stays_clean() {
+    let (root, _guard) = tempdir("proof-out-of-scope");
+    let world_path = root.join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.join("store").to_string_lossy().into_owned();
+    let path = world_path.join("region/r.0.0.mca");
+    write_region(
+        &path,
+        &[(0, 0, chunk_nbt("marker-1")), (1, 0, chunk_nbt("marker-2"))],
+    );
+
+    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    instance
+        .world_mut(&mut world)
+        .commit(
+            sekai_app::CommitOptions::default(),
+            sekai_app::Scope::World,
+            &(),
+        )
+        .await
+        .unwrap();
+    write_region(
+        &path,
+        &[(0, 0, chunk_nbt("marker-1")), (1, 0, chunk_nbt("marker-9"))],
+    );
+
+    let scope = sekai_app::Scope::Select {
+        kinds: sekai_app::Scope::all_kinds(),
+        areas: vec![(
+            sekai_app::Dimension::OVERWORLD,
+            sekai_app::Area::Rect(sekai_app::Rect::new(0, 0, 0, 0)),
+        )],
+    };
+    let (report, timings) = instance
+        .world(&world)
+        .status(options(), scope, &())
+        .await
+        .unwrap();
+    assert!(report.clean);
+    assert_eq!(report.tombstones, 0);
+    assert!(
+        !timings.hash.is_zero(),
+        "a changed file must fall back to chunk hashing"
+    );
+}
