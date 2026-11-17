@@ -21,13 +21,13 @@ carries the bare result only.
 | `log` | commit array (+stats with `--stat`) | n/a | no phases exist |
 | `ref` | record, deletion record, or ref array | n/a | no phases exist |
 | `scope` | record, deletion record, or scope array | n/a | no phases exist |
-| `cache` | clean record | n/a | no phases exist |
+| `cache` | clean record or update report (+timings with `--timing`) | table + JSON block (`update` only) | `clean` has no phases |
 | `diff` | single array, grouped array (multi), or timed object | table + JSON block | `--in`/`--region` select chunks; one chunk keeps the single shape |
 
 Without `--timing`, `--json` emits the bare result. With `--timing`,
 the report that would be a bare array (`diff`) is promoted to an object
 holding the array (`diffs`) plus the timing block; object reports
-(commit/status/checkout) append the block in place.
+(commit/status/checkout/cache update) append the block in place.
 
 ## Envelope
 
@@ -241,8 +241,34 @@ Clean (`cache clean`) returns the number of removed entries:
 The region-image cache is derived state (ADR-0029): cleaning it only costs
 performance on later commits, never changes what a commit or checkout
 reads or writes, so it is always safe to run for capacity reduction. The
-next commit rebuilds the entries it needs. `entries` is `0` when the cache
-was already empty; cleaning is idempotent.
+next commit rebuilds the entries it needs (`cache update` warms them
+without a commit). `entries` is `0` when the cache was already empty;
+cleaning is idempotent.
+
+Update (`cache update [--world PATH]`) returns what the pass populated:
+
+```jsonc
+{"files": 4, "chunks": 101, "entries": 3, "existing": 1, "empty": 0}
+```
+
+With `--timing` the `total_ms`/`phases` block is appended:
+
+```jsonc
+{
+  "files": 4, "chunks": 101, "entries": 3, "existing": 1, "empty": 0,
+  "total_ms": 120,
+  "phases": {"discover_ms": 1, "ingest_ms": 80, "hash_ms": 30, "cache_ms": 20}
+}
+```
+
+`files` counts region files visited, `chunks` the chunks hashed, `entries`
+the cache entries newly inserted, `existing` the entries already present
+(first-image-wins kept the original), and `empty` the files holding no
+chunks (they name no region node and cache nothing). `hash_ms` is a subset
+of `ingest_ms`; `cache_ms` covers the writes plus the advisory flush. The
+pass writes only cache entries - no CAS blobs, no metadata, no commit
+(ADR-0033) - and works on a store with no commits yet. A corrupt or
+unsupported chunk fails the run loudly; a cache write failure fails it too.
 
 ### `diff`
 

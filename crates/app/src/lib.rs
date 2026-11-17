@@ -8,8 +8,8 @@
 //! Store-scoped operations hang off [`SekaiInstance`] (open once, then
 //! `list_commits`, ...); operations that touch a world
 //! hang off the handles it hands out: [`WorldHandle`] for read-only work
-//! (`status`, `diff_world_*`) and [`WorldHandleMut`] for `commit` and
-//! `checkout`.
+//! (`status`, `diff_world_*`) and [`WorldHandleMut`] for runs that write
+//! the store or the world (`commit`, `checkout`, `update_cache`).
 //!
 //! A world is any [`WorldTree`]: the operations reach its region files
 //! through [`RegionFile`] handles, so a tree that is not backed by a
@@ -28,6 +28,7 @@ mod scopes;
 mod time;
 mod workers;
 
+pub use cache::{CacheUpdateOptions, CacheUpdateReport, CacheUpdateTimings};
 pub use checkout::{CheckoutOptions, CheckoutTimings, MissingBlobPolicy, MissingFilePolicy};
 pub use commit::{
     CommitOptions, CommitTimings, RegionTiming, StatusOptions, StatusReport, StatusTimings,

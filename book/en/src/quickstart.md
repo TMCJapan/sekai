@@ -26,8 +26,8 @@ sekai diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a
 The store defaults to `.sekai`; see [Store location](store.md) for
 using another location. Every
 command accepts `--json` for machine-readable output and, except `log`,
-`ref`, `init`, and `cache`, `--timing` for a per-phase breakdown. `commit`, `status`,
-`checkout`, and `diff` take `--progress` for a
-stderr progress bar (refused with `--json`). `commit`, `status`,
+`ref`, `init`, and `cache clean`, `--timing` for a per-phase breakdown.
+`commit`, `status`, `checkout`, `diff`, and `cache update` take `--progress`
+for a stderr progress bar (refused with `--json`). `commit`, `status`,
 `checkout`, and `diff` accept a scope
 (`--in`, `--region`, `--kind`); nothing selected means the whole world.

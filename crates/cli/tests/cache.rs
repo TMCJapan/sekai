@@ -4,7 +4,7 @@
 
 use clap::Parser as _;
 use sekai_app::SekaiInstance;
-use sekai_cli::cli::Cli;
+use sekai_cli::cli::{CacheCommand, Cli, Command};
 
 /// A temp dir whose name starts with the calling test's name (tempfile
 /// appends a random suffix), removed when its guard is dropped.
@@ -151,4 +151,70 @@ async fn cache_clean_on_a_missing_store_fails() {
         !root.join("store").exists(),
         "clean must not create a store"
     );
+}
+
+#[tokio::test]
+async fn cache_update_populates_the_cache_without_a_commit() {
+    let (root, _guard) = tempdir("cache-update");
+    let world = root.join("world");
+    write_region(world.join("region/r.0.0.mca"));
+    let store = root.join("store");
+    let store = store.to_str().expect("temporary store path is UTF-8");
+    let world = world.to_str().expect("temporary world path is UTF-8");
+
+    run(&["sekai", "--store", store, "init"])
+        .await
+        .expect("init creates the store");
+    // Two runs (human and JSON) populate one entry idempotently.
+    run(&[
+        "sekai", "--store", store, "cache", "update", "--world", world,
+    ])
+    .await
+    .expect("cache update");
+    run(&[
+        "sekai", "--store", store, "cache", "update", "--world", world, "--json",
+    ])
+    .await
+    .expect("cache update, JSON mode");
+
+    // One cache entry, but no commit was recorded.
+    let mut instance = SekaiInstance::open(store).await.unwrap();
+    assert_eq!(instance.list_commits().await.unwrap(), []);
+    assert_eq!(instance.clean_cache().await.unwrap(), 1);
+    drop(instance);
+
+    // The world still commits cleanly afterwards.
+    run(&["sekai", "--store", store, "commit", world])
+        .await
+        .expect("commit after cache update");
+}
+
+#[tokio::test]
+async fn cache_update_on_a_missing_store_fails() {
+    let (root, _guard) = tempdir("cache-update-missing");
+    let store = root.join("store");
+    let store = store.to_str().expect("temporary store path is UTF-8");
+    let err = run(&["sekai", "--store", store, "cache", "update", "--world", "."])
+        .await
+        .expect_err("a missing store must fail");
+    assert!(
+        err.chain()
+            .any(|cause| cause.to_string().contains("no store at")),
+        "failed for the wrong reason: {err:?}"
+    );
+    assert!(
+        !root.join("store").exists(),
+        "update must not create a store"
+    );
+}
+
+#[test]
+fn cache_update_world_defaults_to_the_current_directory() {
+    let cli = Cli::try_parse_from(["sekai", "cache", "update"]).expect("valid invocation");
+    match cli.command {
+        Command::Cache {
+            action: CacheCommand::Update { world, .. },
+        } => assert_eq!(world, std::path::PathBuf::from(".")),
+        other => panic!("expected cache update, got {other:?}"),
+    }
 }
