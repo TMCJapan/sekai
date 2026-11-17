@@ -219,4 +219,36 @@ impl CacheStore for SledCache {
         let db = self.db.clone();
         blocking(move || db.flush().map_err(db_err).map(drop)).await
     }
+
+    /// Wipe both entry trees in one transaction, keeping the version
+    /// marker: a reader never sees an image without its hash, and the
+    /// keyspace stays openable afterwards. Keys are snapshotted before the
+    /// transaction (sled's transactional trees cannot iterate), so an entry
+    /// written concurrently may survive - harmless for derived state. The
+    /// count is the image tree's key count, since every entry holds exactly
+    /// one image and one hash.
+    async fn clear(&mut self) -> Result<u64, Self::Error> {
+        let db = self.db.clone();
+        let hashes = self.hashes.clone();
+        blocking(move || {
+            let keys = db
+                .iter()
+                .keys()
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(db_err)?;
+            let removed = keys.len() as u64;
+            (&*db, &hashes)
+                .transaction(|(images, hashes)| {
+                    for key in &keys {
+                        images.remove(key)?;
+                        hashes.remove(key)?;
+                    }
+                    Ok(())
+                })
+                .map_err(tx_err)?;
+            db.flush().map_err(db_err)?;
+            Ok(removed)
+        })
+        .await
+    }
 }

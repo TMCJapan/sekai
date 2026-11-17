@@ -311,7 +311,10 @@ costs performance only, and `sync` is advisory rather than a crash-order
 barrier - the opposite of the blob store, whose `sync` guards the commit.
 The image and its hash are written as one atomic pair, and the first image
 wins for a given region hash (different raw files can normalize to the same
-region node). See [ADR-0029](docs/adr/0029-region-image-cache.md).
+region node). `sekai cache clean` exposes the wipe as a capacity-reduction
+operation: it removes every entry, keeps the keyspace format, and reports
+the count; later commits rebuild what they need.
+See [ADR-0029](docs/adr/0029-region-image-cache.md).
 
 Commit populates the cache as its final, best-effort pass. Ingest keeps a
 candidate per fully covered file - the region node hash its own chunks

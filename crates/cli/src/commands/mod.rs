@@ -1,5 +1,6 @@
 //! Subcommand execution dispatcher and output control wrappers.
 
+mod cache;
 mod checkout;
 mod commit;
 mod diff;
@@ -128,6 +129,7 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
         Command::Log { json, stat } => log::run(&cli.store, *json, *stat, style).await,
         Command::Ref { action } => refs::run(&cli.store, action, style).await,
         Command::Scope { action } => scopes::run(&cli.store, action, style).await,
+        Command::Cache { action } => cache::run(&cli.store, action, style).await,
         Command::Diff(args) => diff::run(&cli.store, args, style).await,
     }
 }

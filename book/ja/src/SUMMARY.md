@@ -12,5 +12,6 @@
 - [チェックアウト](commands/checkout.md)
 - [Ref](commands/refs.md)
 - [検証・検査](commands/inspection.md)
+- [キャッシュ](commands/cache.md)
 - [自動化](automation.md)
 - [トラブルシューティング](troubleshooting.md)

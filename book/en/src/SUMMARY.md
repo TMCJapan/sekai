@@ -12,5 +12,6 @@
 - [Checkout](commands/checkout.md)
 - [Refs](commands/refs.md)
 - [Inspection](commands/inspection.md)
+- [Cache](commands/cache.md)
 - [Automation](automation.md)
 - [Troubleshooting](troubleshooting.md)

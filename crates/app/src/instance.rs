@@ -19,7 +19,7 @@
 use std::sync::Arc;
 
 use sekai_core::{Commit, CommitId};
-use sekai_storage::{SekaiStore, SekaiStoreOpener};
+use sekai_storage::{CacheStore as _, SekaiStore, SekaiStoreOpener};
 use sekai_world::{WorldLock, WorldLockMode, WorldLockState, WorldTree};
 
 use crate::error::AppError;
@@ -127,6 +127,20 @@ impl<T: SekaiStore> SekaiInstance<T> {
         sekai_core::usecase::graph::commit_stats(self.store.meta(), commit)
             .await
             .map_err(AppError::Commit)
+    }
+
+    /// Wipe the region-image cache, returning the number of entries removed.
+    ///
+    /// The cache is derived state (ADR-0029): cleaning it only costs
+    /// performance on later commits, never changes their outcome, so it is
+    /// always safe to run for capacity reduction. The next commit rebuilds
+    /// the entries it needs.
+    pub async fn clean_cache(&mut self) -> Result<u64, AppError> {
+        self.store
+            .cache_mut()
+            .clear()
+            .await
+            .map_err(AppError::Storage)
     }
 }
 

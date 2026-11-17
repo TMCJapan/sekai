@@ -67,4 +67,13 @@ pub trait CacheStore {
     /// write leaves at most a missing entry. Callers may batch it like the
     /// blob barrier to keep the log small.
     fn sync(&mut self) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// Remove every cached entry, returning how many were removed.
+    ///
+    /// Always safe: the cache is derived state, so wiping it costs
+    /// performance only and never changes what a commit or checkout reads
+    /// or writes. The keyspace and its format marker survive; the next
+    /// commit repopulates the entries it needs. Entries written concurrently
+    /// with the clear may survive; they are equally derived and harmless.
+    fn clear(&mut self) -> impl Future<Output = Result<u64, Self::Error>> + Send;
 }
