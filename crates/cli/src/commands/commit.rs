@@ -3,7 +3,8 @@
 //! `sekai commit` is two sequential app operations (ADR-0034): the
 //! commit-free cache update warms the region-image cache from the live
 //! world, then the commit records history. The `cache_ms` phase reports
-//! the update pass; `total_ms` spans both.
+//! the update pass; `total_ms` spans both. `--no-cache` skips the update
+//! pass, leaving `cache_ms` at zero and the cache untouched.
 
 use anyhow::Context as _;
 use sekai_app::{
@@ -27,6 +28,7 @@ pub async fn run(
     store: &str,
     world_path: impl AsRef<Path>,
     jobs: usize,
+    no_cache: bool,
     selection: &Selection,
     out: ReportOut,
 ) -> anyhow::Result<()> {
@@ -39,17 +41,24 @@ pub async fn run(
     let bars = Bars::new(out.progress);
     // Cache update first, record second: the update keys each file under
     // the region node its own chunks produce, so a stable world leaves the
-    // commit naming exactly the hashes just cached (ADR-0034).
-    let (_, update_timings) = instance
-        .world_mut(&mut world)
-        .update_cache(CacheUpdateOptions { concurrency: jobs }, &bars)
-        .await
-        .with_context(|| {
-            format!(
-                "cache update before commit of {} failed",
-                world_path.as_ref().display()
-            )
-        })?;
+    // commit naming exactly the hashes just cached (ADR-0034). `--no-cache`
+    // skips the pass; zero timings keep `cache_ms` at 0 and `total_ms`
+    // spanning the commit alone, so the payload shape is unchanged.
+    let update_timings = if no_cache {
+        CacheUpdateTimings::default()
+    } else {
+        let (_, update_timings) = instance
+            .world_mut(&mut world)
+            .update_cache(CacheUpdateOptions { concurrency: jobs }, &bars)
+            .await
+            .with_context(|| {
+                format!(
+                    "cache update before commit of {} failed",
+                    world_path.as_ref().display()
+                )
+            })?;
+        update_timings
+    };
     let (report, timings) = instance
         .world_mut(&mut world)
         .commit(options(jobs), scope, &bars)

@@ -71,12 +71,14 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
             world,
             output,
             jobs,
+            no_cache,
             selection,
         } => {
             commit::run(
                 &cli.store,
                 world,
                 *jobs,
+                *no_cache,
                 selection,
                 ReportOut::of(*output, style),
             )

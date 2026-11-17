@@ -106,7 +106,7 @@ The boundary rules:
 ## Data Flow
 
 ```text
-commit (sekai commit = update_cache, then commit):
+commit (sekai commit = update_cache, then commit; --no-cache skips the update):
   cache update: world read -> normalized region node hash -> cache put
   commit:
     world: region handle -> Vec<u8> image
@@ -327,6 +327,9 @@ an unhashable payload or a cache write failure, since updating the cache
 is its whole point. Commit itself records history only; `sekai commit`
 composes the two operations, running the update pass before recording, so
 a stable world leaves the commit naming exactly the hashes just cached.
+`sekai commit --no-cache` skips the update pass and records history only,
+leaving the cache untouched (the same history-only choice a library caller
+makes by calling `commit` without `update_cache`).
 See [ADR-0033](docs/adr/0033-cache-update-commit-free-population.md) and
 [ADR-0034](docs/adr/0034-commit-as-cache-update-plus-record.md).
 

@@ -136,6 +136,38 @@ fn parses_progress_flag() {
 }
 
 #[test]
+fn parses_no_cache_flag() {
+    // Default: the pre-commit cache update pass runs.
+    let cli = Cli::try_parse_from(["sekai", "commit", "world"]).expect("commit parses");
+    assert!(matches!(
+        cli.command,
+        Command::Commit {
+            no_cache: false,
+            ..
+        }
+    ));
+
+    let cli = Cli::try_parse_from(["sekai", "commit", "world", "--no-cache"])
+        .expect("commit --no-cache parses");
+    assert!(matches!(
+        cli.command,
+        Command::Commit { no_cache: true, .. }
+    ));
+
+    // The flag is commit-only: other commands refuse it.
+    for args in [
+        vec!["sekai", "status", "w", "--no-cache"],
+        vec!["sekai", "checkout", "w", H3, "--no-cache"],
+        vec!["sekai", "cache", "update", "--no-cache"],
+    ] {
+        assert!(
+            Cli::try_parse_from(&args).is_err(),
+            "{args:?} must be refused"
+        );
+    }
+}
+
+#[test]
 fn parses_diff_command() {
     let cli = Cli::try_parse_from(["sekai", "diff", H1, H2, "--in", "overworld:10,-5"])
         .expect("diff parses");
