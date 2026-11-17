@@ -190,6 +190,38 @@ async fn cache_update_populates_the_cache_without_a_commit() {
 }
 
 #[tokio::test]
+async fn commit_no_cache_records_history_but_leaves_the_cache_empty() {
+    let (root, _guard) = tempdir("commit-no-cache");
+    let world = root.join("world");
+    write_region(world.join("region/r.0.0.mca"));
+    let store = root.join("store");
+    let store = store.to_str().expect("temporary store path is UTF-8");
+    let world = world.to_str().expect("temporary world path is UTF-8");
+
+    run(&["sekai", "--store", store, "init"])
+        .await
+        .expect("init creates the store");
+
+    // `--no-cache` records the commit but skips the update pass, so the
+    // cache stays empty even though the region was ingested.
+    run(&["sekai", "--store", store, "commit", world, "--no-cache"])
+        .await
+        .expect("commit --no-cache records the region");
+    let mut instance = SekaiInstance::open(store).await.unwrap();
+    assert_eq!(instance.list_commits().await.unwrap().len(), 1);
+    assert_eq!(instance.clean_cache().await.unwrap(), 0);
+    drop(instance);
+
+    // A normal commit afterwards still warms the cache.
+    run(&["sekai", "--store", store, "commit", world])
+        .await
+        .expect("commit warms the cache");
+    let mut instance = SekaiInstance::open(store).await.unwrap();
+    assert_eq!(instance.clean_cache().await.unwrap(), 1);
+    drop(instance);
+}
+
+#[tokio::test]
 async fn cache_update_on_a_missing_store_fails() {
     let (root, _guard) = tempdir("cache-update-missing");
     let store = root.join("store");

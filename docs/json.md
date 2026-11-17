@@ -137,7 +137,8 @@ With `--timing` the `total_ms`/`phases`/`regions` block is appended:
 `sekai commit` runs the commit-free cache update before recording
 (ADR-0034): `cache_ms` measures that update pass, `total_ms` spans both
 passes, and the remaining phases and `regions` rows describe the commit
-itself.
+itself. With `--no-cache` the update pass is skipped: `cache_ms` is `0`,
+`total_ms` spans the commit alone, and the payload shape is unchanged.
 
 ### `status`
 

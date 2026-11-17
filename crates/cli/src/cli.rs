@@ -44,6 +44,10 @@ pub enum Command {
         /// Ingest worker count. `0` means one per CPU.
         #[arg(long, default_value = "0")]
         jobs: usize,
+        /// Skip the pre-commit cache update pass (ADR-0034): record
+        /// history only, leaving the region-image cache untouched.
+        #[arg(long)]
+        no_cache: bool,
         /// World portion to record (default: whole world).
         #[command(flatten)]
         selection: Selection,
