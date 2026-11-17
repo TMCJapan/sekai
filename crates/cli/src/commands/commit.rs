@@ -1,7 +1,15 @@
 //! Commit subcommand execution, DTOs, and output rendering.
+//!
+//! `sekai commit` is two sequential app operations (ADR-0034): the
+//! commit-free cache update warms the region-image cache from the live
+//! world, then the commit records history. The `cache_ms` phase reports
+//! the update pass; `total_ms` spans both.
 
 use anyhow::Context as _;
-use sekai_app::{CommitOptions, CommitReport, CommitTimings, HostWorldTree};
+use sekai_app::{
+    CacheUpdateOptions, CacheUpdateTimings, CommitOptions, CommitReport, CommitTimings,
+    HostWorldTree,
+};
 use serde::Serialize;
 use std::path::Path;
 
@@ -29,6 +37,19 @@ pub async fn run(
         .with_context(|| format!("commit of {} failed", world_path.as_ref().display()))?;
     let scope = resolve_selection(&instance, selection).await?;
     let bars = Bars::new(out.progress);
+    // Cache update first, record second: the update keys each file under
+    // the region node its own chunks produce, so a stable world leaves the
+    // commit naming exactly the hashes just cached (ADR-0034).
+    let (_, update_timings) = instance
+        .world_mut(&mut world)
+        .update_cache(CacheUpdateOptions { concurrency: jobs }, &bars)
+        .await
+        .with_context(|| {
+            format!(
+                "cache update before commit of {} failed",
+                world_path.as_ref().display()
+            )
+        })?;
     let (report, timings) = instance
         .world_mut(&mut world)
         .commit(options(jobs), scope, &bars)
@@ -37,7 +58,10 @@ pub async fn run(
     if out.json {
         println!(
             "{}",
-            envelope_ok("commit", &commit_payload(&report, &timings, out.timing))?
+            envelope_ok(
+                "commit",
+                &commit_payload(&report, &timings, &update_timings, out.timing)
+            )?
         );
         return Ok(());
     }
@@ -50,7 +74,7 @@ pub async fn run(
         report.tombstones
     );
     if out.timing {
-        print_timing_table(&timings, style);
+        print_timing_table(&timings, &update_timings, style);
     }
     Ok(())
 }
@@ -82,6 +106,7 @@ struct CommitPhases {
     hash_ms: u128,
     cas_put_ms: u128,
     db_apply_ms: u128,
+    /// The cache update pass run before recording (ADR-0034).
     cache_ms: u128,
 }
 
@@ -101,7 +126,12 @@ struct RegionTimingJson {
     cas_ms: u128,
 }
 
-fn commit_payload(report: &CommitReport, timings: &CommitTimings, timing: bool) -> CommitPayload {
+fn commit_payload(
+    report: &CommitReport,
+    timings: &CommitTimings,
+    update_timings: &CacheUpdateTimings,
+    timing: bool,
+) -> CommitPayload {
     CommitPayload {
         commit: report.commit.to_string(),
         chunks: report.chunks,
@@ -111,7 +141,7 @@ fn commit_payload(report: &CommitReport, timings: &CommitTimings, timing: bool) 
         // while `then_some` eagerly builds the timing block (and a copy of
         // every region's location) even without `--timing`.
         timing: timing.then(|| CommitTiming {
-            total_ms: timings.total.as_millis(),
+            total_ms: (timings.total + update_timings.total).as_millis(),
             phases: CommitPhases {
                 discover_ms: timings.discover.as_millis(),
                 universe_load_ms: timings.universe_load.as_millis(),
@@ -120,7 +150,7 @@ fn commit_payload(report: &CommitReport, timings: &CommitTimings, timing: bool) 
                 hash_ms: timings.hash.as_millis(),
                 cas_put_ms: timings.cas_put.as_millis(),
                 db_apply_ms: timings.db_apply.as_millis(),
-                cache_ms: timings.cache.as_millis(),
+                cache_ms: update_timings.total.as_millis(),
             },
             regions: timings
                 .regions
@@ -138,12 +168,12 @@ fn commit_payload(report: &CommitReport, timings: &CommitTimings, timing: bool) 
     }
 }
 
-fn print_timing_table(timings: &CommitTimings, style: Styler) {
+fn print_timing_table(timings: &CommitTimings, update_timings: &CacheUpdateTimings, style: Styler) {
     println!(
         "{}",
         style.dim(&format!(
             "timing total={}ms discover={}ms universe={}ms open={}ms ingest={}ms (hash={}ms cas={}ms) db={}ms cache={}ms ingested_files={}",
-            timings.total.as_millis(),
+            (timings.total + update_timings.total).as_millis(),
             timings.discover.as_millis(),
             timings.universe_load.as_millis(),
             timings.region_open.as_millis(),
@@ -151,7 +181,7 @@ fn print_timing_table(timings: &CommitTimings, style: Styler) {
             timings.hash.as_millis(),
             timings.cas_put.as_millis(),
             timings.db_apply.as_millis(),
-            timings.cache.as_millis(),
+            update_timings.total.as_millis(),
             timings.regions.len(),
         ))
     );
@@ -195,7 +225,6 @@ mod tests {
             hash: Duration::from_millis(6),
             cas_put: Duration::from_millis(7),
             db_apply: Duration::from_millis(8),
-            cache: Duration::from_millis(9),
             regions: vec![sekai_app::RegionTiming {
                 location: "region/r.0.0.mca".to_owned(),
                 chunks: 32,
@@ -205,17 +234,24 @@ mod tests {
                 cas: Duration::from_millis(7),
             }],
         };
+        let update_timings = CacheUpdateTimings {
+            total: Duration::from_millis(120),
+            discover: Duration::from_millis(1),
+            ingest: Duration::from_millis(80),
+            hash: Duration::from_millis(30),
+            cache: Duration::from_millis(20),
+        };
         let id = report.commit;
-        let payload = commit_payload(&report, &timings, false);
+        let payload = commit_payload(&report, &timings, &update_timings, false);
         assert_eq!(
             serde_json::to_string(&payload).unwrap(),
             format!(r#"{{"commit":"{id}","chunks":40,"new_blobs":2,"tombstones":0}}"#)
         );
-        let payload_timed = commit_payload(&report, &timings, true);
+        let payload_timed = commit_payload(&report, &timings, &update_timings, true);
         assert_eq!(
             serde_json::to_string(&payload_timed).unwrap(),
             format!(
-                r#"{{"commit":"{id}","chunks":40,"new_blobs":2,"tombstones":0,"total_ms":100,"phases":{{"discover_ms":1,"universe_load_ms":2,"region_open_ms":4,"ingest_ms":50,"hash_ms":6,"cas_put_ms":7,"db_apply_ms":8,"cache_ms":9}},"regions":[{{"path":"region/r.0.0.mca","chunks":32,"open_ms":4,"ingest_ms":5,"hash_ms":6,"cas_ms":7}}]}}"#
+                r#"{{"commit":"{id}","chunks":40,"new_blobs":2,"tombstones":0,"total_ms":220,"phases":{{"discover_ms":1,"universe_load_ms":2,"region_open_ms":4,"ingest_ms":50,"hash_ms":6,"cas_put_ms":7,"db_apply_ms":8,"cache_ms":120}},"regions":[{{"path":"region/r.0.0.mca","chunks":32,"open_ms":4,"ingest_ms":5,"hash_ms":6,"cas_ms":7}}]}}"#
             )
         );
     }

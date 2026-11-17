@@ -154,6 +154,11 @@ async fn status_proves_a_clean_world_without_hashing() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
+        .update_cache(sekai_app::CacheUpdateOptions::default(), &())
+        .await
+        .unwrap();
+    instance
+        .world_mut(&mut world)
         .commit(
             sekai_app::CommitOptions::default(),
             sekai_app::Scope::World,
@@ -194,6 +199,11 @@ async fn status_wiped_cache_falls_back_to_hashing() {
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
+        .update_cache(sekai_app::CacheUpdateOptions::default(), &())
+        .await
+        .unwrap();
+    instance
+        .world_mut(&mut world)
         .commit(
             sekai_app::CommitOptions::default(),
             sekai_app::Scope::World,
@@ -232,6 +242,11 @@ async fn status_partial_scope_proves_without_false_tombstones() {
     );
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    instance
+        .world_mut(&mut world)
+        .update_cache(sekai_app::CacheUpdateOptions::default(), &())
+        .await
+        .unwrap();
     instance
         .world_mut(&mut world)
         .commit(
@@ -276,6 +291,11 @@ async fn status_out_of_scope_change_falls_back_and_stays_clean() {
     );
 
     let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    instance
+        .world_mut(&mut world)
+        .update_cache(sekai_app::CacheUpdateOptions::default(), &())
+        .await
+        .unwrap();
     instance
         .world_mut(&mut world)
         .commit(

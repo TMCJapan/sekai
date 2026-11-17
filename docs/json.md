@@ -54,6 +54,13 @@ first, then `Caused by:` lines), JSON-escaped.
 
 ## Compatibility
 
+Semantics change (ADR-0034): `commit` no longer populates the region-image
+cache as part of recording; the command runs the `update_cache` pass
+first, then records. In `commit --timing`, `cache_ms` now measures that
+pre-commit update pass and `total_ms` spans both passes; field names and
+shapes are unchanged. The app-level `commit` operation writes no cache
+entries - population is exclusively `update_cache`.
+
 Breaking change (ADR-0027): metadata schema 17 replaces delta history
 with content-addressed snapshot trees. Old stores fail with an unsupported
 schema error and must be recreated; commit IDs change.
@@ -126,6 +133,11 @@ With `--timing` the `total_ms`/`phases`/`regions` block is appended:
   ]
 }
 ```
+
+`sekai commit` runs the commit-free cache update before recording
+(ADR-0034): `cache_ms` measures that update pass, `total_ms` spans both
+passes, and the remaining phases and `regions` rows describe the commit
+itself.
 
 ### `status`
 

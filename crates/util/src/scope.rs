@@ -208,12 +208,11 @@ impl Scope {
 
     /// Whether the scope contains every chunk of a region file.
     ///
-    /// The commit's cache pass asks: only a fully covered file can
-    /// produce its committed region node, so only such files become
-    /// region-image cache candidates (ADR-0029, ADR-0030). A partial
-    /// ingest leaves out-of-scope chunks unrecorded (ADR-0023). Coverage
-    /// by the union of several areas is reported as partial, which costs
-    /// a re-ingest rather than correctness.
+    /// Only a fully covered file's own chunks produce exactly the region
+    /// node a commit names for it; a partial ingest leaves out-of-scope
+    /// chunks unrecorded (ADR-0023), so the merged node is not the file's
+    /// own. Coverage by the union of several areas is reported as partial,
+    /// which costs a re-ingest rather than correctness.
     pub fn covers_region(&self, key: RegionKey) -> bool {
         match self {
             Self::World => true,

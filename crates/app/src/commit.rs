@@ -16,9 +16,10 @@
 //!
 //! Crash order mirrors the core contract: every blob is flushed to CAS
 //! *before* the single metadata batch commits, so a torn commit leaves at
-//! most orphan blobs, never dangling references. The region-image cache
-//! is populated *after* the metadata commit names its region hashes; it
-//! is derived state, so that pass is best-effort (ADR-0029, ADR-0030).
+//! most orphan blobs, never dangling references. Commit records history
+//! only: the region-image cache is populated by the separate
+//! [`WorldHandleMut::update_cache`] pass, which `sekai commit` runs before
+//! recording (ADR-0034).
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::sync::Arc;
@@ -26,10 +27,9 @@ use std::time::{Duration, Instant};
 
 use sekai_core::usecase::commit::Ingested;
 use sekai_core::{
-    Assembled, ChunkCoord, CommitEntry, CommitId, CommitReport, Previous, RegionHash, RegionKey,
-    Scope, hash_bytes,
+    Assembled, ChunkCoord, CommitEntry, CommitId, CommitReport, Previous, RegionKey, Scope,
 };
-use sekai_storage::{BlobStore, CacheStore, RegionNode, SekaiStore, StorageError};
+use sekai_storage::{BlobStore, RegionNode, SekaiStore, StorageError};
 use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
 use tokio::task::JoinSet;
 
@@ -118,9 +118,6 @@ pub struct CommitTimings {
     pub cas_put: Duration,
     /// Metadata commit.
     pub db_apply: Duration,
-    /// Region-image cache population after the metadata commit: the
-    /// confirming tree reads, the raw re-reads, and the cache writes.
-    pub cache: Duration,
     /// Per-region details for ingested files, ordered by region identity:
     /// dimension (by its code), then family, then coordinates - the order
     /// the world walk uses.
@@ -154,25 +151,8 @@ struct FileOutcome {
     present: HashSet<ChunkCoord>,
     /// Blobs newly written to CAS.
     new_blobs: usize,
-    /// Cache candidacy, when the scope fully covers the file.
-    cache: Option<CacheCandidate>,
     /// Per-region timing slice.
     timing: RegionTiming,
-}
-
-/// One fully covered file's region-image cache candidacy (ADR-0029).
-///
-/// The candidate is the region node the file's own chunks produce; the
-/// commit confirms it only when it names exactly that hash for the file's
-/// region. `mca_hash` pins the image the chunks were read from, so the
-/// post-commit re-read can prove it still holds the same bytes.
-struct CacheCandidate {
-    /// The region the file holds.
-    key: RegionKey,
-    /// Region node hash the file's chunks produce.
-    region: RegionHash,
-    /// Content hash of the raw image at ingest time.
-    mca_hash: [u8; 32],
 }
 
 impl<W: WorldTree, S: SekaiStore> WorldHandleMut<'_, W, S>
@@ -181,6 +161,10 @@ where
 {
     /// Scan the bound world and record it as a new commit in the store,
     /// additionally returning per-phase timings.
+    ///
+    /// History only: no region-image cache entry is written. Population is
+    /// the separate [`WorldHandleMut::update_cache`] pass, which callers
+    /// run before recording when they want a warm cache (ADR-0034).
     ///
     /// The recorded timestamp is read after ingestion, when the metadata
     /// write begins.
@@ -208,8 +192,6 @@ where
             walk,
             discover,
             universe_load,
-            cache_candidates,
-            cache_handles,
         } = prepare(
             store,
             self.world,
@@ -239,20 +221,6 @@ where
         .await?;
         let db_apply = db_started.elapsed();
 
-        // The cache is derived state written after the commit names its
-        // region hashes; it never fails the recorded commit (ADR-0030).
-        let cache_started = Instant::now();
-        populate_cache::<W, S>(
-            store,
-            report.commit,
-            &cache_candidates,
-            &cache_handles,
-            options.concurrency,
-            &guard,
-        )
-        .await;
-        let cache = cache_started.elapsed();
-
         let timings = CommitTimings {
             total: total.elapsed(),
             discover,
@@ -262,100 +230,20 @@ where
             hash: walk.hash,
             cas_put: walk.cas + dir_sync,
             db_apply,
-            cache,
             regions: walk.regions,
         };
         Ok((report, timings))
     }
 }
 
-/// Populate the region-image cache for the commit just recorded
-/// (ADR-0029, ADR-0030).
-///
-/// Only confirmed candidates are written: the commit must name the file's
-/// own region node hash for its region key. Each confirmed file is re-read
-/// raw - no chunk decode - and its content hash must still match the
-/// digest taken at ingest: a rewrite between the two reads leaves the
-/// entry absent, never cached under bytes that did not produce the hash.
-///
-/// Best-effort by design: the cache is derived state, so every failure
-/// here - a tree read, a file re-read, a cache write - only costs a cold
-/// cache later and never fails the recorded commit.
-async fn populate_cache<W: WorldTree, S: SekaiStore>(
-    store: &mut S,
-    commit: CommitId,
-    candidates: &[CacheCandidate],
-    handles: &BTreeMap<RegionKey, W::Region>,
-    concurrency: usize,
-    guard: &Arc<WorldGuard<W::Lock>>,
-) {
-    if candidates.is_empty() {
-        return;
-    }
-    let pairs: Vec<(RegionKey, RegionHash)> =
-        candidates.iter().map(|c| (c.key, c.region)).collect();
-    let Ok(targets) =
-        sekai_core::usecase::commit::cacheable_regions(store.meta(), commit, &pairs).await
-    else {
-        return;
-    };
-    let confirmed: BTreeSet<RegionKey> = targets.into_iter().map(|(key, _)| key).collect();
-
-    // Same bounded fan-out as ingest: a finished file frees its slot.
-    let mut queued = candidates.iter().filter(|c| confirmed.contains(&c.key));
-    let mut set = JoinSet::new();
-    let spawn = |set: &mut JoinSet<()>, candidate: &CacheCandidate| {
-        let Some(handle) = handles.get(&candidate.key).cloned() else {
-            return;
-        };
-        let key = candidate.key;
-        let region = candidate.region;
-        let mca_hash = candidate.mca_hash;
-        let mut cache = store.cache().clone();
-        let guard = Arc::clone(guard);
-        set.spawn(async move {
-            let image = tokio::task::spawn_blocking(move || {
-                let _guard = guard;
-                let Ok(image) = handle.read(key) else {
-                    return None;
-                };
-                let bytes = image.image();
-                (hash_bytes(bytes) == mca_hash).then(|| bytes.to_vec())
-            })
-            .await
-            .ok()
-            .flatten();
-            if let Some(bytes) = image {
-                let _ = cache.put(region, mca_hash, &bytes).await;
-            }
-        });
-    };
-    for candidate in queued.by_ref().take(worker_slots(concurrency)) {
-        spawn(&mut set, candidate);
-    }
-    // A worker panic is one more way an entry stays absent; the commit
-    // itself is already recorded.
-    while set.join_next().await.is_some() {
-        if let Some(candidate) = queued.next() {
-            spawn(&mut set, candidate);
-        }
-    }
-    let _ = store.cache_mut().sync().await;
-}
-
 /// Everything a commit records and a status preview counts, before the
 /// commit decision that separates them.
-struct Prepared<R> {
+struct Prepared {
     previous: Previous,
     staged: Assembled,
     walk: IngestTimings,
     discover: Duration,
     universe_load: Duration,
-    /// Cache candidates from the fully covered files (empty on a preview).
-    cache_candidates: Vec<CacheCandidate>,
-    /// Discovered handles of the fully covered files, kept for the
-    /// post-commit re-read: a derived handle could name another path.
-    cache_handles: BTreeMap<RegionKey, R>,
 }
 
 /// Discover the world, plan against the previous commit, and ingest the
@@ -364,8 +252,7 @@ struct Prepared<R> {
 /// Under `dry_run` blobs are probed instead of stored, so the staged rows
 /// are the same numbers a real commit would commit. Files proven unchanged
 /// through the region-image cache stage straight from the committed region
-/// nodes; a real commit always ingests, so its cache population keeps every
-/// candidate (ADR-0030). `progress_builder` counts the files to ingest.
+/// nodes. `progress_builder` counts the files to ingest.
 async fn prepare<W: WorldTree, S: SekaiStore>(
     store: &S,
     world: &W,
@@ -374,7 +261,7 @@ async fn prepare<W: WorldTree, S: SekaiStore>(
     progress_builder: &impl BuildProgress,
     dry_run: bool,
     guard: &Arc<WorldGuard<W::Lock>>,
-) -> Result<Prepared<W::Region>, AppError>
+) -> Result<Prepared, AppError>
 where
     AppError: From<W::Error>,
 {
@@ -408,20 +295,7 @@ where
         .filter_map(|key| regions.remove_entry(key))
         .collect();
 
-    // The cache re-reads fully covered files after the commit through the
-    // handles discovery found: a non-canonical name (`r.00.00.mca`) must
-    // not be re-derived as another path. A preview keeps nothing.
-    let cache_handles: BTreeMap<RegionKey, W::Region> = if dry_run {
-        BTreeMap::new()
-    } else {
-        changed
-            .iter()
-            .filter(|(key, _)| scope.covers_region(*key))
-            .map(|(key, region)| (*key, region.clone()))
-            .collect()
-    };
-
-    let (ingested, walk, cache_candidates) = ingest_changed::<W::Region, S, W::Lock>(
+    let (ingested, walk) = ingest_changed::<W::Region, S, W::Lock>(
         changed,
         store.blob().clone(),
         options,
@@ -440,8 +314,6 @@ where
         walk,
         discover,
         universe_load,
-        cache_candidates,
-        cache_handles,
     })
 }
 
@@ -564,8 +436,6 @@ struct RegionWalk {
     present: HashSet<ChunkCoord>,
     /// Blobs newly written to CAS.
     new_blobs: usize,
-    /// Cache candidates of the fully covered files.
-    cache_candidates: Vec<CacheCandidate>,
     /// Time spent opening changed region files.
     region_open: Duration,
     /// Time spent visiting, hashing, and storing changed chunks.
@@ -579,9 +449,8 @@ struct RegionWalk {
 }
 
 impl RegionWalk {
-    /// Split into what `core` assembles from, what the report needs, and
-    /// what the post-commit cache pass confirms.
-    fn into_parts(self) -> (Ingested, IngestTimings, Vec<CacheCandidate>) {
+    /// Split into what `core` assembles from and what the report needs.
+    fn into_parts(self) -> (Ingested, IngestTimings) {
         let ingested = Ingested {
             entries: self.entries,
             present: self.present.into_iter().collect(),
@@ -594,7 +463,7 @@ impl RegionWalk {
             cas: self.cas,
             regions: self.timings.into_iter().map(|(_, timing)| timing).collect(),
         };
-        (ingested, timings, self.cache_candidates)
+        (ingested, timings)
     }
 }
 
@@ -635,7 +504,7 @@ async fn ingest_changed<R: RegionFile, S: SekaiStore, L: WorldLock>(
     progress_builder: &impl BuildProgress,
     dry_run: bool,
     guard: &Arc<WorldGuard<L>>,
-) -> Result<(Ingested, IngestTimings, Vec<CacheCandidate>), AppError>
+) -> Result<(Ingested, IngestTimings), AppError>
 where
     AppError: From<R::Error>,
 {
@@ -690,7 +559,6 @@ fn merge_outcome(walk: &mut RegionWalk, outcome: FileOutcome) {
     walk.entries.extend(outcome.entries);
     walk.present.extend(outcome.present);
     walk.new_blobs += outcome.new_blobs;
-    walk.cache_candidates.extend(outcome.cache);
     walk.region_open += outcome.timing.open;
     walk.ingest += outcome.timing.ingest;
     walk.hash += outcome.timing.hash;
@@ -724,7 +592,6 @@ fn proven_outcome<R: RegionFile>(
         entries,
         present,
         new_blobs: 0,
-        cache: None,
         timing: RegionTiming {
             location: region.to_string(),
             chunks,
@@ -770,12 +637,9 @@ where
     AppError: From<R::Error>,
 {
     let location = region.to_string();
-    // Only a fully covered file can produce its committed region node
-    // (ADR-0029); a preview records nothing, so it prepares no cache.
-    let prepare_cache = !dry_run && scope.covers_region(key);
     let staged = tokio::task::spawn_blocking(move || {
         let _guard = guard;
-        stage_file(&region, key, &scope, prepare_cache)
+        stage_file(&region, key, &scope)
     })
     .await
     .map_err(|source| AppError::Storage(StorageError::backend("ingest worker", source)))??;
@@ -794,21 +658,11 @@ where
         cas_elapsed += started.elapsed();
         new_blobs += usize::from(stored?);
     }
-    let cache = staged.mca_hash.and_then(|mca_hash| {
-        sekai_core::usecase::commit::file_region_hash(&staged.entries).map(|region| {
-            CacheCandidate {
-                key,
-                region,
-                mca_hash,
-            }
-        })
-    });
     Ok(FileOutcome {
         key,
         entries: staged.entries,
         present: staged.present,
         new_blobs,
-        cache,
         timing: RegionTiming {
             location,
             chunks: staged.chunks,
@@ -830,8 +684,6 @@ struct Staged {
     chunks: usize,
     open: Duration,
     hash: Duration,
-    /// Content hash of the raw image, kept only for a cache candidate.
-    mca_hash: Option<[u8; 32]>,
 }
 
 /// One chunk payload waiting for its CAS write.
@@ -841,16 +693,7 @@ struct ChunkWrite {
 }
 
 /// Open the region file, then hash and stage every in-scope chunk.
-///
-/// `prepare_cache` also hashes the raw image while its bytes are in hand:
-/// the digest pins the image for the post-commit cache re-read, and doing
-/// it here costs no second pass over the file.
-fn stage_file<R: RegionFile>(
-    region: &R,
-    key: RegionKey,
-    scope: &Scope,
-    prepare_cache: bool,
-) -> Result<Staged, AppError>
+fn stage_file<R: RegionFile>(region: &R, key: RegionKey, scope: &Scope) -> Result<Staged, AppError>
 where
     AppError: From<R::Error>,
 {
@@ -858,7 +701,6 @@ where
     let image: R::RegionImage = region.read(key)?;
     let mut staged = Staged {
         open: opened.elapsed(),
-        mca_hash: prepare_cache.then(|| hash_bytes(image.image())),
         ..Default::default()
     };
     let mut failure = None;

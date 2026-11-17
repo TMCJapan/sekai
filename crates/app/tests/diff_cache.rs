@@ -1,5 +1,5 @@
 //! World-vs-commit diffs answered through the region-image cache
-//! (ADR-0029, ADR-0030).
+//! (ADR-0029, ADR-0033, ADR-0034).
 //!
 //! A proven-unchanged region skips per-chunk decompression entirely; a
 //! cache miss, a byte mismatch, or a changed file falls back to the full
@@ -108,6 +108,11 @@ async fn unchanged_world_diff_skips_chunk_reads() {
     let mut instance = SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
+        .update_cache(sekai_app::CacheUpdateOptions::default(), &())
+        .await
+        .unwrap();
+    instance
+        .world_mut(&mut world)
         .commit(options(), Scope::World, &())
         .await
         .unwrap();
@@ -141,6 +146,11 @@ async fn wiped_cache_falls_back_to_chunk_reads() {
     );
 
     let mut instance = SekaiInstance::init(&store).await.unwrap();
+    instance
+        .world_mut(&mut world)
+        .update_cache(sekai_app::CacheUpdateOptions::default(), &())
+        .await
+        .unwrap();
     instance
         .world_mut(&mut world)
         .commit(options(), Scope::World, &())
@@ -177,6 +187,11 @@ async fn changed_chunk_falls_back_and_reports_the_change() {
     );
 
     let mut instance = SekaiInstance::init(&store).await.unwrap();
+    instance
+        .world_mut(&mut world)
+        .update_cache(sekai_app::CacheUpdateOptions::default(), &())
+        .await
+        .unwrap();
     instance
         .world_mut(&mut world)
         .commit(options(), Scope::World, &())
@@ -220,6 +235,11 @@ async fn header_rewrite_falls_back_but_stays_clean() {
     let mut instance = SekaiInstance::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
+        .update_cache(sekai_app::CacheUpdateOptions::default(), &())
+        .await
+        .unwrap();
+    instance
+        .world_mut(&mut world)
         .commit(options(), Scope::World, &())
         .await
         .unwrap();
@@ -246,6 +266,11 @@ async fn deleted_file_reports_absence() {
     write_region(&path, &[(0, 0, chunk_nbt("marker-1"))]);
 
     let mut instance = SekaiInstance::init(&store).await.unwrap();
+    instance
+        .world_mut(&mut world)
+        .update_cache(sekai_app::CacheUpdateOptions::default(), &())
+        .await
+        .unwrap();
     instance
         .world_mut(&mut world)
         .commit(options(), Scope::World, &())
@@ -280,6 +305,11 @@ async fn mixed_regions_prove_only_the_unchanged_one() {
     write_region(&changed_path, &[(32, 0, chunk_nbt("marker-3"))]);
 
     let mut instance = SekaiInstance::init(&store).await.unwrap();
+    instance
+        .world_mut(&mut world)
+        .update_cache(sekai_app::CacheUpdateOptions::default(), &())
+        .await
+        .unwrap();
     instance
         .world_mut(&mut world)
         .commit(options(), Scope::World, &())
