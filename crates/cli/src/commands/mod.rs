@@ -23,8 +23,11 @@ use crate::style::Styler;
 fn format_time(created_at_ms: u64) -> String {
     i64::try_from(created_at_ms)
         .ok()
-        .and_then(chrono::DateTime::from_timestamp_millis)
-        .map_or_else(|| format!("{created_at_ms}ms"), |time| time.to_rfc3339())
+        .and_then(|millis| jiff::Timestamp::from_millisecond(millis).ok())
+        .map_or_else(
+            || format!("{created_at_ms}ms"),
+            |time| time.display_with_offset(jiff::tz::Offset::UTC).to_string(),
+        )
 }
 
 /// The scope a selection stands for: `--scope NAME` looked up in the
