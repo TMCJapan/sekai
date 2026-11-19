@@ -2,9 +2,11 @@
 //!
 //! The flows target `sekai-storage` traits; backend-specific setup stays in each runner.
 
+use core::future::Future;
+
 use sekai_core::{
-    ChunkCoord, ChunkHash, CommitEntry, CommitId, Dimension, NamedScope, Rect, RefName, RegionKind,
-    ScopeName,
+    ApplyOutcome, ChunkCoord, ChunkHash, CommitEntry, CommitId, Dimension, Head, NamedScope, Rect,
+    RefName, ReflogNote, RegionKind, ScopeName, Worktree, WorktreeName,
 };
 use sekai_storage::{BlobStore, CacheStore, MetaStore};
 
@@ -18,6 +20,46 @@ pub const fn coord(x: i32, z: i32) -> ChunkCoord {
 const fn present(x: i32, z: i32, byte: u8) -> CommitEntry {
     CommitEntry::new(coord(x, z), Some(ChunkHash::new([byte; 32])))
 }
+
+/// The main worktree every runner registers before a flow commits.
+pub fn main_worktree() -> WorktreeName {
+    WorktreeName::parse("main").unwrap()
+}
+
+/// Register the main worktree, HEAD unborn on `main`, the way `init`
+/// leaves a store.
+pub async fn add_main_worktree<M>(meta: &mut M)
+where
+    M: MetaStore,
+    M::Error: core::fmt::Debug,
+{
+    let main = Worktree {
+        name: main_worktree(),
+        path: None,
+        head: Head::Branch(RefName::parse("main").unwrap()),
+    };
+    meta.add_worktree(&main, ReflogNote::new("init", 0))
+        .await
+        .unwrap();
+}
+
+/// Commits on the main worktree's HEAD.
+pub trait CommitOnMain: MetaStore {
+    fn commit_main<'a>(
+        &'a mut self,
+        created_at_ms: u64,
+        parents: &'a [CommitId],
+        entries: &'a [CommitEntry],
+    ) -> impl Future<Output = Result<ApplyOutcome, Self::Error>> + 'a {
+        async move {
+            let note = ReflogNote::new("commit: ", created_at_ms);
+            self.apply_commit_incremental(&main_worktree(), created_at_ms, parents, entries, note)
+                .await
+        }
+    }
+}
+
+impl<M: MetaStore> CommitOnMain for M {}
 
 /// Named scope CRUD: create, replace, list in name order, delete.
 pub async fn scope_flow<M>(meta: &mut M)
@@ -122,7 +164,7 @@ where
 {
     assert!(meta.latest_commit().await.unwrap().is_none());
     let id = meta
-        .apply_commit_incremental(1_000, &[], &[present(0, 0, 1)])
+        .commit_main(1_000, &[], &[present(0, 0, 1)])
         .await
         .unwrap()
         .id;
@@ -150,12 +192,12 @@ where
 {
     use sekai_core::usecase::graph::{CommitStats, commit_stats};
     let first = meta
-        .apply_commit_incremental(1_000, &[], &[present(0, 0, 1), present(1, 0, 1)])
+        .commit_main(1_000, &[], &[present(0, 0, 1), present(1, 0, 1)])
         .await
         .unwrap()
         .id;
     let second = meta
-        .apply_commit_incremental(
+        .commit_main(
             2_000,
             &[first],
             &[present(0, 0, 2), CommitEntry::new(coord(1, 0), None)],
@@ -198,7 +240,7 @@ where
     // The two overworld regions hold identical chunks, so they share
     // one region node hash.
     let id = meta
-        .apply_commit_incremental(
+        .commit_main(
             1_000,
             &[],
             &[
@@ -251,11 +293,7 @@ where
     let many: Vec<CommitEntry> = (0..1_100)
         .map(|i| present(i * 32, 0, u8::try_from(i % 251).unwrap()))
         .collect();
-    let big = meta
-        .apply_commit_incremental(2_000, &[id], &many)
-        .await
-        .unwrap()
-        .id;
+    let big = meta.commit_main(2_000, &[id], &many).await.unwrap().id;
     let mut coords = Vec::new();
     meta.visit_commit_chunks(big, |entry| {
         coords.push(entry.coord);
@@ -280,30 +318,24 @@ where
 {
     use sekai_core::usecase::graph::{commit_ancestors, commit_history};
 
-    let main = RefName::parse("main").unwrap();
     // Two independent histories: the second root shares no ancestor with
-    // the first. Pointing the active ref back to unborn starts it.
+    // the first. Checking out an unborn branch starts it.
     let first = meta
-        .apply_commit_incremental(1_000, &[], &[present(0, 0, 1)])
+        .commit_main(1_000, &[], &[present(0, 0, 1)])
         .await
         .unwrap()
         .id;
-    let second = meta
-        .apply_commit_incremental(2_000, &[first], &[])
-        .await
-        .unwrap()
-        .id;
-    meta.set_ref(&main, None, 2_500).await.unwrap();
-    let other = meta
-        .apply_commit_incremental(3_000, &[], &[])
-        .await
-        .unwrap()
-        .id;
-    let child = meta
-        .apply_commit_incremental(4_000, &[other], &[])
-        .await
-        .unwrap()
-        .id;
+    let second = meta.commit_main(2_000, &[first], &[]).await.unwrap().id;
+    let orphan = Head::Branch(RefName::parse("orphan").unwrap());
+    meta.set_head(
+        &main_worktree(),
+        &orphan,
+        ReflogNote::new("checkout", 2_500),
+    )
+    .await
+    .unwrap();
+    let other = meta.commit_main(3_000, &[], &[]).await.unwrap().id;
+    let child = meta.commit_main(4_000, &[other], &[]).await.unwrap().id;
 
     // The graph, not the local record order, decides what a commit
     // inherits: the chunk of `first` is invisible from `child`.
@@ -467,7 +499,7 @@ where
     store.blob_mut().sync().await.unwrap();
     let commit = store
         .meta_mut()
-        .apply_commit_incremental(1_000, &[], &[CommitEntry::new(coord(0, 0), Some(live))])
+        .commit_main(1_000, &[], &[CommitEntry::new(coord(0, 0), Some(live))])
         .await
         .unwrap()
         .id;

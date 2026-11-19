@@ -7,6 +7,7 @@ use alloc::string::String;
 use core::fmt;
 
 pub use sekai_util::CommitId;
+use sekai_util::Ref;
 
 pub use crate::{BlobStore, MetaStore};
 
@@ -76,32 +77,73 @@ pub enum StorageError {
         /// Scope that has no area.
         name: String,
     },
+    /// Stored worktree name fails validation.
+    InvalidWorktreeName {
+        /// Worktree name that failed validation.
+        name: String,
+    },
+    /// Stored `worktrees` row holds neither or both of the HEAD columns,
+    /// which the schema forbids; the row is corruption.
+    CorruptWorktreeHead {
+        /// Name of the worktree whose HEAD columns are corrupt.
+        name: String,
+    },
     /// The named ref does not exist.
     ///
-    /// Emitted by operations that require the ref to exist
-    /// (`activate_ref`); lookups and `delete_ref` report absence as
-    /// `None`/`false` instead.
+    /// Emitted by operations that require the ref to exist (`move_ref`,
+    /// `rename_branch`); lookups and `delete_ref` report absence as
+    /// `None` instead.
     UnknownRef {
-        /// Requested ref name.
+        /// Requested ref.
+        name: Ref,
+    },
+    /// The ref already exists.
+    RefExists {
+        /// Requested ref.
+        name: Ref,
+    },
+    /// The ref would conflict with another ref, or with the branch an
+    /// unborn HEAD names, as a directory and a file would.
+    RefConflict {
+        /// Requested ref.
+        name: Ref,
+        /// Ref it conflicts with.
+        existing: Ref,
+    },
+    /// The branch is checked out by a worktree that the operation may not
+    /// touch.
+    BranchCheckedOut {
+        /// The branch.
+        branch: Ref,
+        /// Worktree that has it checked out.
+        worktree: String,
+    },
+    /// The named worktree does not exist.
+    UnknownWorktree {
+        /// Requested worktree name.
         name: String,
     },
-    /// The active ref cannot be removed: a store without one would have
-    /// nowhere to hang new commits from.
-    ActiveRefProtected {
-        /// Ref that was asked for.
+    /// A worktree with this name already exists.
+    WorktreeExists {
+        /// Requested worktree name.
         name: String,
     },
-    /// The store has no active ref, so a new commit has nowhere to land.
-    ///
-    /// Field-less on purpose: the condition is store-wide, not tied to a
-    /// name the caller passed. A backend checks for the active ref before
-    /// its parent constraint, so `NoActiveRef` takes priority over
-    /// [`Self::NotContinuing`] when both conditions hold.
-    NoActiveRef,
-    /// A new commit does not continue the active ref's target, which
-    /// would fork the ref onto another history.
+    /// Another worktree already has this path.
+    WorktreePathTaken {
+        /// Requested path.
+        path: String,
+    },
+    /// The store already has a main worktree.
+    MainWorktreeExists,
+    /// The main worktree cannot be removed or moved.
+    MainWorktreeProtected {
+        /// Requested worktree name.
+        name: String,
+    },
+    /// A new commit does not continue the commit HEAD stands at, which
+    /// would fork HEAD onto another history.
     NotContinuing {
-        /// Target commit ID the new commit had to include as a parent.
+        /// Commit the new commit had to include as a parent.
         base: CommitId,
     },
     /// Stored region-family code does not name a known kind.
@@ -111,16 +153,6 @@ pub enum StorageError {
     },
     /// Millisecond timestamp does not fit `i64`.
     InvalidTimestamp(u64),
-    /// The system clock is before the Unix epoch.
-    ///
-    /// Raised when a millisecond reading of the system clock cannot be
-    /// represented as a non-negative `u64` timestamp.
-    ClockBeforeEpoch,
-    /// The system clock is past the representable range.
-    ///
-    /// Raised when a millisecond reading of the system clock does not fit
-    /// the timestamp range the backend stores.
-    ClockOutOfRange,
     /// Region file size does not fit `i64`.
     InvalidSize(u64),
     /// The named commit does not exist.
@@ -169,23 +201,34 @@ impl fmt::Display for StorageError {
             Self::InvalidRefName { name } => write!(f, "stored ref name is invalid: {name}"),
             Self::InvalidScopeName { name } => write!(f, "stored scope name is invalid: {name}"),
             Self::EmptyScope { name } => write!(f, "stored scope has no area: {name}"),
-            Self::UnknownRef { name } => write!(f, "unknown ref: {name}"),
-            Self::ActiveRefProtected { name } => {
-                write!(f, "cannot remove the active ref: {name}")
+            Self::InvalidWorktreeName { name } => {
+                write!(f, "stored worktree name is invalid: {name}")
             }
-            Self::NoActiveRef => {
-                f.write_str("store has no active ref: a new commit has nowhere to hang from")
+            Self::CorruptWorktreeHead { name } => {
+                write!(f, "stored worktree {name} has a corrupt HEAD row")
+            }
+            Self::UnknownRef { name } => write!(f, "unknown ref: {name}"),
+            Self::RefExists { name } => write!(f, "ref already exists: {name}"),
+            Self::RefConflict { name, existing } => {
+                write!(f, "ref {name} conflicts with existing ref {existing}")
+            }
+            Self::BranchCheckedOut { branch, worktree } => {
+                write!(f, "branch {branch} is checked out by worktree {worktree}")
+            }
+            Self::UnknownWorktree { name } => write!(f, "unknown worktree: {name}"),
+            Self::WorktreeExists { name } => write!(f, "worktree already exists: {name}"),
+            Self::WorktreePathTaken { path } => {
+                write!(f, "another worktree already has path {path}")
+            }
+            Self::MainWorktreeExists => f.write_str("store already has a main worktree"),
+            Self::MainWorktreeProtected { name } => {
+                write!(f, "the main worktree cannot be removed or moved: {name}")
             }
             Self::NotContinuing { base } => {
-                write!(
-                    f,
-                    "new commit does not continue the active ref's target {base}"
-                )
+                write!(f, "new commit does not continue HEAD's commit {base}")
             }
             Self::UnknownRegionKind { kind } => write!(f, "stored region kind is unknown: {kind}"),
             Self::InvalidTimestamp(millis) => write!(f, "timestamp out of range: {millis}"),
-            Self::ClockBeforeEpoch => f.write_str("system clock is before the Unix epoch"),
-            Self::ClockOutOfRange => f.write_str("system clock is out of range"),
             Self::InvalidSize(size) => write!(f, "region size out of range: {size}"),
             Self::UnknownCommit { id } => write!(f, "unknown commit: {id}"),
             Self::UnsupportedSchema { found, supported } => write!(

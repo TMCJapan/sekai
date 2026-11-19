@@ -2,6 +2,8 @@
 
 mod common;
 
+use common::CommitOnMain as _;
+
 use sekai_core::{
     ChunkCoord, ChunkHash, CommitEntry, Dimension, RegionHash, RegionKind,
     usecase::checkout::plan_checkout,
@@ -21,8 +23,11 @@ fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
     (guard.path().to_path_buf(), guard)
 }
 
+/// An initialized store with its main worktree registered.
 async fn init(dir: impl AsRef<Path>) -> sekai_storage_local::LocalStore {
-    init_local(dir).await.unwrap()
+    let mut store = init_local(dir).await.unwrap();
+    common::add_main_worktree(store.meta_mut()).await;
+    store
 }
 
 #[tokio::test]
@@ -63,7 +68,7 @@ async fn sqlite_tombstones_shape_and_checkout_drop() {
     let present = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
     let gone = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 1, 0);
     let first = meta
-        .apply_commit_incremental(
+        .commit_main(
             1_000,
             &[],
             &[
@@ -75,7 +80,7 @@ async fn sqlite_tombstones_shape_and_checkout_drop() {
         .unwrap()
         .id;
     let second = meta
-        .apply_commit_incremental(2_000, &[first], &[CommitEntry::new(gone, None)])
+        .commit_main(2_000, &[first], &[CommitEntry::new(gone, None)])
         .await
         .unwrap()
         .id;
