@@ -125,7 +125,7 @@ diff:
     -> proven region: the committed region node answers both sides
   fallback: one world read per region file (blocking pool, fanned out)
     -> Chunk::normalized_hash per requested chunk; commit side: recorded digests
-  unborn active ref: the empty snapshot is the base (every chunk added)
+  unborn HEAD: the empty snapshot is the base (every chunk added)
 ```
 
 A chunk has exactly one hash: the `Chunk::normalized_hash` digest of its
@@ -371,24 +371,32 @@ sequence for traversal and latest-commit lookup; that sequence is never
 part of the public ID. See
 [ADR-0027](docs/adr/0027-content-addressed-snapshot-trees.md).
 
-## Ref Objects
+## Refs, Worktrees, and Reflogs
 
-Ref objects are the store's movable pointers to commits: named
-branches. A ref names a commit and moves with the history it names; a
-ref without a commit is _unborn_. Exactly one ref is _active_ - the one
-new commits hang from (the store's `HEAD`). A fresh store starts with
-one active ref, `main`, unborn.
+Refs are the store's named, movable pointers to commits: branches
+(`refs/heads/<name>`), which move as commits land, and lightweight tags
+(`refs/tags/<name>`). A ref names a commit and moves with the history it
+names; a branch without a commit is _unborn_ and exists only as the name
+a worktree's HEAD carries - the store keeps no row for it. A fresh store's
+worktree starts unborn on `main`.
 
-A new commit continues the target of the active ref - the trait rejects
-one whose parents omit it - and the active ref moves onto the new commit
-in the same transaction. Switching the active ref forks the history: the
-next commit continues the ref it was planned against, not the newest
-commit in the store. Commit references accept a `<64-char commit hash>`
-or a bare ref name.
+Every worktree has its own HEAD: attached to a branch, unborn on a
+branch, or detached at a commit. A new commit continues the commit HEAD
+stands on - the trait rejects mismatched parents rather than fork HEAD -
+and HEAD moves onto the new commit in the same transaction, updating the
+branch. Switching HEAD forks the history: the next commit continues the
+branch it was planned against, not the newest commit in the store. A
+branch checked out by any worktree is never deleted or force-moved in
+the transaction that would break it. Branch and HEAD updates append
+reflog entries; creating, moving, or renaming a branch logs it, a rename
+keeps a branch's reflog under the new name, and deleting a branch drops
+it. Tags are not logged. Commit references accept a `<64-char commit
+hash>` or a bare branch name.
 
 Refs point at commit hashes. Like Git, identity is derived from content;
 a recorded commit is immutable, so a ref's target keeps resolving to the
-same snapshot tree. See [ADR-0019](docs/adr/0019-ref-objects.md).
+same snapshot tree. See [ADR-0035](docs/adr/0035-git-modelled-refs-and-worktrees.md)
+(superseding [ADR-0019](docs/adr/0019-ref-objects.md)).
 
 ## Snapshot Tree Storage
 
