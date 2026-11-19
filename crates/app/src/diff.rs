@@ -5,14 +5,16 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use sekai_anvil::{Chunk, ChunkHashError, ChunkPayloadDiff};
-use sekai_core::{ChunkCoord, ChunkHash, CommitId, RegionKey, RegionKind};
+use sekai_core::{
+    ChunkCoord, ChunkHash, CommitId, RegionKey, RegionKind, ResolveError, Revision, Scope,
+};
 use sekai_storage::{BlobStore as _, MetaStore, RegionNode, SekaiStore, StorageError};
 use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
 use tokio::task::JoinSet;
 
 use crate::cache::prove_regions_unchanged;
 use crate::error::AppError;
-use crate::instance::{SekaiInstance, WorldGuard, WorldHandle, WorldHandleMut};
+use crate::instance::{SekaiInstance, WorldGuard, WorldHandle};
 use crate::progress::{BuildProgress, Progress};
 use crate::regions::discover_regions;
 use crate::workers::worker_slots;
@@ -35,6 +37,29 @@ pub struct DiffTimings {
 }
 
 impl<S: SekaiStore> SekaiInstance<S> {
+    /// The commit `diff` compares with: `revision`, or HEAD's commit
+    /// (ADR-0036 *diff*).
+    ///
+    /// A revision that reads an unborn HEAD fails as an unknown revision,
+    /// as Git's `diff` fails on `HEAD` then; passing `None` to
+    /// [`WorldHandle::diff_world_chunks`] instead diffs against the empty
+    /// snapshot (ADR-0032).
+    pub async fn resolve_diff_commit(
+        &self,
+        revision: Option<&Revision>,
+    ) -> Result<CommitId, AppError> {
+        let head = Revision::head();
+        let revision = revision.unwrap_or(&head);
+        match self.resolve_revision(revision).await {
+            Err(AppError::CommitRef(ResolveError::UnbornHead { .. })) => {
+                Err(AppError::CommitRef(ResolveError::UnknownRevision {
+                    revision: revision.to_string(),
+                }))
+            }
+            resolved => resolved,
+        }
+    }
+
     /// Compute AST diff between two stored chunk blob hashes.
     pub async fn diff_blobs(
         &self,
@@ -160,7 +185,8 @@ impl<S: SekaiStore> SekaiInstance<S> {
         Ok((out, timings))
     }
 
-    /// Effective chunk coordinates of one commit (snapshot set).
+    /// Effective chunk coordinates of one commit (snapshot set), sorted
+    /// and deduplicated.
     pub async fn commit_chunk_coords(&self, commit: CommitId) -> Result<Vec<ChunkCoord>, AppError> {
         let mut coords = Vec::new();
         self.store
@@ -170,8 +196,18 @@ impl<S: SekaiStore> SekaiInstance<S> {
                 true
             })
             .await?;
+        coords.sort();
+        coords.dedup();
         Ok(coords)
     }
+}
+
+/// The coordinates `scope` selects from `coords`, sorted and deduplicated.
+pub fn scoped_coords(mut coords: Vec<ChunkCoord>, scope: &Scope) -> Vec<ChunkCoord> {
+    coords.retain(|coord| scope.contains(*coord));
+    coords.sort();
+    coords.dedup();
+    coords
 }
 
 /// Chunk coordinates present on disk in `world`.
@@ -223,8 +259,8 @@ where
     /// Compute AST diff for a chunk coordinate between the bound world state
     /// and a commit.
     ///
-    /// If `commit` is `None`, the active ref's target is used; an unborn
-    /// active ref diffs against the empty snapshot (the chunk is added).
+    /// If `commit` is `None`, HEAD's commit is used; an unborn HEAD diffs
+    /// against the empty snapshot (the chunk is added).
     pub async fn diff_world_chunk(
         &self,
         commit: Option<CommitId>,
@@ -240,16 +276,16 @@ where
     /// Compute AST diffs for explicit chunk coordinates between the bound
     /// world state and a commit, additionally returning per-phase timings.
     ///
-    /// If `commit` is `None`, the active ref's target is used - the
-    /// commit the next one would continue. An unborn active ref (a store with
-    /// no commit to continue) diffs against the empty snapshot: every chunk
-    /// the world holds is reported as added. The commit side is a metadata
-    /// lookup; the world side reads each region file once and digests its
-    /// requested chunks, fanned out across the blocking pool. Decompression
-    /// and digesting count under `decompress`, the reads and metadata lookups
-    /// under `blob_fetch`, and comparing the two digests under `diff_compute`.
-    /// `progress_builder` counts the region files `coords` span, stepping once
-    /// per file as it completes.
+    /// If `commit` is `None`, HEAD's commit is used - the commit the next
+    /// one would continue. An unborn HEAD (no commit to continue) diffs
+    /// against the empty snapshot: every chunk the world holds is reported
+    /// as added. The commit side is a metadata lookup; the world side reads
+    /// each region file once and digests its requested chunks, fanned out
+    /// across the blocking pool. Decompression and digesting count under
+    /// `decompress`, the reads and metadata lookups under `blob_fetch`, and
+    /// comparing the two digests under `diff_compute`. `progress_builder`
+    /// counts the region files `coords` span, stepping once per file as it
+    /// completes.
     ///
     /// Regions proven unchanged through the region-image cache answer both
     /// sides from the committed region node, skipping the world read; the
@@ -336,33 +372,6 @@ where
         timings.total = total_started.elapsed();
         drop(guard);
         Ok((out, timings))
-    }
-}
-
-impl<W: WorldTree, S: SekaiStore> WorldHandleMut<'_, W, S>
-where
-    AppError: From<W::Error>,
-{
-    /// Compute AST diff for one chunk; see [`WorldHandle::diff_world_chunk`].
-    pub async fn diff_world_chunk(
-        &self,
-        commit: Option<CommitId>,
-        coord: &ChunkCoord,
-    ) -> Result<ChunkPayloadDiff, AppError> {
-        self.view().diff_world_chunk(commit, coord).await
-    }
-
-    /// Compute AST diffs for explicit chunks; see
-    /// [`WorldHandle::diff_world_chunks`].
-    pub async fn diff_world_chunks(
-        &self,
-        commit: Option<CommitId>,
-        coords: &[ChunkCoord],
-        progress_builder: &impl BuildProgress,
-    ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
-        self.view()
-            .diff_world_chunks(commit, coords, progress_builder)
-            .await
     }
 }
 

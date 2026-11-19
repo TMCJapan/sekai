@@ -4,7 +4,8 @@
 //! the store is opened once per process instead of once per free function,
 //! and metadata/CAS adapters are reached through one place. The store type
 //! is pluggable: any [`SekaiStore`] backend can be used, and the local
-//! backend additionally gets the convenience `open`/`init` entry points.
+//! backend additionally gets `open_location` and `init_world`, which tie
+//! the store to the world a command runs in (ADR-0035).
 //! Operations that touch a world hang off borrowed handles: [`WorldHandle`]
 //! for read-only work, [`WorldHandleMut`] for runs that write (commit,
 //! checkout), so write exclusivity shows in the type.
@@ -16,23 +17,57 @@
 //! run that touches a world takes that world's lock at entry and releases
 //! it on return; see [`WorldTree::lock`].
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use sekai_core::{Commit, CommitId};
-use sekai_storage::{CacheStore as _, SekaiStore, SekaiStoreOpener};
+use sekai_core::{Commit, CommitId, Revision, Target, WorktreeName};
+use sekai_storage::{CacheStore as _, SekaiStore};
 use sekai_world::{WorldLock, WorldLockMode, WorldLockState, WorldTree};
 
 use crate::error::AppError;
+use crate::refs::switch_err;
 
 /// An opened store; all store-scoped operations go through this.
 pub struct SekaiInstance<T: SekaiStore> {
     pub(crate) store: T,
+    /// The worktree commands act on, or `None` outside every worktree,
+    /// where reading HEAD fails.
+    pub(crate) worktree: Option<WorktreeName>,
+    /// World root of the main worktree, the directory that holds the
+    /// store, when the store lies on the local filesystem. Errors name a
+    /// worktree by its root, as Git's do.
+    pub(crate) main_root: Option<PathBuf>,
 }
 
 impl<T: SekaiStore> SekaiInstance<T> {
-    /// Compose an instance from an already opened store.
+    /// Compose an instance from an already opened store, outside every
+    /// worktree.
     pub const fn new(store: T) -> Self {
-        Self { store }
+        Self {
+            store,
+            worktree: None,
+            main_root: None,
+        }
+    }
+
+    /// The same instance acting on `worktree`, or outside every worktree
+    /// for `None`.
+    #[must_use]
+    pub fn with_worktree(self, worktree: Option<WorktreeName>) -> Self {
+        Self { worktree, ..self }
+    }
+
+    /// The worktree commands act on, or `None` outside every worktree.
+    pub const fn worktree(&self) -> Option<&WorktreeName> {
+        self.worktree.as_ref()
+    }
+
+    /// The worktree commands act on; fails outside every worktree, as a
+    /// command that writes HEAD must.
+    pub(crate) fn current_worktree(&self) -> Result<&WorktreeName, AppError> {
+        self.worktree
+            .as_ref()
+            .ok_or(AppError::CommitRef(sekai_core::ResolveError::NoWorktree))
     }
 
     /// Store handle (metadata plus CAS) for escape-hatch access: CAS
@@ -80,28 +115,24 @@ impl<T: SekaiStore> SekaiInstance<T> {
             .map_err(AppError::Commit)
     }
 
-    /// Every ancestor of a commit, nearest first.
-    ///
-    /// Fails when the commit does not exist.
-    pub async fn commit_ancestors(&self, commit: CommitId) -> Result<Vec<CommitId>, AppError> {
-        sekai_core::usecase::graph::commit_ancestors(self.store.meta(), commit)
-            .await
-            .map_err(AppError::Commit)
-    }
-
-    /// The history of a commit: the commit itself followed by its
-    /// ancestors, nearest first.
-    ///
-    /// Fails when the commit does not exist.
-    pub async fn commit_history(&self, commit: CommitId) -> Result<Vec<Commit>, AppError> {
-        sekai_core::usecase::graph::commit_history(self.store.meta(), commit)
-            .await
-            .map_err(AppError::Commit)
-    }
-
     /// Resolve a commit reference (`<64-char hash>` or a ref name).
     pub async fn resolve_commit_ref(&self, raw: &str) -> Result<CommitId, AppError> {
         sekai_core::usecase::resolve::resolve_commit_ref(self.store.meta(), raw)
+            .await
+            .map_err(switch_err)
+    }
+
+    /// Resolve `revision` against the store and the worktree's HEAD.
+    pub async fn resolve_revision(&self, revision: &Revision) -> Result<CommitId, AppError> {
+        sekai_core::resolve_revision(self.store.meta(), self.worktree.as_ref(), revision)
+            .await
+            .map_err(switch_err)
+    }
+
+    /// Resolve a `checkout` target: an argument that may name a branch,
+    /// as [`WorldHandleMut::switch`] takes it.
+    pub async fn resolve_target(&self, revision: &Revision) -> Result<Target, AppError> {
+        sekai_core::resolve_target(self.store.meta(), self.worktree.as_ref(), revision)
             .await
             .map_err(AppError::CommitRef)
     }
@@ -131,59 +162,18 @@ impl<T: SekaiStore> SekaiInstance<T> {
     }
 }
 
-#[cfg(feature = "backend-local")]
-impl SekaiInstance<sekai_storage_local::LocalStore> {
-    /// Open the existing store rooted at `root`.
-    ///
-    /// A store that was never initialized fails without creating anything:
-    /// only [`Self::init`] materializes a store.
-    pub async fn open(root: &str) -> Result<Self, AppError> {
-        Ok(Self {
-            store: sekai_storage_local::open_local(root).await?,
-        })
-    }
-
-    /// Initialize the store rooted at `root` and open it.
-    ///
-    /// This is the creation path reserved for an explicit init (the CLI's
-    /// `sekai init`); every other command must go through [`Self::open`] so
-    /// a missing store fails loudly instead of leaving an empty store
-    /// behind. Initializing an existing store again is idempotent.
-    pub async fn init(root: &str) -> Result<Self, AppError> {
-        Ok(Self {
-            store: sekai_storage_local::init_local(root).await?,
-        })
-    }
-}
-
-impl<T: SekaiStore + SekaiStoreOpener> SekaiInstance<T> {
-    /// Open the existing store of an explicitly chosen backend type.
-    pub async fn open_with(location: &str) -> Result<Self, AppError> {
-        Ok(Self {
-            store: T::open(location).await?,
-        })
-    }
-
-    /// Initialize the store of an explicitly chosen backend type and open
-    /// it; the only entry point that materializes a store. Initializing an
-    /// existing store again is idempotent.
-    pub async fn init_with(location: &str) -> Result<Self, AppError> {
-        Ok(Self {
-            store: T::init(location).await?,
-        })
-    }
-}
-
 /// A world lock shared (`Arc`) into the blocking tasks that touch files.
 ///
 /// The lock is released when the last share drops. A cancelled future drops
 /// its own share at once, but a blocking task cannot be aborted once it has
 /// started, so each one holds a share of its own: the world stays locked
 /// until every file it is reading or writing is done.
-#[derive(Debug)]
 pub(crate) struct WorldGuard<L> {
     /// Held for its drop: the lock must outlive the operation.
     _world: WorldLockState<L>,
+    /// Dropped after `_world` (fields drop in declaration order), so it
+    /// runs once the last share is gone and the lock is released.
+    _then: Option<Box<dyn Send + Sync>>,
 }
 
 impl<L: WorldLock> WorldGuard<L> {
@@ -196,6 +186,25 @@ impl<L: WorldLock> WorldGuard<L> {
     {
         Ok(Arc::new(Self {
             _world: world.lock(mode)?,
+            _then: None,
+        }))
+    }
+
+    /// [`Self::acquire`], dropping `then` once every share is gone: after
+    /// a failure or a cancellation, that is when the last blocking task
+    /// touching the world ends.
+    #[cfg(feature = "backend-local")]
+    pub(crate) fn acquire_then<W: WorldTree<Lock = L>>(
+        world: &W,
+        mode: WorldLockMode,
+        then: impl Send + Sync + 'static,
+    ) -> Result<Arc<Self>, AppError>
+    where
+        AppError: From<W::Error>,
+    {
+        Ok(Arc::new(Self {
+            _world: world.lock(mode)?,
+            _then: Some(Box::new(then)),
         }))
     }
 }
@@ -215,15 +224,4 @@ pub struct WorldHandle<'a, W, S: SekaiStore> {
 pub struct WorldHandleMut<'a, W, S: SekaiStore> {
     pub(crate) instance: &'a mut SekaiInstance<S>,
     pub(crate) world: &'a mut W,
-}
-
-impl<W, S: SekaiStore> WorldHandleMut<'_, W, S> {
-    /// Read-only view of the same world, for read operations issued while a
-    /// write session is held.
-    pub(crate) const fn view(&self) -> WorldHandle<'_, W, S> {
-        WorldHandle {
-            instance: &*self.instance,
-            world: &*self.world,
-        }
-    }
 }

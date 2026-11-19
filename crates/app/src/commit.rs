@@ -35,9 +35,8 @@ use tokio::task::JoinSet;
 
 use crate::cache::prove_regions_unchanged;
 use crate::error::AppError;
-use crate::instance::{WorldGuard, WorldHandle, WorldHandleMut};
+use crate::instance::{SekaiInstance, WorldGuard, WorldHandle, WorldHandleMut};
 use crate::progress::{BuildProgress, Progress};
-use crate::refs::main_worktree;
 use crate::regions::discover_regions;
 use crate::time::now_ms;
 use crate::workers::worker_slots;
@@ -63,7 +62,8 @@ pub struct StatusOptions {
 pub struct StatusReport {
     /// Nothing in scope differs from the latest commit.
     pub clean: bool,
-    /// The active ref's target the preview is measured against, if any.
+    /// The commit HEAD stands at, which the preview is measured against,
+    /// if any.
     ///
     /// `None` when that ref is unborn, even if the store already holds
     /// commits from an earlier history.
@@ -185,8 +185,6 @@ where
         // The world stays stable for the whole read pass; the store needs no
         // lock - blobs are append-only and the metadata write is atomic.
         let guard = WorldGuard::acquire(self.world, WorldLockMode::Shared)?;
-        let store = &mut self.instance.store;
-
         let Prepared {
             previous,
             staged,
@@ -194,7 +192,7 @@ where
             discover,
             universe_load,
         } = prepare(
-            store,
+            self.instance,
             self.world,
             &options,
             &scope,
@@ -203,6 +201,12 @@ where
             &guard,
         )
         .await?;
+        let worktree = self
+            .instance
+            .worktree
+            .as_ref()
+            .ok_or(AppError::CommitRef(sekai_core::ResolveError::NoWorktree))?;
+        let store = &mut self.instance.store;
 
         let created_at_ms = now_ms()?;
         // Persist blob writes before the metadata commit: puts only append
@@ -215,7 +219,7 @@ where
         let db_started = Instant::now();
         let report = sekai_core::usecase::commit::record_commit(
             store.meta_mut(),
-            &main_worktree()?,
+            worktree,
             &previous,
             &staged,
             created_at_ms,
@@ -248,6 +252,26 @@ struct Prepared {
     universe_load: Duration,
 }
 
+/// The chunks in `scope` that differ from HEAD's commit, as a commit would
+/// record them: every present chunk while HEAD is unborn.
+///
+/// Runs the preview pipeline under the caller's world lock, so a checkout
+/// compares the same world it then rewrites.
+pub(crate) async fn uncommitted_chunks<W: WorldTree, S: SekaiStore>(
+    instance: &SekaiInstance<S>,
+    world: &W,
+    scope: &Scope,
+    concurrency: usize,
+    guard: &Arc<WorldGuard<W::Lock>>,
+) -> Result<Vec<CommitEntry>, AppError>
+where
+    AppError: From<W::Error>,
+{
+    let options = CommitOptions { concurrency };
+    let prepared = prepare(instance, world, &options, scope, &(), true, guard).await?;
+    Ok(prepared.staged.entries)
+}
+
 /// Discover the world, plan against the previous commit, and ingest the
 /// changed files - the whole pipeline `commit` and `status` share.
 ///
@@ -256,7 +280,7 @@ struct Prepared {
 /// through the region-image cache stage straight from the committed region
 /// nodes. `progress_builder` counts the files to ingest.
 async fn prepare<W: WorldTree, S: SekaiStore>(
-    store: &S,
+    instance: &SekaiInstance<S>,
     world: &W,
     options: &CommitOptions,
     scope: &Scope,
@@ -267,6 +291,7 @@ async fn prepare<W: WorldTree, S: SekaiStore>(
 where
     AppError: From<W::Error>,
 {
+    let store = &instance.store;
     // Discovery walks directories on the blocking pool, owning a share of
     // the world lock like every file pass.
     let discover_started = Instant::now();
@@ -281,9 +306,13 @@ where
 
     let universe_started = Instant::now();
     let keys: Vec<RegionKey> = regions.keys().copied().collect();
-    let (previous, plan) =
-        sekai_core::usecase::commit::plan_commit(store.meta(), &main_worktree()?, &keys, scope)
-            .await?;
+    let (previous, plan) = sekai_core::usecase::commit::plan_commit(
+        store.meta(),
+        instance.current_worktree()?,
+        &keys,
+        scope,
+    )
+    .await?;
     // The proof needs the discovered handles, so it runs before the ingest
     // list takes them out of the map.
     let proven = match previous.commit.as_ref().filter(|_| dry_run) {
@@ -340,7 +369,7 @@ where
     ) -> Result<(StatusReport, StatusTimings), AppError> {
         let guard = WorldGuard::acquire(self.world, WorldLockMode::Shared)?;
         status_impl(
-            &self.instance.store,
+            self.instance,
             self.world,
             options,
             scope,
@@ -351,24 +380,9 @@ where
     }
 }
 
-impl<W: WorldTree, S: SekaiStore> WorldHandleMut<'_, W, S>
-where
-    AppError: From<W::Error>,
-{
-    /// Preview what a commit would record; see [`WorldHandle::status`].
-    pub async fn status(
-        &self,
-        options: StatusOptions,
-        scope: Scope,
-        progress_builder: &impl BuildProgress,
-    ) -> Result<(StatusReport, StatusTimings), AppError> {
-        self.view().status(options, scope, progress_builder).await
-    }
-}
-
 /// Preview implementation shared by read-only and read-write handles.
 async fn status_impl<W: WorldTree, S: SekaiStore>(
-    store: &S,
+    instance: &SekaiInstance<S>,
     world: &W,
     options: StatusOptions,
     scope: Scope,
@@ -392,7 +406,7 @@ where
         universe_load,
         ..
     } = prepare(
-        store,
+        instance,
         world,
         &preview,
         &scope,
@@ -582,7 +596,7 @@ fn proven_outcome<R: RegionFile>(
     let mut entries = Vec::new();
     let mut present = HashSet::new();
     for entry in node.entries() {
-        let coord = slot_coord(key, entry.cx, entry.cz);
+        let coord = key.chunk_coord(entry.cx, entry.cz);
         if !scope.contains(coord) {
             continue;
         }
@@ -604,16 +618,6 @@ fn proven_outcome<R: RegionFile>(
             cas: Duration::ZERO,
         },
     }
-}
-
-/// The global coordinate of a region node's local slot.
-fn slot_coord(key: RegionKey, cx: u8, cz: u8) -> ChunkCoord {
-    ChunkCoord::new(
-        key.dim,
-        key.kind,
-        key.rx * 32 + i32::from(cx),
-        key.rz * 32 + i32::from(cz),
-    )
 }
 
 /// Read, hash, and store one changed region file, staging its changes.
