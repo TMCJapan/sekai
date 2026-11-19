@@ -16,16 +16,34 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
-use sekai_core::{CheckoutReport, ChunkCoord, ChunkHash, CommitId, RegionKey, Scope};
+use sekai_core::usecase::checkout::{FileChange, overwritten_regions, unchanged_regions};
+use sekai_core::{
+    CheckoutPlan, CheckoutReport, ChunkCoord, ChunkHash, CommitId, HeadMove, HeadState, RegionKey,
+    ResolveError, Revision, Scope, Target,
+};
 use sekai_storage::{SekaiStore, StorageError};
 use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
 use tokio::task::JoinSet;
 
-use crate::error::AppError;
+use crate::commit::uncommitted_chunks;
+use crate::error::{AppError, BranchUse};
 use crate::instance::{WorldGuard, WorldHandleMut};
 use crate::progress::{BuildProgress, Progress};
+use crate::refs::switch_err;
 use crate::regions::discover_regions;
+use crate::time::now_ms;
 use crate::workers::worker_slots;
+
+/// A restore: the commit it rewrote the area from and what it did.
+#[derive(Debug, Clone)]
+pub struct Restored {
+    /// The commit the area was rewritten from.
+    pub commit: CommitId,
+    /// What the rebuild wrote and deleted.
+    pub report: CheckoutReport,
+    /// Per-phase timings.
+    pub timings: CheckoutTimings,
+}
 
 /// Per-phase timings for checkout execution.
 #[derive(Debug, Clone, Default)]
@@ -36,6 +54,8 @@ pub struct CheckoutTimings {
     pub plan: Duration,
     /// Region discovery.
     pub discover: Duration,
+    /// Comparing the files to touch with HEAD; zero under `force`.
+    pub check: Duration,
     /// Rebuilding MCA files, restoring chunks from CAS, and removing post-commit files.
     pub checkout_files: Duration,
 }
@@ -89,14 +109,199 @@ pub struct CheckoutOptions {
     pub concurrency: usize,
 }
 
+/// A branch switch: where HEAD stood and what the world rebuild did.
+#[derive(Debug, Clone)]
+pub struct Switched {
+    /// HEAD before the switch.
+    pub from: HeadState,
+    /// What the switch selected.
+    pub target: Target,
+    /// What the rebuild wrote and deleted.
+    pub report: CheckoutReport,
+    /// Per-phase timings.
+    pub timings: CheckoutTimings,
+}
+
 impl<W: WorldTree, S: SekaiStore> WorldHandleMut<'_, W, S>
 where
     AppError: From<W::Error>,
 {
-    /// Rebuild the bound world from `commit`, returning execution report
-    /// and per-phase timings.
+    /// Rebuild `scope` of the bound world from `commit`, returning
+    /// execution report and per-phase timings: [`Self::restore`] with
+    /// `force`.
+    pub async fn checkout(
+        &mut self,
+        commit: CommitId,
+        options: CheckoutOptions,
+        scope: Scope,
+        progress_builder: &impl BuildProgress,
+    ) -> Result<(CheckoutReport, CheckoutTimings), AppError> {
+        self.restore(commit, scope, true, options, progress_builder)
+            .await
+    }
+
+    /// Switch HEAD to `target` and rebuild the world from its commit, as
+    /// `checkout [-f] <branch | commit-ish>` does (ADR-0036 *checkout*);
+    /// [`crate::SekaiInstance::resolve_target`] resolves the argument.
     ///
-    /// Only `scope` is rebuilt: region files outside the scope are never
+    /// A branch attaches HEAD, [`HeadMove::Keep`] keeps HEAD as it is, and
+    /// a detached target detaches it. Regions that HEAD's commit and the target's agree
+    /// on are left alone, so their uncommitted changes carry over, and a
+    /// checkout that would overwrite or drop an uncommitted chunk fails
+    /// with [`AppError::WouldOverwrite`] before any file is touched.
+    /// `force` skips that check and rebuilds the whole world, as
+    /// `git checkout -f` does; without it, `HEAD` changes nothing. A branch
+    /// checked out elsewhere is refused before any file is touched, and
+    /// HEAD moves only after every file is rebuilt.
+    pub async fn switch(
+        &mut self,
+        target: Target,
+        force: bool,
+        options: CheckoutOptions,
+        progress_builder: &impl BuildProgress,
+    ) -> Result<Switched, AppError> {
+        let guard = WorldGuard::acquire(self.world, WorldLockMode::Exclusive)?;
+        let started = Instant::now();
+        let meta = self.instance.store.meta();
+        let (worktree, from) =
+            sekai_core::head_state(meta, self.instance.worktree.as_ref()).await?;
+
+        // `HEAD` without `force` changes nothing, as `git checkout HEAD` does.
+        if target.head == HeadMove::Keep && !force {
+            return Ok(Switched {
+                from,
+                target,
+                report: CheckoutReport::default(),
+                timings: CheckoutTimings::default(),
+            });
+        }
+        // A branch checked out elsewhere is refused before any file is
+        // touched.
+        if let HeadMove::Attach(name) = &target.head {
+            self.instance
+                .refuse_checked_out(name, Some(worktree), BranchUse::CheckOut)
+                .await?;
+        }
+
+        let commit = target.commit;
+        let plan = self.plan_checkout(commit).await?;
+        // Regions both commits agree on carry their uncommitted changes over.
+        let untouched = match from.commit() {
+            Some(head) if !force => {
+                let keys: Vec<RegionKey> = plan.groups.keys().copied().collect();
+                unchanged_regions(meta, head, commit, &keys).await?
+            }
+            _ => BTreeSet::new(),
+        };
+        let rebuild = Rebuild {
+            plan,
+            planning: started.elapsed(),
+            scope: &Scope::World,
+            untouched: &untouched,
+            force,
+        };
+        let (report, timings) = self
+            .rebuild(rebuild, options, &guard, progress_builder)
+            .await?;
+
+        // HEAD moves only after every file is rebuilt.
+        sekai_core::switch_head(self.instance.store.meta_mut(), worktree, &target, now_ms()?)
+            .await
+            .map_err(switch_err)?;
+        Ok(Switched {
+            from,
+            target,
+            report,
+            timings,
+        })
+    }
+
+    /// Switch HEAD to what `revision` selects and rebuild the world, as
+    /// `checkout [-f] <branch | commit-ish>` does:
+    /// [`crate::SekaiInstance::resolve_target`] followed by
+    /// [`Self::switch`].
+    pub async fn switch_to(
+        &mut self,
+        revision: &Revision,
+        force: bool,
+        options: CheckoutOptions,
+        progress_builder: &impl BuildProgress,
+    ) -> Result<Switched, AppError> {
+        let target = self.instance.resolve_target(revision).await?;
+        self.switch(target, force, options, progress_builder).await
+    }
+
+    /// Rewrite `scope` of the bound world from `source`, or from HEAD's
+    /// commit, without moving HEAD, as `checkout [-f] [<commit-ish>]
+    /// <selection>` does (ADR-0036 *checkout*). An unborn HEAD fails with
+    /// [`AppError::UnbornBranch`].
+    pub async fn restore_from(
+        &mut self,
+        source: Option<&Revision>,
+        scope: Scope,
+        force: bool,
+        options: CheckoutOptions,
+        progress_builder: &impl BuildProgress,
+    ) -> Result<Restored, AppError> {
+        let commit = match source {
+            Some(source) => self.instance.resolve_revision(source).await?,
+            None => self.born_head().await?,
+        };
+        let (report, timings) = self
+            .restore(commit, scope, force, options, progress_builder)
+            .await?;
+        Ok(Restored {
+            commit,
+            report,
+            timings,
+        })
+    }
+
+    /// Act on HEAD alone, as `checkout [-f]` without an argument or a
+    /// selection does (ADR-0036 *checkout*): nothing without `force`,
+    /// and with it a rebuild of the whole world from HEAD that discards
+    /// uncommitted changes. Either way, an unborn HEAD fails with
+    /// [`AppError::UnbornBranch`], as in Git.
+    pub async fn checkout_head(
+        &mut self,
+        force: bool,
+        options: CheckoutOptions,
+        progress_builder: &impl BuildProgress,
+    ) -> Result<Option<Restored>, AppError> {
+        let commit = self.born_head().await?;
+        if !force {
+            return Ok(None);
+        }
+        let (report, timings) = self
+            .restore(commit, Scope::World, true, options, progress_builder)
+            .await?;
+        Ok(Some(Restored {
+            commit,
+            report,
+            timings,
+        }))
+    }
+
+    /// The commit HEAD stands at; an unborn HEAD fails in Git's words for
+    /// `checkout`.
+    async fn born_head(&self) -> Result<CommitId, AppError> {
+        let instance = &self.instance;
+        sekai_core::born_head(instance.store.meta(), instance.worktree.as_ref())
+            .await
+            .map_err(|err| match err {
+                ResolveError::UnbornHead { .. } => AppError::UnbornBranch,
+                other => AppError::CommitRef(other),
+            })
+    }
+
+    /// Rewrite `scope` of the bound world from `commit` without moving
+    /// HEAD, as `checkout [-f] [<commit-ish>] <selection>` does, and as
+    /// `checkout -f` does for the whole world from HEAD (ADR-0036
+    /// *checkout*). Returns execution report and per-phase timings.
+    ///
+    /// Without `force`, a restore that would overwrite or drop an
+    /// uncommitted chunk fails with [`AppError::WouldOverwrite`] before
+    /// any file is touched. Region files outside `scope` are never
     /// written, deleted, or otherwise touched. `progress_builder` counts the
     /// files to write or delete, stepping on the async side as each one
     /// finishes, never on the blocking pool.
@@ -109,73 +314,177 @@ where
     ///
     /// Rebuilding writes (and may delete) region files, so it goes through
     /// `&mut self`: only one write session per world can exist at a time.
-    pub async fn checkout(
+    pub async fn restore(
         &mut self,
         commit: CommitId,
-        options: CheckoutOptions,
         scope: Scope,
+        force: bool,
+        options: CheckoutOptions,
         progress_builder: &impl BuildProgress,
     ) -> Result<(CheckoutReport, CheckoutTimings), AppError> {
         let guard = WorldGuard::acquire(self.world, WorldLockMode::Exclusive)?;
-        let store = &self.instance.store;
-        let world = &*self.world;
-        let total_started = Instant::now();
-
-        let plan_started = Instant::now();
-        // The commit's creation time stamps every rebuilt file.
-        let plan = sekai_core::usecase::checkout::plan_checkout(store.meta(), commit)
+        let started = Instant::now();
+        let plan = self.plan_checkout(commit).await?;
+        let rebuild = Rebuild {
+            plan,
+            planning: started.elapsed(),
+            scope: &scope,
+            untouched: &BTreeSet::new(),
+            force,
+        };
+        self.rebuild(rebuild, options, &guard, progress_builder)
             .await
-            .map_err(AppError::Checkout)?;
-        let plan_dt = plan_started.elapsed();
+    }
 
+    /// Rebuild the whole bound world from `plan`, a commit already planned,
+    /// as [`Self::restore`] does under `force`, under the caller's
+    /// exclusive `guard` on the world.
+    #[cfg(feature = "backend-local")]
+    #[expect(
+        clippy::needless_pass_by_ref_mut,
+        reason = "rebuilding writes the world, which takes a write session"
+    )]
+    pub(crate) async fn restore_planned(
+        &mut self,
+        plan: CheckoutPlan,
+        options: CheckoutOptions,
+        guard: &Arc<WorldGuard<W::Lock>>,
+        progress_builder: &impl BuildProgress,
+    ) -> Result<(CheckoutReport, CheckoutTimings), AppError> {
+        let rebuild = Rebuild {
+            plan,
+            planning: Duration::ZERO,
+            scope: &Scope::World,
+            untouched: &BTreeSet::new(),
+            force: true,
+        };
+        self.rebuild(rebuild, options, guard, progress_builder)
+            .await
+    }
+
+    /// The present rows of `commit`.
+    async fn plan_checkout(&self, commit: CommitId) -> Result<CheckoutPlan, AppError> {
+        sekai_core::usecase::checkout::plan_checkout(self.instance.store.meta(), commit)
+            .await
+            .map_err(AppError::Checkout)
+    }
+
+    /// Rebuild the files `rebuild` selects, after checking them for
+    /// uncommitted chunks unless `rebuild.force` is set.
+    async fn rebuild(
+        &self,
+        rebuild: Rebuild<'_>,
+        options: CheckoutOptions,
+        guard: &Arc<WorldGuard<W::Lock>>,
+        progress_builder: &impl BuildProgress,
+    ) -> Result<(CheckoutReport, CheckoutTimings), AppError> {
+        let total_started = Instant::now();
+        let world = &*self.world;
+        let plan = rebuild.plan;
+        // The commit's creation time stamps every rebuilt file.
         let timestamp = u32::try_from(plan.created_at_ms / 1000).unwrap_or(u32::MAX);
+        let selected = |key: &RegionKey| {
+            rebuild.scope.matches_region(*key) && !rebuild.untouched.contains(key)
+        };
 
-        // Scope before the file passes: out-of-scope regions are dropped
-        // from both sides, so the passes below cannot tell they exist.
+        // Select before the file passes: regions left out are dropped from
+        // both sides, so the passes below cannot tell they exist.
         let mut groups = plan.groups;
-        groups.retain(|key, _| scope.matches_region(*key));
+        groups.retain(|key, _| selected(key));
 
         // Discovery walks the filesystem, so it runs on the blocking pool
         // with its own share of the world lock, like every file write.
         let discover_started = Instant::now();
         let world_handle = world.clone();
         let mut discovered =
-            on_blocking_pool(Arc::clone(&guard), move || discover_regions(&world_handle)).await?;
+            on_blocking_pool(Arc::clone(guard), move || discover_regions(&world_handle)).await?;
         let discover_dt = discover_started.elapsed();
-        discovered.retain(|key, _| scope.matches_region(*key));
+        discovered.retain(|key, _| selected(key));
+
+        let jobs = plan_files(groups, &discovered, world, options)?;
+
+        let check_started = Instant::now();
+        if !rebuild.force {
+            let uncommitted = uncommitted_chunks(
+                self.instance,
+                world,
+                rebuild.scope,
+                options.concurrency,
+                guard,
+            )
+            .await?;
+            let keep_live_chunks =
+                options.keep_post_commit_chunks || options.keep_tombstoned_chunks;
+            let regions = overwritten_regions(
+                jobs.iter().map(FileJob::change),
+                &uncommitted,
+                keep_live_chunks,
+            );
+            if !regions.is_empty() {
+                return Err(AppError::WouldOverwrite { regions });
+            }
+        }
+        let check_dt = check_started.elapsed();
 
         let files_started = Instant::now();
-        let jobs = plan_files(groups, &discovered, world, options)?;
         let report = run_files(
             jobs,
-            store.blob(),
+            self.instance.store.blob(),
             options,
             timestamp,
-            &guard,
+            guard,
             progress_builder,
         )
         .await?;
         let files_dt = files_started.elapsed();
 
         let timings = CheckoutTimings {
-            total: total_started.elapsed(),
-            plan: plan_dt,
+            total: rebuild.planning + total_started.elapsed(),
+            plan: rebuild.planning,
             discover: discover_dt,
+            check: check_dt,
             checkout_files: files_dt,
         };
-
         Ok((report, timings))
     }
 }
 
+/// A commit's rows to rebuild, which files they may touch, and whether
+/// the files are checked first.
+struct Rebuild<'a> {
+    /// The commit's present rows.
+    plan: CheckoutPlan,
+    /// How long resolving and planning took.
+    planning: Duration,
+    /// Regions outside are never touched.
+    scope: &'a Scope,
+    /// Regions a branch switch leaves alone.
+    untouched: &'a BTreeSet<RegionKey>,
+    /// Skip the check for uncommitted chunks.
+    force: bool,
+}
+
 /// What one region file needs.
 enum FileJob<R: RegionFile> {
-    Delete(R),
+    Delete {
+        key: RegionKey,
+        region: R,
+    },
     Rebuild {
         key: RegionKey,
         region: R,
         rows: Vec<(ChunkCoord, ChunkHash)>,
     },
+}
+
+impl<R: RegionFile> FileJob<R> {
+    /// The region and what happens to it, for the uncommitted-chunk check.
+    fn change(&self) -> (RegionKey, FileChange<'_>) {
+        match self {
+            Self::Delete { key, .. } => (*key, FileChange::Delete),
+            Self::Rebuild { key, rows, .. } => (*key, FileChange::Rebuild(rows)),
+        }
+    }
 }
 
 /// Decide what every region file needs, without touching the disk: present
@@ -215,7 +524,7 @@ where
         let region = if let Some(region) = discovered.get(&key) {
             region.clone()
         } else {
-            resolve_target(discovered, world, &key, options.on_missing_file)?
+            missing_region_target(discovered, world, key, options.on_missing_file)?
         };
         Ok(Some(FileJob::Rebuild { key, region, rows }))
     } else {
@@ -227,7 +536,10 @@ where
         if keep {
             Ok(None)
         } else {
-            Ok(discovered.get(&key).cloned().map(FileJob::Delete))
+            Ok(discovered
+                .get(&key)
+                .cloned()
+                .map(|region| FileJob::Delete { key, region }))
         }
     }
 }
@@ -312,7 +624,7 @@ where
     AppError: From<R::Error>,
 {
     match job {
-        FileJob::Delete(region) => {
+        FileJob::Delete { region, .. } => {
             write_while_running(&lock, move || {
                 if !region.exists() {
                     return Ok(Outcome::AlreadyAbsent);
@@ -443,18 +755,18 @@ where
 
 /// Target region file for a commit-known region whose file is missing on
 /// disk, per [`MissingFilePolicy`].
-fn resolve_target<T: WorldTree>(
+fn missing_region_target<T: WorldTree>(
     discovered: &BTreeMap<RegionKey, T::Region>,
     world: &T,
-    key: &RegionKey,
+    key: RegionKey,
     policy: MissingFilePolicy,
 ) -> Result<T::Region, AppError>
 where
     AppError: From<T::Error>,
 {
     match policy {
-        MissingFilePolicy::Error => Err(AppError::MissingRegionFile { key: *key }),
-        MissingFilePolicy::DerivedOnly => Ok(world.derive_region(*key)?),
+        MissingFilePolicy::Error => Err(AppError::MissingRegionFile { key }),
+        MissingFilePolicy::DerivedOnly => Ok(world.derive_region(key)?),
         // Folders may have moved since the commit (e.g. across a 26.1
         // migration), so a same-dimension sibling's directory wins over
         // the layout-derived one. Any sibling of that dimension and family
@@ -466,8 +778,8 @@ where
             .iter()
             .find(|(found, _)| found.dim == key.dim && found.kind == key.kind)
         {
-            Some((_, sibling)) => Ok(world.sibling_region(sibling, *key)?),
-            None => Ok(world.derive_region(*key)?),
+            Some((_, sibling)) => Ok(world.sibling_region(sibling, key)?),
+            None => Ok(world.derive_region(key)?),
         },
     }
 }

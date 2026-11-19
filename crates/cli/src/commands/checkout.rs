@@ -48,9 +48,12 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let mut world = HostWorldTree::new(&world_path)
         .with_context(|| format!("failed to inspect world {}", world_path.as_ref().display()))?;
-    let mut instance = sekai_app::SekaiInstance::open(store)
-        .await
-        .with_context(|| format!("checkout of {} failed", world_path.as_ref().display()))?;
+    let mut instance = sekai_app::SekaiInstance::open_location(&sekai_app::Location {
+        store: store.into(),
+        world: None,
+    })
+    .await
+    .with_context(|| format!("checkout of {} failed", world_path.as_ref().display()))?;
     let id = instance
         .resolve_commit_ref(commit.as_str())
         .await
@@ -198,6 +201,7 @@ mod tests {
             total: Duration::from_millis(90),
             plan: Duration::from_millis(9),
             discover: Duration::from_millis(8),
+            check: Duration::ZERO,
             checkout_files: Duration::from_millis(70),
         };
         let payload = checkout_payload(&report, &timings, false);

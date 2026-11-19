@@ -184,9 +184,6 @@ jobs:
             exit 1
           fi
           [ ! -e "$SMOKE/store" ]
-          "$BIN" --store "$SMOKE/store" init --json | grep -q '"command":"init","status":"ok"'
-          "$BIN" --store "$SMOKE/store" log --json | grep -q '"command":"log","status":"ok"'
-          "$BIN" --store "$SMOKE/store" status "$SMOKE/world" --json | grep -q '"status":"ok"'
 
       - name: Upload CLI
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9

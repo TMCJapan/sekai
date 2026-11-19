@@ -622,25 +622,6 @@ fn parses_timing_and_json_flags() {
 }
 
 #[test]
-fn parses_init_command() {
-    let cli = Cli::try_parse_from(["sekai", "init"]).expect("init parses");
-    assert!(matches!(cli.command, Command::Init { json: false }));
-    assert_eq!(cli.command.name(), "init");
-    assert!(!cli.command.output_json());
-    assert_eq!(cli.store, ".sekai");
-
-    let cli = Cli::try_parse_from(["sekai", "--store", "s", "init", "--json"])
-        .expect("init --json parses");
-    assert!(matches!(cli.command, Command::Init { json: true }));
-    assert!(cli.command.output_json());
-    assert_eq!(cli.store, "s");
-
-    // Init takes no world argument and has no phases to time.
-    assert!(Cli::try_parse_from(["sekai", "init", "world"]).is_err());
-    assert!(Cli::try_parse_from(["sekai", "init", "--timing"]).is_err());
-}
-
-#[test]
 fn parses_color_flag() {
     let cli = Cli::try_parse_from(["sekai", "commit", "world"]).expect("commit parses");
     assert_eq!(cli.color, ColorChoice::Auto);

@@ -187,15 +187,19 @@ impl Op {
             Self::ListCommits => instance.list_commits().await.map(drop),
             Self::ResolveRef => {
                 let raw = fx.commit.to_string();
-                instance.resolve_commit_ref(&raw).await.map(drop)
+                instance.resolve_commit_ref(&raw).await.map(drop)?;
+                // The ref-name lookup path: the fixture's commit landed
+                // on `main`, so the branch exists.
+                instance.resolve_commit_ref("main").await.map(drop)
             }
             Self::CreateRef => {
                 let name = RefName::parse("lock-matrix").unwrap();
-                instance.create_ref(&name, id, true).await.map(drop)
+                let start = sekai_app::Revision::parse(&id.to_string()).unwrap();
+                instance.create_branch(&name, &start, true).await.map(drop)
             }
             Self::DeleteRef => {
                 let name = RefName::parse("lock-matrix").unwrap();
-                instance.delete_ref(&name).await.map(drop)
+                instance.delete_branch(&name, true).await.map(drop)
             }
             Self::CreateScope => {
                 let name = ScopeName::parse("lock-matrix").unwrap();

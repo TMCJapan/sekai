@@ -28,7 +28,7 @@ pub use api::{StorageError, Store, io_error};
 pub use blob::BlobStore;
 pub use cache::CacheStore;
 pub use meta::MetaStore;
-pub use store::{SekaiStore, SekaiStoreOpener};
+pub use store::SekaiStore;
 pub use tree::{
     DimEntry, DimNode, NodeLevel, RegionEntry, RegionNode, RootEntry, RootNode, TreeError,
     TreeNodes, empty_tree,

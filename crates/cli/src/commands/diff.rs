@@ -25,7 +25,11 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
         // filters.
         Selection::Scope(_) => (Vec::new(), true),
     };
-    let instance = sekai_app::SekaiInstance::open(store).await?;
+    let instance = sekai_app::SekaiInstance::open_location(&sekai_app::Location {
+        store: store.into(),
+        world: None,
+    })
+    .await?;
     let scope = resolve_selection(&instance, &args.selection).await?;
     let bars = Bars::new(args.output.progress);
 
