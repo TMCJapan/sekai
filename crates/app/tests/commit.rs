@@ -78,6 +78,28 @@ const fn options() -> CommitOptions {
     CommitOptions { concurrency: 2 }
 }
 
+/// Initialize the store right after the last handle was dropped in the
+/// same process. sled admits one opener per keyspace and background
+/// flush jobs on its global thread pool keep their own clones of the
+/// keyspace file, so the exclusive lock can still be held for a moment
+/// after `drop` returns. Wait the lock out instead of racing it.
+async fn init_after_drop(store: &str) -> sekai_app::SekaiInstance<sekai_storage_local::LocalStore> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        match sekai_app::SekaiInstance::init(store).await {
+            Ok(instance) => return instance,
+            Err(err) => {
+                if !err.to_string().contains("could not acquire lock")
+                    || std::time::Instant::now() >= deadline
+                {
+                    panic!("store failed to open after drop: {err}");
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+        }
+    }
+}
+
 /// A parseable but non-canonical file name (`r.00.00.mca`) must be read
 /// from the path discovery found, not from the canonical `r.0.0.mca`.
 #[tokio::test]
@@ -659,7 +681,7 @@ async fn missing_blob_abort_is_default_and_skip_recovers() {
     // committed blob.
     drop(instance);
     std::fs::remove_dir_all(store_dir.join("blobs")).unwrap();
-    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let mut instance = init_after_drop(&store).await;
 
     // Default policy aborts loudly, leaving the live file alone.
     let error = instance
