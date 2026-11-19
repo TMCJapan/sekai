@@ -407,3 +407,176 @@ async fn opener_trait_takes_path_like_locations() {
     drop(store);
     let _store = LocalStore::open(dir.as_path()).await.unwrap();
 }
+
+/// Write a worktree pointer config. TOML literal strings keep Windows
+/// backslashes intact without escaping.
+fn write_worktree_conf(wt: impl AsRef<Path>, main: &str) {
+    std::fs::write(
+        wt.as_ref().join("conf.toml"),
+        format!(
+            "version = {}\nmain_worktree = '{main}'\n",
+            sekai_storage_local::CONFIG_VERSION
+        ),
+    )
+    .unwrap();
+}
+
+/// A worktree config pointing at the main worktree's store root resolves
+/// every database from there: both roots open the one shared store, and the
+/// worktree directory keeps only its pointer config.
+#[tokio::test]
+async fn worktree_conf_shares_the_main_store() {
+    let (base, _guard) = tempdir("worktree-share");
+    let main = base.join("main");
+    let mut store = init(&main).await;
+    let hash = ChunkHash::new(sekai_util::hash_bytes(b"shared"));
+    assert!(store.blob_mut().put(&hash, b"shared").await.unwrap());
+    store.blob_mut().sync().await.unwrap();
+    drop(store);
+
+    let wt = base.join("wt");
+    std::fs::create_dir_all(&wt).unwrap();
+    write_worktree_conf(&wt, &main.to_string_lossy());
+
+    let mut store = LocalStore::open(&wt).await.unwrap();
+    let mut out = Vec::new();
+    store.blob_mut().fetch_into(&hash, &mut out).await.unwrap();
+    assert_eq!(out, b"shared");
+
+    // History recorded through the worktree handle lands in the shared meta.
+    let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
+    let entry = CommitEntry::new(coord, Some(ChunkHash::new([1; 32])));
+    let id = store
+        .meta_mut()
+        .apply_commit_incremental(1_000, &[], &[entry])
+        .await
+        .unwrap()
+        .id;
+    drop(store);
+
+    assert!(!wt.join("meta.sqlite").exists());
+    assert!(!wt.join("blobs").exists());
+    assert!(!wt.join("cache").exists());
+
+    let store = LocalStore::open(&main).await.unwrap();
+    assert_eq!(
+        store.meta().lookup_chunk(id, &coord).await.unwrap(),
+        Some(entry)
+    );
+}
+
+/// A relative pointer joins onto the worktree's store root, not the process
+/// working directory.
+#[tokio::test]
+async fn worktree_pointer_may_be_relative() {
+    let (base, _guard) = tempdir("worktree-relative");
+    let main = base.join("main");
+    let store = init(&main).await;
+    drop(store);
+
+    let wt = base.join("wt");
+    std::fs::create_dir_all(&wt).unwrap();
+    write_worktree_conf(&wt, "../main");
+    let _store = LocalStore::open(&wt).await.unwrap();
+}
+
+/// A pointer at a never-initialized root fails loudly and creates nothing.
+#[tokio::test]
+async fn worktree_open_of_a_missing_main_store_fails() {
+    let (base, _guard) = tempdir("worktree-missing");
+    let wt = base.join("wt");
+    std::fs::create_dir_all(&wt).unwrap();
+    write_worktree_conf(&wt, &base.join("main").to_string_lossy());
+    let err = LocalStore::open(&wt).await.unwrap_err();
+    assert!(
+        matches!(err, sekai_storage::StorageError::StoreMissing { .. }),
+        "unexpected error: {err}"
+    );
+    assert!(!base.join("main").exists());
+    assert!(!wt.join("meta.sqlite").exists());
+}
+
+/// Init through a pointer config materializes the shared store at the main
+/// root and keeps the worktree's pointer file untouched.
+#[tokio::test]
+async fn worktree_init_materializes_the_shared_store() {
+    let (base, _guard) = tempdir("worktree-init");
+    let main = base.join("main");
+    let wt = base.join("wt");
+    std::fs::create_dir_all(&wt).unwrap();
+    write_worktree_conf(&wt, &main.to_string_lossy());
+
+    let store = LocalStore::init(&wt).await.unwrap();
+    drop(store);
+    assert!(main.join("conf.toml").is_file());
+    assert!(main.join("meta.sqlite").is_file());
+    assert!(main.join("blobs/conf").is_file());
+    assert!(main.join("cache/conf").is_file());
+    assert!(!wt.join("meta.sqlite").exists());
+    assert!(
+        std::fs::read_to_string(wt.join("conf.toml"))
+            .unwrap()
+            .contains("main_worktree")
+    );
+
+    let _store = LocalStore::open(&main).await.unwrap();
+}
+
+/// The worktree config is version-gated before the shared store is touched.
+#[tokio::test]
+async fn worktree_conf_version_is_gated() {
+    let (base, _guard) = tempdir("worktree-version");
+    let main = base.join("main");
+    let store = init(&main).await;
+    drop(store);
+
+    let wt = base.join("wt");
+    std::fs::create_dir_all(&wt).unwrap();
+    std::fs::write(
+        wt.join("conf.toml"),
+        format!(
+            "version = 99\nmain_worktree = '{}'\n",
+            main.to_string_lossy()
+        ),
+    )
+    .unwrap();
+    let err = LocalStore::open(&wt).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            sekai_storage::StorageError::UnsupportedSchema { found: 99, .. }
+        ),
+        "unexpected error: {err}"
+    );
+}
+
+/// Sharing does not bypass the keyspace session lock: a second worktree
+/// cannot open the shared store while the first handle lives.
+#[tokio::test]
+async fn a_live_shared_store_refuses_a_second_worktree() {
+    let (base, _guard) = tempdir("worktree-exclusive");
+    let main = base.join("main");
+    let store = init(&main).await;
+    drop(store);
+
+    let wt1 = base.join("wt1");
+    let wt2 = base.join("wt2");
+    for wt in [&wt1, &wt2] {
+        std::fs::create_dir_all(wt).unwrap();
+        write_worktree_conf(wt, &main.to_string_lossy());
+    }
+    let store = LocalStore::open(&wt1).await.unwrap();
+    let err = LocalStore::open(&wt2).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            sekai_storage::StorageError::Backend {
+                backend: "sled",
+                ..
+            }
+        ),
+        "unexpected error: {err}"
+    );
+    drop(store);
+    let _store = LocalStore::open(&wt2).await.unwrap();
+}
