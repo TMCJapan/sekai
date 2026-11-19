@@ -68,9 +68,7 @@ impl<T: SekaiStore> SekaiInstance<T> {
 
     /// List all commits in local record order (for `log` and pre-flight checks).
     pub async fn list_commits(&self) -> Result<Vec<Commit>, AppError> {
-        sekai_core::usecase::graph::list_commits(self.store.meta())
-            .await
-            .map_err(AppError::Commit)
+        Ok(sekai_core::usecase::graph::list_commits(self.store.meta()).await?)
     }
 
     /// The commits a commit continues: its direct parents.
@@ -103,7 +101,7 @@ impl<T: SekaiStore> SekaiInstance<T> {
 
     /// Resolve a commit reference (`<64-char hash>` or a ref name).
     pub async fn resolve_commit_ref(&self, raw: &str) -> Result<CommitId, AppError> {
-        sekai_core::usecase::graph::resolve_commit_ref(self.store.meta(), raw)
+        sekai_core::usecase::resolve::resolve_commit_ref(self.store.meta(), raw)
             .await
             .map_err(AppError::CommitRef)
     }

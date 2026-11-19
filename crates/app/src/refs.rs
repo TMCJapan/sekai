@@ -59,9 +59,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
 
     /// List refs in full refname order.
     pub async fn list_refs(&self) -> Result<Vec<CommitRef>, AppError> {
-        sekai_core::usecase::refs::list_refs(self.store.meta())
-            .await
-            .map_err(AppError::Commit)
+        Ok(sekai_core::usecase::refs::list_refs(self.store.meta()).await?)
     }
 
     /// The commit HEAD stands at - the one the next commit continues -
@@ -71,9 +69,8 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// the newest commit may sit on a branch HEAD is not on.
     pub async fn current_commit_id(&self) -> Result<Option<CommitId>, AppError> {
         Ok(
-            sekai_core::usecase::refs::head(self.store.meta(), &main_worktree()?)
-                .await
-                .map_err(AppError::Commit)?
+            sekai_core::usecase::head::head(self.store.meta(), &main_worktree()?)
+                .await?
                 .as_ref()
                 .and_then(HeadState::commit),
         )
