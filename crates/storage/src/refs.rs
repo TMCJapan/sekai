@@ -2,8 +2,7 @@
 //!
 //! A ref names a commit and moves with the history it names. Exactly one
 //! ref is active - the one new commits hang from. Reads here are pure
-//! lookups; the mutations live in [`MetaStore`](crate::meta::MetaStore)
-//! and the app layer.
+//! lookups; the mutations live in [`MetaStore`] and the app layer.
 
 use alloc::vec::Vec;
 
