@@ -5,6 +5,7 @@
 #![cfg(feature = "backend-local")]
 
 mod fixtures;
+mod support;
 
 use fixtures::chunk_nbt;
 
@@ -63,7 +64,7 @@ async fn status_counts_tombstones_without_writing() {
         &[(0, 0, chunk_nbt("marker-1")), (1, 0, chunk_nbt("marker-2"))],
     );
 
-    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let mut instance = support::init_store(&store).await.unwrap();
     let (committed, _) = instance
         .world_mut(&mut world)
         .commit(
@@ -109,7 +110,7 @@ async fn status_reports_a_clean_world_after_commit() {
         &[(0, 0, chunk_nbt("marker-1")), (1, 0, chunk_nbt("marker-2"))],
     );
 
-    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let mut instance = support::init_store(&store).await.unwrap();
     let (committed, _) = instance
         .world_mut(&mut world)
         .commit(
@@ -151,7 +152,7 @@ async fn status_proves_a_clean_world_without_hashing() {
         &[(0, 0, chunk_nbt("marker-1")), (1, 0, chunk_nbt("marker-2"))],
     );
 
-    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let mut instance = support::init_store(&store).await.unwrap();
     instance
         .world_mut(&mut world)
         .update_cache(sekai_app::CacheUpdateOptions::default(), &())
@@ -196,7 +197,7 @@ async fn status_wiped_cache_falls_back_to_hashing() {
         &[(0, 0, chunk_nbt("marker-1"))],
     );
 
-    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let mut instance = support::init_store(&store).await.unwrap();
     instance
         .world_mut(&mut world)
         .update_cache(sekai_app::CacheUpdateOptions::default(), &())
@@ -213,7 +214,7 @@ async fn status_wiped_cache_falls_back_to_hashing() {
         .unwrap();
     drop(instance);
     std::fs::remove_dir_all(store_dir.join("cache")).unwrap();
-    let instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let instance = support::init_store(&store).await.unwrap();
 
     let (report, timings) = instance
         .world(&world)
@@ -241,7 +242,7 @@ async fn status_partial_scope_proves_without_false_tombstones() {
         &[(0, 0, chunk_nbt("marker-1")), (1, 0, chunk_nbt("marker-2"))],
     );
 
-    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let mut instance = support::init_store(&store).await.unwrap();
     instance
         .world_mut(&mut world)
         .update_cache(sekai_app::CacheUpdateOptions::default(), &())
@@ -290,7 +291,7 @@ async fn status_out_of_scope_change_falls_back_and_stays_clean() {
         &[(0, 0, chunk_nbt("marker-1")), (1, 0, chunk_nbt("marker-2"))],
     );
 
-    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let mut instance = support::init_store(&store).await.unwrap();
     instance
         .world_mut(&mut world)
         .update_cache(sekai_app::CacheUpdateOptions::default(), &())

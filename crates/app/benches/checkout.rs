@@ -2,6 +2,8 @@
 
 #[path = "common.rs"]
 mod common;
+#[path = "../tests/support/mod.rs"]
+mod support;
 
 use common::{SMALL, corpus_world, generate, options, runtime, tempdir};
 use criterion::{Criterion, criterion_group, criterion_main};
@@ -17,7 +19,7 @@ fn benches(c: &mut Criterion) {
         generate(&world_path, &SMALL);
         let store = root.path().join("store").to_string_lossy().into_owned();
         let mut instance = rt
-            .block_on(sekai_app::SekaiInstance::init(&store))
+            .block_on(support::init_store(&store))
             .expect("open works");
         rt.block_on(
             instance
@@ -48,7 +50,7 @@ fn benches(c: &mut Criterion) {
             .to_string_lossy()
             .into_owned();
         let mut instance = rt
-            .block_on(sekai_app::SekaiInstance::init(&store))
+            .block_on(support::init_store(&store))
             .expect("open works");
         rt.block_on(
             instance

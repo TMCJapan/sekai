@@ -6,6 +6,7 @@
 #![cfg(feature = "backend-local")]
 
 mod fixtures;
+mod support;
 
 use fixtures::chunk_nbt;
 use sekai_anvil::ChunkHashError;
@@ -19,7 +20,7 @@ async fn instance(name: &str) -> (SekaiInstance<LocalStore>, tempfile::TempDir) 
         .tempdir()
         .unwrap();
     let url = guard.path().join("store").to_string_lossy().into_owned();
-    let instance = SekaiInstance::init(&url).await.unwrap();
+    let instance = support::init_store(&url).await.unwrap();
     (instance, guard)
 }
 

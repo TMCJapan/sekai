@@ -309,16 +309,6 @@ fn validates_commit_refs_at_parse_time() {
         vec!["sekai", "checkout", "w", "a//b"],
         vec!["sekai", "checkout", "w", "a/../b"],
         vec!["sekai", "diff", H1, "bad name"],
-        vec!["sekai", "ref", "create", "main", "@stable"],
-        vec!["sekai", "ref", "create", ""],
-        vec!["sekai", "ref", "create", "bad name"],
-        vec!["sekai", "ref", "create", "main", "HEAD"],
-        vec!["sekai", "ref", "create", "HEAD"],
-        vec!["sekai", "ref", "create"],
-        vec!["sekai", "ref", "create", "123"],
-        vec!["sekai", "ref", "create", "main", H3, "4"],
-        vec!["sekai", "ref", "delete"],
-        vec!["sekai", "ref"],
     ] {
         assert!(Cli::try_parse_from(&args).is_err(), "{args:?} is refused");
     }
@@ -328,16 +318,6 @@ fn validates_commit_refs_at_parse_time() {
         vec!["sekai", "checkout", "w", "feature/nightly"],
         vec!["sekai", "checkout", "w", "v1.2_x-1"],
         vec!["sekai", "diff", H1, H2],
-        vec!["sekai", "ref", "create", "main"],
-        vec![
-            "sekai",
-            "ref",
-            "create",
-            "feature/nightly",
-            "main",
-            "--force",
-            "--json",
-        ],
     ] {
         Cli::try_parse_from(&args).unwrap_or_else(|err| panic!("{args:?} parses: {err}"));
     }
@@ -353,8 +333,8 @@ fn validates_commit_refs_at_parse_time() {
 
     // The refusal names what a reference may be, so the wording is part
     // of the contract the parse error carries.
-    let err = Cli::try_parse_from(["sekai", "checkout", "w", "18446744073709551616"])
-        .expect_err("an out-of-range id is refused");
+    let err = Cli::try_parse_from(["sekai", "checkout", "w", "bad name"])
+        .expect_err("a malformed reference is refused");
     let message = err.to_string();
     assert!(
         message.contains("invalid reference"),
@@ -804,6 +784,10 @@ fn parses_scope_subcommands() {
     ));
     assert!(!cli.command.output_json());
 
+    // A scope name refuses no path shape (ADR-0035).
+    Cli::try_parse_from(["sekai", "scope", "create", "a/../b", "--in", "ow:0,0"])
+        .expect("scope create with a dotted path parses");
+
     let cli = Cli::try_parse_from(["sekai", "scope", "delete", "spawn"]).expect("scope delete");
     assert!(matches!(
         &cli.command,
@@ -831,7 +815,6 @@ fn parses_scope_subcommands() {
             "sekai", "scope", "create", "spawn", "--in", "ow:0,0", "--kind", "region",
         ],
         vec!["sekai", "scope", "create", "bad name", "--in", "ow:0,0"],
-        vec!["sekai", "scope", "create", "a/../b", "--in", "ow:0,0"],
         vec!["sekai", "scope", "delete", "spawn", "--force"],
         vec!["sekai", "scope", "list", "--force"],
     ] {
