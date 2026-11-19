@@ -23,3 +23,16 @@ async fn fetch(req: Request, env: Env, _ctx: Context) -> Result<Response> {
         .run(req, env)
         .await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn renders_health_payload() {
+        assert_eq!(
+            serde_json::to_string(&Health { status: "ok" }).unwrap(),
+            r#"{"status":"ok"}"#
+        );
+    }
+}

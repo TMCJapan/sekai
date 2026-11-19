@@ -1409,6 +1409,7 @@ name = "sekai-remote-worker"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
  "worker",
 ]
 
