@@ -1,6 +1,7 @@
 # ADR-0032: Empty-base world diff and region-parallel diff pipeline
 
-- Status: Accepted
+- Status: Amended by ADR-0036 (`diff` with an unborn HEAD fails on the
+  command line; `app` still diffs against the empty snapshot)
 - Date: 2026-11-16
 
 ## Context
