@@ -7,7 +7,7 @@
 <!-- e.g. `core`, `storage`, `anvil`. -->
 
 - [ ] `util`, `core`, `anvil`, `world`, and `storage` remain `no_std`
-- [ ] No storage schema change (or: `user_version` bumped, see below)
+- [ ] No storage schema change (or: `conf.toml` version bumped, see below)
 - [ ] JSON output unchanged (or: golden tests + `docs/json.md` updated together)
 
 ## Safety invariants

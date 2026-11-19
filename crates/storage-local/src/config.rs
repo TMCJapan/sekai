@@ -10,10 +10,7 @@ use serde::{Deserialize, Serialize};
 /// Config file name at the store root.
 pub const FILE_NAME: &str = "conf.toml";
 
-/// Version of the config format this binary writes and accepts.
-///
-/// Pre-release policy recreates, it never migrates: an unknown version is
-/// refused loudly instead of reinterpreted.
+/// Version of the store format this binary writes and accepts.
 pub const CONFIG_VERSION: u32 = 1;
 
 /// Store configuration persisted at `<root>/conf.toml`.

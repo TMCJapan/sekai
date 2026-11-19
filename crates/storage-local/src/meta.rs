@@ -19,9 +19,6 @@ use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
 };
 
-/// Managed schema version (`PRAGMA user_version`).
-pub const SCHEMA_VERSION: i64 = 17;
-
 const SCHEMA: &str = include_str!("../schema/sqlite.sql");
 
 /// Map a backend failure into the shared storage error.
@@ -69,16 +66,14 @@ async fn connect_pool(options: SqliteConnectOptions) -> Result<SqlitePool, sqlx:
     }
 }
 
-async fn read_user_version<'c>(
-    executor: impl sqlx::SqliteExecutor<'c>,
-) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar("PRAGMA user_version")
+async fn has_schema<'c>(executor: impl sqlx::SqliteExecutor<'c>) -> Result<bool, sqlx::Error> {
+    sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table')")
         .fetch_one(executor)
         .await
 }
 
 impl SqliteMeta {
-    /// Open (creating and version-gating) the database at `path`.
+    /// Open the database at `path`, creating the schema when missing.
     ///
     /// The parent directory must already exist; this type never creates it
     /// (directory layout is the store's concern). Opening while another
@@ -91,17 +86,9 @@ impl SqliteMeta {
             .synchronous(SqliteSynchronous::Full)
             .foreign_keys(true);
         let pool = connect_pool(options).await.map_err(db_err)?;
-        let mut version = read_user_version(&pool).await.map_err(db_err)?;
-        if version == 0 {
-            // Re-read under the write lock: a concurrent opener that won the
-            // race has stamped the version by the time this one gets it, so
-            // the schema is created exactly once. DDL and the stamp commit
-            // together: a crash between them would leave a half-created
-            // schema that no later open can repair (the gate would demand a
-            // version the store never got).
+        if !has_schema(&pool).await.map_err(db_err)? {
             let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(db_err)?;
-            version = read_user_version(&mut *tx).await.map_err(db_err)?;
-            if version == 0 {
+            if !has_schema(&mut *tx).await.map_err(db_err)? {
                 sqlx::query(SCHEMA)
                     .execute(&mut *tx)
                     .await
@@ -117,21 +104,8 @@ impl SqliteMeta {
                 .execute(&mut *tx)
                 .await
                 .map_err(db_err)?;
-                sqlx::query(sqlx::AssertSqlSafe(format!(
-                    "PRAGMA user_version = {SCHEMA_VERSION}"
-                )))
-                .execute(&mut *tx)
-                .await
-                .map_err(db_err)?;
-                version = SCHEMA_VERSION;
             }
             tx.commit().await.map_err(db_err)?;
-        }
-        if version != SCHEMA_VERSION {
-            return Err(StorageError::UnsupportedSchema {
-                found: version,
-                supported: SCHEMA_VERSION,
-            });
         }
         Ok(Self { pool })
     }
@@ -1074,13 +1048,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fresh_store_carries_schema_version() {
-        let meta = memory_meta().await;
-        let version: i64 = sqlx::query_scalar("PRAGMA user_version")
-            .fetch_one(&meta.pool)
+    async fn concurrent_openers_create_the_schema_once() {
+        let (dir, _guard) = tempdir("concurrent-open");
+        let path = dir.join("meta.sqlite");
+        let (a, b) = tokio::join!(SqliteMeta::open(&path), SqliteMeta::open(&path));
+        let a = a.unwrap();
+        let _b = b.unwrap();
+        let active = a.active_ref().await.unwrap().unwrap();
+        assert_eq!(active.name.as_str(), DEFAULT_REF_NAME);
+        let refs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM refs")
+            .fetch_one(&a.pool)
             .await
             .unwrap();
-        assert_eq!(version, SCHEMA_VERSION);
+        assert_eq!(refs, 1);
     }
 
     #[tokio::test]
@@ -1394,82 +1374,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(edges, 0);
-    }
-
-    #[tokio::test]
-    async fn version_gate_rejects_foreign_schema() {
-        let (dir, _guard) = tempdir("version");
-        let path = dir.join("meta.sqlite");
-        let mut seed = SqliteConnectOptions::new()
-            .filename(&path)
-            .create_if_missing(true)
-            .connect()
-            .await
-            .unwrap();
-        sqlx::query(SCHEMA).execute(&mut seed).await.unwrap();
-        sqlx::query("PRAGMA user_version=999")
-            .execute(&mut seed)
-            .await
-            .unwrap();
-        seed.close().await.unwrap();
-        assert!(matches!(
-            SqliteMeta::open(&path).await,
-            Err(StorageError::UnsupportedSchema {
-                found: 999,
-                supported: SCHEMA_VERSION,
-            })
-        ));
-    }
-
-    /// The version gate rejects any store whose `user_version` is not
-    /// `SCHEMA_VERSION` (17) before any table is touched. A store from the
-    /// immediately previous version (16: delta history, `commits` without
-    /// `root_hash`) is refused with `UnsupportedSchema { found: 16,
-    /// supported: SCHEMA_VERSION }`, never opened and failed on the first
-    /// query.
-    #[tokio::test]
-    async fn a_store_from_the_previous_schema_version_is_refused() {
-        let (dir, _guard) = tempdir("version-16");
-        let path = dir.join("meta.sqlite");
-        let mut seed = SqliteConnectOptions::new()
-            .filename(&path)
-            .create_if_missing(true)
-            .connect()
-            .await
-            .unwrap();
-        // The schema 16 layout as shipped: delta history, no tree tables.
-        sqlx::query(
-            "CREATE TABLE commits(
-                seq INTEGER PRIMARY KEY AUTOINCREMENT,
-                id BLOB NOT NULL UNIQUE,
-                created_at_ms INTEGER NOT NULL
-            );
-            CREATE TABLE chunk_history(
-                commit_id BLOB NOT NULL REFERENCES commits(id),
-                seq INTEGER NOT NULL,
-                dim INTEGER NOT NULL,
-                kind INTEGER NOT NULL,
-                cx INTEGER NOT NULL,
-                cz INTEGER NOT NULL,
-                blob BLOB NULL,
-                PRIMARY KEY(commit_id, dim, kind, cx, cz)
-            );",
-        )
-        .execute(&mut seed)
-        .await
-        .unwrap();
-        sqlx::query("PRAGMA user_version=16")
-            .execute(&mut seed)
-            .await
-            .unwrap();
-        seed.close().await.unwrap();
-        assert!(matches!(
-            SqliteMeta::open(&path).await,
-            Err(StorageError::UnsupportedSchema {
-                found: 16,
-                supported: SCHEMA_VERSION,
-            })
-        ));
     }
 
     #[tokio::test]

@@ -3,7 +3,7 @@
 //! Blobs are the raw sector payloads ingest captured, keyed by their hash and
 //! never rewritten. They live in the default tree of a sled keyspace beside
 //! `meta.sqlite`, so the store stays a single directory, moved and backed up
-//! as a unit; a reserved tree holds the format version.
+//! as a unit.
 //!
 //! Durability follows the architecture's crash order. A `put` appends to
 //! sled's log without fsyncing on its own; `sync` is the batched barrier
@@ -22,18 +22,6 @@ use std::path::{Path, PathBuf};
 
 use sekai_storage::{BlobStore, StorageError, io_error};
 use sekai_util::ChunkHash;
-
-/// Version of the blob keyspace format.
-///
-/// Blob values are opaque payloads with no derived state to reinterpret, so
-/// this gate only guards the storage format itself. Bump it for any change to
-/// the layout below; pre-release policy recreates, it never migrates.
-const SCHEMA_VERSION: i64 = 1;
-
-/// Reserved tree holding the format version, kept apart from the default
-/// tree so that tree's keyspace stays exactly the 32-byte blob hashes.
-const VERSION_TREE: &[u8] = b"__sekai_version";
-const VERSION_KEY: &[u8] = b"schema";
 
 /// Map a backend failure into the shared storage error.
 fn db_err(source: sled::Error) -> StorageError {
@@ -63,45 +51,6 @@ where
         .map_err(join_err)?
 }
 
-/// Open the keyspace and enforce the format version on one blocking task:
-/// recovery can replay the whole log, and the exclusive session lock sled
-/// takes makes the gate race-free without a write-transaction dance.
-fn open_gated(path: impl AsRef<Path>) -> Result<sled::Db, StorageError> {
-    let db = sled::Config::new().path(path).open().map_err(db_err)?;
-    let versions = db.open_tree(VERSION_TREE).map_err(db_err)?;
-    match versions.get(VERSION_KEY).map_err(db_err)? {
-        None => {
-            versions
-                .insert(VERSION_KEY, &SCHEMA_VERSION.to_le_bytes()[..])
-                .map_err(db_err)?;
-            // Stamp durably before any blob can be written under the gate.
-            db.flush().map_err(db_err)?;
-        }
-        Some(bytes) => {
-            let found = version_of(&bytes)?;
-            if found != SCHEMA_VERSION {
-                return Err(StorageError::UnsupportedSchema {
-                    found,
-                    supported: SCHEMA_VERSION,
-                });
-            }
-        }
-    }
-    Ok(db)
-}
-
-/// Decode the stored version marker; anything but eight bytes is corruption,
-/// never a version to reinterpret.
-fn version_of(bytes: &[u8]) -> Result<i64, StorageError> {
-    let octets: [u8; 8] = bytes.try_into().map_err(|_| {
-        db_err(sled::Error::Unsupported(format!(
-            "malformed blob schema version: {} bytes, expected 8",
-            bytes.len()
-        )))
-    })?;
-    Ok(i64::from_le_bytes(octets))
-}
-
 /// Content-addressed blob store backed by the sled keyspace at `<store>/blobs`.
 #[derive(Debug, Clone)]
 pub struct SledBlob {
@@ -110,7 +59,7 @@ pub struct SledBlob {
 }
 
 impl SledBlob {
-    /// Open (creating and version-gating) the keyspace at `path`.
+    /// Open the keyspace at `path`, creating it when missing.
     ///
     /// The parent directory must already exist; this type never creates it
     /// (directory layout is the store's concern). While another handle holds
@@ -127,9 +76,11 @@ impl SledBlob {
             ));
         }
         let opened = path.clone();
-        let db = tokio::task::spawn_blocking(move || open_gated(&opened))
-            .await
-            .map_err(join_err)??;
+        let db = tokio::task::spawn_blocking(move || {
+            sled::Config::new().path(opened).open().map_err(db_err)
+        })
+        .await
+        .map_err(join_err)??;
         Ok(Self { path, db })
     }
 
