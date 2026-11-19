@@ -15,7 +15,7 @@ pub use sekai_util::{
     CommitRef, DEFAULT_REF_NAME, DimHash, Dimension, Head, HeadState, HexError, NamedScope,
     NamedScopeError, Rect, Ref, RefKind, RefName, RefNameError, ReflogEntry, ReflogNote,
     RegionFingerprint, RegionHash, RegionKey, RegionKind, RootHash, Scope, ScopeName,
-    ScopeNameError, UnknownRegionKind, Worktree, WorktreeName, WorktreeNameError, hash_bytes,
+    ScopeNameError, UnknownRegionKind, Worktree, hash_bytes,
 };
 
 pub use usecase::{

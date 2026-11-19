@@ -1,19 +1,31 @@
 //! Branches and the HEAD new commits land on (ADR-0035).
 //!
-//! Commands act on the HEAD of the worktree named `main`. Nothing here
+//! Commands act on the HEAD of the store's main worktree. Nothing here
 //! registers that worktree, so a store without it has no HEAD to commit
 //! on.
 
-use sekai_core::{CommitId, CommitRef, HeadState, Ref, RefName, ReflogNote, WorktreeName};
+use sekai_core::{CommitId, CommitRef, HeadState, Ref, RefName, ReflogNote};
 use sekai_storage::{MetaStore as _, SekaiStore, StorageError};
 
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
 use crate::time::now_ms;
 
-/// The worktree every command acts on.
-pub(crate) fn main_worktree() -> Result<WorktreeName, AppError> {
-    Ok(WorktreeName::parse("main")?)
+/// The world root of the store's main worktree: the worktree every
+/// command acts on.
+pub(crate) async fn main_worktree<S: SekaiStore>(store: &S) -> Result<String, AppError> {
+    let mut path = None;
+    store
+        .meta()
+        .visit_worktrees(|worktree| {
+            if worktree.is_main() {
+                path = Some(worktree.path.clone());
+                return false;
+            }
+            true
+        })
+        .await?;
+    path.ok_or(AppError::NoMainWorktree)
 }
 
 impl<S: SekaiStore> SekaiInstance<S> {
@@ -70,12 +82,11 @@ impl<S: SekaiStore> SekaiInstance<S> {
     /// This is not the newest commit in the store: with several branches,
     /// the newest commit may sit on a branch HEAD is not on.
     pub async fn current_commit_id(&self) -> Result<Option<CommitId>, AppError> {
-        Ok(
-            sekai_core::usecase::refs::head(self.store.meta(), &main_worktree()?)
-                .await
-                .map_err(AppError::Commit)?
-                .as_ref()
-                .and_then(HeadState::commit),
-        )
+        let main = main_worktree(&self.store).await?;
+        Ok(sekai_core::usecase::refs::head(self.store.meta(), &main)
+            .await
+            .map_err(AppError::Commit)?
+            .as_ref()
+            .and_then(HeadState::commit))
     }
 }

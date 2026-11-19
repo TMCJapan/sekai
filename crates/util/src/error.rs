@@ -24,16 +24,6 @@ impl From<NameRule> for ScopeNameError {
     }
 }
 
-impl From<NameRule> for WorktreeNameError {
-    fn from(rule: NameRule) -> Self {
-        match rule {
-            NameRule::Empty => Self::Empty,
-            NameRule::TooLong => Self::TooLong(crate::name::MAX_LEN),
-            NameRule::BadChar(c) => Self::BadChar(c),
-        }
-    }
-}
-
 /// Error returned when parsing an invalid named code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseCodeError(pub ());
@@ -133,34 +123,6 @@ impl fmt::Display for ScopeNameError {
 }
 
 impl core::error::Error for ScopeNameError {}
-
-/// Worktree name validation failure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorktreeNameError {
-    /// Name was empty.
-    Empty,
-    /// Name exceeded the limit; the payload is that limit in bytes
-    /// (`WorktreeName::MAX_LEN`).
-    TooLong(usize),
-    /// Name held a character outside ASCII alphanumerics, `.`, `_`, or
-    /// `-`.
-    BadChar(char),
-    /// Name contains `..`.
-    DoubleDot,
-}
-
-impl fmt::Display for WorktreeNameError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Empty => write!(f, "worktree name is empty"),
-            Self::TooLong(limit) => write!(f, "worktree name exceeds {limit} bytes"),
-            Self::BadChar(c) => write!(f, "worktree name holds invalid character: {c:?}"),
-            Self::DoubleDot => write!(f, "worktree name contains '..'"),
-        }
-    }
-}
-
-impl core::error::Error for WorktreeNameError {}
 
 /// A revision outside the grammar ADR-0036 adopts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

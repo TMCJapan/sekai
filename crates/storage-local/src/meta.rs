@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use sekai_core::{
     ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DimHash, Dimension, Head,
     HeadState, NamedScope, NamedScopeError, Rect, Ref, RefKind, RefName, ReflogEntry, ReflogNote,
-    RegionHash, RootHash, ScopeName, Worktree, WorktreeName, commit_hash,
+    RegionHash, RootHash, ScopeName, Worktree, commit_hash,
 };
 use sekai_storage::{DimNode, RegionNode, RootNode, StorageError, TreeNodes};
 use sqlx::Row as _;
@@ -20,7 +20,7 @@ use sqlx::sqlite::{
 };
 
 /// Managed schema version (`PRAGMA user_version`).
-pub const SCHEMA_VERSION: i64 = 18;
+pub const SCHEMA_VERSION: i64 = 19;
 
 const SCHEMA: &str = include_str!("../schema/sqlite.sql");
 
@@ -212,11 +212,6 @@ fn branch_from_column(raw: String) -> Result<RefName, StorageError> {
     }
 }
 
-/// Decode a stored worktree name.
-fn worktree_name_from_column(raw: String) -> Result<WorktreeName, StorageError> {
-    WorktreeName::parse(&raw).map_err(|_| StorageError::InvalidWorktreeName { name: raw })
-}
-
 /// Decode one `refs` row.
 fn decode_ref(row: &sqlx::sqlite::SqliteRow) -> Result<CommitRef, StorageError> {
     Ok(CommitRef::new(
@@ -229,18 +224,18 @@ fn decode_ref(row: &sqlx::sqlite::SqliteRow) -> Result<CommitRef, StorageError> 
 fn decode_worktree(row: &sqlx::sqlite::SqliteRow) -> Result<Worktree, StorageError> {
     let head_ref: Option<String> = row.try_get("head_ref").map_err(db_err)?;
     let head_commit: Option<Vec<u8>> = row.try_get("head_commit").map_err(db_err)?;
-    let name: String = row.try_get("name").map_err(db_err)?;
+    let path: String = row.try_get("path").map_err(db_err)?;
     // The CHECK constraint keeps exactly one of the two columns set.
     let head = match (head_ref, head_commit) {
         (Some(branch), None) => Head::Branch(branch_from_column(branch)?),
         (None, Some(commit)) => Head::Detached(commit_id_from_blob(commit)?),
         _ => {
-            return Err(StorageError::CorruptWorktreeHead { name });
+            return Err(StorageError::CorruptWorktreeHead { path });
         }
     };
     Ok(Worktree {
-        name: worktree_name_from_column(name)?,
-        path: row.try_get("path").map_err(db_err)?,
+        path,
+        main: row.try_get("main").map_err(db_err)?,
         head,
     })
 }
@@ -281,12 +276,13 @@ async fn require_commit(conn: &mut SqliteConnection, id: CommitId) -> Result<(),
     found.map(drop).ok_or(StorageError::UnknownCommit { id })
 }
 
-/// The worktree that has branch `name` checked out, unborn or not.
+/// The path of the worktree that has branch `name` checked out, unborn
+/// or not.
 async fn checked_out_by(
     conn: &mut SqliteConnection,
     name: &str,
 ) -> Result<Option<String>, StorageError> {
-    sqlx::query_scalar("SELECT name FROM worktrees WHERE head_ref = ?")
+    sqlx::query_scalar("SELECT path FROM worktrees WHERE head_ref = ?")
         .bind(name)
         .fetch_optional(conn)
         .await
@@ -309,15 +305,13 @@ async fn delete_ref_row(conn: &mut SqliteConnection, name: &str) -> Result<(), S
 async fn check_not_checked_out(
     conn: &mut SqliteConnection,
     branch: &Ref,
-    allowed: Option<&WorktreeName>,
+    allowed: Option<&str>,
 ) -> Result<(), StorageError> {
     match checked_out_by(conn, &branch.full_name()).await? {
-        Some(holder) if allowed.is_none_or(|allowed| allowed.as_str() != holder) => {
-            Err(StorageError::BranchCheckedOut {
-                branch: branch.clone(),
-                worktree: holder,
-            })
-        }
+        Some(holder) if allowed != Some(holder.as_str()) => Err(StorageError::BranchCheckedOut {
+            branch: branch.clone(),
+            worktree: holder,
+        }),
         _ => Ok(()),
     }
 }
@@ -382,7 +376,7 @@ async fn check_no_conflict(
 enum LogTable {
     /// Branch reflogs, keyed by full refname.
     Ref,
-    /// Worktree HEAD reflogs, keyed by worktree name.
+    /// Worktree HEAD reflogs, keyed by worktree path.
     Head,
 }
 
@@ -422,28 +416,29 @@ async fn append_log(
     Ok(())
 }
 
-/// Worktree `name`'s HEAD, refusing when the worktree does not exist.
-async fn expect_head(conn: &mut SqliteConnection, name: &str) -> Result<HeadState, StorageError> {
-    head_state(conn, name)
+/// The HEAD of the worktree at `path`, refusing when the worktree does
+/// not exist.
+async fn expect_head(conn: &mut SqliteConnection, path: &str) -> Result<HeadState, StorageError> {
+    head_state(conn, path)
         .await?
         .ok_or_else(|| StorageError::UnknownWorktree {
-            name: name.to_owned(),
+            path: path.to_owned(),
         })
 }
 
-/// Worktree `name`'s HEAD resolved against the refs, or `None` when the
-/// worktree does not exist.
+/// The HEAD of the worktree at `path` resolved against the refs, or
+/// `None` when the worktree does not exist.
 async fn head_state(
     conn: &mut SqliteConnection,
-    name: &str,
+    path: &str,
 ) -> Result<Option<HeadState>, StorageError> {
     let row = sqlx::query(
-        "SELECT worktrees.name, worktrees.path, worktrees.head_ref, worktrees.head_commit,
+        "SELECT worktrees.path, worktrees.main, worktrees.head_ref, worktrees.head_commit,
                 refs.commit_id AS branch_commit
          FROM worktrees LEFT JOIN refs ON refs.name = worktrees.head_ref
-         WHERE worktrees.name = ?",
+         WHERE worktrees.path = ?",
     )
-    .bind(name)
+    .bind(path)
     .fetch_optional(conn)
     .await
     .map_err(db_err)?;
@@ -969,18 +964,18 @@ impl sekai_storage::MetaStore for SqliteMeta {
 
     async fn apply_commit_incremental(
         &mut self,
-        worktree: &WorktreeName,
+        path: &str,
         created_at_ms: u64,
         parents: &[CommitId],
         entries: &[CommitEntry],
         note: ReflogNote<'_>,
     ) -> Result<ApplyOutcome, StorageError> {
-        sekai_core::tree::apply_entries(self, worktree, created_at_ms, parents, entries, note).await
+        sekai_core::tree::apply_entries(self, path, created_at_ms, parents, entries, note).await
     }
 
     async fn commit_tree(
         &mut self,
-        worktree: &WorktreeName,
+        path: &str,
         created_at_ms: u64,
         parents: &[CommitId],
         root: RootHash,
@@ -991,7 +986,7 @@ impl sekai_storage::MetaStore for SqliteMeta {
         // Dropping the transaction on an early return rolls it back, so a
         // rejected call writes nothing.
         let mut tx = self.pool.begin().await.map_err(db_err)?;
-        let state = expect_head(&mut tx, worktree.as_str()).await?;
+        let state = expect_head(&mut tx, path).await?;
         // The new commit must continue HEAD's commit: moving HEAD onto an
         // unrelated history would fork it.
         if let Some(base) = state.commit()
@@ -1031,23 +1026,15 @@ impl sekai_storage::MetaStore for SqliteMeta {
                 append_log(&mut tx, LogTable::Ref, &name, None, commit, note).await?;
             }
             HeadState::Detached { .. } => {
-                sqlx::query("UPDATE worktrees SET head_commit = ? WHERE name = ?")
+                sqlx::query("UPDATE worktrees SET head_commit = ? WHERE path = ?")
                     .bind(commit_param(commit))
-                    .bind(worktree.as_str())
+                    .bind(path)
                     .execute(&mut *tx)
                     .await
                     .map_err(db_err)?;
             }
         }
-        append_log(
-            &mut tx,
-            LogTable::Head,
-            worktree.as_str(),
-            state.commit(),
-            commit,
-            note,
-        )
-        .await?;
+        append_log(&mut tx, LogTable::Head, path, state.commit(), commit, note).await?;
         tx.commit().await.map_err(db_err)?;
         Ok(ApplyOutcome { id: commit })
     }
@@ -1214,34 +1201,24 @@ impl sekai_storage::MetaStore for SqliteMeta {
         worktree: &Worktree,
         note: ReflogNote<'_>,
     ) -> Result<(), StorageError> {
-        let name = worktree.name.as_str();
+        let path = &worktree.path;
         let mut tx = self.pool.begin().await.map_err(db_err)?;
-        let existing: Option<String> =
-            sqlx::query_scalar("SELECT name FROM worktrees WHERE name = ?")
-                .bind(name)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(db_err)?;
-        if existing.is_some() {
-            return Err(StorageError::WorktreeExists {
-                name: name.to_owned(),
-            });
+        let taken: Option<String> = sqlx::query_scalar("SELECT path FROM worktrees WHERE path = ?")
+            .bind(path)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db_err)?;
+        if taken.is_some() {
+            return Err(StorageError::WorktreePathTaken { path: path.clone() });
         }
-        // `IS` matches NULL too, so one query finds the main worktree or
-        // the holder of a linked path.
-        let path_taken: Option<String> =
-            sqlx::query_scalar("SELECT name FROM worktrees WHERE path IS ?")
-                .bind(worktree.path.as_deref())
+        if worktree.main {
+            let main: Option<i64> = sqlx::query_scalar("SELECT 1 FROM worktrees WHERE main")
                 .fetch_optional(&mut *tx)
                 .await
                 .map_err(db_err)?;
-        if path_taken.is_some() {
-            return Err(worktree
-                .path
-                .clone()
-                .map_or(StorageError::MainWorktreeExists, |path| {
-                    StorageError::WorktreePathTaken { path }
-                }));
+            if main.is_some() {
+                return Err(StorageError::MainWorktreeExists);
+            }
         }
         let (head_ref, head_commit) = match &worktree.head {
             Head::Branch(branch) => {
@@ -1256,28 +1233,28 @@ impl sekai_storage::MetaStore for SqliteMeta {
             }
         };
         sqlx::query(
-            "INSERT INTO worktrees (name, path, head_ref, head_commit) VALUES (?, ?, ?, ?)",
+            "INSERT INTO worktrees (path, main, head_ref, head_commit) VALUES (?, ?, ?, ?)",
         )
-        .bind(name)
-        .bind(worktree.path.as_deref())
+        .bind(path)
+        .bind(worktree.main)
         .bind(head_ref)
         .bind(head_commit)
         .execute(&mut *tx)
         .await
         .map_err(db_err)?;
-        if let Some(commit) = head_state(&mut tx, name)
+        if let Some(commit) = head_state(&mut tx, path)
             .await?
             .and_then(|state| state.commit())
         {
-            append_log(&mut tx, LogTable::Head, name, None, commit, note).await?;
+            append_log(&mut tx, LogTable::Head, path, None, commit, note).await?;
         }
         tx.commit().await.map_err(db_err)?;
         Ok(())
     }
 
-    async fn lookup_worktree(&self, name: &WorktreeName) -> Result<Option<Worktree>, StorageError> {
-        sqlx::query("SELECT name, path, head_ref, head_commit FROM worktrees WHERE name = ?")
-            .bind(name.as_str())
+    async fn lookup_worktree(&self, path: &str) -> Result<Option<Worktree>, StorageError> {
+        sqlx::query("SELECT path, main, head_ref, head_commit FROM worktrees WHERE path = ?")
+            .bind(path)
             .fetch_optional(&self.pool)
             .await
             .map_err(db_err)?
@@ -1291,7 +1268,7 @@ impl sekai_storage::MetaStore for SqliteMeta {
     {
         visit_rows(
             &self.pool,
-            "SELECT name, path, head_ref, head_commit FROM worktrees ORDER BY name",
+            "SELECT path, main, head_ref, head_commit FROM worktrees ORDER BY path",
             None,
             decode_worktree,
             visit,
@@ -1299,26 +1276,25 @@ impl sekai_storage::MetaStore for SqliteMeta {
         .await
     }
 
-    async fn remove_worktree(&mut self, name: &WorktreeName) -> Result<bool, StorageError> {
+    async fn remove_worktree(&mut self, path: &str) -> Result<bool, StorageError> {
         let mut tx = self.pool.begin().await.map_err(db_err)?;
-        let path: Option<Option<String>> =
-            sqlx::query_scalar("SELECT path FROM worktrees WHERE name = ?")
-                .bind(name.as_str())
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(db_err)?;
-        match path {
+        let main: Option<bool> = sqlx::query_scalar("SELECT main FROM worktrees WHERE path = ?")
+            .bind(path)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db_err)?;
+        match main {
             None => return Ok(false),
-            Some(None) => {
+            Some(true) => {
                 return Err(StorageError::MainWorktreeProtected {
-                    name: name.as_str().to_owned(),
+                    path: path.to_owned(),
                 });
             }
-            Some(Some(_)) => {}
+            Some(false) => {}
         }
         // The HEAD reflog goes with the worktree through its cascade.
-        sqlx::query("DELETE FROM worktrees WHERE name = ?")
-            .bind(name.as_str())
+        sqlx::query("DELETE FROM worktrees WHERE path = ?")
+            .bind(path)
             .execute(&mut *tx)
             .await
             .map_err(db_err)?;
@@ -1328,16 +1304,16 @@ impl sekai_storage::MetaStore for SqliteMeta {
 
     async fn set_head(
         &mut self,
-        name: &WorktreeName,
+        path: &str,
         head: &Head,
         note: ReflogNote<'_>,
     ) -> Result<(), StorageError> {
         let mut tx = self.pool.begin().await.map_err(db_err)?;
-        let old = expect_head(&mut tx, name.as_str()).await?;
+        let old = expect_head(&mut tx, path).await?;
         let (head_ref, head_commit) = match head {
             Head::Branch(new_branch) => {
                 let new_ref = Ref::branch(new_branch.clone());
-                check_not_checked_out(&mut tx, &new_ref, Some(name)).await?;
+                check_not_checked_out(&mut tx, &new_ref, Some(path)).await?;
                 // Only a branch HEAD names exists only as the `head_ref`
                 // this move rewrites. Such an unborn branch may be excluded
                 // from the conflict scan; a born branch stays in `refs` and
@@ -1358,34 +1334,26 @@ impl sekai_storage::MetaStore for SqliteMeta {
                 (None, Some(commit_param(*commit)))
             }
         };
-        sqlx::query("UPDATE worktrees SET head_ref = ?, head_commit = ? WHERE name = ?")
+        sqlx::query("UPDATE worktrees SET head_ref = ?, head_commit = ? WHERE path = ?")
             .bind(head_ref)
             .bind(head_commit)
-            .bind(name.as_str())
+            .bind(path)
             .execute(&mut *tx)
             .await
             .map_err(db_err)?;
-        if let Some(new) = head_state(&mut tx, name.as_str())
+        if let Some(new) = head_state(&mut tx, path)
             .await?
             .and_then(|state| state.commit())
         {
-            append_log(
-                &mut tx,
-                LogTable::Head,
-                name.as_str(),
-                old.commit(),
-                new,
-                note,
-            )
-            .await?;
+            append_log(&mut tx, LogTable::Head, path, old.commit(), new, note).await?;
         }
         tx.commit().await.map_err(db_err)?;
         Ok(())
     }
 
-    async fn head(&self, name: &WorktreeName) -> Result<Option<HeadState>, StorageError> {
+    async fn head(&self, path: &str) -> Result<Option<HeadState>, StorageError> {
         let mut conn = self.pool.acquire().await.map_err(db_err)?;
-        head_state(&mut conn, name.as_str()).await
+        head_state(&mut conn, path).await
     }
 
     async fn visit_ref_log<F>(&self, name: &RefName, visit: F) -> Result<(), StorageError>
@@ -1403,7 +1371,7 @@ impl sekai_storage::MetaStore for SqliteMeta {
         .await
     }
 
-    async fn visit_head_log<F>(&self, name: &WorktreeName, visit: F) -> Result<(), StorageError>
+    async fn visit_head_log<F>(&self, path: &str, visit: F) -> Result<(), StorageError>
     where
         F: FnMut(&ReflogEntry) -> bool + Send,
     {
@@ -1411,7 +1379,7 @@ impl sekai_storage::MetaStore for SqliteMeta {
             &self.pool,
             "SELECT old_commit, new_commit, message, at_ms FROM head_log
              WHERE worktree = ? ORDER BY seq DESC",
-            Some(name.as_str()),
+            Some(path),
             decode_log_entry,
             visit,
         )
@@ -1536,8 +1504,9 @@ mod tests {
         assert_eq!(version, SCHEMA_VERSION);
     }
 
-    fn worktree(name: &str) -> WorktreeName {
-        WorktreeName::parse(name).unwrap()
+    /// The world root a test worktree called `name` registers at.
+    fn worktree(name: &str) -> String {
+        format!("/worlds/{name}")
     }
 
     fn branch_name(name: &str) -> RefName {
@@ -1556,13 +1525,13 @@ mod tests {
         ReflogNote::new(message, 5_000)
     }
 
-    /// A store whose main worktree `main` is unborn on `main`, the way
-    /// `init` leaves it.
+    /// A store whose main worktree is unborn on `main`, the way `init`
+    /// leaves it.
     async fn initialized_meta() -> SqliteMeta {
         let mut meta = memory_meta().await;
         let main = Worktree {
-            name: worktree("main"),
-            path: None,
+            path: worktree("main"),
+            main: true,
             head: Head::Branch(branch_name("main")),
         };
         meta.add_worktree(&main, note("unused")).await.unwrap();
@@ -1708,7 +1677,7 @@ mod tests {
     async fn a_commit_on_an_unknown_worktree_writes_nothing() {
         let mut meta = initialized_meta().await;
         let err = commit_on(&mut meta, "ghost", 1_000, &[]).await.unwrap_err();
-        assert!(matches!(err, StorageError::UnknownWorktree { name } if name == "ghost"));
+        assert!(matches!(err, StorageError::UnknownWorktree { path } if path == "/worlds/ghost"));
         assert!(meta.latest_commit().await.unwrap().is_none());
     }
 
@@ -1717,8 +1686,8 @@ mod tests {
         let mut meta = initialized_meta().await;
         let root = commit_on(&mut meta, "main", 1_000, &[]).await.unwrap();
         let linked = Worktree {
-            name: worktree("linked"),
-            path: Some("/worlds/linked".to_owned()),
+            path: worktree("linked"),
+            main: false,
             head: Head::Detached(root),
         };
         meta.add_worktree(&linked, note("add")).await.unwrap();
@@ -1804,7 +1773,7 @@ mod tests {
         assert!(matches!(
             meta.delete_ref(&branch("main")).await,
             Err(StorageError::BranchCheckedOut { branch: held, worktree })
-                if held == branch("main") && worktree == "main"
+                if held == branch("main") && worktree == "/worlds/main"
         ));
         assert!(matches!(
             meta.move_ref(&branch("main"), first, note("branch: Reset to x"))
@@ -1844,14 +1813,14 @@ mod tests {
     async fn a_branch_is_checked_out_by_at_most_one_worktree() {
         let mut meta = initialized_meta().await;
         let linked = Worktree {
-            name: worktree("linked"),
-            path: Some("/worlds/linked".to_owned()),
+            path: worktree("linked"),
+            main: false,
             head: Head::Branch(branch_name("main")),
         };
         // Unborn counts too.
         assert!(matches!(
             meta.add_worktree(&linked, note("add")).await,
-            Err(StorageError::BranchCheckedOut { worktree, .. }) if worktree == "main"
+            Err(StorageError::BranchCheckedOut { worktree, .. }) if worktree == "/worlds/main"
         ));
         let linked = Worktree {
             head: Head::Branch(branch_name("other")),
@@ -2051,26 +2020,26 @@ mod tests {
             "DROP INDEX idx_worktrees_main",
             "DROP INDEX idx_worktrees_head_ref",
             "ALTER TABLE worktrees RENAME TO worktrees_no_check",
-            "CREATE TABLE worktrees(name TEXT NOT NULL COLLATE BINARY PRIMARY KEY, path TEXT NULL UNIQUE, head_ref TEXT NULL CHECK (head_ref GLOB 'refs/heads/?*'), head_commit BLOB NULL REFERENCES commits(id)) WITHOUT ROWID",
+            "CREATE TABLE worktrees(path TEXT NOT NULL COLLATE BINARY PRIMARY KEY, main INTEGER NOT NULL CHECK (main IN (0, 1)), head_ref TEXT NULL CHECK (head_ref GLOB 'refs/heads/?*'), head_commit BLOB NULL REFERENCES commits(id)) WITHOUT ROWID",
             "INSERT INTO worktrees SELECT * FROM worktrees_no_check",
             "DROP TABLE worktrees_no_check",
             "PRAGMA legacy_alter_table = OFF",
         ] {
             sqlx::query(sql).execute(&meta.pool).await.unwrap();
         }
-        // `w` holds neither HEAD column; `w2` holds both.
+        // `/w/w` holds neither HEAD column; `/w/w2` holds both.
         sqlx::query(
-            "INSERT INTO worktrees (name, path, head_ref, head_commit) \
-             VALUES ('w', NULL, NULL, NULL), ('w2', NULL, 'refs/heads/main', ?)",
+            "INSERT INTO worktrees (path, main, head_ref, head_commit) \
+             VALUES ('/w/w', 0, NULL, NULL), ('/w/w2', 0, 'refs/heads/main', ?)",
         )
         .bind(commit_param(root))
         .execute(&meta.pool)
         .await
         .unwrap();
-        for name in ["w", "w2"] {
-            let err = meta.lookup_worktree(&worktree(name)).await.unwrap_err();
+        for path in ["/w/w", "/w/w2"] {
+            let err = meta.lookup_worktree(path).await.unwrap_err();
             assert!(
-                matches!(&err, StorageError::CorruptWorktreeHead { name: stored } if stored == name),
+                matches!(&err, StorageError::CorruptWorktreeHead { path: stored } if stored == path),
                 "{err}"
             );
         }
@@ -2249,51 +2218,59 @@ mod tests {
     async fn worktrees_keep_one_main_and_unique_paths() {
         let mut meta = initialized_meta().await;
         let root = meta.create_commit(1_000, &[]).await.unwrap();
-        let linked = |name: &str, path: Option<&str>| Worktree {
-            name: worktree(name),
-            path: path.map(str::to_owned),
+        let linked = |path: &str, main: bool| Worktree {
+            path: path.to_owned(),
+            main,
             head: Head::Detached(root),
         };
         assert!(matches!(
-            meta.add_worktree(&linked("second", None), note("x")).await,
+            meta.add_worktree(&linked("/w/second", true), note("x"))
+                .await,
             Err(StorageError::MainWorktreeExists)
         ));
         assert!(matches!(
-            meta.add_worktree(&linked("main", Some("/w/main")), note("x"))
-                .await,
-            Err(StorageError::WorktreeExists { .. })
-        ));
-        meta.add_worktree(&linked("a", Some("/w/a")), note("x"))
-            .await
-            .unwrap();
-        meta.add_worktree(&linked("b", Some("/w/b")), note("x"))
-            .await
-            .unwrap();
-        assert!(matches!(
-            meta.add_worktree(&linked("c", Some("/w/a")), note("x"))
+            meta.add_worktree(&linked("/worlds/main", false), note("x"))
                 .await,
             Err(StorageError::WorktreePathTaken { .. })
         ));
+        meta.add_worktree(&linked("/w/a", false), note("x"))
+            .await
+            .unwrap();
+        meta.add_worktree(&linked("/w/b", false), note("x"))
+            .await
+            .unwrap();
         assert!(matches!(
-            meta.remove_worktree(&worktree("main")).await,
+            meta.add_worktree(&linked("/w/a", false), note("x")).await,
+            Err(StorageError::WorktreePathTaken { .. })
+        ));
+        assert!(matches!(
+            meta.remove_worktree("/worlds/main").await,
             Err(StorageError::MainWorktreeProtected { .. })
         ));
-        assert!(meta.remove_worktree(&worktree("a")).await.unwrap());
-        assert!(!meta.remove_worktree(&worktree("a")).await.unwrap());
-        let logs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM head_log WHERE worktree = 'a'")
+        assert!(meta.remove_worktree("/w/a").await.unwrap());
+        assert!(!meta.remove_worktree("/w/a").await.unwrap());
+        let logs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM head_log WHERE worktree = '/w/a'")
             .fetch_one(&meta.pool)
             .await
             .unwrap();
         assert_eq!(logs, 0, "the HEAD reflog goes with its worktree");
 
-        let mut names = Vec::new();
+        assert!(
+            meta.lookup_worktree("/worlds/main")
+                .await
+                .unwrap()
+                .unwrap()
+                .main
+        );
+        assert!(!meta.lookup_worktree("/w/b").await.unwrap().unwrap().main);
+        let mut paths = Vec::new();
         meta.visit_worktrees(|worktree| {
-            names.push(worktree.name.to_string());
+            paths.push(worktree.path.clone());
             true
         })
         .await
         .unwrap();
-        assert_eq!(names, ["b", "main"]);
+        assert_eq!(paths, ["/w/b", "/worlds/main"]);
     }
 
     #[tokio::test]
@@ -2386,13 +2363,14 @@ mod tests {
     }
 
     /// The version gate rejects any store whose `user_version` is not
-    /// `SCHEMA_VERSION` (18) before any table is touched. A store from the
-    /// immediately previous version (17: one active ref, no worktrees) is
-    /// refused with `UnsupportedSchema { found: 17, supported:
-    /// SCHEMA_VERSION }`, never opened and failed on the first query.
+    /// `SCHEMA_VERSION` (19) before any table is touched. A store from the
+    /// immediately previous version (18: name-keyed worktrees, NULL path
+    /// for the main one) is refused with `UnsupportedSchema { found: 18,
+    /// supported: SCHEMA_VERSION }`, never opened and failed on the first
+    /// query.
     #[tokio::test]
     async fn a_store_from_the_previous_schema_version_is_refused() {
-        let (dir, _guard) = tempdir("version-17");
+        let (dir, _guard) = tempdir("version-18");
         let path = dir.join("meta.sqlite");
         let mut seed = SqliteConnectOptions::new()
             .filename(&path)
@@ -2400,21 +2378,22 @@ mod tests {
             .connect()
             .await
             .unwrap();
-        // The schema 17 refs table as shipped: an active flag, no worktrees.
+        // The schema 18 worktrees table as shipped: a name key, and a NULL
+        // path marking the main worktree.
         sqlx::query(
-            "CREATE TABLE refs(
+            "CREATE TABLE worktrees(
                 name TEXT NOT NULL COLLATE BINARY PRIMARY KEY,
-                commit_id BLOB NULL,
-                active INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0, 1)),
-                created_at_ms INTEGER NOT NULL
+                path TEXT NULL UNIQUE,
+                head_ref TEXT NULL CHECK (head_ref GLOB 'refs/heads/?*'),
+                head_commit BLOB NULL
             );
-            INSERT INTO refs (name, commit_id, active, created_at_ms)
-                VALUES ('main', NULL, 1, 0);",
+            INSERT INTO worktrees (name, path, head_ref)
+                VALUES ('main', NULL, 'refs/heads/main');",
         )
         .execute(&mut seed)
         .await
         .unwrap();
-        sqlx::query("PRAGMA user_version=17")
+        sqlx::query("PRAGMA user_version=18")
             .execute(&mut seed)
             .await
             .unwrap();
@@ -2422,7 +2401,7 @@ mod tests {
         assert!(matches!(
             SqliteMeta::open(&path).await,
             Err(StorageError::UnsupportedSchema {
-                found: 17,
+                found: 18,
                 supported: SCHEMA_VERSION,
             })
         ));

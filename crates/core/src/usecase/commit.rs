@@ -25,7 +25,7 @@ use alloc::vec::Vec;
 use sekai_storage::{DimNode, MetaStore, RegionEntry, RegionNode};
 use sekai_util::{
     ApplyOutcome, ChunkCoord, ChunkHash, Commit, CommitEntry, CommitId, DimHash, HeadState,
-    ReflogNote, RegionHash, RegionKey, Scope, WorktreeName,
+    ReflogNote, RegionHash, RegionKey, Scope,
 };
 
 use crate::tree::local_slot;
@@ -88,9 +88,9 @@ pub struct Assembled {
 
 /// Load prior state and list the in-scope regions to ingest.
 ///
-/// The base is the commit `worktree`'s HEAD stands at: a new commit
-/// continues the history HEAD is on, not the newest commit in the store.
-/// An unborn HEAD starts a new history.
+/// The base is the commit the worktree at `path` has at HEAD: a new
+/// commit continues the history HEAD is on, not the newest commit in the
+/// store. An unborn HEAD starts a new history.
 ///
 /// The caller must hold the world's lock (shared or exclusive) from this
 /// call through [`record_commit`]: a commit that moves HEAD in between
@@ -106,7 +106,7 @@ pub struct Assembled {
 /// drops chunk facts whose blob already matches the base snapshot.
 pub async fn plan_commit<M: MetaStore>(
     meta: &M,
-    worktree: &WorktreeName,
+    path: &str,
     discovered: &[RegionKey],
     scope: &Scope,
 ) -> Result<(Previous, Plan), M::Error> {
@@ -114,7 +114,7 @@ pub async fn plan_commit<M: MetaStore>(
     // below finds the commit HEAD stands at: a `None` here is an unborn
     // HEAD, or a worktree the store does not know, which the commit
     // itself then refuses.
-    let head = meta.head(worktree).await?;
+    let head = meta.head(path).await?;
     let base = match head.as_ref().and_then(HeadState::commit) {
         Some(id) => meta.lookup_commit(id).await?,
         None => None,
@@ -229,15 +229,15 @@ pub fn assemble(plan: Plan, previous: &Previous, ingested: Ingested, scope: &Sco
 /// metadata transaction is committed.
 ///
 /// The new commit continues the history it was planned against: its
-/// parent is `previous.commit` - the commit `worktree`'s HEAD stands at,
-/// which is also the base tree its changes were computed against. HEAD
-/// moves onto the new commit in the same transaction, which logs Git's
-/// `commit: ` message, or `commit (initial): ` for an unborn HEAD. Plan
-/// and commit must not be interleaved with another commit; the app holds
-/// the store's writer lock for the whole run.
+/// parent is `previous.commit` - the commit the worktree's HEAD stands
+/// at, which is also the base tree its changes were computed against.
+/// HEAD moves onto the new commit in the same transaction, which logs
+/// Git's `commit: ` message, or `commit (initial): ` for an unborn HEAD.
+/// Plan and commit must not be interleaved with another commit; the app
+/// holds the store's writer lock for the whole run.
 pub async fn record_commit<M: MetaStore>(
     meta: &mut M,
-    worktree: &WorktreeName,
+    path: &str,
     previous: &Previous,
     staged: &Assembled,
     created_at_ms: u64,
@@ -253,7 +253,7 @@ pub async fn record_commit<M: MetaStore>(
     };
     let outcome: ApplyOutcome = meta
         .apply_commit_incremental(
-            worktree,
+            path,
             created_at_ms,
             &parents,
             &staged.entries,

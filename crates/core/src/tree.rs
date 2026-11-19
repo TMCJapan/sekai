@@ -189,18 +189,18 @@ pub async fn build_update<M: MetaStore>(
     Ok((hash, nodes))
 }
 
-/// Record `entries` as a commit on `worktree`'s HEAD, building its tree
-/// from the parent snapshot.
+/// Record `entries` as a commit on the HEAD of the worktree at `path`,
+/// building its tree from the parent snapshot.
 pub async fn apply_entries<M: MetaStore>(
     meta: &mut M,
-    worktree: &sekai_util::WorktreeName,
+    path: &str,
     created_at_ms: u64,
     parents: &[CommitId],
     entries: &[CommitEntry],
     note: sekai_util::ReflogNote<'_>,
 ) -> Result<sekai_util::ApplyOutcome, M::Error> {
     let (root, nodes) = build_update(meta, parents, entries).await?;
-    meta.commit_tree(worktree, created_at_ms, parents, root, &nodes, note)
+    meta.commit_tree(path, created_at_ms, parents, root, &nodes, note)
         .await
 }
 

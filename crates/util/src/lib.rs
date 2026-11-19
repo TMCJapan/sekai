@@ -34,7 +34,6 @@ pub use commit::{Commit, CommitId};
 pub use dimension::Dimension;
 pub use error::{
     HexError, NamedScopeError, ParseCodeError, RefNameError, RevisionError, ScopeNameError,
-    WorktreeNameError,
 };
 pub use glob::wildmatch;
 pub use hash::{BytesHasher, ChunkHash, hash_bytes};
@@ -46,4 +45,4 @@ pub use region_kind::{RegionKind, UnknownRegionKind};
 pub use revision::{ReflogSelector, Revision, RevisionBase, RevisionRange, RevisionStep, Side};
 pub use scope::{Area, Rect, Scope};
 pub use tree::{DimHash, RegionHash, RootHash};
-pub use worktree::{Head, HeadState, Worktree, WorktreeName};
+pub use worktree::{Head, HeadState, Worktree};

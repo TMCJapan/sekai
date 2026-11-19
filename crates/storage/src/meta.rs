@@ -10,7 +10,6 @@ use core::future::Future;
 use sekai_util::{
     ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DimHash, Head, HeadState,
     NamedScope, Ref, RefName, ReflogEntry, ReflogNote, RegionHash, RootHash, ScopeName, Worktree,
-    WorktreeName,
 };
 
 use crate::{DimNode, RegionNode, RootNode, TreeNodes};
@@ -104,8 +103,8 @@ pub trait MetaStore {
         hashes: &[RegionHash],
     ) -> impl Future<Output = Result<Vec<RegionNode>, Self::Error>> + Send;
 
-    /// Record a commit on `worktree`'s HEAD whose root tree and newly
-    /// written nodes are already built.
+    /// Record a commit on the HEAD of the worktree at `path`, whose root
+    /// tree and newly written nodes are already built.
     ///
     /// Nodes are inserted children-first, child before parent, in the same
     /// transaction as the commit row. Unchanged subtrees are shared by hash
@@ -119,12 +118,12 @@ pub trait MetaStore {
     /// history. In the same transaction the commit moves HEAD's branch,
     /// creating it when HEAD is unborn, or moves a detached HEAD, and
     /// appends `note` to the branch's reflog and to HEAD's. An unknown
-    /// `worktree` is refused.
+    /// worktree path is refused.
     ///
     /// Referenced blobs must already be flushed to CAS.
     fn commit_tree(
         &mut self,
-        worktree: &WorktreeName,
+        path: &str,
         created_at_ms: u64,
         parents: &[CommitId],
         root: RootHash,
@@ -133,11 +132,11 @@ pub trait MetaStore {
     ) -> impl Future<Output = Result<ApplyOutcome, Self::Error>> + Send;
 
     /// Apply fresh entries to the parent snapshot, insert the resulting
-    /// nodes, and record the commit on `worktree`'s HEAD atomically, as
+    /// nodes, and record the commit on the worktree's HEAD atomically, as
     /// [`Self::commit_tree`] does.
     fn apply_commit_incremental(
         &mut self,
-        worktree: &WorktreeName,
+        path: &str,
         created_at_ms: u64,
         parents: &[CommitId],
         entries: &[CommitEntry],
@@ -214,8 +213,8 @@ pub trait MetaStore {
     /// Register `worktree`. A HEAD at a commit logs `note` as the first
     /// entry of its reflog.
     ///
-    /// Fails when the name or path is taken, when a second main worktree
-    /// is added, when HEAD's branch is checked out elsewhere or would
+    /// Fails when the path is taken, when a second main worktree is
+    /// added, when HEAD's branch is checked out elsewhere or would
     /// conflict as a directory and a file would, or when a detached HEAD
     /// names an unknown commit.
     fn add_worktree(
@@ -224,42 +223,43 @@ pub trait MetaStore {
         note: ReflogNote<'_>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
-    /// The worktree `name`, or `None` when it does not exist.
+    /// The worktree at `path`, or `None` when it does not exist.
     fn lookup_worktree(
         &self,
-        name: &WorktreeName,
+        path: &str,
     ) -> impl Future<Output = Result<Option<Worktree>, Self::Error>> + Send;
 
-    /// Visit worktrees in name order. Return `false` to stop early.
+    /// Visit worktrees in path order. Return `false` to stop early.
     fn visit_worktrees<F>(&self, visit: F) -> impl Future<Output = Result<(), Self::Error>> + Send
     where
         F: FnMut(&Worktree) -> bool + Send;
 
-    /// Remove worktree `name` with its HEAD reflog. Returns whether a
-    /// worktree was removed. The main worktree is refused.
+    /// Remove the worktree at `path` with its HEAD reflog. Returns
+    /// whether a worktree was removed. The main worktree is refused.
     fn remove_worktree(
         &mut self,
-        name: &WorktreeName,
+        path: &str,
     ) -> impl Future<Output = Result<bool, Self::Error>> + Send;
 
-    /// Point worktree `name`'s HEAD at `head`, as a checkout does. When
-    /// the new HEAD stands at a commit, its reflog records `note`.
+    /// Point the HEAD of the worktree at `path` at `head`, as a checkout
+    /// does. When the new HEAD stands at a commit, its reflog records
+    /// `note`.
     ///
     /// Fails for an unknown worktree, a branch checked out elsewhere or
     /// conflicting as a directory and a file would, or a detached HEAD
     /// at an unknown commit.
     fn set_head(
         &mut self,
-        name: &WorktreeName,
+        path: &str,
         head: &Head,
         note: ReflogNote<'_>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
-    /// Worktree `name`'s HEAD resolved against the refs, or `None` when
-    /// the worktree does not exist.
+    /// The HEAD of the worktree at `path` resolved against the refs, or
+    /// `None` when the worktree does not exist.
     fn head(
         &self,
-        name: &WorktreeName,
+        path: &str,
     ) -> impl Future<Output = Result<Option<HeadState>, Self::Error>> + Send;
 
     /// Visit branch `name`'s reflog, newest entry first. A branch without
@@ -272,12 +272,12 @@ pub trait MetaStore {
     where
         F: FnMut(&ReflogEntry) -> bool + Send;
 
-    /// Visit worktree `name`'s HEAD reflog, newest entry first. A
-    /// worktree without a reflog visits nothing. Return `false` to stop
-    /// early.
+    /// Visit the HEAD reflog of the worktree at `path`, newest entry
+    /// first. A worktree without a reflog visits nothing. Return `false`
+    /// to stop early.
     fn visit_head_log<F>(
         &self,
-        name: &WorktreeName,
+        path: &str,
         visit: F,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send
     where

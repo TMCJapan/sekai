@@ -107,9 +107,9 @@ pub enum AppError {
         /// Ref that was asked for.
         name: String,
     },
-    /// A built-in worktree name failed validation.
-    #[error(transparent)]
-    WorktreeName(#[from] sekai_core::WorktreeNameError),
+    /// The store has no main worktree to act on.
+    #[error("store has no main worktree: no world is registered to commit on")]
+    NoMainWorktree,
     /// Scope name is already taken.
     #[error("scope already exists: {name} (use --force to replace it)")]
     ScopeExists {

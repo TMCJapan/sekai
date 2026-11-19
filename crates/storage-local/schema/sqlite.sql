@@ -1,7 +1,10 @@
--- Schema version 18: Git-modelled refs, worktrees, and reflogs
+-- Schema version 19: Git-modelled refs, worktrees, and reflogs
 -- (ADR-0035). `refs` holds branches and tags keyed by full refname, and
--- each worktree carries its own HEAD. There is no migration path from
--- version 17: old stores are rejected via `UnsupportedSchema`.
+-- each worktree carries its own HEAD. Worktrees are keyed by their world
+-- root path alone: every worktree, the main one included, records its
+-- path, and a `main` flag marks the worktree whose world holds the
+-- store. There is no migration path from version 17: old stores are
+-- rejected via `UnsupportedSchema`.
 --
 -- Schema version 17: commits name content-addressed snapshot trees
 -- (ADR-0027); `chunk_history` is gone. There is no migration path from
@@ -85,22 +88,23 @@ CREATE TABLE refs(
     CHECK (name GLOB 'refs/heads/?*' OR name GLOB 'refs/tags/?*')
 ) WITHOUT ROWID;
 
--- One row per world the store backs up, each with its own HEAD: attached
--- or unborn (`head_ref` names a branch, which may have no row yet) or
--- detached (`head_commit`). `head_ref` has no foreign key: an unborn
--- HEAD names a missing branch. A branch rename rewrites `head_ref` in
--- the application.
+-- One row per world the store backs up, keyed by its absolute world root
+-- (ADR-0035), each with its own HEAD: attached or unborn (`head_ref`
+-- names a branch, which may have no row yet) or detached (`head_commit`).
+-- `head_ref` has no foreign key: an unborn HEAD names a missing branch.
+-- A branch rename rewrites `head_ref` in the application.
 CREATE TABLE worktrees(
-    name TEXT NOT NULL COLLATE BINARY PRIMARY KEY,
-    path TEXT NULL UNIQUE,
+    path TEXT NOT NULL COLLATE BINARY PRIMARY KEY,
+    main INTEGER NOT NULL CHECK (main IN (0, 1)),
     head_ref TEXT NULL CHECK (head_ref GLOB 'refs/heads/?*'),
     head_commit BLOB NULL REFERENCES commits(id),
     CHECK ((head_ref IS NULL) != (head_commit IS NULL))
 ) WITHOUT ROWID;
 
--- A NULL `path` marks the main worktree, and only one row may have it.
+-- The `main` flag marks the worktree whose world holds the store, and
+-- only one row may carry it.
 CREATE UNIQUE INDEX idx_worktrees_main
-    ON worktrees((path IS NULL)) WHERE path IS NULL;
+    ON worktrees(main) WHERE main;
 
 -- A branch is checked out by at most one worktree, unborn or not.
 CREATE UNIQUE INDEX idx_worktrees_head_ref
@@ -125,8 +129,8 @@ CREATE INDEX idx_ref_log_name ON ref_log(name, seq);
 -- `old_commit` marks HEAD's first commit.
 CREATE TABLE head_log(
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
-    worktree TEXT NOT NULL
-        REFERENCES worktrees(name) ON DELETE CASCADE ON UPDATE CASCADE,
+    worktree TEXT NOT NULL COLLATE BINARY
+        REFERENCES worktrees(path) ON DELETE CASCADE ON UPDATE CASCADE,
     old_commit BLOB NULL REFERENCES commits(id),
     new_commit BLOB NOT NULL REFERENCES commits(id),
     message TEXT NOT NULL,

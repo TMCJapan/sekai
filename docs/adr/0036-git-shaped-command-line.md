@@ -1,6 +1,7 @@
 # ADR-0036: Git-shaped command line
 
-- Status: Accepted
+- Status: Amended by ADR-0035 (the `worktree` JSON record loses
+  `name`, and a branch list's `worktree` field is a path)
 - Date: 2026-11-14
 
 ## Context

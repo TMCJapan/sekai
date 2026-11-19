@@ -7,9 +7,11 @@
 
 Under ADR-0019 a store has one active ref and no tags, no detached HEAD,
 and no ref history, so a store can serve only one world. This ADR
-replaces that model with Git's refs, worktrees, and reflogs. Behavior
-follows Git (as of 2.53) unless this ADR says otherwise. Every
-deviation from Git is marked **(deviation)**.
+replaces that model with Git's refs, worktrees, and reflogs. Worktrees
+are keyed by their world root path alone: Git derives a worktree's
+identity from its path, and a separate name would carry no information
+the path does not. Behavior follows Git (as of 2.53) unless this ADR
+says otherwise. Every deviation from Git is marked **(deviation)**.
 
 ## Decision
 
@@ -68,6 +70,11 @@ deviation from Git is marked **(deviation)**.
   - **detached:** `head_commit` holds a commit.
 - A branch is checked out by at most one worktree, and this holds for
   an unborn branch too **(deviation)**.
+- A worktree is identified by its absolute world root path alone.
+  Every worktree records its path, the main one included, and a `main`
+  flag marks the worktree whose world holds the store. There is no
+  worktree name or ID, so no validation, sanitization, or clash rules
+  **(deviation)**.
 - The store enforces the following rules, which the schema cannot
   express, inside the transaction that would break them:
   - A checked-out branch is never deleted.
@@ -75,13 +82,22 @@ deviation from Git is marked **(deviation)**.
   - A rename rewrites the `head_ref` that names the branch. Renaming
     an unborn branch rewrites only `head_ref`.
   - The directory and file conflict rule from *Refs* applies.
-- A linked worktree's path never equals the main worktree's world
-  root. `worktree add` enforces this, because the store records no path
-  for the main worktree.
+- `worktree add` refuses a path that is already registered
+  (`WorktreePathTaken`), before it refuses a second main worktree
+  (`MainWorktreeExists`).
 - On a commit, HEAD's commit becomes the first parent. When HEAD is
   unborn, the commit has no parents. In the same transaction, the
   commit moves the branch (creating it when HEAD is unborn), or it moves
   `head_commit` when HEAD is detached.
+- `MetaStore` worktree operations take `path: &str`: `commit_tree`,
+  `apply_commit_incremental`, `lookup_worktree`, `remove_worktree`,
+  `set_head`, `head`, and `visit_head_log`. `visit_worktrees` visits in
+  path order. The app acts on the main worktree, resolved by scanning
+  for the `main` flag; a store with no main worktree has no HEAD to
+  commit on and fails with a dedicated error.
+- Errors name paths: `UnknownWorktree`, `CorruptWorktreeHead`,
+  `MainWorktreeProtected`, and `WorktreePathTaken` carry a `path`, and
+  `BranchCheckedOut` carries the holder's path.
 
 #### `init`
 
@@ -118,7 +134,7 @@ sekai worktree add <path> [<commit-ish>]
   - **Omitted:** sekai checks out the branch named after the basename
     of `<path>`. If no such branch exists, sekai creates it at the
     source's HEAD. A basename that is not a valid branch name fails the
-    command, as in Git; unlike the worktree name, it is not sanitized.
+    command, as in Git.
 - When `<commit-ish>` is omitted and the source's HEAD is unborn, the
   command fails. Git would infer `--orphan` **(deviation)**. A given
   `<commit-ish>` works whatever the source's HEAD is, as in Git.
@@ -157,37 +173,31 @@ sekai worktree add <path> [<commit-ish>]
 
 #### Identity and discovery
 
-- A worktree's name comes from the basename of `<path>`. For `init`,
-  it comes from the basename of the world root. The basename is
-  sanitized as Git sanitizes worktree IDs, which replaces characters
-  that are invalid in a ref component. A clash gets a numeric suffix.
-- The main worktree has a name too. In Git the main worktree has no ID
-  **(deviation)**.
-- `path` holds the absolute world root of a linked worktree, as
-  `worktree add` wrote it. Nothing updates it.
-- The main worktree's `path` is NULL, and at most one row has a NULL
-  `path`. Its world root is the directory that holds the store, so
-  moving the world together with the store keeps it valid. Git also
-  records paths only for linked worktrees.
+- A worktree's key is its absolute world root path: for a linked
+  worktree, the `<path>` that `worktree add` wrote; for the main
+  worktree, the directory that holds the store. Nothing updates a
+  recorded path.
 - Commands identify a worktree by its path, or by trailing path
   components that are unique among worktrees.
 - `.sekai` sits at the world root. For Bukkit layouts, the world root is
   the server directory.
   - **A directory** at `.sekai` is the store. Its world is the main
-    worktree, which is the row with a NULL `path`. A store outside
-    every world has no main worktree.
+    worktree, which is the row flagged `main`. A store outside every
+    world has no main worktree.
   - **A file** at `.sekai` is a link file, which `init --store` and
     `worktree add` write:
 
     ```text
     store: /absolute/path/to/store
-    worktree: <name>
+    worktree: /absolute/path/to/world
     ```
+
+    The `worktree:` line records the world root path, the row's key.
 - Discovery walks up from the current directory, or from `--world`, to
   the first `.sekai`. It stops at a filesystem boundary.
 - Discovery never falls back to matching paths. Without a `.sekai`, a
   command fails.
-- `--store` overrides the store location. The worktree name still comes
+- `--store` overrides the store location. The worktree still comes
   from the link file, whereas Git ignores the gitfile **(deviation)**.
 - World scanning ignores `.sekai`.
 - Besides `add`, only `worktree list` and `worktree remove` exist:
@@ -197,8 +207,8 @@ sekai worktree add <path> [<commit-ish>]
     also clears a worktree whose world is already gone.
   - The main worktree cannot be removed.
   - `move`, `repair`, `prune`, `lock`, `unlock`, and `--force` are not
-    adopted **(deviation)**. A linked world moved with `mv` keeps
-    working, because discovery reads its link file. Only `path` goes
+    adopted **(deviation)**. A world moved with `mv` keeps working,
+    because discovery reads its link file. Only the recorded path goes
     stale.
 
 ### Reflogs
@@ -235,16 +245,16 @@ CREATE TABLE refs(
 
 -- `head_ref` has no foreign key: an unborn HEAD names a missing branch.
 CREATE TABLE worktrees(
-    name TEXT NOT NULL COLLATE BINARY PRIMARY KEY,
-    path TEXT NULL UNIQUE,
+    path TEXT NOT NULL COLLATE BINARY PRIMARY KEY,
+    main INTEGER NOT NULL CHECK (main IN (0, 1)),
     head_ref TEXT NULL CHECK (head_ref GLOB 'refs/heads/?*'),
     head_commit BLOB NULL REFERENCES commits(id),
     CHECK ((head_ref IS NULL) != (head_commit IS NULL))
 ) WITHOUT ROWID;
 
--- A NULL `path` marks the main worktree, and only one row may have it.
+-- Only one row may carry the main flag.
 CREATE UNIQUE INDEX idx_worktrees_main
-    ON worktrees((path IS NULL)) WHERE path IS NULL;
+    ON worktrees(main) WHERE main;
 
 CREATE UNIQUE INDEX idx_worktrees_head_ref
     ON worktrees(head_ref) WHERE head_ref IS NOT NULL;
@@ -264,8 +274,8 @@ CREATE INDEX idx_ref_log_name ON ref_log(name, seq);
 
 CREATE TABLE head_log(
     seq INTEGER PRIMARY KEY AUTOINCREMENT,
-    worktree TEXT NOT NULL
-        REFERENCES worktrees(name) ON DELETE CASCADE ON UPDATE CASCADE,
+    worktree TEXT NOT NULL COLLATE BINARY
+        REFERENCES worktrees(path) ON DELETE CASCADE ON UPDATE CASCADE,
     old_commit BLOB NULL REFERENCES commits(id),
     new_commit BLOB NOT NULL REFERENCES commits(id),
     message TEXT NOT NULL,
@@ -276,24 +286,36 @@ CREATE INDEX idx_head_log_worktree ON head_log(worktree, seq);
 ```
 
 - Queries select a namespace with GLOB or a range, never with LIKE.
-- `SCHEMA_VERSION` goes from 17 to 18, and old stores are recreated.
+- `SCHEMA_VERSION` goes from 17 to 19. There is no migration: old
+  stores are refused with `UnsupportedSchema` and recreated.
 - In the `MetaStore` trait, `set_ref` splits into `create_ref` and
   `move_ref`, `active_ref` and `activate_ref` become the per-worktree
   `head` and `set_head`, and worktree and reflog operations are added.
 - This ADR supersedes ADR-0019.
 - It amends ADR-0026 in three ways: `init` takes a world, `--store`
   defaults to `<world>/.sekai`, and no ref is seeded.
+- It amends ADR-0036's output contract: the `worktree` record is
+  `{"path", "main", "head"}`, and the `worktree` field a branch list
+  adds is the holder's path, not a name.
 
 ## Consequences
 
 - One store backs up several worlds, and a world can be checked out at
   a tag or at a commit.
+- One key and one uniqueness rule per worktree: no name validation or
+  clash handling, and the main worktree is an ordinary row, so queries
+  never special-case it.
 - Four ref rules live in the store's code and one worktree rule lives
   in `worktree add`, rather than in the schema.
 - `worktree add` copies the whole copy root, including logs and caches.
   The copied non-region files reflect the source as it is now.
 - A world copied by hand shares the original's HEAD, and sekai does not
   detect it.
+- Moving the world together with the store leaves the main worktree's
+  recorded path stale. Discovery still finds the store through
+  `.sekai`, but nothing rewrites the path, as for a linked worktree
+  moved with `mv`. This is the accepted cost of recording the main
+  path.
 
 Out of scope:
 
@@ -304,4 +326,6 @@ Out of scope:
 - commit messages;
 - remotes;
 - non-ASCII names;
-- an exclusion list for `worktree add`.
+- an exclusion list for `worktree add`;
+- repairing a stale worktree path: `worktree move` and `repair` stay
+  unadopted.

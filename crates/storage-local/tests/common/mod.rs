@@ -6,7 +6,7 @@ use core::future::Future;
 
 use sekai_core::{
     ApplyOutcome, ChunkCoord, ChunkHash, CommitEntry, CommitId, Dimension, Head, NamedScope, Rect,
-    RefName, ReflogNote, RegionKind, ScopeName, Worktree, WorktreeName,
+    RefName, ReflogNote, RegionKind, ScopeName, Worktree,
 };
 use sekai_storage::{BlobStore, CacheStore, MetaStore};
 
@@ -21,9 +21,10 @@ const fn present(x: i32, z: i32, byte: u8) -> CommitEntry {
     CommitEntry::new(coord(x, z), Some(ChunkHash::new([byte; 32])))
 }
 
-/// The main worktree every runner registers before a flow commits.
-pub fn main_worktree() -> WorktreeName {
-    WorktreeName::parse("main").unwrap()
+/// The world root of the main worktree every runner registers before a
+/// flow commits.
+pub fn main_worktree() -> String {
+    String::from("/worlds/main")
 }
 
 /// Register the main worktree, HEAD unborn on `main`, the way `init`
@@ -34,8 +35,8 @@ where
     M::Error: core::fmt::Debug,
 {
     let main = Worktree {
-        name: main_worktree(),
-        path: None,
+        path: main_worktree(),
+        main: true,
         head: Head::Branch(RefName::parse("main").unwrap()),
     };
     meta.add_worktree(&main, ReflogNote::new("init", 0))

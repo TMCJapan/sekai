@@ -380,6 +380,8 @@ names; a branch without a commit is _unborn_ and exists only as the name
 a worktree's HEAD carries - the store keeps no row for it. A fresh store's
 worktree starts unborn on `main`.
 
+A worktree is keyed by its absolute world root path; a `main` flag marks
+the one whose world holds the store, and at most one row carries it.
 Every worktree has its own HEAD: attached to a branch, unborn on a
 branch, or detached at a commit. A new commit continues the commit HEAD
 stands on - the trait rejects mismatched parents rather than fork HEAD -
@@ -530,7 +532,8 @@ the pass still writes files.
 
 Owned by the backend crate (`crates/storage-local/schema/sqlite.sql` for
 metadata; `commits`, `commit_parents`, `root_tree`, `dim_tree`,
-`region_tree`, `refs`, `scopes`, `scope_areas`; `SCHEMA_VERSION` gate;
+`region_tree`, `refs`, `worktrees`, `ref_log`, `head_log`, `scopes`,
+`scope_areas`; `SCHEMA_VERSION` gate;
 pre-release policy = recreate, don't migrate). Each tree table stores the
 canonical node bytes under their hash; paths are three primary-key probes.
 The blob keyspace (`blobs/`) carries its own version gate in a

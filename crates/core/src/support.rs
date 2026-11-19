@@ -13,7 +13,6 @@ use sekai_util::refs::paths_conflict;
 use sekai_util::{
     ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DimHash, Head, HeadState,
     NamedScope, Ref, RefName, ReflogEntry, ReflogNote, RegionHash, RootHash, ScopeName, Worktree,
-    WorktreeName,
 };
 
 /// Fake backend failure.
@@ -57,18 +56,13 @@ pub enum MemError {
     BranchCheckedOut {
         /// Branch that was asked for.
         branch: RefName,
-        /// Worktree that has it checked out.
-        worktree: WorktreeName,
+        /// Path of the worktree that has it checked out.
+        worktree: String,
     },
-    /// The worktree does not exist.
+    /// No worktree has this path.
     UnknownWorktree {
-        /// Worktree that was asked for.
-        name: WorktreeName,
-    },
-    /// The worktree name is taken.
-    WorktreeExists {
-        /// Worktree that was asked for.
-        name: WorktreeName,
+        /// Worktree path that was asked for.
+        path: String,
     },
     /// Another worktree already has this path.
     WorktreePathTaken {
@@ -79,8 +73,8 @@ pub enum MemError {
     MainWorktreeExists,
     /// The main worktree cannot be removed or moved.
     MainWorktreeProtected {
-        /// Worktree that was asked for.
-        name: WorktreeName,
+        /// Worktree path that was asked for.
+        path: String,
     },
     /// The new commit does not continue HEAD's commit.
     NotContinuing {
@@ -122,12 +116,12 @@ pub struct MemMeta {
     pub region_nodes: BTreeMap<RegionHash, RegionNode>,
     /// Refs, in full refname order.
     pub refs: BTreeMap<Ref, CommitId>,
-    /// Worktrees by name.
-    pub worktrees: BTreeMap<WorktreeName, Worktree>,
+    /// Worktrees by world root path.
+    pub worktrees: BTreeMap<String, Worktree>,
     /// Branch reflogs, oldest entry first.
     pub ref_logs: BTreeMap<RefName, Vec<ReflogEntry>>,
-    /// HEAD reflogs, oldest entry first.
-    pub head_logs: BTreeMap<WorktreeName, Vec<ReflogEntry>>,
+    /// HEAD reflogs by worktree path, oldest entry first.
+    pub head_logs: BTreeMap<String, Vec<ReflogEntry>>,
     /// Named scopes by name.
     pub scopes: BTreeMap<ScopeName, NamedScope>,
     /// Stable local sequence per commit hash.
@@ -176,10 +170,18 @@ impl MemMeta {
         Ok(())
     }
 
-    /// Add the main worktree [`main_worktree`] with HEAD unborn on
+    /// Add the main worktree at [`main_worktree`] with HEAD unborn on
     /// `main`, the way a freshly initialized world looks.
     pub fn with_main(&mut self) {
-        self.with_worktree(&main_worktree(), &RefName::parse("main").unwrap());
+        let path = main_worktree();
+        self.worktrees.insert(
+            path.clone(),
+            Worktree {
+                path,
+                main: true,
+                head: Head::Branch(RefName::parse("main").unwrap()),
+            },
+        );
     }
 
     /// Commit `entries` on the main worktree's HEAD.
@@ -197,19 +199,6 @@ impl MemMeta {
             ReflogNote::new("commit: ", created_at_ms),
         ));
         core::future::ready(outcome)
-    }
-
-    /// Add a main worktree with HEAD unborn on `branch`, the way a
-    /// freshly initialized world looks.
-    pub fn with_worktree(&mut self, name: &WorktreeName, branch: &RefName) {
-        self.worktrees.insert(
-            name.clone(),
-            Worktree {
-                name: name.clone(),
-                path: None,
-                head: Head::Branch(branch.clone()),
-            },
-        );
     }
 
     fn has_commit(&self, id: CommitId) -> bool {
@@ -232,11 +221,11 @@ impl MemMeta {
         worktree.head.resolve(commit)
     }
 
-    fn checked_out_by(&self, branch: &RefName) -> Option<&WorktreeName> {
+    fn checked_out_by(&self, branch: &RefName) -> Option<&String> {
         self.worktrees
             .values()
             .find(|worktree| worktree.head.branch() == Some(branch))
-            .map(|worktree| &worktree.name)
+            .map(|worktree| &worktree.path)
     }
 
     /// Refuse `branch` when a worktree other than `allowed` has it
@@ -244,10 +233,10 @@ impl MemMeta {
     fn check_not_checked_out(
         &self,
         branch: &RefName,
-        allowed: Option<&WorktreeName>,
+        allowed: Option<&str>,
     ) -> Result<(), MemError> {
         match self.checked_out_by(branch) {
-            Some(holder) if Some(holder) != allowed => Err(MemError::BranchCheckedOut {
+            Some(holder) if Some(holder.as_str()) != allowed => Err(MemError::BranchCheckedOut {
                 branch: branch.clone(),
                 worktree: holder.clone(),
             }),
@@ -294,20 +283,20 @@ impl MemMeta {
 
     fn log_head(
         &mut self,
-        worktree: &WorktreeName,
+        worktree: &str,
         old: Option<CommitId>,
         new: CommitId,
         note: ReflogNote<'_>,
     ) {
         self.head_logs
-            .entry(worktree.clone())
+            .entry(worktree.to_owned())
             .or_default()
             .push(log_entry(old, new, note));
     }
 
     fn record_commit(
         &mut self,
-        worktree: &WorktreeName,
+        path: &str,
         created_at_ms: u64,
         parents: &[CommitId],
         root: RootHash,
@@ -318,10 +307,10 @@ impl MemMeta {
         // transaction would roll back on failure.
         let state = self
             .worktrees
-            .get(worktree)
+            .get(path)
             .map(|held| self.head_state(held))
             .ok_or_else(|| MemError::UnknownWorktree {
-                name: worktree.clone(),
+                path: path.to_owned(),
             })?;
         if let Some(base) = state.commit()
             && !parents.contains(&base)
@@ -352,12 +341,12 @@ impl MemMeta {
                 self.log_ref(branch, None, id, note);
             }
             HeadState::Detached { .. } => {
-                if let Some(held) = self.worktrees.get_mut(worktree) {
+                if let Some(held) = self.worktrees.get_mut(path) {
                     held.head = Head::Detached(id);
                 }
             }
         }
-        self.log_head(worktree, state.commit(), id, note);
+        self.log_head(path, state.commit(), id, note);
         Ok(ApplyOutcome { id })
     }
 
@@ -371,11 +360,11 @@ impl MemMeta {
         let from_ref = Ref::branch(from.clone());
         let to_ref = Ref::branch(to.clone());
         let commit = self.refs.get(&from_ref).copied();
-        let holders: Vec<WorktreeName> = self
+        let holders: Vec<String> = self
             .worktrees
             .values()
             .filter(|worktree| worktree.head.branch() == Some(from))
-            .map(|worktree| worktree.name.clone())
+            .map(|worktree| worktree.path.clone())
             .collect();
         if commit.is_none() && holders.is_empty() {
             return Err(MemError::UnknownRef { name: from_ref });
@@ -420,9 +409,9 @@ impl MemMeta {
     }
 }
 
-/// Name of the main worktree [`MemMeta::with_main`] adds.
-pub fn main_worktree() -> WorktreeName {
-    WorktreeName::parse("main").unwrap()
+/// World root of the main worktree [`MemMeta::with_main`] adds.
+pub fn main_worktree() -> String {
+    String::from("/worlds/main")
 }
 
 fn log_entry(old: Option<CommitId>, new: CommitId, note: ReflogNote<'_>) -> ReflogEntry {
@@ -521,13 +510,13 @@ impl MetaStore for MemMeta {
 
     fn apply_commit_incremental(
         &mut self,
-        worktree: &WorktreeName,
+        path: &str,
         created_at_ms: u64,
         parents: &[CommitId],
         entries: &[CommitEntry],
         note: ReflogNote<'_>,
     ) -> impl Future<Output = Result<ApplyOutcome, MemError>> + Send {
-        crate::tree::apply_entries(self, worktree, created_at_ms, parents, entries, note)
+        crate::tree::apply_entries(self, path, created_at_ms, parents, entries, note)
     }
 
     fn lookup_commit(
@@ -621,14 +610,14 @@ impl MetaStore for MemMeta {
 
     fn commit_tree(
         &mut self,
-        worktree: &WorktreeName,
+        path: &str,
         created_at_ms: u64,
         parents: &[CommitId],
         root: RootHash,
         nodes: &TreeNodes,
         note: ReflogNote<'_>,
     ) -> impl Future<Output = Result<ApplyOutcome, MemError>> + Send {
-        core::future::ready(self.record_commit(worktree, created_at_ms, parents, root, nodes, note))
+        core::future::ready(self.record_commit(path, created_at_ms, parents, root, nodes, note))
     }
 
     fn lookup_ref(
@@ -734,24 +723,13 @@ impl MetaStore for MemMeta {
         note: ReflogNote<'_>,
     ) -> impl Future<Output = Result<(), MemError>> + Send {
         let result = (|| {
-            if self.worktrees.contains_key(&worktree.name) {
-                return Err(MemError::WorktreeExists {
-                    name: worktree.name.clone(),
+            if self.worktrees.contains_key(&worktree.path) {
+                return Err(MemError::WorktreePathTaken {
+                    path: worktree.path.clone(),
                 });
             }
-            match &worktree.path {
-                None if self.worktrees.values().any(Worktree::is_main) => {
-                    return Err(MemError::MainWorktreeExists);
-                }
-                Some(path)
-                    if self
-                        .worktrees
-                        .values()
-                        .any(|held| held.path.as_ref() == Some(path)) =>
-                {
-                    return Err(MemError::WorktreePathTaken { path: path.clone() });
-                }
-                _ => {}
+            if worktree.main && self.worktrees.values().any(Worktree::is_main) {
+                return Err(MemError::MainWorktreeExists);
             }
             match &worktree.head {
                 Head::Branch(branch) => {
@@ -762,9 +740,9 @@ impl MetaStore for MemMeta {
             }
             let state = self.head_state(worktree);
             self.worktrees
-                .insert(worktree.name.clone(), worktree.clone());
+                .insert(worktree.path.clone(), worktree.clone());
             if let Some(commit) = state.commit() {
-                self.log_head(&worktree.name, None, commit, note);
+                self.log_head(&worktree.path, None, commit, note);
             }
             Ok(())
         })();
@@ -773,9 +751,9 @@ impl MetaStore for MemMeta {
 
     fn lookup_worktree(
         &self,
-        name: &WorktreeName,
+        path: &str,
     ) -> impl Future<Output = Result<Option<Worktree>, MemError>> + Send {
-        core::future::ready(Ok(self.worktrees.get(name).cloned()))
+        core::future::ready(Ok(self.worktrees.get(path).cloned()))
     }
 
     fn visit_worktrees<F>(&self, mut visit: F) -> impl Future<Output = Result<(), MemError>> + Send
@@ -792,16 +770,16 @@ impl MetaStore for MemMeta {
 
     fn remove_worktree(
         &mut self,
-        name: &WorktreeName,
+        path: &str,
     ) -> impl Future<Output = Result<bool, MemError>> + Send {
-        let result = match self.worktrees.get(name) {
+        let result = match self.worktrees.get(path) {
             None => Ok(false),
-            Some(worktree) if worktree.is_main() => {
-                Err(MemError::MainWorktreeProtected { name: name.clone() })
-            }
+            Some(worktree) if worktree.is_main() => Err(MemError::MainWorktreeProtected {
+                path: path.to_owned(),
+            }),
             Some(_) => {
-                self.worktrees.remove(name);
-                self.head_logs.remove(name);
+                self.worktrees.remove(path);
+                self.head_logs.remove(path);
                 Ok(true)
             }
         };
@@ -810,19 +788,21 @@ impl MetaStore for MemMeta {
 
     fn set_head(
         &mut self,
-        name: &WorktreeName,
+        path: &str,
         head: &Head,
         note: ReflogNote<'_>,
     ) -> impl Future<Output = Result<(), MemError>> + Send {
         let result = (|| {
             let old = self
                 .worktrees
-                .get(name)
+                .get(path)
                 .map(|held| self.head_state(held))
-                .ok_or_else(|| MemError::UnknownWorktree { name: name.clone() })?;
+                .ok_or_else(|| MemError::UnknownWorktree {
+                    path: path.to_owned(),
+                })?;
             match head {
                 Head::Branch(new_branch) => {
-                    self.check_not_checked_out(new_branch, Some(name))?;
+                    self.check_not_checked_out(new_branch, Some(path))?;
                     let target = Ref::branch(new_branch.clone());
                     // Only a branch this worktree's HEAD names exists only
                     // as the head this move rewrites. Such an unborn branch
@@ -840,27 +820,24 @@ impl MetaStore for MemMeta {
                 }
                 Head::Detached(commit) => self.require_commit(*commit)?,
             }
-            if let Some(worktree) = self.worktrees.get_mut(name) {
+            if let Some(worktree) = self.worktrees.get_mut(path) {
                 worktree.head = head.clone();
             }
             let new = self
                 .worktrees
-                .get(name)
+                .get(path)
                 .map(|held| self.head_state(held))
                 .and_then(|state| state.commit());
             if let Some(new) = new {
-                self.log_head(name, old.commit(), new, note);
+                self.log_head(path, old.commit(), new, note);
             }
             Ok(())
         })();
         core::future::ready(result)
     }
 
-    fn head(
-        &self,
-        name: &WorktreeName,
-    ) -> impl Future<Output = Result<Option<HeadState>, MemError>> + Send {
-        let state = self.worktrees.get(name).map(|held| self.head_state(held));
+    fn head(&self, path: &str) -> impl Future<Output = Result<Option<HeadState>, MemError>> + Send {
+        let state = self.worktrees.get(path).map(|held| self.head_state(held));
         core::future::ready(Ok(state))
     }
 
@@ -878,13 +855,13 @@ impl MetaStore for MemMeta {
 
     fn visit_head_log<F>(
         &self,
-        name: &WorktreeName,
+        path: &str,
         visit: F,
     ) -> impl Future<Output = Result<(), MemError>> + Send
     where
         F: FnMut(&ReflogEntry) -> bool + Send,
     {
-        visit_newest_first(self.head_logs.get(name), visit);
+        visit_newest_first(self.head_logs.get(path), visit);
         core::future::ready(Ok(()))
     }
 

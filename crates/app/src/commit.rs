@@ -213,9 +213,10 @@ where
         store.blob_mut().sync().await?;
         let dir_sync = sync_started.elapsed();
         let db_started = Instant::now();
+        let main = main_worktree(store).await?;
         let report = sekai_core::usecase::commit::record_commit(
             store.meta_mut(),
-            &main_worktree()?,
+            &main,
             &previous,
             &staged,
             created_at_ms,
@@ -281,9 +282,9 @@ where
 
     let universe_started = Instant::now();
     let keys: Vec<RegionKey> = regions.keys().copied().collect();
+    let main = main_worktree(store).await?;
     let (previous, plan) =
-        sekai_core::usecase::commit::plan_commit(store.meta(), &main_worktree()?, &keys, scope)
-            .await?;
+        sekai_core::usecase::commit::plan_commit(store.meta(), &main, &keys, scope).await?;
     // The proof needs the discovered handles, so it runs before the ingest
     // list takes them out of the map.
     let proven = match previous.commit.as_ref().filter(|_| dry_run) {

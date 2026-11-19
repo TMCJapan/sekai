@@ -6,7 +6,7 @@
 use alloc::vec::Vec;
 
 use sekai_storage::MetaStore;
-use sekai_util::{CommitRef, HeadState, WorktreeName};
+use sekai_util::{CommitRef, HeadState};
 
 use super::graph::CommitError;
 
@@ -22,11 +22,11 @@ pub async fn list_refs<M: MetaStore>(meta: &M) -> Result<Vec<CommitRef>, CommitE
     Ok(out)
 }
 
-/// `worktree`'s HEAD resolved against the refs, or `None` when the
-/// worktree does not exist.
+/// The HEAD of the worktree at `path` resolved against the refs, or
+/// `None` when the worktree does not exist.
 pub async fn head<M: MetaStore>(
     meta: &M,
-    worktree: &WorktreeName,
+    path: &str,
 ) -> Result<Option<HeadState>, CommitError<M::Error>> {
-    meta.head(worktree).await.map_err(CommitError::Meta)
+    meta.head(path).await.map_err(CommitError::Meta)
 }

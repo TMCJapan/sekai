@@ -77,16 +77,11 @@ pub enum StorageError {
         /// Scope that has no area.
         name: String,
     },
-    /// Stored worktree name fails validation.
-    InvalidWorktreeName {
-        /// Worktree name that failed validation.
-        name: String,
-    },
     /// Stored `worktrees` row holds neither or both of the HEAD columns,
     /// which the schema forbids; the row is corruption.
     CorruptWorktreeHead {
-        /// Name of the worktree whose HEAD columns are corrupt.
-        name: String,
+        /// Path of the worktree whose HEAD columns are corrupt.
+        path: String,
     },
     /// The named ref does not exist.
     ///
@@ -115,18 +110,13 @@ pub enum StorageError {
     BranchCheckedOut {
         /// The branch.
         branch: Ref,
-        /// Worktree that has it checked out.
+        /// Path of the worktree that has it checked out.
         worktree: String,
     },
-    /// The named worktree does not exist.
+    /// No worktree has this path.
     UnknownWorktree {
-        /// Requested worktree name.
-        name: String,
-    },
-    /// A worktree with this name already exists.
-    WorktreeExists {
-        /// Requested worktree name.
-        name: String,
+        /// Requested worktree path.
+        path: String,
     },
     /// Another worktree already has this path.
     WorktreePathTaken {
@@ -137,8 +127,8 @@ pub enum StorageError {
     MainWorktreeExists,
     /// The main worktree cannot be removed or moved.
     MainWorktreeProtected {
-        /// Requested worktree name.
-        name: String,
+        /// Requested worktree path.
+        path: String,
     },
     /// A new commit does not continue the commit HEAD stands at, which
     /// would fork HEAD onto another history.
@@ -201,11 +191,8 @@ impl fmt::Display for StorageError {
             Self::InvalidRefName { name } => write!(f, "stored ref name is invalid: {name}"),
             Self::InvalidScopeName { name } => write!(f, "stored scope name is invalid: {name}"),
             Self::EmptyScope { name } => write!(f, "stored scope has no area: {name}"),
-            Self::InvalidWorktreeName { name } => {
-                write!(f, "stored worktree name is invalid: {name}")
-            }
-            Self::CorruptWorktreeHead { name } => {
-                write!(f, "stored worktree {name} has a corrupt HEAD row")
+            Self::CorruptWorktreeHead { path } => {
+                write!(f, "stored worktree {path} has a corrupt HEAD row")
             }
             Self::UnknownRef { name } => write!(f, "unknown ref: {name}"),
             Self::RefExists { name } => write!(f, "ref already exists: {name}"),
@@ -215,14 +202,13 @@ impl fmt::Display for StorageError {
             Self::BranchCheckedOut { branch, worktree } => {
                 write!(f, "branch {branch} is checked out by worktree {worktree}")
             }
-            Self::UnknownWorktree { name } => write!(f, "unknown worktree: {name}"),
-            Self::WorktreeExists { name } => write!(f, "worktree already exists: {name}"),
+            Self::UnknownWorktree { path } => write!(f, "unknown worktree: {path}"),
             Self::WorktreePathTaken { path } => {
                 write!(f, "another worktree already has path {path}")
             }
             Self::MainWorktreeExists => f.write_str("store already has a main worktree"),
-            Self::MainWorktreeProtected { name } => {
-                write!(f, "the main worktree cannot be removed or moved: {name}")
+            Self::MainWorktreeProtected { path } => {
+                write!(f, "the main worktree cannot be removed or moved: {path}")
             }
             Self::NotContinuing { base } => {
                 write!(f, "new commit does not continue HEAD's commit {base}")
