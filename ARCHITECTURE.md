@@ -495,7 +495,9 @@ feature (default-on) that pulls in `sekai-storage-local` and
 no features of its own. The local backend is the only one shipped, and
 `--store` names its root directory directly; there is no runtime URL
 selection. A backend crate implements `SekaiStoreOpener` for its store
-type, so the backend owns the meaning of the location string that names it.
+type, so the backend owns the location type (`SekaiStoreOpener::Path`)
+that names it; the local backend reads it as a store root directory
+([ADR-0036](docs/adr/0036-opener-path-associated-type.md)).
 
 A build without `backend-local` has no store-opening entry point at all:
 `sekai-storage` ships no stand-in store, so a build that carries no backend

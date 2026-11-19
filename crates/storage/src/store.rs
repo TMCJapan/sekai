@@ -50,22 +50,32 @@ pub trait SekaiStore: Send + Sync + Sized + 'static {
 /// Open or initialize a store of one concrete backend.
 ///
 /// The two entry points are exclusive: only [`Self::init`] materializes a
-/// store, while [`Self::open`] never creates anything. The implementation
-/// owns the meaning of the location string; the local backend reads it as
-/// a store root directory.
+/// store, while [`Self::open`] never creates anything. The backend owns
+/// its location type [`Self::Path`]; the local backend reads it as a store
+/// root directory. The associated type keeps this crate `no_std`: `Path`
+/// itself never appears here, only whatever the backend names.
 pub trait SekaiStoreOpener: SekaiStore {
-    /// Open the existing store named by `location`.
+    /// The backend's location type, borrowed through [`AsRef`] at the entry
+    /// points (`std::path::Path` for the local backend, a string or URL
+    /// type for a remote one).
+    type Path: ?Sized;
+
+    /// Open the existing store named by `path`.
     ///
     /// Fails with [`StorageError::StoreMissing`] when the store was never
     /// initialized, without creating anything.
-    fn open(location: &str) -> impl Future<Output = Result<Self, StorageError>> + Send;
+    fn open(
+        path: impl AsRef<Self::Path>,
+    ) -> impl Future<Output = Result<Self, StorageError>> + Send;
 
-    /// Initialize the store named by `location` and open it.
+    /// Initialize the store named by `path` and open it.
     ///
     /// The only path that materializes a store, reserved for an explicit
     /// init (the CLI's `sekai init`). Initializing an existing store again
     /// is idempotent, like `git init`.
-    fn init(location: &str) -> impl Future<Output = Result<Self, StorageError>> + Send;
+    fn init(
+        path: impl AsRef<Self::Path>,
+    ) -> impl Future<Output = Result<Self, StorageError>> + Send;
 }
 
 impl<M, C, K> SekaiStore for Store<M, C, K>

@@ -2,8 +2,8 @@
 
 mod common;
 
-use sekai_storage::{BlobStore as _, CacheStore as _, MetaStore as _};
-use sekai_storage_local::{init_local, open_local};
+use sekai_storage::{BlobStore as _, CacheStore as _, MetaStore as _, SekaiStoreOpener as _};
+use sekai_storage_local::{LocalStore, init_local, open_local};
 use sekai_util::{ChunkCoord, ChunkHash, CommitEntry, Dimension, RegionHash, RegionKind};
 use std::path::Path;
 
@@ -327,4 +327,29 @@ async fn open_of_a_missing_store_fails_without_creating_it() {
     // The keyspace admits one opener: release the init handle first.
     drop(store);
     let _store = open_local(&dir).await.unwrap();
+}
+
+/// The opener trait accepts any `AsRef<Path>` holder, not just strings, and
+/// keeps the open/init exclusivity of the free functions (issue #80).
+#[tokio::test]
+async fn opener_trait_takes_path_like_locations() {
+    let (base, _guard) = tempdir("opener-trait");
+    let dir = base.join("store");
+
+    let err = LocalStore::open(&dir).await.unwrap_err();
+    assert!(
+        matches!(&err, sekai_storage::StorageError::StoreMissing { path } if Path::new(path) == dir),
+        "unexpected error: {err}"
+    );
+    assert!(!dir.exists(), "a failed open must not create anything");
+
+    let store = LocalStore::init(dir.clone()).await.unwrap();
+    assert!(sekai_storage_local::local_store_exists(&dir));
+    // The keyspace admits one opener: release the init handle first.
+    drop(store);
+
+    let url = dir.to_string_lossy().into_owned();
+    let store = LocalStore::open(url.as_str()).await.unwrap();
+    drop(store);
+    let _store = LocalStore::open(dir.as_path()).await.unwrap();
 }
