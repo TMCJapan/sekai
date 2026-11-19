@@ -51,7 +51,7 @@ sekai-util (no_std, no tokio dependency: coordinates, chunk hashes,
 | `sekai-anvil`                     | `no_std` + `alloc`                    | no                                           | Pure Anvil sector codec including decompression and chunk NBT normalization. A stored sector payload becomes a `Chunk` whose `normalized_hash()` is the only public NBT-derived digest; the parser and normalized views stay internal. Owns `ChunkPayloadDiff`, the two-sided digest comparison diff flows report. Also builds `Vec<u8>` images. Compression framing is MCA spec knowledge, so it lives here. No `Path`, no `fs`. Names custom dimensions with util `Dimension`. |
 | `sekai-core`                      | `no_std` + `alloc`                    | no                                           | Pure staging policy (`Previous`/`Plan`/`Ingested`/`Assembled`, `stage_present`, `assemble`) over util types; no store access. Re-exports every util type at its root, so downstream paths stay stable. `app` composes it with `anvil` for payload digests and diffs.                                                                                                                                                                               |
 | `sekai-storage`                   | `no_std` + `alloc`                    | yes (RPITIT)                                 | Backend-neutral boundaries: async `BlobStore`/`MetaStore`/`CacheStore` traits, the canonical snapshot-tree codec they exchange, the generic tree/graph/ref/scope algorithms over `MetaStore`, the content-addressed `commit_hash` derivation, high-level `SekaiStore`/`SekaiStoreOpener` traits, and shared storage errors. A feature-gated `testing` module holds the in-memory fake. Depends on `util` only.                                                                                                                                                                  |
-| `sekai-storage-local`             | `std` + tokio                         | yes                                          | Concrete local backend: `SqliteMeta` over sqlx plus `SledBlob` and `SledCache` over sled, composed into `LocalStore`, all three schema/version gates, and the openers. Implements the traits from `sekai-storage`. Other backends become sibling crates without touching `core`/`app`.                                                                                                                  |
+| `sekai-storage-local`             | `std` + tokio                         | yes                                          | Concrete local backend: `SqliteMeta` over sqlx plus `SledBlob` and `SledCache` over sled, composed into `LocalStore`, the config version gate, and the openers. Implements the traits from `sekai-storage`. Other backends become sibling crates without touching `core`/`app`.                                                                                                                  |
 | `sekai-world`                     | `no_std` + `alloc`                    | no                                           | World access boundary: the `WorldTree` trait, the `RegionFile` handle, and the `WorldLock` primitives. No filesystem code.                                                                                                                                                                                                                                                                                |
 | `sekai-world-local`               | `std`                                 | no                                           | Host filesystem tree: `HostWorldTree`, layout detection (vanilla, pre-26.1 Bukkit, plugin worlds), the `HostRegion` handles, the `.sekai.lock` file lock, atomic swaps, and the host `WorldError`.                                                                                                                                                                                                      |
 | `sekai-app`                       | `std` + tokio                         | yes                                          | Composition/orchestration library for third parties: store-touching commit/checkout planning (`plan_commit`, `record_commit`, `plan_checkout`), parallel ingest, clocks, timing, progress callbacks.                                                                                                                                                                                                                                            |
@@ -472,9 +472,9 @@ produced them. The scope is a filter, not a partition:
   so workers share them without exclusion and a cancelled future cannot
   strand a lock.
 - `sekai-storage-local` is the concrete local backend. It owns `SqliteMeta`
-  (sqlx), `SledBlob` and `SledCache` (sled), `LocalStore`, all three schemas
-  and version gates, and implements the storage traits. Keeping sqlx and
-  sled out of `sekai-storage` keeps the abstraction crate free of native
+  (sqlx), `SledBlob` and `SledCache` (sled), `LocalStore`, the schemas and
+  the config version gate, and implements the storage traits. Keeping sqlx
+  and sled out of `sekai-storage` keeps the abstraction crate free of native
   database dependencies.
 - New backends (mysql, postgres, embedded, in-memory, wasm) become sibling
   crates implementing the same traits. `app` is generic over
@@ -529,15 +529,16 @@ the pass still writes files.
 
 Owned by the backend crate (`crates/storage-local/schema/sqlite.sql` for
 metadata; `commits`, `commit_parents`, `root_tree`, `dim_tree`,
-`region_tree`, `refs`, `scopes`, `scope_areas`; `SCHEMA_VERSION` gate;
-pre-release policy = recreate, don't migrate). Each tree table stores the
-canonical node bytes under their hash; paths are three primary-key probes.
-The blob keyspace (`blobs/`) carries its own version gate in a
-reserved sled tree (`__sekai_version`); blob values are opaque payloads, so
-it has no derived state to reinterpret. The cache keyspace (`cache/`)
-carries an independent gate the same way; its entries are derived and
-rebuildable, so a version bump recreates them without touching the source
-of truth. CAS stays behind the backend-neutral
+`region_tree`, `refs`, `scopes`, `scope_areas`). One version gate covers
+the whole store: `<root>/conf.toml` records the format version
+(`CONFIG_VERSION` in `crates/storage-local/src/config.rs`), read and
+enforced before any database opens; pre-release policy = recreate, don't
+migrate. Each tree table stores the canonical node bytes under their hash;
+paths are three primary-key probes. The blob keyspace (`blobs/`) keeps
+opaque payloads in its default tree, so it has no derived state to
+reinterpret. The cache keyspace (`cache/`) holds derived, rebuildable
+entries, so a version bump recreates them without touching the source of
+truth. CAS stays behind the backend-neutral
 trait, so an object-store backend swaps the adapter without touching metadata
 code.
 

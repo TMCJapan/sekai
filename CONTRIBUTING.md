@@ -238,8 +238,8 @@ cargo build -p sekai-cli --release
 
 - **Unit Tests**: Place in `src/` alongside the code. Ensure coverage for edge cases (corrupted headers, unexpected NBT structures, zero-length chunks).
 - **Integration Tests**: Place in `tests/` directories within crates. Test atomic operations (e.g., MCA writes, checkouts) using synthetic binary fixtures. The `test-world/` corpus (small real-data region files, see its README for provenance) is the exception: copy it into a temp dir first, never mutate it in place. Crash-order tests (torn commit leaves orphans, never dangling references) are mandatory for `app`/`world-local`/`storage` changes.
-- **Backend tests**: `sekai-storage-local` must cover all three version
-  gates (metadata, blobs, cache; `UnsupportedSchema`), snapshot-tree path
+- **Backend tests**: `sekai-storage-local` must cover the config version
+  gate (`UnsupportedSchema`), snapshot-tree path
   reads and shared-subtree reuse, the cache roundtrip, and the
   source-of-truth recovery guarantees. Future backend crates must run the
   same suite via the shared conformance flows.
@@ -292,15 +292,14 @@ Write [Conventional Commits](https://www.conventionalcommits.org/):
 
 ### Storage Schema Changes
 
-The metadata schema is backend-owned and versioned
-(`SCHEMA_VERSION` in `crates/storage-local/src/meta.rs`); the blob and
-cache keyspaces each have their own gate (`SCHEMA_VERSION` in
-`crates/storage-local/src/blob.rs` and `cache.rs`).
+The whole store format is backend-owned and versioned in one place:
+`CONFIG_VERSION` in `crates/storage-local/src/config.rs`, persisted as
+`version` in `<root>/conf.toml` and enforced before any database opens.
 
-- Bump the version for any schema change and add a test pinning the version
-  gate (old stores fail loudly with `UnsupportedSchema`). Fresh stores
-  derive the version from `SCHEMA_VERSION`, so bumping the constant is
-  sufficient.
+- Bump the version for any schema or keyspace-layout change and add a test
+  pinning the version gate (old stores fail loudly with
+  `UnsupportedSchema`). Fresh stores derive the version from
+  `CONFIG_VERSION`, so bumping the constant is sufficient.
 - The project is pre-release: old stores are recreated, not migrated. Never
   silently reinterpret an unknown version.
 - The metadata schema keeps only source-of-truth history and snapshot

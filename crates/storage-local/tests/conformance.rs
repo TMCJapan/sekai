@@ -157,10 +157,11 @@ async fn visit_lists_stored_hashes_and_missing_fetch_clears() {
     assert!(out.is_empty(), "a failed fetch clears the buffer");
 }
 
-/// The blob keyspace is its own versioned sled directory beside `meta.sqlite`.
+/// The blob keyspace is a sled directory beside `meta.sqlite`, its default
+/// tree keyed by the blob hashes alone.
 #[tokio::test]
-async fn blob_database_is_created_and_version_gated() {
-    let (dir, _guard) = tempdir("blob-schema");
+async fn blob_database_is_created() {
+    let (dir, _guard) = tempdir("blob-created");
     let mut store = init(&dir).await;
     let hash = ChunkHash::new(sekai_util::hash_bytes(b"payload"));
     assert!(store.blob_mut().put(&hash, b"payload").await.unwrap());
@@ -169,37 +170,22 @@ async fn blob_database_is_created_and_version_gated() {
 
     let blob_path = dir.join("blobs");
     assert!(blob_path.is_dir());
-    // The version marker lives in a reserved tree, apart from the blob
-    // hashes; the tree and key names pin the on-disk format.
     let db = sled::open(&blob_path).unwrap();
-    let versions = db.open_tree("__sekai_version").unwrap();
-    let stored = versions.get("schema").unwrap().unwrap();
-    let version = i64::from_le_bytes(stored.as_ref().try_into().unwrap());
-    assert_eq!(version, 1);
-
-    // A future version is refused loudly instead of reinterpreted.
-    versions.insert("schema", &99i64.to_le_bytes()[..]).unwrap();
-    db.flush().unwrap();
-    // Every tree handle shares the session: all of them must go before the
-    // keyspace can be opened again.
-    drop(versions);
+    assert_eq!(
+        db.get(hash.as_bytes()).unwrap().unwrap().as_ref(),
+        b"payload"
+    );
+    assert_eq!(db.tree_names().len(), 1);
     drop(db);
-    let err = LocalStore::open(&dir).await.unwrap_err();
-    assert!(matches!(
-        err,
-        sekai_storage::StorageError::UnsupportedSchema {
-            found: 99,
-            supported: 1
-        }
-    ));
+    let _store = LocalStore::open(&dir).await.unwrap();
 }
 
-/// The cache keyspace is its own versioned sled directory beside
-/// `meta.sqlite`, with the image in the default tree and its hash in a
-/// side tree.
+/// The cache keyspace is a sled directory beside `meta.sqlite`, the image
+/// in the default tree and its hash in a side tree so a hash lookup never
+/// reads image bytes.
 #[tokio::test]
-async fn cache_database_is_created_and_version_gated() {
-    let (dir, _guard) = tempdir("cache-schema");
+async fn cache_database_is_created() {
+    let (dir, _guard) = tempdir("cache-created");
     let mut store = init(&dir).await;
     let region = RegionHash::new([7; 32]);
     let image = b"mca image";
@@ -216,43 +202,23 @@ async fn cache_database_is_created_and_version_gated() {
 
     let cache_path = dir.join("cache");
     assert!(cache_path.is_dir());
-    // The tree and key names pin the on-disk format: the version marker in
-    // a reserved tree, the image in the default tree, its hash in the side
-    // tree so a hash lookup never reads image bytes.
     let db = sled::open(&cache_path).unwrap();
-    let versions = db.open_tree("__sekai_version").unwrap();
-    let stored = versions.get("schema").unwrap().unwrap();
-    let version = i64::from_le_bytes(stored.as_ref().try_into().unwrap());
-    assert_eq!(version, 1);
     assert_eq!(db.get(region.as_bytes()).unwrap().unwrap().as_ref(), image);
     let hashes = db.open_tree("mca_hashes").unwrap();
     assert_eq!(
         hashes.get(region.as_bytes()).unwrap().unwrap().as_ref(),
         &mca_hash[..]
     );
-
-    // A future version is refused loudly instead of reinterpreted.
-    versions.insert("schema", &99i64.to_le_bytes()[..]).unwrap();
-    db.flush().unwrap();
-    // Every tree handle shares the session: all of them must go before the
-    // keyspace can be opened again.
+    assert_eq!(db.tree_names().len(), 2);
     drop(hashes);
-    drop(versions);
     drop(db);
-    let err = LocalStore::open(&dir).await.unwrap_err();
-    assert!(matches!(
-        err,
-        sekai_storage::StorageError::UnsupportedSchema {
-            found: 99,
-            supported: 1
-        }
-    ));
+    let _store = LocalStore::open(&dir).await.unwrap();
 }
 
-/// A wiped cache keeps its version marker and stays openable: `clear`
-/// removes entries, never the keyspace format.
+/// A wiped cache stays openable: `clear` removes entries, never the
+/// keyspace.
 #[tokio::test]
-async fn cache_clear_keeps_the_version_marker() {
+async fn cache_clear_keeps_the_keyspace_openable() {
     let (dir, _guard) = tempdir("cache-clear");
     let mut store = init(&dir).await;
     let region = RegionHash::new([7; 32]);

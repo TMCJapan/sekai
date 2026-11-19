@@ -9,7 +9,7 @@ mod meta;
 pub use blob::SledBlob;
 pub use cache::SledCache;
 pub use config::{CONFIG_VERSION, Config};
-pub use meta::{SCHEMA_VERSION, SqliteMeta};
+pub use meta::SqliteMeta;
 
 use std::path::Path;
 
