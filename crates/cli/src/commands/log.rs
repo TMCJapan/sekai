@@ -2,11 +2,12 @@
 
 use crate::envelope::envelope_ok;
 use crate::style::Styler;
+use sekai_storage_local::LocalStore;
 use serde::Serialize;
 use std::fmt::Write as _;
 
 pub async fn run(store: &str, json: bool, stat: bool, style: Styler) -> anyhow::Result<()> {
-    let instance = sekai_app::SekaiInstance::open(store).await?;
+    let instance = sekai_app::SekaiInstance::<LocalStore>::open(store).await?;
     let commits = instance.list_commits().await?;
     let mut stats = Vec::new();
     if stat {

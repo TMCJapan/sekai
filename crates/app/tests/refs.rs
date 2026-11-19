@@ -9,6 +9,7 @@ mod fixtures;
 use fixtures::chunk_nbt;
 
 use sekai_app::{DEFAULT_REF_NAME, HostWorldTree, RefName};
+use sekai_storage_local::LocalStore;
 use std::path::Path;
 
 /// A private temp dir, removed on drop. Nothing is kept, so a panicking
@@ -52,7 +53,9 @@ async fn commit<S: sekai_app::SekaiStore>(
 async fn a_fresh_store_starts_with_one_active_ref() {
     let root = tempdir();
     let store = root.path().join("store").to_string_lossy().into_owned();
-    let instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let instance = sekai_app::SekaiInstance::<LocalStore>::init(&store)
+        .await
+        .unwrap();
 
     let refs = instance.list_refs().await.unwrap();
     assert_eq!(refs.len(), 1);
@@ -73,7 +76,9 @@ async fn a_commit_hangs_from_the_active_ref() {
         &[(0, 0, chunk_nbt("marker-1"))],
     );
 
-    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::<LocalStore>::init(&store)
+        .await
+        .unwrap();
     let first = commit(&mut instance, &mut world).await;
 
     // The active ref moved onto the new commit.
@@ -108,7 +113,9 @@ async fn switching_refs_forks_the_history() {
         &[(0, 0, chunk_nbt("marker-1"))],
     );
 
-    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::<LocalStore>::init(&store)
+        .await
+        .unwrap();
     let first = commit(&mut instance, &mut world).await;
 
     // A second ref starts at the active ref's target.
@@ -159,7 +166,9 @@ async fn switching_refs_forks_the_history() {
 async fn the_active_ref_is_protected() {
     let root = tempdir();
     let store = root.path().join("store").to_string_lossy().into_owned();
-    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::<LocalStore>::init(&store)
+        .await
+        .unwrap();
     let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
 
     // The store's active ref never goes away.
@@ -183,7 +192,9 @@ async fn forcing_a_move_keeps_the_active_flag() {
         &[(0, 0, chunk_nbt("marker-1"))],
     );
 
-    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::<LocalStore>::init(&store)
+        .await
+        .unwrap();
     let first = commit(&mut instance, &mut world).await;
     let _second = commit(&mut instance, &mut world).await;
     let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
@@ -217,7 +228,9 @@ async fn forcing_a_move_keeps_the_active_flag() {
 async fn ref_writes_report_a_missing_target() {
     let root = tempdir();
     let store = root.path().join("store").to_string_lossy().into_owned();
-    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let mut instance = sekai_app::SekaiInstance::<LocalStore>::init(&store)
+        .await
+        .unwrap();
     let feature = RefName::parse("feature").unwrap();
 
     // A target no commit carries is refused before the ref exists.

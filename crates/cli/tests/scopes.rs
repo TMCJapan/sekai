@@ -3,6 +3,7 @@
 use clap::Parser as _;
 use sekai_app::{Dimension, Rect, SekaiInstance};
 use sekai_cli::cli::Cli;
+use sekai_storage_local::LocalStore;
 
 /// A temp dir whose name starts with the calling test's name (tempfile
 /// appends a random suffix), removed when its guard is dropped.
@@ -49,7 +50,7 @@ async fn saved_scopes_select_by_name() {
     .await
     .expect("scope create");
 
-    let listed = SekaiInstance::open(store)
+    let listed = SekaiInstance::<LocalStore>::open(store)
         .await
         .unwrap()
         .list_scopes()

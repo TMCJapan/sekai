@@ -1,6 +1,7 @@
 //! Init subcommand execution, DTOs, and output rendering.
 
 use anyhow::Context as _;
+use sekai_storage_local::LocalStore;
 use serde::Serialize;
 
 use crate::envelope::envelope_ok;
@@ -9,8 +10,8 @@ use crate::style::Styler;
 pub async fn run(store: &str, json: bool, style: Styler) -> anyhow::Result<()> {
     // Checked before init so a re-initialization reports itself as one;
     // the marker check never opens (and locks) the store.
-    let existed = sekai_app::local_store_exists(store);
-    sekai_app::SekaiInstance::init(store)
+    let existed = sekai_storage_local::local_store_exists(store);
+    sekai_app::SekaiInstance::<LocalStore>::init(store)
         .await
         .with_context(|| format!("init of {store} failed"))?;
     if json {

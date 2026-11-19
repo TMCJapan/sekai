@@ -22,8 +22,8 @@ git-style vocabulary (ADR-0018) already invites that model.
 Add `sekai init` as the only command that materializes a store, and make
 every other command (including `commit`) open only:
 
-- CLI: a new `init` subcommand runs `SekaiInstance::init`; `commit` switches
-  to `SekaiInstance::open`. Like `git init`, re-initializing an existing
+- CLI: a new `init` subcommand runs `SekaiInstance::<LocalStore>::init`; `commit` switches
+  to `SekaiInstance::<LocalStore>::open`. Like `git init`, re-initializing an existing
   store is idempotent and reports itself as a re-initialization.
 - Errors: `StorageError::StoreMissing` now reads
   `no store at <path>: run 'sekai init' to create one`.

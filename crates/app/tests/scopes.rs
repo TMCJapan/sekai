@@ -12,6 +12,7 @@ use sekai_app::{
     AppError, Area, ChunkCoord, Dimension, HostWorldTree, NamedScopeError, Rect, RegionKind, Scope,
     ScopeName,
 };
+use sekai_storage_local::LocalStore;
 use std::path::Path;
 
 /// A private temp dir, removed on drop. Nothing is kept, so a panicking
@@ -43,7 +44,7 @@ fn name(raw: &str) -> ScopeName {
 #[tokio::test]
 async fn a_scope_is_created_listed_and_deleted() {
     let root = tempdir();
-    let mut instance = sekai_app::SekaiInstance::init(root.path().join("store"))
+    let mut instance = sekai_app::SekaiInstance::<LocalStore>::init(root.path().join("store"))
         .await
         .unwrap();
     assert_eq!(instance.list_scopes().await.unwrap(), Vec::new());
@@ -81,7 +82,7 @@ async fn a_scope_is_created_listed_and_deleted() {
 #[tokio::test]
 async fn an_existing_scope_is_replaced_only_with_force() {
     let root = tempdir();
-    let mut instance = sekai_app::SekaiInstance::init(root.path().join("store"))
+    let mut instance = sekai_app::SekaiInstance::<LocalStore>::init(root.path().join("store"))
         .await
         .unwrap();
     let spawn = name("spawn");
@@ -109,7 +110,7 @@ async fn an_existing_scope_is_replaced_only_with_force() {
 #[tokio::test]
 async fn a_selection_of_nothing_is_refused() {
     let root = tempdir();
-    let mut instance = sekai_app::SekaiInstance::init(root.path().join("store"))
+    let mut instance = sekai_app::SekaiInstance::<LocalStore>::init(root.path().join("store"))
         .await
         .unwrap();
     let err = instance
@@ -126,7 +127,7 @@ async fn a_selection_of_nothing_is_refused() {
 #[tokio::test]
 async fn a_scope_resolves_to_its_rectangles() {
     let root = tempdir();
-    let mut instance = sekai_app::SekaiInstance::init(root.path().join("store"))
+    let mut instance = sekai_app::SekaiInstance::<LocalStore>::init(root.path().join("store"))
         .await
         .unwrap();
     let err = instance.resolve_scope(&name("spawn")).await.unwrap_err();
@@ -168,7 +169,7 @@ async fn a_resolved_scope_limits_a_commit() {
             (5, 5, chunk_nbt("marker-3")),
         ],
     );
-    let mut instance = sekai_app::SekaiInstance::init(root.path().join("store"))
+    let mut instance = sekai_app::SekaiInstance::<LocalStore>::init(root.path().join("store"))
         .await
         .unwrap();
     instance

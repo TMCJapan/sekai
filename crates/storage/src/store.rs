@@ -64,18 +64,14 @@ pub trait SekaiStoreOpener: SekaiStore {
     ///
     /// Fails with [`StorageError::StoreMissing`] when the store was never
     /// initialized, without creating anything.
-    fn open(
-        path: impl AsRef<Self::Path>,
-    ) -> impl Future<Output = Result<Self, StorageError>> + Send;
+    fn open(path: impl AsRef<Self::Path>) -> impl Future<Output = Result<Self, StorageError>>;
 
     /// Initialize the store named by `path` and open it.
     ///
     /// The only path that materializes a store, reserved for an explicit
     /// init (the CLI's `sekai init`). Initializing an existing store again
     /// is idempotent, like `git init`.
-    fn init(
-        path: impl AsRef<Self::Path>,
-    ) -> impl Future<Output = Result<Self, StorageError>> + Send;
+    fn init(path: impl AsRef<Self::Path>) -> impl Future<Output = Result<Self, StorageError>>;
 }
 
 impl<M, C, K> SekaiStore for Store<M, C, K>

@@ -1303,6 +1303,7 @@ dependencies = [
  "jiff",
  "sekai-anvil",
  "sekai-app",
+ "sekai-storage-local",
  "serde",
  "serde_json",
  "tempfile",

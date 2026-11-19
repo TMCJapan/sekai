@@ -72,11 +72,11 @@ async fn init_creates_the_store_every_other_command_opens() {
     let store = store.to_str().expect("temporary store path is UTF-8");
     let world = world.to_str().expect("temporary world path is UTF-8");
 
-    assert!(!sekai_app::local_store_exists(store));
+    assert!(!sekai_storage_local::local_store_exists(store));
     run(&["sekai", "--store", store, "init"])
         .await
         .expect("init creates the store");
-    assert!(sekai_app::local_store_exists(store));
+    assert!(sekai_storage_local::local_store_exists(store));
     assert!(root.join("store/meta.sqlite").is_file());
     assert!(root.join("store/blobs/conf").is_file());
     assert!(root.join("store/cache/conf").is_file());

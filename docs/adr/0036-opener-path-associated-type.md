@@ -27,12 +27,12 @@ name `std::path::Path`.
   `!Send` ones: the local impl owns the path (`to_path_buf`) in the
   synchronous body before building the future.
 - `LocalStore` becomes a newtype over `Store<SqliteMeta, SledBlob,
-  SledCache>` instead of an alias. The orphan rule forbids implementing
+SledCache>` instead of an alias. The orphan rule forbids implementing
   `sekai-storage`'s traits for the foreign `Store` combinator from
   `storage-local`; a local store type is what the backend owns anyway
   (ARCHITECTURE.md, Backend Selection). Adapter accessors are forwarded,
   and `SekaiStore` is implemented alongside `SekaiStoreOpener`.
-- `SekaiInstance::open`/`init` (local) and `open_with`/`init_with`
+- `SekaiInstance::<LocalStore>::open`/`init` (local) and `open_with`/`init_with`
   (backend-generic) widen to `impl AsRef<Path>` / `impl AsRef<T::Path>`.
 
 ## Consequences

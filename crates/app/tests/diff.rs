@@ -9,7 +9,7 @@ mod fixtures;
 
 use fixtures::chunk_nbt;
 use sekai_anvil::ChunkHashError;
-use sekai_app::{AppError, ChunkHash, RegionKind, SekaiInstance};
+use sekai_app::{AppError, ChunkHash, RegionKind, SekaiInstance, SekaiStore};
 use sekai_storage::{BlobStore as _, StorageError};
 use sekai_storage_local::LocalStore;
 
@@ -19,7 +19,7 @@ async fn instance(name: &str) -> (SekaiInstance<LocalStore>, tempfile::TempDir) 
         .tempdir()
         .unwrap();
     let url = guard.path().join("store").to_string_lossy().into_owned();
-    let instance = SekaiInstance::init(&url).await.unwrap();
+    let instance = SekaiInstance::<LocalStore>::init(&url).await.unwrap();
     (instance, guard)
 }
 

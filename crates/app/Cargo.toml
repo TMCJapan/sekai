@@ -12,13 +12,12 @@ workspace = true
 
 [features]
 default = ["backend-local"]
-backend-local = ["dep:sekai-storage-local", "dep:sekai-world-local"]
+backend-local = ["dep:sekai-world-local"]
 
 [dependencies]
 sekai-anvil.workspace = true
 sekai-core.workspace = true
 sekai-storage.workspace = true
-sekai-storage-local = { workspace = true, optional = true }
 sekai-world.workspace = true
 sekai-world-local = { workspace = true, optional = true }
 thiserror.workspace = true
@@ -43,6 +42,7 @@ required-features = ["backend-local"]
 criterion.workspace = true
 miniz_oxide.workspace = true
 sekai-storage = { workspace = true, features = ["testing"] }
+sekai-storage-local.workspace = true
 tempfile.workspace = true
 
 [package.metadata.cargo-machete]
