@@ -77,6 +77,7 @@ async fn init_creates_the_store_every_other_command_opens() {
         .await
         .expect("init creates the store");
     assert!(sekai_storage_local::local_store_exists(store));
+    assert!(root.join("store/conf.toml").is_file());
     assert!(root.join("store/meta.sqlite").is_file());
     assert!(root.join("store/blobs/conf").is_file());
     assert!(root.join("store/cache/conf").is_file());

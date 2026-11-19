@@ -34,8 +34,8 @@ pub enum StorageError {
     /// one; every other operation must fail here instead of materializing
     /// an empty store as a side effect.
     StoreMissing {
-        /// Store root that was expected to hold `meta.sqlite` and the
-        /// `blobs` and `cache` keyspaces.
+        /// Store root that was expected to hold `conf.toml`, `meta.sqlite`,
+        /// and the `blobs` and `cache` keyspaces.
         path: String,
     },
     /// Stored hash bytes are not 32 bytes long.

@@ -3,10 +3,12 @@
 
 mod blob;
 mod cache;
+mod config;
 mod meta;
 
 pub use blob::SledBlob;
 pub use cache::SledCache;
+pub use config::{CONFIG_VERSION, Config};
 pub use meta::{SCHEMA_VERSION, SqliteMeta};
 
 use std::path::Path;
@@ -49,31 +51,37 @@ impl SekaiStoreOpener for LocalStore {
 
     /// Initialize the store rooted at `root` and open it.
     ///
-    /// The layout is `<root>/meta.sqlite` plus the sled keyspaces at
-    /// `<root>/blobs` and `<root>/cache`; initializing an existing store again
-    /// is idempotent, like `git init`. This is the only path that materializes
-    /// a store, reserved for an explicit init (the CLI's `sekai init`). sled
-    /// admits a single opener per keyspace, so a concurrent initialization of
-    /// the same root fails loudly instead of racing.
+    /// The layout is `<root>/conf.toml` plus `<root>/meta.sqlite` and the sled
+    /// keyspaces at `<root>/blobs` and `<root>/cache`; initializing an existing
+    /// store again is idempotent, like `git init`. This is the only path that
+    /// materializes a store, reserved for an explicit init (the CLI's
+    /// `sekai init`). The config is read and version-gated before any database
+    /// opens. sled admits a single opener per keyspace, so a concurrent
+    /// initialization of the same root fails loudly instead of racing.
     async fn init(path: impl AsRef<Self::Path>) -> Result<Self, StorageError> {
-        std::fs::create_dir_all(path.as_ref())
-            .map_err(|source| io_error(path.as_ref().display().to_string(), source))?;
-        Self::connect(path).await
+        let root = path.as_ref();
+        std::fs::create_dir_all(root)
+            .map_err(|source| io_error(root.display().to_string(), source))?;
+        config::init(root)?;
+        Self::connect(root).await
     }
 
     /// Open the existing store rooted at `root`.
     ///
-    /// The layout is `<root>/meta.sqlite` plus the sled keyspaces at
-    /// `<root>/blobs` and `<root>/cache`. Fails with
+    /// The layout is `<root>/conf.toml` plus `<root>/meta.sqlite` and the sled
+    /// keyspaces at `<root>/blobs` and `<root>/cache`. The config is read and
+    /// version-gated before any database opens. Fails with
     /// [`StorageError::StoreMissing`] when the store was never initialized,
     /// without creating anything.
     async fn open(path: impl AsRef<Self::Path>) -> Result<Self, StorageError> {
-        if !Self::markers_present(path.as_ref()) {
+        let root = path.as_ref();
+        if !Self::markers_present(root) {
             return Err(StorageError::StoreMissing {
-                path: path.as_ref().display().to_string(),
+                path: root.display().to_string(),
             });
         }
-        Self::connect(path).await
+        Config::read(root)?;
+        Self::connect(root).await
     }
 }
 
@@ -85,17 +93,19 @@ pub fn local_store_exists(root: impl AsRef<Path>) -> bool {
 }
 
 impl LocalStore {
-    /// `conf` is the config file sled writes on first open: each keyspace's
-    /// existence marker, checked without opening (and locking) anything.
+    /// Each component's existence marker, checked without opening (and
+    /// locking) anything: `conf.toml`, `meta.sqlite`, and the `conf` files
+    /// sled writes inside each keyspace on first open.
     fn markers_present(root: impl AsRef<Path>) -> bool {
         let root = root.as_ref();
-        root.join("meta.sqlite").is_file()
+        root.join(config::FILE_NAME).is_file()
+            && root.join("meta.sqlite").is_file()
             && root.join("blobs/conf").is_file()
             && root.join("cache/conf").is_file()
     }
     /// Attach the metadata, blob, and cache adapters to an existing store root;
-    /// the root directory must already hold `meta.sqlite` and the `blobs` and
-    /// `cache` keyspaces.
+    /// the root directory must already hold `conf.toml`, `meta.sqlite`, and the
+    /// `blobs` and `cache` keyspaces.
     async fn connect(root: impl AsRef<Path>) -> Result<Self, StorageError> {
         let blob = SledBlob::open(root.as_ref().join("blobs")).await?;
         let cache = SledCache::open(root.as_ref().join("cache")).await?;
