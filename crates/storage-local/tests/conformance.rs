@@ -286,6 +286,91 @@ async fn open_of_a_pre_cache_store_fails() {
     );
 }
 
+/// Init materializes `conf.toml` with the current config version, and a
+/// re-init keeps the existing file instead of rewriting it.
+#[tokio::test]
+async fn init_writes_conf_and_reinit_keeps_it() {
+    let (dir, _guard) = tempdir("conf-init");
+    let store = init(&dir).await;
+    drop(store);
+    let conf = dir.join("conf.toml");
+    assert_eq!(
+        std::fs::read_to_string(&conf).unwrap(),
+        format!("version = {}\n", sekai_storage_local::CONFIG_VERSION)
+    );
+
+    // A comment only a preserved file can carry: re-init must not rewrite it.
+    std::fs::write(
+        &conf,
+        format!(
+            "# kept\nversion = {}\n",
+            sekai_storage_local::CONFIG_VERSION
+        ),
+    )
+    .unwrap();
+    let store = LocalStore::init(&dir).await.unwrap();
+    drop(store);
+    assert!(
+        std::fs::read_to_string(&conf)
+            .unwrap()
+            .starts_with("# kept")
+    );
+}
+
+/// A future config version is refused loudly instead of reinterpreted.
+#[tokio::test]
+async fn open_gates_the_config_version() {
+    let (dir, _guard) = tempdir("conf-version");
+    let store = init(&dir).await;
+    drop(store);
+    std::fs::write(dir.join("conf.toml"), "version = 99\n").unwrap();
+    let err = LocalStore::open(&dir).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            sekai_storage::StorageError::UnsupportedSchema { found: 99, supported }
+                if supported == i64::from(sekai_storage_local::CONFIG_VERSION)
+        ),
+        "unexpected error: {err}"
+    );
+}
+
+/// A malformed config fails loudly instead of being reinterpreted.
+#[tokio::test]
+async fn open_of_a_malformed_conf_fails() {
+    let (dir, _guard) = tempdir("conf-malformed");
+    let store = init(&dir).await;
+    drop(store);
+    std::fs::write(dir.join("conf.toml"), "version = \"one\"\n").unwrap();
+    let err = LocalStore::open(&dir).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            sekai_storage::StorageError::Backend {
+                backend: "toml",
+                ..
+            }
+        ),
+        "unexpected error: {err}"
+    );
+}
+
+/// `conf.toml` is part of the layout markers: a store without one is not
+/// openable, and nothing is opened or created to find that out.
+#[tokio::test]
+async fn open_of_a_store_without_conf_fails() {
+    let (dir, _guard) = tempdir("conf-missing");
+    let store = init(&dir).await;
+    drop(store);
+    std::fs::remove_file(dir.join("conf.toml")).unwrap();
+    assert!(!sekai_storage_local::local_store_exists(&dir));
+    let err = LocalStore::open(&dir).await.unwrap_err();
+    assert!(
+        matches!(err, sekai_storage::StorageError::StoreMissing { .. }),
+        "unexpected error: {err}"
+    );
+}
+
 /// sled admits a single opener per keyspace: a second open fails while the
 /// first handle lives, and succeeds once it is gone.
 #[tokio::test]
@@ -322,6 +407,7 @@ async fn open_of_a_missing_store_fails_without_creating_it() {
     assert!(!dir.exists(), "a failed open must not create anything");
 
     let store = LocalStore::init(&dir).await.unwrap();
+    assert!(dir.join("conf.toml").is_file());
     assert!(dir.join("meta.sqlite").is_file());
     assert!(dir.join("blobs/conf").is_file());
     assert!(dir.join("cache/conf").is_file());
