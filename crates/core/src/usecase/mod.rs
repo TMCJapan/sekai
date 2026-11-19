@@ -19,5 +19,5 @@ pub use graph::{
     CommitError, CommitStats, ResolveError, commit_ancestors, commit_history, commit_parents,
     commit_stats, latest_commit_id, list_commits, resolve_commit_ref,
 };
-pub use refs::{active_ref, list_refs};
+pub use refs::{head, list_refs};
 pub use scopes::list_scopes;

@@ -189,15 +189,19 @@ pub async fn build_update<M: MetaStore>(
     Ok((hash, nodes))
 }
 
-/// Record `entries` as a commit, building its tree from the parent snapshot.
+/// Record `entries` as a commit on `worktree`'s HEAD, building its tree
+/// from the parent snapshot.
 pub async fn apply_entries<M: MetaStore>(
     meta: &mut M,
+    worktree: &sekai_util::WorktreeName,
     created_at_ms: u64,
     parents: &[CommitId],
     entries: &[CommitEntry],
+    note: sekai_util::ReflogNote<'_>,
 ) -> Result<sekai_util::ApplyOutcome, M::Error> {
     let (root, nodes) = build_update(meta, parents, entries).await?;
-    meta.commit_tree(created_at_ms, parents, root, &nodes).await
+    meta.commit_tree(worktree, created_at_ms, parents, root, &nodes, note)
+        .await
 }
 
 /// Effective present entry for one coordinate at a commit.
@@ -419,7 +423,7 @@ pub async fn diff_stats<M: MetaStore>(
 mod tests {
     use super::*;
     use crate::support::{MemMeta, block_on};
-    use sekai_util::{Dimension, RefName};
+    use sekai_util::Dimension;
 
     const OVER: Dimension = Dimension::OVERWORLD;
     const NETHER: Dimension = Dimension::NETHER;
@@ -436,14 +440,11 @@ mod tests {
     #[test]
     fn scoped_update_only_reads_and_writes_changed_dimensions() {
         let mut meta = MemMeta::default();
-        meta.with_active_ref(&RefName::parse("main").unwrap());
-        let first = block_on(meta.apply_commit_incremental(
-            1_000,
-            &[],
-            &[entry(OVER, 0, 0, 1), entry(NETHER, 0, 0, 2)],
-        ))
-        .unwrap()
-        .id;
+        meta.with_main();
+        let first =
+            block_on(meta.apply_main(1_000, &[], &[entry(OVER, 0, 0, 1), entry(NETHER, 0, 0, 2)]))
+                .unwrap()
+                .id;
         let old_root = block_on(meta.lookup_commit(first)).unwrap().unwrap().root;
         let old_root_node = block_on(meta.read_root_node(old_root)).unwrap();
         let over_hash = old_root_node.get(OVER.raw()).unwrap();
@@ -475,8 +476,8 @@ mod tests {
     #[test]
     fn an_unchanged_update_reuses_the_parent_root() {
         let mut meta = MemMeta::default();
-        meta.with_active_ref(&RefName::parse("main").unwrap());
-        let first = block_on(meta.apply_commit_incremental(1_000, &[], &[entry(OVER, 0, 0, 1)]))
+        meta.with_main();
+        let first = block_on(meta.apply_main(1_000, &[], &[entry(OVER, 0, 0, 1)]))
             .unwrap()
             .id;
         let root = block_on(meta.lookup_commit(first)).unwrap().unwrap().root;

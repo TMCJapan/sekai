@@ -1,15 +1,19 @@
 //! In-memory `MetaStore` fake used by tests.
 
+use alloc::borrow::ToOwned;
 use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::pin;
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use sekai_storage::{DimNode, MetaStore, RegionNode, RootNode, TreeError, TreeNodes};
+use sekai_util::refs::paths_conflict;
 use sekai_util::{
-    ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DimHash, NamedScope,
-    RefName, RegionHash, RootHash, ScopeName,
+    ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DimHash, Head, HeadState,
+    NamedScope, Ref, RefName, ReflogEntry, ReflogNote, RegionHash, RootHash, ScopeName, Worktree,
+    WorktreeName,
 };
 
 /// Fake backend failure.
@@ -35,19 +39,53 @@ pub enum MemError {
     /// The ref does not exist.
     UnknownRef {
         /// Ref that was asked for.
-        name: RefName,
+        name: Ref,
     },
-    /// The store has no active ref to hang a new commit from.
-    NoActiveRef,
-    /// The new commit does not continue the active ref's target.
-    NotContinuing {
-        /// Target the new commit had to include as a parent.
-        base: CommitId,
-    },
-    /// The active ref cannot be removed.
-    ActiveRefProtected {
+    /// The ref already exists.
+    RefExists {
         /// Ref that was asked for.
-        name: RefName,
+        name: Ref,
+    },
+    /// The ref would conflict with another as a directory and a file.
+    RefConflict {
+        /// Ref that was asked for.
+        name: Ref,
+        /// Ref or unborn branch it conflicts with.
+        existing: Ref,
+    },
+    /// The branch is checked out by another worktree.
+    BranchCheckedOut {
+        /// Branch that was asked for.
+        branch: RefName,
+        /// Worktree that has it checked out.
+        worktree: WorktreeName,
+    },
+    /// The worktree does not exist.
+    UnknownWorktree {
+        /// Worktree that was asked for.
+        name: WorktreeName,
+    },
+    /// The worktree name is taken.
+    WorktreeExists {
+        /// Worktree that was asked for.
+        name: WorktreeName,
+    },
+    /// Another worktree already has this path.
+    WorktreePathTaken {
+        /// Path that was asked for.
+        path: String,
+    },
+    /// The store already has a main worktree.
+    MainWorktreeExists,
+    /// The main worktree cannot be removed or moved.
+    MainWorktreeProtected {
+        /// Worktree that was asked for.
+        name: WorktreeName,
+    },
+    /// The new commit does not continue HEAD's commit.
+    NotContinuing {
+        /// Commit the new commit had to include as a parent.
+        base: CommitId,
     },
 }
 
@@ -82,8 +120,14 @@ pub struct MemMeta {
     pub dim_nodes: BTreeMap<DimHash, DimNode>,
     /// Region nodes by hash.
     pub region_nodes: BTreeMap<RegionHash, RegionNode>,
-    /// Refs by name.
-    pub refs: BTreeMap<RefName, CommitRef>,
+    /// Refs, in full refname order.
+    pub refs: BTreeMap<Ref, CommitId>,
+    /// Worktrees by name.
+    pub worktrees: BTreeMap<WorktreeName, Worktree>,
+    /// Branch reflogs, oldest entry first.
+    pub ref_logs: BTreeMap<RefName, Vec<ReflogEntry>>,
+    /// HEAD reflogs, oldest entry first.
+    pub head_logs: BTreeMap<WorktreeName, Vec<ReflogEntry>>,
     /// Named scopes by name.
     pub scopes: BTreeMap<ScopeName, NamedScope>,
     /// Stable local sequence per commit hash.
@@ -132,19 +176,273 @@ impl MemMeta {
         Ok(())
     }
 
-    /// Add an active ref, the way a fresh store looks: one ref, unborn,
-    /// waiting for the first commit.
-    ///
-    /// Any previously active ref is deactivated: the fake keeps the same
-    /// single-active-ref invariant as the backend.
-    pub fn with_active_ref(&mut self, name: &RefName) {
-        for (ref_name, record) in &mut self.refs {
-            record.active = ref_name == name;
+    /// Add the main worktree [`main_worktree`] with HEAD unborn on
+    /// `main`, the way a freshly initialized world looks.
+    pub fn with_main(&mut self) {
+        self.with_worktree(&main_worktree(), &RefName::parse("main").unwrap());
+    }
+
+    /// Commit `entries` on the main worktree's HEAD.
+    pub fn apply_main(
+        &mut self,
+        created_at_ms: u64,
+        parents: &[CommitId],
+        entries: &[CommitEntry],
+    ) -> impl Future<Output = Result<ApplyOutcome, MemError>> + Send {
+        let outcome = block_on(self.apply_commit_incremental(
+            &main_worktree(),
+            created_at_ms,
+            parents,
+            entries,
+            ReflogNote::new("commit: ", created_at_ms),
+        ));
+        core::future::ready(outcome)
+    }
+
+    /// Add a main worktree with HEAD unborn on `branch`, the way a
+    /// freshly initialized world looks.
+    pub fn with_worktree(&mut self, name: &WorktreeName, branch: &RefName) {
+        self.worktrees.insert(
+            name.clone(),
+            Worktree {
+                name: name.clone(),
+                path: None,
+                head: Head::Branch(branch.clone()),
+            },
+        );
+    }
+
+    fn has_commit(&self, id: CommitId) -> bool {
+        self.seqs.contains_key(&id)
+    }
+
+    fn require_commit(&self, id: CommitId) -> Result<(), MemError> {
+        if self.has_commit(id) {
+            Ok(())
+        } else {
+            Err(MemError::UnknownCommit { id })
         }
-        self.refs
-            .entry(name.clone())
-            .and_modify(|record| record.active = true)
-            .or_insert_with(|| CommitRef::new(name.clone(), None, true, 0));
+    }
+
+    fn head_state(&self, worktree: &Worktree) -> HeadState {
+        let commit = match &worktree.head {
+            Head::Branch(branch) => self.refs.get(&Ref::branch(branch.clone())).copied(),
+            Head::Detached(_) => None,
+        };
+        worktree.head.resolve(commit)
+    }
+
+    fn checked_out_by(&self, branch: &RefName) -> Option<&WorktreeName> {
+        self.worktrees
+            .values()
+            .find(|worktree| worktree.head.branch() == Some(branch))
+            .map(|worktree| &worktree.name)
+    }
+
+    /// Refuse `branch` when a worktree other than `allowed` has it
+    /// checked out.
+    fn check_not_checked_out(
+        &self,
+        branch: &RefName,
+        allowed: Option<&WorktreeName>,
+    ) -> Result<(), MemError> {
+        match self.checked_out_by(branch) {
+            Some(holder) if Some(holder) != allowed => Err(MemError::BranchCheckedOut {
+                branch: branch.clone(),
+                worktree: holder.clone(),
+            }),
+            _ => Ok(()),
+        }
+    }
+
+    /// Refuse `name` when it conflicts as a directory and a file would
+    /// with a ref or an unborn HEAD's branch other than `except`.
+    fn check_no_conflict(&self, name: &Ref, except: Option<&Ref>) -> Result<(), MemError> {
+        let full = name.full_name();
+        let unborn = self
+            .worktrees
+            .values()
+            .filter_map(|worktree| worktree.head.branch())
+            .map(|branch| Ref::branch(branch.clone()));
+        let conflict = self
+            .refs
+            .keys()
+            .cloned()
+            .chain(unborn)
+            .filter(|other| Some(other) != except)
+            .find(|other| paths_conflict(&full, &other.full_name()));
+        conflict.map_or(Ok(()), |existing| {
+            Err(MemError::RefConflict {
+                name: name.clone(),
+                existing,
+            })
+        })
+    }
+
+    fn log_ref(
+        &mut self,
+        branch: &RefName,
+        old: Option<CommitId>,
+        new: CommitId,
+        note: ReflogNote<'_>,
+    ) {
+        self.ref_logs
+            .entry(branch.clone())
+            .or_default()
+            .push(log_entry(old, new, note));
+    }
+
+    fn log_head(
+        &mut self,
+        worktree: &WorktreeName,
+        old: Option<CommitId>,
+        new: CommitId,
+        note: ReflogNote<'_>,
+    ) {
+        self.head_logs
+            .entry(worktree.clone())
+            .or_default()
+            .push(log_entry(old, new, note));
+    }
+
+    fn record_commit(
+        &mut self,
+        worktree: &WorktreeName,
+        created_at_ms: u64,
+        parents: &[CommitId],
+        root: RootHash,
+        nodes: &TreeNodes,
+        note: ReflogNote<'_>,
+    ) -> Result<ApplyOutcome, MemError> {
+        // Every check runs before the first write, as the backend's single
+        // transaction would roll back on failure.
+        let state = self
+            .worktrees
+            .get(worktree)
+            .map(|held| self.head_state(held))
+            .ok_or_else(|| MemError::UnknownWorktree {
+                name: worktree.clone(),
+            })?;
+        if let Some(base) = state.commit()
+            && !parents.contains(&base)
+        {
+            return Err(MemError::NotContinuing { base });
+        }
+        if let HeadState::Unborn { branch } = &state {
+            self.check_no_conflict(&Ref::branch(branch.clone()), None)?;
+        }
+        let mut unique: BTreeSet<CommitId> = BTreeSet::new();
+        for parent in parents {
+            if !self.has_commit(*parent) {
+                return Err(MemError::UnknownParent { id: *parent });
+            }
+            unique.insert(*parent);
+        }
+        let canonical: Vec<CommitId> = unique.into_iter().collect();
+        let id = crate::commit::commit_hash(&canonical, created_at_ms, root);
+        self.insert_nodes(nodes)?;
+        self.insert_commit(id, created_at_ms, canonical, root);
+        match &state {
+            HeadState::Attached { branch, commit } => {
+                self.refs.insert(Ref::branch(branch.clone()), id);
+                self.log_ref(branch, Some(*commit), id, note);
+            }
+            HeadState::Unborn { branch } => {
+                self.refs.insert(Ref::branch(branch.clone()), id);
+                self.log_ref(branch, None, id, note);
+            }
+            HeadState::Detached { .. } => {
+                if let Some(held) = self.worktrees.get_mut(worktree) {
+                    held.head = Head::Detached(id);
+                }
+            }
+        }
+        self.log_head(worktree, state.commit(), id, note);
+        Ok(ApplyOutcome { id })
+    }
+
+    fn rename(
+        &mut self,
+        from: &RefName,
+        to: &RefName,
+        force: bool,
+        note: ReflogNote<'_>,
+    ) -> Result<(), MemError> {
+        let from_ref = Ref::branch(from.clone());
+        let to_ref = Ref::branch(to.clone());
+        let commit = self.refs.get(&from_ref).copied();
+        let holders: Vec<WorktreeName> = self
+            .worktrees
+            .values()
+            .filter(|worktree| worktree.head.branch() == Some(from))
+            .map(|worktree| worktree.name.clone())
+            .collect();
+        if commit.is_none() && holders.is_empty() {
+            return Err(MemError::UnknownRef { name: from_ref });
+        }
+        let mut replaced = None;
+        if from != to {
+            replaced = self.refs.get(&to_ref).copied();
+            if replaced.is_some() && !force {
+                return Err(MemError::RefExists { name: to_ref });
+            }
+            self.check_not_checked_out(to, None)?;
+            self.check_no_conflict(&to_ref, Some(&from_ref))?;
+            for holder in &holders {
+                if let Some(worktree) = self.worktrees.get_mut(holder) {
+                    worktree.head = Head::Branch(to.clone());
+                }
+            }
+            if let Some(commit) = commit {
+                self.refs.remove(&from_ref);
+                self.refs.insert(to_ref, commit);
+                let log = self.ref_logs.remove(from).unwrap_or_default();
+                self.ref_logs.insert(to.clone(), log);
+            }
+        }
+        match (commit, replaced) {
+            (Some(commit), _) => {
+                self.log_ref(to, Some(commit), commit, note);
+                for holder in &holders {
+                    self.log_head(holder, Some(commit), commit, note);
+                }
+            }
+            // An unborn HEAD lands on the branch it was renamed over.
+            (None, Some(landed)) => {
+                for holder in &holders {
+                    self.log_head(holder, None, landed, note);
+                }
+            }
+            // Otherwise an unborn HEAD stays unborn and logs nothing.
+            (None, None) => {}
+        }
+        Ok(())
+    }
+}
+
+/// Name of the main worktree [`MemMeta::with_main`] adds.
+pub fn main_worktree() -> WorktreeName {
+    WorktreeName::parse("main").unwrap()
+}
+
+fn log_entry(old: Option<CommitId>, new: CommitId, note: ReflogNote<'_>) -> ReflogEntry {
+    ReflogEntry {
+        old,
+        new,
+        message: note.message.to_owned(),
+        at_ms: note.at_ms,
+    }
+}
+
+/// Visit `log` newest entry first.
+fn visit_newest_first<F>(log: Option<&Vec<ReflogEntry>>, mut visit: F)
+where
+    F: FnMut(&ReflogEntry) -> bool,
+{
+    for entry in log.into_iter().flatten().rev() {
+        if !visit(entry) {
+            break;
+        }
     }
 }
 
@@ -220,11 +518,13 @@ impl MetaStore for MemMeta {
 
     fn apply_commit_incremental(
         &mut self,
+        worktree: &WorktreeName,
         created_at_ms: u64,
         parents: &[CommitId],
         entries: &[CommitEntry],
+        note: ReflogNote<'_>,
     ) -> impl Future<Output = Result<ApplyOutcome, MemError>> + Send {
-        crate::tree::apply_entries(self, created_at_ms, parents, entries)
+        crate::tree::apply_entries(self, worktree, created_at_ms, parents, entries, note)
     }
 
     fn lookup_commit(
@@ -333,134 +633,270 @@ impl MetaStore for MemMeta {
 
     fn commit_tree(
         &mut self,
+        worktree: &WorktreeName,
         created_at_ms: u64,
         parents: &[CommitId],
         root: RootHash,
         nodes: &TreeNodes,
+        note: ReflogNote<'_>,
     ) -> impl Future<Output = Result<ApplyOutcome, MemError>> + Send {
-        // The active ref decides where the commit lands: bind it before
-        // any write, so a store without one changes nothing (the backend
-        // does the same in one transaction and rolls back on failure).
-        let Some((active, mut record)) = self
-            .refs
-            .iter()
-            .find(|(_, record)| record.active)
-            .map(|(name, record)| (name.clone(), record.clone()))
-        else {
-            return core::future::ready(Err(MemError::NoActiveRef));
-        };
-        debug_assert!(
-            self.refs.values().filter(|record| record.active).count() <= 1,
-            "fake store holds more than one active ref"
-        );
-        // A born ref moves along its own history: unrelated parents would
-        // fork it away from its target.
-        if let Some(base) = record.commit
-            && !parents.contains(&base)
-        {
-            return core::future::ready(Err(MemError::NotContinuing { base }));
-        }
-        let mut unique: BTreeSet<CommitId> = BTreeSet::new();
-        for parent in parents {
-            if !self.commits.iter().any(|commit| commit.id == *parent) {
-                return core::future::ready(Err(MemError::UnknownParent { id: *parent }));
-            }
-            unique.insert(*parent);
-        }
-        let canonical: Vec<CommitId> = unique.into_iter().collect();
-        let id = crate::commit::commit_hash(&canonical, created_at_ms, root);
-        if let Err(err) = self.insert_nodes(nodes) {
-            return core::future::ready(Err(err));
-        }
-        self.insert_commit(id, created_at_ms, canonical, root);
-        // The active ref moves onto the new commit, in the same step: a
-        // ref that lags behind its history would fork the next commit.
-        record.commit = Some(id);
-        self.refs.insert(active, record);
-        core::future::ready(Ok(ApplyOutcome { id }))
-    }
-
-    fn set_ref(
-        &mut self,
-        name: &RefName,
-        commit: Option<CommitId>,
-        created_at_ms: u64,
-    ) -> impl Future<Output = Result<(), MemError>> + Send {
-        // Mirrors the backend: a ref may not name a commit the store lacks.
-        if let Some(id) = commit
-            && !self.commits.iter().any(|held| held.id == id)
-        {
-            return core::future::ready(Err(MemError::UnknownCommit { id }));
-        }
-        let (active, created_at_ms) = self
-            .refs
-            .get(name)
-            .map_or((false, created_at_ms), |existing| {
-                (existing.active, existing.created_at_ms)
-            });
-        self.refs.insert(
-            name.clone(),
-            CommitRef::new(name.clone(), commit, active, created_at_ms),
-        );
-        core::future::ready(Ok(()))
+        core::future::ready(self.record_commit(worktree, created_at_ms, parents, root, nodes, note))
     }
 
     fn lookup_ref(
         &self,
-        name: &RefName,
+        name: &Ref,
     ) -> impl Future<Output = Result<Option<CommitRef>, MemError>> + Send {
-        core::future::ready(Ok(self.refs.get(name).cloned()))
+        let record = self
+            .refs
+            .get(name)
+            .map(|&commit| CommitRef::new(name.clone(), commit));
+        core::future::ready(Ok(record))
     }
 
     fn visit_refs<F>(&self, mut visit: F) -> impl Future<Output = Result<(), MemError>> + Send
     where
         F: FnMut(&CommitRef) -> bool + Send,
     {
-        for record in self.refs.values() {
-            if !visit(record) {
+        for (name, &commit) in &self.refs {
+            if !visit(&CommitRef::new(name.clone(), commit)) {
                 break;
             }
         }
         core::future::ready(Ok(()))
     }
 
+    fn create_ref(
+        &mut self,
+        name: &Ref,
+        commit: CommitId,
+        note: ReflogNote<'_>,
+    ) -> impl Future<Output = Result<(), MemError>> + Send {
+        let result = (|| {
+            if self.refs.contains_key(name) {
+                return Err(MemError::RefExists { name: name.clone() });
+            }
+            self.check_no_conflict(name, None)?;
+            self.require_commit(commit)?;
+            self.refs.insert(name.clone(), commit);
+            if name.kind == sekai_util::RefKind::Branch {
+                self.log_ref(&name.name, None, commit, note);
+                // The branch an unborn HEAD names now has a commit, which
+                // leaves that HEAD at it.
+                if let Some(holder) = self.checked_out_by(&name.name).cloned() {
+                    self.log_head(&holder, None, commit, note);
+                }
+            }
+            Ok(())
+        })();
+        core::future::ready(result)
+    }
+
+    fn move_ref(
+        &mut self,
+        name: &Ref,
+        commit: CommitId,
+        note: ReflogNote<'_>,
+    ) -> impl Future<Output = Result<CommitId, MemError>> + Send {
+        let result = (|| {
+            let old = *self
+                .refs
+                .get(name)
+                .ok_or_else(|| MemError::UnknownRef { name: name.clone() })?;
+            self.require_commit(commit)?;
+            if name.kind == sekai_util::RefKind::Tag {
+                self.refs.insert(name.clone(), commit);
+                return Ok(old);
+            }
+            self.check_not_checked_out(&name.name, None)?;
+            self.refs.insert(name.clone(), commit);
+            self.log_ref(&name.name, Some(old), commit, note);
+            Ok(old)
+        })();
+        core::future::ready(result)
+    }
+
     fn delete_ref(
         &mut self,
-        name: &RefName,
-    ) -> impl Future<Output = Result<bool, MemError>> + Send {
-        if self.refs.get(name).is_some_and(|record| record.active) {
-            return core::future::ready(Err(MemError::ActiveRefProtected { name: name.clone() }));
-        }
-        core::future::ready(Ok(self.refs.remove(name).is_some()))
+        name: &Ref,
+    ) -> impl Future<Output = Result<Option<CommitId>, MemError>> + Send {
+        let result = (|| {
+            if name.kind == sekai_util::RefKind::Branch && self.refs.contains_key(name) {
+                self.check_not_checked_out(&name.name, None)?;
+                self.ref_logs.remove(&name.name);
+            }
+            Ok(self.refs.remove(name))
+        })();
+        core::future::ready(result)
     }
 
-    fn active_ref(&self) -> impl Future<Output = Result<Option<CommitRef>, MemError>> + Send {
-        let active = self.refs.values().find(|record| record.active).cloned();
-        // Mirrors the backend: the target commit must exist.
-        if let Some(record) = &active
-            && let Some(commit) = record.commit
-            && !self.commits.iter().any(|held| held.id == commit)
-        {
-            return core::future::ready(Err(MemError::UnknownCommit { id: commit }));
-        }
-        core::future::ready(Ok(active))
-    }
-
-    fn activate_ref(
+    fn rename_branch(
         &mut self,
-        name: &RefName,
+        from: &RefName,
+        to: &RefName,
+        force: bool,
+        note: ReflogNote<'_>,
     ) -> impl Future<Output = Result<(), MemError>> + Send {
-        let Some(record) = self.refs.get(name) else {
-            return core::future::ready(Err(MemError::UnknownRef { name: name.clone() }));
+        core::future::ready(self.rename(from, to, force, note))
+    }
+
+    fn add_worktree(
+        &mut self,
+        worktree: &Worktree,
+        note: ReflogNote<'_>,
+    ) -> impl Future<Output = Result<(), MemError>> + Send {
+        let result = (|| {
+            if self.worktrees.contains_key(&worktree.name) {
+                return Err(MemError::WorktreeExists {
+                    name: worktree.name.clone(),
+                });
+            }
+            match &worktree.path {
+                None if self.worktrees.values().any(Worktree::is_main) => {
+                    return Err(MemError::MainWorktreeExists);
+                }
+                Some(path)
+                    if self
+                        .worktrees
+                        .values()
+                        .any(|held| held.path.as_ref() == Some(path)) =>
+                {
+                    return Err(MemError::WorktreePathTaken { path: path.clone() });
+                }
+                _ => {}
+            }
+            match &worktree.head {
+                Head::Branch(branch) => {
+                    self.check_not_checked_out(branch, None)?;
+                    self.check_no_conflict(&Ref::branch(branch.clone()), None)?;
+                }
+                Head::Detached(commit) => self.require_commit(*commit)?,
+            }
+            let state = self.head_state(worktree);
+            self.worktrees
+                .insert(worktree.name.clone(), worktree.clone());
+            if let Some(commit) = state.commit() {
+                self.log_head(&worktree.name, None, commit, note);
+            }
+            Ok(())
+        })();
+        core::future::ready(result)
+    }
+
+    fn lookup_worktree(
+        &self,
+        name: &WorktreeName,
+    ) -> impl Future<Output = Result<Option<Worktree>, MemError>> + Send {
+        core::future::ready(Ok(self.worktrees.get(name).cloned()))
+    }
+
+    fn visit_worktrees<F>(&self, mut visit: F) -> impl Future<Output = Result<(), MemError>> + Send
+    where
+        F: FnMut(&Worktree) -> bool + Send,
+    {
+        for worktree in self.worktrees.values() {
+            if !visit(worktree) {
+                break;
+            }
+        }
+        core::future::ready(Ok(()))
+    }
+
+    fn remove_worktree(
+        &mut self,
+        name: &WorktreeName,
+    ) -> impl Future<Output = Result<bool, MemError>> + Send {
+        let result = match self.worktrees.get(name) {
+            None => Ok(false),
+            Some(worktree) if worktree.is_main() => {
+                Err(MemError::MainWorktreeProtected { name: name.clone() })
+            }
+            Some(_) => {
+                self.worktrees.remove(name);
+                self.head_logs.remove(name);
+                Ok(true)
+            }
         };
-        if let Some(commit) = record.commit
-            && !self.commits.iter().any(|held| held.id == commit)
-        {
-            return core::future::ready(Err(MemError::UnknownCommit { id: commit }));
-        }
-        for record in self.refs.values_mut() {
-            record.active = record.name == *name;
-        }
+        core::future::ready(result)
+    }
+
+    fn set_head(
+        &mut self,
+        name: &WorktreeName,
+        head: &Head,
+        note: ReflogNote<'_>,
+    ) -> impl Future<Output = Result<(), MemError>> + Send {
+        let result = (|| {
+            let old = self
+                .worktrees
+                .get(name)
+                .map(|held| self.head_state(held))
+                .ok_or_else(|| MemError::UnknownWorktree { name: name.clone() })?;
+            match head {
+                Head::Branch(new_branch) => {
+                    self.check_not_checked_out(new_branch, Some(name))?;
+                    let target = Ref::branch(new_branch.clone());
+                    // Only a branch this worktree's HEAD names exists only
+                    // as the head this move rewrites. Such an unborn branch
+                    // may be excluded from the conflict scan; a born branch
+                    // stays in `refs` and must be seen. A re-checkout of the
+                    // branch HEAD is already on must also pass.
+                    let own = match &old {
+                        HeadState::Unborn { branch } => Some(Ref::branch(branch.clone())),
+                        HeadState::Attached { branch, .. } if branch == new_branch => {
+                            Some(Ref::branch(branch.clone()))
+                        }
+                        _ => None,
+                    };
+                    self.check_no_conflict(&target, own.as_ref())?;
+                }
+                Head::Detached(commit) => self.require_commit(*commit)?,
+            }
+            if let Some(worktree) = self.worktrees.get_mut(name) {
+                worktree.head = head.clone();
+            }
+            let new = self
+                .worktrees
+                .get(name)
+                .map(|held| self.head_state(held))
+                .and_then(|state| state.commit());
+            if let Some(new) = new {
+                self.log_head(name, old.commit(), new, note);
+            }
+            Ok(())
+        })();
+        core::future::ready(result)
+    }
+
+    fn head(
+        &self,
+        name: &WorktreeName,
+    ) -> impl Future<Output = Result<Option<HeadState>, MemError>> + Send {
+        let state = self.worktrees.get(name).map(|held| self.head_state(held));
+        core::future::ready(Ok(state))
+    }
+
+    fn visit_ref_log<F>(
+        &self,
+        name: &RefName,
+        visit: F,
+    ) -> impl Future<Output = Result<(), MemError>> + Send
+    where
+        F: FnMut(&ReflogEntry) -> bool + Send,
+    {
+        visit_newest_first(self.ref_logs.get(name), visit);
+        core::future::ready(Ok(()))
+    }
+
+    fn visit_head_log<F>(
+        &self,
+        name: &WorktreeName,
+        visit: F,
+    ) -> impl Future<Output = Result<(), MemError>> + Send
+    where
+        F: FnMut(&ReflogEntry) -> bool + Send,
+    {
+        visit_newest_first(self.head_logs.get(name), visit);
         core::future::ready(Ok(()))
     }
 

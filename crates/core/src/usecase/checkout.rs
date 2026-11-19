@@ -84,7 +84,7 @@ pub async fn plan_checkout<M: MetaStore>(
 mod tests {
     use super::*;
     use crate::support::{MemMeta, block_on};
-    use sekai_util::{CommitEntry, Dimension, RefName, RegionKind};
+    use sekai_util::{CommitEntry, Dimension, RegionKind};
 
     const OVER: Dimension = Dimension::OVERWORLD;
     const REGION: RegionKind = RegionKind::Region;
@@ -92,11 +92,11 @@ mod tests {
     #[test]
     fn resolves_present_rows_grouped_by_region() {
         let mut meta = MemMeta::default();
-        meta.with_active_ref(&RefName::parse("main").unwrap());
+        meta.with_main();
         let a = ChunkCoord::new(OVER, REGION, 0, 0);
         let b = ChunkCoord::new(OVER, REGION, 1, 0);
         let gone = ChunkCoord::new(OVER, REGION, 2, 0);
-        let id = block_on(meta.apply_commit_incremental(
+        let id = block_on(meta.apply_main(
             1_000,
             &[],
             &[

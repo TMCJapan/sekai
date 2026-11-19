@@ -12,14 +12,15 @@ pub mod usecase;
 
 pub use sekai_util::{
     ApplyOutcome, Area, BytesHasher, ChunkCoord, ChunkHash, Commit, CommitEntry, CommitId,
-    CommitRef, DEFAULT_REF_NAME, DimHash, Dimension, HexError, NamedScope, NamedScopeError, Rect,
-    RefName, RefNameError, RegionFingerprint, RegionHash, RegionKey, RegionKind, RootHash, Scope,
-    ScopeName, ScopeNameError, UnknownRegionKind, hash_bytes,
+    CommitRef, DEFAULT_REF_NAME, DimHash, Dimension, Head, HeadState, HexError, NamedScope,
+    NamedScopeError, Rect, Ref, RefKind, RefName, RefNameError, ReflogEntry, ReflogNote,
+    RegionFingerprint, RegionHash, RegionKey, RegionKind, RootHash, Scope, ScopeName,
+    ScopeNameError, UnknownRegionKind, Worktree, WorktreeName, WorktreeNameError, hash_bytes,
 };
 
 pub use usecase::{
     Assembled, CheckoutError, CheckoutPlan, CheckoutReport, CommitError, CommitReport, CommitStats,
-    Plan, Previous, ResolveError, active_ref, commit_ancestors, commit_history, commit_parents,
+    Plan, Previous, ResolveError, commit_ancestors, commit_history, commit_parents, head,
     list_refs, list_scopes,
 };
 
