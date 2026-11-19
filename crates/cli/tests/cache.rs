@@ -110,7 +110,12 @@ async fn cache_clean_wipes_the_store_cache_and_commits_keep_working() {
         .await
         .expect("commit records the region");
     // The commit populated one entry: an app-level wipe proves it.
-    let mut instance = SekaiInstance::open(store).await.unwrap();
+    let mut instance = SekaiInstance::open_location(&sekai_app::Location {
+        store: store.into(),
+        world: None,
+    })
+    .await
+    .unwrap();
     assert_eq!(instance.clean_cache().await.unwrap(), 1);
     drop(instance);
 
@@ -122,7 +127,12 @@ async fn cache_clean_wipes_the_store_cache_and_commits_keep_working() {
     run(&["sekai", "--store", store, "cache", "clean"])
         .await
         .expect("cache clean");
-    let mut instance = SekaiInstance::open(store).await.unwrap();
+    let mut instance = SekaiInstance::open_location(&sekai_app::Location {
+        store: store.into(),
+        world: None,
+    })
+    .await
+    .unwrap();
     assert_eq!(instance.clean_cache().await.unwrap(), 0);
     drop(instance);
 
@@ -180,7 +190,12 @@ async fn cache_update_populates_the_cache_without_a_commit() {
     .expect("cache update, JSON mode");
 
     // One cache entry, but no commit was recorded.
-    let mut instance = SekaiInstance::open(store).await.unwrap();
+    let mut instance = SekaiInstance::open_location(&sekai_app::Location {
+        store: store.into(),
+        world: None,
+    })
+    .await
+    .unwrap();
     assert_eq!(instance.list_commits().await.unwrap(), []);
     assert_eq!(instance.clean_cache().await.unwrap(), 1);
     drop(instance);
@@ -210,7 +225,12 @@ async fn commit_no_cache_records_history_but_leaves_the_cache_empty() {
     run(&["sekai", "--store", store, "commit", world, "--no-cache"])
         .await
         .expect("commit --no-cache records the region");
-    let mut instance = SekaiInstance::open(store).await.unwrap();
+    let mut instance = SekaiInstance::open_location(&sekai_app::Location {
+        store: store.into(),
+        world: None,
+    })
+    .await
+    .unwrap();
     assert_eq!(instance.list_commits().await.unwrap().len(), 1);
     assert_eq!(instance.clean_cache().await.unwrap(), 0);
     drop(instance);
@@ -219,7 +239,12 @@ async fn commit_no_cache_records_history_but_leaves_the_cache_empty() {
     run(&["sekai", "--store", store, "commit", world])
         .await
         .expect("commit warms the cache");
-    let mut instance = SekaiInstance::open(store).await.unwrap();
+    let mut instance = SekaiInstance::open_location(&sekai_app::Location {
+        store: store.into(),
+        world: None,
+    })
+    .await
+    .unwrap();
     assert_eq!(instance.clean_cache().await.unwrap(), 1);
     drop(instance);
 }

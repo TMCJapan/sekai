@@ -6,7 +6,11 @@ use serde::Serialize;
 use std::fmt::Write as _;
 
 pub async fn run(store: &str, json: bool, stat: bool, style: Styler) -> anyhow::Result<()> {
-    let instance = sekai_app::SekaiInstance::open(store).await?;
+    let instance = sekai_app::SekaiInstance::open_location(&sekai_app::Location {
+        store: store.into(),
+        world: None,
+    })
+    .await?;
     let commits = instance.list_commits().await?;
     let mut stats = Vec::new();
     if stat {

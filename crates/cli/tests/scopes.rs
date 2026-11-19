@@ -50,12 +50,15 @@ async fn saved_scopes_select_by_name() {
     .await
     .expect("scope create");
 
-    let listed = SekaiInstance::open(store)
-        .await
-        .unwrap()
-        .list_scopes()
-        .await
-        .unwrap();
+    let listed = SekaiInstance::open_location(&sekai_app::Location {
+        store: store.into(),
+        world: None,
+    })
+    .await
+    .unwrap()
+    .list_scopes()
+    .await
+    .unwrap();
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].name.as_str(), "spawn");
     let mut areas = listed[0].areas().to_vec();

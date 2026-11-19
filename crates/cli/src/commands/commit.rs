@@ -34,9 +34,12 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let mut world = HostWorldTree::new(&world_path)
         .with_context(|| format!("failed to inspect world {}", world_path.as_ref().display()))?;
-    let mut instance = sekai_app::SekaiInstance::open(store)
-        .await
-        .with_context(|| format!("commit of {} failed", world_path.as_ref().display()))?;
+    let mut instance = sekai_app::SekaiInstance::open_location(&sekai_app::Location {
+        store: store.into(),
+        world: None,
+    })
+    .await
+    .with_context(|| format!("commit of {} failed", world_path.as_ref().display()))?;
     let scope = resolve_selection(&instance, selection).await?;
     let bars = Bars::new(out.progress);
     // Cache update first, record second: the update keys each file under

@@ -9,7 +9,11 @@ use crate::envelope::envelope_ok;
 use crate::style::Styler;
 
 pub async fn run(store: &str, action: &ScopeCommand, style: Styler) -> anyhow::Result<()> {
-    let mut instance = sekai_app::SekaiInstance::open(store).await?;
+    let mut instance = sekai_app::SekaiInstance::open_location(&sekai_app::Location {
+        store: store.into(),
+        world: None,
+    })
+    .await?;
 
     match action {
         ScopeCommand::Create {
@@ -39,13 +43,10 @@ pub async fn run(store: &str, action: &ScopeCommand, style: Styler) -> anyhow::R
             );
         }
         ScopeCommand::Delete { name, json } => {
-            let removed = instance
+            instance
                 .delete_scope(name)
                 .await
                 .with_context(|| format!("delete of scope {name} failed"))?;
-            if !removed {
-                anyhow::bail!("unknown scope: {name}");
-            }
             if *json {
                 println!(
                     "{}",

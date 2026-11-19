@@ -10,7 +10,11 @@ use crate::envelope::envelope_ok;
 use crate::style::Styler;
 
 pub async fn run(store: &str, action: &CacheCommand, style: Styler) -> anyhow::Result<()> {
-    let mut instance = sekai_app::SekaiInstance::open(store).await?;
+    let mut instance = sekai_app::SekaiInstance::open_location(&sekai_app::Location {
+        store: store.into(),
+        world: None,
+    })
+    .await?;
 
     match action {
         CacheCommand::Clean { json } => {

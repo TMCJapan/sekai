@@ -26,13 +26,6 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Create a new store, or re-initialize an existing one. Every other
-    /// command requires a store created this way.
-    Init {
-        /// Emit output as JSON instead of human text. See docs/json.md.
-        #[arg(long)]
-        json: bool,
-    },
     /// Record the current world state as a new commit.
     Commit {
         /// World directory (the one containing `region/`, `DIM-1/`, or `dimensions/`).
@@ -132,7 +125,6 @@ impl Command {
     /// Stable command name for JSON envelopes and error objects.
     pub const fn name(&self) -> &'static str {
         match self {
-            Self::Init { .. } => "init",
             Self::Commit { .. } => "commit",
             Self::Status { .. } => "status",
             Self::Checkout { .. } => "checkout",
@@ -150,7 +142,7 @@ impl Command {
             Self::Commit { output, .. }
             | Self::Status { output, .. }
             | Self::Checkout { output, .. } => output.json,
-            Self::Init { json } | Self::Log { json, .. } => *json,
+            Self::Log { json, .. } => *json,
             Self::Scope { action } => action.output_json(),
             Self::Cache { action } => action.output_json(),
             Self::Diff(args) => args.output.json,
