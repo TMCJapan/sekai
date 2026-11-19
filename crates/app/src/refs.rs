@@ -34,7 +34,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
             && self.store.meta().lookup_commit(commit).await?.is_none()
         {
             return Err(AppError::CommitRef(
-                sekai_core::ResolveError::UnknownCommit { id: commit },
+                sekai_storage::ResolveError::UnknownCommit { id: commit },
             ));
         }
         let existing = self.store.meta().lookup_ref(name).await?;
@@ -55,7 +55,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
             .await
             .map_err(|err| match err {
                 StorageError::UnknownCommit { id } => {
-                    AppError::CommitRef(sekai_core::ResolveError::UnknownCommit { id })
+                    AppError::CommitRef(sekai_storage::ResolveError::UnknownCommit { id })
                 }
                 other => AppError::Storage(other),
             })?;
@@ -82,7 +82,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
 
     /// List refs in name order.
     pub async fn list_refs(&self) -> Result<Vec<CommitRef>, AppError> {
-        sekai_core::usecase::refs::list_refs(self.store.meta())
+        sekai_storage::refs::list_refs(self.store.meta())
             .await
             .map_err(AppError::Commit)
     }
@@ -100,7 +100,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
             .map_err(|err| match err {
                 StorageError::UnknownRef { name } => AppError::UnknownRef { name },
                 StorageError::UnknownCommit { id } => {
-                    AppError::CommitRef(sekai_core::ResolveError::UnknownCommit { id })
+                    AppError::CommitRef(sekai_storage::ResolveError::UnknownCommit { id })
                 }
                 other => AppError::Storage(other),
             })?;
@@ -115,7 +115,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
 
     /// The active ref, or `None` when the store has none.
     pub async fn active_ref(&self) -> Result<Option<CommitRef>, AppError> {
-        sekai_core::usecase::refs::active_ref(self.store.meta())
+        sekai_storage::refs::active_ref(self.store.meta())
             .await
             .map_err(AppError::Commit)
     }
@@ -132,7 +132,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
     ///
     /// Any caller may run it, including one holding a world lock.
     pub async fn current_commit_id(&self) -> Result<Option<CommitId>, AppError> {
-        Ok(sekai_core::usecase::refs::active_ref(self.store.meta())
+        Ok(sekai_storage::refs::active_ref(self.store.meta())
             .await
             .map_err(AppError::Commit)?
             .and_then(|active| active.commit))

@@ -2,12 +2,9 @@
 
 mod common;
 
-use sekai_core::{
-    ChunkCoord, ChunkHash, CommitEntry, Dimension, RegionHash, RegionKind,
-    usecase::checkout::plan_checkout,
-};
 use sekai_storage::{BlobStore as _, CacheStore as _, MetaStore as _};
 use sekai_storage_local::{init_local, open_local};
+use sekai_util::{ChunkCoord, ChunkHash, CommitEntry, Dimension, RegionHash, RegionKind};
 use std::path::Path;
 
 /// A temp dir whose name starts with the calling test's name (tempfile
@@ -53,10 +50,11 @@ async fn sqlite_tree_bulk_reads() {
     common::tree_bulk_reads(store.meta_mut()).await;
 }
 
-/// A vanished coordinate stops resolving: absence is the tombstone, and a
-/// checkout plan drops the coordinate instead of asking for a blob.
+/// A vanished coordinate stops resolving: absence is the tombstone, and the
+/// snapshot walk a checkout plan is built from drops the coordinate instead
+/// of asking for a blob.
 #[tokio::test]
-async fn sqlite_tombstones_shape_and_checkout_drop() {
+async fn sqlite_tombstones_shape_and_walk_drop() {
     let (dir, _guard) = tempdir("tombstones");
     let mut store = init(&dir).await;
     let meta = store.meta_mut();
@@ -86,11 +84,16 @@ async fn sqlite_tombstones_shape_and_checkout_drop() {
         Some(CommitEntry::new(present, Some(ChunkHash::new([1; 32]))))
     );
 
-    let plan = plan_checkout(&*meta, second).await.unwrap();
-    let region = sekai_core::RegionKey::of(present);
+    let mut visited = Vec::new();
+    meta.visit_commit_chunks(second, |entry| {
+        visited.push(*entry);
+        true
+    })
+    .await
+    .unwrap();
     assert_eq!(
-        plan.groups[&region],
-        vec![(present, ChunkHash::new([1; 32]))]
+        visited,
+        vec![CommitEntry::new(present, Some(ChunkHash::new([1; 32])))]
     );
 }
 
@@ -127,7 +130,7 @@ async fn visit_lists_stored_hashes_and_missing_fetch_clears() {
     let (dir, _guard) = tempdir("visit");
     let mut store = init(&dir).await;
     let blobs = store.blob_mut();
-    let hash = ChunkHash::new(sekai_core::hash_bytes(b"real"));
+    let hash = ChunkHash::new(sekai_util::hash_bytes(b"real"));
     assert!(blobs.put(&hash, b"real").await.unwrap());
     // The keyspace has no file names to skip, so visiting every key is the
     // whole story; a missing hash is a read error, not an ignorable name.
@@ -157,7 +160,7 @@ async fn visit_lists_stored_hashes_and_missing_fetch_clears() {
 async fn blob_database_is_created_and_version_gated() {
     let (dir, _guard) = tempdir("blob-schema");
     let mut store = init(&dir).await;
-    let hash = ChunkHash::new(sekai_core::hash_bytes(b"payload"));
+    let hash = ChunkHash::new(sekai_util::hash_bytes(b"payload"));
     assert!(store.blob_mut().put(&hash, b"payload").await.unwrap());
     store.blob_mut().sync().await.unwrap();
     drop(store);
@@ -198,7 +201,7 @@ async fn cache_database_is_created_and_version_gated() {
     let mut store = init(&dir).await;
     let region = RegionHash::new([7; 32]);
     let image = b"mca image";
-    let mca_hash = sekai_core::hash_bytes(image);
+    let mca_hash = sekai_util::hash_bytes(image);
     assert!(
         store
             .cache_mut()
@@ -255,7 +258,7 @@ async fn cache_clear_keeps_the_version_marker() {
     assert!(
         store
             .cache_mut()
-            .put(region, sekai_core::hash_bytes(image), image)
+            .put(region, sekai_util::hash_bytes(image), image)
             .await
             .unwrap()
     );

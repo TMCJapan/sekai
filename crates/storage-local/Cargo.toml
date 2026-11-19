@@ -11,8 +11,8 @@ keywords = ["minecraft", "version-control", "storage"]
 workspace = true
 
 [dependencies]
-sekai-core.workspace = true
 sekai-storage.workspace = true
+sekai-util.workspace = true
 sled.workspace = true
 sqlx = { workspace = true, features = ["sqlite"] }
 tokio = { workspace = true, features = ["time"] }

@@ -11,6 +11,9 @@ keywords = ["minecraft", "version-control", "storage"]
 workspace = true
 
 [features]
+# In-memory `MetaStore` fake (`testing` module) for unit tests in this crate
+# and downstream; never compiled into a normal build.
+testing = []
 
 [dependencies]
 sekai-util.workspace = true

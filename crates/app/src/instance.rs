@@ -68,7 +68,7 @@ impl<T: SekaiStore> SekaiInstance<T> {
 
     /// List all commits in local record order (for `log` and pre-flight checks).
     pub async fn list_commits(&self) -> Result<Vec<Commit>, AppError> {
-        sekai_core::usecase::graph::list_commits(self.store.meta())
+        sekai_storage::graph::list_commits(self.store.meta())
             .await
             .map_err(AppError::Commit)
     }
@@ -77,7 +77,7 @@ impl<T: SekaiStore> SekaiInstance<T> {
     ///
     /// Fails when the commit does not exist.
     pub async fn commit_parents(&self, commit: CommitId) -> Result<Vec<CommitId>, AppError> {
-        sekai_core::usecase::graph::commit_parents(self.store.meta(), commit)
+        sekai_storage::graph::commit_parents(self.store.meta(), commit)
             .await
             .map_err(AppError::Commit)
     }
@@ -86,7 +86,7 @@ impl<T: SekaiStore> SekaiInstance<T> {
     ///
     /// Fails when the commit does not exist.
     pub async fn commit_ancestors(&self, commit: CommitId) -> Result<Vec<CommitId>, AppError> {
-        sekai_core::usecase::graph::commit_ancestors(self.store.meta(), commit)
+        sekai_storage::graph::commit_ancestors(self.store.meta(), commit)
             .await
             .map_err(AppError::Commit)
     }
@@ -96,7 +96,7 @@ impl<T: SekaiStore> SekaiInstance<T> {
     ///
     /// Fails when the commit does not exist.
     pub async fn commit_history(&self, commit: CommitId) -> Result<Vec<Commit>, AppError> {
-        sekai_core::usecase::graph::commit_history(self.store.meta(), commit)
+        sekai_storage::graph::commit_history(self.store.meta(), commit)
             .await
             .map_err(AppError::Commit)
     }
@@ -106,7 +106,7 @@ impl<T: SekaiStore> SekaiInstance<T> {
     /// This is the newest commit of the store, not the one the next
     /// commit would continue - see [`SekaiInstance::current_commit_id`].
     pub async fn latest_commit_id(&self) -> Result<CommitId, AppError> {
-        sekai_core::usecase::graph::latest_commit_id(self.store.meta())
+        sekai_storage::graph::latest_commit_id(self.store.meta())
             .await
             .map_err(AppError::Commit)?
             .ok_or(AppError::NoCommits)
@@ -114,7 +114,7 @@ impl<T: SekaiStore> SekaiInstance<T> {
 
     /// Resolve a commit reference (`<64-char hash>` or a ref name).
     pub async fn resolve_commit_ref(&self, raw: &str) -> Result<CommitId, AppError> {
-        sekai_core::usecase::graph::resolve_commit_ref(self.store.meta(), raw)
+        sekai_storage::graph::resolve_commit_ref(self.store.meta(), raw)
             .await
             .map_err(AppError::CommitRef)
     }
@@ -123,8 +123,8 @@ impl<T: SekaiStore> SekaiInstance<T> {
     pub async fn commit_stats(
         &self,
         commit: CommitId,
-    ) -> Result<sekai_core::CommitStats, AppError> {
-        sekai_core::usecase::graph::commit_stats(self.store.meta(), commit)
+    ) -> Result<sekai_storage::CommitStats, AppError> {
+        sekai_storage::graph::commit_stats(self.store.meta(), commit)
             .await
             .map_err(AppError::Commit)
     }

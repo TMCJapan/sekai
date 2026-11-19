@@ -65,8 +65,7 @@ where
     S: SekaiStore,
     L: WorldLock,
 {
-    let Ok(hashes) =
-        sekai_core::usecase::commit::commit_region_hashes(store.meta(), commit, keys).await
+    let Ok(hashes) = sekai_storage::tree::commit_region_hashes(store.meta(), commit, keys).await
     else {
         return BTreeMap::new();
     };
@@ -202,7 +201,7 @@ where
     /// write failure fails it too, since updating the cache is the whole
     /// point of the command.
     ///
-    /// [`file_region_hash`]: sekai_core::usecase::commit::file_region_hash
+    /// [`file_region_hash`]: sekai_storage::tree::file_region_hash
     pub async fn update_cache(
         &mut self,
         options: CacheUpdateOptions,
@@ -401,7 +400,7 @@ where
     }
     let hash = hash_started.elapsed();
     let chunks = entries.len();
-    let region = sekai_core::usecase::commit::file_region_hash(&entries);
+    let region = sekai_storage::tree::file_region_hash(&entries);
     Ok(HashedRegion {
         region,
         mca_hash,

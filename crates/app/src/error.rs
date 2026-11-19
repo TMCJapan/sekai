@@ -40,7 +40,7 @@ pub enum AppError {
     },
     /// Checkout plan could not be resolved.
     #[error("{0}")]
-    Checkout(sekai_core::CheckoutError<sekai_storage::StorageError>),
+    Checkout(crate::checkout::CheckoutError<sekai_storage::StorageError>),
     /// A commit-known region file is missing on disk and the checkout
     /// policy refuses to guess where to rebuild it.
     #[error("region file r.{region_x}.{region_z}.mca of dim {dim_code}, kind {kind_code} is missing and the checkout policy refuses to derive its location", dim_code = key.dim.raw(), kind_code = key.kind.raw(), region_x = key.rx, region_z = key.rz)]
@@ -85,10 +85,10 @@ pub enum AppError {
     },
     /// Commit-graph operation failed.
     #[error("{0}")]
-    Commit(sekai_core::CommitError<sekai_storage::StorageError>),
+    Commit(sekai_storage::CommitError<sekai_storage::StorageError>),
     /// Commit reference (`<64-char hash>` or ref name) could not be resolved.
     #[error("{0}")]
-    CommitRef(sekai_core::ResolveError<sekai_storage::StorageError>),
+    CommitRef(sekai_storage::ResolveError<sekai_storage::StorageError>),
     /// Ref name is already taken.
     #[error("ref already exists: {name} (use --force to move it)")]
     RefExists {

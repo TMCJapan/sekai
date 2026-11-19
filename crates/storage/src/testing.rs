@@ -1,4 +1,8 @@
-//! In-memory `MetaStore` fake used by tests.
+//! In-memory [`MetaStore`] fake for unit tests.
+//!
+//! Compiled only for this crate's own tests and for downstream crates
+//! that enable the `testing` feature; a normal build carries no store
+//! implementation here.
 
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
@@ -6,11 +10,13 @@ use core::future::Future;
 use core::pin::pin;
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
-use sekai_storage::{DimNode, MetaStore, RegionNode, RootNode, TreeError, TreeNodes};
 use sekai_util::{
     ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DimHash, NamedScope,
     RefName, RegionHash, RootHash, ScopeName,
 };
+
+use crate::meta::{MetaStore, commit_hash};
+use crate::tree::{DimNode, RegionNode, RootNode, TreeError, TreeNodes};
 
 /// Fake backend failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,18 +174,17 @@ impl MetaStore for MemMeta {
         let canonical: Vec<CommitId> = unique.into_iter().collect();
         // No snapshot changes: continue the lowest-hash parent's tree, or
         // start with the canonical empty root.
-        let (root, nodes) =
-            canonical
-                .first()
-                .map_or_else(sekai_storage::tree::empty_tree, |parent| {
-                    self.commits
-                        .iter()
-                        .find(|commit| commit.id == *parent)
-                        .map_or_else(sekai_storage::tree::empty_tree, |commit| {
-                            (commit.root, TreeNodes::default())
-                        })
-                });
-        let id = crate::commit::commit_hash(&canonical, created_at_ms, root);
+        let (root, nodes) = canonical
+            .first()
+            .map_or_else(crate::tree::empty_tree, |parent| {
+                self.commits
+                    .iter()
+                    .find(|commit| commit.id == *parent)
+                    .map_or_else(crate::tree::empty_tree, |commit| {
+                        (commit.root, TreeNodes::default())
+                    })
+            });
+        let id = commit_hash(&canonical, created_at_ms, root);
         if let Err(err) = self.insert_nodes(&nodes) {
             return core::future::ready(Err(err));
         }
@@ -368,7 +373,7 @@ impl MetaStore for MemMeta {
             unique.insert(*parent);
         }
         let canonical: Vec<CommitId> = unique.into_iter().collect();
-        let id = crate::commit::commit_hash(&canonical, created_at_ms, root);
+        let id = commit_hash(&canonical, created_at_ms, root);
         if let Err(err) = self.insert_nodes(nodes) {
             return core::future::ready(Err(err));
         }
@@ -500,5 +505,72 @@ impl MetaStore for MemMeta {
         name: &ScopeName,
     ) -> impl Future<Output = Result<bool, MemError>> + Send {
         core::future::ready(Ok(self.scopes.remove(name).is_some()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sekai_util::{ChunkHash, Dimension, RegionKind};
+
+    const OVER: Dimension = Dimension::OVERWORLD;
+    const REGION: RegionKind = RegionKind::Region;
+
+    const fn coord(x: i32, z: i32) -> ChunkCoord {
+        ChunkCoord::new(OVER, REGION, x, z)
+    }
+
+    fn present(x: i32, z: i32, byte: u8) -> CommitEntry {
+        CommitEntry::new(coord(x, z), Some(ChunkHash::new([byte; 32])))
+    }
+
+    fn store_with_ref() -> MemMeta {
+        let mut meta = MemMeta::default();
+        meta.with_active_ref(&RefName::parse("main").unwrap());
+        meta
+    }
+
+    #[test]
+    fn a_commit_must_continue_the_active_ref() {
+        let mut meta = store_with_ref();
+        let first = block_on(meta.apply_commit_incremental(1_000, &[], &[present(0, 0, 1)]))
+            .unwrap()
+            .id;
+
+        // An empty parent list on a born ref would move the active ref
+        // into an unrelated history.
+        let err =
+            block_on(meta.apply_commit_incremental(2_000, &[], &[present(1, 0, 2)])).unwrap_err();
+        assert_eq!(err, MemError::NotContinuing { base: first });
+
+        // The rejected call wrote nothing.
+        let second = block_on(meta.apply_commit_incremental(3_000, &[first], &[present(1, 0, 2)]))
+            .unwrap()
+            .id;
+        assert_ne!(second, first);
+        assert_eq!(
+            block_on(meta.lookup_ref(&RefName::parse("main").unwrap()))
+                .unwrap()
+                .unwrap()
+                .commit,
+            Some(second)
+        );
+    }
+
+    #[test]
+    fn mem_meta_satisfies_lookup_contract() {
+        let mut meta = store_with_ref();
+        let id = block_on(meta.apply_commit_incremental(5, &[], &[present(0, 0, 3)]))
+            .unwrap()
+            .id;
+        let row = block_on(meta.lookup_chunk(id, &coord(0, 0)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(row, present(0, 0, 3));
+        assert!(
+            block_on(meta.lookup_commit(CommitId([0xFF; 32])))
+                .unwrap()
+                .is_none()
+        );
     }
 }

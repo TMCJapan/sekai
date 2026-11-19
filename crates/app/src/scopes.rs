@@ -53,7 +53,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
 
     /// List scopes in name order.
     pub async fn list_scopes(&self) -> Result<Vec<NamedScope>, AppError> {
-        Ok(sekai_core::usecase::scopes::list_scopes(self.store.meta()).await?)
+        Ok(sekai_storage::scopes::list_scopes(self.store.meta()).await?)
     }
 
     /// The selection the scope `name` stands for, for a `--scope` run.
