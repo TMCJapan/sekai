@@ -9,7 +9,7 @@ This project is organized as a Cargo workspace under `crates/`:
     ├── anvil           # Pure Anvil sector codec, decompression, and normalized chunk hashing (no_std + alloc, ex-mca)
     ├── core            # Use-case policy API over shared types (no_std + alloc, depends on storage + util)
     ├── storage         # Backend-neutral store traits (no_std + alloc)
-    ├── storage-local   # Local backend: SQLite metadata (sqlx) + sled blobs + sled region-image cache (std + tokio)
+    ├── storage-local   # Local backend: Turso metadata (turso) + sled blobs + sled region-image cache (std + tokio)
     ├── world           # World access boundary (no_std + alloc): WorldTree trait,
     │                   # RegionFile handle, WorldLock primitives
     ├── world-local     # Host filesystem tree (std): HostWorldTree, layout detection,
@@ -144,7 +144,7 @@ any exception in the PR body.
 - `wasm`: `util`, `anvil`, `core`, `world`, and the backend-neutral
   `storage` crate must keep linting clean for `wasm32-unknown-unknown`.
   `world-local`, `storage-local`, `app`, and the binary own host file I/O, locks,
-  and the databases (SQLite, sled) and are intentionally **not** wasm targets yet. The
+  and the databases (Turso, sled) and are intentionally **not** wasm targets yet. The
   backend-neutral store traits exist so a wasm backend can be added as a
   sibling crate without touching `core`/`app`.
 - Neither target has a runner, so they are lint-only; the full workspace is
@@ -156,7 +156,7 @@ any exception in the PR body.
   file modes, the artifact wraps a `sekai-<target triple>.tar.gz` that keeps
   the binary executable.
 - **Storage backends**: this project ships one local backend, in the
-  `sekai-storage-local` crate (SQLite metadata via sqlx, blobs and the
+  `sekai-storage-local` crate (Turso metadata via turso, blobs and the
   region-image cache via sled; app feature `backend-local`, default-on).
   `sekai-storage` stays
   backend-neutral and owns the traits and locks; it holds no backend

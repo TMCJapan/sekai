@@ -4,7 +4,7 @@
 //! Use cases coordinate the storage traits and enforce application-level policy.
 //! They own ordering and decisions such as change filtering, snapshot
 //! merging, and restore.
-//! Backends own SQLite, CAS layout, threading, and clocks. Policy here is
+//! Backends own the database, CAS layout, threading, and clocks. Policy here is
 //! portable (`no_std` + `alloc` only) and tested without I/O.
 
 pub mod checkout;

@@ -1,4 +1,4 @@
-//! Local storage backend for Sekai: SQLite metadata, sled blobs, and a
+//! Local storage backend for Sekai: Turso metadata, sled blobs, and a
 //! sled region-image cache.
 
 mod blob;
@@ -7,13 +7,13 @@ mod meta;
 
 pub use blob::SledBlob;
 pub use cache::SledCache;
-pub use meta::{SCHEMA_VERSION, SqliteMeta};
+pub use meta::{SCHEMA_VERSION, TursoMeta};
 
 use std::path::Path;
 
 use sekai_storage::{StorageError, Store, io_error};
 
-pub type LocalStore = Store<SqliteMeta, SledBlob, SledCache>;
+pub type LocalStore = Store<TursoMeta, SledBlob, SledCache>;
 
 /// Initialize the store rooted at `root` and open it.
 ///
@@ -66,6 +66,6 @@ fn markers_present(root: impl AsRef<Path>) -> bool {
 async fn connect(root: impl AsRef<Path>) -> Result<LocalStore, StorageError> {
     let blob = SledBlob::open(root.as_ref().join("blobs")).await?;
     let cache = SledCache::open(root.as_ref().join("cache")).await?;
-    let meta = SqliteMeta::open(root.as_ref().join("meta.sqlite")).await?;
+    let meta = TursoMeta::open(root.as_ref().join("meta.sqlite")).await?;
     Ok(LocalStore::new(meta, blob, cache))
 }

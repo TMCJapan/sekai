@@ -35,7 +35,7 @@ sekai (bin, thin: clap parse + print + exit code)
       -> sekai-world + sekai-anvil + sekai-core (types only)
     -> sekai-storage (no_std + alloc: store traits + canonical snapshot-tree codec)
       -> sekai-util
-    -> sekai-storage-local (std + tokio: SQLite metadata + sled blobs + sled region-image cache)
+    -> sekai-storage-local (std + tokio: Turso metadata + sled blobs + sled region-image cache)
       -> sekai-storage
 sekai-util (no_std, no tokio dependency: coordinates, chunk hashes,
   history value types) <- anvil, core, storage (world/app reach them
@@ -48,7 +48,7 @@ sekai-util (no_std, no tokio dependency: coordinates, chunk hashes,
 | `sekai-anvil`                     | `no_std` + `alloc`                    | no                                           | Pure Anvil sector codec including decompression and chunk NBT normalization. A stored sector payload becomes a `Chunk` whose `normalized_hash()` is the only public NBT-derived digest; the parser and normalized views stay internal. Owns `ChunkPayloadDiff`, the two-sided digest comparison diff flows report. Also builds `Vec<u8>` images. Compression framing is MCA spec knowledge, so it lives here. No `Path`, no `fs`. Names custom dimensions with util `Dimension`. |
 | `sekai-core`                      | `no_std` + `alloc`                    | no (`async` only as trait bounds, see below) | Use-case policy API (`plan`/`assemble`/`commit`, `plan_checkout`) over the `storage` traits and util types. Re-exports every util type at its root, so downstream paths stay stable. `app` composes it with `anvil` for payload digests and diffs.                                                                                                                                                                               |
 | `sekai-storage`                   | `no_std` + `alloc`                    | yes (RPITIT)                                 | Backend-neutral boundaries: async `BlobStore`/`MetaStore`/`CacheStore` traits, the canonical snapshot-tree codec they exchange, high-level `SekaiStore`/`SekaiStoreOpener` traits, and shared storage errors. Depends on `util` only.                                                                                                                                                                  |
-| `sekai-storage-local`             | `std` + tokio                         | yes                                          | Concrete local backend: `SqliteMeta` over sqlx plus `SledBlob` and `SledCache` over sled, composed into `LocalStore`, all three schema/version gates, and the openers. Implements the traits from `sekai-storage`. Other backends become sibling crates without touching `core`/`app`.                                                                                                                  |
+| `sekai-storage-local`             | `std` + tokio                         | yes                                          | Concrete local backend: `TursoMeta` over turso plus `SledBlob` and `SledCache` over sled, composed into `LocalStore`, all three schema/version gates, and the openers. Implements the traits from `sekai-storage`. Other backends become sibling crates without touching `core`/`app`.                                                                                                                  |
 | `sekai-world`                     | `no_std` + `alloc`                    | no                                           | World access boundary: the `WorldTree` trait, the `RegionFile` handle, and the `WorldLock` primitives. No filesystem code.                                                                                                                                                                                                                                                                                |
 | `sekai-world-local`               | `std`                                 | no                                           | Host filesystem tree: `HostWorldTree`, layout detection (vanilla, pre-26.1 Bukkit, plugin worlds), the `HostRegion` handles, the `.sekai.lock` file lock, atomic swaps, and the host `WorldError`.                                                                                                                                                                                                      |
 | `sekai-app`                       | `std` + tokio                         | yes                                          | Composition/orchestration library for third parties: parallel ingest, clocks, timing, progress callbacks.                                                                                                                                                                                                                                                                                            |
@@ -467,16 +467,16 @@ produced them. The scope is a filter, not a partition:
   async only and `Clone`: the CAS is append-only and the cache is derived,
   so workers share them without exclusion and a cancelled future cannot
   strand a lock.
-- `sekai-storage-local` is the concrete local backend. It owns `SqliteMeta`
-  (sqlx), `SledBlob` and `SledCache` (sled), `LocalStore`, all three schemas
-  and version gates, and implements the storage traits. Keeping sqlx and
+- `sekai-storage-local` is the concrete local backend. It owns `TursoMeta`
+  (turso), `SledBlob` and `SledCache` (sled), `LocalStore`, all three schemas
+  and version gates, and implements the storage traits. Keeping turso and
   sled out of `sekai-storage` keeps the abstraction crate free of native
   database dependencies.
 - New backends (mysql, postgres, embedded, in-memory, wasm) become sibling
   crates implementing the same traits. `app` is generic over
   `SekaiInstance<T: SekaiStore>`, so adding a backend does not touch use-case
   policy. No generic `Any`-driver abstraction.
-- The local backend (SQLite metadata + sled blobs + sled cache) is the only
+- The local backend (Turso metadata + sled blobs + sled cache) is the only
   one shipped. `sekai-storage` holds no backend modules at all: it owns the
   traits and the locks, and stays free of a native database dependency. A
   mysql or postgres backend arrives as a sibling crate, never as a stub

@@ -26,28 +26,28 @@ async fn init(dir: impl AsRef<Path>) -> sekai_storage_local::LocalStore {
 }
 
 #[tokio::test]
-async fn sqlite_commit_lifecycle() {
+async fn turso_commit_lifecycle() {
     let (dir, _guard) = tempdir("lifecycle");
     let mut store = init(&dir).await;
     common::commit_lifecycle(store.meta_mut()).await;
 }
 
 #[tokio::test]
-async fn sqlite_scope_flow() {
+async fn turso_scope_flow() {
     let (dir, _guard) = tempdir("scopes");
     let mut store = init(&dir).await;
     common::scope_flow(store.meta_mut()).await;
 }
 
 #[tokio::test]
-async fn sqlite_fresh_stats() {
+async fn turso_fresh_stats() {
     let (dir, _guard) = tempdir("fresh");
     let mut store = init(&dir).await;
     common::fresh_stats(store.meta_mut()).await;
 }
 
 #[tokio::test]
-async fn sqlite_tree_bulk_reads() {
+async fn turso_tree_bulk_reads() {
     let (dir, _guard) = tempdir("bulk-reads");
     let mut store = init(&dir).await;
     common::tree_bulk_reads(store.meta_mut()).await;
@@ -56,7 +56,7 @@ async fn sqlite_tree_bulk_reads() {
 /// A vanished coordinate stops resolving: absence is the tombstone, and a
 /// checkout plan drops the coordinate instead of asking for a blob.
 #[tokio::test]
-async fn sqlite_tombstones_shape_and_checkout_drop() {
+async fn turso_tombstones_shape_and_checkout_drop() {
     let (dir, _guard) = tempdir("tombstones");
     let mut store = init(&dir).await;
     let meta = store.meta_mut();
@@ -95,14 +95,14 @@ async fn sqlite_tombstones_shape_and_checkout_drop() {
 }
 
 #[tokio::test]
-async fn sqlite_history_graph() {
+async fn turso_history_graph() {
     let (dir, _guard) = tempdir("graph");
     let mut store = init(&dir).await;
     common::history_graph(store.meta_mut()).await;
 }
 
 #[tokio::test]
-async fn sqlite_cas_roundtrip() {
+async fn turso_cas_roundtrip() {
     let (dir, _guard) = tempdir("cas");
     let mut store = init(&dir).await;
     common::cas_roundtrip(store.blob_mut()).await;
@@ -116,7 +116,7 @@ async fn cache_roundtrip() {
 }
 
 #[tokio::test]
-async fn sqlite_torn_commit_leaves_orphans() {
+async fn turso_torn_commit_leaves_orphans() {
     let (dir, _guard) = tempdir("torn-commit");
     let mut store = init(&dir).await;
     common::torn_commit_leaves_orphans(&mut store).await;

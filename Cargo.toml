@@ -55,7 +55,6 @@ nanonbt = { git = "https://github.com/TMCJapan/nanonbt.git", rev = "e842ae44e61f
 serde = { version = "1.0.229", default-features = false, features = ["alloc", "derive"] }
 serde_json = { version = "1.0.151", default-features = false, features = ["alloc"] }
 sled = "0.34.7"
-sqlx = { version = "0.9.0", default-features = false, features = ["runtime-tokio"] }
 thiserror = { version = "2.0.20", default-features = false }
 tokio = { version = "1", default-features = false, features = [
   "macros",
@@ -63,13 +62,10 @@ tokio = { version = "1", default-features = false, features = [
   "sync",
 ] }
 tempfile = { version = "3.27.0", default-features = false }
+# Default features off: `mimalloc` would install a process-wide global
+# allocator from a library dependency, and `fts` is unused.
+turso = { version = "0.8.3", default-features = false }
 twox-hash = { version = "2", default-features = false, features = ["xxhash32"] }
-
-# SQLx 0.9.0 pins `libsqlite3-sys < 0.38`, which bundles a SQLite version affected
-# by RUSTSEC-2026-0459. The fix is on the unreleased `release/0.9.1` branch.
-# Remove this patch once sqlx 0.9.1 (or newer) is published.
-[patch.crates-io]
-sqlx = { git = "https://github.com/launchbadge/sqlx", rev = "92a43e76a49244340fefdba099a485e40318d81f" }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

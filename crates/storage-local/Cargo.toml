@@ -14,8 +14,8 @@ workspace = true
 sekai-core.workspace = true
 sekai-storage.workspace = true
 sled.workspace = true
-sqlx = { workspace = true, features = ["sqlite"] }
 tokio = { workspace = true, features = ["time"] }
+turso.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

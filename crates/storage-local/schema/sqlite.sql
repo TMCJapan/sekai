@@ -1,3 +1,8 @@
+-- Schema version 18: the engine switched from SQLite (sqlx) to Turso.
+-- The SQL schema is unchanged from version 17, but the on-disk formats
+-- are not interchangeable: stores stamped by the SQLite engine are
+-- rejected via `UnsupportedSchema`. There is no migration path.
+--
 -- Schema version 17: commits name content-addressed snapshot trees
 -- (ADR-0027); `chunk_history` is gone. There is no migration path from
 -- version 16: old stores are rejected via `UnsupportedSchema`.

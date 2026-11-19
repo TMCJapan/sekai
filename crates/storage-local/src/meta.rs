@@ -1,7 +1,7 @@
-//! SQLite commit metadata: the history graph and snapshot trees.
+//! Turso commit metadata: the history graph and snapshot trees.
 //!
 //! Recording a commit uses one transaction; blob durability is established
-//! before the metadata commit by the caller. The pool has one connection.
+//! before the metadata commit by the caller. The store keeps one connection.
 
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 use std::path::Path;
@@ -12,55 +12,49 @@ use sekai_core::{
     Dimension, NamedScope, NamedScopeError, Rect, RefName, RegionHash, RootHash, ScopeName,
     commit_hash,
 };
-use sekai_storage::{DimNode, MetaStore, RegionNode, RootNode, StorageError, TreeNodes};
-use sqlx::Row as _;
-use sqlx::sqlite::{
-    SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
-};
+use sekai_storage::{DimNode, MetaStore, RegionNode, RootNode, StorageError, TreeNodes, io_error};
+use turso::transaction::{Transaction, TransactionBehavior};
+use turso::{Builder, Connection, Row, Value};
 
 /// Managed schema version (`PRAGMA user_version`).
-pub const SCHEMA_VERSION: i64 = 17;
+///
+/// Version 18 switched the engine from SQLite (sqlx) to Turso. The SQL
+/// schema is unchanged, but the on-disk formats are not interchangeable,
+/// so a store stamped by the SQLite engine is refused by the version gate.
+pub const SCHEMA_VERSION: i64 = 18;
 
 const SCHEMA: &str = include_str!("../schema/sqlite.sql");
 
 /// Map a backend failure into the shared storage error.
-fn db_err(source: sqlx::Error) -> StorageError {
-    StorageError::backend("sqlite", source)
+fn db_err(source: turso::Error) -> StorageError {
+    StorageError::backend("turso", source)
 }
 
-/// SQLite-backed commit metadata: the history graph and snapshot trees.
+/// Turso-backed commit metadata: the history graph and snapshot trees.
 #[derive(Debug, Clone)]
-pub struct SqliteMeta {
-    pool: SqlitePool,
+pub struct TursoMeta {
+    conn: Connection,
 }
 
-/// How long a connect keeps retrying `SQLITE_BUSY`, matching sqlx's
-/// default `busy_timeout`.
+/// How long a connect keeps retrying busy failures, matching the
+/// connection's `busy_timeout`.
 const CONNECT_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// Connect the single-connection pool.
+/// Whether a failure is a busy variant worth retrying.
+const fn is_busy(err: &turso::Error) -> bool {
+    matches!(err, turso::Error::Busy(_) | turso::Error::BusySnapshot(_))
+}
+
+/// Open the store's single connection.
 ///
-/// Switching a fresh database into WAL needs an exclusive lock that
-/// SQLite's busy handler cannot wait on, so a connect racing another
-/// opener's switch fails with `SQLITE_BUSY` at once. Retry it as long as
-/// `busy_timeout` would have waited. Extended codes (`SQLITE_BUSY_RECOVERY`
-/// while another opener replays the WAL, ...) share the primary code in
-/// their low byte.
-async fn connect_pool(options: SqliteConnectOptions) -> Result<SqlitePool, sqlx::Error> {
-    const SQLITE_BUSY: i32 = 5;
-    let is_busy = |err: &dyn sqlx::error::DatabaseError| {
-        err.code()
-            .and_then(|code| code.parse::<i32>().ok())
-            .is_some_and(|code| code & 0xff == SQLITE_BUSY)
-    };
+/// An open racing another opener's schema creation or WAL replay can fail
+/// busy before the statement-level busy handler applies. Retry it as long
+/// as `busy_timeout` would have waited.
+async fn connect(path: &str) -> Result<Connection, turso::Error> {
     let deadline = Instant::now() + CONNECT_BUSY_TIMEOUT;
     loop {
-        match SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options.clone())
-            .await
-        {
-            Err(sqlx::Error::Database(err)) if is_busy(&*err) && Instant::now() < deadline => {
+        match connect_once(path).await {
+            Err(err) if is_busy(&err) && Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
             connected => return connected,
@@ -68,29 +62,88 @@ async fn connect_pool(options: SqliteConnectOptions) -> Result<SqlitePool, sqlx:
     }
 }
 
-async fn read_user_version<'c>(
-    executor: impl sqlx::SqliteExecutor<'c>,
-) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar("PRAGMA user_version")
-        .fetch_one(executor)
-        .await
+/// Open one connection with the store's pragmas applied. Turso defaults
+/// to WAL journalling; durability and foreign keys are pinned explicitly.
+async fn connect_once(path: &str) -> Result<Connection, turso::Error> {
+    let db = Builder::new_local(path).build().await?;
+    let conn = db.connect()?;
+    // The connection keeps the database alive through its own handle.
+    drop(db);
+    conn.busy_timeout(CONNECT_BUSY_TIMEOUT)?;
+    conn.execute("PRAGMA synchronous = FULL", ()).await?;
+    conn.execute("PRAGMA foreign_keys = ON", ()).await?;
+    Ok(conn)
 }
 
-impl SqliteMeta {
+/// Run a query and collect every row.
+async fn fetch_all(
+    conn: &Connection,
+    sql: &str,
+    params: impl turso::IntoParams,
+) -> Result<Vec<Row>, StorageError> {
+    let mut rows = conn.query(sql, params).await.map_err(db_err)?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next().await.map_err(db_err)? {
+        out.push(row);
+    }
+    Ok(out)
+}
+
+/// Run a query that must return exactly one row.
+async fn fetch_one(
+    conn: &Connection,
+    sql: &str,
+    params: impl turso::IntoParams,
+) -> Result<Row, StorageError> {
+    let mut rows = conn.query(sql, params).await.map_err(db_err)?;
+    rows.next()
+        .await
+        .map_err(db_err)?
+        .ok_or(turso::Error::QueryReturnedNoRows)
+        .map_err(db_err)
+}
+
+/// Run a query that returns zero or one row.
+async fn fetch_optional(
+    conn: &Connection,
+    sql: &str,
+    params: impl turso::IntoParams,
+) -> Result<Option<Row>, StorageError> {
+    let mut rows = conn.query(sql, params).await.map_err(db_err)?;
+    rows.next().await.map_err(db_err)
+}
+
+async fn read_user_version(conn: &Connection) -> Result<i64, StorageError> {
+    fetch_one(conn, "PRAGMA user_version", ())
+        .await?
+        .get(0)
+        .map_err(db_err)
+}
+
+/// Comma-separated `?` placeholders for a dynamic parameter list.
+fn placeholders(count: usize) -> String {
+    vec!["?"; count].join(", ")
+}
+
+impl TursoMeta {
     /// Open (creating and version-gating) the database at `path`.
     ///
     /// The parent directory must already exist; this type never creates it
     /// (directory layout is the store's concern). Opening while another
     /// opener creates the schema waits for it, up to the busy timeout.
     pub async fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
-        let options = SqliteConnectOptions::new()
-            .filename(path)
-            .create_if_missing(true)
-            .journal_mode(SqliteJournalMode::Wal)
-            .synchronous(SqliteSynchronous::Full)
-            .foreign_keys(true);
-        let pool = connect_pool(options).await.map_err(db_err)?;
-        let mut version = read_user_version(&pool).await.map_err(db_err)?;
+        let path = path.as_ref();
+        let path_str = path.to_str().ok_or_else(|| {
+            io_error(
+                path.display().to_string(),
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "store path is not valid UTF-8",
+                ),
+            )
+        })?;
+        let mut conn = connect(path_str).await.map_err(db_err)?;
+        let mut version = read_user_version(&conn).await?;
         if version == 0 {
             // Re-read under the write lock: a concurrent opener that won the
             // race has stamped the version by the time this one gets it, so
@@ -98,30 +151,25 @@ impl SqliteMeta {
             // together: a crash between them would leave a half-created
             // schema that no later open can repair (the gate would demand a
             // version the store never got).
-            let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(db_err)?;
-            version = read_user_version(&mut *tx).await.map_err(db_err)?;
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .await
+                .map_err(db_err)?;
+            version = read_user_version(&tx).await?;
             if version == 0 {
-                sqlx::query(SCHEMA)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(db_err)?;
+                tx.execute_batch(SCHEMA).await.map_err(db_err)?;
                 // The store starts with one active ref, unborn: new
                 // commits hang from it until the first one lands.
-                sqlx::query(
+                tx.execute(
                     "INSERT INTO refs (name, commit_id, active, created_at_ms)
                      VALUES (?, NULL, 1, ?)",
+                    (DEFAULT_REF_NAME, now_ms()?),
                 )
-                .bind(DEFAULT_REF_NAME)
-                .bind(now_ms()?)
-                .execute(&mut *tx)
                 .await
                 .map_err(db_err)?;
-                sqlx::query(sqlx::AssertSqlSafe(format!(
-                    "PRAGMA user_version = {SCHEMA_VERSION}"
-                )))
-                .execute(&mut *tx)
-                .await
-                .map_err(db_err)?;
+                tx.execute(&format!("PRAGMA user_version = {SCHEMA_VERSION}"), ())
+                    .await
+                    .map_err(db_err)?;
                 version = SCHEMA_VERSION;
             }
             tx.commit().await.map_err(db_err)?;
@@ -132,7 +180,7 @@ impl SqliteMeta {
                 supported: SCHEMA_VERSION,
             });
         }
-        Ok(Self { pool })
+        Ok(Self { conn })
     }
 
     /// Record a whole commit atomically; returns its new ID.
@@ -155,28 +203,28 @@ impl SqliteMeta {
     /// The graph is small (one edge per commit in a linear history), so
     /// reading it whole beats a query per commit.
     async fn parent_map(&self) -> Result<BTreeMap<CommitId, Vec<CommitId>>, StorageError> {
-        let rows = sqlx::query(
+        let rows = fetch_all(
+            &self.conn,
             "SELECT child_id, parent_id FROM commit_parents ORDER BY child_id, parent_id",
+            (),
         )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db_err)?;
+        .await?;
         let mut map: BTreeMap<CommitId, Vec<CommitId>> = BTreeMap::new();
         for row in &rows {
-            let child = commit_id_from_blob(row.try_get("child_id").map_err(db_err)?)?;
-            let parent = commit_id_from_blob(row.try_get("parent_id").map_err(db_err)?)?;
+            let child = commit_id_from_blob(blob_col(row, 0)?)?;
+            let parent = commit_id_from_blob(blob_col(row, 1)?)?;
             map.entry(child).or_default().push(parent);
         }
         Ok(map)
     }
 }
 
-/// Fallible `i64` -> `i32` narrowing for SQLite integer columns.
+/// Fallible `i64` -> `i32` narrowing for integer columns.
 fn i64_to_i32(value: i64, column: &'static str) -> Result<i32, StorageError> {
     i32::try_from(value).map_err(|_| StorageError::InvalidHistoryValue { column, value })
 }
 
-/// Fallible `i64` -> `u64` widening for SQLite timestamp/size columns.
+/// Fallible `i64` -> `u64` widening for timestamp/size columns.
 fn i64_to_u64(value: i64, column: &'static str) -> Result<u64, StorageError> {
     u64::try_from(value).map_err(|_| StorageError::InvalidHistoryValue { column, value })
 }
@@ -186,10 +234,24 @@ fn commit_id_from_blob(bytes: Vec<u8>) -> Result<CommitId, StorageError> {
     hash32(bytes).map(CommitId)
 }
 
+/// Read an `i64` column.
+fn i64_col(row: &Row, idx: usize) -> Result<i64, StorageError> {
+    row.get(idx).map_err(db_err)
+}
+
 /// Read an `i32` column with a loud error on out-of-range values.
-fn i32_col(row: &sqlx::sqlite::SqliteRow, column: &'static str) -> Result<i32, StorageError> {
-    let value: i64 = row.try_get(column).map_err(db_err)?;
-    i64_to_i32(value, column)
+fn i32_col(row: &Row, idx: usize, column: &'static str) -> Result<i32, StorageError> {
+    i64_to_i32(i64_col(row, idx)?, column)
+}
+
+/// Read a BLOB column.
+fn blob_col(row: &Row, idx: usize) -> Result<Vec<u8>, StorageError> {
+    row.get(idx).map_err(db_err)
+}
+
+/// Read a nullable BLOB column.
+fn opt_blob_col(row: &Row, idx: usize) -> Result<Option<Vec<u8>>, StorageError> {
+    row.get(idx).map_err(db_err)
 }
 
 /// Read a 32-byte hash column.
@@ -213,21 +275,19 @@ const fn tree_err(err: sekai_storage::TreeError) -> StorageError {
 }
 
 /// Read a millisecond timestamp column.
-fn millis_col(row: &sqlx::sqlite::SqliteRow, column: &'static str) -> Result<u64, StorageError> {
-    let value: i64 = row.try_get(column).map_err(db_err)?;
-    i64_to_u64(value, column)
+fn millis_col(row: &Row, idx: usize, column: &'static str) -> Result<u64, StorageError> {
+    i64_to_u64(i64_col(row, idx)?, column)
 }
 
-/// Decode one `refs` row. Stored names always re-validate: anything
-/// else is corruption, never silent reinterpretation.
-fn decode_ref(row: &sqlx::sqlite::SqliteRow) -> Result<CommitRef, StorageError> {
-    let name_raw: String = row.try_get("name").map_err(db_err)?;
+/// Decode one `refs` row (`name, commit_id, active, created_at_ms`).
+/// Stored names always re-validate: anything else is corruption, never
+/// silent reinterpretation.
+fn decode_ref(row: &Row) -> Result<CommitRef, StorageError> {
+    let name_raw: String = row.get(0).map_err(db_err)?;
     let name =
         RefName::parse(&name_raw).map_err(|_| StorageError::InvalidRefName { name: name_raw })?;
-    let commit_raw: Option<Vec<u8>> = row.try_get("commit_id").map_err(db_err)?;
-    let commit = commit_raw.map(commit_id_from_blob).transpose()?;
-    let active_raw: i64 = row.try_get("active").map_err(db_err)?;
-    let active = match active_raw {
+    let commit = opt_blob_col(row, 1)?.map(commit_id_from_blob).transpose()?;
+    let active = match i64_col(row, 2)? {
         0 => false,
         1 => true,
         value => {
@@ -241,7 +301,7 @@ fn decode_ref(row: &sqlx::sqlite::SqliteRow) -> Result<CommitRef, StorageError> 
         name,
         commit,
         active,
-        millis_col(row, "created_at_ms")?,
+        millis_col(row, 3, "created_at_ms")?,
     ))
 }
 
@@ -253,29 +313,27 @@ struct ScopeColumns {
 
 /// Group rows of [`SCOPE_QUERY`] by scope name. The map iterates in
 /// byte-wise name order, the order `ScopeName` compares by.
-fn group_scope_rows(
-    rows: &[sqlx::sqlite::SqliteRow],
-) -> Result<BTreeMap<String, ScopeColumns>, StorageError> {
+fn group_scope_rows(rows: &[Row]) -> Result<BTreeMap<String, ScopeColumns>, StorageError> {
     let mut grouped = BTreeMap::new();
     for row in rows {
-        let name: String = row.try_get("name").map_err(db_err)?;
+        let name: String = row.get(0).map_err(db_err)?;
         let columns = match grouped.entry(name) {
             Entry::Occupied(entry) => entry.into_mut(),
             Entry::Vacant(entry) => entry.insert(ScopeColumns {
-                created_at_ms: millis_col(row, "created_at_ms")?,
+                created_at_ms: millis_col(row, 1, "created_at_ms")?,
                 areas: Vec::new(),
             }),
         };
         // The LEFT JOIN yields one all-NULL area for a scope without rows.
-        let dim: Option<i64> = row.try_get("dim").map_err(db_err)?;
+        let dim: Option<i64> = row.get(2).map_err(db_err)?;
         if let Some(dim) = dim {
             columns.areas.push((
                 Dimension::new(i64_to_i32(dim, "dim")?),
                 Rect::new(
-                    i32_col(row, "x0")?,
-                    i32_col(row, "z0")?,
-                    i32_col(row, "x1")?,
-                    i32_col(row, "z1")?,
+                    i32_col(row, 3, "x0")?,
+                    i32_col(row, 4, "z0")?,
+                    i32_col(row, 5, "x1")?,
+                    i32_col(row, 6, "z1")?,
                 ),
             ));
         }
@@ -330,18 +388,13 @@ fn now_ms() -> Result<i64, StorageError> {
     i64::try_from(millis).map_err(|_| StorageError::InvalidTimestamp(millis))
 }
 
-/// Decode one `commits` row.
-fn decode_commit(
-    row: &sqlx::sqlite::SqliteRow,
-    parents: &[CommitId],
-) -> Result<Commit, StorageError> {
-    let id: Vec<u8> = row.try_get("id").map_err(db_err)?;
-    let root: Vec<u8> = row.try_get("root_hash").map_err(db_err)?;
+/// Decode one `commits` row (`id, created_at_ms, root_hash`).
+fn decode_commit(row: &Row, parents: &[CommitId]) -> Result<Commit, StorageError> {
     Ok(Commit::new(
-        commit_id_from_blob(id)?,
-        millis_col(row, "created_at_ms")?,
+        commit_id_from_blob(blob_col(row, 0)?)?,
+        millis_col(row, 1, "created_at_ms")?,
         parents.to_vec(),
-        root_hash_from_blob(root)?,
+        root_hash_from_blob(blob_col(row, 2)?)?,
     ))
 }
 
@@ -353,7 +406,7 @@ fn decode_commit(
 /// commit (same hash) is idempotent: its row and edges already exist, and
 /// `inserted` reports `false`.
 async fn insert_commit(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &Transaction<'_>,
     id: CommitId,
     created_at_ms: u64,
     parents: &[CommitId],
@@ -364,18 +417,18 @@ async fn insert_commit(
     let existing: BTreeSet<CommitId> = if parents.is_empty() {
         BTreeSet::new()
     } else {
-        let mut qb = sqlx::QueryBuilder::new("SELECT id FROM commits WHERE id IN (");
-        let mut separated = qb.separated(", ");
-        for parent in parents {
-            separated.push_bind(commit_param(*parent));
-        }
-        separated.push_unseparated(")");
-        qb.build_query_scalar()
-            .fetch_all(&mut **tx)
-            .await
-            .map_err(db_err)?
-            .into_iter()
-            .map(commit_id_from_blob)
+        let sql = format!(
+            "SELECT id FROM commits WHERE id IN ({})",
+            placeholders(parents.len())
+        );
+        let params: Vec<Value> = parents
+            .iter()
+            .map(|parent| Value::Blob(commit_param(*parent)))
+            .collect();
+        fetch_all(tx, &sql, params)
+            .await?
+            .iter()
+            .map(|row| commit_id_from_blob(blob_col(row, 0)?))
             .collect::<Result<_, _>>()?
     };
     for parent in parents {
@@ -383,63 +436,63 @@ async fn insert_commit(
             return Err(StorageError::UnknownCommit { id: *parent });
         }
     }
-    let inserted = sqlx::query(
-        "INSERT OR IGNORE INTO commits (id, created_at_ms, root_hash) VALUES (?, ?, ?)",
-    )
-    .bind(commit_param(id))
-    .bind(millis_param(created_at_ms)?)
-    .bind(&root.as_bytes()[..])
-    .execute(&mut **tx)
-    .await
-    .map_err(db_err)?
-    .rows_affected()
+    let inserted = tx
+        .execute(
+            "INSERT OR IGNORE INTO commits (id, created_at_ms, root_hash) VALUES (?, ?, ?)",
+            (
+                commit_param(id),
+                millis_param(created_at_ms)?,
+                root.as_bytes().to_vec(),
+            ),
+        )
+        .await
+        .map_err(db_err)?
         > 0;
-    let seq: i64 = sqlx::query_scalar("SELECT seq FROM commits WHERE id = ?")
-        .bind(commit_param(id))
-        .fetch_one(&mut **tx)
+    let seq: i64 = fetch_one(
+        tx,
+        "SELECT seq FROM commits WHERE id = ?",
+        (commit_param(id),),
+    )
+    .await?
+    .get(0)
+    .map_err(db_err)?;
+    for parent in parents {
+        tx.execute(
+            "INSERT OR IGNORE INTO commit_parents (child_id, parent_id) VALUES (?, ?)",
+            (commit_param(id), commit_param(*parent)),
+        )
         .await
         .map_err(db_err)?;
-    for parent in parents {
-        sqlx::query("INSERT OR IGNORE INTO commit_parents (child_id, parent_id) VALUES (?, ?)")
-            .bind(commit_param(id))
-            .bind(commit_param(*parent))
-            .execute(&mut **tx)
-            .await
-            .map_err(db_err)?;
     }
     Ok((seq, inserted))
 }
 
 /// Rows per bulk node insert.
 ///
-/// Each row binds two parameters and SQLite caps a statement's parameter
-/// count (32766 by default), so large inserts bind in batches. Every batch
-/// is one round trip to sqlx's SQLite worker thread, which costs far more
-/// than SQLite's own insert.
+/// Batching bounds one statement's SQL text and parameter vector: a
+/// whole snapshot's nodes would otherwise build a single enormous
+/// multi-row INSERT.
 const NODE_INSERT_BATCH: usize = 1024;
 
 /// Insert tree nodes children-first, ignoring hashes the store already has.
-async fn insert_tree_nodes(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
-    nodes: &TreeNodes,
-) -> Result<(), StorageError> {
+async fn insert_tree_nodes(tx: &Transaction<'_>, nodes: &TreeNodes) -> Result<(), StorageError> {
     insert_node_rows(
         tx,
-        "INSERT OR IGNORE INTO region_tree (hash, node) ",
+        "INSERT OR IGNORE INTO region_tree (hash, node) VALUES ",
         &nodes.region,
         RegionHash::as_bytes,
     )
     .await?;
     insert_node_rows(
         tx,
-        "INSERT OR IGNORE INTO dim_tree (hash, node) ",
+        "INSERT OR IGNORE INTO dim_tree (hash, node) VALUES ",
         &nodes.dim,
         DimHash::as_bytes,
     )
     .await?;
     insert_node_rows(
         tx,
-        "INSERT OR IGNORE INTO root_tree (hash, node) ",
+        "INSERT OR IGNORE INTO root_tree (hash, node) VALUES ",
         &nodes.root,
         RootHash::as_bytes,
     )
@@ -449,31 +502,32 @@ async fn insert_tree_nodes(
 
 /// Insert one table's nodes in `NODE_INSERT_BATCH`-row statements.
 async fn insert_node_rows<H: Ord>(
-    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tx: &Transaction<'_>,
     prefix: &'static str,
     nodes: &BTreeMap<H, Vec<u8>>,
     key: fn(&H) -> &[u8; 32],
 ) -> Result<(), StorageError> {
-    let mut insert = sqlx::QueryBuilder::new(prefix);
     let mut rows = nodes.iter().peekable();
     while rows.peek().is_some() {
-        insert.reset().push_values(
-            rows.by_ref().take(NODE_INSERT_BATCH),
-            |mut row, (hash, node)| {
-                row.push_bind(&key(hash)[..]).push_bind(node);
-            },
-        );
-        insert.build().execute(&mut **tx).await.map_err(db_err)?;
+        let mut sql = String::from(prefix);
+        let mut params = Vec::with_capacity(NODE_INSERT_BATCH * 2);
+        for (i, (hash, node)) in rows.by_ref().take(NODE_INSERT_BATCH).enumerate() {
+            if i > 0 {
+                sql.push(',');
+            }
+            sql.push_str("(?, ?)");
+            params.push(Value::Blob(key(hash).to_vec()));
+            params.push(Value::Blob(node.clone()));
+        }
+        tx.execute(&sql, params).await.map_err(db_err)?;
     }
     Ok(())
 }
 
 /// Hashes per bulk node read.
 ///
-/// Each hash binds one parameter and SQLite caps a statement's parameter
-/// count (32766 by default), so large reads bind in batches. Every batch
-/// is one round trip to sqlx's SQLite worker thread, which costs far more
-/// than SQLite's own lookup.
+/// Batching bounds one statement's `IN (...)` list and parameter
+/// vector, mirroring the insert side.
 const NODE_READ_BATCH: usize = 1024;
 
 /// The tree table a node read targets. An enum keeps an unknown table
@@ -503,18 +557,15 @@ impl TreeTable {
     }
 }
 
-impl SqliteMeta {
+impl TursoMeta {
     async fn node_bytes(
         &self,
         table: TreeTable,
         hash: &[u8; 32],
     ) -> Result<Option<Vec<u8>>, StorageError> {
-        sqlx::query(table.select_node())
-            .bind(&hash[..])
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(db_err)?
-            .map(|row| row.try_get("node").map_err(db_err))
+        fetch_optional(&self.conn, table.select_node(), (hash.to_vec(),))
+            .await?
+            .map(|row| blob_col(&row, 0))
             .transpose()
     }
 
@@ -527,23 +578,20 @@ impl SqliteMeta {
         let select = table.select_nodes();
         let mut nodes = BTreeMap::new();
         for batch in hashes.chunks(NODE_READ_BATCH) {
-            let mut query = sqlx::QueryBuilder::new(select);
-            let mut separated = query.separated(", ");
-            for hash in batch {
-                separated.push_bind(&hash[..]);
-            }
-            separated.push_unseparated(")");
-            let rows = query.build().fetch_all(&self.pool).await.map_err(db_err)?;
-            for row in &rows {
-                let hash: Vec<u8> = row.try_get("hash").map_err(db_err)?;
-                let node: Vec<u8> = row.try_get("node").map_err(db_err)?;
-                nodes.insert(hash32(hash)?, node);
+            let sql = format!("{select}{})", placeholders(batch.len()));
+            let params: Vec<Value> = batch
+                .iter()
+                .map(|hash| Value::Blob(hash.to_vec()))
+                .collect();
+            for row in fetch_all(&self.conn, &sql, params).await? {
+                nodes.insert(hash32(blob_col(&row, 0)?)?, blob_col(&row, 1)?);
             }
         }
         Ok(nodes)
     }
 }
-impl sekai_storage::MetaStore for SqliteMeta {
+
+impl sekai_storage::MetaStore for TursoMeta {
     type Error = StorageError;
 
     async fn create_commit(
@@ -557,36 +605,38 @@ impl sekai_storage::MetaStore for SqliteMeta {
         canonical_parents.sort();
         canonical_parents.dedup();
         let parent_root = match canonical_parents.first() {
-            Some(parent) => sqlx::query_scalar("SELECT root_hash FROM commits WHERE id = ?")
-                .bind(commit_param(*parent))
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(db_err)?
-                .map(root_hash_from_blob)
-                .transpose()?,
+            Some(parent) => fetch_optional(
+                &self.conn,
+                "SELECT root_hash FROM commits WHERE id = ?",
+                (commit_param(*parent),),
+            )
+            .await?
+            .map(|row| blob_col(&row, 0))
+            .transpose()?
+            .map(root_hash_from_blob)
+            .transpose()?,
             None => None,
         };
         let (root, nodes) = parent_root.map_or_else(sekai_storage::tree::empty_tree, |root| {
             (root, TreeNodes::default())
         });
         let id = commit_hash(parents, created_at_ms, root);
-        let mut tx = self.pool.begin().await.map_err(db_err)?;
-        insert_tree_nodes(&mut tx, &nodes).await?;
-        insert_commit(&mut tx, id, created_at_ms, parents, root).await?;
+        let tx = self.conn.transaction().await.map_err(db_err)?;
+        insert_tree_nodes(&tx, &nodes).await?;
+        insert_commit(&tx, id, created_at_ms, parents, root).await?;
         tx.commit().await.map_err(db_err)?;
         Ok(id)
     }
 
     async fn commit_parents(&self, commit: CommitId) -> Result<Vec<CommitId>, StorageError> {
-        let rows = sqlx::query(
+        let rows = fetch_all(
+            &self.conn,
             "SELECT parent_id FROM commit_parents WHERE child_id = ? ORDER BY parent_id",
+            (commit_param(commit),),
         )
-        .bind(commit_param(commit))
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db_err)?;
+        .await?;
         rows.iter()
-            .map(|row| commit_id_from_blob(row.try_get("parent_id").map_err(db_err)?))
+            .map(|row| commit_id_from_blob(blob_col(row, 0)?))
             .collect()
     }
 
@@ -678,11 +728,12 @@ impl sekai_storage::MetaStore for SqliteMeta {
     }
 
     async fn lookup_commit(&self, id: CommitId) -> Result<Option<Commit>, StorageError> {
-        let row = sqlx::query("SELECT id, created_at_ms, root_hash FROM commits WHERE id = ?")
-            .bind(commit_param(id))
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(db_err)?;
+        let row = fetch_optional(
+            &self.conn,
+            "SELECT id, created_at_ms, root_hash FROM commits WHERE id = ?",
+            (commit_param(id),),
+        )
+        .await?;
         let Some(row) = row else {
             return Ok(None);
         };
@@ -691,16 +742,16 @@ impl sekai_storage::MetaStore for SqliteMeta {
     }
 
     async fn latest_commit(&self) -> Result<Option<Commit>, StorageError> {
-        let row = sqlx::query(
+        let row = fetch_optional(
+            &self.conn,
             "SELECT id, created_at_ms, root_hash FROM commits ORDER BY seq DESC LIMIT 1",
+            (),
         )
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(db_err)?;
+        .await?;
         let Some(row) = row else {
             return Ok(None);
         };
-        let id = commit_id_from_blob(row.try_get("id").map_err(db_err)?)?;
+        let id = commit_id_from_blob(blob_col(&row, 0)?)?;
         let parents = self.commit_parents(id).await?;
         Ok(Some(decode_commit(&row, &parents)?))
     }
@@ -709,14 +760,16 @@ impl sekai_storage::MetaStore for SqliteMeta {
     where
         F: FnMut(&Commit) -> bool + Send,
     {
-        let rows = sqlx::query("SELECT id, created_at_ms, root_hash FROM commits ORDER BY seq")
-            .fetch_all(&self.pool)
-            .await
-            .map_err(db_err)?;
+        let rows = fetch_all(
+            &self.conn,
+            "SELECT id, created_at_ms, root_hash FROM commits ORDER BY seq",
+            (),
+        )
+        .await?;
         let parents = self.parent_map().await?;
         let mut ids: Vec<CommitId> = Vec::with_capacity(rows.len());
         for row in &rows {
-            ids.push(commit_id_from_blob(row.try_get("id").map_err(db_err)?)?);
+            ids.push(commit_id_from_blob(blob_col(row, 0)?)?);
         }
         // The map holds every edge, so a commit without an entry is a
         // root; an edge naming a commit that is gone is corruption.
@@ -751,15 +804,15 @@ impl sekai_storage::MetaStore for SqliteMeta {
         nodes: &TreeNodes,
     ) -> Result<ApplyOutcome, StorageError> {
         let commit = commit_hash(parents, created_at_ms, root);
-        let mut tx = self.pool.begin().await.map_err(db_err)?;
+        let tx = self.conn.transaction().await.map_err(db_err)?;
         // The new commit must continue the active ref's target: moving the
         // ref onto an unrelated history would fork it. Read the target
         // before inserting, so a rejected call writes nothing.
         let active_target: Option<Option<Vec<u8>>> =
-            sqlx::query_scalar("SELECT commit_id FROM refs WHERE active = 1")
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(db_err)?;
+            fetch_optional(&tx, "SELECT commit_id FROM refs WHERE active = 1", ())
+                .await?
+                .map(|row| opt_blob_col(&row, 0))
+                .transpose()?;
         let Some(active_target) = active_target else {
             tx.rollback().await.map_err(db_err)?;
             return Err(StorageError::NoActiveRef);
@@ -771,18 +824,18 @@ impl sekai_storage::MetaStore for SqliteMeta {
                 return Err(StorageError::NotContinuing { base });
             }
         }
-        insert_tree_nodes(&mut tx, nodes).await?;
-        insert_commit(&mut tx, commit, created_at_ms, parents, root).await?;
-        let id_param = commit_param(commit);
+        insert_tree_nodes(&tx, nodes).await?;
+        insert_commit(&tx, commit, created_at_ms, parents, root).await?;
         // The active ref moves onto the new commit, in the same
         // transaction: a ref lagging behind its history would fork the
         // next commit.
-        let moved = sqlx::query("UPDATE refs SET commit_id = ? WHERE active = 1")
-            .bind(&id_param[..])
-            .execute(&mut *tx)
+        let moved = tx
+            .execute(
+                "UPDATE refs SET commit_id = ? WHERE active = 1",
+                (commit_param(commit),),
+            )
             .await
-            .map_err(db_err)?
-            .rows_affected();
+            .map_err(db_err)?;
         if moved == 0 {
             tx.rollback().await.map_err(db_err)?;
             return Err(StorageError::NoActiveRef);
@@ -802,29 +855,27 @@ impl sekai_storage::MetaStore for SqliteMeta {
         // so moving a ref back to unborn is allowed.
         let stored_commit = commit.map(commit_param);
         let created_at_ms = millis_param(created_at_ms)?;
-        let mut tx = self.pool.begin().await.map_err(db_err)?;
+        let tx = self.conn.transaction().await.map_err(db_err)?;
         if let Some(id) = commit {
             // Pointing at a commit that does not exist is corruption, not
             // a move: report it as such instead of the foreign-key
             // violation the upsert would raise.
-            let found: Option<i64> = sqlx::query_scalar("SELECT 1 FROM commits WHERE id = ?")
-                .bind(stored_commit.as_deref())
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(db_err)?;
+            let found = fetch_optional(
+                &tx,
+                "SELECT 1 FROM commits WHERE id = ?",
+                (commit_param(id),),
+            )
+            .await?;
             if found.is_none() {
                 tx.rollback().await.map_err(db_err)?;
                 return Err(StorageError::UnknownCommit { id });
             }
         }
-        sqlx::query(
+        tx.execute(
             "INSERT INTO refs (name, commit_id, active, created_at_ms) VALUES (?, ?, 0, ?)
              ON CONFLICT(name) DO UPDATE SET commit_id = excluded.commit_id",
+            (name.as_str(), stored_commit, created_at_ms),
         )
-        .bind(name.as_str())
-        .bind(stored_commit.as_deref())
-        .bind(created_at_ms)
-        .execute(&mut *tx)
         .await
         .map_err(db_err)?;
         tx.commit().await.map_err(db_err)?;
@@ -832,12 +883,12 @@ impl sekai_storage::MetaStore for SqliteMeta {
     }
 
     async fn lookup_ref(&self, name: &RefName) -> Result<Option<CommitRef>, StorageError> {
-        let row =
-            sqlx::query("SELECT name, commit_id, active, created_at_ms FROM refs WHERE name = ?")
-                .bind(name.as_str())
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(db_err)?;
+        let row = fetch_optional(
+            &self.conn,
+            "SELECT name, commit_id, active, created_at_ms FROM refs WHERE name = ?",
+            (name.as_str(),),
+        )
+        .await?;
         row.map(|row| decode_ref(&row)).transpose()
     }
 
@@ -845,13 +896,13 @@ impl sekai_storage::MetaStore for SqliteMeta {
     where
         F: FnMut(&CommitRef) -> bool + Send,
     {
-        let rows = sqlx::query(
+        let rows = fetch_all(
+            &self.conn,
             "SELECT name, commit_id, active, created_at_ms
              FROM refs ORDER BY name COLLATE BINARY",
+            (),
         )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db_err)?;
+        .await?;
         for row in &rows {
             if !visit(&decode_ref(row)?) {
                 break;
@@ -864,23 +915,25 @@ impl sekai_storage::MetaStore for SqliteMeta {
         // One transaction so the DELETE and the follow-up read see the
         // same snapshot: the DELETE refuses the active ref, and the read
         // only refines why nothing was removed.
-        let mut tx = self.pool.begin().await.map_err(db_err)?;
-        let deleted = sqlx::query("DELETE FROM refs WHERE name = ? AND active = 0")
-            .bind(name.as_str())
-            .execute(&mut *tx)
+        let tx = self.conn.transaction().await.map_err(db_err)?;
+        let deleted = tx
+            .execute(
+                "DELETE FROM refs WHERE name = ? AND active = 0",
+                (name.as_str(),),
+            )
             .await
             .map_err(db_err)?;
-        if deleted.rows_affected() > 0 {
+        if deleted > 0 {
             tx.commit().await.map_err(db_err)?;
             return Ok(true);
         }
         // Nothing was deleted: the ref is absent or active.
-        let active: Option<i64> =
-            sqlx::query_scalar("SELECT 1 FROM refs WHERE name = ? AND active = 1")
-                .bind(name.as_str())
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(db_err)?;
+        let active = fetch_optional(
+            &tx,
+            "SELECT 1 FROM refs WHERE name = ? AND active = 1",
+            (name.as_str(),),
+        )
+        .await?;
         tx.commit().await.map_err(db_err)?;
         match active {
             Some(_) => Err(StorageError::ActiveRefProtected {
@@ -893,40 +946,38 @@ impl sekai_storage::MetaStore for SqliteMeta {
     async fn active_ref(&self) -> Result<Option<CommitRef>, StorageError> {
         // The target commit must exist: the foreign key keeps it honest,
         // and a dangling target is corruption, not an unborn ref.
-        let row = sqlx::query(
+        let row = fetch_optional(
+            &self.conn,
             "SELECT refs.name, refs.commit_id, refs.active, refs.created_at_ms,
                     commits.id AS target
              FROM refs LEFT JOIN commits ON commits.id = refs.commit_id
              WHERE refs.active = 1",
+            (),
         )
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(db_err)?;
+        .await?;
         let Some(row) = row else {
             return Ok(None);
         };
         let record = decode_ref(&row)?;
-        if let Some(commit) = record.commit {
-            let target: Option<Vec<u8>> = row.try_get("target").map_err(db_err)?;
-            if target.is_none() {
-                return Err(StorageError::UnknownCommit { id: commit });
-            }
+        if let Some(commit) = record.commit
+            && opt_blob_col(&row, 4)?.is_none()
+        {
+            return Err(StorageError::UnknownCommit { id: commit });
         }
         Ok(Some(record))
     }
 
     async fn activate_ref(&mut self, name: &RefName) -> Result<(), StorageError> {
-        let mut tx = self.pool.begin().await.map_err(db_err)?;
-        let row = sqlx::query(
+        let tx = self.conn.transaction().await.map_err(db_err)?;
+        let row = fetch_optional(
+            &tx,
             "SELECT refs.name, refs.commit_id, refs.active, refs.created_at_ms,
                     commits.id AS target
              FROM refs LEFT JOIN commits ON commits.id = refs.commit_id
              WHERE refs.name = ?",
+            (name.as_str(),),
         )
-        .bind(name.as_str())
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(db_err)?;
+        .await?;
         let Some(row) = row else {
             tx.rollback().await.map_err(db_err)?;
             return Err(StorageError::UnknownRef {
@@ -934,27 +985,26 @@ impl sekai_storage::MetaStore for SqliteMeta {
             });
         };
         let record = decode_ref(&row)?;
-        if let Some(commit) = record.commit {
-            let target: Option<Vec<u8>> = row.try_get("target").map_err(db_err)?;
-            if target.is_none() {
-                tx.rollback().await.map_err(db_err)?;
-                return Err(StorageError::UnknownCommit { id: commit });
-            }
+        if let Some(commit) = record.commit
+            && opt_blob_col(&row, 4)?.is_none()
+        {
+            tx.rollback().await.map_err(db_err)?;
+            return Err(StorageError::UnknownCommit { id: commit });
         }
         // The partial unique index allows one active row: clear the old
         // one before marking the new one.
-        sqlx::query("UPDATE refs SET active = 0 WHERE active = 1")
-            .execute(&mut *tx)
+        tx.execute("UPDATE refs SET active = 0 WHERE active = 1", ())
             .await
             .map_err(db_err)?;
         // The row can still vanish between the check above and this
         // update; committing then would leave the store without a head.
-        let activated = sqlx::query("UPDATE refs SET active = 1 WHERE name = ?")
-            .bind(name.as_str())
-            .execute(&mut *tx)
+        let activated = tx
+            .execute(
+                "UPDATE refs SET active = 1 WHERE name = ?",
+                (name.as_str(),),
+            )
             .await
-            .map_err(db_err)?
-            .rows_affected();
+            .map_err(db_err)?;
         if activated == 0 {
             tx.rollback().await.map_err(db_err)?;
             return Err(StorageError::UnknownRef {
@@ -968,39 +1018,35 @@ impl sekai_storage::MetaStore for SqliteMeta {
     async fn set_scope(&mut self, scope: &NamedScope) -> Result<(), StorageError> {
         let created_at_ms = millis_param(scope.created_at_ms)?;
         let name = scope.name.as_str();
-        let mut tx = self.pool.begin().await.map_err(db_err)?;
+        let tx = self.conn.transaction().await.map_err(db_err)?;
         // A replacement keeps the scope row, and with it the id and the
         // creation time; only the whole area set is swapped.
-        sqlx::query(
+        tx.execute(
             "INSERT INTO scopes (name, created_at_ms) VALUES (?, ?)
              ON CONFLICT(name) DO NOTHING",
+            (name, created_at_ms),
         )
-        .bind(name)
-        .bind(created_at_ms)
-        .execute(&mut *tx)
         .await
         .map_err(db_err)?;
-        let scope_id: i64 = sqlx::query_scalar("SELECT id FROM scopes WHERE name = ?")
-            .bind(name)
-            .fetch_one(&mut *tx)
-            .await
+        let scope_id: i64 = fetch_one(&tx, "SELECT id FROM scopes WHERE name = ?", (name,))
+            .await?
+            .get(0)
             .map_err(db_err)?;
-        sqlx::query("DELETE FROM scope_areas WHERE scope = ?")
-            .bind(scope_id)
-            .execute(&mut *tx)
+        tx.execute("DELETE FROM scope_areas WHERE scope = ?", (scope_id,))
             .await
             .map_err(db_err)?;
         for (dim, rect) in scope.areas() {
-            sqlx::query(
+            tx.execute(
                 "INSERT INTO scope_areas (scope, dim, x0, z0, x1, z1) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    scope_id,
+                    i64::from(dim.raw()),
+                    i64::from(rect.x0),
+                    i64::from(rect.z0),
+                    i64::from(rect.x1),
+                    i64::from(rect.z1),
+                ),
             )
-            .bind(scope_id)
-            .bind(i64::from(dim.raw()))
-            .bind(i64::from(rect.x0))
-            .bind(i64::from(rect.z0))
-            .bind(i64::from(rect.x1))
-            .bind(i64::from(rect.z1))
-            .execute(&mut *tx)
             .await
             .map_err(db_err)?;
         }
@@ -1009,13 +1055,12 @@ impl sekai_storage::MetaStore for SqliteMeta {
     }
 
     async fn lookup_scope(&self, name: &ScopeName) -> Result<Option<NamedScope>, StorageError> {
-        let rows = sqlx::query(sqlx::AssertSqlSafe(format!(
-            "{SCOPE_QUERY} WHERE scopes.name = ?"
-        )))
-        .bind(name.as_str())
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db_err)?;
+        let rows = fetch_all(
+            &self.conn,
+            &format!("{SCOPE_QUERY} WHERE scopes.name = ?"),
+            (name.as_str(),),
+        )
+        .await?;
         group_scope_rows(&rows)?
             .into_iter()
             .next()
@@ -1027,10 +1072,7 @@ impl sekai_storage::MetaStore for SqliteMeta {
     where
         F: FnMut(&NamedScope) -> bool + Send,
     {
-        let rows = sqlx::query(SCOPE_QUERY)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(db_err)?;
+        let rows = fetch_all(&self.conn, SCOPE_QUERY, ()).await?;
         for (name, columns) in group_scope_rows(&rows)? {
             if !visit(&decode_scope(name, columns)?) {
                 break;
@@ -1041,20 +1083,19 @@ impl sekai_storage::MetaStore for SqliteMeta {
 
     async fn delete_scope(&mut self, name: &ScopeName) -> Result<bool, StorageError> {
         // The foreign key cascades the delete onto the scope's areas.
-        let deleted = sqlx::query("DELETE FROM scopes WHERE name = ?")
-            .bind(name.as_str())
-            .execute(&self.pool)
+        let deleted = self
+            .conn
+            .execute("DELETE FROM scopes WHERE name = ?", (name.as_str(),))
             .await
             .map_err(db_err)?;
-        Ok(deleted.rows_affected() > 0)
+        Ok(deleted > 0)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::ConnectOptions as _;
-    use sqlx::Connection as _;
+
     /// A temp dir whose name starts with the calling test's name
     /// (tempfile appends a random suffix), removed when its guard is
     /// dropped at the end of the test, panics included.
@@ -1066,19 +1107,35 @@ mod tests {
         (guard.path().to_path_buf(), guard)
     }
 
-    async fn memory_meta() -> SqliteMeta {
-        SqliteMeta::open(&std::path::PathBuf::from(":memory:"))
+    async fn memory_meta() -> TursoMeta {
+        TursoMeta::open(":memory:").await.unwrap()
+    }
+
+    /// Read one `i64` scalar on a raw connection.
+    async fn scalar_i64(conn: &Connection, sql: &str, params: impl turso::IntoParams) -> i64 {
+        let mut rows = conn.query(sql, params).await.unwrap();
+        rows.next().await.unwrap().unwrap().get(0).unwrap()
+    }
+
+    /// Seed a store file with the given schema and version stamp, then
+    /// release it so `TursoMeta::open` can gate it.
+    async fn seed(path: &Path, schema: &str, version: i64) {
+        let db = Builder::new_local(path.to_str().unwrap())
+            .build()
             .await
-            .unwrap()
+            .unwrap();
+        let conn = db.connect().unwrap();
+        drop(db);
+        conn.execute_batch(schema).await.unwrap();
+        conn.execute(&format!("PRAGMA user_version = {version}"), ())
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
     async fn fresh_store_carries_schema_version() {
         let meta = memory_meta().await;
-        let version: i64 = sqlx::query_scalar("PRAGMA user_version")
-            .fetch_one(&meta.pool)
-            .await
-            .unwrap();
+        let version = scalar_i64(&meta.conn, "PRAGMA user_version", ()).await;
         assert_eq!(version, SCHEMA_VERSION);
     }
 
@@ -1127,7 +1184,7 @@ mod tests {
     async fn activating_a_ref_refuses_a_dangling_target() {
         let (dir, _guard) = tempdir("dangling-target");
         let path = dir.join("meta.sqlite");
-        let mut meta = SqliteMeta::open(&path).await.unwrap();
+        let mut meta = TursoMeta::open(&path).await.unwrap();
         let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
         let feature = RefName::parse("feature").unwrap();
         let root = meta
@@ -1137,21 +1194,24 @@ mod tests {
             .id;
         meta.set_ref(&feature, Some(root), 2_000).await.unwrap();
 
-        // Simulate corruption that bypassed the foreign key on a dedicated
-        // connection, so no pooled connection inherits the pragma.
-        let mut raw = SqliteConnectOptions::new()
-            .filename(&path)
-            .foreign_keys(false)
-            .connect()
-            .await
-            .unwrap();
+        // Simulate corruption that bypassed the foreign key: disable the
+        // pragma, write the dangling target, restore the pragma.
         let missing = CommitId([0xEE; 32]);
-        sqlx::query("UPDATE refs SET commit_id = ? WHERE name = 'feature'")
-            .bind(missing.0.to_vec())
-            .execute(&mut raw)
+        meta.conn
+            .execute("PRAGMA foreign_keys = OFF", ())
             .await
             .unwrap();
-        raw.close().await.unwrap();
+        meta.conn
+            .execute(
+                "UPDATE refs SET commit_id = ? WHERE name = 'feature'",
+                (missing.0.to_vec(),),
+            )
+            .await
+            .unwrap();
+        meta.conn
+            .execute("PRAGMA foreign_keys = ON", ())
+            .await
+            .unwrap();
 
         let err = meta.activate_ref(&feature).await.unwrap_err();
         assert!(matches!(err, StorageError::UnknownCommit { id } if id == missing));
@@ -1269,41 +1329,38 @@ mod tests {
     async fn a_corrupt_ref_row_fails_loudly() {
         let (dir, _guard) = tempdir("corrupt-ref");
         let path = dir.join("meta.sqlite");
-        let meta = SqliteMeta::open(&path).await.unwrap();
+        let meta = TursoMeta::open(&path).await.unwrap();
         // Names are re-validated on decode: a row the schema no longer
         // accepts is corruption, never a new ref name.
-        sqlx::query(
-            "INSERT INTO refs (name, commit_id, active, created_at_ms) \
-             VALUES ('bad name', NULL, 0, 0)",
-        )
-        .execute(&meta.pool)
-        .await
-        .unwrap();
+        meta.conn
+            .execute(
+                "INSERT INTO refs (name, commit_id, active, created_at_ms) \
+                 VALUES ('bad name', NULL, 0, 0)",
+                (),
+            )
+            .await
+            .unwrap();
 
         let err = meta.visit_refs(|_| true).await.unwrap_err();
         assert!(matches!(err, StorageError::InvalidRefName { name } if name == "bad name"));
 
-        // The table's CHECK normally rejects this; disable it on a
-        // dedicated connection so no pooled connection inherits the pragma.
-        let mut raw = SqliteConnectOptions::new()
-            .filename(&path)
-            .connect()
+        // The table's CHECK normally rejects this; disable it for the
+        // corrupting write and restore it afterwards.
+        meta.conn
+            .execute("PRAGMA ignore_check_constraints = ON", ())
             .await
             .unwrap();
-        sqlx::query("PRAGMA ignore_check_constraints = ON")
-            .execute(&mut raw)
+        meta.conn
+            .execute(
+                "UPDATE refs SET active = 2 WHERE name = ?",
+                (DEFAULT_REF_NAME,),
+            )
             .await
             .unwrap();
-        sqlx::query("UPDATE refs SET active = 2 WHERE name = ?")
-            .bind(DEFAULT_REF_NAME)
-            .execute(&mut raw)
+        meta.conn
+            .execute("PRAGMA ignore_check_constraints = OFF", ())
             .await
             .unwrap();
-        sqlx::query("PRAGMA ignore_check_constraints = OFF")
-            .execute(&mut raw)
-            .await
-            .unwrap();
-        raw.close().await.unwrap();
 
         let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
         assert!(matches!(
@@ -1326,8 +1383,8 @@ mod tests {
             .id;
         // A store whose active flag was lost (corruption or a legacy row),
         // leaving the history intact but with no head.
-        sqlx::query("UPDATE refs SET active = 0")
-            .execute(&meta.pool)
+        meta.conn
+            .execute("UPDATE refs SET active = 0", ())
             .await
             .unwrap();
 
@@ -1374,10 +1431,7 @@ mod tests {
         ));
         // The rejected attempt left nothing behind.
         assert!(meta.latest_commit().await.unwrap().is_none());
-        let edges: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM commit_parents")
-            .fetch_one(&meta.pool)
-            .await
-            .unwrap();
+        let edges = scalar_i64(&meta.conn, "SELECT COUNT(*) FROM commit_parents", ()).await;
         assert_eq!(edges, 0);
 
         // A rejection on a store that already holds a history leaves that
@@ -1388,10 +1442,7 @@ mod tests {
             Err(StorageError::UnknownCommit { id }) if id == missing
         ));
         assert_eq!(meta.latest_commit().await.unwrap().unwrap().id, root);
-        let edges: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM commit_parents")
-            .fetch_one(&meta.pool)
-            .await
-            .unwrap();
+        let edges = scalar_i64(&meta.conn, "SELECT COUNT(*) FROM commit_parents", ()).await;
         assert_eq!(edges, 0);
     }
 
@@ -1399,20 +1450,9 @@ mod tests {
     async fn version_gate_rejects_foreign_schema() {
         let (dir, _guard) = tempdir("version");
         let path = dir.join("meta.sqlite");
-        let mut seed = SqliteConnectOptions::new()
-            .filename(&path)
-            .create_if_missing(true)
-            .connect()
-            .await
-            .unwrap();
-        sqlx::query(SCHEMA).execute(&mut seed).await.unwrap();
-        sqlx::query("PRAGMA user_version=999")
-            .execute(&mut seed)
-            .await
-            .unwrap();
-        seed.close().await.unwrap();
+        seed(&path, SCHEMA, 999).await;
         assert!(matches!(
-            SqliteMeta::open(&path).await,
+            TursoMeta::open(&path).await,
             Err(StorageError::UnsupportedSchema {
                 found: 999,
                 supported: SCHEMA_VERSION,
@@ -1421,23 +1461,33 @@ mod tests {
     }
 
     /// The version gate rejects any store whose `user_version` is not
-    /// `SCHEMA_VERSION` (17) before any table is touched. A store from the
-    /// immediately previous version (16: delta history, `commits` without
-    /// `root_hash`) is refused with `UnsupportedSchema { found: 16,
-    /// supported: SCHEMA_VERSION }`, never opened and failed on the first
-    /// query.
+    /// `SCHEMA_VERSION` (18) before any table is touched. A store stamped
+    /// by the SQLite engine (17: the same SQL schema, a different on-disk
+    /// format) is refused with `UnsupportedSchema { found: 17, supported:
+    /// SCHEMA_VERSION }`, never opened and failed on the first query.
     #[tokio::test]
-    async fn a_store_from_the_previous_schema_version_is_refused() {
+    async fn a_store_from_the_sqlite_engine_is_refused() {
+        let (dir, _guard) = tempdir("version-17");
+        let path = dir.join("meta.sqlite");
+        seed(&path, SCHEMA, 17).await;
+        assert!(matches!(
+            TursoMeta::open(&path).await,
+            Err(StorageError::UnsupportedSchema {
+                found: 17,
+                supported: SCHEMA_VERSION,
+            })
+        ));
+    }
+
+    /// An ancient store (16: delta history, `commits` without `root_hash`)
+    /// is refused the same way, never opened and failed on the first query.
+    #[tokio::test]
+    async fn a_store_from_an_ancient_schema_version_is_refused() {
         let (dir, _guard) = tempdir("version-16");
         let path = dir.join("meta.sqlite");
-        let mut seed = SqliteConnectOptions::new()
-            .filename(&path)
-            .create_if_missing(true)
-            .connect()
-            .await
-            .unwrap();
         // The schema 16 layout as shipped: delta history, no tree tables.
-        sqlx::query(
+        seed(
+            &path,
             "CREATE TABLE commits(
                 seq INTEGER PRIMARY KEY AUTOINCREMENT,
                 id BLOB NOT NULL UNIQUE,
@@ -1453,17 +1503,11 @@ mod tests {
                 blob BLOB NULL,
                 PRIMARY KEY(commit_id, dim, kind, cx, cz)
             );",
+            16,
         )
-        .execute(&mut seed)
-        .await
-        .unwrap();
-        sqlx::query("PRAGMA user_version=16")
-            .execute(&mut seed)
-            .await
-            .unwrap();
-        seed.close().await.unwrap();
+        .await;
         assert!(matches!(
-            SqliteMeta::open(&path).await,
+            TursoMeta::open(&path).await,
             Err(StorageError::UnsupportedSchema {
                 found: 16,
                 supported: SCHEMA_VERSION,
@@ -1490,26 +1534,43 @@ mod tests {
             .id;
         let record = meta.lookup_commit(id).await.unwrap().unwrap();
 
-        let root_bytes: Vec<u8> = sqlx::query_scalar("SELECT node FROM root_tree WHERE hash = ?")
-            .bind(&record.root.as_bytes()[..])
-            .fetch_one(&meta.pool)
-            .await
-            .unwrap();
-        let root = RootNode::decode(&root_bytes, record.root).unwrap();
-        let dim_hash = root.get(Dimension::OVERWORLD.raw()).unwrap();
-        let dim_bytes: Vec<u8> = sqlx::query_scalar("SELECT node FROM dim_tree WHERE hash = ?")
-            .bind(&dim_hash.as_bytes()[..])
-            .fetch_one(&meta.pool)
-            .await
-            .unwrap();
-        let dim = DimNode::decode(&dim_bytes, dim_hash).unwrap();
-        let region_hash = dim.get(RegionKind::Region, 0, 0).unwrap();
-        let region_bytes: Vec<u8> =
-            sqlx::query_scalar("SELECT node FROM region_tree WHERE hash = ?")
-                .bind(&region_hash.as_bytes()[..])
-                .fetch_one(&meta.pool)
+        let root_bytes: Vec<u8> = {
+            let mut rows = meta
+                .conn
+                .query(
+                    "SELECT node FROM root_tree WHERE hash = ?",
+                    (record.root.as_bytes().to_vec(),),
+                )
                 .await
                 .unwrap();
+            rows.next().await.unwrap().unwrap().get(0).unwrap()
+        };
+        let root = RootNode::decode(&root_bytes, record.root).unwrap();
+        let dim_hash = root.get(Dimension::OVERWORLD.raw()).unwrap();
+        let dim_bytes: Vec<u8> = {
+            let mut rows = meta
+                .conn
+                .query(
+                    "SELECT node FROM dim_tree WHERE hash = ?",
+                    (dim_hash.as_bytes().to_vec(),),
+                )
+                .await
+                .unwrap();
+            rows.next().await.unwrap().unwrap().get(0).unwrap()
+        };
+        let dim = DimNode::decode(&dim_bytes, dim_hash).unwrap();
+        let region_hash = dim.get(RegionKind::Region, 0, 0).unwrap();
+        let region_bytes: Vec<u8> = {
+            let mut rows = meta
+                .conn
+                .query(
+                    "SELECT node FROM region_tree WHERE hash = ?",
+                    (region_hash.as_bytes().to_vec(),),
+                )
+                .await
+                .unwrap();
+            rows.next().await.unwrap().unwrap().get(0).unwrap()
+        };
         let region = RegionNode::decode(&region_bytes, region_hash).unwrap();
         assert_eq!(region.get(5, 5), Some(ChunkHash::new([1; 32])));
     }
@@ -1519,10 +1580,11 @@ mod tests {
         use sekai_storage::MetaStore as _;
         let meta = memory_meta().await;
         let hash = RootHash::new([9; 32]);
-        sqlx::query("INSERT INTO root_tree (hash, node) VALUES (?, ?)")
-            .bind(&hash.as_bytes()[..])
-            .bind(Vec::<u8>::new())
-            .execute(&meta.pool)
+        meta.conn
+            .execute(
+                "INSERT INTO root_tree (hash, node) VALUES (?, ?)",
+                (hash.as_bytes().to_vec(), Vec::<u8>::new()),
+            )
             .await
             .unwrap();
         let err = meta.read_root_node(hash).await.unwrap_err();
@@ -1583,10 +1645,7 @@ mod tests {
         let record = scope("spawn");
         meta.set_scope(&record).await.unwrap();
         assert!(meta.delete_scope(&record.name).await.unwrap());
-        let areas: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM scope_areas")
-            .fetch_one(&meta.pool)
-            .await
-            .unwrap();
+        let areas = scalar_i64(&meta.conn, "SELECT COUNT(*) FROM scope_areas", ()).await;
         assert_eq!(areas, 0);
     }
 
@@ -1595,28 +1654,32 @@ mod tests {
         let meta = memory_meta().await;
 
         // Names re-validate on decode.
-        sqlx::query("INSERT INTO scopes (name, created_at_ms) VALUES ('bad name', 0)")
-            .execute(&meta.pool)
+        meta.conn
+            .execute(
+                "INSERT INTO scopes (name, created_at_ms) VALUES ('bad name', 0)",
+                (),
+            )
             .await
             .unwrap();
-        sqlx::query(
-            "INSERT INTO scope_areas (scope, dim, x0, z0, x1, z1) \
-             SELECT id, 0, 0, 0, 0, 0 FROM scopes WHERE name = 'bad name'",
-        )
-        .execute(&meta.pool)
-        .await
-        .unwrap();
+        meta.conn
+            .execute(
+                "INSERT INTO scope_areas (scope, dim, x0, z0, x1, z1) \
+                 SELECT id, 0, 0, 0, 0, 0 FROM scopes WHERE name = 'bad name'",
+                (),
+            )
+            .await
+            .unwrap();
         let err = meta.visit_scopes(|_| true).await.unwrap_err();
         assert!(matches!(err, StorageError::InvalidScopeName { name } if name == "bad name"));
-        sqlx::query("DELETE FROM scopes")
-            .execute(&meta.pool)
-            .await
-            .unwrap();
+        meta.conn.execute("DELETE FROM scopes", ()).await.unwrap();
 
         // A scope without areas would select nothing: `NamedScope::new`
         // refuses one, so a stored one is corruption.
-        sqlx::query("INSERT INTO scopes (name, created_at_ms) VALUES ('empty', 0)")
-            .execute(&meta.pool)
+        meta.conn
+            .execute(
+                "INSERT INTO scopes (name, created_at_ms) VALUES ('empty', 0)",
+                (),
+            )
             .await
             .unwrap();
         let empty = ScopeName::parse("empty").unwrap();
