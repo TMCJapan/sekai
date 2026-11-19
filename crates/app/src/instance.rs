@@ -150,7 +150,7 @@ impl SekaiInstance<sekai_storage_local::LocalStore> {
     ///
     /// A store that was never initialized fails without creating anything:
     /// only [`Self::init`] materializes a store.
-    pub async fn open(root: &str) -> Result<Self, AppError> {
+    pub async fn open(root: impl AsRef<std::path::Path>) -> Result<Self, AppError> {
         Ok(Self {
             store: sekai_storage_local::open_local(root).await?,
         })
@@ -162,7 +162,7 @@ impl SekaiInstance<sekai_storage_local::LocalStore> {
     /// `sekai init`); every other command must go through [`Self::open`] so
     /// a missing store fails loudly instead of leaving an empty store
     /// behind. Initializing an existing store again is idempotent.
-    pub async fn init(root: &str) -> Result<Self, AppError> {
+    pub async fn init(root: impl AsRef<std::path::Path>) -> Result<Self, AppError> {
         Ok(Self {
             store: sekai_storage_local::init_local(root).await?,
         })
@@ -171,18 +171,18 @@ impl SekaiInstance<sekai_storage_local::LocalStore> {
 
 impl<T: SekaiStore + SekaiStoreOpener> SekaiInstance<T> {
     /// Open the existing store of an explicitly chosen backend type.
-    pub async fn open_with(location: &str) -> Result<Self, AppError> {
+    pub async fn open_with(path: impl AsRef<T::Path>) -> Result<Self, AppError> {
         Ok(Self {
-            store: T::open(location).await?,
+            store: T::open(path).await?,
         })
     }
 
     /// Initialize the store of an explicitly chosen backend type and open
     /// it; the only entry point that materializes a store. Initializing an
     /// existing store again is idempotent.
-    pub async fn init_with(location: &str) -> Result<Self, AppError> {
+    pub async fn init_with(path: impl AsRef<T::Path>) -> Result<Self, AppError> {
         Ok(Self {
-            store: T::init(location).await?,
+            store: T::init(path).await?,
         })
     }
 }

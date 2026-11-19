@@ -48,3 +48,31 @@ async fn init_is_idempotent_on_an_existing_store() {
     sekai_app::SekaiInstance::init(&url).await.unwrap();
     assert!(store.join("meta.sqlite").is_file());
 }
+
+/// The backend-generic entry points take the backend's own path type, so a
+/// `PathBuf` opens a local store without a lossy string round-trip.
+#[tokio::test]
+async fn open_with_and_init_with_take_path_like_locations() {
+    use sekai_app::SekaiInstance;
+    use sekai_storage_local::LocalStore;
+
+    let (root, _guard) = tempdir("with-path");
+    let store = root.join("store");
+
+    let Err(err) = SekaiInstance::<LocalStore>::open_with(&store).await else {
+        panic!("open of a missing store must fail");
+    };
+    assert!(
+        err.to_string().contains("no store at"),
+        "unexpected error: {err}"
+    );
+    assert!(!store.exists(), "a failed open must not create anything");
+
+    SekaiInstance::<LocalStore>::init_with(store.clone())
+        .await
+        .unwrap();
+    assert!(store.join("meta.sqlite").is_file());
+    SekaiInstance::<LocalStore>::open_with(store.as_path())
+        .await
+        .unwrap();
+}

@@ -9,11 +9,106 @@ pub use blob::SledBlob;
 pub use cache::SledCache;
 pub use meta::{SCHEMA_VERSION, SqliteMeta};
 
+use std::future::Future;
 use std::path::Path;
 
-use sekai_storage::{StorageError, Store, io_error};
+use sekai_storage::{SekaiStore, SekaiStoreOpener, StorageError, Store, io_error};
 
-pub type LocalStore = Store<SqliteMeta, SledBlob, SledCache>;
+/// Local backend store handle: SQLite metadata, sled blobs, and a sled
+/// region-image cache.
+///
+/// A newtype over the generic [`Store`] combinator rather than an alias:
+/// the combinator belongs to `sekai-storage`, so only a local type can
+/// carry this backend's trait implementations (orphan rule).
+#[derive(Debug, Clone)]
+pub struct LocalStore(Store<SqliteMeta, SledBlob, SledCache>);
+
+impl LocalStore {
+    /// Compose an opened store from its adapters.
+    pub const fn new(meta: SqliteMeta, blob: SledBlob, cache: SledCache) -> Self {
+        Self(Store::new(meta, blob, cache))
+    }
+
+    /// Metadata adapter.
+    pub const fn meta(&self) -> &SqliteMeta {
+        self.0.meta()
+    }
+
+    /// Mutable metadata adapter.
+    pub const fn meta_mut(&mut self) -> &mut SqliteMeta {
+        self.0.meta_mut()
+    }
+
+    /// Blob adapter.
+    pub const fn blob(&self) -> &SledBlob {
+        self.0.blob()
+    }
+
+    /// Mutable blob adapter.
+    pub const fn blob_mut(&mut self) -> &mut SledBlob {
+        self.0.blob_mut()
+    }
+
+    /// Cache adapter.
+    pub const fn cache(&self) -> &SledCache {
+        self.0.cache()
+    }
+
+    /// Mutable cache adapter.
+    pub const fn cache_mut(&mut self) -> &mut SledCache {
+        self.0.cache_mut()
+    }
+}
+
+impl SekaiStore for LocalStore {
+    type Meta = SqliteMeta;
+    type Blobs = SledBlob;
+    type Cache = SledCache;
+
+    fn meta(&self) -> &Self::Meta {
+        self.0.meta()
+    }
+
+    fn meta_mut(&mut self) -> &mut Self::Meta {
+        self.0.meta_mut()
+    }
+
+    fn blob(&self) -> &Self::Blobs {
+        self.0.blob()
+    }
+
+    fn blob_mut(&mut self) -> &mut Self::Blobs {
+        self.0.blob_mut()
+    }
+
+    fn cache(&self) -> &Self::Cache {
+        self.0.cache()
+    }
+
+    fn cache_mut(&mut self) -> &mut Self::Cache {
+        self.0.cache_mut()
+    }
+}
+
+impl SekaiStoreOpener for LocalStore {
+    type Path = Path;
+
+    fn open(
+        path: impl AsRef<Self::Path>,
+    ) -> impl Future<Output = Result<Self, StorageError>> + Send {
+        // Own the path before the future is built: the trait promises a
+        // `Send` future for every path holder, including `!Send` ones.
+        let root = path.as_ref().to_path_buf();
+        async move { open_local(root).await }
+    }
+
+    fn init(
+        path: impl AsRef<Self::Path>,
+    ) -> impl Future<Output = Result<Self, StorageError>> + Send {
+        let root = path.as_ref().to_path_buf();
+        async move { init_local(root).await }
+    }
+}
 
 /// Initialize the store rooted at `root` and open it.
 ///
