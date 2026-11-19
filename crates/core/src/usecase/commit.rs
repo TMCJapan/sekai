@@ -28,6 +28,7 @@ use sekai_util::{
     ReflogNote, RegionHash, RegionKey, Scope, WorktreeName,
 };
 
+use super::messages;
 use crate::tree::local_slot;
 
 /// Outcome of one commit run.
@@ -247,9 +248,9 @@ pub async fn record_commit<M: MetaStore>(
         .as_ref()
         .map_or_default(|commit| alloc::vec![commit.id]);
     let message = if parents.is_empty() {
-        "commit (initial): "
+        messages::COMMIT_INITIAL
     } else {
-        "commit: "
+        messages::COMMIT
     };
     let outcome: ApplyOutcome = meta
         .apply_commit_incremental(
