@@ -2,6 +2,7 @@
 
 use anyhow::Context as _;
 use sekai_app::{CheckoutReport, CheckoutTimings, HostWorldTree};
+use sekai_storage_local::LocalStore;
 use serde::Serialize;
 use std::path::Path;
 
@@ -48,7 +49,7 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let mut world = HostWorldTree::new(&world_path)
         .with_context(|| format!("failed to inspect world {}", world_path.as_ref().display()))?;
-    let mut instance = sekai_app::SekaiInstance::open(store)
+    let mut instance = sekai_app::SekaiInstance::<LocalStore>::open(store)
         .await
         .with_context(|| format!("checkout of {} failed", world_path.as_ref().display()))?;
     let id = instance

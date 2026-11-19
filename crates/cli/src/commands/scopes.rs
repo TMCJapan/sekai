@@ -2,6 +2,7 @@
 
 use anyhow::Context as _;
 use sekai_app::{Dimension, NamedScope, Rect};
+use sekai_storage_local::LocalStore;
 use serde::Serialize;
 
 use crate::cli::{RegionSpec, ScopeCommand};
@@ -9,7 +10,7 @@ use crate::envelope::envelope_ok;
 use crate::style::Styler;
 
 pub async fn run(store: &str, action: &ScopeCommand, style: Styler) -> anyhow::Result<()> {
-    let mut instance = sekai_app::SekaiInstance::open(store).await?;
+    let mut instance = sekai_app::SekaiInstance::<LocalStore>::open(store).await?;
 
     match action {
         ScopeCommand::Create {

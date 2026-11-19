@@ -2,6 +2,7 @@
 
 use anyhow::Context as _;
 use sekai_app::{HostWorldTree, StatusReport, StatusTimings};
+use sekai_storage_local::LocalStore;
 use serde::Serialize;
 use std::path::Path;
 
@@ -21,7 +22,7 @@ pub async fn run(
     let world = HostWorldTree::new(&world_path)
         .with_context(|| format!("failed to inspect world {}", world_path.as_ref().display()))?;
     let options = sekai_app::StatusOptions { concurrency: jobs };
-    let instance = sekai_app::SekaiInstance::open(store)
+    let instance = sekai_app::SekaiInstance::<LocalStore>::open(store)
         .await
         .with_context(|| format!("status of {} failed", world_path.as_ref().display()))?;
     let scope = resolve_selection(&instance, selection).await?;

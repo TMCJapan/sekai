@@ -11,6 +11,7 @@ use sekai_app::{
     CacheUpdateOptions, CacheUpdateTimings, CommitOptions, CommitReport, CommitTimings,
     HostWorldTree,
 };
+use sekai_storage_local::LocalStore;
 use serde::Serialize;
 use std::path::Path;
 
@@ -34,7 +35,7 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let mut world = HostWorldTree::new(&world_path)
         .with_context(|| format!("failed to inspect world {}", world_path.as_ref().display()))?;
-    let mut instance = sekai_app::SekaiInstance::open(store)
+    let mut instance = sekai_app::SekaiInstance::<LocalStore>::open(store)
         .await
         .with_context(|| format!("commit of {} failed", world_path.as_ref().display()))?;
     let scope = resolve_selection(&instance, selection).await?;

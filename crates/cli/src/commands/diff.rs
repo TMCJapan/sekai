@@ -2,6 +2,7 @@
 
 use anyhow::Context as _;
 use sekai_app::{AppError, ChunkCoord, ChunkDiff, CommitId, HostWorldTree, Scope, SekaiStore};
+use sekai_storage_local::LocalStore;
 
 use super::diff_render::{
     TimedDiffs, diff_group_payload, print_diff_timing_table, render_diff_coords,
@@ -25,7 +26,7 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
         // filters.
         Selection::Scope(_) => (Vec::new(), true),
     };
-    let instance = sekai_app::SekaiInstance::open(store).await?;
+    let instance = sekai_app::SekaiInstance::<LocalStore>::open(store).await?;
     let scope = resolve_selection(&instance, &args.selection).await?;
     let bars = Bars::new(args.output.progress);
 

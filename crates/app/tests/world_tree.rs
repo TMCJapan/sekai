@@ -274,12 +274,16 @@ fn custom_tree_reports_its_unguarded_answer() {
 #[cfg(feature = "backend-local")]
 #[tokio::test]
 async fn only_planned_files_are_read() {
+    use sekai_storage_local::LocalStore;
+
     let root = tempfile::Builder::new()
         .prefix("sekai-world-tree-planned-")
         .tempdir()
         .unwrap();
     let store = root.path().join("store").to_string_lossy().into_owned();
-    let instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let instance = sekai_app::SekaiInstance::<LocalStore>::init(&store)
+        .await
+        .unwrap();
     // The fake serves overworld files only, and every `read` fails.
     let world = FakeWorld {
         fail_dims: false,

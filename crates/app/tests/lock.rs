@@ -15,7 +15,8 @@ use fixtures::chunk_nbt;
 use sekai_app::{
     CheckoutOptions, ChunkHash, CommitId, CommitOptions, Dimension, HostRegion, HostWorldLock,
     HostWorldTree, Rect, RefName, RegionFile, RegionFingerprint, RegionKey, RegionKind, Scope,
-    ScopeName, SekaiInstance, StatusOptions, WorldError, WorldLockMode, WorldLockState, WorldTree,
+    ScopeName, SekaiInstance, SekaiStore, StatusOptions, WorldError, WorldLockMode, WorldLockState,
+    WorldTree,
 };
 use sekai_storage::MetaStore as _;
 use sekai_storage_local::LocalStore;
@@ -65,7 +66,7 @@ impl Fixture {
         write_region(world_path.join("region/r.1.0.mca"), &payload);
         let mut world = HostWorldTree::new(&world_path).unwrap();
         let store = root.join("store").to_string_lossy().into_owned();
-        let mut instance = SekaiInstance::init(&store).await.unwrap();
+        let mut instance = SekaiInstance::<LocalStore>::init(&store).await.unwrap();
         let (report, _) = instance
             .world_mut(&mut world)
             .commit(CommitOptions::default(), Scope::World, &())

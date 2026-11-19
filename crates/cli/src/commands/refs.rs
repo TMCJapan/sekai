@@ -1,6 +1,7 @@
 //! Ref subcommand execution, DTOs, and output rendering.
 
 use sekai_app::CommitRef;
+use sekai_storage_local::LocalStore;
 use serde::Serialize;
 
 use crate::cli::RefCommand;
@@ -9,7 +10,7 @@ use crate::style::Styler;
 use anyhow::Context as _;
 
 pub async fn run(store: &str, action: &RefCommand, style: Styler) -> anyhow::Result<()> {
-    let mut instance = sekai_app::SekaiInstance::open(store).await?;
+    let mut instance = sekai_app::SekaiInstance::<LocalStore>::open(store).await?;
 
     match action {
         RefCommand::Create {

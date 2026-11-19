@@ -2,8 +2,10 @@
 
 mod common;
 
-use sekai_storage::{BlobStore as _, CacheStore as _, MetaStore as _, SekaiStoreOpener as _};
-use sekai_storage_local::{LocalStore, init_local, open_local};
+use sekai_storage::{
+    BlobStore as _, CacheStore as _, MetaStore as _, SekaiStore as _, SekaiStoreOpener,
+};
+use sekai_storage_local::LocalStore;
 use sekai_util::{ChunkCoord, ChunkHash, CommitEntry, Dimension, RegionHash, RegionKind};
 use std::path::Path;
 
@@ -19,7 +21,7 @@ fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
 }
 
 async fn init(dir: impl AsRef<Path>) -> sekai_storage_local::LocalStore {
-    init_local(dir).await.unwrap()
+    LocalStore::init(dir).await.unwrap()
 }
 
 #[tokio::test]
@@ -182,7 +184,7 @@ async fn blob_database_is_created_and_version_gated() {
     // keyspace can be opened again.
     drop(versions);
     drop(db);
-    let err = open_local(&dir).await.unwrap_err();
+    let err = LocalStore::open(&dir).await.unwrap_err();
     assert!(matches!(
         err,
         sekai_storage::StorageError::UnsupportedSchema {
@@ -237,7 +239,7 @@ async fn cache_database_is_created_and_version_gated() {
     drop(hashes);
     drop(versions);
     drop(db);
-    let err = open_local(&dir).await.unwrap_err();
+    let err = LocalStore::open(&dir).await.unwrap_err();
     assert!(matches!(
         err,
         sekai_storage::StorageError::UnsupportedSchema {
@@ -265,7 +267,7 @@ async fn cache_clear_keeps_the_version_marker() {
     assert_eq!(store.cache_mut().clear().await.unwrap(), 1);
     drop(store);
 
-    let store = open_local(&dir).await.unwrap();
+    let store = LocalStore::open(&dir).await.unwrap();
     assert_eq!(store.cache().mca_hash(region).await.unwrap(), None);
 }
 
@@ -277,7 +279,7 @@ async fn open_of_a_pre_cache_store_fails() {
     let store = init(&dir).await;
     drop(store);
     std::fs::remove_dir_all(dir.join("cache")).unwrap();
-    let err = open_local(&dir).await.unwrap_err();
+    let err = LocalStore::open(&dir).await.unwrap_err();
     assert!(
         matches!(err, sekai_storage::StorageError::StoreMissing { .. }),
         "unexpected error: {err}"
@@ -290,7 +292,7 @@ async fn open_of_a_pre_cache_store_fails() {
 async fn a_live_blob_keyspace_refuses_a_second_opener() {
     let (dir, _guard) = tempdir("exclusive");
     let store = init(&dir).await;
-    let err = open_local(&dir).await.unwrap_err();
+    let err = LocalStore::open(&dir).await.unwrap_err();
     assert!(
         matches!(
             err,
@@ -302,31 +304,31 @@ async fn a_live_blob_keyspace_refuses_a_second_opener() {
         "unexpected error: {err}"
     );
     drop(store);
-    let _store = open_local(&dir).await.unwrap();
+    let _store = LocalStore::open(&dir).await.unwrap();
 }
 
-/// Only `init_local` materializes a store; `open_local` must fail loudly on
+/// Only `LocalStore::init` materializes a store; `LocalStore::open` must fail loudly on
 /// a root that was never initialized and leave nothing behind (issue #80).
 #[tokio::test]
 async fn open_of_a_missing_store_fails_without_creating_it() {
     let (base, _guard) = tempdir("missing");
     let dir = base.join("store");
     assert!(!sekai_storage_local::local_store_exists(&dir));
-    let err = open_local(&dir).await.unwrap_err();
+    let err = LocalStore::open(&dir).await.unwrap_err();
     assert!(
         matches!(&err, sekai_storage::StorageError::StoreMissing { path } if Path::new(path) == dir),
         "unexpected error: {err}"
     );
     assert!(!dir.exists(), "a failed open must not create anything");
 
-    let store = init_local(&dir).await.unwrap();
+    let store = LocalStore::init(&dir).await.unwrap();
     assert!(dir.join("meta.sqlite").is_file());
     assert!(dir.join("blobs/conf").is_file());
     assert!(dir.join("cache/conf").is_file());
     assert!(sekai_storage_local::local_store_exists(&dir));
     // The keyspace admits one opener: release the init handle first.
     drop(store);
-    let _store = open_local(&dir).await.unwrap();
+    let _store = LocalStore::open(&dir).await.unwrap();
 }
 
 /// The opener trait accepts any `AsRef<Path>` holder, not just strings, and
