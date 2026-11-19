@@ -3,6 +3,16 @@
 - `no store at <path>` — the store was never initialized. Run
   `sekai init` (with the same `--store`) first; only `init` creates a
   store, every other command fails without creating anything.
+- `not in a sekai world` — no `.sekai` from the current directory up.
+  Run the command inside a world, or pass `--world` (or `--store`).
+- `this operation must be run in a work tree` — the command reads or
+  writes a world, but `--store` named a store whose worlds the current
+  directory is not in.
+- `your local changes to N region files would be overwritten by
+  checkout` — commit them, or pass `-f` to discard them.
+- `'<branch>' is already used by worktree at '<path>'` — another
+  worktree has the branch checked out; switch that worktree elsewhere
+  first.
 - `unknown commit: <hash>` — no commit with that hash exists in this
   store. Check `log` and copy the full 64-character hash. IDs are
   content-derived: the same parents, timestamp, and delta always produce

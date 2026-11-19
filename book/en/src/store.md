@@ -1,32 +1,44 @@
 # Store location
 
-By default `sekai` uses a store directory named `.sekai` in the
-current working directory. In that case `--store` can be omitted
-from every command:
+A world's store sits at its root as `.sekai`, as a Git repository sits
+in `.git`. Run commands anywhere inside the world: sekai walks up from
+the current directory to the first `.sekai`, which names the store and
+the worktree.
 
 ```sh
+cd ./world
 sekai init
-sekai commit ./world
+sekai commit
 sekai log
 ```
 
-Pass `--store` only when you want a store somewhere else:
+Two global options change where sekai looks:
+
+- `--world <dir>` starts the search at `<dir>` instead of the current
+  directory.
+- `--store <dir>` uses another store. With `init`, the world becomes a
+  linked worktree of that store, and `init` writes a `.sekai` link file
+  that names it, so later commands find the store from the world alone.
 
 ```sh
-sekai --store ./backups/sekai init
-sekai --store ./backups/sekai commit ./world
+sekai --world ./world --store ./backups/sekai init
+sekai --world ./world commit
 ```
 
-`--store` is a global option and works with all subcommands.
+A world belongs to one store: `init` refuses a world whose `.sekai`
+names another. Outside every world, `--store` still runs the commands
+that need no world, such as `log --all`, `branch`, `tag`, `scope`, and
+`worktree list`.
 
 ## Initializing a store
 
-`sekai init` is the only command that creates a store; run it once
-before anything else. Every other command (including `commit`) fails
-on a missing store and asks you to run `sekai init` first.
+`sekai init` is the only command that creates a store; run it once in
+a world before anything else. Every other command fails on a missing
+store and asks you to run `sekai init` first.
 
-Like `git init`, re-running `init` on an existing store is safe: it
-reports a re-initialization and leaves the recorded history untouched.
+Like `git init`, re-running `init` is safe: it reports a
+re-initialization and leaves the recorded history untouched. HEAD
+starts unborn on `main`, so the first commit creates the branch.
 
 ## Secondary backups
 

@@ -6,9 +6,13 @@
   only fresh rows; reads resolve effective state through fallback, so
   metadata grows with changes, not with universe size. Recording the same
   commit twice is idempotent.
-- **Ref**: a named, movable pointer to a commit - sekai's branch. One
-  ref is active, and new commits hang from it; switching the active ref
-  forks the history. See [Refs](commands/refs.md).
+- **Branch, tag, and HEAD**: as in Git. A branch is a movable pointer
+  to a commit, a tag a fixed one, and HEAD names the branch new commits
+  land on, or holds a commit directly when detached. See
+  [Branches and tags](commands/branches.md).
+- **Worktree**: a world registered in a store, with its own HEAD. The
+  world whose root holds the store is the main worktree; others link to
+  the store through a `.sekai` file. See [Worktrees](commands/worktree.md).
 - **Chunk hash (CAS key)**: the normalized digest of a decompressed chunk,
   over a canonical encoding with volatile tags such as `LastUpdate`
   excluded. It is independent of the order of the chunk's top-level keys

@@ -2,7 +2,7 @@
 
 ```sh
 sekai cache clean
-sekai cache update --world ./world
+sekai cache update
 ```
 
 `cache` manages the region-image cache, the speed-only keyspace inside
@@ -37,9 +37,9 @@ from the world and the snapshot tree.
   only cache entries — no blobs, no metadata, no commit. `sekai commit`
   runs this same pass before recording; use the standalone command to
   warm the cache after `cache clean`, or before the first commit, so
-  `diff` and `status` can prove unchanged regions right away. `--world`
-  defaults to the current directory; `--jobs` sets the hashing worker
-  count (`0` means one per CPU). The whole world is hashed: a corrupt or
+  `diff` and `status` can prove unchanged regions right away. It hashes
+  the world sekai finds from the current directory (or `--world`);
+  `-j`/`--jobs` sets the hashing worker count (`0` means one per CPU). The whole world is hashed: a corrupt or
   unsupported chunk fails the run loudly, and entries already written
   stay.
 - Use `clean` to reclaim space. Commits and blobs are append-only and are
@@ -53,5 +53,5 @@ from the world and the snapshot tree.
 - `--json` reports the removed count as `entries` for `clean`, and
   `files`/`chunks`/`entries`/`existing`/`empty` for `update`; the full
   payload contract is [docs/json.md](https://github.com/tmcjapan/sekai/blob/main/docs/json.md).
-  `update` accepts `--timing` and `--progress`; `clean` has no phases to
-  time or items to count, so neither applies to it.
+  `update` accepts `--timing` and `--no-progress`; `clean` has no phases
+  to time or items to count, so neither applies to it.

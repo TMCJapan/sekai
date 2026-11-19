@@ -1,30 +1,31 @@
 # クイックスタート
 
 ```sh
-# ストアを作成（初回の一度だけ。他のコマンドより先に実行）
+cd ./world
+
+# ワールドを ./world/.sekai の新しいストアに登録する（最初に1回だけ）
 sekai init
 
-# 現在のワールド状態を記録（事前にサーバーの書き込みを停止してください。「サーバー連携」を参照）
-sekai commit ./world
+# 現在のワールドの状態を記録する（事前にサーバーを一時停止してください。
+# 「サーバー連携」を参照）
+sekai commit
 
-# ワールドに変更を加えずに、コミットで何が記録されるかをプレビュー
-sekai status ./world
+# 何も書き込まずに、コミットで記録される内容をプレビューする
+sekai status
 
-# コミットの一覧を表示
-sekai log
+# HEAD から新しい順に履歴をたどる
+sekai log --oneline
 
+# HEAD の位置にブランチを作り、そこに切り替える
+sekai branch experiment
+sekai checkout experiment
 
-# タグ付けしたコミットからワールドを再構築（リージョンファイルを上書き）
-sekai checkout ./world 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a
+# ワールドと HEAD、または2つのコミットを比較する
+sekai diff --in overworld:0,0
+sekai diff main experiment
 
-# 2 つのコミット間でチャンクの NBT を比較（ハッシュは `log` で確認）
-sekai diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a --in overworld:0,0
+# main に戻る（ワールドを main のコミットから再構築する）
+sekai checkout main
 ```
 
-ストアはデフォルトで `.sekai` を使用します（別の場所を使う場合は [ストアの場所](store.md) を参照）。
-
-すべてのコマンドは機械可読な出力を得るための `--json` に対応しています。また、`log`、`ref`、`init`、`cache clean` を除くすべてのコマンドは、フェーズごとの処理時間内訳を表示する `--timing` に対応しています。
-
-`commit`、`status`、`checkout`、`diff`、`cache update` では、標準エラー出力に進捗バーを表示する `--progress` を利用できます（`--json` との併用は不可）。
-
-`commit`、`status`、`checkout`、`diff` はスコープ（`--in`, `--region`, `--kind`）による対象範囲の絞り込みに対応しています。スコープを指定しない場合はワールド全体が対象となります。
+どのコマンドも、Git がリポジトリを探すのと同じように、カレントディレクトリから見つけたワールドで動作します。`--world` と `--store` については[ストアの場所](store.md)を参照してください。すべてのコマンドは機械可読な出力を得るための `--json` に対応しています。`init`、`branch`、`tag`、`log`、`reflog`、`worktree`、`scope`、`cache clean` 以外のコマンドは、フェーズごとの内訳を表示する `--timing` にも対応しています。進捗は標準エラー出力が端末のときに表示され、`--no-progress` で止められます。`commit`、`status`、`checkout`、`diff` ではスコープ（`--in`、`--region`、`--kind`）を指定でき、何も指定しない場合はワールド全体が対象になります。
