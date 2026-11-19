@@ -37,6 +37,7 @@ use crate::cache::prove_regions_unchanged;
 use crate::error::AppError;
 use crate::instance::{WorldGuard, WorldHandle, WorldHandleMut};
 use crate::progress::{BuildProgress, Progress};
+use crate::refs::main_worktree;
 use crate::regions::discover_regions;
 use crate::time::now_ms;
 use crate::workers::worker_slots;
@@ -214,6 +215,7 @@ where
         let db_started = Instant::now();
         let report = sekai_core::usecase::commit::record_commit(
             store.meta_mut(),
+            &main_worktree()?,
             &previous,
             &staged,
             created_at_ms,
@@ -280,7 +282,8 @@ where
     let universe_started = Instant::now();
     let keys: Vec<RegionKey> = regions.keys().copied().collect();
     let (previous, plan) =
-        sekai_core::usecase::commit::plan_commit(store.meta(), &keys, scope).await?;
+        sekai_core::usecase::commit::plan_commit(store.meta(), &main_worktree()?, &keys, scope)
+            .await?;
     // The proof needs the discovered handles, so it runs before the ingest
     // list takes them out of the map.
     let proven = match previous.commit.as_ref().filter(|_| dry_run) {

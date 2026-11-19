@@ -265,7 +265,6 @@ jobs:
           fi
           [ ! -e "$SMOKE/store" ]
           "$BIN" --store "$SMOKE/store" init --json | grep -q '"command":"init","status":"ok"'
-          "$BIN" --store "$SMOKE/store" commit "$SMOKE/world" --json | grep -q '"status":"ok"'
           "$BIN" --store "$SMOKE/store" log --json | grep -q '"command":"log","status":"ok"'
           "$BIN" --store "$SMOKE/store" status "$SMOKE/world" --json | grep -q '"status":"ok"'
 

@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use sekai_storage::MetaStore;
-use sekai_util::{Commit, CommitId, RefName};
+use sekai_util::{Commit, CommitId, Ref, RefName};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommitError<M> {
@@ -172,14 +172,6 @@ pub async fn commit_stats<M: MetaStore>(
     })
 }
 
-/// Get the latest commit ID from the store.
-pub async fn latest_commit_id<M: MetaStore>(
-    meta: &M,
-) -> Result<Option<CommitId>, CommitError<M::Error>> {
-    let commit = meta.latest_commit().await.map_err(CommitError::Meta)?;
-    Ok(commit.map(|c| c.id))
-}
-
 /// Failures while resolving a commit reference.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolveError<M> {
@@ -192,11 +184,6 @@ pub enum ResolveError<M> {
     },
     /// No ref with this name exists.
     UnknownRef {
-        /// Requested ref name.
-        name: RefName,
-    },
-    /// The ref exists but names no commit yet.
-    UnbornRef {
         /// Requested ref name.
         name: RefName,
     },
@@ -213,7 +200,6 @@ impl<M: fmt::Debug> fmt::Display for ResolveError<M> {
             Self::Meta(_) => write!(f, "commit metadata failed"),
             Self::UnknownCommit { id } => write!(f, "unknown commit: {id}"),
             Self::UnknownRef { name } => write!(f, "unknown ref: {name}"),
-            Self::UnbornRef { name } => write!(f, "ref has no commit yet: {name}"),
             Self::InvalidRef { raw } => write!(
                 f,
                 "invalid reference: {raw:?}, expected <64-char commit hash> or <ref>"
@@ -223,12 +209,11 @@ impl<M: fmt::Debug> fmt::Display for ResolveError<M> {
 }
 
 /// Resolve a commit reference: a 64-character hexadecimal commit ID or a
-/// bare ref name.
+/// branch name.
 ///
 /// A bare name is tried as a commit ID first: a 64-character hexadecimal
-/// spelling is either a commit ID or `UnknownCommit`, never a ref, so a ref
-/// whose name is exactly 64 hex characters is shadowed. An unborn ref has
-/// no commit to point at yet.
+/// spelling is either a commit ID or `UnknownCommit`, never a ref, so a
+/// branch whose name is exactly 64 hex characters is shadowed.
 pub async fn resolve_commit_ref<M: MetaStore>(
     meta: &M,
     raw: &str,
@@ -244,24 +229,26 @@ pub async fn resolve_commit_ref<M: MetaStore>(
     let name = RefName::parse(raw).map_err(|_| ResolveError::InvalidRef {
         raw: alloc::string::String::from(raw),
     })?;
-    let Some(record) = meta.lookup_ref(&name).await.map_err(ResolveError::Meta)? else {
-        return Err(ResolveError::UnknownRef { name });
-    };
-    record.commit.ok_or(ResolveError::UnbornRef { name })
+    meta.lookup_ref(&Ref::branch(name.clone()))
+        .await
+        .map_err(ResolveError::Meta)?
+        .map(|record| record.commit)
+        .ok_or(ResolveError::UnknownRef { name })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::support::{MemMeta, block_on};
+    use crate::support::{MemMeta, block_on, main_worktree};
     use alloc::string::ToString;
     use sekai_util::CommitEntry;
+    use sekai_util::{Head, ReflogNote};
 
     #[test]
     fn lists_in_local_sequence_order() {
         let mut meta = MemMeta::default();
-        let first = block_on(meta.create_commit(300, &[])).unwrap();
-        let second = block_on(meta.create_commit(100, &[])).unwrap();
+        let first = meta.create_commit(300, &[]).unwrap();
+        let second = meta.create_commit(100, &[]).unwrap();
         let listed = block_on(list_commits(&meta)).unwrap();
         assert_eq!(listed.len(), 2);
         assert_eq!(listed[0].id, first);
@@ -271,10 +258,15 @@ mod tests {
     #[test]
     fn resolves_hashes_and_refs() {
         let mut meta = MemMeta::default();
-        let first = block_on(meta.create_commit(100, &[])).unwrap();
-        let second = block_on(meta.create_commit(200, &[first])).unwrap();
-        let branch = RefName::parse("main").unwrap();
-        block_on(meta.set_ref(&branch, Some(second), 300)).unwrap();
+        let first = meta.create_commit(100, &[]).unwrap();
+        let second = meta.create_commit(200, &[first]).unwrap();
+        let branch = Ref::branch(RefName::parse("main").unwrap());
+        block_on(meta.create_ref(
+            &branch,
+            second,
+            ReflogNote::new("branch: Created from HEAD", 300),
+        ))
+        .unwrap();
 
         let first_hex = first.to_string();
         assert_eq!(first_hex.len(), 64);
@@ -321,9 +313,15 @@ mod tests {
         // A 64-character hex spelling always resolves as a commit ID: an
         // unknown one is `UnknownCommit`, never the ref of the same name.
         let mut meta = MemMeta::default();
+        let commit = meta.create_commit(100, &[]).unwrap();
         let hex = "a".repeat(64);
-        let name = RefName::parse(&hex).unwrap();
-        block_on(meta.set_ref(&name, None, 100)).unwrap();
+        let name = Ref::branch(RefName::parse(&hex).unwrap());
+        block_on(meta.create_ref(
+            &name,
+            commit,
+            ReflogNote::new("branch: Created from HEAD", 100),
+        ))
+        .unwrap();
         assert_eq!(
             block_on(resolve_commit_ref(&meta, &hex)),
             Err(ResolveError::UnknownCommit {
@@ -333,13 +331,13 @@ mod tests {
     }
 
     #[test]
-    fn an_unborn_ref_resolves_to_nothing() {
+    fn an_unborn_branch_resolves_to_nothing() {
+        // HEAD names `main`, but the branch has no commit and no row yet.
         let mut meta = MemMeta::default();
-        let branch = RefName::parse("main").unwrap();
-        block_on(meta.set_ref(&branch, None, 100)).unwrap();
+        meta.with_main();
         assert_eq!(
             block_on(resolve_commit_ref(&meta, "main")),
-            Err(ResolveError::UnbornRef {
+            Err(ResolveError::UnknownRef {
                 name: RefName::parse("main").unwrap()
             })
         );
@@ -349,10 +347,10 @@ mod tests {
     fn counts_fresh_and_effective_rows() {
         use sekai_util::{ChunkCoord, ChunkHash, Dimension, RegionKind};
         let mut meta = MemMeta::default();
-        meta.with_active_ref(&RefName::parse("main").unwrap());
+        meta.with_main();
         let over = Dimension::OVERWORLD;
         let region = RegionKind::Region;
-        let first = block_on(meta.apply_commit_incremental(
+        let first = block_on(meta.apply_main(
             100,
             &[],
             &[
@@ -368,7 +366,7 @@ mod tests {
         ))
         .unwrap()
         .id;
-        let second = block_on(meta.apply_commit_incremental(
+        let second = block_on(meta.apply_main(
             200,
             &[first],
             &[
@@ -406,7 +404,7 @@ mod tests {
     fn counts_vanished_regions_and_dimensions() {
         use sekai_util::{ChunkCoord, ChunkHash, Dimension, RegionKind};
         let mut meta = MemMeta::default();
-        meta.with_active_ref(&RefName::parse("main").unwrap());
+        meta.with_main();
         let over = Dimension::OVERWORLD;
         let nether = Dimension::NETHER;
         let region = RegionKind::Region;
@@ -415,7 +413,7 @@ mod tests {
         };
         // Two overworld regions share one node by content, and the nether
         // starts its own dimension.
-        let first = block_on(meta.apply_commit_incremental(
+        let first = block_on(meta.apply_main(
             100,
             &[],
             &[
@@ -431,7 +429,7 @@ mod tests {
         .id;
         // Change one region, drop another whole; the shared node and the
         // nether stay untouched.
-        let second = block_on(meta.apply_commit_incremental(
+        let second = block_on(meta.apply_main(
             200,
             &[first],
             &[entry(over, 0, Some([5; 32])), entry(over, 32, None)],
@@ -439,10 +437,9 @@ mod tests {
         .unwrap()
         .id;
         // Drop the nether's last chunk: the whole dimension vanishes.
-        let third =
-            block_on(meta.apply_commit_incremental(300, &[second], &[entry(nether, 0, None)]))
-                .unwrap()
-                .id;
+        let third = block_on(meta.apply_main(300, &[second], &[entry(nether, 0, None)]))
+            .unwrap()
+            .id;
 
         assert_eq!(
             block_on(commit_stats(&meta, first)).unwrap(),
@@ -476,9 +473,9 @@ mod tests {
     #[test]
     fn walks_the_history_back_to_the_root() {
         let mut meta = MemMeta::default();
-        let root = block_on(meta.create_commit(100, &[])).unwrap();
-        let second = block_on(meta.create_commit(200, &[root])).unwrap();
-        let third = block_on(meta.create_commit(300, &[second])).unwrap();
+        let root = meta.create_commit(100, &[]).unwrap();
+        let second = meta.create_commit(200, &[root]).unwrap();
+        let third = meta.create_commit(300, &[second]).unwrap();
 
         assert_eq!(
             block_on(commit_ancestors(&meta, third)).unwrap(),
@@ -502,10 +499,10 @@ mod tests {
     fn a_commit_only_inherits_from_its_own_ancestors() {
         use sekai_util::{ChunkCoord, ChunkHash, Dimension, RegionKind};
         let mut meta = MemMeta::default();
-        meta.with_active_ref(&RefName::parse("main").unwrap());
+        meta.with_main();
         let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
         let first_only = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 1, 0);
-        let first = block_on(meta.apply_commit_incremental(
+        let first = block_on(meta.apply_main(
             100,
             &[],
             &[
@@ -516,17 +513,17 @@ mod tests {
         .unwrap()
         .id;
         // A second history: its root shares no ancestor with `first`.
-        block_on(meta.set_ref(&RefName::parse("main").unwrap(), None, 150)).unwrap();
-        let other = block_on(meta.apply_commit_incremental(
+        let orphan = Head::Branch(RefName::parse("orphan").unwrap());
+        block_on(meta.set_head(&main_worktree(), &orphan, ReflogNote::new("checkout", 150)))
+            .unwrap();
+        let other = block_on(meta.apply_main(
             200,
             &[],
             &[CommitEntry::new(coord, Some(ChunkHash::new([2; 32])))],
         ))
         .unwrap()
         .id;
-        let child = block_on(meta.apply_commit_incremental(300, &[other], &[]))
-            .unwrap()
-            .id;
+        let child = block_on(meta.apply_main(300, &[other], &[])).unwrap().id;
 
         // The child continues `other`, which holds a different blob.
         assert_eq!(
@@ -579,20 +576,20 @@ mod tests {
         let mut meta = MemMeta::default();
         let missing = CommitId([9; 32]);
         assert_eq!(
-            block_on(meta.create_commit(100, &[missing])).unwrap_err(),
+            meta.create_commit(100, &[missing]).unwrap_err(),
             MemError::UnknownParent { id: missing }
         );
         // A parent listed twice is recorded once.
-        let root = block_on(meta.create_commit(100, &[])).unwrap();
-        let child = block_on(meta.create_commit(200, &[root, root])).unwrap();
+        let root = meta.create_commit(100, &[]).unwrap();
+        let child = meta.create_commit(200, &[root, root]).unwrap();
         assert_eq!(block_on(meta.commit_parents(child)).unwrap(), [root]);
     }
 
     #[test]
     fn repeating_a_commit_is_idempotent() {
         let mut meta = MemMeta::default();
-        let first = block_on(meta.create_commit(100, &[])).unwrap();
-        let again = block_on(meta.create_commit(100, &[])).unwrap();
+        let first = meta.create_commit(100, &[]).unwrap();
+        let again = meta.create_commit(100, &[]).unwrap();
         assert_eq!(first, again);
         assert_eq!(block_on(list_commits(&meta)).unwrap().len(), 1);
     }

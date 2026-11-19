@@ -1,42 +1,37 @@
-//! Named, movable pointers to commits.
+//! Named pointers to commits, modelled on Git's refs (ADR-0035).
 //!
-//! Refs are the store's branch model: a name bound to a commit that moves
-//! forward when a new commit lands on it. A ref without a commit is
-//! *unborn* - it names a history that has not started yet. At most one ref
-//! is *active*: the one new commits hang from. A store normally has
-//! exactly one, but the invariant is "at most", enforced by the backend.
-//!
-//! An unborn ref can be active (the fresh-store state) or inactive (a name
-//! waiting for its first commit).
+//! A store holds branches (`refs/heads/<name>`), which move as commits
+//! land on them, and lightweight tags (`refs/tags/<name>`). Every stored
+//! ref names a commit: a branch without one is *unborn* and exists only as
+//! the name a worktree's HEAD carries.
 
 use alloc::string::String;
 use core::{fmt, str::FromStr};
 
 use crate::commit::CommitId;
 use crate::error::RefNameError;
-use crate::name::{self, NameRule};
+use crate::name;
 
-/// Name of the ref a fresh store starts with: the active one, unborn,
-/// waiting for the first commit.
+/// Branch a new worktree's HEAD starts on, unborn until its first commit.
 pub const DEFAULT_REF_NAME: &str = "main";
 
-/// Validated ref name.
+/// Validated short ref name: the part after `refs/heads/` or `refs/tags/`.
 ///
-/// Ref names are path-like (`main`, `feature/nightly`): 1-64 bytes of
-/// ASCII alphanumerics plus `.`, `_`, `-`, and `/`, with no empty path
-/// component (no leading, trailing, or doubled `/`) and no `.` or `..`
-/// segment. The whole name is never all digits; digit-only segments in a
-/// path-like name are allowed. No ref may be named `HEAD` (the active
-/// ref is the store's HEAD equivalent).
+/// Names are path-like (`main`, `feature/nightly`): 1-255 bytes of ASCII
+/// alphanumerics plus `.`, `_`, `-`, and `/`, with no empty `/`-separated
+/// component, no `..`, no trailing `.`, and no leading `-` (ADR-0035).
+/// Git refuses more shapes, such as a `.lock` suffix, which guard its
+/// files backend; sekai keeps refs in a database and accepts them. Only
+/// the exact name `HEAD` is reserved.
 ///
 /// Ordering and uniqueness are byte-wise and case-sensitive, so `main`
-/// and `Main` are distinct refs; only the `HEAD` reservation ignores ASCII
-/// case.
+/// and `Main` are distinct refs.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RefName(String);
 
 impl RefName {
-    /// Longest accepted name, in bytes (names are ASCII-only).
+    /// Longest accepted name, in bytes (names are ASCII-only). Git sets no
+    /// limit.
     pub const MAX_LEN: usize = name::MAX_LEN;
 
     /// Name the store keeps for itself: no ref may carry it.
@@ -49,18 +44,27 @@ impl RefName {
     /// over-long name reports [`RefNameError::TooLong`] even when it also
     /// holds a non-ASCII character.
     pub fn parse(raw: &str) -> Result<Self, RefNameError> {
-        name::check(raw).map_err(|rule| match rule {
-            NameRule::Empty => RefNameError::Empty,
-            NameRule::TooLong => RefNameError::TooLong(Self::MAX_LEN),
-            NameRule::BadChar(c) => RefNameError::BadChar(c),
-            NameRule::BadPath(reason) => RefNameError::BadPath(reason),
-        })?;
-        // A digit-only token is a commit ID on the CLI, so no ref may
-        // shadow one.
-        if raw.bytes().all(|b| b.is_ascii_digit()) {
-            return Err(RefNameError::Numeric);
+        name::check(raw).map_err(RefNameError::from)?;
+        // An empty component would break the ref hierarchy that refnames
+        // and their short forms rely on.
+        if raw.split('/').any(str::is_empty) {
+            return Err(RefNameError::BadPath("empty path component"));
         }
-        if raw.eq_ignore_ascii_case(Self::RESERVED) {
+        // `..` would read as the range in revision syntax such as `a..b`.
+        if raw.contains("..") {
+            return Err(RefNameError::BadPath("contains '..'"));
+        }
+        // A name ending in `.` would fuse with `..b` into `a...b`,
+        // the unsupported symmetric difference. Git refuses it too.
+        if raw.ends_with('.') {
+            return Err(RefNameError::BadPath("ends with '.'"));
+        }
+        // Git accepts such a ref but refuses to create one, as it would
+        // read as an option; refusing it here means no ref ever has one.
+        if raw.starts_with('-') {
+            return Err(RefNameError::LeadingDash);
+        }
+        if raw == Self::RESERVED {
             return Err(RefNameError::Reserved(Self::RESERVED));
         }
         Ok(Self(String::from(raw)))
@@ -86,56 +90,133 @@ impl FromStr for RefName {
     }
 }
 
-/// A named pointer to a commit.
+/// Namespace a ref lives in.
 ///
-/// The record carries the active flag but cannot enforce the store-wide
-/// invariant on its own: a store holds at most one ref with `active` set,
-/// and the backend maintains that when the flag moves (`set_ref` and
-/// `activate_ref`). An active ref may be unborn; that is the fresh-store
-/// state. The flag is advisory on a value: a hand-built record is not the
-/// store's authority on which ref is active, so callers must not treat it
-/// as one.
+/// `Branch` is declared before `Tag` so that the derived order matches
+/// the byte order of the full refnames (`refs/heads/` < `refs/tags/`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RefKind {
+    /// `refs/heads/<name>`.
+    Branch,
+    /// `refs/tags/<name>`, a lightweight tag.
+    Tag,
+}
+
+impl RefKind {
+    /// Every kind, in refname order.
+    pub const ALL: [Self; 2] = [Self::Branch, Self::Tag];
+
+    /// Refname prefix of this namespace, trailing `/` included.
+    pub const fn prefix(self) -> &'static str {
+        match self {
+            Self::Branch => "refs/heads/",
+            Self::Tag => "refs/tags/",
+        }
+    }
+
+    /// The full Git refname of `name` in this namespace, such as
+    /// `refs/heads/main`.
+    pub fn full_name(self, name: &RefName) -> String {
+        let mut full = String::from(self.prefix());
+        full.push_str(name.as_str());
+        full
+    }
+}
+
+/// A branch or tag, identified by its namespace and short name.
+///
+/// The store keys refs by the full Git refname (`refs/heads/main`), which
+/// [`Self::full_name`] and [`Self::from_full`] convert to and from. The
+/// derived order equals the byte order of the full refnames.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Ref {
+    /// Namespace.
+    pub kind: RefKind,
+    /// Short name within the namespace.
+    pub name: RefName,
+}
+
+impl Ref {
+    /// Construct a ref from its parts.
+    pub const fn new(kind: RefKind, name: RefName) -> Self {
+        Self { kind, name }
+    }
+
+    /// The branch `refs/heads/<name>`.
+    pub const fn branch(name: RefName) -> Self {
+        Self::new(RefKind::Branch, name)
+    }
+
+    /// The tag `refs/tags/<name>`.
+    pub const fn tag(name: RefName) -> Self {
+        Self::new(RefKind::Tag, name)
+    }
+
+    /// The full Git refname, such as `refs/heads/main`.
+    pub fn full_name(&self) -> String {
+        self.kind.full_name(&self.name)
+    }
+
+    /// Parse a full refname. Anything outside `refs/heads/` and
+    /// `refs/tags/` fails with [`RefNameError::UnknownNamespace`].
+    pub fn from_full(raw: &str) -> Result<Self, RefNameError> {
+        let (kind, short) = RefKind::ALL
+            .into_iter()
+            .find_map(|kind| raw.strip_prefix(kind.prefix()).map(|short| (kind, short)))
+            .ok_or(RefNameError::UnknownNamespace)?;
+        Ok(Self::new(kind, RefName::parse(short)?))
+    }
+}
+
+impl fmt::Display for Ref {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}{}", self.kind.prefix(), self.name)
+    }
+}
+
+/// A stored ref and the commit it names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitRef {
-    /// Ref name.
-    pub name: RefName,
-    /// Commit the ref points at, or `None` while the ref is unborn.
-    pub commit: Option<CommitId>,
-    /// Whether this ref is the active one (new commits hang from it).
-    pub active: bool,
-    /// Creation time as Unix millis (informational only).
-    pub created_at_ms: u64,
+    /// Ref.
+    pub name: Ref,
+    /// Commit the ref points at.
+    pub commit: CommitId,
 }
 
 impl CommitRef {
     /// Construct a ref record.
-    ///
-    /// A struct literal is equally valid and clearer when only a few
-    /// fields differ; this helper exists for all-field construction.
-    pub const fn new(
-        name: RefName,
-        commit: Option<CommitId>,
-        active: bool,
-        created_at_ms: u64,
-    ) -> Self {
-        Self {
-            name,
-            commit,
-            active,
-            created_at_ms,
-        }
+    pub const fn new(name: Ref, commit: CommitId) -> Self {
+        Self { name, commit }
     }
+}
 
-    /// Whether the ref names no commit yet.
-    pub const fn is_unborn(&self) -> bool {
-        self.commit.is_none()
+/// Whether two full refnames conflict as a directory and a file would:
+/// one is a `/`-separated prefix of the other.
+///
+/// The store keys refs by full name, so `refs/heads/a` and `refs/heads/a/b`
+/// cannot coexist any more than a directory and a file can. Names in
+/// different namespaces never conflict.
+pub fn paths_conflict(a: &str, b: &str) -> bool {
+    fn nested(outer: &str, inner: &str) -> bool {
+        inner
+            .strip_prefix(outer)
+            .is_some_and(|rest| rest.starts_with('/'))
     }
+    nested(a, b) || nested(b, a)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use alloc::string::ToString;
+    use alloc::vec::Vec;
+
+    fn bad_path(raw: &str) -> Option<&'static str> {
+        match RefName::parse(raw) {
+            Err(RefNameError::BadPath(rule)) => Some(rule),
+            _ => None,
+        }
+    }
 
     #[test]
     fn accepts_path_like_names() {
@@ -144,10 +225,22 @@ mod tests {
             "feature/nightly",
             "a",
             "x-y.z_w",
-            "v..1",
-            "a..b",
-            "release..2024",
+            "x-",
+            "a/-b",
+            "v1.2",
             "1/2",
+            "123",
+            "head",
+            "Head",
+            "HEAD/x",
+            "x/HEAD",
+            "a.b/c.d",
+            "x.lock",
+            "x.lock/y",
+            ".hidden",
+            "a/.b",
+            "a/./b",
+            "a./b",
         ] {
             assert_eq!(RefName::parse(raw).unwrap().as_str(), raw);
         }
@@ -155,89 +248,133 @@ mod tests {
     }
 
     #[test]
-    fn rejects_bad_names() {
+    fn rejects_bad_characters() {
         assert_eq!(RefName::parse(""), Err(RefNameError::Empty));
-        assert_eq!(RefName::parse("123"), Err(RefNameError::Numeric));
         assert_eq!(RefName::parse("a b"), Err(RefNameError::BadChar(' ')));
         assert_eq!(RefName::parse("@x"), Err(RefNameError::BadChar('@')));
         // A multi-byte character is reported as itself, not as one of its
         // bytes.
         assert_eq!(RefName::parse("bré"), Err(RefNameError::BadChar('é')));
-        assert_eq!(
-            RefName::parse("/main"),
-            Err(RefNameError::BadPath("empty path component"))
-        );
-        assert_eq!(
-            RefName::parse("main/"),
-            Err(RefNameError::BadPath("empty path component"))
-        );
-        assert_eq!(
-            RefName::parse("a//b"),
-            Err(RefNameError::BadPath("empty path component"))
-        );
-        assert_eq!(
-            RefName::parse(".."),
-            Err(RefNameError::BadPath("'.' or '..' segment"))
-        );
-        assert_eq!(
-            RefName::parse("a/../b"),
-            Err(RefNameError::BadPath("'.' or '..' segment"))
-        );
-        assert_eq!(
-            RefName::parse("a/.."),
-            Err(RefNameError::BadPath("'.' or '..' segment"))
-        );
-        assert_eq!(
-            RefName::parse("."),
-            Err(RefNameError::BadPath("'.' or '..' segment"))
-        );
-        assert_eq!(
-            RefName::parse("a/./b"),
-            Err(RefNameError::BadPath("'.' or '..' segment"))
-        );
-        assert_eq!(
-            RefName::parse("a/."),
-            Err(RefNameError::BadPath("'.' or '..' segment"))
-        );
+    }
+
+    #[test]
+    fn rejects_empty_components_and_double_dots() {
+        for raw in ["/main", "main/", "a//b"] {
+            assert_eq!(bad_path(raw), Some("empty path component"), "{raw}");
+        }
+        for raw in ["..", "v..1", "a/../b", "a/..", "x..lock"] {
+            assert_eq!(bad_path(raw), Some("contains '..'"), "{raw}");
+        }
+        for raw in [".", "end.", "a/b."] {
+            assert_eq!(bad_path(raw), Some("ends with '.'"), "{raw}");
+        }
+    }
+
+    #[test]
+    fn rejects_a_leading_dash() {
+        for raw in ["-", "-x", "-x/y"] {
+            assert_eq!(RefName::parse(raw), Err(RefNameError::LeadingDash), "{raw}");
+        }
+    }
+
+    #[test]
+    fn reserves_only_the_exact_name_head() {
         assert_eq!(
             RefName::parse("HEAD"),
             Err(RefNameError::Reserved(RefName::RESERVED))
         );
+    }
+
+    #[test]
+    fn limits_the_whole_name_to_255_bytes() {
+        assert!(RefName::parse(&"a".repeat(RefName::MAX_LEN)).is_ok());
         assert_eq!(
-            RefName::parse("head"),
-            Err(RefNameError::Reserved(RefName::RESERVED))
-        );
-        let long = "a".repeat(RefName::MAX_LEN + 1);
-        assert_eq!(
-            RefName::parse(&long),
+            RefName::parse(&"a".repeat(RefName::MAX_LEN + 1)),
             Err(RefNameError::TooLong(RefName::MAX_LEN))
+        );
+        let component = "a".repeat(100);
+        assert_eq!(
+            RefName::parse(&[component.as_str(); 3].join("/")),
+            Err(RefNameError::TooLong(RefName::MAX_LEN)),
+            "the limit covers the whole name, not each component"
         );
         // The byte-length check runs first: an over-long name reports
         // `TooLong` even when it also holds a non-ASCII character.
-        let long_non_ascii = "é".repeat(RefName::MAX_LEN);
         assert_eq!(
-            RefName::parse(&long_non_ascii),
+            RefName::parse(&"é".repeat(RefName::MAX_LEN)),
             Err(RefNameError::TooLong(RefName::MAX_LEN))
         );
-        assert!(RefName::parse(&"a".repeat(RefName::MAX_LEN)).is_ok());
     }
 
     #[test]
-    fn unborn_refs_have_no_commit() {
-        let name = RefName::parse("main").unwrap();
-        let record = CommitRef::new(name.clone(), None, true, 1_700_000_000_000);
-        assert!(record.is_unborn());
-        assert!(record.active);
-        assert_eq!(record.name, name);
+    fn full_names_round_trip() {
+        for (full, kind, short) in [
+            ("refs/heads/main", RefKind::Branch, "main"),
+            ("refs/heads/feature/x", RefKind::Branch, "feature/x"),
+            ("refs/tags/v1", RefKind::Tag, "v1"),
+        ] {
+            let r = Ref::from_full(full).unwrap();
+            assert_eq!(r, Ref::new(kind, RefName::parse(short).unwrap()));
+            assert_eq!(r.full_name(), full);
+            assert_eq!(r.to_string(), full);
+        }
     }
 
     #[test]
-    fn born_refs_name_a_commit() {
-        let name = RefName::parse("main").unwrap();
-        let commit = CommitId([7; 32]);
-        let record = CommitRef::new(name, Some(commit), false, 1_700_000_000_000);
-        assert!(!record.is_unborn());
-        assert!(!record.active);
-        assert_eq!(record.commit, Some(commit));
+    fn full_names_outside_heads_and_tags_are_refused() {
+        for raw in [
+            "main",
+            "heads/main",
+            "refs/main",
+            "refs/remotes/o/main",
+            "refs/heads",
+        ] {
+            assert_eq!(
+                Ref::from_full(raw),
+                Err(RefNameError::UnknownNamespace),
+                "{raw}"
+            );
+        }
+        assert_eq!(Ref::from_full("refs/heads/"), Err(RefNameError::Empty));
+        assert_eq!(
+            Ref::from_full("refs/tags/HEAD"),
+            Err(RefNameError::Reserved(RefName::RESERVED))
+        );
+    }
+
+    #[test]
+    fn paths_conflict_tests() {
+        for (a, b, expected) in [
+            ("refs/heads/a", "refs/heads/a/b", true),
+            ("refs/heads/a/b", "refs/heads/a", true),
+            ("refs/heads/a", "refs/heads/a", false),
+            ("refs/heads/a", "refs/heads/a-b", false),
+            ("refs/heads/a", "refs/heads/ab", false),
+            ("refs/heads/a", "refs/tags/a", false),
+            ("refs/heads/a", "refs/tags/a/b", false),
+            ("refs/heads/feature/x", "refs/heads/feature", true),
+            ("refs/heads/feature", "refs/heads/feature/x", true),
+            ("refs/heads/feature/x/y", "refs/heads/feature", true),
+            ("refs/heads/feature/x", "refs/heads/feature/y", false),
+        ] {
+            assert_eq!(paths_conflict(a, b), expected, "{a} vs {b}");
+            assert_eq!(paths_conflict(b, a), expected, "{b} vs {a}");
+        }
+    }
+
+    #[test]
+    fn ref_order_matches_full_name_order() {
+        let name = |raw| RefName::parse(raw).unwrap();
+        let mut refs = alloc::vec![
+            Ref::new(RefKind::Tag, name("a")),
+            Ref::new(RefKind::Branch, name("z")),
+            Ref::new(RefKind::Branch, name("a/b")),
+            Ref::new(RefKind::Branch, name("a-b")),
+            Ref::new(RefKind::Tag, name("A")),
+        ];
+        let mut full: Vec<String> = refs.iter().map(Ref::full_name).collect();
+        refs.sort();
+        full.sort();
+        assert_eq!(refs.iter().map(Ref::full_name).collect::<Vec<_>>(), full);
     }
 }

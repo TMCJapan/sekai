@@ -9,6 +9,7 @@
 #![cfg(feature = "backend-local")]
 
 mod fixtures;
+mod support;
 
 use fixtures::chunk_nbt;
 
@@ -65,7 +66,7 @@ impl Fixture {
         write_region(world_path.join("region/r.1.0.mca"), &payload);
         let mut world = HostWorldTree::new(&world_path).unwrap();
         let store = root.join("store").to_string_lossy().into_owned();
-        let mut instance = SekaiInstance::init(&store).await.unwrap();
+        let mut instance = support::init_store(&store).await.unwrap();
         let (report, _) = instance
             .world_mut(&mut world)
             .commit(CommitOptions::default(), Scope::World, &())
@@ -115,7 +116,6 @@ const fn is_lock_error(err: &sekai_app::AppError) -> bool {
 #[derive(Debug, Clone, Copy)]
 enum Op {
     ListCommits,
-    LatestCommit,
     ResolveRef,
     CreateRef,
     DeleteRef,
@@ -135,9 +135,8 @@ enum Op {
 }
 
 impl Op {
-    const ALL: [Self; 18] = [
+    const ALL: [Self; 17] = [
         Self::ListCommits,
-        Self::LatestCommit,
         Self::ResolveRef,
         Self::CreateRef,
         Self::DeleteRef,
@@ -163,7 +162,6 @@ impl Op {
             }
             Self::Checkout => Some(WorldLockMode::Exclusive),
             Self::ListCommits
-            | Self::LatestCommit
             | Self::ResolveRef
             | Self::CreateRef
             | Self::DeleteRef
@@ -187,14 +185,13 @@ impl Op {
         let instance = &mut fx.instance;
         match self {
             Self::ListCommits => instance.list_commits().await.map(drop),
-            Self::LatestCommit => instance.latest_commit_id().await.map(drop),
             Self::ResolveRef => {
                 let raw = fx.commit.to_string();
                 instance.resolve_commit_ref(&raw).await.map(drop)
             }
             Self::CreateRef => {
                 let name = RefName::parse("lock-matrix").unwrap();
-                instance.create_ref(&name, Some(id), true).await.map(drop)
+                instance.create_ref(&name, id, true).await.map(drop)
             }
             Self::DeleteRef => {
                 let name = RefName::parse("lock-matrix").unwrap();

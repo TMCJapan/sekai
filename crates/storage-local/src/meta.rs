@@ -8,18 +8,19 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use sekai_core::{
-    ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DEFAULT_REF_NAME, DimHash,
-    Dimension, NamedScope, NamedScopeError, Rect, RefName, RegionHash, RootHash, ScopeName,
-    commit_hash,
+    ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DimHash, Dimension, Head,
+    HeadState, NamedScope, NamedScopeError, Rect, Ref, RefKind, RefName, ReflogEntry, ReflogNote,
+    RegionHash, RootHash, ScopeName, Worktree, WorktreeName, commit_hash,
 };
-use sekai_storage::{DimNode, MetaStore, RegionNode, RootNode, StorageError, TreeNodes};
+use sekai_storage::{DimNode, RegionNode, RootNode, StorageError, TreeNodes};
 use sqlx::Row as _;
+use sqlx::SqliteConnection;
 use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
 };
 
 /// Managed schema version (`PRAGMA user_version`).
-pub const SCHEMA_VERSION: i64 = 17;
+pub const SCHEMA_VERSION: i64 = 18;
 
 const SCHEMA: &str = include_str!("../schema/sqlite.sql");
 
@@ -101,21 +102,12 @@ impl SqliteMeta {
             let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(db_err)?;
             version = read_user_version(&mut *tx).await.map_err(db_err)?;
             if version == 0 {
+                // No ref or worktree is seeded: `init` registers the
+                // world (ADR-0035).
                 sqlx::query(SCHEMA)
                     .execute(&mut *tx)
                     .await
                     .map_err(db_err)?;
-                // The store starts with one active ref, unborn: new
-                // commits hang from it until the first one lands.
-                sqlx::query(
-                    "INSERT INTO refs (name, commit_id, active, created_at_ms)
-                     VALUES (?, NULL, 1, ?)",
-                )
-                .bind(DEFAULT_REF_NAME)
-                .bind(now_ms()?)
-                .execute(&mut *tx)
-                .await
-                .map_err(db_err)?;
                 sqlx::query(sqlx::AssertSqlSafe(format!(
                     "PRAGMA user_version = {SCHEMA_VERSION}"
                 )))
@@ -133,21 +125,6 @@ impl SqliteMeta {
             });
         }
         Ok(Self { pool })
-    }
-
-    /// Record a whole commit atomically; returns its new ID.
-    ///
-    /// Blobs must already be flushed to the blob store before calling.
-    pub async fn apply_commit(
-        &mut self,
-        created_at_ms: u64,
-        parents: &[CommitId],
-        entries: &[CommitEntry],
-    ) -> Result<CommitId, StorageError> {
-        Ok(self
-            .apply_commit_incremental(created_at_ms, parents, entries)
-            .await?
-            .id)
     }
 
     /// Parent edges of every commit, grouped by child.
@@ -218,31 +195,295 @@ fn millis_col(row: &sqlx::sqlite::SqliteRow, column: &'static str) -> Result<u64
     i64_to_u64(value, column)
 }
 
-/// Decode one `refs` row. Stored names always re-validate: anything
-/// else is corruption, never silent reinterpretation.
+/// Decode a stored full refname. Stored names always re-validate:
+/// anything else is corruption, never silent reinterpretation.
+fn ref_from_column(raw: String) -> Result<Ref, StorageError> {
+    Ref::from_full(&raw).map_err(|_| StorageError::InvalidRefName { name: raw })
+}
+
+/// Decode a stored `head_ref`, which must name a branch.
+fn branch_from_column(raw: String) -> Result<RefName, StorageError> {
+    match Ref::from_full(&raw) {
+        Ok(Ref {
+            kind: RefKind::Branch,
+            name,
+        }) => Ok(name),
+        _ => Err(StorageError::InvalidRefName { name: raw }),
+    }
+}
+
+/// Decode a stored worktree name.
+fn worktree_name_from_column(raw: String) -> Result<WorktreeName, StorageError> {
+    WorktreeName::parse(&raw).map_err(|_| StorageError::InvalidWorktreeName { name: raw })
+}
+
+/// Decode one `refs` row.
 fn decode_ref(row: &sqlx::sqlite::SqliteRow) -> Result<CommitRef, StorageError> {
-    let name_raw: String = row.try_get("name").map_err(db_err)?;
-    let name =
-        RefName::parse(&name_raw).map_err(|_| StorageError::InvalidRefName { name: name_raw })?;
-    let commit_raw: Option<Vec<u8>> = row.try_get("commit_id").map_err(db_err)?;
-    let commit = commit_raw.map(commit_id_from_blob).transpose()?;
-    let active_raw: i64 = row.try_get("active").map_err(db_err)?;
-    let active = match active_raw {
-        0 => false,
-        1 => true,
-        value => {
-            return Err(StorageError::InvalidHistoryValue {
-                column: "active",
-                value,
-            });
+    Ok(CommitRef::new(
+        ref_from_column(row.try_get("name").map_err(db_err)?)?,
+        commit_id_from_blob(row.try_get("commit_id").map_err(db_err)?)?,
+    ))
+}
+
+/// Decode one `worktrees` row.
+fn decode_worktree(row: &sqlx::sqlite::SqliteRow) -> Result<Worktree, StorageError> {
+    let head_ref: Option<String> = row.try_get("head_ref").map_err(db_err)?;
+    let head_commit: Option<Vec<u8>> = row.try_get("head_commit").map_err(db_err)?;
+    let name: String = row.try_get("name").map_err(db_err)?;
+    // The CHECK constraint keeps exactly one of the two columns set.
+    let head = match (head_ref, head_commit) {
+        (Some(branch), None) => Head::Branch(branch_from_column(branch)?),
+        (None, Some(commit)) => Head::Detached(commit_id_from_blob(commit)?),
+        _ => {
+            return Err(StorageError::CorruptWorktreeHead { name });
         }
     };
-    Ok(CommitRef::new(
-        name,
-        commit,
-        active,
-        millis_col(row, "created_at_ms")?,
-    ))
+    Ok(Worktree {
+        name: worktree_name_from_column(name)?,
+        path: row.try_get("path").map_err(db_err)?,
+        head,
+    })
+}
+
+/// Decode one `ref_log` or `head_log` row.
+fn decode_log_entry(row: &sqlx::sqlite::SqliteRow) -> Result<ReflogEntry, StorageError> {
+    let old: Option<Vec<u8>> = row.try_get("old_commit").map_err(db_err)?;
+    Ok(ReflogEntry {
+        old: old.map(commit_id_from_blob).transpose()?,
+        new: commit_id_from_blob(row.try_get("new_commit").map_err(db_err)?)?,
+        message: row.try_get("message").map_err(db_err)?,
+        at_ms: millis_col(row, "at_ms")?,
+    })
+}
+
+/// The commit `name` points at, or `None` when the ref does not exist.
+async fn ref_target(
+    conn: &mut SqliteConnection,
+    name: &str,
+) -> Result<Option<CommitId>, StorageError> {
+    sqlx::query_scalar("SELECT commit_id FROM refs WHERE name = ?")
+        .bind(name)
+        .fetch_optional(conn)
+        .await
+        .map_err(db_err)?
+        .map(commit_id_from_blob)
+        .transpose()
+}
+
+/// Fail with `UnknownCommit` unless `id` is stored, instead of the
+/// foreign-key violation a write would raise.
+async fn require_commit(conn: &mut SqliteConnection, id: CommitId) -> Result<(), StorageError> {
+    let found: Option<i64> = sqlx::query_scalar("SELECT 1 FROM commits WHERE id = ?")
+        .bind(commit_param(id))
+        .fetch_optional(conn)
+        .await
+        .map_err(db_err)?;
+    found.map(drop).ok_or(StorageError::UnknownCommit { id })
+}
+
+/// The worktree that has branch `name` checked out, unborn or not.
+async fn checked_out_by(
+    conn: &mut SqliteConnection,
+    name: &str,
+) -> Result<Option<String>, StorageError> {
+    sqlx::query_scalar("SELECT name FROM worktrees WHERE head_ref = ?")
+        .bind(name)
+        .fetch_optional(conn)
+        .await
+        .map_err(db_err)
+}
+
+/// Delete the ref row `name`; a branch's reflog goes with it through
+/// its cascade.
+async fn delete_ref_row(conn: &mut SqliteConnection, name: &str) -> Result<(), StorageError> {
+    sqlx::query("DELETE FROM refs WHERE name = ?")
+        .bind(name)
+        .execute(conn)
+        .await
+        .map_err(db_err)?;
+    Ok(())
+}
+
+/// Refuse `branch` when a worktree other than `allowed` has it checked
+/// out.
+async fn check_not_checked_out(
+    conn: &mut SqliteConnection,
+    branch: &Ref,
+    allowed: Option<&WorktreeName>,
+) -> Result<(), StorageError> {
+    match checked_out_by(conn, &branch.full_name()).await? {
+        Some(holder) if allowed.is_none_or(|allowed| allowed.as_str() != holder) => {
+            Err(StorageError::BranchCheckedOut {
+                branch: branch.clone(),
+                worktree: holder,
+            })
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Refuse `name` when it conflicts as a directory and a file would with
+/// a ref, or with the branch an unborn HEAD names, other than `except`.
+///
+/// A conflicting name is either one of `name`'s `/`-separated ancestors,
+/// or sorts inside `[name/, name0)`: `0` follows `/` in ASCII, so that
+/// range holds exactly the names below `name/`.
+// The range scan plus the ancestor disjuncts implement the same predicate
+// as `util::refs::paths_conflict` over full refnames; it cannot call that
+// function because SQLite does the comparison here.
+async fn check_no_conflict(
+    conn: &mut SqliteConnection,
+    requested: &Ref,
+    except: Option<&str>,
+) -> Result<(), StorageError> {
+    let name = &requested.full_name();
+    let mut query = sqlx::QueryBuilder::new(
+        "SELECT name FROM (
+             SELECT name FROM refs
+             UNION ALL SELECT head_ref FROM worktrees WHERE head_ref IS NOT NULL
+         ) WHERE ((name >= ",
+    );
+    query
+        .push_bind(format!("{name}/"))
+        .push(" AND name < ")
+        .push_bind(format!("{name}0"))
+        .push(")");
+    // Ancestors below the namespace only: `refs` and `refs/heads` are never
+    // stored names.
+    let namespace = RefKind::ALL
+        .into_iter()
+        .map(RefKind::prefix)
+        .find(|prefix| name.starts_with(prefix))
+        .map_or(0, str::len);
+    for (at, _) in name.match_indices('/').filter(|&(at, _)| at > namespace) {
+        query.push(" OR name = ").push_bind(&name[..at]);
+    }
+    query.push(")");
+    if let Some(except) = except {
+        query.push(" AND name != ").push_bind(except);
+    }
+    query.push(" LIMIT 1");
+    let existing: Option<String> = query
+        .build_query_scalar()
+        .fetch_optional(conn)
+        .await
+        .map_err(db_err)?;
+    match existing {
+        Some(existing) => Err(StorageError::RefConflict {
+            name: requested.clone(),
+            existing: ref_from_column(existing)?,
+        }),
+        None => Ok(()),
+    }
+}
+
+/// Which reflog to append to.
+#[derive(Clone, Copy)]
+enum LogTable {
+    /// Branch reflogs, keyed by full refname.
+    Ref,
+    /// Worktree HEAD reflogs, keyed by worktree name.
+    Head,
+}
+
+impl LogTable {
+    const fn insert_sql(self) -> &'static str {
+        match self {
+            Self::Ref => {
+                "INSERT INTO ref_log (name, old_commit, new_commit, message, at_ms)
+                 VALUES (?, ?, ?, ?, ?)"
+            }
+            Self::Head => {
+                "INSERT INTO head_log (worktree, old_commit, new_commit, message, at_ms)
+                 VALUES (?, ?, ?, ?, ?)"
+            }
+        }
+    }
+}
+
+/// Append one entry to a reflog.
+async fn append_log(
+    conn: &mut SqliteConnection,
+    log: LogTable,
+    key: &str,
+    old: Option<CommitId>,
+    new: CommitId,
+    note: ReflogNote<'_>,
+) -> Result<(), StorageError> {
+    sqlx::query(log.insert_sql())
+        .bind(key)
+        .bind(old.map(commit_param))
+        .bind(commit_param(new))
+        .bind(note.message)
+        .bind(millis_param(note.at_ms)?)
+        .execute(conn)
+        .await
+        .map_err(db_err)?;
+    Ok(())
+}
+
+/// Worktree `name`'s HEAD, refusing when the worktree does not exist.
+async fn expect_head(conn: &mut SqliteConnection, name: &str) -> Result<HeadState, StorageError> {
+    head_state(conn, name)
+        .await?
+        .ok_or_else(|| StorageError::UnknownWorktree {
+            name: name.to_owned(),
+        })
+}
+
+/// Worktree `name`'s HEAD resolved against the refs, or `None` when the
+/// worktree does not exist.
+async fn head_state(
+    conn: &mut SqliteConnection,
+    name: &str,
+) -> Result<Option<HeadState>, StorageError> {
+    let row = sqlx::query(
+        "SELECT worktrees.name, worktrees.path, worktrees.head_ref, worktrees.head_commit,
+                refs.commit_id AS branch_commit
+         FROM worktrees LEFT JOIN refs ON refs.name = worktrees.head_ref
+         WHERE worktrees.name = ?",
+    )
+    .bind(name)
+    .fetch_optional(conn)
+    .await
+    .map_err(db_err)?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let branch_commit: Option<Vec<u8>> = row.try_get("branch_commit").map_err(db_err)?;
+    let commit = branch_commit.map(commit_id_from_blob).transpose()?;
+    Ok(Some(decode_worktree(&row)?.head.resolve(commit)))
+}
+
+/// The full refname of branch `name`.
+fn branch_full_name(name: &RefName) -> String {
+    RefKind::Branch.full_name(name)
+}
+
+/// Visit the rows `query` selects, in the order it sorts them, binding
+/// `key` as the query's single parameter when it carries one.
+async fn visit_rows<T, F, D>(
+    pool: &SqlitePool,
+    query: &'static str,
+    key: Option<&str>,
+    decode: D,
+    mut visit: F,
+) -> Result<(), StorageError>
+where
+    F: FnMut(&T) -> bool + Send,
+    D: Fn(&sqlx::sqlite::SqliteRow) -> Result<T, StorageError>,
+{
+    let mut query = sqlx::query(query);
+    if let Some(key) = key {
+        query = query.bind(key);
+    }
+    let rows = query.fetch_all(pool).await.map_err(db_err)?;
+    for row in &rows {
+        if !visit(&decode(row)?) {
+            break;
+        }
+    }
+    Ok(())
 }
 
 /// One scope's columns, gathered from its joined area rows.
@@ -309,25 +550,6 @@ fn commit_param(id: CommitId) -> Vec<u8> {
 /// clock, so an absurd value is their bug, surfaced loudly.
 fn millis_param(ms: u64) -> Result<i64, StorageError> {
     i64::try_from(ms).map_err(|_| StorageError::InvalidTimestamp(ms))
-}
-
-/// The current time in Unix millis, for the rows a store creates for
-/// itself.
-///
-/// Kept local rather than shared with the app's clock helper: failures
-/// here are `StorageError`s, and an out-of-range value is rejected
-/// instead of saturating. The app does not read the clock for a move
-/// that keeps an existing timestamp.
-fn now_ms() -> Result<i64, StorageError> {
-    let millis = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| StorageError::ClockBeforeEpoch)?
-        .as_millis();
-    // `as_millis` is `u128`: a value above `u64::MAX` has no
-    // representation in the stored range, so it gets its own error rather
-    // than a sentinel timestamp.
-    let millis = u64::try_from(millis).map_err(|_| StorageError::ClockOutOfRange)?;
-    i64::try_from(millis).map_err(|_| StorageError::InvalidTimestamp(millis))
 }
 
 /// Decode one `commits` row.
@@ -543,11 +765,14 @@ impl SqliteMeta {
         Ok(nodes)
     }
 }
-impl sekai_storage::MetaStore for SqliteMeta {
-    type Error = StorageError;
 
-    async fn create_commit(
-        &mut self,
+impl SqliteMeta {
+    /// Seed a history with a commit that changes nothing, continuing the
+    /// lowest-hash parent's tree. Not part of the store's contract: used
+    /// by tests to build histories without writing region data.
+    #[cfg(test)]
+    pub(crate) async fn create_commit(
+        &self,
         created_at_ms: u64,
         parents: &[CommitId],
     ) -> Result<CommitId, StorageError> {
@@ -576,6 +801,29 @@ impl sekai_storage::MetaStore for SqliteMeta {
         tx.commit().await.map_err(db_err)?;
         Ok(id)
     }
+
+    /// The most recently recorded commit, or `None` when none has been
+    /// recorded. Only the unit tests use it; the store's contract reads
+    /// commits through refs and HEADs.
+    #[cfg(test)]
+    pub(crate) async fn latest_commit(&self) -> Result<Option<Commit>, StorageError> {
+        let row = sqlx::query(
+            "SELECT id, created_at_ms, root_hash FROM commits ORDER BY seq DESC LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_err)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let id = commit_id_from_blob(row.try_get("id").map_err(db_err)?)?;
+        let parents = sekai_storage::MetaStore::commit_parents(self, id).await?;
+        Ok(Some(decode_commit(&row, &parents)?))
+    }
+}
+
+impl sekai_storage::MetaStore for SqliteMeta {
+    type Error = StorageError;
 
     async fn commit_parents(&self, commit: CommitId) -> Result<Vec<CommitId>, StorageError> {
         let rows = sqlx::query(
@@ -690,21 +938,6 @@ impl sekai_storage::MetaStore for SqliteMeta {
         Ok(Some(decode_commit(&row, &parents)?))
     }
 
-    async fn latest_commit(&self) -> Result<Option<Commit>, StorageError> {
-        let row = sqlx::query(
-            "SELECT id, created_at_ms, root_hash FROM commits ORDER BY seq DESC LIMIT 1",
-        )
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(db_err)?;
-        let Some(row) = row else {
-            return Ok(None);
-        };
-        let id = commit_id_from_blob(row.try_get("id").map_err(db_err)?)?;
-        let parents = self.commit_parents(id).await?;
-        Ok(Some(decode_commit(&row, &parents)?))
-    }
-
     async fn visit_commits<F>(&self, mut visit: F) -> Result<(), StorageError>
     where
         F: FnMut(&Commit) -> bool + Send,
@@ -736,233 +969,453 @@ impl sekai_storage::MetaStore for SqliteMeta {
 
     async fn apply_commit_incremental(
         &mut self,
+        worktree: &WorktreeName,
         created_at_ms: u64,
         parents: &[CommitId],
         entries: &[CommitEntry],
+        note: ReflogNote<'_>,
     ) -> Result<ApplyOutcome, StorageError> {
-        sekai_core::tree::apply_entries(self, created_at_ms, parents, entries).await
+        sekai_core::tree::apply_entries(self, worktree, created_at_ms, parents, entries, note).await
     }
 
     async fn commit_tree(
         &mut self,
+        worktree: &WorktreeName,
         created_at_ms: u64,
         parents: &[CommitId],
         root: RootHash,
         nodes: &TreeNodes,
+        note: ReflogNote<'_>,
     ) -> Result<ApplyOutcome, StorageError> {
         let commit = commit_hash(parents, created_at_ms, root);
+        // Dropping the transaction on an early return rolls it back, so a
+        // rejected call writes nothing.
         let mut tx = self.pool.begin().await.map_err(db_err)?;
-        // The new commit must continue the active ref's target: moving the
-        // ref onto an unrelated history would fork it. Read the target
-        // before inserting, so a rejected call writes nothing.
-        let active_target: Option<Option<Vec<u8>>> =
-            sqlx::query_scalar("SELECT commit_id FROM refs WHERE active = 1")
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(db_err)?;
-        let Some(active_target) = active_target else {
-            tx.rollback().await.map_err(db_err)?;
-            return Err(StorageError::NoActiveRef);
-        };
-        if let Some(target) = active_target {
-            let base = commit_id_from_blob(target)?;
-            if !parents.contains(&base) {
-                tx.rollback().await.map_err(db_err)?;
-                return Err(StorageError::NotContinuing { base });
-            }
+        let state = expect_head(&mut tx, worktree.as_str()).await?;
+        // The new commit must continue HEAD's commit: moving HEAD onto an
+        // unrelated history would fork it.
+        if let Some(base) = state.commit()
+            && !parents.contains(&base)
+        {
+            return Err(StorageError::NotContinuing { base });
+        }
+        if let HeadState::Unborn { branch } = &state {
+            check_no_conflict(&mut tx, &Ref::branch(branch.clone()), None).await?;
         }
         insert_tree_nodes(&mut tx, nodes).await?;
         insert_commit(&mut tx, commit, created_at_ms, parents, root).await?;
-        let id_param = commit_param(commit);
-        // The active ref moves onto the new commit, in the same
-        // transaction: a ref lagging behind its history would fork the
-        // next commit.
-        let moved = sqlx::query("UPDATE refs SET commit_id = ? WHERE active = 1")
-            .bind(&id_param[..])
-            .execute(&mut *tx)
-            .await
-            .map_err(db_err)?
-            .rows_affected();
-        if moved == 0 {
-            tx.rollback().await.map_err(db_err)?;
-            return Err(StorageError::NoActiveRef);
+        // HEAD moves onto the new commit in the same transaction: a HEAD
+        // lagging behind its history would fork the next commit.
+        match &state {
+            HeadState::Attached {
+                branch,
+                commit: old,
+            } => {
+                let name = branch_full_name(branch);
+                sqlx::query("UPDATE refs SET commit_id = ? WHERE name = ?")
+                    .bind(commit_param(commit))
+                    .bind(&name)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db_err)?;
+                append_log(&mut tx, LogTable::Ref, &name, Some(*old), commit, note).await?;
+            }
+            HeadState::Unborn { branch } => {
+                let name = branch_full_name(branch);
+                sqlx::query("INSERT INTO refs (name, commit_id) VALUES (?, ?)")
+                    .bind(&name)
+                    .bind(commit_param(commit))
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db_err)?;
+                append_log(&mut tx, LogTable::Ref, &name, None, commit, note).await?;
+            }
+            HeadState::Detached { .. } => {
+                sqlx::query("UPDATE worktrees SET head_commit = ? WHERE name = ?")
+                    .bind(commit_param(commit))
+                    .bind(worktree.as_str())
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db_err)?;
+            }
         }
+        append_log(
+            &mut tx,
+            LogTable::Head,
+            worktree.as_str(),
+            state.commit(),
+            commit,
+            note,
+        )
+        .await?;
         tx.commit().await.map_err(db_err)?;
         Ok(ApplyOutcome { id: commit })
     }
 
-    async fn set_ref(
-        &mut self,
-        name: &RefName,
-        commit: Option<CommitId>,
-        created_at_ms: u64,
-    ) -> Result<(), StorageError> {
-        // A new ref starts inactive; a moved ref keeps its flag and
-        // creation time. `commit = None` is the documented unborn state,
-        // so moving a ref back to unborn is allowed.
-        let stored_commit = commit.map(commit_param);
-        let created_at_ms = millis_param(created_at_ms)?;
-        let mut tx = self.pool.begin().await.map_err(db_err)?;
-        if let Some(id) = commit {
-            // Pointing at a commit that does not exist is corruption, not
-            // a move: report it as such instead of the foreign-key
-            // violation the upsert would raise.
-            let found: Option<i64> = sqlx::query_scalar("SELECT 1 FROM commits WHERE id = ?")
-                .bind(stored_commit.as_deref())
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(db_err)?;
-            if found.is_none() {
-                tx.rollback().await.map_err(db_err)?;
-                return Err(StorageError::UnknownCommit { id });
-            }
-        }
-        sqlx::query(
-            "INSERT INTO refs (name, commit_id, active, created_at_ms) VALUES (?, ?, 0, ?)
-             ON CONFLICT(name) DO UPDATE SET commit_id = excluded.commit_id",
-        )
-        .bind(name.as_str())
-        .bind(stored_commit.as_deref())
-        .bind(created_at_ms)
-        .execute(&mut *tx)
-        .await
-        .map_err(db_err)?;
-        tx.commit().await.map_err(db_err)?;
-        Ok(())
+    async fn lookup_ref(&self, name: &Ref) -> Result<Option<CommitRef>, StorageError> {
+        sqlx::query("SELECT name, commit_id FROM refs WHERE name = ?")
+            .bind(name.full_name())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db_err)?
+            .map(|row| decode_ref(&row))
+            .transpose()
     }
 
-    async fn lookup_ref(&self, name: &RefName) -> Result<Option<CommitRef>, StorageError> {
-        let row =
-            sqlx::query("SELECT name, commit_id, active, created_at_ms FROM refs WHERE name = ?")
-                .bind(name.as_str())
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(db_err)?;
-        row.map(|row| decode_ref(&row)).transpose()
-    }
-
-    async fn visit_refs<F>(&self, mut visit: F) -> Result<(), StorageError>
+    async fn visit_refs<F>(&self, visit: F) -> Result<(), StorageError>
     where
         F: FnMut(&CommitRef) -> bool + Send,
     {
-        let rows = sqlx::query(
-            "SELECT name, commit_id, active, created_at_ms
-             FROM refs ORDER BY name COLLATE BINARY",
+        visit_rows(
+            &self.pool,
+            "SELECT name, commit_id FROM refs ORDER BY name",
+            None,
+            decode_ref,
+            visit,
         )
-        .fetch_all(&self.pool)
         .await
-        .map_err(db_err)?;
-        for row in &rows {
-            if !visit(&decode_ref(row)?) {
-                break;
-            }
-        }
-        Ok(())
     }
 
-    async fn delete_ref(&mut self, name: &RefName) -> Result<bool, StorageError> {
-        // One transaction so the DELETE and the follow-up read see the
-        // same snapshot: the DELETE refuses the active ref, and the read
-        // only refines why nothing was removed.
+    async fn create_ref(
+        &mut self,
+        name: &Ref,
+        commit: CommitId,
+        note: ReflogNote<'_>,
+    ) -> Result<(), StorageError> {
+        let full = name.full_name();
         let mut tx = self.pool.begin().await.map_err(db_err)?;
-        let deleted = sqlx::query("DELETE FROM refs WHERE name = ? AND active = 0")
-            .bind(name.as_str())
+        if ref_target(&mut tx, &full).await?.is_some() {
+            return Err(StorageError::RefExists { name: name.clone() });
+        }
+        check_no_conflict(&mut tx, name, None).await?;
+        require_commit(&mut tx, commit).await?;
+        sqlx::query("INSERT INTO refs (name, commit_id) VALUES (?, ?)")
+            .bind(&full)
+            .bind(commit_param(commit))
             .execute(&mut *tx)
             .await
             .map_err(db_err)?;
-        if deleted.rows_affected() > 0 {
-            tx.commit().await.map_err(db_err)?;
-            return Ok(true);
+        if name.kind == RefKind::Branch {
+            append_log(&mut tx, LogTable::Ref, &full, None, commit, note).await?;
+            // The branch an unborn HEAD names now has a commit, which
+            // leaves that HEAD at it.
+            if let Some(holder) = checked_out_by(&mut tx, &full).await? {
+                append_log(&mut tx, LogTable::Head, &holder, None, commit, note).await?;
+            }
         }
-        // Nothing was deleted: the ref is absent or active.
-        let active: Option<i64> =
-            sqlx::query_scalar("SELECT 1 FROM refs WHERE name = ? AND active = 1")
+        tx.commit().await.map_err(db_err)?;
+        Ok(())
+    }
+
+    async fn move_ref(
+        &mut self,
+        name: &Ref,
+        commit: CommitId,
+        note: ReflogNote<'_>,
+    ) -> Result<CommitId, StorageError> {
+        let full = name.full_name();
+        let mut tx = self.pool.begin().await.map_err(db_err)?;
+        let old = ref_target(&mut tx, &full)
+            .await?
+            .ok_or_else(|| StorageError::UnknownRef { name: name.clone() })?;
+        require_commit(&mut tx, commit).await?;
+        if name.kind == RefKind::Branch {
+            check_not_checked_out(&mut tx, name, None).await?;
+        }
+        sqlx::query("UPDATE refs SET commit_id = ? WHERE name = ?")
+            .bind(commit_param(commit))
+            .bind(&full)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?;
+        if name.kind == RefKind::Branch {
+            append_log(&mut tx, LogTable::Ref, &full, Some(old), commit, note).await?;
+        }
+        tx.commit().await.map_err(db_err)?;
+        Ok(old)
+    }
+
+    async fn delete_ref(&mut self, name: &Ref) -> Result<Option<CommitId>, StorageError> {
+        let full = name.full_name();
+        let mut tx = self.pool.begin().await.map_err(db_err)?;
+        let Some(old) = ref_target(&mut tx, &full).await? else {
+            return Ok(None);
+        };
+        if name.kind == RefKind::Branch {
+            check_not_checked_out(&mut tx, name, None).await?;
+        }
+        delete_ref_row(&mut tx, &full).await?;
+        tx.commit().await.map_err(db_err)?;
+        Ok(Some(old))
+    }
+
+    async fn rename_branch(
+        &mut self,
+        from: &RefName,
+        to: &RefName,
+        force: bool,
+        note: ReflogNote<'_>,
+    ) -> Result<(), StorageError> {
+        let (from_ref, to_ref) = (Ref::branch(from.clone()), Ref::branch(to.clone()));
+        let (from, to) = (from_ref.full_name(), to_ref.full_name());
+        let mut tx = self.pool.begin().await.map_err(db_err)?;
+        let commit = ref_target(&mut tx, &from).await?;
+        // The unique index on `head_ref` allows one HEAD per branch.
+        let holder = checked_out_by(&mut tx, &from).await?;
+        if commit.is_none() && holder.is_none() {
+            return Err(StorageError::UnknownRef { name: from_ref });
+        }
+        let mut replaced = None;
+        if from != to {
+            replaced = ref_target(&mut tx, &to).await?;
+            if replaced.is_some() && !force {
+                return Err(StorageError::RefExists { name: to_ref });
+            }
+            check_not_checked_out(&mut tx, &to_ref, None).await?;
+            check_no_conflict(&mut tx, &to_ref, Some(&from)).await?;
+            if commit.is_some() && replaced.is_some() {
+                delete_ref_row(&mut tx, &to).await?;
+            }
+            // `ref_log` follows the row through its `ON UPDATE CASCADE`.
+            sqlx::query("UPDATE refs SET name = ? WHERE name = ?")
+                .bind(&to)
+                .bind(&from)
+                .execute(&mut *tx)
+                .await
+                .map_err(db_err)?;
+            sqlx::query("UPDATE worktrees SET head_ref = ? WHERE head_ref = ?")
+                .bind(&to)
+                .bind(&from)
+                .execute(&mut *tx)
+                .await
+                .map_err(db_err)?;
+        }
+        match (commit, replaced, holder) {
+            (Some(commit), _, holder) => {
+                append_log(&mut tx, LogTable::Ref, &to, Some(commit), commit, note).await?;
+                if let Some(holder) = holder {
+                    append_log(&mut tx, LogTable::Head, &holder, Some(commit), commit, note)
+                        .await?;
+                }
+            }
+            // An unborn HEAD lands on the branch it was renamed over.
+            (None, Some(landed), Some(holder)) => {
+                append_log(&mut tx, LogTable::Head, &holder, None, landed, note).await?;
+            }
+            // Otherwise an unborn HEAD stays unborn and logs nothing.
+            (None, _, _) => {}
+        }
+        tx.commit().await.map_err(db_err)?;
+        Ok(())
+    }
+
+    async fn add_worktree(
+        &mut self,
+        worktree: &Worktree,
+        note: ReflogNote<'_>,
+    ) -> Result<(), StorageError> {
+        let name = worktree.name.as_str();
+        let mut tx = self.pool.begin().await.map_err(db_err)?;
+        let existing: Option<String> =
+            sqlx::query_scalar("SELECT name FROM worktrees WHERE name = ?")
+                .bind(name)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(db_err)?;
+        if existing.is_some() {
+            return Err(StorageError::WorktreeExists {
+                name: name.to_owned(),
+            });
+        }
+        // `IS` matches NULL too, so one query finds the main worktree or
+        // the holder of a linked path.
+        let path_taken: Option<String> =
+            sqlx::query_scalar("SELECT name FROM worktrees WHERE path IS ?")
+                .bind(worktree.path.as_deref())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(db_err)?;
+        if path_taken.is_some() {
+            return Err(worktree
+                .path
+                .clone()
+                .map_or(StorageError::MainWorktreeExists, |path| {
+                    StorageError::WorktreePathTaken { path }
+                }));
+        }
+        let (head_ref, head_commit) = match &worktree.head {
+            Head::Branch(branch) => {
+                let branch = Ref::branch(branch.clone());
+                check_not_checked_out(&mut tx, &branch, None).await?;
+                check_no_conflict(&mut tx, &branch, None).await?;
+                (Some(branch.full_name()), None)
+            }
+            Head::Detached(commit) => {
+                require_commit(&mut tx, *commit).await?;
+                (None, Some(commit_param(*commit)))
+            }
+        };
+        sqlx::query(
+            "INSERT INTO worktrees (name, path, head_ref, head_commit) VALUES (?, ?, ?, ?)",
+        )
+        .bind(name)
+        .bind(worktree.path.as_deref())
+        .bind(head_ref)
+        .bind(head_commit)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+        if let Some(commit) = head_state(&mut tx, name)
+            .await?
+            .and_then(|state| state.commit())
+        {
+            append_log(&mut tx, LogTable::Head, name, None, commit, note).await?;
+        }
+        tx.commit().await.map_err(db_err)?;
+        Ok(())
+    }
+
+    async fn lookup_worktree(&self, name: &WorktreeName) -> Result<Option<Worktree>, StorageError> {
+        sqlx::query("SELECT name, path, head_ref, head_commit FROM worktrees WHERE name = ?")
+            .bind(name.as_str())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db_err)?
+            .map(|row| decode_worktree(&row))
+            .transpose()
+    }
+
+    async fn visit_worktrees<F>(&self, visit: F) -> Result<(), StorageError>
+    where
+        F: FnMut(&Worktree) -> bool + Send,
+    {
+        visit_rows(
+            &self.pool,
+            "SELECT name, path, head_ref, head_commit FROM worktrees ORDER BY name",
+            None,
+            decode_worktree,
+            visit,
+        )
+        .await
+    }
+
+    async fn remove_worktree(&mut self, name: &WorktreeName) -> Result<bool, StorageError> {
+        let mut tx = self.pool.begin().await.map_err(db_err)?;
+        let path: Option<Option<String>> =
+            sqlx::query_scalar("SELECT path FROM worktrees WHERE name = ?")
                 .bind(name.as_str())
                 .fetch_optional(&mut *tx)
                 .await
                 .map_err(db_err)?;
-        tx.commit().await.map_err(db_err)?;
-        match active {
-            Some(_) => Err(StorageError::ActiveRefProtected {
-                name: name.as_str().to_owned(),
-            }),
-            None => Ok(false),
-        }
-    }
-
-    async fn active_ref(&self) -> Result<Option<CommitRef>, StorageError> {
-        // The target commit must exist: the foreign key keeps it honest,
-        // and a dangling target is corruption, not an unborn ref.
-        let row = sqlx::query(
-            "SELECT refs.name, refs.commit_id, refs.active, refs.created_at_ms,
-                    commits.id AS target
-             FROM refs LEFT JOIN commits ON commits.id = refs.commit_id
-             WHERE refs.active = 1",
-        )
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(db_err)?;
-        let Some(row) = row else {
-            return Ok(None);
-        };
-        let record = decode_ref(&row)?;
-        if let Some(commit) = record.commit {
-            let target: Option<Vec<u8>> = row.try_get("target").map_err(db_err)?;
-            if target.is_none() {
-                return Err(StorageError::UnknownCommit { id: commit });
+        match path {
+            None => return Ok(false),
+            Some(None) => {
+                return Err(StorageError::MainWorktreeProtected {
+                    name: name.as_str().to_owned(),
+                });
             }
+            Some(Some(_)) => {}
         }
-        Ok(Some(record))
-    }
-
-    async fn activate_ref(&mut self, name: &RefName) -> Result<(), StorageError> {
-        let mut tx = self.pool.begin().await.map_err(db_err)?;
-        let row = sqlx::query(
-            "SELECT refs.name, refs.commit_id, refs.active, refs.created_at_ms,
-                    commits.id AS target
-             FROM refs LEFT JOIN commits ON commits.id = refs.commit_id
-             WHERE refs.name = ?",
-        )
-        .bind(name.as_str())
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(db_err)?;
-        let Some(row) = row else {
-            tx.rollback().await.map_err(db_err)?;
-            return Err(StorageError::UnknownRef {
-                name: name.as_str().to_owned(),
-            });
-        };
-        let record = decode_ref(&row)?;
-        if let Some(commit) = record.commit {
-            let target: Option<Vec<u8>> = row.try_get("target").map_err(db_err)?;
-            if target.is_none() {
-                tx.rollback().await.map_err(db_err)?;
-                return Err(StorageError::UnknownCommit { id: commit });
-            }
-        }
-        // The partial unique index allows one active row: clear the old
-        // one before marking the new one.
-        sqlx::query("UPDATE refs SET active = 0 WHERE active = 1")
-            .execute(&mut *tx)
-            .await
-            .map_err(db_err)?;
-        // The row can still vanish between the check above and this
-        // update; committing then would leave the store without a head.
-        let activated = sqlx::query("UPDATE refs SET active = 1 WHERE name = ?")
+        // The HEAD reflog goes with the worktree through its cascade.
+        sqlx::query("DELETE FROM worktrees WHERE name = ?")
             .bind(name.as_str())
             .execute(&mut *tx)
             .await
-            .map_err(db_err)?
-            .rows_affected();
-        if activated == 0 {
-            tx.rollback().await.map_err(db_err)?;
-            return Err(StorageError::UnknownRef {
-                name: name.as_str().to_owned(),
-            });
+            .map_err(db_err)?;
+        tx.commit().await.map_err(db_err)?;
+        Ok(true)
+    }
+
+    async fn set_head(
+        &mut self,
+        name: &WorktreeName,
+        head: &Head,
+        note: ReflogNote<'_>,
+    ) -> Result<(), StorageError> {
+        let mut tx = self.pool.begin().await.map_err(db_err)?;
+        let old = expect_head(&mut tx, name.as_str()).await?;
+        let (head_ref, head_commit) = match head {
+            Head::Branch(new_branch) => {
+                let new_ref = Ref::branch(new_branch.clone());
+                check_not_checked_out(&mut tx, &new_ref, Some(name)).await?;
+                // Only a branch HEAD names exists only as the `head_ref`
+                // this move rewrites. Such an unborn branch may be excluded
+                // from the conflict scan; a born branch stays in `refs` and
+                // must be seen. A re-checkout of the branch HEAD is already
+                // on must also pass.
+                let own = match &old {
+                    HeadState::Unborn { branch } => Some(branch_full_name(branch)),
+                    HeadState::Attached { branch, .. } if branch == new_branch => {
+                        Some(branch_full_name(branch))
+                    }
+                    _ => None,
+                };
+                check_no_conflict(&mut tx, &new_ref, own.as_deref()).await?;
+                (Some(new_ref.full_name()), None)
+            }
+            Head::Detached(commit) => {
+                require_commit(&mut tx, *commit).await?;
+                (None, Some(commit_param(*commit)))
+            }
+        };
+        sqlx::query("UPDATE worktrees SET head_ref = ?, head_commit = ? WHERE name = ?")
+            .bind(head_ref)
+            .bind(head_commit)
+            .bind(name.as_str())
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?;
+        if let Some(new) = head_state(&mut tx, name.as_str())
+            .await?
+            .and_then(|state| state.commit())
+        {
+            append_log(
+                &mut tx,
+                LogTable::Head,
+                name.as_str(),
+                old.commit(),
+                new,
+                note,
+            )
+            .await?;
         }
         tx.commit().await.map_err(db_err)?;
         Ok(())
+    }
+
+    async fn head(&self, name: &WorktreeName) -> Result<Option<HeadState>, StorageError> {
+        let mut conn = self.pool.acquire().await.map_err(db_err)?;
+        head_state(&mut conn, name.as_str()).await
+    }
+
+    async fn visit_ref_log<F>(&self, name: &RefName, visit: F) -> Result<(), StorageError>
+    where
+        F: FnMut(&ReflogEntry) -> bool + Send,
+    {
+        visit_rows(
+            &self.pool,
+            "SELECT old_commit, new_commit, message, at_ms FROM ref_log
+             WHERE name = ? ORDER BY seq DESC",
+            Some(&branch_full_name(name)),
+            decode_log_entry,
+            visit,
+        )
+        .await
+    }
+
+    async fn visit_head_log<F>(&self, name: &WorktreeName, visit: F) -> Result<(), StorageError>
+    where
+        F: FnMut(&ReflogEntry) -> bool + Send,
+    {
+        visit_rows(
+            &self.pool,
+            "SELECT old_commit, new_commit, message, at_ms FROM head_log
+             WHERE worktree = ? ORDER BY seq DESC",
+            Some(name.as_str()),
+            decode_log_entry,
+            visit,
+        )
+        .await
     }
 
     async fn set_scope(&mut self, scope: &NamedScope) -> Result<(), StorageError> {
@@ -1053,6 +1506,7 @@ impl sekai_storage::MetaStore for SqliteMeta {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sekai_storage::MetaStore as _;
     use sqlx::ConnectOptions as _;
     use sqlx::Connection as _;
     /// A temp dir whose name starts with the calling test's name
@@ -1082,149 +1536,769 @@ mod tests {
         assert_eq!(version, SCHEMA_VERSION);
     }
 
-    #[tokio::test]
-    async fn a_fresh_store_starts_with_one_active_ref() {
-        let meta = memory_meta().await;
-        let active = meta.active_ref().await.unwrap().unwrap();
-        assert_eq!(active.name.as_str(), DEFAULT_REF_NAME);
-        assert!(active.active);
-        // Unborn: no commit yet.
-        assert!(active.commit.is_none());
+    fn worktree(name: &str) -> WorktreeName {
+        WorktreeName::parse(name).unwrap()
+    }
 
-        let mut refs = Vec::new();
-        meta.visit_refs(|record| {
-            refs.push(record.clone());
+    fn branch_name(name: &str) -> RefName {
+        RefName::parse(name).unwrap()
+    }
+
+    fn branch(name: &str) -> Ref {
+        Ref::branch(branch_name(name))
+    }
+
+    fn tag(name: &str) -> Ref {
+        Ref::tag(RefName::parse(name).unwrap())
+    }
+
+    const fn note(message: &str) -> ReflogNote<'_> {
+        ReflogNote::new(message, 5_000)
+    }
+
+    /// A store whose main worktree `main` is unborn on `main`, the way
+    /// `init` leaves it.
+    async fn initialized_meta() -> SqliteMeta {
+        let mut meta = memory_meta().await;
+        let main = Worktree {
+            name: worktree("main"),
+            path: None,
+            head: Head::Branch(branch_name("main")),
+        };
+        meta.add_worktree(&main, note("unused")).await.unwrap();
+        meta
+    }
+
+    /// Commit an unchanged snapshot on `on`'s HEAD.
+    async fn commit_on(
+        meta: &mut SqliteMeta,
+        on: &str,
+        created_at_ms: u64,
+        parents: &[CommitId],
+    ) -> Result<CommitId, StorageError> {
+        let message = if parents.is_empty() {
+            "commit (initial): "
+        } else {
+            "commit: "
+        };
+        meta.apply_commit_incremental(
+            &worktree(on),
+            created_at_ms,
+            parents,
+            &[],
+            ReflogNote::new(message, created_at_ms),
+        )
+        .await
+        .map(|outcome| outcome.id)
+    }
+
+    async fn ref_log(meta: &SqliteMeta, name: &str) -> Vec<ReflogEntry> {
+        let mut entries = Vec::new();
+        meta.visit_ref_log(&branch_name(name), |entry| {
+            entries.push(entry.clone());
             true
         })
         .await
         .unwrap();
-        assert_eq!(refs.len(), 1);
+        entries
+    }
+
+    async fn head_log(meta: &SqliteMeta, name: &str) -> Vec<ReflogEntry> {
+        let mut entries = Vec::new();
+        meta.visit_head_log(&worktree(name), |entry| {
+            entries.push(entry.clone());
+            true
+        })
+        .await
+        .unwrap();
+        entries
+    }
+
+    fn entry(old: Option<CommitId>, new: CommitId, message: &str, at_ms: u64) -> ReflogEntry {
+        ReflogEntry {
+            old,
+            new,
+            message: message.to_owned(),
+            at_ms,
+        }
     }
 
     #[tokio::test]
-    async fn activating_a_ref_moves_the_active_flag() {
-        let mut meta = memory_meta().await;
-        let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
-        let other = RefName::parse("feature").unwrap();
-        meta.set_ref(&other, None, 1_000).await.unwrap();
-
-        meta.activate_ref(&other).await.unwrap();
-        assert_eq!(meta.active_ref().await.unwrap().unwrap().name, other);
-        assert!(
-            !meta.lookup_ref(&main).await.unwrap().unwrap().active,
-            "the previous active ref is no longer active"
-        );
-
-        // Unknown refs are refused, and the flag stays where it was.
-        assert!(matches!(
-            meta.activate_ref(&RefName::parse("missing").unwrap()).await,
-            Err(StorageError::UnknownRef { .. })
-        ));
-        assert_eq!(meta.active_ref().await.unwrap().unwrap().name, other);
+    async fn a_fresh_store_seeds_no_ref_or_worktree() {
+        let meta = memory_meta().await;
+        let mut refs = 0;
+        meta.visit_refs(|_| {
+            refs += 1;
+            true
+        })
+        .await
+        .unwrap();
+        let mut worktrees = 0;
+        meta.visit_worktrees(|_| {
+            worktrees += 1;
+            true
+        })
+        .await
+        .unwrap();
+        assert_eq!((refs, worktrees), (0, 0));
     }
 
     #[tokio::test]
-    async fn activating_a_ref_refuses_a_dangling_target() {
-        let (dir, _guard) = tempdir("dangling-target");
-        let path = dir.join("meta.sqlite");
-        let mut meta = SqliteMeta::open(&path).await.unwrap();
-        let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
-        let feature = RefName::parse("feature").unwrap();
-        let root = meta
-            .apply_commit_incremental(1_000, &[], &[])
-            .await
-            .unwrap()
-            .id;
-        meta.set_ref(&feature, Some(root), 2_000).await.unwrap();
-
-        // Simulate corruption that bypassed the foreign key on a dedicated
-        // connection, so no pooled connection inherits the pragma.
-        let mut raw = SqliteConnectOptions::new()
-            .filename(&path)
-            .foreign_keys(false)
-            .connect()
-            .await
-            .unwrap();
-        let missing = CommitId([0xEE; 32]);
-        sqlx::query("UPDATE refs SET commit_id = ? WHERE name = 'feature'")
-            .bind(missing.0.to_vec())
-            .execute(&mut raw)
-            .await
-            .unwrap();
-        raw.close().await.unwrap();
-
-        let err = meta.activate_ref(&feature).await.unwrap_err();
-        assert!(matches!(err, StorageError::UnknownCommit { id } if id == missing));
-        assert_eq!(meta.active_ref().await.unwrap().unwrap().name, main);
-    }
-
-    #[tokio::test]
-    async fn an_unborn_active_ref_starts_a_new_root() {
-        let mut meta = memory_meta().await;
-        let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
-        let first = meta
-            .apply_commit_incremental(1_000, &[], &[])
-            .await
-            .unwrap()
-            .id;
-
-        // Moving the active ref to unborn deliberately drops the parent
-        // constraint: the next commit is a fresh root.
-        meta.set_ref(&main, None, 2_000).await.unwrap();
-        let second = meta
-            .apply_commit_incremental(3_000, &[], &[])
-            .await
-            .unwrap()
-            .id;
-        assert_ne!(first, second);
+    async fn the_first_commit_creates_heads_branch() {
+        let mut meta = initialized_meta().await;
         assert_eq!(
-            meta.active_ref().await.unwrap().unwrap().commit,
-            Some(second)
+            meta.head(&worktree("main")).await.unwrap(),
+            Some(HeadState::Unborn {
+                branch: branch_name("main")
+            })
         );
-        assert_eq!(meta.commit_parents(second).await.unwrap(), Vec::new());
+        assert_eq!(
+            head_log(&meta, "main").await,
+            [],
+            "an unborn HEAD logs nothing"
+        );
+
+        let first = commit_on(&mut meta, "main", 1_000, &[]).await.unwrap();
+        assert_eq!(meta.commit_parents(first).await.unwrap(), Vec::new());
+        assert_eq!(
+            meta.head(&worktree("main")).await.unwrap(),
+            Some(HeadState::Attached {
+                branch: branch_name("main"),
+                commit: first
+            })
+        );
+        let second = commit_on(&mut meta, "main", 2_000, &[first]).await.unwrap();
+        assert_eq!(
+            meta.lookup_ref(&branch("main")).await.unwrap(),
+            Some(CommitRef::new(branch("main"), second))
+        );
+        let expected = vec![
+            entry(Some(first), second, "commit: ", 2_000),
+            entry(None, first, "commit (initial): ", 1_000),
+        ];
+        assert_eq!(ref_log(&meta, "main").await, expected);
+        assert_eq!(head_log(&meta, "main").await, expected);
+    }
+
+    #[tokio::test]
+    async fn a_commit_must_continue_head() {
+        let mut meta = initialized_meta().await;
+        let root = commit_on(&mut meta, "main", 1_000, &[]).await.unwrap();
+
+        let err = commit_on(&mut meta, "main", 2_000, &[]).await.unwrap_err();
+        assert!(matches!(err, StorageError::NotContinuing { base } if base == root));
+
+        // The rejected call wrote nothing.
+        assert_eq!(meta.latest_commit().await.unwrap().unwrap().id, root);
+        assert_eq!(
+            meta.head(&worktree("main"))
+                .await
+                .unwrap()
+                .unwrap()
+                .commit(),
+            Some(root)
+        );
+        assert_eq!(ref_log(&meta, "main").await.len(), 1);
+
+        let next = commit_on(&mut meta, "main", 3_000, &[root]).await.unwrap();
+        assert_ne!(next, root);
+    }
+
+    #[tokio::test]
+    async fn a_commit_on_an_unknown_worktree_writes_nothing() {
+        let mut meta = initialized_meta().await;
+        let err = commit_on(&mut meta, "ghost", 1_000, &[]).await.unwrap_err();
+        assert!(matches!(err, StorageError::UnknownWorktree { name } if name == "ghost"));
+        assert!(meta.latest_commit().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_detached_head_moves_without_a_branch() {
+        let mut meta = initialized_meta().await;
+        let root = commit_on(&mut meta, "main", 1_000, &[]).await.unwrap();
+        let linked = Worktree {
+            name: worktree("linked"),
+            path: Some("/worlds/linked".to_owned()),
+            head: Head::Detached(root),
+        };
+        meta.add_worktree(&linked, note("add")).await.unwrap();
+        assert_eq!(
+            head_log(&meta, "linked").await,
+            vec![entry(None, root, "add", 5_000)]
+        );
+
+        let next = commit_on(&mut meta, "linked", 2_000, &[root])
+            .await
+            .unwrap();
+        assert_eq!(
+            meta.head(&worktree("linked")).await.unwrap(),
+            Some(HeadState::Detached { commit: next })
+        );
+        assert_eq!(
+            meta.lookup_ref(&branch("main"))
+                .await
+                .unwrap()
+                .unwrap()
+                .commit,
+            root,
+            "no branch moved"
+        );
+        assert_eq!(head_log(&meta, "linked").await.len(), 2);
     }
 
     #[tokio::test]
     async fn a_ref_cannot_name_a_missing_commit() {
         let mut meta = memory_meta().await;
-        let feature = RefName::parse("feature").unwrap();
-
         // A stale target is a typed error, not an opaque foreign-key
         // violation, and the ref does not appear.
         let missing = CommitId([0xEE; 32]);
         let err = meta
-            .set_ref(&feature, Some(missing), 1_000)
+            .create_ref(&branch("feature"), missing, note("branch: Created from x"))
             .await
             .unwrap_err();
         assert!(matches!(err, StorageError::UnknownCommit { id } if id == missing));
-        assert!(meta.lookup_ref(&feature).await.unwrap().is_none());
+        assert!(meta.lookup_ref(&branch("feature")).await.unwrap().is_none());
     }
 
     #[tokio::test]
-    async fn moving_a_born_active_ref_back_to_unborn_keeps_its_state() {
-        let mut meta = memory_meta().await;
-        let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
-        let first = meta
-            .apply_commit_incremental(1_000, &[], &[])
+    async fn refs_refuse_directory_and_file_conflicts() {
+        let mut meta = initialized_meta().await;
+        let root = meta.create_commit(1_000, &[]).await.unwrap();
+        meta.create_ref(&branch("a/b"), root, note("x"))
             .await
-            .unwrap()
-            .id;
-        let before = meta.lookup_ref(&main).await.unwrap().unwrap();
-        assert_eq!(before.commit, Some(first));
+            .unwrap();
 
-        meta.set_ref(&main, None, 2_000).await.unwrap();
-        let after = meta.lookup_ref(&main).await.unwrap().unwrap();
-        assert_eq!(after.commit, None, "the target moved back to unborn");
-        assert!(after.active, "the move kept the active flag");
+        for (name, existing) in [
+            (branch("a"), branch("a/b")),
+            (branch("a/b/c"), branch("a/b")),
+            // The branch an unborn HEAD names counts as taken.
+            (branch("main/x"), branch("main")),
+        ] {
+            let err = meta.create_ref(&name, root, note("x")).await.unwrap_err();
+            assert!(
+                matches!(&err, StorageError::RefConflict { existing: found, .. } if *found == existing),
+                "{name}: {err}"
+            );
+        }
+        // Names that only share a prefix, or live in another namespace, do
+        // not conflict.
+        for name in [branch("a-b"), branch("a/bc"), branch("ab"), tag("a/b/c")] {
+            meta.create_ref(&name, root, note("x")).await.unwrap();
+        }
+        assert!(matches!(
+            meta.create_ref(&tag("a"), root, note("x")).await,
+            Err(StorageError::RefConflict { existing, .. }) if existing == tag("a/b/c")
+        ));
+        assert!(matches!(
+            meta.create_ref(&branch("a/b"), root, note("x")).await,
+            Err(StorageError::RefExists { name }) if name == branch("a/b")
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_checked_out_branch_is_never_deleted_or_moved() {
+        let mut meta = initialized_meta().await;
+        let first = commit_on(&mut meta, "main", 1_000, &[]).await.unwrap();
+        let second = commit_on(&mut meta, "main", 2_000, &[first]).await.unwrap();
+
+        assert!(matches!(
+            meta.delete_ref(&branch("main")).await,
+            Err(StorageError::BranchCheckedOut { branch: held, worktree })
+                if held == branch("main") && worktree == "main"
+        ));
+        assert!(matches!(
+            meta.move_ref(&branch("main"), first, note("branch: Reset to x"))
+                .await,
+            Err(StorageError::BranchCheckedOut { .. })
+        ));
         assert_eq!(
-            after.created_at_ms, before.created_at_ms,
-            "the move kept the creation time"
+            meta.lookup_ref(&branch("main"))
+                .await
+                .unwrap()
+                .unwrap()
+                .commit,
+            second
+        );
+
+        // Once HEAD leaves it, the branch moves, and only its own reflog
+        // records the move.
+        meta.set_head(&worktree("main"), &Head::Detached(second), note("detach"))
+            .await
+            .unwrap();
+        let old = meta
+            .move_ref(&branch("main"), first, note("reset"))
+            .await
+            .unwrap();
+        assert_eq!(old, second);
+        assert_eq!(
+            ref_log(&meta, "main").await[0],
+            entry(Some(second), first, "reset", 5_000)
+        );
+        assert_eq!(
+            head_log(&meta, "main").await[0],
+            entry(Some(second), second, "detach", 5_000)
         );
     }
 
     #[tokio::test]
+    async fn a_branch_is_checked_out_by_at_most_one_worktree() {
+        let mut meta = initialized_meta().await;
+        let linked = Worktree {
+            name: worktree("linked"),
+            path: Some("/worlds/linked".to_owned()),
+            head: Head::Branch(branch_name("main")),
+        };
+        // Unborn counts too.
+        assert!(matches!(
+            meta.add_worktree(&linked, note("add")).await,
+            Err(StorageError::BranchCheckedOut { worktree, .. }) if worktree == "main"
+        ));
+        let linked = Worktree {
+            head: Head::Branch(branch_name("other")),
+            ..linked
+        };
+        meta.add_worktree(&linked, note("add")).await.unwrap();
+        assert!(matches!(
+            meta.set_head(
+                &worktree("linked"),
+                &Head::Branch(branch_name("main")),
+                note("x")
+            )
+            .await,
+            Err(StorageError::BranchCheckedOut { .. })
+        ));
+        // Checking out the branch a worktree is already on is a no-op move.
+        meta.set_head(
+            &worktree("main"),
+            &Head::Branch(branch_name("main")),
+            note("x"),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn checkout_logs_only_a_head_left_at_a_commit() {
+        let mut meta = initialized_meta().await;
+        let root = commit_on(&mut meta, "main", 1_000, &[]).await.unwrap();
+        meta.create_ref(&tag("v1"), root, note("unused"))
+            .await
+            .unwrap();
+
+        meta.set_head(&worktree("main"), &Head::Detached(root), note("detach"))
+            .await
+            .unwrap();
+        meta.set_head(
+            &worktree("main"),
+            &Head::Branch(branch_name("orphan")),
+            note("orphan"),
+        )
+        .await
+        .unwrap();
+        meta.set_head(
+            &worktree("main"),
+            &Head::Branch(branch_name("main")),
+            note("back"),
+        )
+        .await
+        .unwrap();
+        let messages: Vec<String> = head_log(&meta, "main")
+            .await
+            .into_iter()
+            .map(|entry| entry.message)
+            .collect();
+        assert_eq!(messages, ["back", "detach", "commit (initial): "]);
+        assert_eq!(
+            head_log(&meta, "main").await[0],
+            entry(None, root, "back", 5_000),
+            "leaving an unborn HEAD has no old commit"
+        );
+        assert!(
+            meta.visit_ref_log(&branch_name("v1"), |_| panic!("tags are not logged"))
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn renaming_a_branch_carries_heads_and_reflog() {
+        let mut meta = initialized_meta().await;
+        let root = commit_on(&mut meta, "main", 1_000, &[]).await.unwrap();
+
+        meta.rename_branch(
+            &branch_name("main"),
+            &branch_name("trunk"),
+            false,
+            note("renamed"),
+        )
+        .await
+        .unwrap();
+        assert!(meta.lookup_ref(&branch("main")).await.unwrap().is_none());
+        assert_eq!(
+            meta.head(&worktree("main")).await.unwrap(),
+            Some(HeadState::Attached {
+                branch: branch_name("trunk"),
+                commit: root
+            })
+        );
+        assert_eq!(ref_log(&meta, "main").await, []);
+        let expected = vec![
+            entry(Some(root), root, "renamed", 5_000),
+            entry(None, root, "commit (initial): ", 1_000),
+        ];
+        assert_eq!(ref_log(&meta, "trunk").await, expected);
+        assert_eq!(head_log(&meta, "main").await, expected);
+
+        // A branch may move below its own old name.
+        meta.rename_branch(
+            &branch_name("trunk"),
+            &branch_name("trunk/x"),
+            false,
+            note("deeper"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(ref_log(&meta, "trunk/x").await.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_head_move_does_not_strand_a_nested_branch() {
+        let mut meta = initialized_meta().await;
+        let root = meta.create_commit(1_000, &[]).await.unwrap();
+        meta.create_ref(&branch("other"), root, note("x"))
+            .await
+            .unwrap();
+        meta.set_head(
+            &worktree("main"),
+            &Head::Branch(branch_name("other")),
+            note("checkout"),
+        )
+        .await
+        .unwrap();
+        meta.create_ref(&branch("main/x"), root, note("x"))
+            .await
+            .unwrap();
+        meta.set_head(
+            &worktree("main"),
+            &Head::Branch(branch_name("main/x")),
+            note("checkout"),
+        )
+        .await
+        .unwrap();
+        // `main/x` is born and stays in `refs`: HEAD may not move onto the
+        // unborn `main`, which would shadow it.
+        let err = meta
+            .set_head(
+                &worktree("main"),
+                &Head::Branch(branch_name("main")),
+                note("checkout"),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, StorageError::RefConflict { name, existing }
+                if *name == branch("main") && *existing == branch("main/x")),
+            "{err}"
+        );
+        // A re-checkout of the branch HEAD holds is a no-op.
+        meta.set_head(
+            &worktree("main"),
+            &Head::Branch(branch_name("main/x")),
+            note("checkout"),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_head_moves_onto_and_off_an_unborn_branch() {
+        let mut meta = initialized_meta().await;
+        // HEAD starts unborn on `main`: moving it onto an unborn `main/x`
+        // must not trip the conflict scan over the unborn `main`.
+        meta.set_head(
+            &worktree("main"),
+            &Head::Branch(branch_name("main/x")),
+            note("checkout"),
+        )
+        .await
+        .unwrap();
+        // And back onto the unborn `main`.
+        meta.set_head(
+            &worktree("main"),
+            &Head::Branch(branch_name("main")),
+            note("checkout"),
+        )
+        .await
+        .unwrap();
+        // Re-checking out the unborn `main` is a no-op.
+        meta.set_head(
+            &worktree("main"),
+            &Head::Branch(branch_name("main")),
+            note("checkout"),
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_corrupt_worktree_head_row_fails_loudly() {
+        let meta = memory_meta().await;
+        let root = meta.create_commit(1_000, &[]).await.unwrap();
+        // Drop the CHECK that keeps exactly one of the two HEAD columns
+        // set, the way corruption would.
+        for sql in [
+            "PRAGMA legacy_alter_table = ON",
+            "DROP INDEX idx_worktrees_main",
+            "DROP INDEX idx_worktrees_head_ref",
+            "ALTER TABLE worktrees RENAME TO worktrees_no_check",
+            "CREATE TABLE worktrees(name TEXT NOT NULL COLLATE BINARY PRIMARY KEY, path TEXT NULL UNIQUE, head_ref TEXT NULL CHECK (head_ref GLOB 'refs/heads/?*'), head_commit BLOB NULL REFERENCES commits(id)) WITHOUT ROWID",
+            "INSERT INTO worktrees SELECT * FROM worktrees_no_check",
+            "DROP TABLE worktrees_no_check",
+            "PRAGMA legacy_alter_table = OFF",
+        ] {
+            sqlx::query(sql).execute(&meta.pool).await.unwrap();
+        }
+        // `w` holds neither HEAD column; `w2` holds both.
+        sqlx::query(
+            "INSERT INTO worktrees (name, path, head_ref, head_commit) \
+             VALUES ('w', NULL, NULL, NULL), ('w2', NULL, 'refs/heads/main', ?)",
+        )
+        .bind(commit_param(root))
+        .execute(&meta.pool)
+        .await
+        .unwrap();
+        for name in ["w", "w2"] {
+            let err = meta.lookup_worktree(&worktree(name)).await.unwrap_err();
+            assert!(
+                matches!(&err, StorageError::CorruptWorktreeHead { name: stored } if stored == name),
+                "{err}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn renaming_an_unborn_branch_rewrites_only_head() {
+        let mut meta = initialized_meta().await;
+        meta.rename_branch(
+            &branch_name("main"),
+            &branch_name("trunk"),
+            false,
+            note("renamed"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            meta.head(&worktree("main")).await.unwrap(),
+            Some(HeadState::Unborn {
+                branch: branch_name("trunk")
+            })
+        );
+        assert_eq!(head_log(&meta, "main").await, []);
+        assert!(matches!(
+            meta.rename_branch(&branch_name("main"), &branch_name("x"), false, note("x")).await,
+            Err(StorageError::UnknownRef { name }) if name == branch("main")
+        ));
+    }
+
+    #[tokio::test]
+    async fn renaming_refuses_taken_and_conflicting_names() {
+        let mut meta = initialized_meta().await;
+        let root = meta.create_commit(1_000, &[]).await.unwrap();
+        meta.create_ref(&branch("a"), root, note("x"))
+            .await
+            .unwrap();
+        meta.create_ref(&branch("b/c"), root, note("x"))
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            meta.rename_branch(&branch_name("a"), &branch_name("b/c"), false, note("x"))
+                .await,
+            Err(StorageError::RefExists { .. })
+        ));
+        assert!(matches!(
+            meta.rename_branch(&branch_name("a"), &branch_name("b"), false, note("x"))
+                .await,
+            Err(StorageError::RefConflict { .. })
+        ));
+        assert!(matches!(
+            meta.rename_branch(&branch_name("a"), &branch_name("main"), false, note("x"))
+                .await,
+            Err(StorageError::BranchCheckedOut { .. })
+        ));
+        assert!(meta.lookup_ref(&branch("a")).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn forcing_a_rename_replaces_the_target() {
+        let mut meta = initialized_meta().await;
+        let root = commit_on(&mut meta, "main", 1_000, &[]).await.unwrap();
+        let next = meta.create_commit(2_000, &[root]).await.unwrap();
+        meta.create_ref(&branch("old"), next, note("created old"))
+            .await
+            .unwrap();
+
+        // HEAD's branch replaces `old`, whose reflog goes with it.
+        meta.rename_branch(
+            &branch_name("main"),
+            &branch_name("old"),
+            true,
+            note("forced"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            meta.lookup_ref(&branch("old")).await.unwrap(),
+            Some(CommitRef::new(branch("old"), root))
+        );
+        let expected = vec![
+            entry(Some(root), root, "forced", 5_000),
+            entry(None, root, "commit (initial): ", 1_000),
+        ];
+        assert_eq!(ref_log(&meta, "old").await, expected);
+        assert_eq!(head_log(&meta, "main").await, expected);
+
+        // A branch checked out elsewhere is never replaced.
+        meta.create_ref(&branch("side"), next, note("x"))
+            .await
+            .unwrap();
+        assert!(matches!(
+            meta.rename_branch(&branch_name("side"), &branch_name("old"), true, note("x"))
+                .await,
+            Err(StorageError::BranchCheckedOut { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn forcing_an_unborn_rename_attaches_head_to_the_target() {
+        let mut meta = initialized_meta().await;
+        let root = meta.create_commit(1_000, &[]).await.unwrap();
+        meta.create_ref(&branch("x"), root, note("created x"))
+            .await
+            .unwrap();
+
+        meta.rename_branch(
+            &branch_name("main"),
+            &branch_name("x"),
+            true,
+            note("forced"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            meta.head(&worktree("main")).await.unwrap(),
+            Some(HeadState::Attached {
+                branch: branch_name("x"),
+                commit: root
+            })
+        );
+        assert_eq!(
+            head_log(&meta, "main").await,
+            [entry(None, root, "forced", 5_000)]
+        );
+        assert_eq!(
+            ref_log(&meta, "x").await,
+            [entry(None, root, "created x", 5_000)]
+        );
+    }
+
+    #[tokio::test]
+    async fn renaming_a_branch_to_itself_only_logs() {
+        let mut meta = initialized_meta().await;
+        let root = commit_on(&mut meta, "main", 1_000, &[]).await.unwrap();
+        meta.rename_branch(
+            &branch_name("main"),
+            &branch_name("main"),
+            false,
+            note("same"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            ref_log(&meta, "main").await[0],
+            entry(Some(root), root, "same", 5_000)
+        );
+        assert_eq!(
+            head_log(&meta, "main").await[0],
+            entry(Some(root), root, "same", 5_000)
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_a_branch_drops_its_reflog() {
+        let mut meta = initialized_meta().await;
+        let root = meta.create_commit(1_000, &[]).await.unwrap();
+        meta.create_ref(&branch("feature"), root, note("created"))
+            .await
+            .unwrap();
+        assert_eq!(ref_log(&meta, "feature").await.len(), 1);
+
+        assert_eq!(
+            meta.delete_ref(&branch("feature")).await.unwrap(),
+            Some(root)
+        );
+        assert_eq!(meta.delete_ref(&branch("feature")).await.unwrap(), None);
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ref_log")
+            .fetch_one(&meta.pool)
+            .await
+            .unwrap();
+        assert_eq!(rows, 0);
+    }
+
+    #[tokio::test]
+    async fn worktrees_keep_one_main_and_unique_paths() {
+        let mut meta = initialized_meta().await;
+        let root = meta.create_commit(1_000, &[]).await.unwrap();
+        let linked = |name: &str, path: Option<&str>| Worktree {
+            name: worktree(name),
+            path: path.map(str::to_owned),
+            head: Head::Detached(root),
+        };
+        assert!(matches!(
+            meta.add_worktree(&linked("second", None), note("x")).await,
+            Err(StorageError::MainWorktreeExists)
+        ));
+        assert!(matches!(
+            meta.add_worktree(&linked("main", Some("/w/main")), note("x"))
+                .await,
+            Err(StorageError::WorktreeExists { .. })
+        ));
+        meta.add_worktree(&linked("a", Some("/w/a")), note("x"))
+            .await
+            .unwrap();
+        meta.add_worktree(&linked("b", Some("/w/b")), note("x"))
+            .await
+            .unwrap();
+        assert!(matches!(
+            meta.add_worktree(&linked("c", Some("/w/a")), note("x"))
+                .await,
+            Err(StorageError::WorktreePathTaken { .. })
+        ));
+        assert!(matches!(
+            meta.remove_worktree(&worktree("main")).await,
+            Err(StorageError::MainWorktreeProtected { .. })
+        ));
+        assert!(meta.remove_worktree(&worktree("a")).await.unwrap());
+        assert!(!meta.remove_worktree(&worktree("a")).await.unwrap());
+        let logs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM head_log WHERE worktree = 'a'")
+            .fetch_one(&meta.pool)
+            .await
+            .unwrap();
+        assert_eq!(logs, 0, "the HEAD reflog goes with its worktree");
+
+        let mut names = Vec::new();
+        meta.visit_worktrees(|worktree| {
+            names.push(worktree.name.to_string());
+            true
+        })
+        .await
+        .unwrap();
+        assert_eq!(names, ["b", "main"]);
+    }
+
+    #[tokio::test]
     async fn recording_the_same_commit_twice_is_idempotent() {
-        let mut meta = memory_meta().await;
+        let meta = memory_meta().await;
         let first = meta.create_commit(1_000, &[]).await.unwrap();
         let again = meta.create_commit(1_000, &[]).await.unwrap();
         assert_eq!(first, again);
@@ -1239,134 +2313,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_commit_must_continue_the_active_ref() {
-        let mut meta = memory_meta().await;
-        let root = meta
-            .apply_commit_incremental(1_000, &[], &[])
-            .await
-            .unwrap()
-            .id;
-
-        let err = meta
-            .apply_commit_incremental(2_000, &[], &[])
-            .await
-            .unwrap_err();
-        assert!(matches!(err, StorageError::NotContinuing { base } if base == root));
-
-        // The rejected call wrote nothing.
-        assert_eq!(meta.latest_commit().await.unwrap().unwrap().id, root);
-        assert_eq!(meta.active_ref().await.unwrap().unwrap().commit, Some(root));
-
-        let next = meta
-            .apply_commit_incremental(3_000, &[root], &[])
-            .await
-            .unwrap()
-            .id;
-        assert_ne!(next, root);
-    }
-
-    #[tokio::test]
     async fn a_corrupt_ref_row_fails_loudly() {
-        let (dir, _guard) = tempdir("corrupt-ref");
-        let path = dir.join("meta.sqlite");
-        let meta = SqliteMeta::open(&path).await.unwrap();
-        // Names are re-validated on decode: a row the schema no longer
+        let meta = memory_meta().await;
+        let root = meta.create_commit(1_000, &[]).await.unwrap();
+        // Names are re-validated on decode: a row the validator no longer
         // accepts is corruption, never a new ref name.
-        sqlx::query(
-            "INSERT INTO refs (name, commit_id, active, created_at_ms) \
-             VALUES ('bad name', NULL, 0, 0)",
-        )
-        .execute(&meta.pool)
-        .await
-        .unwrap();
-
-        let err = meta.visit_refs(|_| true).await.unwrap_err();
-        assert!(matches!(err, StorageError::InvalidRefName { name } if name == "bad name"));
-
-        // The table's CHECK normally rejects this; disable it on a
-        // dedicated connection so no pooled connection inherits the pragma.
-        let mut raw = SqliteConnectOptions::new()
-            .filename(&path)
-            .connect()
-            .await
-            .unwrap();
-        sqlx::query("PRAGMA ignore_check_constraints = ON")
-            .execute(&mut raw)
-            .await
-            .unwrap();
-        sqlx::query("UPDATE refs SET active = 2 WHERE name = ?")
-            .bind(DEFAULT_REF_NAME)
-            .execute(&mut raw)
-            .await
-            .unwrap();
-        sqlx::query("PRAGMA ignore_check_constraints = OFF")
-            .execute(&mut raw)
-            .await
-            .unwrap();
-        raw.close().await.unwrap();
-
-        let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
-        assert!(matches!(
-            meta.lookup_ref(&main).await,
-            Err(StorageError::InvalidHistoryValue {
-                column: "active",
-                value: 2
-            })
-        ));
-    }
-
-    #[tokio::test]
-    async fn a_commit_without_an_active_ref_writes_nothing() {
-        let mut meta = memory_meta().await;
-        // A first commit gives the store a history.
-        let first = meta
-            .apply_commit_incremental(1_000, &[], &[])
-            .await
-            .unwrap()
-            .id;
-        // A store whose active flag was lost (corruption or a legacy row),
-        // leaving the history intact but with no head.
-        sqlx::query("UPDATE refs SET active = 0")
+        sqlx::query("INSERT INTO refs (name, commit_id) VALUES ('refs/heads/bad name', ?)")
+            .bind(commit_param(root))
             .execute(&meta.pool)
             .await
             .unwrap();
-
-        let err = meta
-            .apply_commit_incremental(2_000, &[], &[])
-            .await
-            .unwrap_err();
-        assert!(matches!(err, StorageError::NoActiveRef));
-
-        let mut commits = Vec::new();
-        meta.visit_commits(|commit| {
-            commits.push(commit.clone());
-            true
-        })
-        .await
-        .unwrap();
-        assert_eq!(commits.len(), 1, "the failed commit left a row behind");
-        assert_eq!(commits[0].id, first);
-    }
-
-    #[tokio::test]
-    async fn the_active_ref_survives_a_delete_attempt() {
-        let mut meta = memory_meta().await;
-        let main = RefName::parse(DEFAULT_REF_NAME).unwrap();
-        let other = RefName::parse("feature").unwrap();
-        meta.set_ref(&other, None, 1_000).await.unwrap();
-
-        assert!(matches!(
-            meta.delete_ref(&main).await,
-            Err(StorageError::ActiveRefProtected { .. })
-        ));
-        assert!(meta.lookup_ref(&main).await.unwrap().is_some());
-        assert!(meta.delete_ref(&other).await.unwrap());
-        assert!(!meta.delete_ref(&other).await.unwrap());
+        let err = meta.visit_refs(|_| true).await.unwrap_err();
+        assert!(
+            matches!(err, StorageError::InvalidRefName { name } if name == "refs/heads/bad name")
+        );
     }
 
     #[tokio::test]
     async fn a_commit_cannot_name_a_missing_commit_as_parent() {
-        let mut meta = memory_meta().await;
+        let meta = memory_meta().await;
         let missing = CommitId([9; 32]);
         assert!(matches!(
             meta.create_commit(1_000, &[missing]).await,
@@ -1421,14 +2386,13 @@ mod tests {
     }
 
     /// The version gate rejects any store whose `user_version` is not
-    /// `SCHEMA_VERSION` (17) before any table is touched. A store from the
-    /// immediately previous version (16: delta history, `commits` without
-    /// `root_hash`) is refused with `UnsupportedSchema { found: 16,
-    /// supported: SCHEMA_VERSION }`, never opened and failed on the first
-    /// query.
+    /// `SCHEMA_VERSION` (18) before any table is touched. A store from the
+    /// immediately previous version (17: one active ref, no worktrees) is
+    /// refused with `UnsupportedSchema { found: 17, supported:
+    /// SCHEMA_VERSION }`, never opened and failed on the first query.
     #[tokio::test]
     async fn a_store_from_the_previous_schema_version_is_refused() {
-        let (dir, _guard) = tempdir("version-16");
+        let (dir, _guard) = tempdir("version-17");
         let path = dir.join("meta.sqlite");
         let mut seed = SqliteConnectOptions::new()
             .filename(&path)
@@ -1436,28 +2400,21 @@ mod tests {
             .connect()
             .await
             .unwrap();
-        // The schema 16 layout as shipped: delta history, no tree tables.
+        // The schema 17 refs table as shipped: an active flag, no worktrees.
         sqlx::query(
-            "CREATE TABLE commits(
-                seq INTEGER PRIMARY KEY AUTOINCREMENT,
-                id BLOB NOT NULL UNIQUE,
+            "CREATE TABLE refs(
+                name TEXT NOT NULL COLLATE BINARY PRIMARY KEY,
+                commit_id BLOB NULL,
+                active INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0, 1)),
                 created_at_ms INTEGER NOT NULL
             );
-            CREATE TABLE chunk_history(
-                commit_id BLOB NOT NULL REFERENCES commits(id),
-                seq INTEGER NOT NULL,
-                dim INTEGER NOT NULL,
-                kind INTEGER NOT NULL,
-                cx INTEGER NOT NULL,
-                cz INTEGER NOT NULL,
-                blob BLOB NULL,
-                PRIMARY KEY(commit_id, dim, kind, cx, cz)
-            );",
+            INSERT INTO refs (name, commit_id, active, created_at_ms)
+                VALUES ('main', NULL, 1, 0);",
         )
         .execute(&mut seed)
         .await
         .unwrap();
-        sqlx::query("PRAGMA user_version=16")
+        sqlx::query("PRAGMA user_version=17")
             .execute(&mut seed)
             .await
             .unwrap();
@@ -1465,7 +2422,7 @@ mod tests {
         assert!(matches!(
             SqliteMeta::open(&path).await,
             Err(StorageError::UnsupportedSchema {
-                found: 16,
+                found: 17,
                 supported: SCHEMA_VERSION,
             })
         ));
@@ -1474,16 +2431,18 @@ mod tests {
     #[tokio::test]
     async fn commit_rows_store_canonical_tree_bytes() {
         use sekai_core::{ChunkHash, Dimension, RegionKind};
-        let mut meta = memory_meta().await;
+        let mut meta = initialized_meta().await;
         let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 5, 5);
         let id = meta
             .apply_commit_incremental(
+                &worktree("main"),
                 1_000,
                 &[],
                 &[sekai_core::CommitEntry::new(
                     coord,
                     Some(ChunkHash::new([1; 32])),
                 )],
+                note("commit (initial): "),
             )
             .await
             .unwrap()
@@ -1516,7 +2475,6 @@ mod tests {
 
     #[tokio::test]
     async fn stored_tree_corruption_fails_loudly() {
-        use sekai_storage::MetaStore as _;
         let meta = memory_meta().await;
         let hash = RootHash::new([9; 32]);
         sqlx::query("INSERT INTO root_tree (hash, node) VALUES (?, ?)")
@@ -1538,8 +2496,7 @@ mod tests {
     #[tokio::test]
     async fn a_commit_spanning_node_insert_batches_records_every_region() {
         use sekai_core::{ChunkHash, RegionKind};
-        use sekai_storage::MetaStore as _;
-        let mut meta = memory_meta().await;
+        let mut meta = initialized_meta().await;
         // One chunk per region, so the region table alone spans three batches.
         // Region nodes are content-addressed: a repeating blob would collapse
         // same-slot regions into one node, so every blob must be distinct.
@@ -1553,7 +2510,11 @@ mod tests {
                 CommitEntry::new(coord, Some(ChunkHash::new(hash)))
             })
             .collect();
-        let commit = meta.apply_commit(1_000, &[], &entries).await.unwrap();
+        let commit = meta
+            .apply_commit_incremental(&worktree("main"), 1_000, &[], &entries, note("x"))
+            .await
+            .unwrap()
+            .id;
 
         let mut recorded = Vec::new();
         meta.visit_commit_chunks(commit, |entry| {

@@ -13,6 +13,7 @@
 #![cfg(feature = "backend-local")]
 
 mod fixtures;
+mod support;
 
 use fixtures::chunk_nbt;
 
@@ -121,7 +122,7 @@ async fn commit_records_history_without_writing_cache_entries() {
         &[(0, 0, chunk_nbt("marker-1"))],
     );
 
-    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let mut instance = support::init_store(&store).await.unwrap();
     let (report, _) = instance
         .world_mut(&mut world)
         .commit(options(), Scope::World, &())
@@ -168,7 +169,7 @@ async fn update_cache_then_commit_caches_every_covered_region() {
         );
     }
 
-    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let mut instance = support::init_store(&store).await.unwrap();
     instance
         .world_mut(&mut world)
         .update_cache(update_options(), &())
@@ -206,7 +207,7 @@ async fn repeated_update_and_commit_keep_the_first_image() {
     write_region(&path, &chunks);
     let first_image = std::fs::read(&path).unwrap();
 
-    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let mut instance = support::init_store(&store).await.unwrap();
     instance
         .world_mut(&mut world)
         .update_cache(update_options(), &())
@@ -256,7 +257,7 @@ async fn changed_region_gets_a_new_entry() {
     write_region(&path, &[(0, 0, chunk_nbt("marker-1"))]);
     let first_image = std::fs::read(&path).unwrap();
 
-    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let mut instance = support::init_store(&store).await.unwrap();
     instance
         .world_mut(&mut world)
         .update_cache(update_options(), &())
@@ -311,7 +312,7 @@ async fn partial_scope_does_not_cache_the_merged_region() {
     );
     let first_image = std::fs::read(&path).unwrap();
 
-    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let mut instance = support::init_store(&store).await.unwrap();
     instance
         .world_mut(&mut world)
         .update_cache(update_options(), &())
@@ -387,7 +388,7 @@ async fn fully_covered_rect_caches_the_region() {
     );
     let image = std::fs::read(&path).unwrap();
 
-    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let mut instance = support::init_store(&store).await.unwrap();
     instance
         .world_mut(&mut world)
         .update_cache(update_options(), &())
@@ -422,7 +423,7 @@ async fn status_and_commit_write_no_cache_entries() {
     let image = std::fs::read(&path).unwrap();
     let expected = file_region_hash(&path);
 
-    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let mut instance = support::init_store(&store).await.unwrap();
     let (report, _) = instance
         .world(&world)
         .status(StatusOptions::default(), Scope::World, &())
@@ -470,7 +471,7 @@ async fn empty_region_is_not_cached() {
     let store = root.join("store").to_string_lossy().into_owned();
     write_region(world_path.join("region/r.0.0.mca"), &[]);
 
-    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let mut instance = support::init_store(&store).await.unwrap();
     let (report, _) = instance
         .world_mut(&mut world)
         .commit(options(), Scope::World, &())
@@ -503,7 +504,7 @@ async fn clean_cache_wipes_entries_and_the_next_update_rebuilds_them() {
     write_region(&path, &[(0, 0, chunk_nbt("marker-1"))]);
     let image = std::fs::read(&path).unwrap();
 
-    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let mut instance = support::init_store(&store).await.unwrap();
     assert_eq!(instance.clean_cache().await.unwrap(), 0);
     instance
         .world_mut(&mut world)
@@ -558,7 +559,7 @@ async fn wiped_cache_is_rebuilt_on_the_next_update() {
     write_region(&path, &[(0, 0, chunk_nbt("marker-1"))]);
     let image = std::fs::read(&path).unwrap();
 
-    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let mut instance = support::init_store(&store).await.unwrap();
     instance
         .world_mut(&mut world)
         .update_cache(update_options(), &())
@@ -577,7 +578,7 @@ async fn wiped_cache_is_rebuilt_on_the_next_update() {
 
     drop(instance);
     std::fs::remove_dir_all(store_dir.join("cache")).unwrap();
-    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let mut instance = support::init_store(&store).await.unwrap();
     assert_eq!(instance.store().cache().mca_hash(hash).await.unwrap(), None);
 
     instance
@@ -612,7 +613,7 @@ async fn update_cache_populates_without_recording_a_commit() {
     let image = std::fs::read(&path).unwrap();
     let expected = file_region_hash(&path);
 
-    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let mut instance = support::init_store(&store).await.unwrap();
     let (report, _) = instance
         .world_mut(&mut world)
         .update_cache(update_options(), &())
@@ -659,7 +660,7 @@ async fn update_cache_is_idempotent_and_keeps_the_first_image() {
     let first_image = std::fs::read(&path).unwrap();
     let expected = file_region_hash(&path);
 
-    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let mut instance = support::init_store(&store).await.unwrap();
     let (first, _) = instance
         .world_mut(&mut world)
         .update_cache(update_options(), &())
@@ -693,7 +694,7 @@ async fn update_cache_skips_empty_region_files() {
     let store = root.join("store").to_string_lossy().into_owned();
     write_region(world_path.join("region/r.0.0.mca"), &[]);
 
-    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let mut instance = support::init_store(&store).await.unwrap();
     let (report, _) = instance
         .world_mut(&mut world)
         .update_cache(update_options(), &())
@@ -742,7 +743,7 @@ async fn update_cache_caches_every_region_family() {
         );
     }
 
-    let mut instance = sekai_app::SekaiInstance::init(&store).await.unwrap();
+    let mut instance = support::init_store(&store).await.unwrap();
     let (report, _) = instance
         .world_mut(&mut world)
         .update_cache(update_options(), &())

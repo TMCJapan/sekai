@@ -24,8 +24,8 @@ use alloc::vec::Vec;
 
 use sekai_storage::{DimNode, MetaStore, RegionEntry, RegionNode};
 use sekai_util::{
-    ApplyOutcome, ChunkCoord, ChunkHash, Commit, CommitEntry, CommitId, DimHash, RegionHash,
-    RegionKey, Scope,
+    ApplyOutcome, ChunkCoord, ChunkHash, Commit, CommitEntry, CommitId, DimHash, HeadState,
+    ReflogNote, RegionHash, RegionKey, Scope, WorktreeName,
 };
 
 use crate::tree::local_slot;
@@ -47,11 +47,11 @@ pub struct CommitReport {
 /// Previous commit plus the state the walk needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Previous {
-    /// The commit the new one continues: the target of the active ref,
-    /// when the store has one (`None` on an unborn ref).
+    /// The commit the new one continues: the commit HEAD stands at
+    /// (`None` while HEAD is unborn).
     pub commit: Option<Commit>,
     /// Effective present entries of the base commit (empty on an unborn
-    /// ref). Keyed by coordinate; the entry carries the blob hash used
+    /// HEAD). Keyed by coordinate; the entry carries the blob hash used
     /// for chunk-level change detection. Absent coordinates are not part
     /// of the snapshot, so they never appear here.
     pub state: BTreeMap<ChunkCoord, CommitEntry>,
@@ -88,13 +88,13 @@ pub struct Assembled {
 
 /// Load prior state and list the in-scope regions to ingest.
 ///
-/// The base is the target of the active ref: a new commit continues the
-/// history that ref names, not the newest commit in the store. A store
-/// without an active ref (or with an unborn one) starts a new history.
+/// The base is the commit `worktree`'s HEAD stands at: a new commit
+/// continues the history HEAD is on, not the newest commit in the store.
+/// An unborn HEAD starts a new history.
 ///
 /// The caller must hold the world's lock (shared or exclusive) from this
-/// call through [`record_commit`]: a commit that moves the active ref in
-/// between would make the plan's base and the recorded parent disagree.
+/// call through [`record_commit`]: a commit that moves HEAD in between
+/// would make the plan's base and the recorded parent disagree.
 ///
 /// Regions outside `scope` are ignored entirely: they are neither ingested
 /// nor reported as removed. Callers must quiesce the source while reading;
@@ -106,14 +106,16 @@ pub struct Assembled {
 /// drops chunk facts whose blob already matches the base snapshot.
 pub async fn plan_commit<M: MetaStore>(
     meta: &M,
+    worktree: &WorktreeName,
     discovered: &[RegionKey],
     scope: &Scope,
 ) -> Result<(Previous, Plan), M::Error> {
-    let active = meta.active_ref().await?;
-    // `MetaStore::active_ref` rejects a dangling target (the trait's
-    // contract), so the lookup below always finds the commit the ref
-    // names: a `None` here is an unborn ref.
-    let base = match active.as_ref().and_then(|r| r.commit) {
+    // Refs and HEADs name existing commits (foreign keys), so the lookup
+    // below finds the commit HEAD stands at: a `None` here is an unborn
+    // HEAD, or a worktree the store does not know, which the commit
+    // itself then refuses.
+    let head = meta.head(worktree).await?;
+    let base = match head.as_ref().and_then(HeadState::commit) {
         Some(id) => meta.lookup_commit(id).await?,
         None => None,
     };
@@ -227,13 +229,15 @@ pub fn assemble(plan: Plan, previous: &Previous, ingested: Ingested, scope: &Sco
 /// metadata transaction is committed.
 ///
 /// The new commit continues the history it was planned against: its
-/// parent is `previous.commit` - the target of the active ref, which is
-/// also the base tree its changes were computed against. The active ref moves
-/// onto the new commit in the same transaction. Plan and commit must not be
-/// interleaved with another commit; the app holds the store's writer
-/// lock for the whole run.
+/// parent is `previous.commit` - the commit `worktree`'s HEAD stands at,
+/// which is also the base tree its changes were computed against. HEAD
+/// moves onto the new commit in the same transaction, which logs Git's
+/// `commit: ` message, or `commit (initial): ` for an unborn HEAD. Plan
+/// and commit must not be interleaved with another commit; the app holds
+/// the store's writer lock for the whole run.
 pub async fn record_commit<M: MetaStore>(
     meta: &mut M,
+    worktree: &WorktreeName,
     previous: &Previous,
     staged: &Assembled,
     created_at_ms: u64,
@@ -242,8 +246,19 @@ pub async fn record_commit<M: MetaStore>(
         .commit
         .as_ref()
         .map_or_default(|commit| alloc::vec![commit.id]);
+    let message = if parents.is_empty() {
+        "commit (initial): "
+    } else {
+        "commit: "
+    };
     let outcome: ApplyOutcome = meta
-        .apply_commit_incremental(created_at_ms, &parents, &staged.entries)
+        .apply_commit_incremental(
+            worktree,
+            created_at_ms,
+            &parents,
+            &staged.entries,
+            ReflogNote::new(message, created_at_ms),
+        )
         .await?;
     Ok(CommitReport {
         commit: outcome.id,
@@ -325,8 +340,8 @@ pub async fn commit_region_hashes<M: MetaStore>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::support::{MemError, MemMeta};
-    use sekai_util::{Area, Dimension, Rect, RefName, RegionKind};
+    use crate::support::{MemError, MemMeta, main_worktree};
+    use sekai_util::{Area, Dimension, Head, Rect, Ref, RefName, RegionKind};
 
     const OVER: Dimension = Dimension::OVERWORLD;
     const NETHER: Dimension = Dimension::NETHER;
@@ -348,15 +363,15 @@ mod tests {
         ChunkCoord::new(NETHER, REGION, x, z)
     }
 
-    /// The store's active ref: new commits hang from it.
-    fn main_ref() -> RefName {
-        RefName::parse("main").unwrap()
+    /// The branch the main worktree's HEAD starts on.
+    fn main_ref() -> Ref {
+        Ref::branch(RefName::parse("main").unwrap())
     }
 
-    /// A fake store with one active ref, the way a fresh store looks.
+    /// A fake store with a main worktree, HEAD unborn on `main`.
     fn store_with_ref() -> MemMeta {
         let mut meta = MemMeta::default();
-        meta.with_active_ref(&main_ref());
+        meta.with_main();
         meta
     }
 
@@ -364,8 +379,13 @@ mod tests {
     fn first_commit_ingests_everything() {
         let meta = store_with_ref();
         let discovered = [key(0, 0)];
-        let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = crate::support::block_on(plan_commit(
+            &meta,
+            &main_worktree(),
+            &discovered,
+            &Scope::World,
+        ))
+        .unwrap();
         assert!(previous.commit.is_none());
         assert!(previous.state.is_empty());
         assert_eq!(plan.ingest, alloc::vec![key(0, 0)]);
@@ -373,14 +393,19 @@ mod tests {
     }
 
     #[test]
-    fn a_new_commit_continues_the_active_ref() {
+    fn a_new_commit_continues_head() {
         let mut meta = store_with_ref();
         let main = main_ref();
         let discovered = [key(0, 0)];
 
-        // The active ref is unborn: the commit starts a history.
-        let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        // HEAD is unborn: the commit starts a history.
+        let (previous, plan) = crate::support::block_on(plan_commit(
+            &meta,
+            &main_worktree(),
+            &discovered,
+            &Scope::World,
+        ))
+        .unwrap();
         assert!(previous.commit.is_none());
         let staged = assemble(
             plan,
@@ -392,22 +417,41 @@ mod tests {
             },
             &Scope::World,
         );
-        let first =
-            crate::support::block_on(record_commit(&mut meta, &previous, &staged, 1_000)).unwrap();
-        // The ref moved onto the new commit.
-        let active = crate::support::block_on(meta.active_ref())
+        let first = crate::support::block_on(record_commit(
+            &mut meta,
+            &main_worktree(),
+            &previous,
+            &staged,
+            1_000,
+        ))
+        .unwrap();
+        // The commit created HEAD's branch.
+        let head = crate::support::block_on(meta.head(&main_worktree()))
             .unwrap()
             .unwrap();
-        assert_eq!(active.commit, Some(first.commit));
+        assert_eq!(head.commit(), Some(first.commit));
 
-        // A second ref at the same commit forks the history: the next
-        // commit continues the ref that is active.
+        // A second branch at the same commit forks the history: the next
+        // commit continues the branch HEAD is on.
         let feature = RefName::parse("feature").unwrap();
-        crate::support::block_on(meta.set_ref(&feature, Some(first.commit), 1_500)).unwrap();
-        crate::support::block_on(meta.activate_ref(&feature)).unwrap();
+        let note = ReflogNote::new("branch: Created from main", 1_500);
+        crate::support::block_on(meta.create_ref(
+            &Ref::branch(feature.clone()),
+            first.commit,
+            note,
+        ))
+        .unwrap();
+        let note = ReflogNote::new("checkout: moving from main to feature", 1_500);
+        crate::support::block_on(meta.set_head(&main_worktree(), &Head::Branch(feature), note))
+            .unwrap();
 
-        let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = crate::support::block_on(plan_commit(
+            &meta,
+            &main_worktree(),
+            &discovered,
+            &Scope::World,
+        ))
+        .unwrap();
         assert_eq!(previous.commit.as_ref().map(|c| c.id), Some(first.commit));
         let staged = assemble(
             plan,
@@ -419,17 +463,38 @@ mod tests {
             },
             &Scope::World,
         );
-        let second =
-            crate::support::block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        let second = crate::support::block_on(record_commit(
+            &mut meta,
+            &main_worktree(),
+            &previous,
+            &staged,
+            2_000,
+        ))
+        .unwrap();
         assert_eq!(
             crate::support::block_on(meta.commit_parents(second.commit)).unwrap(),
             alloc::vec![first.commit]
         );
-        // The ref that was left behind keeps naming the first commit.
+        // The branch that was left behind keeps naming the first commit.
         let main = crate::support::block_on(meta.lookup_ref(&main))
             .unwrap()
             .unwrap();
-        assert_eq!(main.commit, Some(first.commit));
+        assert_eq!(main.commit, first.commit);
+        // HEAD's reflog tells the whole story, newest first.
+        let mut messages = Vec::new();
+        crate::support::block_on(meta.visit_head_log(&main_worktree(), |entry| {
+            messages.push(entry.message.clone());
+            true
+        }))
+        .unwrap();
+        assert_eq!(
+            messages,
+            [
+                "commit: ",
+                "checkout: moving from main to feature",
+                "commit (initial): "
+            ]
+        );
     }
 
     #[test]
@@ -439,8 +504,13 @@ mod tests {
 
         // The first commit starts a history: no previous commit, no
         // parent.
-        let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = crate::support::block_on(plan_commit(
+            &meta,
+            &main_worktree(),
+            &discovered,
+            &Scope::World,
+        ))
+        .unwrap();
         let staged = assemble(
             plan,
             &previous,
@@ -451,8 +521,14 @@ mod tests {
             },
             &Scope::World,
         );
-        let first =
-            crate::support::block_on(record_commit(&mut meta, &previous, &staged, 1_000)).unwrap();
+        let first = crate::support::block_on(record_commit(
+            &mut meta,
+            &main_worktree(),
+            &previous,
+            &staged,
+            1_000,
+        ))
+        .unwrap();
         assert_eq!(
             crate::support::block_on(meta.commit_parents(first.commit)).unwrap(),
             alloc::vec![]
@@ -460,8 +536,13 @@ mod tests {
 
         // The second commit continues the history of the commit it was
         // planned against.
-        let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = crate::support::block_on(plan_commit(
+            &meta,
+            &main_worktree(),
+            &discovered,
+            &Scope::World,
+        ))
+        .unwrap();
         assert_eq!(previous.commit.as_ref().map(|c| c.id), Some(first.commit));
         let staged = assemble(
             plan,
@@ -473,8 +554,14 @@ mod tests {
             },
             &Scope::World,
         );
-        let second =
-            crate::support::block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        let second = crate::support::block_on(record_commit(
+            &mut meta,
+            &main_worktree(),
+            &previous,
+            &staged,
+            2_000,
+        ))
+        .unwrap();
         assert_eq!(
             crate::support::block_on(meta.commit_parents(second.commit)).unwrap(),
             alloc::vec![first.commit]
@@ -482,9 +569,9 @@ mod tests {
     }
 
     #[test]
-    fn a_commit_must_continue_the_active_ref() {
+    fn a_commit_must_continue_head() {
         let mut meta = store_with_ref();
-        let first = crate::support::block_on(meta.apply_commit_incremental(
+        let first = crate::support::block_on(meta.apply_main(
             1_000,
             &[],
             &[stage_present(coord(0, 0), ChunkHash::new([1; 32]))],
@@ -492,9 +579,9 @@ mod tests {
         .unwrap()
         .id;
 
-        // An empty parent list on a born ref would move the active ref
-        // into an unrelated history.
-        let err = crate::support::block_on(meta.apply_commit_incremental(
+        // An empty parent list on a born HEAD would move its branch into
+        // an unrelated history.
+        let err = crate::support::block_on(meta.apply_main(
             2_000,
             &[],
             &[stage_present(coord(1, 0), ChunkHash::new([2; 32]))],
@@ -503,7 +590,7 @@ mod tests {
         assert_eq!(err, MemError::NotContinuing { base: first });
 
         // The rejected call wrote nothing.
-        let second = crate::support::block_on(meta.apply_commit_incremental(
+        let second = crate::support::block_on(meta.apply_main(
             3_000,
             &[first],
             &[stage_present(coord(1, 0), ChunkHash::new([2; 32]))],
@@ -516,7 +603,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .commit,
-            Some(second)
+            second
         );
     }
 
@@ -524,8 +611,13 @@ mod tests {
     fn an_empty_region_is_not_a_new_file() {
         let meta = store_with_ref();
         let discovered = [key(0, 0)];
-        let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = crate::support::block_on(plan_commit(
+            &meta,
+            &main_worktree(),
+            &discovered,
+            &Scope::World,
+        ))
+        .unwrap();
         let staged = assemble(plan, &previous, Ingested::default(), &Scope::World);
         assert_eq!(staged.entries, [] as [CommitEntry; 0]);
         assert_eq!(staged.new_files, 0);
@@ -541,8 +633,13 @@ mod tests {
             stage_present(coord(1, 0), ChunkHash::new([2; 32])),
         ];
         let present = BTreeSet::from([coord(0, 0), coord(1, 0)]);
-        let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = crate::support::block_on(plan_commit(
+            &meta,
+            &main_worktree(),
+            &discovered,
+            &Scope::World,
+        ))
+        .unwrap();
         let staged = assemble(
             plan,
             &previous,
@@ -553,11 +650,22 @@ mod tests {
             },
             &Scope::World,
         );
-        let first =
-            crate::support::block_on(record_commit(&mut meta, &previous, &staged, 1_000)).unwrap();
+        let first = crate::support::block_on(record_commit(
+            &mut meta,
+            &main_worktree(),
+            &previous,
+            &staged,
+            1_000,
+        ))
+        .unwrap();
 
-        let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = crate::support::block_on(plan_commit(
+            &meta,
+            &main_worktree(),
+            &discovered,
+            &Scope::World,
+        ))
+        .unwrap();
         let staged = assemble(
             plan,
             &previous,
@@ -570,8 +678,14 @@ mod tests {
         );
         assert_eq!(staged.entries, [] as [CommitEntry; 0]);
         assert_eq!(staged.chunks, 2);
-        let report =
-            crate::support::block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        let report = crate::support::block_on(record_commit(
+            &mut meta,
+            &main_worktree(),
+            &previous,
+            &staged,
+            2_000,
+        ))
+        .unwrap();
         assert_ne!(report.commit, first.commit);
         assert_eq!(report.new_blobs, 0);
         assert_eq!(report.tombstones, 0);
@@ -585,8 +699,13 @@ mod tests {
     fn changed_chunk_writes_only_its_row() {
         let mut meta = store_with_ref();
         let discovered = [key(0, 0)];
-        let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = crate::support::block_on(plan_commit(
+            &meta,
+            &main_worktree(),
+            &discovered,
+            &Scope::World,
+        ))
+        .unwrap();
         let staged = assemble(
             plan,
             &previous,
@@ -600,10 +719,22 @@ mod tests {
             },
             &Scope::World,
         );
-        crate::support::block_on(record_commit(&mut meta, &previous, &staged, 1_000)).unwrap();
+        crate::support::block_on(record_commit(
+            &mut meta,
+            &main_worktree(),
+            &previous,
+            &staged,
+            1_000,
+        ))
+        .unwrap();
 
-        let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = crate::support::block_on(plan_commit(
+            &meta,
+            &main_worktree(),
+            &discovered,
+            &Scope::World,
+        ))
+        .unwrap();
         let staged = assemble(
             plan,
             &previous,
@@ -622,8 +753,14 @@ mod tests {
             alloc::vec![stage_present(coord(0, 0), ChunkHash::new([9; 32]))]
         );
         assert_eq!(staged.chunks, 2);
-        let report =
-            crate::support::block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        let report = crate::support::block_on(record_commit(
+            &mut meta,
+            &main_worktree(),
+            &previous,
+            &staged,
+            2_000,
+        ))
+        .unwrap();
         assert_eq!(report.chunks, 2);
         assert_eq!(report.new_blobs, 1);
         assert_eq!(report.tombstones, 0);
@@ -641,7 +778,7 @@ mod tests {
     #[test]
     fn missing_coordinates_become_tombstones() {
         let mut meta = store_with_ref();
-        crate::support::block_on(meta.apply_commit_incremental(
+        crate::support::block_on(meta.apply_main(
             1_000,
             &[],
             &[
@@ -651,14 +788,21 @@ mod tests {
         ))
         .unwrap();
         let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &[], &Scope::World)).unwrap();
+            crate::support::block_on(plan_commit(&meta, &main_worktree(), &[], &Scope::World))
+                .unwrap();
         assert_eq!(plan.removed, alloc::vec![key(0, 0)]);
         let staged = assemble(plan, &previous, Ingested::default(), &Scope::World);
         assert_eq!(staged.chunks, 0);
         assert_eq!(staged.tombstones, 2);
 
-        let report =
-            crate::support::block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        let report = crate::support::block_on(record_commit(
+            &mut meta,
+            &main_worktree(),
+            &previous,
+            &staged,
+            2_000,
+        ))
+        .unwrap();
         assert_eq!(report.tombstones, 2);
         let tomb =
             crate::support::block_on(meta.lookup_chunk(report.commit, &coord(0, 0))).unwrap();
@@ -668,7 +812,7 @@ mod tests {
     #[test]
     fn already_tombstoned_coordinates_record_no_further_rows() {
         let mut meta = store_with_ref();
-        crate::support::block_on(meta.apply_commit_incremental(
+        crate::support::block_on(meta.apply_main(
             1_000,
             &[],
             &[
@@ -681,8 +825,13 @@ mod tests {
         // Region (0,0) is gone from disk: its chunk tombstones once while
         // region (1,0) is still present.
         let discovered = [key(1, 0)];
-        let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = crate::support::block_on(plan_commit(
+            &meta,
+            &main_worktree(),
+            &discovered,
+            &Scope::World,
+        ))
+        .unwrap();
         let staged = assemble(
             plan,
             &previous,
@@ -695,16 +844,27 @@ mod tests {
         );
         assert_eq!(staged.tombstones, 1);
         assert_eq!(staged.chunks, 1);
-        let report =
-            crate::support::block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        let report = crate::support::block_on(record_commit(
+            &mut meta,
+            &main_worktree(),
+            &previous,
+            &staged,
+            2_000,
+        ))
+        .unwrap();
         assert_eq!(report.tombstones, 1);
         assert_eq!(report.chunks, 1);
 
         // Repeat commit with the same world: the tombstone already resolves
         // through fallback, so it records no fresh row and the vanished
         // chunk is not carried back as present.
-        let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = crate::support::block_on(plan_commit(
+            &meta,
+            &main_worktree(),
+            &discovered,
+            &Scope::World,
+        ))
+        .unwrap();
         assert_eq!(
             previous.state.keys().copied().collect::<Vec<_>>(),
             [coord(32, 0)]
@@ -723,8 +883,14 @@ mod tests {
         assert_eq!(staged.tombstones, 0);
         assert_eq!(staged.chunks, 1);
 
-        let report =
-            crate::support::block_on(record_commit(&mut meta, &previous, &staged, 3_000)).unwrap();
+        let report = crate::support::block_on(record_commit(
+            &mut meta,
+            &main_worktree(),
+            &previous,
+            &staged,
+            3_000,
+        ))
+        .unwrap();
         assert_eq!(report.tombstones, 0);
         assert_eq!(report.chunks, 1);
         assert!(
@@ -741,7 +907,7 @@ mod tests {
     #[test]
     fn scoped_plan_ignores_out_of_scope_regions() {
         let mut meta = store_with_ref();
-        crate::support::block_on(meta.apply_commit_incremental(
+        crate::support::block_on(meta.apply_main(
             1_000,
             &[],
             &[
@@ -755,21 +921,28 @@ mod tests {
         // disk), but the overworld scope sees neither ingest nor removal.
         let discovered = [nether_key(0, 0)];
         let scope = Scope::dimension(NETHER);
-        let (_, plan) = crate::support::block_on(plan_commit(&meta, &discovered, &scope)).unwrap();
+        let (_, plan) =
+            crate::support::block_on(plan_commit(&meta, &main_worktree(), &discovered, &scope))
+                .unwrap();
         assert_eq!(plan.ingest, alloc::vec![nether_key(0, 0)]);
         assert_eq!(plan.removed, [] as [RegionKey; 0]);
 
         // Out-of-scope regions never enter the plan at all.
         let discovered = [key(0, 0), nether_key(0, 0)];
-        let (_, plan) =
-            crate::support::block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (_, plan) = crate::support::block_on(plan_commit(
+            &meta,
+            &main_worktree(),
+            &discovered,
+            &Scope::World,
+        ))
+        .unwrap();
         assert_eq!(plan.ingest, alloc::vec![key(0, 0), nether_key(0, 0)]);
     }
 
     #[test]
     fn scoped_assemble_tombstones_only_in_scope() {
         let mut meta = store_with_ref();
-        crate::support::block_on(meta.apply_commit_incremental(
+        crate::support::block_on(meta.apply_main(
             1_000,
             &[],
             &[
@@ -786,7 +959,8 @@ mod tests {
         let discovered = [key(0, 0)];
         let scope = Scope::dimension(OVER);
         let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &discovered, &scope)).unwrap();
+            crate::support::block_on(plan_commit(&meta, &main_worktree(), &discovered, &scope))
+                .unwrap();
         assert_eq!(plan.ingest, alloc::vec![key(0, 0)]);
         assert_eq!(plan.removed, [] as [RegionKey; 0]);
         let staged = assemble(
@@ -809,8 +983,14 @@ mod tests {
             .collect();
         assert_eq!(tombstoned, alloc::vec![coord(1, 0)]);
 
-        let report =
-            crate::support::block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        let report = crate::support::block_on(record_commit(
+            &mut meta,
+            &main_worktree(),
+            &previous,
+            &staged,
+            2_000,
+        ))
+        .unwrap();
         assert_eq!(report.tombstones, 1);
         // The nether chunk still resolves through fallback, untouched.
         let kept = crate::support::block_on(meta.lookup_chunk(report.commit, &nether_coord(0, 0)))
@@ -829,7 +1009,7 @@ mod tests {
     #[test]
     fn partial_scope_then_full_commit_reingests_unread_chunks() {
         let mut meta = store_with_ref();
-        crate::support::block_on(meta.apply_commit_incremental(
+        crate::support::block_on(meta.apply_main(
             1_000,
             &[],
             &[
@@ -843,7 +1023,8 @@ mod tests {
         let discovered = [key(0, 0)];
         let scope = over_rect(Rect::new(0, 0, 0, 0));
         let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &discovered, &scope)).unwrap();
+            crate::support::block_on(plan_commit(&meta, &main_worktree(), &discovered, &scope))
+                .unwrap();
         assert_eq!(plan.ingest, alloc::vec![key(0, 0)]);
         let staged = assemble(
             plan,
@@ -856,12 +1037,24 @@ mod tests {
             &scope,
         );
         assert_eq!(staged.tombstones, 0);
-        crate::support::block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        crate::support::block_on(record_commit(
+            &mut meta,
+            &main_worktree(),
+            &previous,
+            &staged,
+            2_000,
+        ))
+        .unwrap();
 
         // The next full commit rereads the whole file and records the
         // unread (1,0) change, while (0,0) stays unchanged.
-        let (previous, plan) =
-            crate::support::block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = crate::support::block_on(plan_commit(
+            &meta,
+            &main_worktree(),
+            &discovered,
+            &Scope::World,
+        ))
+        .unwrap();
         let staged = assemble(
             plan,
             &previous,
@@ -879,8 +1072,14 @@ mod tests {
             staged.entries,
             alloc::vec![stage_present(coord(1, 0), ChunkHash::new([7; 32]))]
         );
-        let report =
-            crate::support::block_on(record_commit(&mut meta, &previous, &staged, 3_000)).unwrap();
+        let report = crate::support::block_on(record_commit(
+            &mut meta,
+            &main_worktree(),
+            &previous,
+            &staged,
+            3_000,
+        ))
+        .unwrap();
         let got = crate::support::block_on(meta.lookup_chunk(report.commit, &coord(1, 0)))
             .unwrap()
             .unwrap();
@@ -890,7 +1089,7 @@ mod tests {
     #[test]
     fn mem_meta_satisfies_lookup_contract() {
         let mut meta = store_with_ref();
-        let id = crate::support::block_on(meta.apply_commit_incremental(
+        let id = crate::support::block_on(meta.apply_main(
             5,
             &[],
             &[stage_present(coord(0, 0), ChunkHash::new([3; 32]))],
@@ -947,7 +1146,7 @@ mod tests {
             stage_present(coord(1, 0), ChunkHash::new([2; 32])),
             stage_present(nether_coord(0, 0), ChunkHash::new([3; 32])),
         ];
-        let id = crate::support::block_on(meta.apply_commit_incremental(1_000, &[], &entries))
+        let id = crate::support::block_on(meta.apply_main(1_000, &[], &entries))
             .unwrap()
             .id;
 

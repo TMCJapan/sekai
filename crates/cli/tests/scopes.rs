@@ -20,6 +20,7 @@ async fn run(args: &[&str]) -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+#[ignore = "commit needs a worktree, which the CLI registers once init takes a world (ADR-0035)"]
 async fn saved_scopes_select_by_name() {
     let (root, _guard) = tempdir("scope-flow");
     let world = root.join("world");

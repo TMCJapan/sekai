@@ -1,18 +1,16 @@
-//! Ref objects: the store's named, movable pointers to commits.
+//! Refs and worktree HEADs (ADR-0035).
 //!
-//! A ref names a commit and moves with the history it names. Exactly one
-//! ref is active - the one new commits hang from. Reads here are pure
-//! lookups; the mutations live in `MetaStore` and the app layer.
+//! Reads here are pure lookups; the mutations live in `MetaStore` and the
+//! app layer.
 
 use alloc::vec::Vec;
 
 use sekai_storage::MetaStore;
-use sekai_util::CommitRef;
+use sekai_util::{CommitRef, HeadState, WorktreeName};
 
 use super::graph::CommitError;
 
-/// List all refs in name order (byte-wise, the order `RefName` compares
-/// by).
+/// List all refs in full refname order (byte-wise).
 pub async fn list_refs<M: MetaStore>(meta: &M) -> Result<Vec<CommitRef>, CommitError<M::Error>> {
     let mut out = Vec::new();
     meta.visit_refs(|r| {
@@ -24,11 +22,11 @@ pub async fn list_refs<M: MetaStore>(meta: &M) -> Result<Vec<CommitRef>, CommitE
     Ok(out)
 }
 
-/// The active ref - the one new commits hang from - or `None` when the
-/// store has no active ref row. A fresh store is not `None`: it starts
-/// with an active, unborn ref whose `commit` is `None`.
-pub async fn active_ref<M: MetaStore>(
+/// `worktree`'s HEAD resolved against the refs, or `None` when the
+/// worktree does not exist.
+pub async fn head<M: MetaStore>(
     meta: &M,
-) -> Result<Option<CommitRef>, CommitError<M::Error>> {
-    meta.active_ref().await.map_err(CommitError::Meta)
+    worktree: &WorktreeName,
+) -> Result<Option<HeadState>, CommitError<M::Error>> {
+    meta.head(worktree).await.map_err(CommitError::Meta)
 }
