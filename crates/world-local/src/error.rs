@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use sekai_core::{Dimension, RegionKind};
+use sekai_core::{Dimension, RegionKey, RegionKind};
 
 /// Failures while discovering, reading, or swapping world files.
 #[derive(Debug, thiserror::Error)]
@@ -49,6 +49,26 @@ pub enum WorldError {
         /// Region Z.
         region_z: i32,
     },
+    /// A `server.properties` beside a world has only invalid `level-name`
+    /// values.
+    ///
+    /// Never raised by this crate: reading it for detection treats such a
+    /// file like an unreadable one and falls back to directory election.
+    /// Raised by callers that treat a lost `level-name` as fatal, such as
+    /// `worktree add`.
+    #[error("{path} has no valid level-name", path = path.display())]
+    InvalidLevelName {
+        /// The `server.properties` file.
+        path: PathBuf,
+    },
+    /// An internal invariant broke: a dimension directory lay outside the
+    /// world root. Constructors root every directory under `root`, so this
+    /// indicates a programming error, not an environment failure.
+    #[error("dimension directory {path} lies outside the world root", path = path.display())]
+    Invariant {
+        /// The offending dimension directory.
+        path: PathBuf,
+    },
     /// Two region files spell the same region identity.
     ///
     /// Raised by discovery, which refuses to pick one of the two files: a
@@ -75,6 +95,17 @@ impl WorldError {
         Self::Io {
             path: path.into(),
             source,
+        }
+    }
+
+    /// Attach the key's identity to a path the tree cannot derive for it,
+    /// so every call site spells the error the same way.
+    pub(crate) const fn unknown_region_path(key: RegionKey) -> Self {
+        Self::UnknownRegionPath {
+            dim: key.dim,
+            kind: key.kind,
+            region_x: key.rx,
+            region_z: key.rz,
         }
     }
 

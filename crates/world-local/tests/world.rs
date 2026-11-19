@@ -1345,3 +1345,60 @@ fn read_refuses_a_key_that_names_another_region() {
         })
     ));
 }
+
+#[test]
+fn detect_recognizes_only_a_world() {
+    let (root_path, _guard) = tempdir("detect");
+    assert!(HostWorldTree::detect(&root_path).unwrap().is_none());
+    write(root_path.join("region/r.0.0.mca"), &one_chunk_image());
+    assert!(HostWorldTree::detect(&root_path).unwrap().is_some());
+}
+
+#[test]
+fn the_sekai_store_is_never_a_bukkit_base() {
+    // A store whose directory nests a `dimensions/` tree would otherwise
+    // be elected a base (ADR-0035: world scanning ignores `.sekai`).
+    let (root_path, _guard) = tempdir("sekai-base");
+    let image = one_chunk_image();
+    write(root_path.join("region/r.0.0.mca"), &image);
+    write(
+        root_path.join(".sekai/dimensions/minecraft/overworld/region/r.0.0.mca"),
+        &image,
+    );
+
+    let root = HostWorldTree::new(&root_path).unwrap();
+    assert_eq!(
+        paths_of(&discover(&root)),
+        vec![root_path.join("region/r.0.0.mca")]
+    );
+}
+
+#[test]
+fn a_rebased_tree_keeps_every_dimension_in_place() {
+    let (root_path, _guard) = tempdir("rebased");
+    let image = one_chunk_image();
+    write(root_path.join("server.properties"), b"level-name=world\n");
+    write(root_path.join("world/region/r.0.0.mca"), &image);
+    write(
+        root_path.join("world_nether/DIM-1/region/r.0.0.mca"),
+        &image,
+    );
+    write(
+        root_path.join("world_kingdoms_spawn/dimensions/kingdoms/spawn/region/r.0.1.mca"),
+        &image,
+    );
+    let source = HostWorldTree::new(&root_path).unwrap();
+    // The target does not exist: the layout comes from the source alone.
+    let target_root = root_path.join("missing/copy");
+    let target = source.rebased(&target_root).unwrap();
+
+    assert_eq!(target.root(), target_root);
+    assert_eq!(target.get_dims().ok(), None, "the target root is missing");
+    for (key, path) in discover(&source) {
+        let relative = path.strip_prefix(&root_path).unwrap();
+        assert_eq!(
+            target.derive_region(key).unwrap().as_path(),
+            target_root.join(relative)
+        );
+    }
+}

@@ -1,5 +1,7 @@
 use std::{fs, path::Path};
 
+use sekai_core::SEKAI_DIR;
+
 use super::vanilla;
 use crate::WorldError;
 
@@ -81,6 +83,9 @@ fn bukkit_bases(root: impl AsRef<Path>) -> Result<Vec<String>, WorldError> {
         if matches!(name, "dimensions" | "DIM-1" | "DIM1") {
             continue; // the layout's own subdirectories, never a base
         }
+        if name == SEKAI_DIR {
+            continue; // sekai's store, which world scanning ignores (ADR-0035)
+        }
         let path = entry.path();
         let sibling_trio = path.with_file_name(format!("{name}_nether")).is_dir()
             || path.with_file_name(format!("{name}_the_end")).is_dir();
@@ -95,21 +100,71 @@ fn bukkit_bases(root: impl AsRef<Path>) -> Result<Vec<String>, WorldError> {
     Ok(bases)
 }
 
+/// The file that carries a server directory's world settings.
+pub const SERVER_PROPERTIES: &str = "server.properties";
+
+/// The `level-name` of a server directory, as [`read_level_name`] reports
+/// it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LevelName {
+    /// No `server.properties`: not a server directory.
+    Missing,
+    /// The file names no `level-name` key: the game defaults to `world`.
+    Absent,
+    /// The first valid `level-name` value, naming the world directory.
+    Named(String),
+    /// A `level-name` key is present, but no value is usable.
+    Invalid,
+}
+
+/// The `level-name` of the `server.properties` in `dir`, under the rules
+/// `level_name` describes. A file that cannot be read, other than one that
+/// does not exist, fails.
+///
+/// Only uncommented `key=value` lines count, key and value are trimmed of
+/// surrounding spaces, and anything but one plain directory name is an
+/// unusable value - the layout must never follow a corrupted value out
+/// of the root.
+pub fn read_level_name(dir: impl AsRef<Path>) -> Result<LevelName, WorldError> {
+    let path = dir.as_ref().join(SERVER_PROPERTIES);
+    let text = match fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(LevelName::Missing);
+        }
+        Err(source) => return Err(WorldError::io(&path, source)),
+    };
+    Ok(match parse_level_name(&text) {
+        Some(name) => LevelName::Named(name.to_owned()),
+        None if level_name_values(&text).next().is_none() => LevelName::Absent,
+        None => LevelName::Invalid,
+    })
+}
+
 /// `level-name` from a Bukkit/Paper `server.properties`, when readable.
 ///
 /// The file is untrusted input: only uncommented `key=value` lines with
-/// that exact key count, the value is trimmed of surrounding spaces, and
-/// anything but one plain directory name is ignored like an unreadable
-/// file - the layout must never follow a corrupted value out of the root.
+/// that exact key count, key and value are trimmed of surrounding spaces,
+/// and anything but one plain directory name is ignored like an
+/// unreadable file - the layout must never follow a corrupted value out
+/// of the root.
 fn level_name(root: impl AsRef<Path>) -> Option<String> {
     let root = root.as_ref();
-    let text = fs::read_to_string(root.join("server.properties")).ok()?;
-    text.lines().find_map(|line| {
-        line.trim()
-            .strip_prefix("level-name=")
-            .map(str::trim)
-            .filter(|value| is_plain_dir_name(value))
-            .map(ToOwned::to_owned)
+    parse_level_name(&fs::read_to_string(root.join(SERVER_PROPERTIES)).ok()?).map(ToOwned::to_owned)
+}
+
+/// `level-name` from the text of a `server.properties`, under the rules
+/// `level_name` describes.
+fn parse_level_name(text: &str) -> Option<&str> {
+    level_name_values(text).find(|value| is_plain_dir_name(value))
+}
+
+/// Every `level-name` value in the text of a `server.properties`, trimmed,
+/// valid or not.
+fn level_name_values(text: &str) -> impl Iterator<Item = &str> {
+    text.lines().filter_map(|line| {
+        let (key, value) = line.split_once('=')?;
+        (key.trim() == "level-name").then(|| value.trim())
     })
 }
 
@@ -171,7 +226,24 @@ fn is_world_folder(dir: impl AsRef<Path>) -> Result<bool, WorldError> {
 
 #[cfg(test)]
 mod tests {
-    use super::is_plain_dir_name;
+    use super::{LevelName, is_plain_dir_name, read_level_name};
+
+    #[test]
+    fn read_level_name_reports_every_case() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(super::SERVER_PROPERTIES);
+
+        assert_eq!(read_level_name(dir.path()).unwrap(), LevelName::Missing);
+        std::fs::write(&path, b"motd=x\n").unwrap();
+        assert_eq!(read_level_name(dir.path()).unwrap(), LevelName::Absent);
+        std::fs::write(&path, b"level-name = my world\nlevel-name=../escape\n").unwrap();
+        assert_eq!(
+            read_level_name(dir.path()).unwrap(),
+            LevelName::Named("my world".to_owned())
+        );
+        std::fs::write(&path, b"level-name=../escape\n").unwrap();
+        assert_eq!(read_level_name(dir.path()).unwrap(), LevelName::Invalid);
+    }
 
     #[test]
     fn only_plain_directory_names_pass() {

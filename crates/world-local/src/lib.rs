@@ -29,6 +29,7 @@ mod observation;
 mod swap;
 mod vanilla;
 
+pub use detect::{LevelName, SERVER_PROPERTIES, read_level_name};
 pub use error::WorldError;
 pub use fingerprint::fingerprint_file;
 pub use lock::{HostWorldLock, HostWorldLockError};
@@ -122,12 +123,7 @@ impl HostRegion {
             .and_then(std::ffi::OsStr::to_str)
             .and_then(|name| sekai_anvil::parse_region_name(name).ok());
         if spelled != Some((key.rx, key.rz)) {
-            return Err(WorldError::UnknownRegionPath {
-                dim: key.dim,
-                kind: key.kind,
-                region_x: key.rx,
-                region_z: key.rz,
-            });
+            return Err(WorldError::unknown_region_path(key));
         }
         Ok(())
     }
@@ -210,37 +206,105 @@ pub struct HostWorldTree {
     /// loudly when it is missing, while missing dimension/kind
     /// subdirectories are skipped.
     root: PathBuf,
+    /// Every dimension directory, each under `root`.
     dirs: BTreeMap<Dimension, PathBuf>,
+    family: LayoutFamily,
+}
+
+/// Which server family's layout a tree resolved to: it decides what lies
+/// around the world root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayoutFamily {
+    /// A world folder, alone or inside a server directory.
+    Vanilla,
+    /// A server directory holding one world folder per dimension.
+    Bukkit,
+}
+
+/// The three default dimensions of a single-folder vanilla layout, as
+/// the plain directory names they live under.
+fn legacy_dirs(root: impl AsRef<Path>) -> BTreeMap<Dimension, PathBuf> {
+    let root = root.as_ref();
+    BTreeMap::from([
+        (Dimension::OVERWORLD, root.to_path_buf()),
+        (Dimension::NETHER, root.join("DIM-1")),
+        (Dimension::END, root.join("DIM1")),
+    ])
 }
 
 impl HostWorldTree {
+    /// The tree at `root`, in the legacy single-folder layout when no
+    /// layout is detected.
     pub fn new(root: impl AsRef<Path>) -> Result<Self, WorldError> {
         let root = root.as_ref();
-        let dirs = match detect::detect(root)? {
-            Some(detect::Layout::Bukkit(base)) => {
-                collect_dimensions(root.join(base).join("dimensions"))?
-            }
+        Ok(Self::detect(root)?.unwrap_or_else(|| Self::new_legacy(root)))
+    }
+
+    /// The tree at `root` when one of the layouts recognizes it as a
+    /// world, or `None` when none does, as `init` asks of a world before
+    /// it registers it (ADR-0035 *`init`*).
+    pub fn detect(root: impl AsRef<Path>) -> Result<Option<Self>, WorldError> {
+        let root = root.as_ref();
+        let (dirs, family) = match detect::detect(root)? {
+            Some(detect::Layout::Bukkit(base)) => (
+                collect_dimensions(root.join(base).join("dimensions"))?,
+                LayoutFamily::Bukkit,
+            ),
             Some(detect::Layout::BukkitLegacy(base)) => {
                 let mut dirs = bukkit::collect_custom_dimensions(root, &base)?;
                 dirs.extend(bukkit::fixed_dirs(root, &base));
-                dirs
+                (dirs, LayoutFamily::Bukkit)
             }
-            Some(detect::Layout::Vanilla) => collect_dimensions(root.join("dimensions"))?,
+            Some(detect::Layout::Vanilla) => (
+                collect_dimensions(root.join("dimensions"))?,
+                LayoutFamily::Vanilla,
+            ),
             Some(detect::Layout::VanillaLegacy) => {
                 let mut dirs = collect_dimensions(root.join("dimensions"))?;
-                dirs.extend([
-                    (Dimension::OVERWORLD, root.to_path_buf()),
-                    (Dimension::NETHER, root.join("DIM-1")),
-                    (Dimension::END, root.join("DIM1")),
-                ]);
-                dirs
+                dirs.extend(legacy_dirs(root));
+                (dirs, LayoutFamily::Vanilla)
             }
-            None => return Ok(Self::new_legacy(root)),
+            None => return Ok(None),
         };
+        Ok(Some(Self {
+            root: root.to_path_buf(),
+            dirs,
+            family,
+        }))
+    }
+
+    /// The tree's root as passed by the caller.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// The same layout at `root`, which need not exist yet, as `worktree
+    /// add` builds its target (ADR-0035 *`worktree add`*): every dimension
+    /// directory keeps its position relative to the root.
+    pub fn rebased(&self, root: impl AsRef<Path>) -> Result<Self, WorldError> {
+        let root = root.as_ref();
+        let dirs = self
+            .dirs
+            .iter()
+            .map(|(&dim, dir)| {
+                // Constructors root every dimension directory under
+                // `self.root`, so the prefix always matches.
+                let relative = dir
+                    .strip_prefix(&self.root)
+                    .map_err(|_| WorldError::Invariant { path: dir.clone() })?;
+                Ok((dim, root.join(relative)))
+            })
+            .collect::<Result<_, WorldError>>()?;
         Ok(Self {
             root: root.to_path_buf(),
             dirs,
+            family: self.family,
         })
+    }
+
+    /// Which server family's layout the tree resolved to.
+    pub const fn family(&self) -> LayoutFamily {
+        self.family
     }
 
     /// Tree in the legacy single-folder layout (`region/`, `DIM-1/`,
@@ -250,12 +314,8 @@ impl HostWorldTree {
         let root = root.as_ref();
         Self {
             root: root.to_path_buf(),
-            dirs: [
-                (Dimension::OVERWORLD, root.to_path_buf()),
-                (Dimension::NETHER, root.join("DIM-1")),
-                (Dimension::END, root.join("DIM1")),
-            ]
-            .into(),
+            dirs: legacy_dirs(root),
+            family: LayoutFamily::Vanilla,
         }
     }
 
@@ -346,14 +406,7 @@ impl WorldTree for HostWorldTree {
         &self,
         RegionKey { dim, kind, rx, rz }: RegionKey,
     ) -> Result<Self::Region, Self::Error> {
-        // Mirrors `WorldError::UnknownRegionPath`; the CLI troubleshooting
-        // entry refers to this wording.
-        let cannot_derive = || WorldError::UnknownRegionPath {
-            dim,
-            kind,
-            region_x: rx,
-            region_z: rz,
-        };
+        let cannot_derive = || WorldError::unknown_region_path(RegionKey { dim, kind, rx, rz });
         let root = self.dirs.get(&dim).ok_or_else(cannot_derive)?;
         let name = kind_dir(kind);
 
