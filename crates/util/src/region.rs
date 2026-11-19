@@ -25,6 +25,16 @@ impl RegionKey {
     pub const fn of(coord: ChunkCoord) -> Self {
         Self::new(coord.dim, coord.kind, coord.region_x(), coord.region_z())
     }
+
+    /// Global chunk identity of the chunk at local slot `(cx, cz)`.
+    pub const fn chunk_coord(&self, cx: u8, cz: u8) -> ChunkCoord {
+        ChunkCoord::new(
+            self.dim,
+            self.kind,
+            self.rx * 32 + cx as i32,
+            self.rz * 32 + cz as i32,
+        )
+    }
 }
 
 /// Fingerprint observed on disk.
@@ -77,6 +87,15 @@ mod tests {
         assert_eq!(
             RegionKey::of(coord),
             RegionKey::new(Dimension::NETHER, RegionKind::Poi, -2, 2)
+        );
+    }
+
+    #[test]
+    fn chunk_coord_of_region_slot() {
+        let key = RegionKey::new(Dimension::OVERWORLD, RegionKind::Region, -1, 2);
+        assert_eq!(
+            key.chunk_coord(30, 5),
+            ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, -2, 69)
         );
     }
 }
