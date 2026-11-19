@@ -10,22 +10,14 @@ use sekai_storage::{
     DimEntry, DimNode, MetaStore, RegionEntry, RegionNode, RootEntry, RootNode, TreeNodes,
 };
 use sekai_util::{
-    ChunkCoord, ChunkHash, CommitEntry, CommitId, DimHash, RegionHash, RegionKind, RootHash,
+    ChunkCoord, ChunkHash, CommitEntry, CommitId, DimHash, Dimension, RegionHash, RegionKey,
+    RegionKind, RootHash,
 };
 
 #[allow(clippy::cast_possible_truncation)]
 pub(crate) const fn local_slot(coord: ChunkCoord) -> (u8, u8) {
     // `rem_euclid(32)` is always in `0..32`, so the cast cannot truncate.
     (coord.x.rem_euclid(32) as u8, coord.z.rem_euclid(32) as u8)
-}
-
-fn coord_from_parts(dim: i32, kind: RegionKind, rx: i32, rz: i32, cx: u8, cz: u8) -> ChunkCoord {
-    ChunkCoord::new(
-        sekai_util::Dimension::new(dim),
-        kind,
-        rx * 32 + i32::from(cx),
-        rz * 32 + i32::from(cz),
-    )
 }
 
 type RegionKeyParts = (RegionKind, i32, i32);
@@ -258,14 +250,13 @@ where
     let mut entries = Vec::new();
     for ((dim, dim_entry), region) in owners.into_iter().zip(regions) {
         for region_entry in region.entries() {
-            let coord = coord_from_parts(
-                dim,
+            let coord = RegionKey::new(
+                Dimension::new(dim),
                 dim_entry.kind,
                 dim_entry.rx,
                 dim_entry.rz,
-                region_entry.cx,
-                region_entry.cz,
-            );
+            )
+            .chunk_coord(region_entry.cx, region_entry.cz);
             entries.push(CommitEntry::new(coord, Some(region_entry.hash)));
         }
     }

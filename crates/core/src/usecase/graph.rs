@@ -1,12 +1,12 @@
-//! Commit-graph read operations: listing, parents, ancestors, history, and
-//! reference resolution.
+//! Commit-graph read operations: listing, parents, ancestors, history,
+//! and reachability.
 
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use core::fmt;
 
 use sekai_storage::MetaStore;
-use sekai_util::{Commit, CommitId, Ref, RefName};
+use sekai_util::{Commit, CommitId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommitError<M> {
@@ -29,14 +29,13 @@ impl<M: fmt::Debug> fmt::Display for CommitError<M> {
 }
 
 /// List all commits in local record order (oldest first).
-pub async fn list_commits<M: MetaStore>(meta: &M) -> Result<Vec<Commit>, CommitError<M::Error>> {
+pub async fn list_commits<M: MetaStore>(meta: &M) -> Result<Vec<Commit>, M::Error> {
     let mut out = Vec::new();
     meta.visit_commits(|commit| {
         out.push(commit.clone());
         true
     })
-    .await
-    .map_err(CommitError::Meta)?;
+    .await?;
     Ok(out)
 }
 
@@ -51,6 +50,66 @@ pub async fn commit_parents<M: MetaStore>(
     // The record carries the parents, so the commit is read once.
     let record = lookup_record(meta, commit).await?;
     Ok(record.parents)
+}
+
+/// Breadth-first walk over parent links from `seeds`. Within one
+/// generation the commits come in ascending hash order; `visit` runs
+/// for every new commit, nearest first, and may return true to stop
+/// the walk early. The seeds are visited too.
+///
+/// A commit continues commits that are older than it, so the graph is
+/// acyclic by construction; the visited set is the guard that keeps
+/// the walk finite even if that ever changes.
+async fn walk_history<M: MetaStore>(
+    meta: &M,
+    seeds: impl IntoIterator<Item = CommitId>,
+    mut visit: impl FnMut(Commit) -> bool,
+) -> Result<(), CommitError<M::Error>> {
+    let mut seen: BTreeSet<CommitId> = BTreeSet::new();
+    let mut level: BTreeSet<CommitId> = seeds.into_iter().collect();
+    while !level.is_empty() {
+        let mut next: BTreeSet<CommitId> = BTreeSet::new();
+        for id in level {
+            if !seen.insert(id) {
+                continue;
+            }
+            let record = lookup_record(meta, id).await?;
+            for parent in &record.parents {
+                if !seen.contains(parent) {
+                    next.insert(*parent);
+                }
+            }
+            if visit(record) {
+                return Ok(());
+            }
+        }
+        level = next;
+    }
+    Ok(())
+}
+
+/// Depth-first walk over parent links from `pending` into `seen`,
+/// visiting each commit once. When `stop_at` is set, the walk stops at
+/// that commit and reports `true`; otherwise it drains `pending` and
+/// reports `false`. Commits already in `seen` are skipped.
+///
+/// One record is loaded per visited commit: a missing record fails the
+/// walk loudly rather than reading as a root of history.
+async fn walk_parents<M: MetaStore>(
+    meta: &M,
+    seen: &mut BTreeSet<CommitId>,
+    pending: &mut Vec<CommitId>,
+    stop_at: Option<CommitId>,
+) -> Result<bool, CommitError<M::Error>> {
+    while let Some(id) = pending.pop() {
+        if stop_at == Some(id) {
+            return Ok(true);
+        }
+        if seen.insert(id) {
+            pending.extend(lookup_record(meta, id).await?.parents);
+        }
+    }
+    Ok(false)
 }
 
 /// Every ancestor of `commit`, nearest first.
@@ -70,24 +129,12 @@ pub async fn commit_ancestors<M: MetaStore>(
     // The record carries the parents, so the requested commit is read
     // once and the walk starts from its parents.
     let record = lookup_record(meta, commit).await?;
-    let mut seen: BTreeSet<CommitId> = BTreeSet::new();
-    let mut order: Vec<CommitId> = Vec::new();
-    let mut level: BTreeSet<CommitId> = record.parents.into_iter().collect();
-    while !level.is_empty() {
-        let mut next: BTreeSet<CommitId> = BTreeSet::new();
-        for id in level {
-            if !seen.insert(id) {
-                continue;
-            }
-            order.push(id);
-            for parent in meta.commit_parents(id).await.map_err(CommitError::Meta)? {
-                if !seen.contains(&parent) {
-                    next.insert(parent);
-                }
-            }
-        }
-        level = next;
-    }
+    let mut order = Vec::new();
+    walk_history(meta, record.parents, |record| {
+        order.push(record.id);
+        false
+    })
+    .await?;
     Ok(order)
 }
 
@@ -102,29 +149,58 @@ pub async fn commit_history<M: MetaStore>(
     commit: CommitId,
 ) -> Result<Vec<Commit>, CommitError<M::Error>> {
     let mut out = Vec::new();
-    let mut seen: BTreeSet<CommitId> = BTreeSet::new();
-    let mut level: BTreeSet<CommitId> = BTreeSet::from([commit]);
-    while !level.is_empty() {
-        let mut next: BTreeSet<CommitId> = BTreeSet::new();
-        for id in level {
-            if !seen.insert(id) {
-                continue;
-            }
-            let record = lookup_record(meta, id).await?;
-            for parent in &record.parents {
-                if !seen.contains(parent) {
-                    next.insert(*parent);
-                }
-            }
-            out.push(record);
-        }
-        level = next;
-    }
+    walk_history(meta, [commit], |record| {
+        out.push(record);
+        false
+    })
+    .await?;
     Ok(out)
 }
 
+/// Whether `ancestor` is `descendant` itself or one of its ancestors, as
+/// `git merge-base --is-ancestor` asks. `branch -d` asks it of a branch
+/// and HEAD: a branch HEAD reaches is merged.
+///
+/// An unknown `descendant` is an error. An unknown `ancestor` lies in no
+/// history, so the answer is `false`. As in [`commit_ancestors`], the
+/// record of every commit the walk visits must exist: a missing one is a
+/// broken history, not a shorter one.
+pub async fn is_ancestor<M: MetaStore>(
+    meta: &M,
+    ancestor: CommitId,
+    descendant: CommitId,
+) -> Result<bool, CommitError<M::Error>> {
+    let record = lookup_record(meta, descendant).await?;
+    if ancestor == descendant {
+        return Ok(true);
+    }
+    let mut seen = BTreeSet::from([descendant]);
+    let mut pending = record.parents;
+    walk_parents(meta, &mut seen, &mut pending, Some(ancestor)).await
+}
+
+/// Every commit reachable from `starts` by parent links, `starts` included.
+///
+/// An unknown starting point is an error. As in [`is_ancestor`], the
+/// record of every commit the walk visits must exist: a missing one is a
+/// broken history, not a shorter one.
+pub(super) async fn reachable_from<M: MetaStore>(
+    meta: &M,
+    starts: &[CommitId],
+) -> Result<BTreeSet<CommitId>, CommitError<M::Error>> {
+    let mut seen = BTreeSet::new();
+    let mut pending = Vec::with_capacity(starts.len());
+    for &start in starts {
+        if seen.insert(start) {
+            pending.extend(lookup_record(meta, start).await?.parents);
+        }
+    }
+    walk_parents(meta, &mut seen, &mut pending, None).await?;
+    Ok(seen)
+}
+
 /// Read one commit record; a missing record is a broken history.
-async fn lookup_record<M: MetaStore>(
+pub(super) async fn lookup_record<M: MetaStore>(
     meta: &M,
     commit: CommitId,
 ) -> Result<Commit, CommitError<M::Error>> {
@@ -172,77 +248,11 @@ pub async fn commit_stats<M: MetaStore>(
     })
 }
 
-/// Failures while resolving a commit reference.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ResolveError<M> {
-    /// Metadata backend failure.
-    Meta(M),
-    /// No commit with this ID exists.
-    UnknownCommit {
-        /// Requested commit ID.
-        id: CommitId,
-    },
-    /// No ref with this name exists.
-    UnknownRef {
-        /// Requested ref name.
-        name: RefName,
-    },
-    /// Reference is neither a commit ID nor a ref name.
-    InvalidRef {
-        /// Raw reference text.
-        raw: alloc::string::String,
-    },
-}
-
-impl<M: fmt::Debug> fmt::Display for ResolveError<M> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Meta(_) => write!(f, "commit metadata failed"),
-            Self::UnknownCommit { id } => write!(f, "unknown commit: {id}"),
-            Self::UnknownRef { name } => write!(f, "unknown ref: {name}"),
-            Self::InvalidRef { raw } => write!(
-                f,
-                "invalid reference: {raw:?}, expected <64-char commit hash> or <ref>"
-            ),
-        }
-    }
-}
-
-/// Resolve a commit reference: a 64-character hexadecimal commit ID or a
-/// branch name.
-///
-/// A bare name is tried as a commit ID first: a 64-character hexadecimal
-/// spelling is either a commit ID or `UnknownCommit`, never a ref, so a
-/// branch whose name is exactly 64 hex characters is shadowed.
-pub async fn resolve_commit_ref<M: MetaStore>(
-    meta: &M,
-    raw: &str,
-) -> Result<CommitId, ResolveError<M::Error>> {
-    if let Ok(id) = raw.parse::<CommitId>() {
-        return meta
-            .lookup_commit(id)
-            .await
-            .map_err(ResolveError::Meta)?
-            .map(|commit| commit.id)
-            .ok_or(ResolveError::UnknownCommit { id });
-    }
-    let name = RefName::parse(raw).map_err(|_| ResolveError::InvalidRef {
-        raw: alloc::string::String::from(raw),
-    })?;
-    meta.lookup_ref(&Ref::branch(name.clone()))
-        .await
-        .map_err(ResolveError::Meta)?
-        .map(|record| record.commit)
-        .ok_or(ResolveError::UnknownRef { name })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::support::{MemMeta, block_on, main_worktree};
-    use alloc::string::ToString;
-    use sekai_util::CommitEntry;
-    use sekai_util::{Head, ReflogNote};
+    use crate::support::{MemMeta, block_on, fork, main_worktree};
+    use sekai_util::{CommitEntry, Head, RefName, ReflogNote};
 
     #[test]
     fn lists_in_local_sequence_order() {
@@ -253,94 +263,6 @@ mod tests {
         assert_eq!(listed.len(), 2);
         assert_eq!(listed[0].id, first);
         assert_eq!(listed[1].id, second);
-    }
-
-    #[test]
-    fn resolves_hashes_and_refs() {
-        let mut meta = MemMeta::default();
-        let first = meta.create_commit(100, &[]).unwrap();
-        let second = meta.create_commit(200, &[first]).unwrap();
-        let branch = Ref::branch(RefName::parse("main").unwrap());
-        block_on(meta.create_ref(
-            &branch,
-            second,
-            ReflogNote::new("branch: Created from HEAD", 300),
-        ))
-        .unwrap();
-
-        let first_hex = first.to_string();
-        assert_eq!(first_hex.len(), 64);
-        assert_eq!(block_on(resolve_commit_ref(&meta, &first_hex)), Ok(first));
-        assert_eq!(block_on(resolve_commit_ref(&meta, "main")), Ok(second));
-        assert_eq!(
-            block_on(resolve_commit_ref(&meta, &"f".repeat(64))),
-            Err(ResolveError::UnknownCommit {
-                id: CommitId::from_hex("f".repeat(64).as_bytes()).unwrap()
-            })
-        );
-        assert_eq!(
-            block_on(resolve_commit_ref(&meta, " 1")),
-            Err(ResolveError::InvalidRef { raw: " 1".into() })
-        );
-        assert_eq!(
-            block_on(resolve_commit_ref(&meta, "")),
-            Err(ResolveError::InvalidRef {
-                raw: alloc::string::String::new()
-            })
-        );
-        assert_eq!(
-            block_on(resolve_commit_ref(&meta, "other")),
-            Err(ResolveError::UnknownRef {
-                name: RefName::parse("other").unwrap()
-            })
-        );
-        assert!(matches!(
-            block_on(resolve_commit_ref(&meta, "a b")),
-            Err(ResolveError::InvalidRef { .. })
-        ));
-        assert!(matches!(
-            block_on(resolve_commit_ref(&meta, "@123")),
-            Err(ResolveError::InvalidRef { .. })
-        ));
-        assert!(matches!(
-            block_on(resolve_commit_ref(&meta, "@main")),
-            Err(ResolveError::InvalidRef { .. })
-        ));
-    }
-
-    #[test]
-    fn a_hex_ref_name_is_shadowed_by_commit_resolution() {
-        // A 64-character hex spelling always resolves as a commit ID: an
-        // unknown one is `UnknownCommit`, never the ref of the same name.
-        let mut meta = MemMeta::default();
-        let commit = meta.create_commit(100, &[]).unwrap();
-        let hex = "a".repeat(64);
-        let name = Ref::branch(RefName::parse(&hex).unwrap());
-        block_on(meta.create_ref(
-            &name,
-            commit,
-            ReflogNote::new("branch: Created from HEAD", 100),
-        ))
-        .unwrap();
-        assert_eq!(
-            block_on(resolve_commit_ref(&meta, &hex)),
-            Err(ResolveError::UnknownCommit {
-                id: CommitId::from_hex(hex.as_bytes()).unwrap()
-            })
-        );
-    }
-
-    #[test]
-    fn an_unborn_branch_resolves_to_nothing() {
-        // HEAD names `main`, but the branch has no commit and no row yet.
-        let mut meta = MemMeta::default();
-        meta.with_main();
-        assert_eq!(
-            block_on(resolve_commit_ref(&meta, "main")),
-            Err(ResolveError::UnknownRef {
-                name: RefName::parse("main").unwrap()
-            })
-        );
     }
 
     #[test]
@@ -549,6 +471,40 @@ mod tests {
                 .unwrap()
                 .map(|entry| entry.blob),
             Some(Some(ChunkHash::new([1; 32])))
+        );
+    }
+
+    #[test]
+    fn is_ancestor_follows_parents_only() {
+        let (meta, [a, b, c]) = fork();
+        assert_eq!(block_on(is_ancestor(&meta, a, b)), Ok(true));
+        assert_eq!(block_on(is_ancestor(&meta, b, b)), Ok(true));
+        assert_eq!(block_on(is_ancestor(&meta, b, a)), Ok(false));
+        assert_eq!(block_on(is_ancestor(&meta, c, b)), Ok(false));
+        let missing = CommitId([9; 32]);
+        assert_eq!(
+            block_on(is_ancestor(&meta, a, missing)),
+            Err(CommitError::UnknownCommit { id: missing })
+        );
+        assert_eq!(
+            block_on(is_ancestor(&meta, missing, missing)),
+            Err(CommitError::UnknownCommit { id: missing })
+        );
+        assert_eq!(block_on(is_ancestor(&meta, missing, b)), Ok(false));
+    }
+
+    #[test]
+    fn reachable_from_checks_its_starting_points() {
+        let (meta, [a, b, c]) = fork();
+        assert_eq!(
+            block_on(reachable_from(&meta, &[b, c])),
+            Ok(BTreeSet::from([a, b, c]))
+        );
+        assert_eq!(block_on(reachable_from(&meta, &[])), Ok(BTreeSet::new()));
+        let missing = CommitId([9; 32]);
+        assert_eq!(
+            block_on(reachable_from(&meta, &[b, missing])),
+            Err(CommitError::UnknownCommit { id: missing })
         );
     }
 

@@ -194,7 +194,7 @@ impl MemMeta {
             created_at_ms,
             parents,
             entries,
-            ReflogNote::new("commit: ", created_at_ms),
+            ReflogNote::new(crate::usecase::messages::COMMIT, created_at_ms),
         ));
         core::future::ready(outcome)
     }
@@ -423,6 +423,52 @@ impl MemMeta {
 /// Name of the main worktree [`MemMeta::with_main`] adds.
 pub fn main_worktree() -> WorktreeName {
     WorktreeName::parse("main").unwrap()
+}
+
+/// A main worktree with three commits on `main`, each the parent of the
+/// next.
+pub fn linear_history() -> (MemMeta, [CommitId; 3]) {
+    let mut meta = MemMeta::default();
+    meta.with_main();
+    let a = block_on(meta.apply_main(100, &[], &[]))
+        .expect("apply first commit")
+        .id;
+    let b = block_on(meta.apply_main(200, &[a], &[]))
+        .expect("apply second commit")
+        .id;
+    let c = block_on(meta.apply_main(300, &[b], &[]))
+        .expect("apply third commit")
+        .id;
+    (meta, [a, b, c])
+}
+
+/// `a` (100) <- `b` (300) on one line and `a` <- `c` (200) on another,
+/// with no worktree.
+pub fn fork() -> (MemMeta, [CommitId; 3]) {
+    let mut meta = MemMeta::default();
+    let a = meta.create_commit(100, &[]).expect("create root commit");
+    let b = meta.create_commit(300, &[a]).expect("create parent commit");
+    let c = meta
+        .create_commit(200, &[a])
+        .expect("create sibling commit");
+    (meta, [a, b, c])
+}
+
+/// A ref name the test knows is valid.
+pub fn ref_name(raw: &str) -> RefName {
+    RefName::parse(raw).expect(raw)
+}
+
+/// A worktree name the test knows is valid.
+pub fn worktree_name(raw: &str) -> WorktreeName {
+    WorktreeName::parse(raw).expect(raw)
+}
+
+/// Create `r` at `commit`. A branch ref logs an empty message; other
+/// ref kinds record no reflog entry.
+pub fn add_ref(meta: &mut MemMeta, r: &Ref, commit: CommitId) {
+    block_on(meta.create_ref(r, commit, ReflogNote::new("", 0)))
+        .unwrap_or_else(|err| panic!("create {}: {err:?}", r.full_name()));
 }
 
 fn log_entry(old: Option<CommitId>, new: CommitId, note: ReflogNote<'_>) -> ReflogEntry {
@@ -924,5 +970,71 @@ impl MetaStore for MemMeta {
         name: &ScopeName,
     ) -> impl Future<Output = Result<bool, MemError>> + Send {
         core::future::ready(Ok(self.scopes.remove(name).is_some()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn branch(raw: &str) -> Ref {
+        Ref::branch(RefName::parse(raw).unwrap())
+    }
+
+    #[test]
+    fn set_head_does_not_strand_a_nested_branch() {
+        let mut meta = MemMeta::default();
+        meta.with_main();
+        let root = meta.create_commit(1_000, &[]).unwrap();
+        block_on(meta.create_ref(&branch("other"), root, ReflogNote::new("x", 0))).unwrap();
+        block_on(meta.set_head(
+            &main_worktree(),
+            &Head::Branch(RefName::parse("other").unwrap()),
+            ReflogNote::new("checkout", 0),
+        ))
+        .unwrap();
+        // `main/x` may be created only now: while HEAD is unborn on `main`,
+        // `main` counts as taken.
+        block_on(meta.create_ref(&branch("main/x"), root, ReflogNote::new("x", 0))).unwrap();
+        block_on(meta.set_head(
+            &main_worktree(),
+            &Head::Branch(RefName::parse("main/x").unwrap()),
+            ReflogNote::new("checkout", 0),
+        ))
+        .unwrap();
+        // `main/x` is born and stays in `refs`: HEAD may not move onto the
+        // unborn `main`, which would shadow it.
+        assert!(matches!(
+            block_on(meta.set_head(
+                &main_worktree(),
+                &Head::Branch(RefName::parse("main").unwrap()),
+                ReflogNote::new("checkout", 0),
+            )),
+            Err(MemError::RefConflict { name, existing })
+                if name == branch("main") && existing == branch("main/x")
+        ));
+        // A re-checkout of the branch HEAD holds is a no-op.
+        block_on(meta.set_head(
+            &main_worktree(),
+            &Head::Branch(RefName::parse("main/x").unwrap()),
+            ReflogNote::new("checkout", 0),
+        ))
+        .unwrap();
+    }
+
+    #[test]
+    fn set_head_moves_onto_and_off_an_unborn_branch() {
+        let mut meta = MemMeta::default();
+        meta.with_main();
+        // HEAD starts unborn on `main`: moving it onto an unborn `main/x`
+        // must not trip the conflict scan over the unborn `main`.
+        for raw in ["main/x", "main", "main"] {
+            block_on(meta.set_head(
+                &main_worktree(),
+                &Head::Branch(RefName::parse(raw).unwrap()),
+                ReflogNote::new("checkout", 0),
+            ))
+            .unwrap();
+        }
     }
 }
