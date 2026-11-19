@@ -1,29 +1,26 @@
 //! Cache subcommand execution, DTOs, and output rendering.
 
-use anyhow::Context as _;
-use sekai_app::{CacheUpdateOptions, CacheUpdateReport, CacheUpdateTimings, HostWorldTree};
+use sekai_app::{CacheUpdateOptions, CacheUpdateReport, CacheUpdateTimings, Location};
 use serde::Serialize;
 
 use super::progress::Bars;
 use crate::cli::CacheCommand;
-use crate::envelope::envelope_ok;
+use crate::envelope::Printer;
 use crate::style::Styler;
 
-pub async fn run(store: &str, action: &CacheCommand, style: Styler) -> anyhow::Result<()> {
-    let mut instance = sekai_app::SekaiInstance::open_location(&sekai_app::Location {
-        store: store.into(),
-        world: None,
-    })
-    .await?;
+pub async fn run(
+    location: &Location,
+    action: &CacheCommand,
+    printer: &Printer,
+) -> anyhow::Result<()> {
+    let style = printer.style;
+    let mut instance = sekai_app::SekaiInstance::open_location(location).await?;
 
     match action {
         CacheCommand::Clean { json } => {
-            let entries = instance
-                .clean_cache()
-                .await
-                .with_context(|| format!("cache clean for {store} failed"))?;
+            let entries = instance.clean_cache().await?;
             if *json {
-                println!("{}", envelope_ok("cache", &CacheClean { entries })?);
+                printer.print_ok("cache", &CacheClean { entries })?;
                 return Ok(());
             }
             println!(
@@ -31,25 +28,16 @@ pub async fn run(store: &str, action: &CacheCommand, style: Styler) -> anyhow::R
                 style.bold(&entries.to_string())
             );
         }
-        CacheCommand::Update {
-            world,
-            output,
-            jobs,
-        } => {
-            let mut world_tree = HostWorldTree::new(world)
-                .with_context(|| format!("failed to inspect world {}", world.display()))?;
-            let bars = Bars::new(output.progress);
+        CacheCommand::Update { output, jobs } => {
+            let mut world = location.world_tree()?;
+            let bars = Bars::new(output.progress.show(output.json));
             let options = CacheUpdateOptions { concurrency: *jobs };
             let (report, timings) = instance
-                .world_mut(&mut world_tree)
+                .world_mut(&mut world)
                 .update_cache(options, &bars)
-                .await
-                .with_context(|| format!("cache update of {} failed", world.display()))?;
+                .await?;
             if output.json {
-                println!(
-                    "{}",
-                    envelope_ok("cache", &update_payload(&report, &timings, output.timing))?
-                );
+                printer.print_ok("cache", &update_payload(&report, &timings, output.timing))?;
                 return Ok(());
             }
             println!("{}", update_line(&report, style));

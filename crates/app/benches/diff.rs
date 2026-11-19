@@ -27,7 +27,7 @@ fn benches(c: &mut Criterion) {
                 .commit(options(), Scope::World, &()),
         )
         .expect("commit works");
-        let commits = rt.block_on(instance.list_commits()).expect("list works");
+        let commits = rt.block_on(support::all_commits(&instance));
         let coords = rt
             .block_on(instance.commit_chunk_coords(commits[0].id))
             .expect("coords work");
@@ -56,7 +56,7 @@ fn benches(c: &mut Criterion) {
                 .commit(options(), Scope::World, &()),
         )
         .expect("commit works");
-        let commits = rt.block_on(instance.list_commits()).expect("list works");
+        let commits = rt.block_on(support::all_commits(&instance));
         let coords = rt
             .block_on(instance.commit_chunk_coords(commits[0].id))
             .expect("coords work");

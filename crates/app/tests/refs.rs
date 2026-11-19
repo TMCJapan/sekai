@@ -187,7 +187,10 @@ async fn switching_refs_forks_the_history() {
 
     // Ref names resolve like commit references.
     assert_eq!(
-        instance.resolve_commit_ref("feature").await.unwrap(),
+        instance
+            .resolve_revision(&Revision::parse("feature").unwrap())
+            .await
+            .unwrap(),
         on_feature.commit
     );
 }

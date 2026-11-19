@@ -8,28 +8,21 @@ pub mod envelope;
 pub mod style;
 
 use cli::Cli;
-use envelope::{envelope_err, render_error};
+use envelope::{Printer, render_error};
 use style::Styler;
 
 /// Executes the CLI application pipeline using the provided options.
 pub async fn run_app(cli: &Cli) -> std::process::ExitCode {
-    let command_name = cli.command.name();
-    let as_json = cli.command.output_json();
-
-    match commands::run(cli).await {
-        Ok(()) => std::process::ExitCode::SUCCESS,
-        Err(err) => {
-            if as_json {
-                match envelope_err(command_name, &err) {
-                    Ok(doc) => println!("{doc}"),
-                    Err(_) => {
-                        eprintln!("{}", render_error(&err, Styler::new_stderr(cli.color)));
-                    }
-                }
-            } else {
-                eprintln!("{}", render_error(&err, Styler::new_stderr(cli.color)));
-            }
-            std::process::ExitCode::FAILURE
-        }
+    let printer = Printer::new(Styler::new(cli.color), cli.command.output_json());
+    let Err(err) = commands::run(cli, &printer).await else {
+        return std::process::ExitCode::SUCCESS;
+    };
+    match printer
+        .json
+        .then(|| printer.envelope_err(cli.command.name(), &err))
+    {
+        Some(Ok(doc)) => println!("{doc}"),
+        _ => eprintln!("{}", render_error(&err, Styler::new_stderr(cli.color))),
     }
+    std::process::ExitCode::FAILURE
 }

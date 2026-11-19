@@ -61,21 +61,20 @@ pub trait CommitOnMain: MetaStore {
 
 impl<M: MetaStore> CommitOnMain for M {}
 
-/// Every commit recorded in `meta`, in record order. The store holds no
-/// record-order reader on purpose; tests need only the full set.
+/// Every commit recorded in `meta`, oldest first, as the Git walk
+/// reports them. The store holds no record-order reader on purpose;
+/// tests need only the full set.
 pub async fn recorded<M>(meta: &M) -> Vec<CommitId>
 where
     M: MetaStore,
     M::Error: core::fmt::Debug,
 {
-    let mut ids = Vec::new();
-    meta.visit_commits(|commit| {
-        ids.push(commit.id);
-        true
-    })
-    .await
-    .unwrap();
-    ids
+    let bounds = sekai_core::resolve_log_bounds(meta, None, &[], true)
+        .await
+        .unwrap();
+    let mut commits = sekai_core::walk_log(meta, &bounds).await.unwrap();
+    commits.reverse();
+    commits.into_iter().map(|commit| commit.id).collect()
 }
 
 /// Named scope CRUD: create, replace, list in name order, delete.
@@ -195,10 +194,7 @@ where
     let row = meta.lookup_chunk(id, &coord(0, 0)).await.unwrap().unwrap();
     assert_eq!(row.blob, Some(ChunkHash::new([1; 32])));
     assert!(meta.lookup_chunk(id, &coord(1, 0)).await.unwrap().is_none());
-    let listed = sekai_core::usecase::graph::list_commits(&*meta)
-        .await
-        .unwrap();
-    assert_eq!(listed.len(), 1);
+    assert_eq!(recorded(meta).await.len(), 1);
 }
 
 /// Per-commit statistics: fresh chunks, fresh tombstones, and new blobs.

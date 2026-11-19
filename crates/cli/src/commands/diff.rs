@@ -1,18 +1,17 @@
 //! Diff subcommand execution, DTOs, and coordination.
 
-use anyhow::Context as _;
-use sekai_app::{AppError, ChunkCoord, ChunkDiff, CommitId, HostWorldTree, Scope, SekaiStore};
+use sekai_app::{ChunkDiff, Location, scoped_coords};
 
 use super::diff_render::{
     TimedDiffs, diff_group_payload, print_diff_timing_table, render_diff_coords,
 };
 use super::progress::Bars;
 use super::resolve_selection;
-use crate::cli::{CommitRef, DiffArgs, DiffTarget, Selection};
-use crate::envelope::envelope_ok;
-use crate::style::Styler;
+use crate::cli::{DiffArgs, DiffTarget, Selection};
+use crate::envelope::Printer;
 
-pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<()> {
+pub async fn run(location: &Location, args: &DiffArgs, printer: &Printer) -> anyhow::Result<()> {
+    let style = printer.style;
     // Broad areas (whole dimensions, rectangles) and empty selections
     // resolve through enumeration; explicit chunks join the union.
     let (mut coords, broad) = match &args.selection {
@@ -25,49 +24,35 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
         // filters.
         Selection::Scope(_) => (Vec::new(), true),
     };
-    let instance = sekai_app::SekaiInstance::open_location(&sekai_app::Location {
-        store: store.into(),
-        world: None,
-    })
-    .await?;
+    let instance = sekai_app::SekaiInstance::open_location(location).await?;
     let scope = resolve_selection(&instance, &args.selection).await?;
-    let bars = Bars::new(args.output.progress);
+    let bars = Bars::new(args.output.progress.show(args.output.json));
 
-    let (diffs, timings) = match args.target() {
-        DiffTarget::World { world, commit } => {
-            // Resolve an explicit reference before scanning the world: a
-            // bad reference must fail without waiting on a full world
-            // read. No reference means the active ref, which may be
-            // unborn: the diff then runs against the empty snapshot.
-            let commit_id = resolve_world_commit(&instance, commit)
-                .await
-                .with_context(|| "failed to compute chunk diffs between world state and commit")?;
-            let world = HostWorldTree::new(world)
-                .with_context(|| format!("failed to inspect world {}", world.display()))?;
+    let (diffs, timings) = match &args.target {
+        DiffTarget::World(commit) => {
+            // Resolve the commit before scanning the world: a bad
+            // reference must fail without waiting on a full world read.
+            let world = location.world_tree()?;
+            let commit_id = instance.resolve_diff_commit(commit.as_ref()).await?;
             if broad {
                 coords.append(&mut sekai_app::world_chunk_coords(&world)?);
             }
             let coords = scoped_coords(coords, &scope);
             instance
                 .world(&world)
-                .diff_world_chunks(commit_id, &coords, &bars)
-                .await
-                .with_context(|| "failed to compute chunk diffs between world state and commit")?
+                .diff_world_chunks(Some(commit_id), &coords, &bars)
+                .await?
         }
         DiffTarget::Commits { old, new } => {
-            let (old_id, new_id) = resolve_commit_pair(&instance, old, new).await?;
+            let old_id = instance.resolve_diff_commit(Some(old)).await?;
+            let new_id = instance.resolve_diff_commit(Some(new)).await?;
             if broad {
                 let mut union = instance.commit_chunk_coords(old_id).await?;
                 union.extend(instance.commit_chunk_coords(new_id).await?);
                 coords.append(&mut union);
             }
             let coords = scoped_coords(coords, &scope);
-            instance
-                .diff_chunks(old_id, new_id, &coords, &bars)
-                .await
-                .with_context(|| {
-                    format!("failed to compute chunk diffs between commit {old_id} and {new_id}")
-                })?
+            instance.diff_chunks(old_id, new_id, &coords, &bars).await?
         }
     };
 
@@ -77,18 +62,15 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
         .collect();
     if args.output.json {
         if args.output.timing {
-            println!(
-                "{}",
-                envelope_ok(
-                    "diff",
-                    &TimedDiffs {
-                        diffs: diff_group_payload(&nonempty),
-                        timing: Some((&timings).into()),
-                    }
-                )?
-            );
+            printer.print_ok(
+                "diff",
+                &TimedDiffs {
+                    diffs: diff_group_payload(&nonempty),
+                    timing: Some((&timings).into()),
+                },
+            )?;
         } else {
-            println!("{}", envelope_ok("diff", &diff_group_payload(&nonempty))?);
+            printer.print_ok("diff", &diff_group_payload(&nonempty))?;
         }
         return Ok(());
     }
@@ -101,89 +83,4 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
         print_diff_timing_table(&timings, diffs.len(), style);
     }
     Ok(())
-}
-
-/// Resolve the commit a world diff compares against.
-///
-/// An explicit reference must resolve before the world is scanned. `None`
-/// keeps meaning "the active ref"; an unborn active ref yields `None`
-/// again, and the diff runs against the empty snapshot (ADR-0006).
-async fn resolve_world_commit(
-    instance: &sekai_app::SekaiInstance<impl SekaiStore>,
-    commit: Option<&CommitRef>,
-) -> anyhow::Result<Option<CommitId>> {
-    match commit {
-        Some(raw) => instance
-            .resolve_commit_ref(raw.as_str())
-            .await
-            .map(Some)
-            .with_context(|| format!("commit {raw} failed to resolve")),
-        None => instance
-            .current_commit_id()
-            .await
-            .with_context(|| "failed to resolve the active ref"),
-    }
-}
-
-async fn resolve_commit_pair(
-    instance: &sekai_app::SekaiInstance<impl SekaiStore>,
-    old_commit: Option<&CommitRef>,
-    new_commit: Option<&CommitRef>,
-) -> anyhow::Result<(CommitId, CommitId)> {
-    async fn resolve(
-        instance: &sekai_app::SekaiInstance<impl SekaiStore>,
-        raw: &CommitRef,
-    ) -> anyhow::Result<CommitId> {
-        instance
-            .resolve_commit_ref(raw.as_str())
-            .await
-            .with_context(|| format!("commit {raw} failed to resolve"))
-    }
-    async fn active_commit(
-        instance: &sekai_app::SekaiInstance<impl SekaiStore>,
-    ) -> anyhow::Result<CommitId> {
-        Ok(instance
-            .current_commit_id()
-            .await?
-            .ok_or(AppError::NoCommits)?)
-    }
-    /// Commit parents are stored sorted by ID in both backends, so this
-    /// returns the lowest-ID parent. For the single-parent commits that
-    /// `commit` creates this is the continued commit; a merge's parents
-    /// are reported in ID order.
-    async fn lowest_id_parent(
-        instance: &sekai_app::SekaiInstance<impl SekaiStore>,
-        commit: CommitId,
-    ) -> anyhow::Result<CommitId> {
-        instance
-            .commit_parents(commit)
-            .await?
-            .into_iter()
-            .min()
-            .with_context(|| format!("commit {commit} has no parent to diff against"))
-    }
-    match (old_commit, new_commit) {
-        (Some(old), Some(new)) => {
-            Ok((resolve(instance, old).await?, resolve(instance, new).await?))
-        }
-        (Some(old), None) => {
-            let new_id = active_commit(instance).await?;
-            Ok((resolve(instance, old).await?, new_id))
-        }
-        (None, Some(new)) => {
-            let new_id = resolve(instance, new).await?;
-            Ok((lowest_id_parent(instance, new_id).await?, new_id))
-        }
-        (None, None) => {
-            let new_id = active_commit(instance).await?;
-            Ok((lowest_id_parent(instance, new_id).await?, new_id))
-        }
-    }
-}
-
-fn scoped_coords(mut coords: Vec<ChunkCoord>, scope: &Scope) -> Vec<ChunkCoord> {
-    coords.retain(|coord| scope.contains(*coord));
-    coords.sort();
-    coords.dedup();
-    coords
 }

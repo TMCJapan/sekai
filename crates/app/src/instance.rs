@@ -20,7 +20,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use sekai_core::{Commit, CommitId, Revision, Target, WorktreeName};
+use sekai_core::{CommitId, Revision, Target, WorktreeName};
 use sekai_storage::{CacheStore as _, SekaiStore};
 use sekai_world::{WorldLock, WorldLockMode, WorldLockState, WorldTree};
 
@@ -101,11 +101,6 @@ impl<T: SekaiStore> SekaiInstance<T> {
         }
     }
 
-    /// List all commits in local record order (for `log` and pre-flight checks).
-    pub async fn list_commits(&self) -> Result<Vec<Commit>, AppError> {
-        Ok(sekai_core::usecase::graph::list_commits(self.store.meta()).await?)
-    }
-
     /// The commits a commit continues: its direct parents.
     ///
     /// Fails when the commit does not exist.
@@ -113,13 +108,6 @@ impl<T: SekaiStore> SekaiInstance<T> {
         sekai_core::usecase::graph::commit_parents(self.store.meta(), commit)
             .await
             .map_err(AppError::Commit)
-    }
-
-    /// Resolve a commit reference (`<64-char hash>` or a ref name).
-    pub async fn resolve_commit_ref(&self, raw: &str) -> Result<CommitId, AppError> {
-        sekai_core::usecase::resolve::resolve_commit_ref(self.store.meta(), raw)
-            .await
-            .map_err(switch_err)
     }
 
     /// Resolve `revision` against the store and the worktree's HEAD.

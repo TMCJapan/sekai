@@ -1,4 +1,5 @@
-//! Opt-in stderr progress bars (`--progress`), shared by report commands.
+//! Stderr progress bars, on unless `--no-progress` or `--json`, shared by
+//! report commands.
 
 use std::time::Duration;
 
@@ -9,7 +10,7 @@ const TEMPLATE: &str =
     "{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} {msg} ({eta})";
 const STEADY_TICK: Duration = Duration::from_millis(100);
 
-/// Builds one progress bar per run for `--progress`, drawn on stderr only
+/// Builds one progress bar per run, drawn on stderr only
 /// when it is a TTY, so piped output stays clean. The TTY check is
 /// indicatif's: its default stderr target hides itself off a terminal or
 /// under `TERM=dumb`.

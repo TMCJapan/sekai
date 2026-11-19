@@ -1,19 +1,18 @@
 //! Scope subcommand execution, DTOs, and output rendering.
 
-use anyhow::Context as _;
-use sekai_app::{Dimension, NamedScope, Rect};
+use sekai_app::{Dimension, Location, NamedScope, Rect};
 use serde::Serialize;
 
 use crate::cli::{RegionSpec, ScopeCommand};
-use crate::envelope::envelope_ok;
-use crate::style::Styler;
+use crate::envelope::Printer;
 
-pub async fn run(store: &str, action: &ScopeCommand, style: Styler) -> anyhow::Result<()> {
-    let mut instance = sekai_app::SekaiInstance::open_location(&sekai_app::Location {
-        store: store.into(),
-        world: None,
-    })
-    .await?;
+pub async fn run(
+    location: &Location,
+    action: &ScopeCommand,
+    printer: &Printer,
+) -> anyhow::Result<()> {
+    let style = printer.style;
+    let mut instance = sekai_app::SekaiInstance::open_location(location).await?;
 
     match action {
         ScopeCommand::Create {
@@ -28,12 +27,9 @@ pub async fn run(store: &str, action: &ScopeCommand, style: Styler) -> anyhow::R
                 .map(|spec| (spec.dim, spec.rect))
                 .chain(region.iter().map(RegionSpec::area))
                 .collect();
-            let record = instance
-                .create_scope(name, areas, *force)
-                .await
-                .with_context(|| format!("scope {name} failed"))?;
+            let record = instance.create_scope(name, areas, *force).await?;
             if *json {
-                println!("{}", envelope_ok("scope", &scope_payload(&record))?);
+                printer.print_ok("scope", &scope_payload(&record))?;
                 return Ok(());
             }
             println!(
@@ -43,37 +39,25 @@ pub async fn run(store: &str, action: &ScopeCommand, style: Styler) -> anyhow::R
             );
         }
         ScopeCommand::Delete { name, json } => {
-            instance
-                .delete_scope(name)
-                .await
-                .with_context(|| format!("delete of scope {name} failed"))?;
+            instance.delete_scope(name).await?;
             if *json {
-                println!(
-                    "{}",
-                    envelope_ok(
-                        "scope",
-                        &ScopeDelete {
-                            name: name.as_str().to_owned(),
-                        }
-                    )?
-                );
+                printer.print_ok(
+                    "scope",
+                    &ScopeDelete {
+                        name: name.as_str().to_owned(),
+                    },
+                )?;
                 return Ok(());
             }
             println!("deleted scope {}", style.bold(name.as_str()));
         }
         ScopeCommand::List { json } => {
-            let scopes = instance
-                .list_scopes()
-                .await
-                .with_context(|| format!("scope list for {store} failed"))?;
+            let scopes = instance.list_scopes().await?;
             if *json {
-                println!(
-                    "{}",
-                    envelope_ok(
-                        "scope",
-                        &scopes.iter().map(scope_payload).collect::<Vec<_>>()
-                    )?
-                );
+                printer.print_ok(
+                    "scope",
+                    &scopes.iter().map(scope_payload).collect::<Vec<_>>(),
+                )?;
                 return Ok(());
             }
             for record in &scopes {

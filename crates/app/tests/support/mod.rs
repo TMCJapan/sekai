@@ -1,7 +1,7 @@
 //! A store set up for tests and benches that drive a world by hand.
 
 use sekai_app::{AppError, DEFAULT_REF_NAME, Head, RefName, SekaiInstance, WorktreeName};
-use sekai_core::{ReflogNote, Worktree};
+use sekai_core::{Commit, ReflogNote, Worktree};
 use sekai_storage::MetaStore as _;
 use sekai_storage_local::LocalStore;
 
@@ -34,4 +34,18 @@ pub async fn init_store(root: &str) -> Result<SekaiInstance<LocalStore>, AppErro
             .await?;
     }
     Ok(instance.with_worktree(Some(name)))
+}
+
+/// Every commit in `instance`'s store, oldest first, as the Git walk
+/// reports them. Single-branch, linear test histories only. Only some
+/// test crates call it.
+#[allow(dead_code)]
+pub async fn all_commits(instance: &SekaiInstance<LocalStore>) -> Vec<Commit> {
+    let meta = instance.store().meta();
+    let bounds = sekai_core::resolve_log_bounds(meta, None, &[], true)
+        .await
+        .unwrap();
+    let mut commits = sekai_core::walk_log(meta, &bounds).await.unwrap();
+    commits.reverse();
+    commits
 }

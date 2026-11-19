@@ -3,35 +3,35 @@
 These commands never write to the world or the store.
 
 ```sh
-sekai log
-sekai status ./world
-sekai diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a --in overworld:0,0
+sekai status
+sekai log --oneline --decorate
+sekai log --all --stat
+sekai diff --in overworld:0,0
+sekai diff v1..main --in overworld:0,0..31,31
 ```
 
-- `log` prints commits oldest first with raw Unix-millis timestamps
-  (RFC 3339 rendering is human-output only). `--stat` appends
-  per-commit change statistics (fresh/tombstone/new-blob/effective
-  counts). An empty store prints a note to stderr and exits 0.
-- `status` previews what a commit would record: the basis commit
-  (`latest`, `null` when the store is empty), changed regions (new and
-  deleted files split out), chunks that would be newly recorded,
-  tombstones, and blobs absent from CAS. `clean` means nothing in scope
-  differs from the latest commit; counts match a subsequent commit
-  unless the world changes in between. There is deliberately no
-  `commit --dry-run`: `status` is that command.
-- `diff` compares chunk NBT between two commits, or between the live
-  world (`--world`) and a commit. One `--in DIM:x,z` selection keeps
-  the single-chunk output; several selections switch to grouped output,
-  omitting chunks without differences. Scope flags (`--in`, `--region`,
-  `--kind`) select the compared chunks; see
-  [Scope selection](../scope.md). A chunk absent or tombstoned on a
-  side diffs as an empty compound there — missing coordinates are never
+- `status` starts with Git's first line, `On branch <name>` or `HEAD
+  detached at <id>`, where `<id>` is HEAD's commit, then previews what
+  a commit would record: the basis commit, changed regions (new and deleted files split out), chunks that
+  would be newly recorded, tombstones, and blobs absent from CAS.
+  `clean` means nothing in scope differs from HEAD's commit; counts
+  match a subsequent commit unless the world changes in between. There
+  is deliberately no `commit --dry-run`: `status` is that command.
+- `log` walks parents from HEAD, newest first, in Git's `medium` format
+  without the author and the message, which sekai does not record.
+  `--oneline` prints one line per commit, `--reverse` lists the oldest
+  first, and `--all` starts from every ref. Revisions and ranges such as
+  `v1..main` choose where to walk. Decorations such as `(HEAD -> main,
+  tag: v1)` show on a terminal; `--decorate` and `--no-decorate` decide
+  otherwise. `--stat` adds per-commit change statistics. A branch with
+  no commit yet fails, as in Git.
+- `diff` compares the world with HEAD, the world with one commit-ish,
+  or two commits (`diff a b` or `diff a..b`). One `--in DIM:x,z`
+  selection keeps the single-chunk output; several selections switch to
+  grouped output, omitting chunks without differences. Scope flags
+  (`--in`, `--region`, `--kind`) select the compared chunks; see
+  [Scope selection](../scope.md). A chunk absent or tombstoned on a side
+  diffs as an empty compound there — missing coordinates are never
   errors (see [ADR-0006](https://github.com/tmcjapan/sekai/blob/main/docs/adr/0006-diff-missing-as-empty.md));
-  only corrupt payloads and missing blobs fail loudly. With commit
-  arguments, a missing newer side defaults to the active ref's target and
-  a missing older side defaults to the newer side's lowest-ID parent; when
-  both are omitted, diff uses the active ref's target against its
-  lowest-ID parent, so a root commit has no implicit older side and the
-  command errors — pass the older commit explicitly or use `--world`
-  (whose single commit defaults to the active ref's target). `--show-values`
-  prints concrete old/new values in human output.
+  only corrupt payloads and missing blobs fail loudly. Comparing the
+  world fails on a branch with no commit yet, as Git's `diff HEAD` does.

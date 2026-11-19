@@ -212,7 +212,7 @@ async fn scoped_commit_records_no_spurious_tombstones() {
     assert_eq!(scoped.chunks, 2);
 
     // The nether chunk still resolves through fallback to the full commit.
-    let commits = instance.list_commits().await.unwrap();
+    let commits = support::all_commits(&instance).await;
     assert_eq!(commits.len(), 2);
     let nether_coord = ChunkCoord::new(Dimension::NETHER, RegionKind::Region, 0, 0);
     let diffs = instance
@@ -241,7 +241,7 @@ async fn scoped_commit_records_no_spurious_tombstones() {
     assert_eq!(full2.tombstones, 0);
     assert_eq!(full2.new_blobs, 0);
     assert_eq!(full2.chunks, 2);
-    let commits = instance.list_commits().await.unwrap();
+    let commits = support::all_commits(&instance).await;
     assert_eq!(commits.len(), 4);
     let diffs = instance
         .diff_chunk(commits[0].id, commits[3].id, &nether_coord)
@@ -295,7 +295,7 @@ async fn partial_scope_then_full_commit_reingests_unread_chunks() {
     assert_eq!(full.new_blobs, 1);
     assert_eq!(full.tombstones, 0);
 
-    let commits = instance.list_commits().await.unwrap();
+    let commits = support::all_commits(&instance).await;
     assert_eq!(commits.len(), 3);
     let coord =
         sekai_core::ChunkCoord::new(sekai_core::Dimension::OVERWORLD, RegionKind::Region, 1, 0);
@@ -367,7 +367,7 @@ async fn scoped_checkout_leaves_other_dimensions_untouched() {
         .commit(options(), Scope::World, &())
         .await
         .unwrap();
-    let commits = instance.list_commits().await.unwrap();
+    let commits = support::all_commits(&instance).await;
 
     // Diverge both dimensions, then delete the nether file outright.
     write_region(&over, &[(0, 0, chunk_nbt("marker-9"))]);
@@ -451,7 +451,7 @@ async fn strict_checkout_removes_post_commit_files() {
         .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
-    let commits = instance.list_commits().await.unwrap();
+    let commits = support::all_commits(&instance).await;
     assert_eq!(commits.len(), 2);
 
     // Commit 2: all-tombstone region deleted (not shelled), new chunk kept.
@@ -504,7 +504,7 @@ async fn keep_options_preserve_post_commit_data() {
         .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
-    let commits = instance.list_commits().await.unwrap();
+    let commits = support::all_commits(&instance).await;
 
     // Afterwards: a new chunk inside the known region plus a new file.
     let added = world_path.join("region/r.1.0.mca");
@@ -559,7 +559,7 @@ async fn keep_tombstoned_chunks_preserves_live_bytes() {
         .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
-    let commits = instance.list_commits().await.unwrap();
+    let commits = support::all_commits(&instance).await;
     assert_eq!(commits.len(), 2);
 
     // Diverge live: change the kept chunk, recreate the deleted one.
@@ -626,7 +626,7 @@ async fn keep_tombstoned_chunks_leaves_fully_tombstoned_files() {
         .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
-    let commits = instance.list_commits().await.unwrap();
+    let commits = support::all_commits(&instance).await;
 
     // Live recreates the chunk afterwards.
     write_region(&region, &[(0, 0, chunk_nbt("marker-7"))]);
@@ -675,7 +675,7 @@ async fn missing_blob_abort_is_default_and_skip_recovers() {
         .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
-    let commits = instance.list_commits().await.unwrap();
+    let commits = support::all_commits(&instance).await;
 
     // Corrupt the CAS by deleting the whole keyspace: an idempotent
     // re-init recreates it empty while the metadata keeps naming the
@@ -735,7 +735,7 @@ async fn missing_file_error_policy_refuses_to_guess() {
         .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
-    let commits = instance.list_commits().await.unwrap();
+    let commits = support::all_commits(&instance).await;
     std::fs::remove_file(&region).unwrap();
 
     // No sibling exists here, so the default sibling-first policy falls
@@ -808,7 +808,7 @@ async fn missing_file_refusal_leaves_the_world_untouched() {
         .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
-    let commits = instance.list_commits().await.unwrap();
+    let commits = support::all_commits(&instance).await;
     for rx in 0..PRESENT {
         write_region(region(rx), &[(rx * 32, 0, chunk_nbt("marker-9"))]);
     }
@@ -857,7 +857,7 @@ async fn commit_records_no_diff_metadata() {
         .unwrap();
     assert_eq!(report.chunks, 1);
 
-    let commits = instance.list_commits().await.unwrap();
+    let commits = support::all_commits(&instance).await;
     let row = instance
         .store()
         .meta()
@@ -989,7 +989,7 @@ async fn progress_events_cover_checkout_and_diff() {
         .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
-    let commits = instance.list_commits().await.unwrap();
+    let commits = support::all_commits(&instance).await;
 
     let recorded = Recorded::default();
     instance
@@ -1114,7 +1114,7 @@ async fn diff_chunk_between_commits() {
         .await
         .unwrap();
 
-    let commits = instance.list_commits().await.unwrap();
+    let commits = support::all_commits(&instance).await;
     assert_eq!(commits.len(), 2);
 
     let coord = sekai_core::ChunkCoord::new(
@@ -1333,7 +1333,7 @@ async fn sparse_entities_chunk_diffs_empty_without_error() {
         .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
-    let commits = instance.list_commits().await.unwrap();
+    let commits = support::all_commits(&instance).await;
 
     // The sparse kinds have no (0,0): previously a loud error, now empty.
     for kind in [RegionKind::Entities, RegionKind::Poi] {
@@ -1371,7 +1371,7 @@ async fn legacy_level_chunks_diff_by_content() {
         .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
-    let commits = instance.list_commits().await.unwrap();
+    let commits = support::all_commits(&instance).await;
 
     // A volatile-only rewrite (`LastUpdate`) normalizes identically.
     write_region(&region, &[(33, 1, legacy_chunk_nbt(&[0; 8], 999))]);
@@ -1403,7 +1403,7 @@ async fn legacy_level_chunks_diff_by_content() {
         .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
-    let commits_after = instance.list_commits().await.unwrap();
+    let commits_after = support::all_commits(&instance).await;
     assert_eq!(commits_after.len(), 2);
     let stored = instance
         .diff_chunk(commits[0].id, commits_after[1].id, &coord)
@@ -1561,7 +1561,7 @@ async fn created_and_deleted_chunks_diff_as_added_removed() {
         .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
-    let commits = instance.list_commits().await.unwrap();
+    let commits = support::all_commits(&instance).await;
 
     let diffs = instance
         .diff_chunk(commits[0].id, commits[1].id, &coord)
@@ -1576,7 +1576,7 @@ async fn created_and_deleted_chunks_diff_as_added_removed() {
         .commit(options(), sekai_app::Scope::World, &())
         .await
         .unwrap();
-    let commits = instance.list_commits().await.unwrap();
+    let commits = support::all_commits(&instance).await;
     let diffs = instance
         .diff_chunk(commits[1].id, commits[2].id, &coord)
         .await
@@ -1611,7 +1611,7 @@ async fn all_kinds_round_trip() {
             .commit(options(), sekai_app::Scope::World, &())
             .await
             .unwrap();
-        let commits = instance.list_commits().await.unwrap();
+        let commits = support::all_commits(&instance).await;
 
         let diffs = instance
             .diff_chunk(commits[0].id, commits[1].id, &coord)
@@ -1743,7 +1743,7 @@ async fn real_world_corpus_round_trip() {
     assert_eq!(report.tombstones, 0);
 
     // Real NBT in every kind decodes: self-diffs are empty, not errors.
-    let commits = instance.list_commits().await.unwrap();
+    let commits = support::all_commits(&instance).await;
     for kind in RegionKind::ALL {
         let coords = sekai_app::world_chunk_coords(&world)
             .unwrap()
@@ -1887,7 +1887,7 @@ async fn randomized_commit_checkout_round_trip() {
 
         // Strict checkout deletes fully tombstoned regions, so a header-only
         // file on disk is expected to be gone after a restore.
-        let commits = instance.list_commits().await.unwrap();
+        let commits = support::all_commits(&instance).await;
         assert_eq!(commits.len(), history.len());
         for (index, commit) in commits.iter().enumerate().rev() {
             instance

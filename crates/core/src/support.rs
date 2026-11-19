@@ -137,10 +137,6 @@ pub struct MemMeta {
 }
 
 impl MemMeta {
-    fn seq_of(&self, id: CommitId) -> Option<u64> {
-        self.seqs.get(&id).copied()
-    }
-
     /// Assign a local sequence and append the commit. Returns `false`
     /// when the content-addressed ID already exists.
     fn insert_commit(
@@ -581,20 +577,6 @@ impl MetaStore for MemMeta {
         id: CommitId,
     ) -> impl Future<Output = Result<Option<Commit>, MemError>> + Send {
         core::future::ready(Ok(self.commits.iter().find(|c| c.id == id).cloned()))
-    }
-
-    fn visit_commits<F>(&self, mut visit: F) -> impl Future<Output = Result<(), MemError>> + Send
-    where
-        F: FnMut(&Commit) -> bool + Send,
-    {
-        let mut ordered: Vec<&Commit> = self.commits.iter().collect();
-        ordered.sort_by_key(|commit| self.seq_of(commit.id));
-        for commit in ordered {
-            if !visit(commit) {
-                break;
-            }
-        }
-        core::future::ready(Ok(()))
     }
 
     fn read_root_node(

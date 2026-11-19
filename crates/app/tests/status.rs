@@ -76,7 +76,7 @@ async fn status_counts_tombstones_without_writing() {
         .unwrap();
     write_region(&region, &[(0, 0, chunk_nbt("marker-1"))]);
 
-    let commits_before = instance.list_commits().await.unwrap().len();
+    let commits_before = support::all_commits(&instance).await.len();
     let blobs_before = blob_count(instance.store()).await;
     let (report, timings) = instance
         .world(&world)
@@ -95,7 +95,7 @@ async fn status_counts_tombstones_without_writing() {
         "total timing must cover its phases"
     );
     // A preview is pure: no commit rows and no blobs appear.
-    assert_eq!(instance.list_commits().await.unwrap().len(), commits_before);
+    assert_eq!(support::all_commits(&instance).await.len(), commits_before);
     assert_eq!(blob_count(instance.store()).await, blobs_before);
 }
 

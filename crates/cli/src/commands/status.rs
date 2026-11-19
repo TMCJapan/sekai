@@ -1,52 +1,53 @@
 //! Status subcommand execution, DTOs, and output rendering.
 
-use anyhow::Context as _;
-use sekai_app::{HostWorldTree, StatusReport, StatusTimings};
+use sekai_app::{HeadState, Location, StatusReport, StatusTimings};
 use serde::Serialize;
-use std::path::Path;
 
 use super::progress::Bars;
-use super::{ReportOut, resolve_selection};
+use super::{HeadJson, ReportOut, resolve_selection};
 use crate::cli::Selection;
-use crate::envelope::envelope_ok;
+use crate::envelope::Printer;
 use crate::style::Styler;
 
 pub async fn run(
-    store: &str,
-    world_path: impl AsRef<Path>,
+    location: &Location,
     jobs: usize,
     selection: &Selection,
     out: ReportOut,
+    printer: &Printer,
 ) -> anyhow::Result<()> {
-    let world = HostWorldTree::new(&world_path)
-        .with_context(|| format!("failed to inspect world {}", world_path.as_ref().display()))?;
     let options = sekai_app::StatusOptions { concurrency: jobs };
-    let instance = sekai_app::SekaiInstance::open_location(&sekai_app::Location {
-        store: store.into(),
-        world: None,
-    })
-    .await
-    .with_context(|| format!("status of {} failed", world_path.as_ref().display()))?;
+    let instance = sekai_app::SekaiInstance::open_location(location).await?;
+    let world = location.world_tree()?;
     let scope = resolve_selection(&instance, selection).await?;
     let bars = Bars::new(out.progress);
-    let (report, timings) = instance
-        .world(&world)
-        .status(options, scope, &bars)
-        .await
-        .with_context(|| format!("status of {} failed", world_path.as_ref().display()))?;
+    let (report, timings) = instance.world(&world).status(options, scope, &bars).await?;
+    let head = instance.head().await?;
     if out.json {
-        println!(
-            "{}",
-            envelope_ok("status", &status_payload(&report, &timings, out.timing))?
-        );
+        let payload = status_payload(&report, &timings, head.as_ref(), out.timing);
+        printer.print_ok("status", &payload)?;
         return Ok(());
     }
     let style = out.style;
+    if let Some(head) = &head {
+        println!("{}", head_lines(head));
+    }
     println!("{}", status_line(&report, style));
     if out.timing {
         print_status_timing_table(&timings, style);
     }
     Ok(())
+}
+
+/// Git's first lines of `status`: where HEAD is, and `No commits yet`
+/// on an unborn branch. A detached HEAD prints its commit (ADR-0036
+/// *status*).
+fn head_lines(head: &HeadState) -> String {
+    match head {
+        HeadState::Attached { branch, .. } => format!("On branch {branch}"),
+        HeadState::Unborn { branch } => format!("On branch {branch}\n\nNo commits yet\n"),
+        HeadState::Detached { commit } => format!("HEAD detached at {commit}"),
+    }
 }
 
 fn status_line(report: &StatusReport, style: Styler) -> String {
@@ -77,6 +78,8 @@ struct StatusPayload {
     new_chunks: usize,
     tombstones: usize,
     new_blobs: usize,
+    /// HEAD the preview is measured against (ADR-0036 *Output*).
+    head: Option<HeadJson>,
     #[serde(flatten)]
     timing: Option<StatusTiming>,
 }
@@ -97,7 +100,12 @@ struct StatusPhases {
     hash_ms: u128,
 }
 
-fn status_payload(report: &StatusReport, timings: &StatusTimings, timing: bool) -> StatusPayload {
+fn status_payload(
+    report: &StatusReport,
+    timings: &StatusTimings,
+    head: Option<&HeadState>,
+    timing: bool,
+) -> StatusPayload {
     StatusPayload {
         clean: report.clean,
         latest: report.latest.map(|id| id.to_string()),
@@ -107,6 +115,7 @@ fn status_payload(report: &StatusReport, timings: &StatusTimings, timing: bool) 
         new_chunks: report.new_chunks,
         tombstones: report.tombstones,
         new_blobs: report.new_blobs,
+        head: head.map(HeadJson::from),
         timing: timing.then_some(StatusTiming {
             total_ms: timings.total.as_millis(),
             phases: StatusPhases {
@@ -167,18 +176,21 @@ mod tests {
     #[test]
     fn renders_status_payload() {
         let latest = sekai_app::CommitId([2; 32]);
-        let payload = status_payload(&report(), &timings(), false);
+        let head = HeadState::Unborn {
+            branch: sekai_app::RefName::parse("main").unwrap(),
+        };
+        let payload = status_payload(&report(), &timings(), Some(&head), false);
         assert_eq!(
             serde_json::to_string(&payload).unwrap(),
             format!(
-                r#"{{"clean":false,"latest":"{latest}","changed_regions":1,"new_files":0,"deleted_files":0,"new_chunks":3,"tombstones":1,"new_blobs":2}}"#
+                r#"{{"clean":false,"latest":"{latest}","changed_regions":1,"new_files":0,"deleted_files":0,"new_chunks":3,"tombstones":1,"new_blobs":2,"head":{{"ref":"refs/heads/main","commit":null}}}}"#
             )
         );
-        let payload_timed = status_payload(&report(), &timings(), true);
+        let payload_timed = status_payload(&report(), &timings(), None, true);
         assert_eq!(
             serde_json::to_string(&payload_timed).unwrap(),
             format!(
-                r#"{{"clean":false,"latest":"{latest}","changed_regions":1,"new_files":0,"deleted_files":0,"new_chunks":3,"tombstones":1,"new_blobs":2,"total_ms":50,"phases":{{"discover_ms":1,"universe_load_ms":3,"region_open_ms":4,"ingest_ms":30,"hash_ms":10}}}}"#
+                r#"{{"clean":false,"latest":"{latest}","changed_regions":1,"new_files":0,"deleted_files":0,"new_chunks":3,"tombstones":1,"new_blobs":2,"head":null,"total_ms":50,"phases":{{"discover_ms":1,"universe_load_ms":3,"region_open_ms":4,"ingest_ms":30,"hash_ms":10}}}}"#
             )
         );
     }

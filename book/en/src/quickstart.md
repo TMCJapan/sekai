@@ -1,33 +1,39 @@
 # Quickstart
 
 ```sh
-# Create the store (once, before any other command)
+cd ./world
+
+# Register the world in a new store at ./world/.sekai (once)
 sekai init
 
 # Record the current world state (pause the server first; see
 # "Server coordination")
-sekai commit ./world
+sekai commit
 
 # Preview what a commit would record, without writing anything
-sekai status ./world
+sekai status
 
-# List commits
-sekai log
+# Walk the history from HEAD, newest first
+sekai log --oneline
 
+# Start a branch at HEAD and switch to it
+sekai branch experiment
+sekai checkout experiment
 
+# Compare the world with HEAD, or two commits
+sekai diff --in overworld:0,0
+sekai diff main experiment
 
-# Rebuild the world from a known commit (overwrites region files)
-sekai checkout ./world 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a
-
-# Compare chunk NBT between two commits (hashes from `log`)
-sekai diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a --in overworld:0,0
+# Go back to main, rebuilding the world from its commit
+sekai checkout main
 ```
 
-The store defaults to `.sekai`; see [Store location](store.md) for
-using another location. Every
-command accepts `--json` for machine-readable output and, except `log`,
-`ref`, `init`, and `cache clean`, `--timing` for a per-phase breakdown.
-`commit`, `status`, `checkout`, `diff`, and `cache update` take `--progress`
-for a stderr progress bar (refused with `--json`). `commit`, `status`,
-`checkout`, and `diff` accept a scope
-(`--in`, `--region`, `--kind`); nothing selected means the whole world.
+Every command runs in the world it finds from the current directory,
+as Git finds its repository; see [Store location](store.md) for
+`--world` and `--store`. Every command accepts `--json` for
+machine-readable output and, except `init`, `branch`, `tag`, `log`,
+`reflog`, `worktree`, `scope`, and `cache clean`, `--timing` for a
+per-phase breakdown. Progress shows on stderr when it is a terminal;
+`--no-progress` turns it off. `commit`, `status`, `checkout`, and
+`diff` accept a scope (`--in`, `--region`, `--kind`); nothing selected
+means the whole world.

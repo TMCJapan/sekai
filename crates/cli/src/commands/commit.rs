@@ -6,18 +6,16 @@
 //! the update pass; `total_ms` spans both. `--no-cache` skips the update
 //! pass, leaving `cache_ms` at zero and the cache untouched.
 
-use anyhow::Context as _;
 use sekai_app::{
-    CacheUpdateOptions, CacheUpdateTimings, CommitOptions, CommitReport, CommitTimings,
-    HostWorldTree,
+    CacheUpdateOptions, CacheUpdateTimings, CommitId, CommitOptions, CommitReport, CommitTimings,
+    HeadState, Location, RefName,
 };
 use serde::Serialize;
-use std::path::Path;
 
 use super::progress::Bars;
-use super::{ReportOut, resolve_selection};
+use super::{HeadJson, ReportOut, resolve_selection};
 use crate::cli::Selection;
-use crate::envelope::envelope_ok;
+use crate::envelope::Printer;
 use crate::style::Styler;
 
 const fn options(jobs: usize) -> CommitOptions {
@@ -25,21 +23,15 @@ const fn options(jobs: usize) -> CommitOptions {
 }
 
 pub async fn run(
-    store: &str,
-    world_path: impl AsRef<Path>,
+    location: &Location,
     jobs: usize,
     no_cache: bool,
     selection: &Selection,
     out: ReportOut,
+    printer: &Printer,
 ) -> anyhow::Result<()> {
-    let mut world = HostWorldTree::new(&world_path)
-        .with_context(|| format!("failed to inspect world {}", world_path.as_ref().display()))?;
-    let mut instance = sekai_app::SekaiInstance::open_location(&sekai_app::Location {
-        store: store.into(),
-        world: None,
-    })
-    .await
-    .with_context(|| format!("commit of {} failed", world_path.as_ref().display()))?;
+    let mut instance = sekai_app::SekaiInstance::open_location(location).await?;
+    let mut world = location.world_tree()?;
     let scope = resolve_selection(&instance, selection).await?;
     let bars = Bars::new(out.progress);
     // Cache update first, record second: the update keys each file under
@@ -53,31 +45,30 @@ pub async fn run(
         let (_, update_timings) = instance
             .world_mut(&mut world)
             .update_cache(CacheUpdateOptions { concurrency: jobs }, &bars)
-            .await
-            .with_context(|| {
-                format!(
-                    "cache update before commit of {} failed",
-                    world_path.as_ref().display()
-                )
-            })?;
+            .await?;
         update_timings
     };
     let (report, timings) = instance
         .world_mut(&mut world)
         .commit(options(jobs), scope, &bars)
-        .await
-        .with_context(|| format!("commit of {} failed", world_path.as_ref().display()))?;
+        .await?;
+    let head = instance.head().await?;
     if out.json {
-        println!(
-            "{}",
-            envelope_ok(
-                "commit",
-                &commit_payload(&report, &timings, &update_timings, out.timing)
-            )?
+        let payload = commit_payload(
+            &report,
+            &timings,
+            &update_timings,
+            head.as_ref(),
+            out.timing,
         );
+        printer.print_ok("commit", &payload)?;
         return Ok(());
     }
     let style = out.style;
+    let root = instance.commit_parents(report.commit).await?.is_empty();
+    if let Some(head) = &head {
+        println!("{}", summary_line(head, root, report.commit));
+    }
     println!(
         "commit {} recorded: {} chunks, {} new blobs, {} tombstones",
         style.bold(&report.commit.to_string()),
@@ -91,12 +82,23 @@ pub async fn run(
     Ok(())
 }
 
+/// Git's first line after a commit, as `print_summary` prints it:
+/// `[main (root-commit) <id>]`, `[main <id>]`, or `[detached HEAD <id>]`,
+/// with the full ID (ADR-0036 *commit*).
+fn summary_line(head: &HeadState, root: bool, commit: CommitId) -> String {
+    let on = head.branch().map_or("detached HEAD", RefName::as_str);
+    let root = if root { " (root-commit)" } else { "" };
+    format!("[{on}{root} {commit}]")
+}
+
 #[derive(Serialize)]
 struct CommitPayload {
     commit: String,
     chunks: usize,
     new_blobs: usize,
     tombstones: usize,
+    /// HEAD after the commit (ADR-0036 *Output*).
+    head: Option<HeadJson>,
     #[serde(flatten)]
     timing: Option<CommitTiming>,
 }
@@ -142,6 +144,7 @@ fn commit_payload(
     report: &CommitReport,
     timings: &CommitTimings,
     update_timings: &CacheUpdateTimings,
+    head: Option<&HeadState>,
     timing: bool,
 ) -> CommitPayload {
     CommitPayload {
@@ -149,6 +152,7 @@ fn commit_payload(
         chunks: report.chunks,
         new_blobs: report.new_blobs,
         tombstones: report.tombstones,
+        head: head.map(HeadJson::from),
         // `then`, not `then_some`: `then` evaluates its closure lazily,
         // while `then_some` eagerly builds the timing block (and a copy of
         // every region's location) even without `--timing`.
@@ -218,6 +222,26 @@ fn print_timing_table(timings: &CommitTimings, update_timings: &CacheUpdateTimin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn summarizes_as_git_does() {
+        let id = CommitId([7; 32]);
+        let main = RefName::parse("main").unwrap();
+        let attached = HeadState::Attached {
+            branch: main,
+            commit: id,
+        };
+        assert_eq!(
+            summary_line(&attached, true, id),
+            format!("[main (root-commit) {id}]")
+        );
+        assert_eq!(summary_line(&attached, false, id), format!("[main {id}]"));
+        let detached = HeadState::Detached { commit: id };
+        assert_eq!(
+            summary_line(&detached, false, id),
+            format!("[detached HEAD {id}]")
+        );
+    }
     use core::time::Duration;
 
     #[test]
@@ -254,16 +278,22 @@ mod tests {
             cache: Duration::from_millis(20),
         };
         let id = report.commit;
-        let payload = commit_payload(&report, &timings, &update_timings, false);
+        let head = HeadState::Attached {
+            branch: RefName::parse("main").unwrap(),
+            commit: id,
+        };
+        let payload = commit_payload(&report, &timings, &update_timings, Some(&head), false);
         assert_eq!(
             serde_json::to_string(&payload).unwrap(),
-            format!(r#"{{"commit":"{id}","chunks":40,"new_blobs":2,"tombstones":0}}"#)
+            format!(
+                r#"{{"commit":"{id}","chunks":40,"new_blobs":2,"tombstones":0,"head":{{"ref":"refs/heads/main","commit":"{id}"}}}}"#
+            )
         );
-        let payload_timed = commit_payload(&report, &timings, &update_timings, true);
+        let payload_timed = commit_payload(&report, &timings, &update_timings, None, true);
         assert_eq!(
             serde_json::to_string(&payload_timed).unwrap(),
             format!(
-                r#"{{"commit":"{id}","chunks":40,"new_blobs":2,"tombstones":0,"total_ms":220,"phases":{{"discover_ms":1,"universe_load_ms":2,"region_open_ms":4,"ingest_ms":50,"hash_ms":6,"cas_put_ms":7,"db_apply_ms":8,"cache_ms":120}},"regions":[{{"path":"region/r.0.0.mca","chunks":32,"open_ms":4,"ingest_ms":5,"hash_ms":6,"cas_ms":7}}]}}"#
+                r#"{{"commit":"{id}","chunks":40,"new_blobs":2,"tombstones":0,"head":null,"total_ms":220,"phases":{{"discover_ms":1,"universe_load_ms":2,"region_open_ms":4,"ingest_ms":50,"hash_ms":6,"cas_put_ms":7,"db_apply_ms":8,"cache_ms":120}},"regions":[{{"path":"region/r.0.0.mca","chunks":32,"open_ms":4,"ingest_ms":5,"hash_ms":6,"cas_ms":7}}]}}"#
             )
         );
     }
