@@ -2,11 +2,11 @@
 //!
 //! The flows target `sekai-storage` traits; backend-specific setup stays in each runner.
 
-use sekai_core::{
+use sekai_storage::{BlobStore, CacheStore, MetaStore};
+use sekai_util::{
     ChunkCoord, ChunkHash, CommitEntry, CommitId, Dimension, NamedScope, Rect, RefName, RegionKind,
     ScopeName,
 };
-use sekai_storage::{BlobStore, CacheStore, MetaStore};
 
 const OVER: Dimension = Dimension::OVERWORLD;
 const REGION: RegionKind = RegionKind::Region;
@@ -136,9 +136,7 @@ where
     let row = meta.lookup_chunk(id, &coord(0, 0)).await.unwrap().unwrap();
     assert_eq!(row.blob, Some(ChunkHash::new([1; 32])));
     assert!(meta.lookup_chunk(id, &coord(1, 0)).await.unwrap().is_none());
-    let listed = sekai_core::usecase::graph::list_commits(&*meta)
-        .await
-        .unwrap();
+    let listed = sekai_storage::graph::list_commits(&*meta).await.unwrap();
     assert_eq!(listed.len(), 1);
 }
 
@@ -148,7 +146,7 @@ where
     M: MetaStore,
     M::Error: core::fmt::Debug,
 {
-    use sekai_core::usecase::graph::{CommitStats, commit_stats};
+    use sekai_storage::graph::{CommitStats, commit_stats};
     let first = meta
         .apply_commit_incremental(1_000, &[], &[present(0, 0, 1), present(1, 0, 1)])
         .await
@@ -192,7 +190,7 @@ where
     M: MetaStore,
     M::Error: core::fmt::Debug,
 {
-    use sekai_core::{DimHash, RegionHash};
+    use sekai_util::{DimHash, RegionHash};
 
     let nether = ChunkCoord::new(Dimension::NETHER, REGION, 0, 0);
     // The two overworld regions hold identical chunks, so they share
@@ -278,7 +276,7 @@ where
     M: MetaStore,
     M::Error: core::fmt::Debug,
 {
-    use sekai_core::usecase::graph::{commit_ancestors, commit_history};
+    use sekai_storage::graph::{commit_ancestors, commit_history};
 
     let main = RefName::parse("main").unwrap();
     // Two independent histories: the second root shares no ancestor with
@@ -374,7 +372,7 @@ where
     C: BlobStore,
     C::Error: core::fmt::Debug,
 {
-    let hash = ChunkHash::new(sekai_core::hash_bytes(b"payload"));
+    let hash = ChunkHash::new(sekai_util::hash_bytes(b"payload"));
     assert!(!cas.contains(&hash).await.unwrap());
     assert!(cas.put(&hash, b"payload").await.unwrap());
     assert!(!cas.put(&hash, b"payload").await.unwrap());
@@ -403,11 +401,11 @@ where
     K: CacheStore,
     K::Error: core::fmt::Debug,
 {
-    use sekai_core::RegionHash;
+    use sekai_util::RegionHash;
 
     let region = RegionHash::new([0x42; 32]);
     let image = b"undecomposed mca bytes";
-    let mca_hash = sekai_core::hash_bytes(image);
+    let mca_hash = sekai_util::hash_bytes(image);
 
     // A cold cache answers absence, never an error.
     assert_eq!(cache.mca_hash(region).await.unwrap(), None);
@@ -428,7 +426,7 @@ where
     let other = b"a different raw image";
     assert!(
         !cache
-            .put(region, sekai_core::hash_bytes(other), other)
+            .put(region, sekai_util::hash_bytes(other), other)
             .await
             .unwrap()
     );
@@ -459,8 +457,8 @@ pub async fn torn_commit_leaves_orphans<S>(store: &mut S)
 where
     S: sekai_storage::SekaiStore,
 {
-    let live = ChunkHash::new(sekai_core::hash_bytes(b"live"));
-    let orphan = ChunkHash::new(sekai_core::hash_bytes(b"orphan"));
+    let live = ChunkHash::new(sekai_util::hash_bytes(b"live"));
+    let orphan = ChunkHash::new(sekai_util::hash_bytes(b"orphan"));
     assert!(store.blob_mut().put(&live, b"live").await.unwrap());
     assert!(store.blob_mut().put(&orphan, b"orphan").await.unwrap());
     // Sync-then-commit order: blobs are durable before metadata names them.

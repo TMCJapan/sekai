@@ -1,8 +1,9 @@
-//! Checkout execution: rebuild world files from a resolved commit plan.
+//! Checkout planning and execution: resolve a commit's restore set, then
+//! rebuild world files from it.
 //!
-//! Rationale: the restore set (which blobs each region file needs) comes
-//! from the [`core`](sekai_core::usecase::checkout) plan; what stays here
-//! is mechanics `core` cannot own: world-layout discovery, path
+//! Rationale: [`plan_checkout`] resolves the restore set (which blobs each
+//! region file needs) straight from the store traits; what only this layer
+//! can own is the mechanics beyond them: world-layout discovery, path
 //! derivation, and the atomic MCA rewrite itself. Region files are rebuilt
 //! wholesale from CAS blobs (never patched). Under the default
 //! [`CheckoutOptions`] on-disk chunks unknown to the commit (created
@@ -16,8 +17,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
-use sekai_core::{CheckoutReport, ChunkCoord, ChunkHash, CommitId, RegionKey, Scope};
-use sekai_storage::{SekaiStore, StorageError};
+use sekai_core::{ChunkCoord, ChunkHash, CommitId, RegionKey, Scope};
+use sekai_storage::{MetaStore, SekaiStore, StorageError};
 use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
 use tokio::task::JoinSet;
 
@@ -26,6 +27,70 @@ use crate::instance::{WorldGuard, WorldHandleMut};
 use crate::progress::{BuildProgress, Progress};
 use crate::regions::discover_regions;
 use crate::workers::worker_slots;
+
+/// Outcome of one checkout run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CheckoutReport {
+    /// Region files rewritten.
+    pub files_written: usize,
+    /// Region files deleted (absent from the commit's snapshot).
+    pub files_deleted: usize,
+    /// Chunks restored from CAS blobs.
+    pub chunks_restored: usize,
+}
+
+/// Resolved restore set for one commit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckoutPlan {
+    /// Commit creation time (unix millis, informational only).
+    pub created_at_ms: u64,
+    /// Present rows grouped by region. A region absent here has no chunks at
+    /// the commit: checkout deletes its file unless a keep-policy applies.
+    pub groups: BTreeMap<RegionKey, Vec<(ChunkCoord, ChunkHash)>>,
+}
+
+/// Failures while resolving a checkout plan.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CheckoutError<M> {
+    /// Metadata backend failure.
+    #[error("commit metadata failed")]
+    Meta(M),
+    /// No commit with this ID exists.
+    #[error("unknown commit: {id}")]
+    UnknownCommit {
+        /// Requested commit ID.
+        id: CommitId,
+    },
+}
+
+/// Resolve present commit rows grouped by region.
+pub(crate) async fn plan_checkout<M: MetaStore>(
+    meta: &M,
+    commit: CommitId,
+) -> Result<CheckoutPlan, CheckoutError<M::Error>> {
+    let created_at_ms = meta
+        .lookup_commit(commit)
+        .await
+        .map_err(CheckoutError::Meta)?
+        .map(|c| c.created_at_ms)
+        .ok_or(CheckoutError::UnknownCommit { id: commit })?;
+    let mut groups: BTreeMap<RegionKey, Vec<(ChunkCoord, ChunkHash)>> = BTreeMap::new();
+    meta.visit_commit_chunks(commit, |entry| {
+        if let Some(blob) = entry.blob {
+            groups
+                .entry(RegionKey::of(entry.coord))
+                .or_default()
+                .push((entry.coord, blob));
+        }
+        true
+    })
+    .await
+    .map_err(CheckoutError::Meta)?;
+    Ok(CheckoutPlan {
+        created_at_ms,
+        groups,
+    })
+}
 
 /// Per-phase timings for checkout execution.
 #[derive(Debug, Clone, Default)]
@@ -123,7 +188,7 @@ where
 
         let plan_started = Instant::now();
         // The commit's creation time stamps every rebuilt file.
-        let plan = sekai_core::usecase::checkout::plan_checkout(store.meta(), commit)
+        let plan = plan_checkout(store.meta(), commit)
             .await
             .map_err(AppError::Checkout)?;
         let plan_dt = plan_started.elapsed();
@@ -469,5 +534,58 @@ where
             Some((_, sibling)) => Ok(world.sibling_region(sibling, *key)?),
             None => Ok(world.derive_region(*key)?),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sekai_core::{CommitEntry, Dimension, RefName, RegionKind};
+    use sekai_storage::testing::{MemMeta, block_on};
+
+    const OVER: Dimension = Dimension::OVERWORLD;
+    const REGION: RegionKind = RegionKind::Region;
+
+    #[test]
+    fn resolves_present_rows_grouped_by_region() {
+        let mut meta = MemMeta::default();
+        meta.with_active_ref(&RefName::parse("main").unwrap());
+        let a = ChunkCoord::new(OVER, REGION, 0, 0);
+        let b = ChunkCoord::new(OVER, REGION, 1, 0);
+        let gone = ChunkCoord::new(OVER, REGION, 2, 0);
+        let id = block_on(meta.apply_commit_incremental(
+            1_000,
+            &[],
+            &[
+                CommitEntry::new(a, Some(ChunkHash::new([1; 32]))),
+                CommitEntry::new(b, Some(ChunkHash::new([2; 32]))),
+                CommitEntry::new(gone, None),
+            ],
+        ))
+        .unwrap()
+        .id;
+
+        let plan = block_on(plan_checkout(&meta, id)).unwrap();
+        assert_eq!(plan.created_at_ms, 1_000);
+        assert_eq!(plan.groups.len(), 1);
+        let rows = &plan.groups[&RegionKey::new(OVER, REGION, 0, 0)];
+        assert_eq!(rows.len(), 2);
+        assert!(rows.contains(&(a, ChunkHash::new([1; 32]))));
+        assert!(rows.contains(&(b, ChunkHash::new([2; 32]))));
+        assert!(
+            block_on(meta.lookup_chunk(id, &gone)).unwrap().is_none(),
+            "absence is the tombstone"
+        );
+    }
+
+    #[test]
+    fn unknown_commit_is_an_error() {
+        let meta = MemMeta::default();
+        assert_eq!(
+            block_on(plan_checkout(&meta, CommitId([7; 32]))),
+            Err(CheckoutError::UnknownCommit {
+                id: CommitId([7; 32])
+            })
+        );
     }
 }

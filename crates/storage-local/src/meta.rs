@@ -7,12 +7,13 @@ use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use sekai_core::{
+use sekai_storage::{
+    DimNode, MetaStore, RegionNode, RootNode, StorageError, TreeNodes, commit_hash,
+};
+use sekai_util::{
     ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DEFAULT_REF_NAME, DimHash,
     Dimension, NamedScope, NamedScopeError, Rect, RefName, RegionHash, RootHash, ScopeName,
-    commit_hash,
 };
-use sekai_storage::{DimNode, MetaStore, RegionNode, RootNode, StorageError, TreeNodes};
 use sqlx::Row as _;
 use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
@@ -595,14 +596,14 @@ impl sekai_storage::MetaStore for SqliteMeta {
         commit: CommitId,
         coord: &ChunkCoord,
     ) -> Result<Option<CommitEntry>, StorageError> {
-        sekai_core::tree::lookup_chunk(self, commit, coord).await
+        sekai_storage::tree::lookup_chunk(self, commit, coord).await
     }
 
     async fn visit_commit_chunks<F>(&self, commit: CommitId, visit: F) -> Result<(), StorageError>
     where
         F: FnMut(&CommitEntry) -> bool + Send,
     {
-        sekai_core::tree::visit_chunks(self, commit, visit).await
+        sekai_storage::tree::visit_chunks(self, commit, visit).await
     }
 
     async fn read_root_node(&self, hash: RootHash) -> Result<RootNode, StorageError> {
@@ -740,7 +741,7 @@ impl sekai_storage::MetaStore for SqliteMeta {
         parents: &[CommitId],
         entries: &[CommitEntry],
     ) -> Result<ApplyOutcome, StorageError> {
-        sekai_core::tree::apply_entries(self, created_at_ms, parents, entries).await
+        sekai_storage::tree::apply_entries(self, created_at_ms, parents, entries).await
     }
 
     async fn commit_tree(
@@ -1473,14 +1474,14 @@ mod tests {
 
     #[tokio::test]
     async fn commit_rows_store_canonical_tree_bytes() {
-        use sekai_core::{ChunkHash, Dimension, RegionKind};
+        use sekai_util::{ChunkHash, Dimension, RegionKind};
         let mut meta = memory_meta().await;
         let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 5, 5);
         let id = meta
             .apply_commit_incremental(
                 1_000,
                 &[],
-                &[sekai_core::CommitEntry::new(
+                &[sekai_util::CommitEntry::new(
                     coord,
                     Some(ChunkHash::new([1; 32])),
                 )],
@@ -1537,8 +1538,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_commit_spanning_node_insert_batches_records_every_region() {
-        use sekai_core::{ChunkHash, RegionKind};
         use sekai_storage::MetaStore as _;
+        use sekai_util::{ChunkHash, RegionKind};
         let mut meta = memory_meta().await;
         // One chunk per region, so the region table alone spans three batches.
         // Region nodes are content-addressed: a repeating blob would collapse

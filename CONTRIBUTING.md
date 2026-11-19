@@ -7,8 +7,8 @@ This project is organized as a Cargo workspace under `crates/`:
 └── crates
     ├── util            # Shared value types: coordinates, hashes, snapshot records (no_std, zero dependencies)
     ├── anvil           # Pure Anvil sector codec, decompression, and normalized chunk hashing (no_std + alloc, ex-mca)
-    ├── core            # Use-case policy API over shared types (no_std + alloc, depends on storage + util)
-    ├── storage         # Backend-neutral store traits (no_std + alloc)
+    ├── core            # Pure staging policy over shared types (no_std + alloc, depends on util only)
+    ├── storage         # Backend-neutral store traits + generic tree/graph algorithms (no_std + alloc)
     ├── storage-local   # Local backend: SQLite metadata (sqlx) + sled blobs + sled region-image cache (std + tokio)
     ├── world           # World access boundary (no_std + alloc): WorldTree trait,
     │                   # RegionFile handle, WorldLock primitives
@@ -27,16 +27,19 @@ sekai (bin) -> app -> {core, world, world-local, storage, storage-local}
 app -> {core, anvil}
 world -> {anvil, core}
 world-local -> {world, anvil, core}
-core -> storage (which owns the async store traits and the canonical tree codec)
-storage -> util
-storage-local -> storage
+core -> util (pure staging policy; no store access)
+storage -> util (owns the async store traits, the canonical tree codec,
+                 and the generic algorithms over them)
+storage-local -> {storage, util}
 {anvil, core, storage} -> util (world/world-local/app reach shared types through `core` re-exports)
 ```
 
 Rules:
 
-- `core` never depends on `world`, `app`, or the binary; it composes the
-  `storage` traits. `world` already depends on `core` types, so the reverse
+- `core` never depends on `storage`, `world`, `app`, or the binary: it is
+  pure policy over `util` types. The generic algorithms over the store
+  traits live in `storage`; the store-touching orchestration lives in
+  `app`. `world` already depends on `core` types, so a `core -> world`
   edge would be a Cargo package cycle.
 - `util` is a dependency leaf: pure data plus total validation only, plus
   the shared Blake3 primitive (`hash_bytes`, `BytesHasher`). It owns no
@@ -50,10 +53,11 @@ Rules:
   chunk schema knowledge both live in `anvil`.
 - `async`/tokio lives in `storage-local`, `app`, and the binary only.
   `anvil` is sync-only; `core` and `storage` carry no runtime: `async fn`
-  appears only in the `storage` traits (RPITIT, see below) and the `core`
-  use cases generic over them.
+  appears only in the `storage` traits (RPITIT, see below) and the
+  `storage` algorithms and `app` orchestration generic over them.
 - `storage` owns backend-neutral boundaries (`blob` / `meta` / `cache` /
-  `tree` / `api` / `store`); concrete database backends live in sibling
+  `tree` / `graph` / `refs` / `scopes` / `api` / `store`, plus the
+  feature-gated `testing` fake); concrete database backends live in sibling
   crates such as `storage-local` and only communicate through the exported
   traits. Backend crates must not reach into each other.
 
@@ -67,15 +71,18 @@ any exception in the PR body.
   No `std::fs`, `Path`, `std::time`, `std::io::Error`, or `thiserror` there;
   hand-written `core::fmt::Display` error enums only. No `tokio`, no
   `async-trait` macro.
-- **`core` is the API layer; `storage` is the trait hub**: `core` owns the
-  use-case policy over shared `util` types and re-exports every util type
-  at its root; `storage` owns the async `BlobStore`/`MetaStore`/`CacheStore`
-  traits (RPITIT) and the canonical snapshot-tree codec. `app` composes `core`
-  with the `anvil` codec for payload digests and diffs. Pluggability lives
+- **`core` is pure policy; `storage` is the trait hub**: `core` owns the
+  store-free staging policy over shared `util` types and re-exports every
+  util type at its root; `storage` owns the async
+  `BlobStore`/`MetaStore`/`CacheStore` traits (RPITIT), the canonical
+  snapshot-tree codec, and the generic tree/graph algorithms over the
+  traits. `app` owns the store-touching orchestration (`plan_commit`,
+  `record_commit`, `plan_checkout`) and composes `core` policy with the
+  `anvil` codec for payload digests and diffs. Pluggability lives
   at the storage traits (implemented by backend crates) and at the `world`
   observation boundary - not at `RegionReader`/`Normalizer`-style traits.
 - **`core` never touches the filesystem**: `world-local` discovers the region
-  files; `app` feeds their `RegionKey`s into `core::plan_*`.
+  files; `app` feeds their `RegionKey`s into its own `plan_commit`.
 - **The world boundary is path-free**: the operations receive `RegionFile`
   handles (read, size, fingerprint, write, remove) and never a `Path`; only
   `sekai-world-local` knows where a region file lives. A tree outside this
@@ -126,8 +133,7 @@ any exception in the PR body.
       `lz4_flex` block API (lz4-java stream bodies), `twox-hash` (lz4-java
       block checksums), and `nanonbt` (chunk NBT parsing and normalized
       views; private to the crate).
-    - `core`: `sekai-util` (shared types, re-exported at the root) and
-      `sekai-storage` (store traits and the canonical tree codec).
+    - `core`: `sekai-util` only (shared types, re-exported at the root).
     - `storage`: `sekai-util` (shared types).
     - `world`: `sekai-anvil` (types only) plus `sekai-core`.
 - **Async policy**: `async fn` in traits via RPITIT (return-position
@@ -160,8 +166,9 @@ any exception in the PR body.
   region-image cache via sled; app feature `backend-local`, default-on).
   `sekai-storage` stays
   backend-neutral and owns the traits and locks; it holds no backend
-  modules, so a mysql or postgres backend arrives as a sibling crate
-  rather than as a stub.
+  modules (the `testing` feature's in-memory fake is test-only and never
+  compiled into a normal build), so a mysql or postgres backend arrives as
+  a sibling crate rather than as a stub.
   Backend selection is compile-time via the `backend-local` feature;
   `--store` names the local store's root directory directly. A build
   without `backend-local` has no store-opening entry point at all.

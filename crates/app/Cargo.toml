@@ -42,6 +42,7 @@ required-features = ["backend-local"]
 [dev-dependencies]
 criterion.workspace = true
 miniz_oxide.workspace = true
+sekai-storage = { workspace = true, features = ["testing"] }
 tempfile.workspace = true
 
 [package.metadata.cargo-machete]

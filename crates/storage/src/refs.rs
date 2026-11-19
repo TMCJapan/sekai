@@ -2,14 +2,15 @@
 //!
 //! A ref names a commit and moves with the history it names. Exactly one
 //! ref is active - the one new commits hang from. Reads here are pure
-//! lookups; the mutations live in `MetaStore` and the app layer.
+//! lookups; the mutations live in [`MetaStore`](crate::meta::MetaStore)
+//! and the app layer.
 
 use alloc::vec::Vec;
 
-use sekai_storage::MetaStore;
 use sekai_util::CommitRef;
 
-use super::graph::CommitError;
+use crate::graph::CommitError;
+use crate::meta::MetaStore;
 
 /// List all refs in name order (byte-wise, the order `RefName` compares
 /// by).

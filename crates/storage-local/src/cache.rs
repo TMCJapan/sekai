@@ -21,8 +21,8 @@
 
 use std::path::{Path, PathBuf};
 
-use sekai_core::RegionHash;
 use sekai_storage::{CacheStore, StorageError, io_error};
+use sekai_util::RegionHash;
 use sled::Transactional as _;
 
 /// Version of the cache keyspace format.

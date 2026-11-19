@@ -228,7 +228,7 @@ async fn ref_writes_report_a_missing_target() {
     assert!(
         matches!(
             err,
-            sekai_app::AppError::CommitRef(sekai_core::ResolveError::UnknownCommit {
+            sekai_app::AppError::CommitRef(sekai_storage::ResolveError::UnknownCommit {
                 id: sekai_app::CommitId(id)
             }) if id == [99; 32]
         ),

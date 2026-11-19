@@ -1,13 +1,18 @@
 //! Commit-graph read operations: listing, parents, ancestors, history, and
 //! reference resolution.
+//!
+//! Generic over [`MetaStore`], like the tree walks: backends and callers
+//! share one implementation of each graph read.
 
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use core::fmt;
 
-use sekai_storage::MetaStore;
 use sekai_util::{Commit, CommitId, RefName};
 
+use crate::meta::MetaStore;
+
+/// Failures while reading commit metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommitError<M> {
     /// Metadata backend failure.
@@ -253,7 +258,7 @@ pub async fn resolve_commit_ref<M: MetaStore>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::support::{MemMeta, block_on};
+    use crate::testing::{MemMeta, block_on};
     use alloc::string::ToString;
     use sekai_util::CommitEntry;
 
@@ -575,7 +580,7 @@ mod tests {
 
     #[test]
     fn a_commit_cannot_name_a_missing_parent() {
-        use crate::support::MemError;
+        use crate::testing::MemError;
         let mut meta = MemMeta::default();
         let missing = CommitId([9; 32]);
         assert_eq!(

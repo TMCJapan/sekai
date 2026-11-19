@@ -1,6 +1,6 @@
 # ADR-0028: Storage owns the store traits
 
-- Status: Accepted
+- Status: Accepted (the core -> storage dependency edge is superseded by ADR-0035)
 - Date: 2026-11-15
 
 ## Context
@@ -29,7 +29,9 @@ crate that `core` can depend on without a cycle.
   `core::tree` keeps the generic merge/lookup/diff operations over it.
 - The dependency edge flips: `storage` depends on `util` only; `core`
   depends on `storage` (and `util`). The chain is
-  `util <- storage <- core <- app`.
+  `util <- storage <- core <- app`. (Superseded by ADR-0035: the edge is
+  cut entirely; the generic algorithms move to `storage` and the
+  store-touching orchestration to `app`.)
 - Downstream imports name `sekai_storage` directly for the traits and tree
   types; `core` re-exports only util types and its own policy API. Backend
   crates implement `sekai_storage::MetaStore`/`BlobStore`.

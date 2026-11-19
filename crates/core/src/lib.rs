@@ -1,14 +1,15 @@
-//! Domain and use-case API for commit metadata and content hashes.
+//! Pure domain policy: the content-hash vocabulary and commit staging.
+//!
+//! `core` depends only on `util`. The storage traits and the generic
+//! algorithms over them live in `sekai-storage`; the orchestration that
+//! runs them against a world lives in `sekai-app`.
 
 #![no_std]
 
 extern crate alloc;
 
-pub mod commit;
-#[cfg(test)]
-pub(crate) mod support;
-pub mod tree;
-pub mod usecase;
+/// Pure commit-staging policy (no store access).
+pub mod staging;
 
 pub use sekai_util::{
     ApplyOutcome, Area, BytesHasher, ChunkCoord, ChunkHash, Commit, CommitEntry, CommitId,
@@ -17,10 +18,4 @@ pub use sekai_util::{
     ScopeName, ScopeNameError, UnknownRegionKind, hash_bytes,
 };
 
-pub use usecase::{
-    Assembled, CheckoutError, CheckoutPlan, CheckoutReport, CommitError, CommitReport, CommitStats,
-    Plan, Previous, ResolveError, active_ref, commit_ancestors, commit_history, commit_parents,
-    list_refs, list_scopes,
-};
-
-pub use commit::commit_hash;
+pub use staging::{Assembled, Ingested, Plan, Previous, assemble, stage_present};

@@ -29,21 +29,24 @@ mod time;
 mod workers;
 
 pub use cache::{CacheUpdateOptions, CacheUpdateReport, CacheUpdateTimings};
-pub use checkout::{CheckoutOptions, CheckoutTimings, MissingBlobPolicy, MissingFilePolicy};
+pub use checkout::{
+    CheckoutError, CheckoutOptions, CheckoutPlan, CheckoutReport, CheckoutTimings,
+    MissingBlobPolicy, MissingFilePolicy,
+};
 pub use commit::{
-    CommitOptions, CommitTimings, RegionTiming, StatusOptions, StatusReport, StatusTimings,
+    CommitOptions, CommitReport, CommitTimings, RegionTiming, StatusOptions, StatusReport,
+    StatusTimings,
 };
 pub use diff::{ChunkDiff, DiffTimings, world_chunk_coords};
 pub use error::AppError;
 pub use instance::{SekaiInstance, WorldHandle, WorldHandleMut};
 pub use progress::{BuildProgress, Progress};
 pub use sekai_core::{
-    Area, CheckoutReport, ChunkCoord, ChunkHash, Commit, CommitId, CommitRef, CommitReport,
-    CommitStats, DEFAULT_REF_NAME, DimHash, Dimension, NamedScope, NamedScopeError, Rect, RefName,
-    RefNameError, RegionFingerprint, RegionHash, RegionKey, RegionKind, RootHash, Scope, ScopeName,
-    ScopeNameError,
+    Area, ChunkCoord, ChunkHash, Commit, CommitId, CommitRef, DEFAULT_REF_NAME, DimHash, Dimension,
+    NamedScope, NamedScopeError, Rect, RefName, RefNameError, RegionFingerprint, RegionHash,
+    RegionKey, RegionKind, RootHash, Scope, ScopeName, ScopeNameError,
 };
-pub use sekai_storage::{SekaiStore, SekaiStoreOpener};
+pub use sekai_storage::{CommitStats, SekaiStore, SekaiStoreOpener};
 #[cfg(feature = "backend-local")]
 pub use sekai_storage_local::local_store_exists;
 pub use sekai_world::{
