@@ -430,7 +430,7 @@ async fn status_and_commit_write_no_cache_entries() {
         .await
         .unwrap();
     assert!(!report.clean);
-    assert_eq!(instance.list_commits().await.unwrap(), []);
+    assert_eq!(support::all_commits(&instance).await, []);
     assert_eq!(
         instance.store().cache().mca_hash(expected).await.unwrap(),
         None
@@ -626,7 +626,7 @@ async fn update_cache_populates_without_recording_a_commit() {
     assert_eq!(report.empty, 0);
 
     // Nothing was recorded, and the entry sits under the file's own node.
-    assert_eq!(instance.list_commits().await.unwrap(), []);
+    assert_eq!(support::all_commits(&instance).await, []);
     assert_cached(instance.store(), expected, &image).await;
 
     // No blob was written: the next commit stores the chunk fresh and names
@@ -681,7 +681,7 @@ async fn update_cache_is_idempotent_and_keeps_the_first_image() {
     assert_eq!(second.existing, 1);
     assert_eq!(file_region_hash(&path), expected);
     assert_cached(instance.store(), expected, &first_image).await;
-    assert_eq!(instance.list_commits().await.unwrap(), []);
+    assert_eq!(support::all_commits(&instance).await, []);
 }
 
 /// An empty region file holds no chunks, names no region node, and is
@@ -709,7 +709,7 @@ async fn update_cache_skips_empty_region_files() {
         instance.store().cache().mca_hash(empty).await.unwrap(),
         None
     );
-    assert_eq!(instance.list_commits().await.unwrap(), []);
+    assert_eq!(support::all_commits(&instance).await, []);
 }
 
 /// An update visits every dimension and region family, caching each file
@@ -753,7 +753,7 @@ async fn update_cache_caches_every_region_family() {
     assert_eq!(report.chunks, 4);
     assert_eq!(report.entries, 4);
     assert_eq!(report.empty, 0);
-    assert_eq!(instance.list_commits().await.unwrap(), []);
+    assert_eq!(support::all_commits(&instance).await, []);
 
     // The commit stores every blob fresh (the update wrote none) and names
     // the hashes the update cached; the cached images survive untouched.

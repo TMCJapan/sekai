@@ -27,7 +27,7 @@ pub use checkout::{
 pub use commit::{Assembled, CommitReport, Plan, Previous};
 pub use graph::{
     CommitError, CommitStats, commit_ancestors, commit_history, commit_parents, commit_stats,
-    is_ancestor, list_commits,
+    is_ancestor,
 };
 pub use head::{born_head, head, head_branch, head_label, head_reaches, head_state};
 pub use log::{LogBounds, resolve_log_bounds, walk_log};

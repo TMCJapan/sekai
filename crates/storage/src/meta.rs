@@ -59,12 +59,6 @@ pub trait MetaStore {
     where
         F: FnMut(&CommitEntry) -> bool + Send;
 
-    /// Visit commits in local record order (oldest first). Return `false`
-    /// to stop early.
-    fn visit_commits<F>(&self, visit: F) -> impl Future<Output = Result<(), Self::Error>> + Send
-    where
-        F: FnMut(&Commit) -> bool + Send;
-
     /// Read and verify one root node. A missing or corrupt node is a
     /// backend error, never an empty tree.
     fn read_root_node(

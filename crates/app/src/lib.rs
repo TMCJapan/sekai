@@ -6,7 +6,7 @@
 //! binary.
 //!
 //! Store-scoped operations hang off [`SekaiInstance`] (open once, then
-//! `list_commits`, ...); operations that touch a world
+//! the `head` and ref operations, ...); operations that touch a world
 //! hang off the handles it hands out: [`WorldHandle`] for read-only work
 //! (`status`, `diff_world_*`) and [`WorldHandleMut`] for runs that write
 //! the store or the world (`commit`, `checkout`, `update_cache`).

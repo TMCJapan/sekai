@@ -1,39 +1,64 @@
 //! JSON payload envelopes and terminal error formatting.
 
-use crate::style::Styler;
 use serde::Serialize;
 
-/// JSON success envelope: exactly one JSON document on stdout.
+use crate::style::Styler;
+
+/// How a run prints: human text, or one JSON envelope on stdout, so
+/// stderr stays silent in JSON mode (ADR-0002).
+pub struct Printer {
+    /// Colors for human output on stdout.
+    pub style: Styler,
+    /// Whether the run prints one JSON envelope (`--json`).
+    pub json: bool,
+}
+
+impl Printer {
+    pub const fn new(style: Styler, json: bool) -> Self {
+        Self { style, json }
+    }
+
+    /// Print the success envelope for `command` with `result`.
+    pub fn print_ok<T: Serialize + ?Sized>(&self, command: &str, result: &T) -> anyhow::Result<()> {
+        println!("{}", self.envelope_ok(command, result)?);
+        Ok(())
+    }
+
+    /// The success envelope for `command` with `result`.
+    pub fn envelope_ok<T: Serialize + ?Sized>(
+        &self,
+        command: &str,
+        result: &T,
+    ) -> anyhow::Result<String> {
+        Ok(serde_json::to_string(&Envelope {
+            command,
+            status: "ok",
+            result: Some(result),
+            error: None,
+        })?)
+    }
+
+    /// The error envelope for `command`: the full error chain as a string.
+    pub fn envelope_err(&self, command: &str, err: &anyhow::Error) -> anyhow::Result<String> {
+        Ok(serde_json::to_string(&Envelope::<()> {
+            command,
+            status: "error",
+            result: None,
+            error: Some(format!("{err:?}")),
+        })?)
+    }
+}
+
+/// The one JSON document a run prints: `result` on success, `error` on
+/// failure.
 #[derive(Serialize)]
-pub struct OkEnvelope<'a, T: ?Sized> {
+struct Envelope<'a, T: ?Sized> {
     command: &'a str,
     status: &'a str,
-    result: &'a T,
-}
-
-pub fn envelope_ok<T: Serialize + ?Sized>(command: &str, result: &T) -> anyhow::Result<String> {
-    Ok(serde_json::to_string(&OkEnvelope {
-        command,
-        status: "ok",
-        result,
-    })?)
-}
-
-/// JSON error object: stdout stays exactly one JSON document.
-/// Callers must still check the exit code; `error` is only present here.
-#[derive(Serialize)]
-pub struct ErrEnvelope<'a> {
-    command: &'a str,
-    status: &'a str,
-    error: String,
-}
-
-pub fn envelope_err(command: &str, err: &anyhow::Error) -> anyhow::Result<String> {
-    Ok(serde_json::to_string(&ErrEnvelope {
-        command,
-        status: "error",
-        error: format!("{err:?}"),
-    })?)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<&'a T>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
 }
 
 /// Render a runtime failure for stderr: red bold `error:` prefix plus the
@@ -58,13 +83,16 @@ mod tests {
 
     #[test]
     fn renders_json_envelopes() {
+        let printer = Printer::new(Styler::disabled(), true);
         assert_eq!(
-            envelope_ok("log", &serde_json::json!([1, 2])).unwrap(),
+            printer
+                .envelope_ok("log", &serde_json::json!([1, 2]))
+                .unwrap(),
             r#"{"command":"log","status":"ok","result":[1,2]}"#
         );
         let err = anyhow::anyhow!("root cause").context("commit of /w failed");
         assert_eq!(
-            envelope_err("commit", &err).unwrap(),
+            printer.envelope_err("commit", &err).unwrap(),
             r#"{"command":"commit","status":"error","error":"commit of /w failed\n\nCaused by:\n    root cause"}"#
         );
     }

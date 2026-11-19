@@ -1,102 +1,154 @@
-//! Checkout subcommand execution, DTOs, and output rendering.
+//! Checkout subcommand execution, DTOs, and output rendering
+//! (ADR-0036 *checkout*).
 
-use anyhow::Context as _;
-use sekai_app::{CheckoutReport, CheckoutTimings, HostWorldTree};
+use sekai_app::{
+    CheckoutReport, CheckoutTimings, HeadMove, HeadState, Location, Restored, Switched,
+};
 use serde::Serialize;
-use std::path::Path;
 
 use super::progress::Bars;
-use super::{ReportOut, resolve_selection};
-use crate::cli::{CommitRef, OnMissingBlob, OnMissingFile, Selection};
-use crate::envelope::envelope_ok;
+use super::{HeadJson, ReportOut, resolve_selection};
+use crate::cli::{CheckoutArgs, OnMissingBlob, OnMissingFile};
+use crate::envelope::Printer;
 use crate::style::Styler;
 
-pub struct CheckoutFlags {
-    pub keep_post_commit_files: bool,
-    pub keep_post_commit_chunks: bool,
-    pub keep_tombstoned_chunks: bool,
-    pub on_missing_blob: OnMissingBlob,
-    pub on_missing_file: OnMissingFile,
-    pub jobs: usize,
-}
-
-const fn map_options(flags: &CheckoutFlags) -> sekai_app::CheckoutOptions {
+const fn map_options(args: &CheckoutArgs) -> sekai_app::CheckoutOptions {
     sekai_app::CheckoutOptions {
-        keep_post_commit_files: flags.keep_post_commit_files,
-        keep_post_commit_chunks: flags.keep_post_commit_chunks,
-        keep_tombstoned_chunks: flags.keep_tombstoned_chunks,
-        on_missing_blob: match flags.on_missing_blob {
+        keep_post_commit_files: args.keep_post_commit_files,
+        keep_post_commit_chunks: args.keep_post_commit_chunks,
+        keep_tombstoned_chunks: args.keep_tombstoned_chunks,
+        on_missing_blob: match args.on_missing_blob {
             OnMissingBlob::Abort => sekai_app::MissingBlobPolicy::Abort,
             OnMissingBlob::SkipChunk => sekai_app::MissingBlobPolicy::SkipChunk,
         },
-        on_missing_file: match flags.on_missing_file {
+        on_missing_file: match args.on_missing_file {
             OnMissingFile::SiblingFirst => sekai_app::MissingFilePolicy::SiblingFirst,
             OnMissingFile::DerivedOnly => sekai_app::MissingFilePolicy::DerivedOnly,
             OnMissingFile::Error => sekai_app::MissingFilePolicy::Error,
         },
-        concurrency: flags.jobs,
+        concurrency: args.jobs,
     }
 }
 
 pub async fn run(
-    store: &str,
-    world_path: impl AsRef<Path>,
-    commit: &CommitRef,
-    selection: &Selection,
-    flags: &CheckoutFlags,
-    out: ReportOut,
+    location: &Location,
+    args: &CheckoutArgs,
+    printer: &Printer,
 ) -> anyhow::Result<()> {
-    let mut world = HostWorldTree::new(&world_path)
-        .with_context(|| format!("failed to inspect world {}", world_path.as_ref().display()))?;
-    let mut instance = sekai_app::SekaiInstance::open_location(&sekai_app::Location {
-        store: store.into(),
-        world: None,
-    })
-    .await
-    .with_context(|| format!("checkout of {} failed", world_path.as_ref().display()))?;
-    let id = instance
-        .resolve_commit_ref(commit.as_str())
-        .await
-        .with_context(|| format!("commit {commit} failed to resolve"))?;
-    let scope = resolve_selection(&instance, selection).await?;
-    let options = map_options(flags);
-    if !out.json {
-        eprintln!(
-            "checkout {} to commit {} (scope: {}, policy: {})",
-            world_path.as_ref().display(),
-            id,
-            selection.describe(),
-            policy_summary(flags),
-        );
-    }
+    let mut instance = sekai_app::SekaiInstance::open_location(location).await?;
+    let mut world = location.world_tree()?;
+    let out = ReportOut::of(args.output, printer.style);
+    let options = map_options(args);
     let bars = Bars::new(out.progress);
-    let (report, timings) = instance
-        .world_mut(&mut world)
-        .checkout(id, options, scope, &bars)
-        .await
-        .with_context(|| {
-            format!(
-                "checkout of {} to commit {commit} failed",
-                world_path.as_ref().display()
-            )
-        })?;
+
+    // What the run rebuilt, if anything: `checkout` alone and `HEAD`
+    // without `-f` change nothing, as in Git.
+    let rebuilt = if args.selection.is_given() {
+        let scope = resolve_selection(&instance, &args.selection).await?;
+        let restored = instance
+            .world_mut(&mut world)
+            .restore_from(args.target.as_ref(), scope, args.force, options, &bars)
+            .await?;
+        Some(restored)
+    } else if let Some(target) = &args.target {
+        let switched = instance
+            .world_mut(&mut world)
+            .switch_to(target, args.force, options, &bars)
+            .await?;
+        if !out.json {
+            print_switch(&switched, target.as_str());
+        }
+        (switched.target.head != HeadMove::Keep || args.force).then_some(Restored {
+            commit: switched.target.commit,
+            report: switched.report,
+            timings: switched.timings,
+        })
+    } else {
+        instance
+            .world_mut(&mut world)
+            .checkout_head(args.force, options, &bars)
+            .await?
+    };
+    let head = instance.head().await?;
+    print_report(rebuilt.as_ref(), head.as_ref(), out, printer)
+}
+
+/// Git's messages for a switch, on stderr as Git prints them:
+/// `Switched to branch '<b>'`, `Already on '<b>'`, or the detached HEAD
+/// advice followed by `HEAD is now at <id>`. `HEAD` itself prints nothing.
+fn print_switch(switched: &Switched, written: &str) {
+    match &switched.target.head {
+        HeadMove::Keep => {}
+        HeadMove::Attach(branch) => {
+            if switched.from.branch() == Some(branch) {
+                eprintln!("Already on '{branch}'");
+            } else {
+                eprintln!("Switched to branch '{branch}'");
+            }
+        }
+        HeadMove::Detach { .. } => {
+            // Git advises only when HEAD leaves a branch.
+            if !matches!(switched.from, HeadState::Detached { .. }) {
+                eprint!("{}", detached_advice(written));
+            }
+            eprintln!("{}", super::head_now_at(&switched.target.commit));
+        }
+    }
+}
+
+/// Git's detached HEAD advice, with `sekai branch` and `sekai checkout`
+/// in place of `git switch -c`, and without the `git switch -` and
+/// `advice.detachedHead` lines, which sekai has no counterpart for
+/// (ADR-0036 *checkout*).
+fn detached_advice(written: &str) -> String {
+    format!(
+        "Note: switching to '{written}'.
+
+You are in 'detached HEAD' state. You can look around, make experimental
+changes and commit them, and you can discard any commits you make in this
+state without impacting any branches by switching back to a branch.
+
+If you want to create a new branch to retain commits you create, you may
+do so (now or later) by creating a branch and checking it out. Example:
+
+  sekai branch <new-branch-name>
+  sekai checkout <new-branch-name>
+
+"
+    )
+}
+
+/// sekai's report of a rebuild, after Git's messages. JSON always gets one
+/// envelope, with zero counts when nothing was rebuilt.
+fn print_report(
+    rebuilt: Option<&Restored>,
+    head: Option<&HeadState>,
+    out: ReportOut,
+    printer: &Printer,
+) -> anyhow::Result<()> {
     if out.json {
-        println!(
-            "{}",
-            envelope_ok("checkout", &checkout_payload(&report, &timings, out.timing))?
+        let (report, timings) = rebuilt.map_or_else(
+            || (CheckoutReport::default(), CheckoutTimings::default()),
+            |restored| (restored.report, restored.timings.clone()),
         );
+        let payload = checkout_payload(&report, &timings, head, out.timing);
+        printer.print_ok("checkout", &payload)?;
         return Ok(());
     }
+    let Some(restored) = rebuilt else {
+        return Ok(());
+    };
     let style = out.style;
+    let report = &restored.report;
     println!(
         "commit {} restored: {} files rewritten, {} files deleted, {} chunks restored",
-        style.bold(&id.to_string()),
+        style.bold(&restored.commit.to_string()),
         report.files_written,
         report.files_deleted,
         report.chunks_restored
     );
     if out.timing {
-        print_checkout_timing_table(&timings, style);
+        print_checkout_timing_table(&restored.timings, style);
     }
     Ok(())
 }
@@ -106,6 +158,8 @@ struct CheckoutPayload {
     files_written: usize,
     files_deleted: usize,
     chunks_restored: usize,
+    /// HEAD after the checkout (ADR-0036 *Output*).
+    head: Option<HeadJson>,
     #[serde(flatten)]
     timing: Option<CheckoutTiming>,
 }
@@ -127,12 +181,14 @@ struct CheckoutPhases {
 fn checkout_payload(
     report: &CheckoutReport,
     timings: &CheckoutTimings,
+    head: Option<&HeadState>,
     timing: bool,
 ) -> CheckoutPayload {
     CheckoutPayload {
         files_written: report.files_written,
         files_deleted: report.files_deleted,
         chunks_restored: report.chunks_restored,
+        head: head.map(HeadJson::from),
         timing: timing.then_some(CheckoutTiming {
             total_ms: timings.total.as_millis(),
             phases: CheckoutPhases {
@@ -157,34 +213,6 @@ fn print_checkout_timing_table(timings: &CheckoutTimings, style: Styler) {
     );
 }
 
-/// One-line human summary of the restore policy for the pre-run echo.
-fn policy_summary(flags: &CheckoutFlags) -> String {
-    let mut parts = Vec::new();
-    if flags.keep_post_commit_files {
-        parts.push("keep files");
-    }
-    if flags.keep_post_commit_chunks {
-        parts.push("keep chunks");
-    }
-    if flags.keep_tombstoned_chunks {
-        parts.push("keep tombstones");
-    }
-    if matches!(flags.on_missing_blob, OnMissingBlob::SkipChunk) {
-        parts.push("skip missing blobs");
-    }
-    if !matches!(flags.on_missing_file, OnMissingFile::SiblingFirst) {
-        parts.push(match flags.on_missing_file {
-            OnMissingFile::SiblingFirst => "sibling-first",
-            OnMissingFile::DerivedOnly => "derived-only",
-            OnMissingFile::Error => "missing-file error",
-        });
-    }
-    if parts.is_empty() {
-        return "strict".to_owned();
-    }
-    parts.join(", ")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,74 +232,19 @@ mod tests {
             check: Duration::ZERO,
             checkout_files: Duration::from_millis(70),
         };
-        let payload = checkout_payload(&report, &timings, false);
+        let commit = sekai_app::CommitId([9; 32]);
+        let head = HeadState::Detached { commit };
+        let payload = checkout_payload(&report, &timings, Some(&head), false);
         assert_eq!(
             serde_json::to_string(&payload).unwrap(),
-            r#"{"files_written":2,"files_deleted":1,"chunks_restored":40}"#
+            format!(
+                r#"{{"files_written":2,"files_deleted":1,"chunks_restored":40,"head":{{"ref":null,"commit":"{commit}"}}}}"#
+            )
         );
-        let payload_timed = checkout_payload(&report, &timings, true);
+        let payload_timed = checkout_payload(&report, &timings, None, true);
         assert_eq!(
             serde_json::to_string(&payload_timed).unwrap(),
-            r#"{"files_written":2,"files_deleted":1,"chunks_restored":40,"total_ms":90,"phases":{"plan_ms":9,"discover_ms":8,"checkout_files_ms":70}}"#
-        );
-    }
-
-    #[test]
-    fn maps_strategy_flags_to_options() {
-        let strict = CheckoutFlags {
-            keep_post_commit_files: false,
-            keep_post_commit_chunks: false,
-            keep_tombstoned_chunks: false,
-            on_missing_blob: OnMissingBlob::Abort,
-            on_missing_file: OnMissingFile::SiblingFirst,
-            jobs: 0,
-        };
-        assert_eq!(map_options(&strict), sekai_app::CheckoutOptions::default());
-
-        let lenient = CheckoutFlags {
-            keep_post_commit_files: true,
-            keep_post_commit_chunks: true,
-            keep_tombstoned_chunks: true,
-            on_missing_blob: OnMissingBlob::SkipChunk,
-            on_missing_file: OnMissingFile::Error,
-            jobs: 3,
-        };
-        assert_eq!(
-            map_options(&lenient),
-            sekai_app::CheckoutOptions {
-                keep_post_commit_files: true,
-                keep_post_commit_chunks: true,
-                keep_tombstoned_chunks: true,
-                on_missing_blob: sekai_app::MissingBlobPolicy::SkipChunk,
-                on_missing_file: sekai_app::MissingFilePolicy::Error,
-                concurrency: 3,
-            }
-        );
-    }
-
-    #[test]
-    fn summarizes_restore_policy() {
-        let strict = CheckoutFlags {
-            keep_post_commit_files: false,
-            keep_post_commit_chunks: false,
-            keep_tombstoned_chunks: false,
-            on_missing_blob: OnMissingBlob::Abort,
-            on_missing_file: OnMissingFile::SiblingFirst,
-            jobs: 0,
-        };
-        assert_eq!(policy_summary(&strict), "strict");
-
-        let lenient = CheckoutFlags {
-            keep_post_commit_files: true,
-            keep_post_commit_chunks: false,
-            keep_tombstoned_chunks: true,
-            on_missing_blob: OnMissingBlob::SkipChunk,
-            on_missing_file: OnMissingFile::Error,
-            jobs: 0,
-        };
-        assert_eq!(
-            policy_summary(&lenient),
-            "keep files, keep tombstones, skip missing blobs, missing-file error"
+            r#"{"files_written":2,"files_deleted":1,"chunks_restored":40,"head":null,"total_ms":90,"phases":{"plan_ms":9,"discover_ms":8,"checkout_files_ms":70}}"#
         );
     }
 }

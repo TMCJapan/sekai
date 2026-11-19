@@ -27,7 +27,7 @@ fn benches(c: &mut Criterion) {
                 .commit(options(), Scope::World, &()),
         )
         .expect("commit works");
-        let commits = rt.block_on(instance.list_commits()).expect("list works");
+        let commits = rt.block_on(support::all_commits(&instance));
         b.iter(|| {
             rt.block_on(instance.world_mut(&mut world).checkout(
                 commits[0].id,
@@ -58,7 +58,7 @@ fn benches(c: &mut Criterion) {
                 .commit(options(), Scope::World, &()),
         )
         .expect("commit works");
-        let commits = rt.block_on(instance.list_commits()).expect("list works");
+        let commits = rt.block_on(support::all_commits(&instance));
         b.iter(|| {
             rt.block_on(instance.world_mut(&mut world).checkout(
                 commits[0].id,

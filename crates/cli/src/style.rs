@@ -84,6 +84,11 @@ impl Styler {
         self.paint(text, "33")
     }
 
+    /// Cyan (a branch checked out in another worktree, as Git colors it).
+    pub fn cyan(self, text: &str) -> String {
+        self.paint(text, "36")
+    }
+
     /// Faint (secondary timing detail).
     pub fn dim(self, text: &str) -> String {
         self.paint(text, "2")

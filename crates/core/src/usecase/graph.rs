@@ -28,17 +28,6 @@ impl<M: fmt::Debug> fmt::Display for CommitError<M> {
     }
 }
 
-/// List all commits in local record order (oldest first).
-pub async fn list_commits<M: MetaStore>(meta: &M) -> Result<Vec<Commit>, M::Error> {
-    let mut out = Vec::new();
-    meta.visit_commits(|commit| {
-        out.push(commit.clone());
-        true
-    })
-    .await?;
-    Ok(out)
-}
-
 /// The commits a commit continues: its direct parents.
 ///
 /// Fails when the commit does not exist: an unknown ID must not read
@@ -253,17 +242,6 @@ mod tests {
     use super::*;
     use crate::support::{MemMeta, block_on, fork, main_worktree};
     use sekai_util::{CommitEntry, Head, RefName, ReflogNote};
-
-    #[test]
-    fn lists_in_local_sequence_order() {
-        let mut meta = MemMeta::default();
-        let first = meta.create_commit(300, &[]).unwrap();
-        let second = meta.create_commit(100, &[]).unwrap();
-        let listed = block_on(list_commits(&meta)).unwrap();
-        assert_eq!(listed.len(), 2);
-        assert_eq!(listed[0].id, first);
-        assert_eq!(listed[1].id, second);
-    }
 
     #[test]
     fn counts_fresh_and_effective_rows() {
@@ -547,6 +525,5 @@ mod tests {
         let first = meta.create_commit(100, &[]).unwrap();
         let again = meta.create_commit(100, &[]).unwrap();
         assert_eq!(first, again);
-        assert_eq!(block_on(list_commits(&meta)).unwrap().len(), 1);
     }
 }

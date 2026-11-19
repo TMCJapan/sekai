@@ -184,13 +184,22 @@ impl Op {
         let id = fx.commit;
         let instance = &mut fx.instance;
         match self {
-            Self::ListCommits => instance.list_commits().await.map(drop),
+            Self::ListCommits => {
+                drop(support::all_commits(instance).await);
+                Ok(())
+            }
             Self::ResolveRef => {
                 let raw = fx.commit.to_string();
-                instance.resolve_commit_ref(&raw).await.map(drop)?;
+                instance
+                    .resolve_revision(&sekai_app::Revision::parse(&raw).unwrap())
+                    .await
+                    .map(drop)?;
                 // The ref-name lookup path: the fixture's commit landed
                 // on `main`, so the branch exists.
-                instance.resolve_commit_ref("main").await.map(drop)
+                instance
+                    .resolve_revision(&sekai_app::Revision::parse("main").unwrap())
+                    .await
+                    .map(drop)
             }
             Self::CreateRef => {
                 let name = RefName::parse("lock-matrix").unwrap();

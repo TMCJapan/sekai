@@ -126,26 +126,6 @@ impl SqliteMeta {
         }
         Ok(Self { pool })
     }
-
-    /// Parent edges of every commit, grouped by child.
-    ///
-    /// The graph is small (one edge per commit in a linear history), so
-    /// reading it whole beats a query per commit.
-    async fn parent_map(&self) -> Result<BTreeMap<CommitId, Vec<CommitId>>, StorageError> {
-        let rows = sqlx::query(
-            "SELECT child_id, parent_id FROM commit_parents ORDER BY child_id, parent_id",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db_err)?;
-        let mut map: BTreeMap<CommitId, Vec<CommitId>> = BTreeMap::new();
-        for row in &rows {
-            let child = commit_id_from_blob(row.try_get("child_id").map_err(db_err)?)?;
-            let parent = commit_id_from_blob(row.try_get("parent_id").map_err(db_err)?)?;
-            map.entry(child).or_default().push(parent);
-        }
-        Ok(map)
-    }
 }
 
 /// Fallible `i64` -> `i32` narrowing for SQLite integer columns.
@@ -936,35 +916,6 @@ impl sekai_storage::MetaStore for SqliteMeta {
         };
         let parents = self.commit_parents(id).await?;
         Ok(Some(decode_commit(&row, &parents)?))
-    }
-
-    async fn visit_commits<F>(&self, mut visit: F) -> Result<(), StorageError>
-    where
-        F: FnMut(&Commit) -> bool + Send,
-    {
-        let rows = sqlx::query("SELECT id, created_at_ms, root_hash FROM commits ORDER BY seq")
-            .fetch_all(&self.pool)
-            .await
-            .map_err(db_err)?;
-        let parents = self.parent_map().await?;
-        let mut ids: Vec<CommitId> = Vec::with_capacity(rows.len());
-        for row in &rows {
-            ids.push(commit_id_from_blob(row.try_get("id").map_err(db_err)?)?);
-        }
-        // The map holds every edge, so a commit without an entry is a
-        // root; an edge naming a commit that is gone is corruption.
-        let known: BTreeSet<CommitId> = ids.iter().copied().collect();
-        debug_assert!(
-            parents.keys().all(|id| known.contains(id)),
-            "parent map names a commit that does not exist"
-        );
-        for (row, id) in rows.iter().zip(ids) {
-            let commit = decode_commit(row, parents.get(&id).map_or(&[], Vec::as_slice))?;
-            if !visit(&commit) {
-                break;
-            }
-        }
-        Ok(())
     }
 
     async fn apply_commit_incremental(
@@ -2302,14 +2253,11 @@ mod tests {
         let first = meta.create_commit(1_000, &[]).await.unwrap();
         let again = meta.create_commit(1_000, &[]).await.unwrap();
         assert_eq!(first, again);
-        let mut commits = Vec::new();
-        meta.visit_commits(|commit| {
-            commits.push(commit.id);
-            true
-        })
-        .await
-        .unwrap();
-        assert_eq!(commits, [first]);
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM commits")
+            .fetch_one(&meta.pool)
+            .await
+            .unwrap();
+        assert_eq!(rows, 1);
     }
 
     #[tokio::test]

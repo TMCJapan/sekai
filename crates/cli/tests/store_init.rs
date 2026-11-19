@@ -19,7 +19,11 @@ fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
 
 async fn run(args: &[&str]) -> anyhow::Result<()> {
     let cli = Cli::try_parse_from(args).expect("valid invocation");
-    sekai_cli::commands::run(&cli).await
+    let printer = sekai_cli::envelope::Printer::new(
+        sekai_cli::style::Styler::new(cli.color),
+        cli.command.output_json(),
+    );
+    sekai_cli::commands::run(&cli, &printer).await
 }
 
 #[tokio::test]
@@ -27,21 +31,37 @@ async fn commands_on_a_missing_store_fail_without_creating_it() {
     let (root, _guard) = tempdir("missing-store");
     let store = root.join("store");
     let world = root.join("world");
-    std::fs::create_dir_all(&world).unwrap();
+    // An empty region file is the empty region, and enough for `init` to
+    // recognize the world.
+    std::fs::create_dir_all(world.join("region")).unwrap();
+    std::fs::write(world.join("region/r.0.0.mca"), []).unwrap();
     let store = store.to_str().expect("temporary store path is UTF-8");
     let world = world.to_str().expect("temporary world path is UTF-8");
 
     for args in [
-        vec!["sekai", "--store", store, "commit", world],
-        vec!["sekai", "--store", store, "log"],
-        vec!["sekai", "--store", store, "status", world],
-        vec!["sekai", "--store", store, "diff"],
-        vec!["sekai", "--store", store, "checkout", world, HASH],
-        vec!["sekai", "--store", store, "scope", "list"],
-        vec!["sekai", "--store", store, "cache", "clean"],
-        vec!["sekai", "--store", store, "scope", "delete", "spawn"],
+        vec!["sekai", "--world", world, "--store", store, "commit"],
+        vec!["sekai", "--world", world, "--store", store, "log"],
+        vec!["sekai", "--world", world, "--store", store, "status"],
+        vec!["sekai", "--world", world, "--store", store, "diff"],
         vec![
-            "sekai", "--store", store, "scope", "create", "spawn", "--in", "ow:0,0",
+            "sekai", "--world", world, "--store", store, "checkout", HASH,
+        ],
+        vec!["sekai", "--world", world, "--store", store, "branch"],
+        vec!["sekai", "--world", world, "--store", store, "tag"],
+        vec!["sekai", "--world", world, "--store", store, "reflog"],
+        vec![
+            "sekai", "--world", world, "--store", store, "worktree", "list",
+        ],
+        vec!["sekai", "--world", world, "--store", store, "scope", "list"],
+        vec![
+            "sekai", "--world", world, "--store", store, "cache", "clean",
+        ],
+        vec![
+            "sekai", "--world", world, "--store", store, "scope", "delete", "spawn",
+        ],
+        vec![
+            "sekai", "--world", world, "--store", store, "scope", "create", "spawn", "--in",
+            "ow:0,0",
         ],
     ] {
         let err = run(&args).await.expect_err("a missing store must fail");
@@ -63,17 +83,19 @@ async fn commands_on_a_missing_store_fail_without_creating_it() {
 }
 
 #[tokio::test]
-#[ignore = "commit needs a worktree, which the CLI registers once init takes a world (ADR-0035)"]
 async fn init_creates_the_store_every_other_command_opens() {
     let (root, _guard) = tempdir("init-flow");
     let store = root.join("store");
     let world = root.join("world");
-    std::fs::create_dir_all(&world).unwrap();
+    // An empty region file is the empty region, and enough for `init` to
+    // recognize the world.
+    std::fs::create_dir_all(world.join("region")).unwrap();
+    std::fs::write(world.join("region/r.0.0.mca"), []).unwrap();
     let store = store.to_str().expect("temporary store path is UTF-8");
     let world = world.to_str().expect("temporary world path is UTF-8");
 
     assert!(!sekai_app::local_store_exists(store));
-    run(&["sekai", "--store", store, "init"])
+    run(&["sekai", "--world", world, "--store", store, "init"])
         .await
         .expect("init creates the store");
     assert!(sekai_app::local_store_exists(store));
@@ -82,13 +104,21 @@ async fn init_creates_the_store_every_other_command_opens() {
     assert!(root.join("store/cache/conf").is_file());
 
     // Re-initializing an existing store is idempotent, like `git init`.
-    run(&["sekai", "--store", store, "init", "--json"])
-        .await
-        .expect("init is idempotent");
+    run(&[
+        "sekai", "--world", world, "--store", store, "init", "--json",
+    ])
+    .await
+    .expect("init is idempotent");
 
     for args in [
-        vec!["sekai", "--store", store, "commit", world],
-        vec!["sekai", "--store", store, "log"],
+        vec!["sekai", "--world", world, "--store", store, "commit"],
+        vec!["sekai", "--world", world, "--store", store, "log"],
+        vec!["sekai", "--world", world, "--store", store, "branch"],
+        vec!["sekai", "--world", world, "--store", store, "tag"],
+        vec!["sekai", "--world", world, "--store", store, "reflog"],
+        vec![
+            "sekai", "--world", world, "--store", store, "worktree", "list",
+        ],
     ] {
         run(&args)
             .await
