@@ -101,17 +101,6 @@ impl<T: SekaiStore> SekaiInstance<T> {
             .map_err(AppError::Commit)
     }
 
-    /// Latest commit ID; fails when the store has no commits.
-    ///
-    /// This is the newest commit of the store, not the one the next
-    /// commit would continue - see [`SekaiInstance::current_commit_id`].
-    pub async fn latest_commit_id(&self) -> Result<CommitId, AppError> {
-        sekai_core::usecase::graph::latest_commit_id(self.store.meta())
-            .await
-            .map_err(AppError::Commit)?
-            .ok_or(AppError::NoCommits)
-    }
-
     /// Resolve a commit reference (`<64-char hash>` or a ref name).
     pub async fn resolve_commit_ref(&self, raw: &str) -> Result<CommitId, AppError> {
         sekai_core::usecase::graph::resolve_commit_ref(self.store.meta(), raw)

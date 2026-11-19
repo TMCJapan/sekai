@@ -61,6 +61,23 @@ pub trait CommitOnMain: MetaStore {
 
 impl<M: MetaStore> CommitOnMain for M {}
 
+/// Every commit recorded in `meta`, in record order. The store holds no
+/// record-order reader on purpose; tests need only the full set.
+pub async fn recorded<M>(meta: &M) -> Vec<CommitId>
+where
+    M: MetaStore,
+    M::Error: core::fmt::Debug,
+{
+    let mut ids = Vec::new();
+    meta.visit_commits(|commit| {
+        ids.push(commit.id);
+        true
+    })
+    .await
+    .unwrap();
+    ids
+}
+
 /// Named scope CRUD: create, replace, list in name order, delete.
 pub async fn scope_flow<M>(meta: &mut M)
 where
@@ -162,13 +179,13 @@ where
     M: MetaStore,
     M::Error: core::fmt::Debug,
 {
-    assert!(meta.latest_commit().await.unwrap().is_none());
+    assert_eq!(recorded(meta).await, Vec::<CommitId>::new());
     let id = meta
         .commit_main(1_000, &[], &[present(0, 0, 1)])
         .await
         .unwrap()
         .id;
-    assert_eq!(meta.latest_commit().await.unwrap().unwrap().id, id);
+    assert_eq!(recorded(meta).await, vec![id]);
     assert!(
         meta.lookup_commit(CommitId([0xFF; 32]))
             .await
@@ -357,13 +374,10 @@ where
     );
     // A parent must exist: the graph never points at a missing commit.
     assert!(
-        meta.create_commit(5_000, &[CommitId([0xFF; 32])])
+        meta.commit_main(5_000, &[child, CommitId([0xFF; 32])], &[])
             .await
             .is_err()
     );
-    // A parent listed twice is recorded once, not a broken edge.
-    let twice = meta.create_commit(6_000, &[first, first]).await.unwrap();
-    assert_eq!(meta.commit_parents(twice).await.unwrap(), vec![first]);
 
     // Walking back covers the whole history, nearest first.
     assert_eq!(commit_ancestors(meta, second).await.unwrap(), vec![first]);
@@ -375,29 +389,6 @@ where
     );
     assert_eq!(walked[0].parents, vec![first]);
     assert!(walked[1].is_root());
-
-    // A merge commit continues two histories at once. The parents are
-    // recorded in canonical (ascending hash) order, and the walk reports
-    // the direct parents first, in that order.
-    let merge = meta.create_commit(6_500, &[other, second]).await.unwrap();
-    let mut direct = vec![second, other];
-    direct.sort();
-    assert_eq!(meta.commit_parents(merge).await.unwrap(), direct);
-    let mut ancestors = direct.clone();
-    ancestors.push(first);
-    assert_eq!(commit_ancestors(meta, merge).await.unwrap(), ancestors);
-    let mut history = vec![merge];
-    history.extend(direct);
-    history.push(first);
-    assert_eq!(
-        commit_history(meta, merge)
-            .await
-            .unwrap()
-            .iter()
-            .map(|c| c.id)
-            .collect::<Vec<_>>(),
-        history
-    );
 }
 
 /// CAS put/fetch/dedup/visit contract.

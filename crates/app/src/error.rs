@@ -107,6 +107,9 @@ pub enum AppError {
         /// Ref that was asked for.
         name: String,
     },
+    /// A built-in worktree name failed validation.
+    #[error(transparent)]
+    WorktreeName(#[from] sekai_core::WorktreeNameError),
     /// Scope name is already taken.
     #[error("scope already exists: {name} (use --force to replace it)")]
     ScopeExists {
@@ -123,8 +126,8 @@ pub enum AppError {
     #[error(transparent)]
     InvalidScope(#[from] sekai_core::NamedScopeError),
     /// No commit is available for the operation: the store is empty or
-    /// the active ref is unborn.
-    #[error("no commit selected: the store is empty or the active ref is unborn")]
+    /// HEAD is unborn.
+    #[error("no commit selected: the store is empty or HEAD is unborn")]
     NoCommits,
     /// I/O operation failed.
     #[error(transparent)]

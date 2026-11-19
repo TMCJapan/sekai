@@ -172,14 +172,6 @@ pub async fn commit_stats<M: MetaStore>(
     })
 }
 
-/// Get the latest commit ID from the store.
-pub async fn latest_commit_id<M: MetaStore>(
-    meta: &M,
-) -> Result<Option<CommitId>, CommitError<M::Error>> {
-    let commit = meta.latest_commit().await.map_err(CommitError::Meta)?;
-    Ok(commit.map(|c| c.id))
-}
-
 /// Failures while resolving a commit reference.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolveError<M> {
@@ -255,8 +247,8 @@ mod tests {
     #[test]
     fn lists_in_local_sequence_order() {
         let mut meta = MemMeta::default();
-        let first = block_on(meta.create_commit(300, &[])).unwrap();
-        let second = block_on(meta.create_commit(100, &[])).unwrap();
+        let first = meta.create_commit(300, &[]).unwrap();
+        let second = meta.create_commit(100, &[]).unwrap();
         let listed = block_on(list_commits(&meta)).unwrap();
         assert_eq!(listed.len(), 2);
         assert_eq!(listed[0].id, first);
@@ -266,8 +258,8 @@ mod tests {
     #[test]
     fn resolves_hashes_and_refs() {
         let mut meta = MemMeta::default();
-        let first = block_on(meta.create_commit(100, &[])).unwrap();
-        let second = block_on(meta.create_commit(200, &[first])).unwrap();
+        let first = meta.create_commit(100, &[]).unwrap();
+        let second = meta.create_commit(200, &[first]).unwrap();
         let branch = Ref::branch(RefName::parse("main").unwrap());
         block_on(meta.create_ref(
             &branch,
@@ -321,7 +313,7 @@ mod tests {
         // A 64-character hex spelling always resolves as a commit ID: an
         // unknown one is `UnknownCommit`, never the ref of the same name.
         let mut meta = MemMeta::default();
-        let commit = block_on(meta.create_commit(100, &[])).unwrap();
+        let commit = meta.create_commit(100, &[]).unwrap();
         let hex = "a".repeat(64);
         let name = Ref::branch(RefName::parse(&hex).unwrap());
         block_on(meta.create_ref(
@@ -481,9 +473,9 @@ mod tests {
     #[test]
     fn walks_the_history_back_to_the_root() {
         let mut meta = MemMeta::default();
-        let root = block_on(meta.create_commit(100, &[])).unwrap();
-        let second = block_on(meta.create_commit(200, &[root])).unwrap();
-        let third = block_on(meta.create_commit(300, &[second])).unwrap();
+        let root = meta.create_commit(100, &[]).unwrap();
+        let second = meta.create_commit(200, &[root]).unwrap();
+        let third = meta.create_commit(300, &[second]).unwrap();
 
         assert_eq!(
             block_on(commit_ancestors(&meta, third)).unwrap(),
@@ -584,20 +576,20 @@ mod tests {
         let mut meta = MemMeta::default();
         let missing = CommitId([9; 32]);
         assert_eq!(
-            block_on(meta.create_commit(100, &[missing])).unwrap_err(),
+            meta.create_commit(100, &[missing]).unwrap_err(),
             MemError::UnknownParent { id: missing }
         );
         // A parent listed twice is recorded once.
-        let root = block_on(meta.create_commit(100, &[])).unwrap();
-        let child = block_on(meta.create_commit(200, &[root, root])).unwrap();
+        let root = meta.create_commit(100, &[]).unwrap();
+        let child = meta.create_commit(200, &[root, root]).unwrap();
         assert_eq!(block_on(meta.commit_parents(child)).unwrap(), [root]);
     }
 
     #[test]
     fn repeating_a_commit_is_idempotent() {
         let mut meta = MemMeta::default();
-        let first = block_on(meta.create_commit(100, &[])).unwrap();
-        let again = block_on(meta.create_commit(100, &[])).unwrap();
+        let first = meta.create_commit(100, &[]).unwrap();
+        let again = meta.create_commit(100, &[]).unwrap();
         assert_eq!(first, again);
         assert_eq!(block_on(list_commits(&meta)).unwrap().len(), 1);
     }

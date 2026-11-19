@@ -17,7 +17,7 @@ pub use checkout::{CheckoutError, CheckoutPlan, CheckoutReport};
 pub use commit::{Assembled, CommitReport, Plan, Previous};
 pub use graph::{
     CommitError, CommitStats, ResolveError, commit_ancestors, commit_history, commit_parents,
-    commit_stats, latest_commit_id, list_commits, resolve_commit_ref,
+    commit_stats, list_commits, resolve_commit_ref,
 };
 pub use refs::{head, list_refs};
 pub use scopes::list_scopes;

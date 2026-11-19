@@ -765,11 +765,14 @@ impl SqliteMeta {
         Ok(nodes)
     }
 }
-impl sekai_storage::MetaStore for SqliteMeta {
-    type Error = StorageError;
 
-    async fn create_commit(
-        &mut self,
+impl SqliteMeta {
+    /// Seed a history with a commit that changes nothing, continuing the
+    /// lowest-hash parent's tree. Not part of the store's contract: used
+    /// by tests to build histories without writing region data.
+    #[cfg(test)]
+    pub(crate) async fn create_commit(
+        &self,
         created_at_ms: u64,
         parents: &[CommitId],
     ) -> Result<CommitId, StorageError> {
@@ -798,6 +801,29 @@ impl sekai_storage::MetaStore for SqliteMeta {
         tx.commit().await.map_err(db_err)?;
         Ok(id)
     }
+
+    /// The most recently recorded commit, or `None` when none has been
+    /// recorded. Only the unit tests use it; the store's contract reads
+    /// commits through refs and HEADs.
+    #[cfg(test)]
+    pub(crate) async fn latest_commit(&self) -> Result<Option<Commit>, StorageError> {
+        let row = sqlx::query(
+            "SELECT id, created_at_ms, root_hash FROM commits ORDER BY seq DESC LIMIT 1",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(db_err)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let id = commit_id_from_blob(row.try_get("id").map_err(db_err)?)?;
+        let parents = sekai_storage::MetaStore::commit_parents(self, id).await?;
+        Ok(Some(decode_commit(&row, &parents)?))
+    }
+}
+
+impl sekai_storage::MetaStore for SqliteMeta {
+    type Error = StorageError;
 
     async fn commit_parents(&self, commit: CommitId) -> Result<Vec<CommitId>, StorageError> {
         let rows = sqlx::query(
@@ -908,21 +934,6 @@ impl sekai_storage::MetaStore for SqliteMeta {
         let Some(row) = row else {
             return Ok(None);
         };
-        let parents = self.commit_parents(id).await?;
-        Ok(Some(decode_commit(&row, &parents)?))
-    }
-
-    async fn latest_commit(&self) -> Result<Option<Commit>, StorageError> {
-        let row = sqlx::query(
-            "SELECT id, created_at_ms, root_hash FROM commits ORDER BY seq DESC LIMIT 1",
-        )
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(db_err)?;
-        let Some(row) = row else {
-            return Ok(None);
-        };
-        let id = commit_id_from_blob(row.try_get("id").map_err(db_err)?)?;
         let parents = self.commit_parents(id).await?;
         Ok(Some(decode_commit(&row, &parents)?))
     }
@@ -2031,7 +2042,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_corrupt_worktree_head_row_fails_loudly() {
-        let mut meta = memory_meta().await;
+        let meta = memory_meta().await;
         let root = meta.create_commit(1_000, &[]).await.unwrap();
         // Drop the CHECK that keeps exactly one of the two HEAD columns
         // set, the way corruption would.
@@ -2287,7 +2298,7 @@ mod tests {
 
     #[tokio::test]
     async fn recording_the_same_commit_twice_is_idempotent() {
-        let mut meta = memory_meta().await;
+        let meta = memory_meta().await;
         let first = meta.create_commit(1_000, &[]).await.unwrap();
         let again = meta.create_commit(1_000, &[]).await.unwrap();
         assert_eq!(first, again);
@@ -2304,7 +2315,6 @@ mod tests {
     #[tokio::test]
     async fn a_corrupt_ref_row_fails_loudly() {
         let meta = memory_meta().await;
-        let mut meta = meta;
         let root = meta.create_commit(1_000, &[]).await.unwrap();
         // Names are re-validated on decode: a row the validator no longer
         // accepts is corruption, never a new ref name.
@@ -2321,7 +2331,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_commit_cannot_name_a_missing_commit_as_parent() {
-        let mut meta = memory_meta().await;
+        let meta = memory_meta().await;
         let missing = CommitId([9; 32]);
         assert!(matches!(
             meta.create_commit(1_000, &[missing]).await,

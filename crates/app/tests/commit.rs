@@ -1064,7 +1064,7 @@ async fn checkout_progress_completes_for_tombstone_only_region() {
 
     assert_eq!(second.tombstones, 1);
 
-    let commit_id = instance.latest_commit_id().await.unwrap();
+    let commit_id = second.commit;
 
     let recorded = Recorded::default();
     let (report, _) = instance

@@ -138,12 +138,10 @@ async fn resolve_commit_pair(
     async fn active_commit(
         instance: &sekai_app::SekaiInstance<impl SekaiStore>,
     ) -> anyhow::Result<CommitId> {
-        match instance.active_ref().await? {
-            None => anyhow::bail!("no active ref to diff against"),
-            Some(active) => active
-                .commit
-                .map_or_else(|| Err(AppError::NoCommits.into()), Ok),
-        }
+        Ok(instance
+            .current_commit_id()
+            .await?
+            .ok_or(AppError::NoCommits)?)
     }
     /// Commit parents are stored sorted by ID in both backends, so this
     /// returns the lowest-ID parent. For the single-parent commits that

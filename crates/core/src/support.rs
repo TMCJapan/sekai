@@ -446,20 +446,21 @@ where
     }
 }
 
-impl MetaStore for MemMeta {
-    type Error = MemError;
-
-    fn create_commit(
+impl MemMeta {
+    /// Seed a history with a commit that changes nothing, continuing the
+    /// lowest-hash parent's tree. Not part of the store's contract: used
+    /// by tests to build histories without writing region data.
+    pub(crate) fn create_commit(
         &mut self,
         created_at_ms: u64,
         parents: &[CommitId],
-    ) -> impl Future<Output = Result<CommitId, MemError>> + Send {
+    ) -> Result<CommitId, MemError> {
         // Mirrors the backend: a parent must exist and a parent listed
         // twice is recorded once, in canonical hash order.
         let mut unique: BTreeSet<CommitId> = BTreeSet::new();
         for parent in parents {
             if !self.commits.iter().any(|commit| commit.id == *parent) {
-                return core::future::ready(Err(MemError::UnknownParent { id: *parent }));
+                return Err(MemError::UnknownParent { id: *parent });
             }
             unique.insert(*parent);
         }
@@ -478,12 +479,14 @@ impl MetaStore for MemMeta {
                         })
                 });
         let id = crate::commit::commit_hash(&canonical, created_at_ms, root);
-        if let Err(err) = self.insert_nodes(&nodes) {
-            return core::future::ready(Err(err));
-        }
+        self.insert_nodes(&nodes)?;
         self.insert_commit(id, created_at_ms, canonical, root);
-        core::future::ready(Ok(id))
+        Ok(id)
     }
+}
+
+impl MetaStore for MemMeta {
+    type Error = MemError;
 
     fn commit_parents(
         &self,
@@ -532,21 +535,6 @@ impl MetaStore for MemMeta {
         id: CommitId,
     ) -> impl Future<Output = Result<Option<Commit>, MemError>> + Send {
         core::future::ready(Ok(self.commits.iter().find(|c| c.id == id).cloned()))
-    }
-
-    fn latest_commit(&self) -> impl Future<Output = Result<Option<Commit>, MemError>> + Send {
-        debug_assert!(
-            self.commits
-                .iter()
-                .all(|commit| self.seqs.contains_key(&commit.id)),
-            "every recorded commit has a local sequence"
-        );
-        let latest = self
-            .commits
-            .iter()
-            .max_by_key(|commit| self.seq_of(commit.id))
-            .cloned();
-        core::future::ready(Ok(latest))
     }
 
     fn visit_commits<F>(&self, mut visit: F) -> impl Future<Output = Result<(), MemError>> + Send

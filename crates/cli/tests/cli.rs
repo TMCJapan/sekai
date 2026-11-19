@@ -7,7 +7,7 @@ use sekai_app::{Dimension, Rect};
 use sekai_cli::{
     cli::{
         CacheCommand, Cli, Command, CommitRef, DiffArgs, InlineSelection, OnMissingBlob,
-        OnMissingFile, RefCommand, RegionSpec, ScopeCommand, Selection, TimingArgs,
+        OnMissingFile, RegionSpec, ScopeCommand, Selection, TimingArgs,
     },
     style::ColorChoice,
 };
@@ -606,91 +606,6 @@ fn parses_timing_and_json_flags() {
         Cli::try_parse_from(["sekai", "checkout", "w", H3, "--on-missing-blob", "ignore"]).is_err(),
         "unknown missing-blob policy is refused"
     );
-
-    let cli = Cli::try_parse_from(["sekai", "ref", "create", "main"]).expect("ref create parses");
-    assert!(matches!(
-        &cli.command,
-        Command::Ref {
-            action: RefCommand::Create {
-                name,
-                commit,
-                force: false,
-                json: false,
-            }
-        } if name.as_str() == "main" && commit.is_none()
-    ));
-    assert_eq!(cli.command.name(), "ref");
-    assert!(!cli.command.output_json());
-
-    let cli = Cli::try_parse_from([
-        "sekai",
-        "ref",
-        "create",
-        "feature/nightly",
-        "main",
-        "--force",
-        "--json",
-    ])
-    .expect("ref create --force --json parses");
-    assert!(matches!(
-        &cli.command,
-        Command::Ref {
-            action: RefCommand::Create {
-                name,
-                commit,
-                force: true,
-                json: true,
-            }
-        } if name.as_str() == "feature/nightly"
-            && ref_str(commit.as_ref()) == Some("main")
-    ));
-    assert_eq!(cli.command.name(), "ref");
-    assert!(cli.command.output_json());
-
-    let cli = Cli::try_parse_from(["sekai", "ref", "delete", "stable"]).expect("ref delete parses");
-    assert!(matches!(
-        &cli.command,
-        Command::Ref {
-            action: RefCommand::Delete { name, json: false }
-        } if name.as_str() == "stable"
-    ));
-    assert_eq!(cli.command.name(), "ref");
-    assert!(!cli.command.output_json());
-
-    let cli = Cli::try_parse_from(["sekai", "ref", "delete", "stable", "--json"])
-        .expect("ref delete --json parses");
-    assert!(matches!(
-        &cli.command,
-        Command::Ref {
-            action: RefCommand::Delete { json: true, .. }
-        }
-    ));
-    assert!(cli.command.output_json());
-
-    let cli =
-        Cli::try_parse_from(["sekai", "ref", "list", "--json"]).expect("ref list --json parses");
-    assert!(matches!(
-        &cli.command,
-        Command::Ref {
-            action: RefCommand::List { json: true }
-        }
-    ));
-    assert!(cli.command.output_json());
-    assert!(
-        Cli::try_parse_from(["sekai", "ref", "list", "--force"]).is_err(),
-        "ref list --force is refused"
-    );
-
-    let cli = Cli::try_parse_from(["sekai", "ref", "activate", "main", "--json"])
-        .expect("ref activate --json parses");
-    assert!(matches!(
-        &cli.command,
-        Command::Ref {
-            action: RefCommand::Activate { name, json: true }
-        } if name.as_str() == "main"
-    ));
-    assert_eq!(cli.command.name(), "ref");
-    assert!(cli.command.output_json());
 
     let cli = Cli::try_parse_from(["sekai", "log", "--json"]).expect("log --json parses");
     assert!(matches!(cli.command, Command::Log { json: true, .. }));

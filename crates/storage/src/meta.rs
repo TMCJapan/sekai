@@ -20,19 +20,6 @@ pub trait MetaStore {
     /// Backend failure (query errors, constraint violations, ...).
     type Error;
 
-    /// Append a commit continuing `parents` with no snapshot changes; an empty
-    /// parent list starts a history with the empty tree.
-    ///
-    /// The ID is derived from the commit's canonical content, so recording
-    /// the same logical commit twice returns the existing ID instead of
-    /// adding a row. Every parent must exist and a parent listed twice is
-    /// recorded once.
-    fn create_commit(
-        &mut self,
-        created_at_ms: u64,
-        parents: &[CommitId],
-    ) -> impl Future<Output = Result<CommitId, Self::Error>> + Send;
-
     /// Direct parents of `commit`; empty for the root of a history.
     ///
     /// An unknown commit yields an empty list: the trait reports what is
@@ -56,10 +43,6 @@ pub trait MetaStore {
         &self,
         id: CommitId,
     ) -> impl Future<Output = Result<Option<Commit>, Self::Error>> + Send;
-
-    /// Most recently recorded commit in the store, or `None` when no
-    /// commit has been recorded yet.
-    fn latest_commit(&self) -> impl Future<Output = Result<Option<Commit>, Self::Error>> + Send;
 
     /// Visit every present chunk of one commit's snapshot, in global
     /// coordinate order. Absent coordinates are never visited. Return
