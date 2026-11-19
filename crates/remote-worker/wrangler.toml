@@ -1,0 +1,6 @@
+name = "sekai-remote"
+main = "build/index.js"
+compatibility_date = "2026-10-02"
+
+[build]
+command = "cargo install -q worker-build@^0.9 && worker-build --release"

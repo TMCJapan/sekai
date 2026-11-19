@@ -1,0 +1,18 @@
+[package]
+name = "sekai-remote-worker"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Cloudflare Workers host for the Sekai remote sync HTTP API"
+keywords = ["minecraft", "version-control", "cloudflare-workers"]
+
+[lib]
+crate-type = ["cdylib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+worker.workspace = true
