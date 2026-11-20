@@ -44,6 +44,3 @@ miniz_oxide.workspace = true
 sekai-storage = { workspace = true, features = ["testing"] }
 sekai-storage-local.workspace = true
 tempfile.workspace = true
-
-[package.metadata.cargo-machete]
-ignored = ["sekai-core", "sekai-storage", "sekai-world", "sekai-world-local"]

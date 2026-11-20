@@ -25,9 +25,6 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 
-[package.metadata.cargo-machete]
-ignored = ["sekai-app"]
-
 [dev-dependencies]
 sekai-anvil.workspace = true
 tempfile.workspace = true
