@@ -40,13 +40,10 @@ pub async fn run(store: &str, action: &ScopeCommand, style: Styler) -> anyhow::R
             );
         }
         ScopeCommand::Delete { name, json } => {
-            let removed = instance
+            instance
                 .delete_scope(name)
                 .await
                 .with_context(|| format!("delete of scope {name} failed"))?;
-            if !removed {
-                anyhow::bail!("unknown scope: {name}");
-            }
             if *json {
                 println!(
                     "{}",

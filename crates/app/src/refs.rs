@@ -10,16 +10,24 @@
 use sekai_core::{CommitId, CommitRef, RefName};
 use sekai_storage::{MetaStore as _, SekaiStore, StorageError};
 
-use crate::error::AppError;
+use crate::error::{AppError, Lookup, NameKind};
 use crate::instance::SekaiInstance;
 use crate::time::now_ms;
+
+/// The error for a ref name the store does not hold.
+fn not_found(name: &RefName) -> AppError {
+    AppError::NotFound {
+        kind: Lookup::Branch,
+        name: name.as_str().to_owned(),
+    }
+}
 
 impl<S: SekaiStore> SekaiInstance<S> {
     /// Point `name` at `commit`, creating the ref when it does not exist.
     ///
     /// `commit = None` leaves the ref unborn: it names a history without
     /// a commit, while `Some(id)` must name a stored commit. An existing
-    /// name fails with [`AppError::RefExists`] unless `force` moves it; a
+    /// name fails with [`AppError::AlreadyExists`] unless `force` moves it; a
     /// move keeps the ref's active flag and creation time.
     ///
     /// `force` is a policy of this layer: the trait's `set_ref` always
@@ -39,7 +47,8 @@ impl<S: SekaiStore> SekaiInstance<S> {
         }
         let existing = self.store.meta().lookup_ref(name).await?;
         if existing.is_some() && !force {
-            return Err(AppError::RefExists {
+            return Err(AppError::AlreadyExists {
+                kind: NameKind::Branch,
                 name: name.as_str().to_owned(),
             });
         }
@@ -62,22 +71,28 @@ impl<S: SekaiStore> SekaiInstance<S> {
         Ok(CommitRef::new(name.clone(), commit, active, created_at_ms))
     }
 
-    /// Remove `name`, returning whether a ref was removed: `false` means
-    /// no ref had that name, not that the removal failed.
+    /// Remove `name`; fails with [`AppError::NotFound`] when no ref has
+    /// that name.
     ///
     /// The active ref is never removed: a store without one would have
     /// nowhere to hang new commits from. The trait is the guard and returns
     /// the protected name, so the app can say which ref to activate
     /// instead.
-    pub async fn delete_ref(&mut self, name: &RefName) -> Result<bool, AppError> {
-        self.store
+    pub async fn delete_ref(&mut self, name: &RefName) -> Result<(), AppError> {
+        let removed = self
+            .store
             .meta_mut()
             .delete_ref(name)
             .await
             .map_err(|err| match err {
                 StorageError::ActiveRefProtected { name } => AppError::ActiveRef { name },
                 other => AppError::Storage(other),
-            })
+            })?;
+        if removed {
+            Ok(())
+        } else {
+            Err(not_found(name))
+        }
     }
 
     /// List refs in name order.
@@ -98,7 +113,10 @@ impl<S: SekaiStore> SekaiInstance<S> {
             .activate_ref(name)
             .await
             .map_err(|err| match err {
-                StorageError::UnknownRef { name } => AppError::UnknownRef { name },
+                StorageError::UnknownRef { name } => AppError::NotFound {
+                    kind: Lookup::Branch,
+                    name,
+                },
                 StorageError::UnknownCommit { id } => {
                     AppError::CommitRef(sekai_storage::ResolveError::UnknownCommit { id })
                 }
@@ -108,9 +126,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
             .meta()
             .lookup_ref(name)
             .await?
-            .ok_or_else(|| AppError::UnknownRef {
-                name: name.as_str().to_owned(),
-            })
+            .ok_or_else(|| not_found(name))
     }
 
     /// The active ref, or `None` when the store has none.

@@ -72,9 +72,10 @@ async fn saved_scopes_select_by_name() {
     ])
     .await
     .expect_err("an existing name needs --force");
-    assert!(err.chain().any(
-        |cause| cause.to_string() == "scope already exists: spawn (use --force to replace it)"
-    ));
+    assert!(
+        err.chain()
+            .any(|cause| cause.to_string() == "a scope named 'spawn' already exists")
+    );
     run(&[
         "sekai", "--store", store, "scope", "create", "spawn", "--in", "ow:0,0", "--force",
     ])
@@ -105,7 +106,7 @@ async fn saved_scopes_select_by_name() {
     .expect_err("an unknown scope fails");
     assert!(
         err.chain()
-            .any(|cause| cause.to_string() == "unknown scope: nope")
+            .any(|cause| cause.to_string() == "no scope named 'nope'")
     );
 
     run(&["sekai", "--store", store, "scope", "delete", "spawn"])
@@ -114,5 +115,8 @@ async fn saved_scopes_select_by_name() {
     let err = run(&["sekai", "--store", store, "scope", "delete", "spawn"])
         .await
         .expect_err("a deleted scope is gone");
-    assert!(err.to_string().contains("unknown scope: spawn"));
+    assert!(
+        err.chain()
+            .any(|cause| cause.to_string() == "no scope named 'spawn'")
+    );
 }
