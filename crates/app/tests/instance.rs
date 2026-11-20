@@ -36,7 +36,7 @@ async fn open_of_a_missing_store_fails_and_creates_nothing() {
     sekai_app::SekaiInstance::<LocalStore>::init(&url)
         .await
         .unwrap();
-    assert!(store.join("conf.toml").is_file());
+    assert!(store.join("version").is_file());
     assert!(store.join("meta.sqlite").is_file());
     assert!(store.join("blobs/conf").is_file());
     assert!(store.join("cache/conf").is_file());

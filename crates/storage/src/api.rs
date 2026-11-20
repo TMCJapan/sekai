@@ -34,7 +34,7 @@ pub enum StorageError {
     /// one; every other operation must fail here instead of materializing
     /// an empty store as a side effect.
     StoreMissing {
-        /// Store root that was expected to hold `conf.toml`, `meta.sqlite`,
+        /// Store root that was expected to hold `version`, `meta.sqlite`,
         /// and the `blobs` and `cache` keyspaces.
         path: String,
     },

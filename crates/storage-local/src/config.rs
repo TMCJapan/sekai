@@ -1,4 +1,4 @@
-//! Store configuration (`<root>/conf.toml`), read and version-gated before
+//! Store format version (`<root>/version`), read and version-gated before
 //! any database opens.
 
 use std::io::Write as _;
@@ -7,13 +7,13 @@ use std::path::Path;
 use sekai_storage::{StorageError, io_error};
 use serde::{Deserialize, Serialize};
 
-/// Config file name at the store root.
-pub const FILE_NAME: &str = "conf.toml";
+/// Version file name at the store root.
+pub const FILE_NAME: &str = "version";
 
 /// Version of the store format this binary writes and accepts.
 pub const CONFIG_VERSION: u32 = 1;
 
-/// Store configuration persisted at `<root>/conf.toml`.
+/// Store format version persisted at `<root>/version`.
 ///
 /// Provisional shape: only the format version is tracked so far.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -31,7 +31,7 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Read `<root>/conf.toml` and enforce the format version.
+    /// Read `<root>/version` and enforce the format version.
     pub fn read(root: impl AsRef<Path>) -> Result<Self, StorageError> {
         let path = root.as_ref().join(FILE_NAME);
         let text = std::fs::read_to_string(&path)
@@ -48,12 +48,12 @@ impl Config {
     }
 }
 
-/// Materialize the config on first init, then read it back through the same
-/// gate as open; re-initialization keeps the existing file.
+/// Materialize the version file on first init, then read it back through the
+/// same gate as open; re-initialization keeps the existing file.
 ///
 /// `create_new` keeps concurrent inits from overwriting each other: the loser
 /// of the create race reads the winner's file instead. The write is synced so
-/// a crash cannot leave a torn config that no later open could parse.
+/// a crash cannot leave a torn version file that no later open could parse.
 pub fn init(root: impl AsRef<Path>) -> Result<Config, StorageError> {
     let path = root.as_ref().join(FILE_NAME);
     let text = toml::to_string(&Config::default())

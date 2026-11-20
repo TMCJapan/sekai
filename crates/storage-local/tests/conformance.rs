@@ -252,22 +252,22 @@ async fn open_of_a_pre_cache_store_fails() {
     );
 }
 
-/// Init materializes `conf.toml` with the current config version, and a
+/// Init materializes `version` with the current config version, and a
 /// re-init keeps the existing file instead of rewriting it.
 #[tokio::test]
-async fn init_writes_conf_and_reinit_keeps_it() {
+async fn init_writes_version_and_reinit_keeps_it() {
     let (dir, _guard) = tempdir("conf-init");
     let store = init(&dir).await;
     drop(store);
-    let conf = dir.join("conf.toml");
+    let version = dir.join("version");
     assert_eq!(
-        std::fs::read_to_string(&conf).unwrap(),
+        std::fs::read_to_string(&version).unwrap(),
         format!("version = {}\n", sekai_storage_local::CONFIG_VERSION)
     );
 
     // A comment only a preserved file can carry: re-init must not rewrite it.
     std::fs::write(
-        &conf,
+        &version,
         format!(
             "# kept\nversion = {}\n",
             sekai_storage_local::CONFIG_VERSION
@@ -277,7 +277,7 @@ async fn init_writes_conf_and_reinit_keeps_it() {
     let store = LocalStore::init(&dir).await.unwrap();
     drop(store);
     assert!(
-        std::fs::read_to_string(&conf)
+        std::fs::read_to_string(&version)
             .unwrap()
             .starts_with("# kept")
     );
@@ -289,7 +289,7 @@ async fn open_gates_the_config_version() {
     let (dir, _guard) = tempdir("conf-version");
     let store = init(&dir).await;
     drop(store);
-    std::fs::write(dir.join("conf.toml"), "version = 99\n").unwrap();
+    std::fs::write(dir.join("version"), "version = 99\n").unwrap();
     let err = LocalStore::open(&dir).await.unwrap_err();
     assert!(
         matches!(
@@ -301,13 +301,13 @@ async fn open_gates_the_config_version() {
     );
 }
 
-/// A malformed config fails loudly instead of being reinterpreted.
+/// A malformed version file fails loudly instead of being reinterpreted.
 #[tokio::test]
-async fn open_of_a_malformed_conf_fails() {
+async fn open_of_a_malformed_version_fails() {
     let (dir, _guard) = tempdir("conf-malformed");
     let store = init(&dir).await;
     drop(store);
-    std::fs::write(dir.join("conf.toml"), "version = \"one\"\n").unwrap();
+    std::fs::write(dir.join("version"), "version = \"one\"\n").unwrap();
     let err = LocalStore::open(&dir).await.unwrap_err();
     assert!(
         matches!(
@@ -321,14 +321,14 @@ async fn open_of_a_malformed_conf_fails() {
     );
 }
 
-/// `conf.toml` is part of the layout markers: a store without one is not
+/// `version` is part of the layout markers: a store without one is not
 /// openable, and nothing is opened or created to find that out.
 #[tokio::test]
-async fn open_of_a_store_without_conf_fails() {
+async fn open_of_a_store_without_version_fails() {
     let (dir, _guard) = tempdir("conf-missing");
     let store = init(&dir).await;
     drop(store);
-    std::fs::remove_file(dir.join("conf.toml")).unwrap();
+    std::fs::remove_file(dir.join("version")).unwrap();
     assert!(!sekai_storage_local::local_store_exists(&dir));
     let err = LocalStore::open(&dir).await.unwrap_err();
     assert!(
@@ -373,7 +373,7 @@ async fn open_of_a_missing_store_fails_without_creating_it() {
     assert!(!dir.exists(), "a failed open must not create anything");
 
     let store = LocalStore::init(&dir).await.unwrap();
-    assert!(dir.join("conf.toml").is_file());
+    assert!(dir.join("version").is_file());
     assert!(dir.join("meta.sqlite").is_file());
     assert!(dir.join("blobs/conf").is_file());
     assert!(dir.join("cache/conf").is_file());

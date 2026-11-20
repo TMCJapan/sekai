@@ -530,7 +530,7 @@ the pass still writes files.
 Owned by the backend crate (`crates/storage-local/schema/sqlite.sql` for
 metadata; `commits`, `commit_parents`, `root_tree`, `dim_tree`,
 `region_tree`, `refs`, `scopes`, `scope_areas`). One version gate covers
-the whole store: `<root>/conf.toml` records the format version
+the whole store: `<root>/version` records the format version
 (`CONFIG_VERSION` in `crates/storage-local/src/config.rs`), read and
 enforced before any database opens; pre-release policy = recreate, don't
 migrate. Each tree table stores the canonical node bytes under their hash;
