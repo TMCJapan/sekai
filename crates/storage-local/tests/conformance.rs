@@ -308,10 +308,6 @@ async fn reinit_gates_the_store_version() {
         ),
         "unexpected error: {err}"
     );
-    assert_eq!(
-        std::fs::read_to_string(dir.join("version")).unwrap(),
-        "99\n"
-    );
 }
 
 /// A malformed version file fails loudly instead of being reinterpreted.

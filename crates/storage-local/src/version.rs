@@ -36,9 +36,11 @@ pub(crate) fn check(root: impl AsRef<Path>) -> Result<(), StorageError> {
 /// existing file and checks it as open does, before any database opens.
 ///
 /// `create_new` keeps concurrent inits from overwriting each other: the loser
-/// of the create race checks the winner's file instead. The write is synced
-/// so a crash cannot leave a torn version file that no later open could
-/// parse.
+/// of the create race checks the winner's file instead, and fails loudly if
+/// it reads that file before the winner has finished writing it. A
+/// concurrent init fails loudly anyway once both open the sled keyspaces,
+/// which admit a single opener. The write is synced so a crash cannot leave
+/// a torn version file that no later open could parse.
 pub(crate) fn init(root: impl AsRef<Path>) -> Result<(), StorageError> {
     let path = root.as_ref().join(FILE_NAME);
     match std::fs::OpenOptions::new()
