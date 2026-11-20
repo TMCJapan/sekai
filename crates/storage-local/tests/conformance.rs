@@ -262,22 +262,16 @@ async fn init_writes_version_and_reinit_keeps_it() {
     let version = dir.join("version");
     assert_eq!(
         std::fs::read_to_string(&version).unwrap(),
-        format!("version = {}\n", sekai_storage_local::STORE_VERSION)
+        format!("{}\n", sekai_storage_local::STORE_VERSION)
     );
 
-    // A comment only a preserved file can carry: re-init must not rewrite it.
-    std::fs::write(
-        &version,
-        format!("# kept\nversion = {}\n", sekai_storage_local::STORE_VERSION),
-    )
-    .unwrap();
+    // A spelling only a preserved file can carry (no trailing newline):
+    // re-init must not rewrite it.
+    let kept = sekai_storage_local::STORE_VERSION.to_string();
+    std::fs::write(&version, &kept).unwrap();
     let store = LocalStore::init(&dir).await.unwrap();
     drop(store);
-    assert!(
-        std::fs::read_to_string(&version)
-            .unwrap()
-            .starts_with("# kept")
-    );
+    assert_eq!(std::fs::read_to_string(&version).unwrap(), kept);
 }
 
 /// A future store version is refused loudly instead of reinterpreted.
@@ -286,7 +280,7 @@ async fn open_gates_the_store_version() {
     let (dir, _guard) = tempdir("version-gate");
     let store = init(&dir).await;
     drop(store);
-    std::fs::write(dir.join("version"), "version = 99\n").unwrap();
+    std::fs::write(dir.join("version"), "99\n").unwrap();
     let err = LocalStore::open(&dir).await.unwrap_err();
     assert!(
         matches!(
@@ -304,13 +298,13 @@ async fn open_of_a_malformed_version_fails() {
     let (dir, _guard) = tempdir("version-malformed");
     let store = init(&dir).await;
     drop(store);
-    std::fs::write(dir.join("version"), "version = \"one\"\n").unwrap();
+    std::fs::write(dir.join("version"), "one\n").unwrap();
     let err = LocalStore::open(&dir).await.unwrap_err();
     assert!(
         matches!(
             err,
             sekai_storage::StorageError::Backend {
-                backend: "toml",
+                backend: "version file",
                 ..
             }
         ),

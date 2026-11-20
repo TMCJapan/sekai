@@ -293,8 +293,8 @@ Write [Conventional Commits](https://www.conventionalcommits.org/):
 ### Storage Schema Changes
 
 The whole store format is backend-owned and versioned in one place:
-`STORE_VERSION` in `crates/storage-local/src/version.rs`, persisted as
-`version` in `<root>/version` and enforced before any database opens.
+`STORE_VERSION` in `crates/storage-local/src/version.rs`, persisted as the
+bare number in `<root>/version` and enforced before any database opens.
 
 - Bump the version for any schema or keyspace-layout change and add a test
   pinning the version gate (old stores fail loudly with
