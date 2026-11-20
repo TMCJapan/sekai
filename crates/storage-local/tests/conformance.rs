@@ -252,26 +252,23 @@ async fn open_of_a_pre_cache_store_fails() {
     );
 }
 
-/// Init materializes `version` with the current config version, and a
+/// Init materializes `version` with the current `STORE_VERSION`, and a
 /// re-init keeps the existing file instead of rewriting it.
 #[tokio::test]
 async fn init_writes_version_and_reinit_keeps_it() {
-    let (dir, _guard) = tempdir("conf-init");
+    let (dir, _guard) = tempdir("version-init");
     let store = init(&dir).await;
     drop(store);
     let version = dir.join("version");
     assert_eq!(
         std::fs::read_to_string(&version).unwrap(),
-        format!("version = {}\n", sekai_storage_local::CONFIG_VERSION)
+        format!("version = {}\n", sekai_storage_local::STORE_VERSION)
     );
 
     // A comment only a preserved file can carry: re-init must not rewrite it.
     std::fs::write(
         &version,
-        format!(
-            "# kept\nversion = {}\n",
-            sekai_storage_local::CONFIG_VERSION
-        ),
+        format!("# kept\nversion = {}\n", sekai_storage_local::STORE_VERSION),
     )
     .unwrap();
     let store = LocalStore::init(&dir).await.unwrap();
@@ -283,10 +280,10 @@ async fn init_writes_version_and_reinit_keeps_it() {
     );
 }
 
-/// A future config version is refused loudly instead of reinterpreted.
+/// A future store version is refused loudly instead of reinterpreted.
 #[tokio::test]
-async fn open_gates_the_config_version() {
-    let (dir, _guard) = tempdir("conf-version");
+async fn open_gates_the_store_version() {
+    let (dir, _guard) = tempdir("version-gate");
     let store = init(&dir).await;
     drop(store);
     std::fs::write(dir.join("version"), "version = 99\n").unwrap();
@@ -295,7 +292,7 @@ async fn open_gates_the_config_version() {
         matches!(
             err,
             sekai_storage::StorageError::UnsupportedSchema { found: 99, supported }
-                if supported == i64::from(sekai_storage_local::CONFIG_VERSION)
+                if supported == i64::from(sekai_storage_local::STORE_VERSION)
         ),
         "unexpected error: {err}"
     );
@@ -304,7 +301,7 @@ async fn open_gates_the_config_version() {
 /// A malformed version file fails loudly instead of being reinterpreted.
 #[tokio::test]
 async fn open_of_a_malformed_version_fails() {
-    let (dir, _guard) = tempdir("conf-malformed");
+    let (dir, _guard) = tempdir("version-malformed");
     let store = init(&dir).await;
     drop(store);
     std::fs::write(dir.join("version"), "version = \"one\"\n").unwrap();
@@ -325,7 +322,7 @@ async fn open_of_a_malformed_version_fails() {
 /// openable, and nothing is opened or created to find that out.
 #[tokio::test]
 async fn open_of_a_store_without_version_fails() {
-    let (dir, _guard) = tempdir("conf-missing");
+    let (dir, _guard) = tempdir("version-missing");
     let store = init(&dir).await;
     drop(store);
     std::fs::remove_file(dir.join("version")).unwrap();

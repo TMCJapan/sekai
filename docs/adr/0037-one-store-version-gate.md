@@ -15,9 +15,9 @@ constants that always moved together.
 
 ## Decision
 
-Abolish the per-database gates and version the whole store through
-`Config::version` in `<root>/version` (`CONFIG_VERSION` in
-`crates/storage-local/src/config.rs`), enforced before any database opens:
+Abolish the per-database gates and version the whole store through the
+`version` field of `<root>/version` (`STORE_VERSION` in
+`crates/storage-local/src/version.rs`), enforced before any database opens:
 
 - `SqliteMeta::open` creates the schema when the database holds no tables,
   re-checked under `BEGIN IMMEDIATE` so concurrent openers create it
