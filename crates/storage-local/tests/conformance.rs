@@ -292,6 +292,28 @@ async fn open_gates_the_store_version() {
     );
 }
 
+/// Re-initializing a store of another version is refused before any
+/// database opens, as open refuses it.
+#[tokio::test]
+async fn reinit_gates_the_store_version() {
+    let (dir, _guard) = tempdir("version-reinit");
+    let store = init(&dir).await;
+    drop(store);
+    std::fs::write(dir.join("version"), "99\n").unwrap();
+    let err = LocalStore::init(&dir).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            sekai_storage::StorageError::UnsupportedSchema { found: 99, .. }
+        ),
+        "unexpected error: {err}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("version")).unwrap(),
+        "99\n"
+    );
+}
+
 /// A malformed version file fails loudly instead of being reinterpreted.
 #[tokio::test]
 async fn open_of_a_malformed_version_fails() {

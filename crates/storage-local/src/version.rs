@@ -32,8 +32,8 @@ pub(crate) fn check(root: impl AsRef<Path>) -> Result<(), StorageError> {
     Ok(())
 }
 
-/// Write the version file on first init, then check it as open does;
-/// re-initialization keeps the existing file.
+/// Write the version file on first init; re-initialization keeps an
+/// existing file and checks it as open does, before any database opens.
 ///
 /// `create_new` keeps concurrent inits from overwriting each other: the loser
 /// of the create race checks the winner's file instead. The write is synced
@@ -46,13 +46,11 @@ pub(crate) fn init(root: impl AsRef<Path>) -> Result<(), StorageError> {
         .create_new(true)
         .open(&path)
     {
-        Ok(mut file) => {
-            file.write_all(format!("{STORE_VERSION}\n").as_bytes())
-                .and_then(|()| file.sync_all())
-                .map_err(|source| io_error(path.display().to_string(), source))?;
-        }
-        Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(source) => return Err(io_error(path.display().to_string(), source)),
+        Ok(mut file) => file
+            .write_all(format!("{STORE_VERSION}\n").as_bytes())
+            .and_then(|()| file.sync_all())
+            .map_err(|source| io_error(path.display().to_string(), source)),
+        Err(source) if source.kind() == std::io::ErrorKind::AlreadyExists => check(root),
+        Err(source) => Err(io_error(path.display().to_string(), source)),
     }
-    check(root)
 }
