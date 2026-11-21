@@ -76,6 +76,12 @@ impl RefName {
         Ok(Self(String::from(raw)))
     }
 
+    /// The branch a new worktree's HEAD starts on, [`DEFAULT_REF_NAME`].
+    pub fn default_branch() -> Self {
+        // `DEFAULT_REF_NAME` passes `parse`; a unit test pins it.
+        Self(String::from(DEFAULT_REF_NAME))
+    }
+
     /// Borrow the validated name.
     pub fn as_str(&self) -> &str {
         &self.0
@@ -307,6 +313,14 @@ mod tests {
         assert_eq!(
             RefName::parse(&"é".repeat(RefName::MAX_LEN)),
             Err(RefNameError::TooLong(RefName::MAX_LEN))
+        );
+    }
+
+    #[test]
+    fn the_default_branch_is_a_valid_name() {
+        assert_eq!(
+            RefName::parse(DEFAULT_REF_NAME),
+            Ok(RefName::default_branch())
         );
     }
 
