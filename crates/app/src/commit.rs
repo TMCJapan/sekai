@@ -862,7 +862,7 @@ mod tests {
     use super::*;
     use sekai_core::staging::stage_present;
     use sekai_core::{Area, ChunkHash, Dimension, Rect, Ref, RefName, RegionKind};
-    use sekai_storage::testing::{MemMeta, block_on};
+    use sekai_storage::testing::{MemError, MemMeta, block_on};
 
     const OVER: Dimension = Dimension::OVERWORLD;
     const NETHER: Dimension = Dimension::NETHER;
@@ -896,11 +896,30 @@ mod tests {
         meta
     }
 
+    /// Plan against the active ref, as `prepare` does.
+    async fn plan_head(
+        meta: &MemMeta,
+        discovered: &[RegionKey],
+        scope: &Scope,
+    ) -> Result<(Previous, Plan), MemError> {
+        plan_commit(meta, discovered, scope).await
+    }
+
+    /// Record onto the active ref.
+    async fn record_head(
+        meta: &mut MemMeta,
+        previous: &Previous,
+        staged: &Assembled,
+        created_at_ms: u64,
+    ) -> Result<CommitReport, MemError> {
+        record_commit(meta, previous, staged, created_at_ms).await
+    }
+
     #[test]
     fn first_commit_ingests_everything() {
         let meta = store_with_ref();
         let discovered = [key(0, 0)];
-        let (previous, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &discovered, &Scope::World)).unwrap();
         assert!(previous.commit.is_none());
         assert!(previous.state.is_empty());
         assert_eq!(plan.ingest, vec![key(0, 0)]);
@@ -914,7 +933,7 @@ mod tests {
         let discovered = [key(0, 0)];
 
         // The active ref is unborn: the commit starts a history.
-        let (previous, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &discovered, &Scope::World)).unwrap();
         assert!(previous.commit.is_none());
         let staged = assemble(
             plan,
@@ -926,7 +945,7 @@ mod tests {
             },
             &Scope::World,
         );
-        let first = block_on(record_commit(&mut meta, &previous, &staged, 1_000)).unwrap();
+        let first = block_on(record_head(&mut meta, &previous, &staged, 1_000)).unwrap();
         // The ref moved onto the new commit.
         let active = block_on(meta.active_ref()).unwrap().unwrap();
         assert_eq!(active.commit, Some(first.commit));
@@ -937,7 +956,7 @@ mod tests {
         block_on(meta.set_ref(&feature, Some(first.commit), 1_500)).unwrap();
         block_on(meta.activate_ref(&feature)).unwrap();
 
-        let (previous, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &discovered, &Scope::World)).unwrap();
         assert_eq!(previous.commit.as_ref().map(|c| c.id), Some(first.commit));
         let staged = assemble(
             plan,
@@ -949,7 +968,7 @@ mod tests {
             },
             &Scope::World,
         );
-        let second = block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        let second = block_on(record_head(&mut meta, &previous, &staged, 2_000)).unwrap();
         assert_eq!(
             block_on(meta.commit_parents(second.commit)).unwrap(),
             vec![first.commit]
@@ -968,7 +987,7 @@ mod tests {
 
         // The first commit starts a history: no previous commit, no
         // parent.
-        let (previous, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &discovered, &Scope::World)).unwrap();
         let staged = assemble(
             plan,
             &previous,
@@ -979,12 +998,12 @@ mod tests {
             },
             &Scope::World,
         );
-        let first = block_on(record_commit(&mut meta, &previous, &staged, 1_000)).unwrap();
+        let first = block_on(record_head(&mut meta, &previous, &staged, 1_000)).unwrap();
         assert_eq!(block_on(meta.commit_parents(first.commit)).unwrap(), vec![]);
 
         // The second commit continues the history of the commit it was
         // planned against.
-        let (previous, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &discovered, &Scope::World)).unwrap();
         assert_eq!(previous.commit.as_ref().map(|c| c.id), Some(first.commit));
         let staged = assemble(
             plan,
@@ -996,7 +1015,7 @@ mod tests {
             },
             &Scope::World,
         );
-        let second = block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        let second = block_on(record_head(&mut meta, &previous, &staged, 2_000)).unwrap();
         assert_eq!(
             block_on(meta.commit_parents(second.commit)).unwrap(),
             vec![first.commit]
@@ -1007,7 +1026,7 @@ mod tests {
     fn an_empty_region_is_not_a_new_file() {
         let meta = store_with_ref();
         let discovered = [key(0, 0)];
-        let (previous, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &discovered, &Scope::World)).unwrap();
         let staged = assemble(plan, &previous, Ingested::default(), &Scope::World);
         assert_eq!(staged.entries, [] as [CommitEntry; 0]);
         assert_eq!(staged.new_files, 0);
@@ -1023,7 +1042,7 @@ mod tests {
             stage_present(coord(1, 0), ChunkHash::new([2; 32])),
         ];
         let present = BTreeSet::from([coord(0, 0), coord(1, 0)]);
-        let (previous, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &discovered, &Scope::World)).unwrap();
         let staged = assemble(
             plan,
             &previous,
@@ -1034,9 +1053,9 @@ mod tests {
             },
             &Scope::World,
         );
-        let first = block_on(record_commit(&mut meta, &previous, &staged, 1_000)).unwrap();
+        let first = block_on(record_head(&mut meta, &previous, &staged, 1_000)).unwrap();
 
-        let (previous, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &discovered, &Scope::World)).unwrap();
         let staged = assemble(
             plan,
             &previous,
@@ -1049,7 +1068,7 @@ mod tests {
         );
         assert_eq!(staged.entries, [] as [CommitEntry; 0]);
         assert_eq!(staged.chunks, 2);
-        let report = block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        let report = block_on(record_head(&mut meta, &previous, &staged, 2_000)).unwrap();
         assert_ne!(report.commit, first.commit);
         assert_eq!(report.new_blobs, 0);
         assert_eq!(report.tombstones, 0);
@@ -1063,7 +1082,7 @@ mod tests {
     fn changed_chunk_writes_only_its_row() {
         let mut meta = store_with_ref();
         let discovered = [key(0, 0)];
-        let (previous, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &discovered, &Scope::World)).unwrap();
         let staged = assemble(
             plan,
             &previous,
@@ -1077,9 +1096,9 @@ mod tests {
             },
             &Scope::World,
         );
-        block_on(record_commit(&mut meta, &previous, &staged, 1_000)).unwrap();
+        block_on(record_head(&mut meta, &previous, &staged, 1_000)).unwrap();
 
-        let (previous, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &discovered, &Scope::World)).unwrap();
         let staged = assemble(
             plan,
             &previous,
@@ -1098,7 +1117,7 @@ mod tests {
             vec![stage_present(coord(0, 0), ChunkHash::new([9; 32]))]
         );
         assert_eq!(staged.chunks, 2);
-        let report = block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        let report = block_on(record_head(&mut meta, &previous, &staged, 2_000)).unwrap();
         assert_eq!(report.chunks, 2);
         assert_eq!(report.new_blobs, 1);
         assert_eq!(report.tombstones, 0);
@@ -1125,13 +1144,13 @@ mod tests {
             ],
         ))
         .unwrap();
-        let (previous, plan) = block_on(plan_commit(&meta, &[], &Scope::World)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &[], &Scope::World)).unwrap();
         assert_eq!(plan.removed, vec![key(0, 0)]);
         let staged = assemble(plan, &previous, Ingested::default(), &Scope::World);
         assert_eq!(staged.chunks, 0);
         assert_eq!(staged.tombstones, 2);
 
-        let report = block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        let report = block_on(record_head(&mut meta, &previous, &staged, 2_000)).unwrap();
         assert_eq!(report.tombstones, 2);
         let tomb = block_on(meta.lookup_chunk(report.commit, &coord(0, 0))).unwrap();
         assert!(tomb.is_none(), "absence is the tombstone");
@@ -1153,7 +1172,7 @@ mod tests {
         // Region (0,0) is gone from disk: its chunk tombstones once while
         // region (1,0) is still present.
         let discovered = [key(1, 0)];
-        let (previous, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &discovered, &Scope::World)).unwrap();
         let staged = assemble(
             plan,
             &previous,
@@ -1166,14 +1185,14 @@ mod tests {
         );
         assert_eq!(staged.tombstones, 1);
         assert_eq!(staged.chunks, 1);
-        let report = block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        let report = block_on(record_head(&mut meta, &previous, &staged, 2_000)).unwrap();
         assert_eq!(report.tombstones, 1);
         assert_eq!(report.chunks, 1);
 
         // Repeat commit with the same world: the tombstone already resolves
         // through fallback, so it records no fresh row and the vanished
         // chunk is not carried back as present.
-        let (previous, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &discovered, &Scope::World)).unwrap();
         assert_eq!(
             previous.state.keys().copied().collect::<Vec<_>>(),
             [coord(32, 0)]
@@ -1192,7 +1211,7 @@ mod tests {
         assert_eq!(staged.tombstones, 0);
         assert_eq!(staged.chunks, 1);
 
-        let report = block_on(record_commit(&mut meta, &previous, &staged, 3_000)).unwrap();
+        let report = block_on(record_head(&mut meta, &previous, &staged, 3_000)).unwrap();
         assert_eq!(report.tombstones, 0);
         assert_eq!(report.chunks, 1);
         assert!(
@@ -1223,13 +1242,13 @@ mod tests {
         // disk), but the overworld scope sees neither ingest nor removal.
         let discovered = [nether_key(0, 0)];
         let scope = Scope::dimension(NETHER);
-        let (_, plan) = block_on(plan_commit(&meta, &discovered, &scope)).unwrap();
+        let (_, plan) = block_on(plan_head(&meta, &discovered, &scope)).unwrap();
         assert_eq!(plan.ingest, vec![nether_key(0, 0)]);
         assert_eq!(plan.removed, [] as [RegionKey; 0]);
 
         // Out-of-scope regions never enter the plan at all.
         let discovered = [key(0, 0), nether_key(0, 0)];
-        let (_, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (_, plan) = block_on(plan_head(&meta, &discovered, &Scope::World)).unwrap();
         assert_eq!(plan.ingest, vec![key(0, 0), nether_key(0, 0)]);
     }
 
@@ -1252,7 +1271,7 @@ mod tests {
         // must not become a tombstone.
         let discovered = [key(0, 0)];
         let scope = Scope::dimension(OVER);
-        let (previous, plan) = block_on(plan_commit(&meta, &discovered, &scope)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &discovered, &scope)).unwrap();
         assert_eq!(plan.ingest, vec![key(0, 0)]);
         assert_eq!(plan.removed, [] as [RegionKey; 0]);
         let staged = assemble(
@@ -1275,7 +1294,7 @@ mod tests {
             .collect();
         assert_eq!(tombstoned, vec![coord(1, 0)]);
 
-        let report = block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        let report = block_on(record_head(&mut meta, &previous, &staged, 2_000)).unwrap();
         assert_eq!(report.tombstones, 1);
         // The nether chunk still resolves through fallback, untouched.
         let kept = block_on(meta.lookup_chunk(report.commit, &nether_coord(0, 0)))
@@ -1307,7 +1326,7 @@ mod tests {
         // Both chunks changed on disk, but the scope reads only (0,0).
         let discovered = [key(0, 0)];
         let scope = over_rect(Rect::new(0, 0, 0, 0));
-        let (previous, plan) = block_on(plan_commit(&meta, &discovered, &scope)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &discovered, &scope)).unwrap();
         assert_eq!(plan.ingest, vec![key(0, 0)]);
         let staged = assemble(
             plan,
@@ -1320,11 +1339,11 @@ mod tests {
             &scope,
         );
         assert_eq!(staged.tombstones, 0);
-        block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        block_on(record_head(&mut meta, &previous, &staged, 2_000)).unwrap();
 
         // The next full commit rereads the whole file and records the
         // unread (1,0) change, while (0,0) stays unchanged.
-        let (previous, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &discovered, &Scope::World)).unwrap();
         let staged = assemble(
             plan,
             &previous,
@@ -1342,7 +1361,7 @@ mod tests {
             staged.entries,
             vec![stage_present(coord(1, 0), ChunkHash::new([7; 32]))]
         );
-        let report = block_on(record_commit(&mut meta, &previous, &staged, 3_000)).unwrap();
+        let report = block_on(record_head(&mut meta, &previous, &staged, 3_000)).unwrap();
         let got = block_on(meta.lookup_chunk(report.commit, &coord(1, 0)))
             .unwrap()
             .unwrap();

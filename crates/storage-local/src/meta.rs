@@ -1116,10 +1116,27 @@ mod tests {
         (guard.path().to_path_buf(), guard)
     }
 
+    /// World root of the main worktree the test stores register.
+    const WORLD: &str = "/worlds/main";
+
+    /// Register the main worktree at [`WORLD`] with HEAD unborn on
+    /// `main`, the way an initialized store looks.
+    async fn register_main(meta: &mut SqliteMeta) {
+        meta.add_worktree(&Worktree {
+            path: WORLD.to_owned(),
+            main: true,
+            head: Head::Branch(RefName::default_branch()),
+        })
+        .await
+        .unwrap();
+    }
+
     async fn memory_meta() -> SqliteMeta {
-        SqliteMeta::open(&std::path::PathBuf::from(":memory:"))
+        let mut meta = SqliteMeta::open(&std::path::PathBuf::from(":memory:"))
             .await
-            .unwrap()
+            .unwrap();
+        register_main(&mut meta).await;
+        meta
     }
 
     #[tokio::test]
@@ -1309,24 +1326,23 @@ mod tests {
         let mut meta = memory_meta().await;
         let first = meta.create_commit(1_000, &[]).await.unwrap();
         let added = [
-            worktree("/worlds/main", true, on_branch(DEFAULT_REF_NAME)),
             worktree("/worlds/b", false, on_branch("feature")),
             worktree("/worlds/a", false, Head::Detached(first)),
         ];
         for one in &added {
             meta.add_worktree(one).await.unwrap();
         }
+        let main = worktree(WORLD, true, on_branch(DEFAULT_REF_NAME));
         assert_eq!(
             worktrees(&meta).await,
-            [added[2].clone(), added[1].clone(), added[0].clone()]
+            [added[1].clone(), added[0].clone(), main]
         );
     }
 
     #[tokio::test]
     async fn worktrees_keep_one_main_one_path_and_one_head_per_branch() {
         let mut meta = memory_meta().await;
-        let main = worktree("/worlds/main", true, on_branch(DEFAULT_REF_NAME));
-        meta.add_worktree(&main).await.unwrap();
+        let main = worktree(WORLD, true, on_branch(DEFAULT_REF_NAME));
 
         for refused in [
             worktree("/worlds/other", true, on_branch("other")),

@@ -8,6 +8,9 @@ use sekai_util::{
     RegionKind, ScopeName,
 };
 
+/// World root of the main worktree every conformance store registers.
+pub const WORLD: &str = "/worlds/main";
+
 const OVER: Dimension = Dimension::OVERWORLD;
 const REGION: RegionKind = RegionKind::Region;
 

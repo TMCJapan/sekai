@@ -6,7 +6,9 @@ use sekai_storage::{
     BlobStore as _, CacheStore as _, MetaStore as _, SekaiStore as _, SekaiStoreOpener,
 };
 use sekai_storage_local::LocalStore;
-use sekai_util::{ChunkCoord, ChunkHash, CommitEntry, Dimension, RegionHash, RegionKind};
+use sekai_util::{
+    ChunkCoord, ChunkHash, CommitEntry, Dimension, Head, RefName, RegionHash, RegionKind, Worktree,
+};
 use std::path::Path;
 
 /// A temp dir whose name starts with the calling test's name (tempfile
@@ -20,8 +22,20 @@ fn tempdir(name: &str) -> (std::path::PathBuf, tempfile::TempDir) {
     (guard.path().to_path_buf(), guard)
 }
 
+/// Initialize a store with the main worktree at [`common::WORLD`], HEAD
+/// unborn on `main`, the way an app init leaves it.
 async fn init(dir: impl AsRef<Path>) -> sekai_storage_local::LocalStore {
-    LocalStore::init(dir).await.unwrap()
+    let mut store = LocalStore::init(dir).await.unwrap();
+    store
+        .meta_mut()
+        .add_worktree(&Worktree {
+            path: common::WORLD.to_owned(),
+            main: true,
+            head: Head::Branch(RefName::default_branch()),
+        })
+        .await
+        .unwrap();
+    store
 }
 
 #[tokio::test]
