@@ -293,13 +293,13 @@ Write [Conventional Commits](https://www.conventionalcommits.org/):
 ### Storage Schema Changes
 
 The whole store format is backend-owned and versioned in one place:
-`CONFIG_VERSION` in `crates/storage-local/src/config.rs`, persisted as
-`version` in `<root>/conf.toml` and enforced before any database opens.
+`STORE_VERSION` in `crates/storage-local/src/version.rs`, persisted as the
+bare number in `<root>/version` and enforced before any database opens.
 
 - Bump the version for any schema or keyspace-layout change and add a test
   pinning the version gate (old stores fail loudly with
   `UnsupportedSchema`). Fresh stores derive the version from
-  `CONFIG_VERSION`, so bumping the constant is sufficient.
+  `STORE_VERSION`, so bumping the constant is sufficient.
 - The project is pre-release: old stores are recreated, not migrated. Never
   silently reinterpret an unknown version.
 - The metadata schema keeps only source-of-truth history and snapshot
