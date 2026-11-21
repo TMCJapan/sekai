@@ -46,11 +46,13 @@ CREATE TABLE commit_parents(
 -- below; the application keeps exactly one, because new commits hang
 -- from it (the store's HEAD). `commit_id` has no cascade: the default
 -- `NO ACTION` blocks deleting a commit a ref still names.
--- Names are byte-wise and case-sensitive: `main` and `Main` are distinct,
--- and `ORDER BY name` follows that byte order. Only the reserved `HEAD`
--- spelling in the validator ignores case.
+-- Names are full Git refnames (`refs/heads/main`), byte-wise and
+-- case-sensitive: `main` and `Main` are distinct, and `ORDER BY name`
+-- follows that byte order. Only the reserved `HEAD` spelling in the
+-- validator ignores case.
 CREATE TABLE refs(
-    name TEXT NOT NULL COLLATE BINARY PRIMARY KEY,
+    name TEXT NOT NULL COLLATE BINARY PRIMARY KEY
+        CHECK (name GLOB 'refs/heads/?*'),
     commit_id BLOB NULL REFERENCES commits(id),
     active INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0, 1)),
     created_at_ms INTEGER NOT NULL

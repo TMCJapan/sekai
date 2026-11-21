@@ -174,8 +174,8 @@ impl fmt::Display for Ref {
 /// as one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitRef {
-    /// Ref name.
-    pub name: RefName,
+    /// Ref.
+    pub name: Ref,
     /// Commit the ref points at, or `None` while the ref is unborn.
     pub commit: Option<CommitId>,
     /// Whether this ref is the active one (new commits hang from it).
@@ -190,7 +190,7 @@ impl CommitRef {
     /// A struct literal is equally valid and clearer when only a few
     /// fields differ; this helper exists for all-field construction.
     pub const fn new(
-        name: RefName,
+        name: Ref,
         commit: Option<CommitId>,
         active: bool,
         created_at_ms: u64,
@@ -363,7 +363,7 @@ mod tests {
 
     #[test]
     fn unborn_refs_have_no_commit() {
-        let name = RefName::parse("main").unwrap();
+        let name = Ref::branch(RefName::parse("main").unwrap());
         let record = CommitRef::new(name.clone(), None, true, 1_700_000_000_000);
         assert!(record.is_unborn());
         assert!(record.active);
@@ -372,7 +372,7 @@ mod tests {
 
     #[test]
     fn born_refs_name_a_commit() {
-        let name = RefName::parse("main").unwrap();
+        let name = Ref::branch(RefName::parse("main").unwrap());
         let commit = CommitId([7; 32]);
         let record = CommitRef::new(name, Some(commit), false, 1_700_000_000_000);
         assert!(!record.is_unborn());

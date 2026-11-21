@@ -11,7 +11,7 @@ use core::pin::pin;
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use sekai_util::{
-    ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DimHash, NamedScope,
+    ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DimHash, NamedScope, Ref,
     RefName, RegionHash, RootHash, ScopeName,
 };
 
@@ -41,7 +41,7 @@ pub enum MemError {
     /// The ref does not exist.
     UnknownRef {
         /// Ref that was asked for.
-        name: RefName,
+        name: Ref,
     },
     /// The store has no active ref to hang a new commit from.
     NoActiveRef,
@@ -53,7 +53,7 @@ pub enum MemError {
     /// The active ref cannot be removed.
     ActiveRefProtected {
         /// Ref that was asked for.
-        name: RefName,
+        name: Ref,
     },
 }
 
@@ -88,8 +88,8 @@ pub struct MemMeta {
     pub dim_nodes: BTreeMap<DimHash, DimNode>,
     /// Region nodes by hash.
     pub region_nodes: BTreeMap<RegionHash, RegionNode>,
-    /// Refs by name.
-    pub refs: BTreeMap<RefName, CommitRef>,
+    /// Refs by full refname order.
+    pub refs: BTreeMap<Ref, CommitRef>,
     /// Named scopes by name.
     pub scopes: BTreeMap<ScopeName, NamedScope>,
     /// Stable local sequence per commit hash.
@@ -144,6 +144,7 @@ impl MemMeta {
     /// Any previously active ref is deactivated: the fake keeps the same
     /// single-active-ref invariant as the backend.
     pub fn with_active_ref(&mut self, name: &RefName) {
+        let name = &Ref::branch(name.clone());
         for (ref_name, record) in &mut self.refs {
             record.active = ref_name == name;
         }
@@ -387,7 +388,7 @@ impl MetaStore for MemMeta {
 
     fn set_ref(
         &mut self,
-        name: &RefName,
+        name: &Ref,
         commit: Option<CommitId>,
         created_at_ms: u64,
     ) -> impl Future<Output = Result<(), MemError>> + Send {
@@ -412,7 +413,7 @@ impl MetaStore for MemMeta {
 
     fn lookup_ref(
         &self,
-        name: &RefName,
+        name: &Ref,
     ) -> impl Future<Output = Result<Option<CommitRef>, MemError>> + Send {
         core::future::ready(Ok(self.refs.get(name).cloned()))
     }
@@ -429,10 +430,7 @@ impl MetaStore for MemMeta {
         core::future::ready(Ok(()))
     }
 
-    fn delete_ref(
-        &mut self,
-        name: &RefName,
-    ) -> impl Future<Output = Result<bool, MemError>> + Send {
+    fn delete_ref(&mut self, name: &Ref) -> impl Future<Output = Result<bool, MemError>> + Send {
         if self.refs.get(name).is_some_and(|record| record.active) {
             return core::future::ready(Err(MemError::ActiveRefProtected { name: name.clone() }));
         }
@@ -451,10 +449,7 @@ impl MetaStore for MemMeta {
         core::future::ready(Ok(active))
     }
 
-    fn activate_ref(
-        &mut self,
-        name: &RefName,
-    ) -> impl Future<Output = Result<(), MemError>> + Send {
+    fn activate_ref(&mut self, name: &Ref) -> impl Future<Output = Result<(), MemError>> + Send {
         let Some(record) = self.refs.get(name) else {
             return core::future::ready(Err(MemError::UnknownRef { name: name.clone() }));
         };
@@ -549,7 +544,7 @@ mod tests {
             .id;
         assert_ne!(second, first);
         assert_eq!(
-            block_on(meta.lookup_ref(&RefName::parse("main").unwrap()))
+            block_on(meta.lookup_ref(&Ref::branch(RefName::parse("main").unwrap())))
                 .unwrap()
                 .unwrap()
                 .commit,

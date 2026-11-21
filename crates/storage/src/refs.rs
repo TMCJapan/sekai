@@ -11,8 +11,8 @@ use sekai_util::CommitRef;
 use crate::graph::CommitError;
 use crate::meta::MetaStore;
 
-/// List all refs in name order (byte-wise, the order `RefName` compares
-/// by).
+/// List all refs in full refname order (byte-wise, the order `Ref`
+/// compares by).
 pub async fn list_refs<M: MetaStore>(meta: &M) -> Result<Vec<CommitRef>, CommitError<M::Error>> {
     let mut out = Vec::new();
     meta.visit_refs(|r| {

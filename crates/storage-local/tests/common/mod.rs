@@ -4,8 +4,8 @@
 
 use sekai_storage::{BlobStore, CacheStore, MetaStore};
 use sekai_util::{
-    ChunkCoord, ChunkHash, CommitEntry, CommitId, Dimension, NamedScope, Rect, RefName, RegionKind,
-    ScopeName,
+    ChunkCoord, ChunkHash, CommitEntry, CommitId, Dimension, NamedScope, Rect, Ref, RefName,
+    RegionKind, ScopeName,
 };
 
 const OVER: Dimension = Dimension::OVERWORLD;
@@ -278,7 +278,7 @@ where
 {
     use sekai_storage::graph::{commit_ancestors, commit_history};
 
-    let main = RefName::parse("main").unwrap();
+    let main = Ref::branch(RefName::parse("main").unwrap());
     // Two independent histories: the second root shares no ancestor with
     // the first. Pointing the active ref back to unborn starts it.
     let first = meta

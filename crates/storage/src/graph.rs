@@ -8,7 +8,7 @@ use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use core::fmt;
 
-use sekai_util::{Commit, CommitId, RefName};
+use sekai_util::{Commit, CommitId, Ref, RefName};
 
 use crate::meta::MetaStore;
 
@@ -249,7 +249,11 @@ pub async fn resolve_commit_ref<M: MetaStore>(
     let name = RefName::parse(raw).map_err(|_| ResolveError::InvalidRef {
         raw: alloc::string::String::from(raw),
     })?;
-    let Some(record) = meta.lookup_ref(&name).await.map_err(ResolveError::Meta)? else {
+    let found = meta
+        .lookup_ref(&Ref::branch(name.clone()))
+        .await
+        .map_err(ResolveError::Meta)?;
+    let Some(record) = found else {
         return Err(ResolveError::UnknownRef { name });
     };
     record.commit.ok_or(ResolveError::UnbornRef { name })
@@ -278,7 +282,7 @@ mod tests {
         let mut meta = MemMeta::default();
         let first = block_on(meta.create_commit(100, &[])).unwrap();
         let second = block_on(meta.create_commit(200, &[first])).unwrap();
-        let branch = RefName::parse("main").unwrap();
+        let branch = Ref::branch(RefName::parse("main").unwrap());
         block_on(meta.set_ref(&branch, Some(second), 300)).unwrap();
 
         let first_hex = first.to_string();
@@ -327,7 +331,7 @@ mod tests {
         // unknown one is `UnknownCommit`, never the ref of the same name.
         let mut meta = MemMeta::default();
         let hex = "a".repeat(64);
-        let name = RefName::parse(&hex).unwrap();
+        let name = Ref::branch(RefName::parse(&hex).unwrap());
         block_on(meta.set_ref(&name, None, 100)).unwrap();
         assert_eq!(
             block_on(resolve_commit_ref(&meta, &hex)),
@@ -340,7 +344,7 @@ mod tests {
     #[test]
     fn an_unborn_ref_resolves_to_nothing() {
         let mut meta = MemMeta::default();
-        let branch = RefName::parse("main").unwrap();
+        let branch = Ref::branch(RefName::parse("main").unwrap());
         block_on(meta.set_ref(&branch, None, 100)).unwrap();
         assert_eq!(
             block_on(resolve_commit_ref(&meta, "main")),
@@ -521,7 +525,8 @@ mod tests {
         .unwrap()
         .id;
         // A second history: its root shares no ancestor with `first`.
-        block_on(meta.set_ref(&RefName::parse("main").unwrap(), None, 150)).unwrap();
+        let main = Ref::branch(RefName::parse("main").unwrap());
+        block_on(meta.set_ref(&main, None, 150)).unwrap();
         let other = block_on(meta.apply_commit_incremental(
             200,
             &[],
