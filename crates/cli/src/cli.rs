@@ -345,10 +345,10 @@ pub struct DiffArgs {
     /// Older commit reference (`<64-char hash>` or `<ref>`; when comparing
     /// commits and omitted, defaults to the lowest-ID parent of the newer
     /// side). With `--world`, the single commit to compare against
-    /// (default: the active ref's target).
+    /// (default: HEAD's commit).
     pub old_commit: Option<CommitRef>,
     /// Newer commit reference (`<64-char hash>` or `<ref>`; if omitted,
-    /// defaults to the active ref's target). Commit-vs-commit only.
+    /// defaults to HEAD's commit). Commit-vs-commit only.
     #[arg(conflicts_with = "world")]
     pub new_commit: Option<CommitRef>,
     /// Chunks to compare (default: whole world). Only chunks with
@@ -393,8 +393,8 @@ pub enum DiffTarget<'a> {
         world: &'a Path,
         commit: Option<&'a CommitRef>,
     },
-    /// Commit against commit (`None` newer side means the active ref's
-    /// target; `None` older side means the newer side's lowest-ID parent).
+    /// Commit against commit (`None` newer side means HEAD's commit;
+    /// `None` older side means the newer side's lowest-ID parent).
     /// A root commit has no implicit older side and errors; pass it or
     /// `--world` explicitly in that case.
     Commits {

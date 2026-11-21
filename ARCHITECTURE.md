@@ -128,7 +128,7 @@ diff:
     -> proven region: the committed region node answers both sides
   fallback: one world read per region file (blocking pool, fanned out)
     -> Chunk::normalized_hash per requested chunk; commit side: recorded digests
-  unborn active ref: the empty snapshot is the base (every chunk added)
+  unborn HEAD: the empty snapshot is the base (every chunk added)
 ```
 
 A chunk has exactly one hash: the `Chunk::normalized_hash` digest of its
@@ -378,9 +378,9 @@ part of the public ID. See
 
 Ref objects are the store's movable pointers to commits: named
 branches. A ref names a commit and moves with the history it names; a
-ref without a commit is _unborn_. Exactly one ref is _active_ - the one
-new commits hang from (the store's `HEAD`). A fresh store starts with
-one active ref, `main`, unborn.
+ref without a commit is _unborn_. A fresh store starts with one ref,
+`main`, unborn. The store still flags one ref as _active_, a leftover
+that no commit moves any more.
 
 The store keys refs by the full Git refname (`refs/heads/main`); commands
 and JSON show the short name (`main`).
@@ -389,14 +389,15 @@ A worktree is one world the store backs up, keyed by its absolute world
 root; no other name or ID exists. Each worktree records a HEAD, which
 names a branch or holds a commit directly. At most one worktree is
 _main_ - the world `sekai init` ran in, with HEAD on `main` - and a
-branch is the HEAD of at most one worktree. Commits still land on the
-active ref; worktree HEADs take over that role in a later change.
+branch is the HEAD of at most one worktree. Until worktrees are chosen
+per world, every command acts on the main worktree's HEAD.
 
-A new commit continues the target of the active ref - the trait rejects
-one whose parents omit it - and the active ref moves onto the new commit
-in the same transaction. Switching the active ref forks the history: the
-next commit continues the ref it was planned against, not the newest
-commit in the store. Commit references accept a `<64-char commit hash>`
+A new commit continues HEAD's commit - the trait rejects one whose
+parents omit it - and HEAD moves onto the new commit in the same
+transaction: an attached HEAD moves its branch (giving an unborn branch
+its first commit), a detached HEAD moves itself. Putting HEAD on another
+branch forks the history: the next commit continues the branch it was
+planned against, not the newest commit in the store. Commit references accept a `<64-char commit hash>`
 or a bare ref name.
 
 Refs point at commit hashes. Like Git, identity is derived from content;

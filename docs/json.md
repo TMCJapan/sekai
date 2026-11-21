@@ -55,8 +55,7 @@ first, then `Caused by:` lines), JSON-escaped.
 
 Breaking change: the `ref` command is removed. `command` no longer takes
 the value `ref`, and the ref record, deletion record, and ref array
-payloads are gone. Commits still move the active ref, and commit
-arguments still accept a bare ref name.
+payloads are gone. Commit arguments still accept a bare ref name.
 
 Semantics change (ADR-0034): `commit` no longer populates the region-image
 cache as part of recording; the command runs the `update_cache` pass
@@ -164,8 +163,8 @@ itself. With `--no-cache` the update pass is skipped: `cache_ms` is `0`,
 The `total_ms`/`phases` block appears only with `--timing`.
 `latest` is `null` when no commit exists yet. Counts describe what a
 commit would record; nothing is written. `latest` is the commit the
-preview is measured against - the target of the active ref, which is
-what the next commit would continue.
+preview is measured against - HEAD's commit, which is what the next
+commit would continue.
 
 ### `checkout`
 
