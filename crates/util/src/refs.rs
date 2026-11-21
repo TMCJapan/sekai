@@ -2,13 +2,9 @@
 //!
 //! Refs are the store's branch model: a name bound to a commit that moves
 //! forward when a new commit lands on it. The store keys them by the full
-//! Git refname (`refs/heads/<name>`). A ref without a commit is
-//! *unborn* - it names a history that has not started yet. At most one ref
-//! is *active*: the one new commits hang from. A store normally has
-//! exactly one, but the invariant is "at most", enforced by the backend.
-//!
-//! An unborn ref can be active (the fresh-store state) or inactive (a name
-//! waiting for its first commit).
+//! Git refname (`refs/heads/<name>`). Every stored ref names a commit: a
+//! branch without one is *unborn* and exists only as the name a
+//! worktree's HEAD carries.
 
 use alloc::string::String;
 use core::{fmt, str::FromStr};
@@ -17,8 +13,7 @@ use crate::commit::CommitId;
 use crate::error::RefNameError;
 use crate::name;
 
-/// Name of the ref a fresh store starts with: the active one, unborn,
-/// waiting for the first commit.
+/// Branch a new worktree's HEAD starts on, unborn until its first commit.
 pub const DEFAULT_REF_NAME: &str = "main";
 
 /// Validated short ref name: the part after `refs/heads/`.
@@ -169,49 +164,19 @@ impl fmt::Display for Ref {
     }
 }
 
-/// A named pointer to a commit.
-///
-/// The record carries the active flag but cannot enforce the store-wide
-/// invariant on its own: a store holds at most one ref with `active` set,
-/// and the backend maintains that when the flag moves (`set_ref` and
-/// `activate_ref`). An active ref may be unborn; that is the fresh-store
-/// state. The flag is advisory on a value: a hand-built record is not the
-/// store's authority on which ref is active, so callers must not treat it
-/// as one.
+/// A stored ref and the commit it names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitRef {
     /// Ref.
     pub name: Ref,
-    /// Commit the ref points at, or `None` while the ref is unborn.
-    pub commit: Option<CommitId>,
-    /// Whether this ref is the active one (new commits hang from it).
-    pub active: bool,
-    /// Creation time as Unix millis (informational only).
-    pub created_at_ms: u64,
+    /// Commit the ref points at.
+    pub commit: CommitId,
 }
 
 impl CommitRef {
     /// Construct a ref record.
-    ///
-    /// A struct literal is equally valid and clearer when only a few
-    /// fields differ; this helper exists for all-field construction.
-    pub const fn new(
-        name: Ref,
-        commit: Option<CommitId>,
-        active: bool,
-        created_at_ms: u64,
-    ) -> Self {
-        Self {
-            name,
-            commit,
-            active,
-            created_at_ms,
-        }
-    }
-
-    /// Whether the ref names no commit yet.
-    pub const fn is_unborn(&self) -> bool {
-        self.commit.is_none()
+    pub const fn new(name: Ref, commit: CommitId) -> Self {
+        Self { name, commit }
     }
 }
 
@@ -373,24 +338,5 @@ mod tests {
         refs.sort();
         full.sort();
         assert_eq!(refs.iter().map(Ref::full_name).collect::<Vec<_>>(), full);
-    }
-
-    #[test]
-    fn unborn_refs_have_no_commit() {
-        let name = Ref::branch(RefName::parse("main").unwrap());
-        let record = CommitRef::new(name.clone(), None, true, 1_700_000_000_000);
-        assert!(record.is_unborn());
-        assert!(record.active);
-        assert_eq!(record.name, name);
-    }
-
-    #[test]
-    fn born_refs_name_a_commit() {
-        let name = Ref::branch(RefName::parse("main").unwrap());
-        let commit = CommitId([7; 32]);
-        let record = CommitRef::new(name, Some(commit), false, 1_700_000_000_000);
-        assert!(!record.is_unborn());
-        assert!(!record.active);
-        assert_eq!(record.commit, Some(commit));
     }
 }

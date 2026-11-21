@@ -87,28 +87,6 @@ pub enum StorageError {
         /// Scope that has no area.
         name: String,
     },
-    /// The named ref does not exist.
-    ///
-    /// Emitted by operations that require the ref to exist
-    /// (`activate_ref`); lookups and `delete_ref` report absence as
-    /// `None`/`false` instead.
-    UnknownRef {
-        /// Requested ref name.
-        name: String,
-    },
-    /// The active ref cannot be removed: a store without one would have
-    /// nowhere to hang new commits from.
-    ActiveRefProtected {
-        /// Ref that was asked for.
-        name: String,
-    },
-    /// The store has no active ref, so a new commit has nowhere to land.
-    ///
-    /// Field-less on purpose: the condition is store-wide, not tied to a
-    /// name the caller passed. A backend checks for the active ref before
-    /// its parent constraint, so `NoActiveRef` takes priority over
-    /// [`Self::NotContinuing`] when both conditions hold.
-    NoActiveRef,
     /// A new commit does not continue HEAD's commit, which would fork HEAD
     /// onto another history.
     NotContinuing {
@@ -122,16 +100,6 @@ pub enum StorageError {
     },
     /// Millisecond timestamp does not fit `i64`.
     InvalidTimestamp(u64),
-    /// The system clock is before the Unix epoch.
-    ///
-    /// Raised when a millisecond reading of the system clock cannot be
-    /// represented as a non-negative `u64` timestamp.
-    ClockBeforeEpoch,
-    /// The system clock is past the representable range.
-    ///
-    /// Raised when a millisecond reading of the system clock does not fit
-    /// the timestamp range the backend stores.
-    ClockOutOfRange,
     /// Region file size does not fit `i64`.
     InvalidSize(u64),
     /// The named commit does not exist.
@@ -184,20 +152,11 @@ impl fmt::Display for StorageError {
             }
             Self::InvalidScopeName { name } => write!(f, "stored scope name is invalid: {name}"),
             Self::EmptyScope { name } => write!(f, "stored scope has no area: {name}"),
-            Self::UnknownRef { name } => write!(f, "unknown ref: {name}"),
-            Self::ActiveRefProtected { name } => {
-                write!(f, "cannot remove the active ref: {name}")
-            }
-            Self::NoActiveRef => {
-                f.write_str("store has no active ref: a new commit has nowhere to hang from")
-            }
             Self::NotContinuing { base } => {
                 write!(f, "new commit does not continue HEAD's commit {base}")
             }
             Self::UnknownRegionKind { kind } => write!(f, "stored region kind is unknown: {kind}"),
             Self::InvalidTimestamp(millis) => write!(f, "timestamp out of range: {millis}"),
-            Self::ClockBeforeEpoch => f.write_str("system clock is before the Unix epoch"),
-            Self::ClockOutOfRange => f.write_str("system clock is out of range"),
             Self::InvalidSize(size) => write!(f, "region size out of range: {size}"),
             Self::UnknownCommit { id } => write!(f, "unknown commit: {id}"),
             Self::UnsupportedSchema { found, supported } => write!(

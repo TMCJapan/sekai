@@ -378,9 +378,9 @@ part of the public ID. See
 
 Ref objects are the store's movable pointers to commits: named
 branches. A ref names a commit and moves with the history it names; a
-ref without a commit is _unborn_. A fresh store starts with one ref,
-`main`, unborn. The store still flags one ref as _active_, a leftover
-that no commit moves any more.
+branch without a commit is _unborn_: it has no row and exists only as
+the name a worktree's HEAD carries. A fresh store holds no ref; its main
+worktree's HEAD is unborn on `main`.
 
 The store keys refs by the full Git refname (`refs/heads/main`); commands
 and JSON show the short name (`main`).

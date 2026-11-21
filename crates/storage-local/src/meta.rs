@@ -11,9 +11,9 @@ use sekai_storage::{
     DimNode, MetaStore, RegionNode, RootNode, StorageError, TreeNodes, commit_hash,
 };
 use sekai_util::{
-    ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DEFAULT_REF_NAME, DimHash,
-    Dimension, Head, HeadState, NamedScope, NamedScopeError, Rect, Ref, RefKind, RefName,
-    RegionHash, RootHash, ScopeName, Worktree,
+    ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DimHash, Dimension, Head,
+    HeadState, NamedScope, NamedScopeError, Rect, Ref, RefKind, RefName, RegionHash, RootHash,
+    ScopeName, Worktree,
 };
 use sqlx::Row as _;
 use sqlx::SqliteConnection;
@@ -95,17 +95,6 @@ impl SqliteMeta {
                     .execute(&mut *tx)
                     .await
                     .map_err(db_err)?;
-                // The store starts with one active ref, unborn, on the
-                // branch an initialized worktree's HEAD names.
-                sqlx::query(
-                    "INSERT INTO refs (name, commit_id, active, created_at_ms)
-                     VALUES (?, NULL, 1, ?)",
-                )
-                .bind(format!("{}{DEFAULT_REF_NAME}", RefKind::Branch.prefix()))
-                .bind(now_ms()?)
-                .execute(&mut *tx)
-                .await
-                .map_err(db_err)?;
             }
             tx.commit().await.map_err(db_err)?;
         }
@@ -202,24 +191,9 @@ fn decode_ref(row: &sqlx::sqlite::SqliteRow) -> Result<CommitRef, StorageError> 
     let name_raw: String = row.try_get("name").map_err(db_err)?;
     let name =
         Ref::from_full(&name_raw).map_err(|_| StorageError::InvalidRefName { name: name_raw })?;
-    let commit_raw: Option<Vec<u8>> = row.try_get("commit_id").map_err(db_err)?;
-    let commit = commit_raw.map(commit_id_from_blob).transpose()?;
-    let active_raw: i64 = row.try_get("active").map_err(db_err)?;
-    let active = match active_raw {
-        0 => false,
-        1 => true,
-        value => {
-            return Err(StorageError::InvalidHistoryValue {
-                column: "active",
-                value,
-            });
-        }
-    };
     Ok(CommitRef::new(
         name,
-        commit,
-        active,
-        millis_col(row, "created_at_ms")?,
+        commit_id_from_blob(row.try_get("commit_id").map_err(db_err)?)?,
     ))
 }
 
@@ -255,8 +229,8 @@ fn decode_worktree(row: &sqlx::sqlite::SqliteRow) -> Result<Worktree, StorageErr
 }
 
 /// The HEAD of the worktree at `path` resolved against the refs, or
-/// `None` when no worktree is registered there. A branch whose row names
-/// no commit is unborn, as one without a row is.
+/// `None` when no worktree is registered there. A branch without a row is
+/// unborn.
 async fn head_state(
     conn: &mut SqliteConnection,
     path: &str,
@@ -343,25 +317,6 @@ fn commit_param(id: CommitId) -> Vec<u8> {
 /// clock, so an absurd value is their bug, surfaced loudly.
 fn millis_param(ms: u64) -> Result<i64, StorageError> {
     i64::try_from(ms).map_err(|_| StorageError::InvalidTimestamp(ms))
-}
-
-/// The current time in Unix millis, for the rows a store creates for
-/// itself.
-///
-/// Kept local rather than shared with the app's clock helper: failures
-/// here are `StorageError`s, and an out-of-range value is rejected
-/// instead of saturating. The app does not read the clock for a move
-/// that keeps an existing timestamp.
-fn now_ms() -> Result<i64, StorageError> {
-    let millis = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| StorageError::ClockBeforeEpoch)?
-        .as_millis();
-    // `as_millis` is `u128`: a value above `u64::MAX` has no
-    // representation in the stored range, so it gets its own error rather
-    // than a sentinel timestamp.
-    let millis = u64::try_from(millis).map_err(|_| StorageError::ClockOutOfRange)?;
-    i64::try_from(millis).map_err(|_| StorageError::InvalidTimestamp(millis))
 }
 
 /// Decode one `commits` row.
@@ -810,12 +765,11 @@ impl sekai_storage::MetaStore for SqliteMeta {
         match &state {
             HeadState::Attached { branch, .. } | HeadState::Unborn { branch } => {
                 sqlx::query(
-                    "INSERT INTO refs (name, commit_id, active, created_at_ms) VALUES (?, ?, 0, ?)
+                    "INSERT INTO refs (name, commit_id) VALUES (?, ?)
                      ON CONFLICT(name) DO UPDATE SET commit_id = excluded.commit_id",
                 )
                 .bind(Ref::branch(branch.clone()).full_name())
                 .bind(commit_param(commit))
-                .bind(millis_param(created_at_ms)?)
                 .execute(&mut *tx)
                 .await
                 .map_err(db_err)?;
@@ -833,39 +787,25 @@ impl sekai_storage::MetaStore for SqliteMeta {
         Ok(ApplyOutcome { id: commit })
     }
 
-    async fn set_ref(
-        &mut self,
-        name: &Ref,
-        commit: Option<CommitId>,
-        created_at_ms: u64,
-    ) -> Result<(), StorageError> {
-        // A new ref starts inactive; a moved ref keeps its flag and
-        // creation time. `commit = None` is the documented unborn state,
-        // so moving a ref back to unborn is allowed.
-        let stored_commit = commit.map(commit_param);
-        let created_at_ms = millis_param(created_at_ms)?;
+    async fn set_ref(&mut self, name: &Ref, commit: CommitId) -> Result<(), StorageError> {
         let mut tx = self.pool.begin().await.map_err(db_err)?;
-        if let Some(id) = commit {
-            // Pointing at a commit that does not exist is corruption, not
-            // a move: report it as such instead of the foreign-key
-            // violation the upsert would raise.
-            let found: Option<i64> = sqlx::query_scalar("SELECT 1 FROM commits WHERE id = ?")
-                .bind(stored_commit.as_deref())
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(db_err)?;
-            if found.is_none() {
-                tx.rollback().await.map_err(db_err)?;
-                return Err(StorageError::UnknownCommit { id });
-            }
+        // Pointing at a commit that does not exist is corruption, not a
+        // move: report it as such instead of the foreign-key violation the
+        // upsert would raise.
+        let found: Option<i64> = sqlx::query_scalar("SELECT 1 FROM commits WHERE id = ?")
+            .bind(commit_param(commit))
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db_err)?;
+        if found.is_none() {
+            return Err(StorageError::UnknownCommit { id: commit });
         }
         sqlx::query(
-            "INSERT INTO refs (name, commit_id, active, created_at_ms) VALUES (?, ?, 0, ?)
+            "INSERT INTO refs (name, commit_id) VALUES (?, ?)
              ON CONFLICT(name) DO UPDATE SET commit_id = excluded.commit_id",
         )
         .bind(name.full_name())
-        .bind(stored_commit.as_deref())
-        .bind(created_at_ms)
+        .bind(commit_param(commit))
         .execute(&mut *tx)
         .await
         .map_err(db_err)?;
@@ -874,26 +814,23 @@ impl sekai_storage::MetaStore for SqliteMeta {
     }
 
     async fn lookup_ref(&self, name: &Ref) -> Result<Option<CommitRef>, StorageError> {
-        let row =
-            sqlx::query("SELECT name, commit_id, active, created_at_ms FROM refs WHERE name = ?")
-                .bind(name.full_name())
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(db_err)?;
-        row.map(|row| decode_ref(&row)).transpose()
+        sqlx::query("SELECT name, commit_id FROM refs WHERE name = ?")
+            .bind(name.full_name())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db_err)?
+            .map(|row| decode_ref(&row))
+            .transpose()
     }
 
     async fn visit_refs<F>(&self, mut visit: F) -> Result<(), StorageError>
     where
         F: FnMut(&CommitRef) -> bool + Send,
     {
-        let rows = sqlx::query(
-            "SELECT name, commit_id, active, created_at_ms
-             FROM refs ORDER BY name COLLATE BINARY",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(db_err)?;
+        let rows = sqlx::query("SELECT name, commit_id FROM refs ORDER BY name COLLATE BINARY")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db_err)?;
         for row in &rows {
             if !visit(&decode_ref(row)?) {
                 break;
@@ -903,110 +840,12 @@ impl sekai_storage::MetaStore for SqliteMeta {
     }
 
     async fn delete_ref(&mut self, name: &Ref) -> Result<bool, StorageError> {
-        let full = name.full_name();
-        // One transaction so the DELETE and the follow-up read see the
-        // same snapshot: the DELETE refuses the active ref, and the read
-        // only refines why nothing was removed.
-        let mut tx = self.pool.begin().await.map_err(db_err)?;
-        let deleted = sqlx::query("DELETE FROM refs WHERE name = ? AND active = 0")
-            .bind(&full)
-            .execute(&mut *tx)
+        let deleted = sqlx::query("DELETE FROM refs WHERE name = ?")
+            .bind(name.full_name())
+            .execute(&self.pool)
             .await
             .map_err(db_err)?;
-        if deleted.rows_affected() > 0 {
-            tx.commit().await.map_err(db_err)?;
-            return Ok(true);
-        }
-        // Nothing was deleted: the ref is absent or active.
-        let active: Option<i64> =
-            sqlx::query_scalar("SELECT 1 FROM refs WHERE name = ? AND active = 1")
-                .bind(&full)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(db_err)?;
-        tx.commit().await.map_err(db_err)?;
-        match active {
-            Some(_) => Err(StorageError::ActiveRefProtected {
-                name: name.name.as_str().to_owned(),
-            }),
-            None => Ok(false),
-        }
-    }
-
-    async fn active_ref(&self) -> Result<Option<CommitRef>, StorageError> {
-        // The target commit must exist: the foreign key keeps it honest,
-        // and a dangling target is corruption, not an unborn ref.
-        let row = sqlx::query(
-            "SELECT refs.name, refs.commit_id, refs.active, refs.created_at_ms,
-                    commits.id AS target
-             FROM refs LEFT JOIN commits ON commits.id = refs.commit_id
-             WHERE refs.active = 1",
-        )
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(db_err)?;
-        let Some(row) = row else {
-            return Ok(None);
-        };
-        let record = decode_ref(&row)?;
-        if let Some(commit) = record.commit {
-            let target: Option<Vec<u8>> = row.try_get("target").map_err(db_err)?;
-            if target.is_none() {
-                return Err(StorageError::UnknownCommit { id: commit });
-            }
-        }
-        Ok(Some(record))
-    }
-
-    async fn activate_ref(&mut self, name: &Ref) -> Result<(), StorageError> {
-        let full = name.full_name();
-        let mut tx = self.pool.begin().await.map_err(db_err)?;
-        let row = sqlx::query(
-            "SELECT refs.name, refs.commit_id, refs.active, refs.created_at_ms,
-                    commits.id AS target
-             FROM refs LEFT JOIN commits ON commits.id = refs.commit_id
-             WHERE refs.name = ?",
-        )
-        .bind(&full)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(db_err)?;
-        let Some(row) = row else {
-            tx.rollback().await.map_err(db_err)?;
-            return Err(StorageError::UnknownRef {
-                name: name.name.as_str().to_owned(),
-            });
-        };
-        let record = decode_ref(&row)?;
-        if let Some(commit) = record.commit {
-            let target: Option<Vec<u8>> = row.try_get("target").map_err(db_err)?;
-            if target.is_none() {
-                tx.rollback().await.map_err(db_err)?;
-                return Err(StorageError::UnknownCommit { id: commit });
-            }
-        }
-        // The partial unique index allows one active row: clear the old
-        // one before marking the new one.
-        sqlx::query("UPDATE refs SET active = 0 WHERE active = 1")
-            .execute(&mut *tx)
-            .await
-            .map_err(db_err)?;
-        // The row can still vanish between the check above and this
-        // update; committing then would leave the store without a head.
-        let activated = sqlx::query("UPDATE refs SET active = 1 WHERE name = ?")
-            .bind(&full)
-            .execute(&mut *tx)
-            .await
-            .map_err(db_err)?
-            .rows_affected();
-        if activated == 0 {
-            tx.rollback().await.map_err(db_err)?;
-            return Err(StorageError::UnknownRef {
-                name: name.name.as_str().to_owned(),
-            });
-        }
-        tx.commit().await.map_err(db_err)?;
-        Ok(())
+        Ok(deleted.rows_affected() > 0)
     }
 
     async fn add_worktree(&mut self, worktree: &Worktree) -> Result<(), StorageError> {
@@ -1138,7 +977,7 @@ impl sekai_storage::MetaStore for SqliteMeta {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sekai_util::RefName;
+    use sekai_util::{DEFAULT_REF_NAME, RefName};
     use sqlx::ConnectOptions as _;
     use sqlx::Connection as _;
 
@@ -1186,24 +1025,17 @@ mod tests {
         let (a, b) = tokio::join!(SqliteMeta::open(&path), SqliteMeta::open(&path));
         let a = a.unwrap();
         let _b = b.unwrap();
-        let active = a.active_ref().await.unwrap().unwrap();
-        assert_eq!(active.name, branch(DEFAULT_REF_NAME));
-        let refs: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM refs")
-            .fetch_one(&a.pool)
-            .await
-            .unwrap();
-        assert_eq!(refs, 1);
+        let tables: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM sqlite_master WHERE name = 'refs'")
+                .fetch_one(&a.pool)
+                .await
+                .unwrap();
+        assert_eq!(tables, 1);
     }
 
     #[tokio::test]
-    async fn a_fresh_store_starts_with_one_active_ref() {
+    async fn a_fresh_store_seeds_no_ref() {
         let meta = memory_meta().await;
-        let active = meta.active_ref().await.unwrap().unwrap();
-        assert_eq!(active.name, branch(DEFAULT_REF_NAME));
-        assert!(active.active);
-        // Unborn: no commit yet.
-        assert!(active.commit.is_none());
-
         let mut refs = Vec::new();
         meta.visit_refs(|record| {
             refs.push(record.clone());
@@ -1211,65 +1043,13 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(refs.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn activating_a_ref_moves_the_active_flag() {
-        let mut meta = memory_meta().await;
-        let main = branch(DEFAULT_REF_NAME);
-        let other = branch("feature");
-        meta.set_ref(&other, None, 1_000).await.unwrap();
-
-        meta.activate_ref(&other).await.unwrap();
-        assert_eq!(meta.active_ref().await.unwrap().unwrap().name, other);
-        assert!(
-            !meta.lookup_ref(&main).await.unwrap().unwrap().active,
-            "the previous active ref is no longer active"
+        assert_eq!(refs, []);
+        assert_eq!(
+            meta.head(WORLD).await.unwrap(),
+            Some(HeadState::Unborn {
+                branch: RefName::default_branch()
+            })
         );
-
-        // Unknown refs are refused, and the flag stays where it was.
-        assert!(matches!(
-            meta.activate_ref(&branch("missing")).await,
-            Err(StorageError::UnknownRef { .. })
-        ));
-        assert_eq!(meta.active_ref().await.unwrap().unwrap().name, other);
-    }
-
-    #[tokio::test]
-    async fn activating_a_ref_refuses_a_dangling_target() {
-        let (dir, _guard) = tempdir("dangling-target");
-        let path = dir.join("meta.sqlite");
-        let mut meta = SqliteMeta::open(&path).await.unwrap();
-        register_main(&mut meta).await;
-        let main = branch(DEFAULT_REF_NAME);
-        let feature = branch("feature");
-        let root = meta
-            .apply_commit_incremental(WORLD, 1_000, &[], &[])
-            .await
-            .unwrap()
-            .id;
-        meta.set_ref(&feature, Some(root), 2_000).await.unwrap();
-
-        // Simulate corruption that bypassed the foreign key on a dedicated
-        // connection, so no pooled connection inherits the pragma.
-        let mut raw = SqliteConnectOptions::new()
-            .filename(&path)
-            .foreign_keys(false)
-            .connect()
-            .await
-            .unwrap();
-        let missing = CommitId([0xEE; 32]);
-        sqlx::query("UPDATE refs SET commit_id = ? WHERE name = 'refs/heads/feature'")
-            .bind(missing.0.to_vec())
-            .execute(&mut raw)
-            .await
-            .unwrap();
-        raw.close().await.unwrap();
-
-        let err = meta.activate_ref(&feature).await.unwrap_err();
-        assert!(matches!(err, StorageError::UnknownCommit { id } if id == missing));
-        assert_eq!(meta.active_ref().await.unwrap().unwrap().name, main);
     }
 
     #[tokio::test]
@@ -1282,9 +1062,9 @@ mod tests {
             .unwrap()
             .id;
 
-        // Moving HEAD's branch back to unborn deliberately drops the parent
-        // constraint: the next commit is a fresh root.
-        meta.set_ref(&main, None, 2_000).await.unwrap();
+        // Deleting HEAD's branch leaves HEAD unborn, which deliberately
+        // drops the parent constraint: the next commit is a fresh root.
+        assert!(meta.delete_ref(&main).await.unwrap());
         let second = meta
             .apply_commit_incremental(WORLD, 3_000, &[], &[])
             .await
@@ -1309,10 +1089,7 @@ mod tests {
         // A stale target is a typed error, not an opaque foreign-key
         // violation, and the ref does not appear.
         let missing = CommitId([0xEE; 32]);
-        let err = meta
-            .set_ref(&feature, Some(missing), 1_000)
-            .await
-            .unwrap_err();
+        let err = meta.set_ref(&feature, missing).await.unwrap_err();
         assert!(matches!(err, StorageError::UnknownCommit { id } if id == missing));
         assert!(meta.lookup_ref(&feature).await.unwrap().is_none());
     }
@@ -1320,8 +1097,9 @@ mod tests {
     #[tokio::test]
     async fn refs_visit_in_full_refname_order() {
         let mut meta = memory_meta().await;
+        let first = meta.apply_commit(WORLD, 1_000, &[], &[]).await.unwrap();
         for name in ["z", "a/b", "a-b", "A"] {
-            meta.set_ref(&branch(name), None, 0).await.unwrap();
+            meta.set_ref(&branch(name), first).await.unwrap();
         }
         let mut seen = Vec::new();
         meta.visit_refs(|record| {
@@ -1469,35 +1247,15 @@ mod tests {
 
     #[tokio::test]
     async fn the_schema_refuses_short_ref_names() {
-        let meta = memory_meta().await;
-        let err = sqlx::query(
-            "INSERT INTO refs (name, commit_id, active, created_at_ms) VALUES ('main2', NULL, 0, 0)",
-        )
-        .execute(&meta.pool)
-        .await;
-        assert!(err.is_err());
-    }
-
-    #[tokio::test]
-    async fn moving_a_born_active_ref_back_to_unborn_keeps_its_state() {
         let mut meta = memory_meta().await;
-        let main = branch(DEFAULT_REF_NAME);
-        let first = meta
-            .apply_commit_incremental(WORLD, 1_000, &[], &[])
-            .await
-            .unwrap()
-            .id;
-        let before = meta.lookup_ref(&main).await.unwrap().unwrap();
-        assert_eq!(before.commit, Some(first));
-
-        meta.set_ref(&main, None, 2_000).await.unwrap();
-        let after = meta.lookup_ref(&main).await.unwrap().unwrap();
-        assert_eq!(after.commit, None, "the target moved back to unborn");
-        assert!(after.active, "the move kept the active flag");
-        assert_eq!(
-            after.created_at_ms, before.created_at_ms,
-            "the move kept the creation time"
-        );
+        let first = meta.apply_commit(WORLD, 1_000, &[], &[]).await.unwrap();
+        let insert = |name: &'static str| {
+            sqlx::query("INSERT INTO refs (name, commit_id) VALUES (?, ?)")
+                .bind(name)
+                .bind(commit_param(first))
+        };
+        insert("refs/heads/ok").execute(&meta.pool).await.unwrap();
+        assert!(insert("main2").execute(&meta.pool).await.is_err());
     }
 
     #[tokio::test]
@@ -1551,54 +1309,19 @@ mod tests {
 
     #[tokio::test]
     async fn a_corrupt_ref_row_fails_loudly() {
-        let (dir, _guard) = tempdir("corrupt-ref");
-        let path = dir.join("meta.sqlite");
-        let meta = SqliteMeta::open(&path).await.unwrap();
-        // Names are re-validated on decode: a row the schema no longer
-        // accepts is corruption, never a new ref name.
-        sqlx::query(
-            "INSERT INTO refs (name, commit_id, active, created_at_ms) \
-             VALUES ('refs/heads/bad name', NULL, 0, 0)",
-        )
-        .execute(&meta.pool)
-        .await
-        .unwrap();
-
+        let mut meta = memory_meta().await;
+        let first = meta.apply_commit(WORLD, 1_000, &[], &[]).await.unwrap();
+        // Names are re-validated on decode: a row the parser refuses is
+        // corruption, never a new ref name.
+        sqlx::query("INSERT INTO refs (name, commit_id) VALUES ('refs/heads/bad name', ?)")
+            .bind(commit_param(first))
+            .execute(&meta.pool)
+            .await
+            .unwrap();
         let err = meta.visit_refs(|_| true).await.unwrap_err();
         assert!(
             matches!(err, StorageError::InvalidRefName { name } if name == "refs/heads/bad name")
         );
-
-        // The table's CHECK normally rejects this; disable it on a
-        // dedicated connection so no pooled connection inherits the pragma.
-        let mut raw = SqliteConnectOptions::new()
-            .filename(&path)
-            .connect()
-            .await
-            .unwrap();
-        sqlx::query("PRAGMA ignore_check_constraints = ON")
-            .execute(&mut raw)
-            .await
-            .unwrap();
-        sqlx::query("UPDATE refs SET active = 2 WHERE name = ?")
-            .bind(branch(DEFAULT_REF_NAME).full_name())
-            .execute(&mut raw)
-            .await
-            .unwrap();
-        sqlx::query("PRAGMA ignore_check_constraints = OFF")
-            .execute(&mut raw)
-            .await
-            .unwrap();
-        raw.close().await.unwrap();
-
-        let main = branch(DEFAULT_REF_NAME);
-        assert!(matches!(
-            meta.lookup_ref(&main).await,
-            Err(StorageError::InvalidHistoryValue {
-                column: "active",
-                value: 2
-            })
-        ));
     }
 
     #[tokio::test]
@@ -1653,7 +1376,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .commit,
-            Some(on_main)
+            on_main
         );
         assert_eq!(
             meta.lookup_ref(&branch("feature"))
@@ -1661,7 +1384,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .commit,
-            Some(on_feature)
+            on_feature
         );
     }
 
@@ -1687,25 +1410,9 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .commit,
-            Some(first),
+            first,
             "no branch moves with a detached HEAD"
         );
-    }
-
-    #[tokio::test]
-    async fn the_active_ref_survives_a_delete_attempt() {
-        let mut meta = memory_meta().await;
-        let main = branch(DEFAULT_REF_NAME);
-        let other = branch("feature");
-        meta.set_ref(&other, None, 1_000).await.unwrap();
-
-        assert!(matches!(
-            meta.delete_ref(&main).await,
-            Err(StorageError::ActiveRefProtected { .. })
-        ));
-        assert!(meta.lookup_ref(&main).await.unwrap().is_some());
-        assert!(meta.delete_ref(&other).await.unwrap());
-        assert!(!meta.delete_ref(&other).await.unwrap());
     }
 
     #[tokio::test]

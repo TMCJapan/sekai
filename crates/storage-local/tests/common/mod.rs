@@ -285,7 +285,7 @@ where
 
     let main = Ref::branch(RefName::parse("main").unwrap());
     // Two independent histories: the second root shares no ancestor with
-    // the first. Pointing the active ref back to unborn starts it.
+    // the first. Deleting HEAD's branch leaves HEAD unborn, which starts it.
     let first = meta
         .apply_commit_incremental(WORLD, 1_000, &[], &[present(0, 0, 1)])
         .await
@@ -296,7 +296,7 @@ where
         .await
         .unwrap()
         .id;
-    meta.set_ref(&main, None, 2_500).await.unwrap();
+    assert!(meta.delete_ref(&main).await.unwrap());
     let other = meta
         .apply_commit_incremental(WORLD, 3_000, &[], &[])
         .await

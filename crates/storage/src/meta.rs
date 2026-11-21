@@ -159,17 +159,11 @@ pub trait MetaStore {
     ) -> impl Future<Output = Result<ApplyOutcome, Self::Error>> + Send;
 
     /// Point `name` at `commit`, creating the ref when it does not exist.
-    /// `commit = None` leaves the ref unborn: it names a history without a
-    /// commit, and the next commit starts a new root from it.
-    ///
-    /// A new ref starts inactive; moving an existing one leaves its flag and
-    /// creation time untouched. `created_at_ms` is stored only when the ref
-    /// is first created.
+    /// `commit` must be stored.
     fn set_ref(
         &mut self,
         name: &Ref,
-        commit: Option<CommitId>,
-        created_at_ms: u64,
+        commit: CommitId,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// The ref `name`, or `None` when it does not exist.
@@ -183,18 +177,9 @@ pub trait MetaStore {
     where
         F: FnMut(&CommitRef) -> bool + Send;
 
-    /// Remove `name`. Returns whether a ref was removed.
-    ///
-    /// The active ref is never removed.
+    /// Remove `name`. Returns whether a ref was removed; an unborn branch
+    /// is not stored, so it is never removed.
     fn delete_ref(&mut self, name: &Ref) -> impl Future<Output = Result<bool, Self::Error>> + Send;
-
-    /// The active ref, or `None` when the store has none. Commits land on
-    /// a worktree's HEAD and no longer move it.
-    fn active_ref(&self) -> impl Future<Output = Result<Option<CommitRef>, Self::Error>> + Send;
-
-    /// Make `name` the active ref. The name and its non-`None` target must
-    /// exist.
-    fn activate_ref(&mut self, name: &Ref) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// Register `worktree`.
     ///
