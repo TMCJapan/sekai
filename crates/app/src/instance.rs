@@ -18,8 +18,8 @@
 
 use std::sync::Arc;
 
-use sekai_core::{Commit, CommitId};
-use sekai_storage::{CacheStore as _, SekaiStore, SekaiStoreOpener};
+use sekai_core::{Commit, CommitId, Head, RefName, Worktree};
+use sekai_storage::{CacheStore as _, MetaStore as _, SekaiStore, SekaiStoreOpener};
 use sekai_world::{WorldLock, WorldLockMode, WorldLockState, WorldTree};
 
 use crate::error::AppError;
@@ -152,13 +152,40 @@ impl<T: SekaiStore + SekaiStoreOpener> SekaiInstance<T> {
         })
     }
 
-    /// Initialize the store of an explicitly chosen backend type and open
-    /// it; the only entry point that materializes a store. Initializing an
-    /// existing store again is idempotent.
-    pub async fn init(path: impl AsRef<T::Path>) -> Result<Self, AppError> {
-        Ok(Self {
-            store: T::init(path).await?,
-        })
+    /// Initialize the store of an explicitly chosen backend type, register
+    /// `world` as its main worktree, and open it; the only entry point that
+    /// materializes a store.
+    ///
+    /// The main worktree's HEAD starts unborn on
+    /// [`DEFAULT_REF_NAME`](sekai_core::DEFAULT_REF_NAME). Initializing
+    /// again from the same world is idempotent; from another world it fails
+    /// with [`AppError::StoreHasOtherWorld`], because a store has one main
+    /// worktree.
+    pub async fn init(
+        path: impl AsRef<T::Path>,
+        world: impl AsRef<std::path::Path>,
+    ) -> Result<Self, AppError> {
+        let world = std::path::absolute(world)?
+            .into_os_string()
+            .into_string()
+            .map_err(|path| AppError::NonUtf8Path { path: path.into() })?;
+        let mut store = T::init(path).await?;
+        match sekai_storage::refs::main_worktree(store.meta())
+            .await
+            .map_err(AppError::Commit)?
+        {
+            None => {
+                let main = Worktree {
+                    path: world,
+                    main: true,
+                    head: Head::Branch(RefName::default_branch()),
+                };
+                store.meta_mut().add_worktree(&main).await?;
+            }
+            Some(main) if main == world => {}
+            Some(main) => return Err(AppError::StoreHasOtherWorld { world, main }),
+        }
+        Ok(Self { store })
     }
 }
 

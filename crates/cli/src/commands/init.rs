@@ -11,7 +11,9 @@ pub async fn run(store: &str, json: bool, style: Styler) -> anyhow::Result<()> {
     // Checked before init so a re-initialization reports itself as one;
     // the marker check never opens (and locks) the store.
     let existed = sekai_storage_local::local_store_exists(store);
-    sekai_app::SekaiInstance::<LocalStore>::init(store)
+    // The world an init runs in becomes the store's main worktree.
+    let world = std::env::current_dir()?;
+    sekai_app::SekaiInstance::<LocalStore>::init(store, &world)
         .await
         .with_context(|| format!("init of {store} failed"))?;
     if json {

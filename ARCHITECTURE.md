@@ -385,6 +385,13 @@ one active ref, `main`, unborn.
 The store keys refs by the full Git refname (`refs/heads/main`); commands
 and JSON show the short name (`main`).
 
+A worktree is one world the store backs up, keyed by its absolute world
+root; no other name or ID exists. Each worktree records a HEAD, which
+names a branch or holds a commit directly. At most one worktree is
+_main_ - the world `sekai init` ran in, with HEAD on `main` - and a
+branch is the HEAD of at most one worktree. Commits still land on the
+active ref; worktree HEADs take over that role in a later change.
+
 A new commit continues the target of the active ref - the trait rejects
 one whose parents omit it - and the active ref moves onto the new commit
 in the same transaction. Switching the active ref forks the history: the
