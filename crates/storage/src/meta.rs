@@ -8,8 +8,8 @@
 use alloc::vec::Vec;
 use core::future::Future;
 use sekai_util::{
-    ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DimHash, NamedScope, Ref,
-    RegionHash, RootHash, ScopeName, Worktree, hash_bytes,
+    ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DimHash, HeadState,
+    NamedScope, Ref, RegionHash, RootHash, ScopeName, Worktree, hash_bytes,
 };
 
 use crate::{DimNode, RegionNode, RootNode, TreeNodes};
@@ -207,6 +207,13 @@ pub trait MetaStore {
     fn visit_worktrees<F>(&self, visit: F) -> impl Future<Output = Result<(), Self::Error>> + Send
     where
         F: FnMut(&Worktree) -> bool + Send;
+
+    /// The HEAD of the worktree at `path` resolved against the refs, or
+    /// `None` when no worktree is registered there.
+    fn head(
+        &self,
+        path: &str,
+    ) -> impl Future<Output = Result<Option<HeadState>, Self::Error>> + Send;
 
     /// Store `scope`, replacing every area of an existing scope of the same
     /// name in one atomic step.

@@ -12,8 +12,8 @@ use core::pin::pin;
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use sekai_util::{
-    ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DimHash, Head, NamedScope,
-    Ref, RefName, RegionHash, RootHash, ScopeName, Worktree,
+    ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DimHash, Head, HeadState,
+    NamedScope, Ref, RefName, RegionHash, RootHash, ScopeName, Worktree,
 };
 
 use crate::meta::{MetaStore, commit_hash};
@@ -161,6 +161,21 @@ impl MemMeta {
             .entry(name.clone())
             .and_modify(|record| record.active = true)
             .or_insert_with(|| CommitRef::new(name.clone(), None, true, 0));
+    }
+
+    /// The HEAD of the worktree at `path` resolved against the refs. A
+    /// branch whose row names no commit is unborn, as one without a row is.
+    fn head_of(&self, path: &str) -> Option<HeadState> {
+        self.worktrees.get(path).map(|worktree| {
+            let branch_commit = match &worktree.head {
+                Head::Branch(branch) => self
+                    .refs
+                    .get(&Ref::branch(branch.clone()))
+                    .and_then(|record| record.commit),
+                Head::Detached(_) => None,
+            };
+            worktree.head.resolve(branch_commit)
+        })
     }
 }
 
@@ -503,6 +518,10 @@ impl MetaStore for MemMeta {
             }
         }
         core::future::ready(Ok(()))
+    }
+
+    fn head(&self, path: &str) -> impl Future<Output = Result<Option<HeadState>, MemError>> + Send {
+        core::future::ready(Ok(self.head_of(path)))
     }
 
     fn set_scope(

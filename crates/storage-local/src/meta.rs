@@ -12,10 +12,11 @@ use sekai_storage::{
 };
 use sekai_util::{
     ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DEFAULT_REF_NAME, DimHash,
-    Dimension, Head, NamedScope, NamedScopeError, Rect, Ref, RefKind, RefName, RegionHash,
-    RootHash, ScopeName, Worktree,
+    Dimension, Head, HeadState, NamedScope, NamedScopeError, Rect, Ref, RefKind, RefName,
+    RegionHash, RootHash, ScopeName, Worktree,
 };
 use sqlx::Row as _;
+use sqlx::SqliteConnection;
 use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
 };
@@ -250,6 +251,31 @@ fn decode_worktree(row: &sqlx::sqlite::SqliteRow) -> Result<Worktree, StorageErr
         main: row.try_get("main").map_err(db_err)?,
         head,
     })
+}
+
+/// The HEAD of the worktree at `path` resolved against the refs, or
+/// `None` when no worktree is registered there. A branch whose row names
+/// no commit is unborn, as one without a row is.
+async fn head_state(
+    conn: &mut SqliteConnection,
+    path: &str,
+) -> Result<Option<HeadState>, StorageError> {
+    let row = sqlx::query(
+        "SELECT worktrees.path, worktrees.main, worktrees.head_ref, worktrees.head_commit,
+                refs.commit_id AS branch_commit
+         FROM worktrees LEFT JOIN refs ON refs.name = worktrees.head_ref
+         WHERE worktrees.path = ?",
+    )
+    .bind(path)
+    .fetch_optional(conn)
+    .await
+    .map_err(db_err)?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let branch_commit: Option<Vec<u8>> = row.try_get("branch_commit").map_err(db_err)?;
+    let commit = branch_commit.map(commit_id_from_blob).transpose()?;
+    Ok(Some(decode_worktree(&row)?.head.resolve(commit)))
 }
 
 /// One scope's columns, gathered from its joined area rows.
@@ -1010,6 +1036,11 @@ impl sekai_storage::MetaStore for SqliteMeta {
         Ok(())
     }
 
+    async fn head(&self, path: &str) -> Result<Option<HeadState>, StorageError> {
+        let mut conn = self.pool.acquire().await.map_err(db_err)?;
+        head_state(&mut conn, path).await
+    }
+
     async fn set_scope(&mut self, scope: &NamedScope) -> Result<(), StorageError> {
         let created_at_ms = millis_param(scope.created_at_ms)?;
         let name = scope.name.as_str();
@@ -1355,6 +1386,38 @@ mod tests {
             );
         }
         assert_eq!(worktrees(&meta).await, [main]);
+    }
+
+    #[tokio::test]
+    async fn head_resolves_each_worktree_against_the_refs() {
+        let mut meta = memory_meta().await;
+        let main = RefName::default_branch();
+        assert_eq!(
+            meta.head(WORLD).await.unwrap(),
+            Some(HeadState::Unborn {
+                branch: main.clone()
+            })
+        );
+
+        let first = meta
+            .apply_commit_incremental(1_000, &[], &[])
+            .await
+            .unwrap()
+            .id;
+        let linked = worktree("/worlds/linked", false, Head::Detached(first));
+        meta.add_worktree(&linked).await.unwrap();
+        assert_eq!(
+            meta.head(WORLD).await.unwrap(),
+            Some(HeadState::Attached {
+                branch: main,
+                commit: first
+            })
+        );
+        assert_eq!(
+            meta.head("/worlds/linked").await.unwrap(),
+            Some(HeadState::Detached { commit: first })
+        );
+        assert_eq!(meta.head("/elsewhere").await.unwrap(), None);
     }
 
     #[tokio::test]

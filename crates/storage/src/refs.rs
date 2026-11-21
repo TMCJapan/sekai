@@ -7,7 +7,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use sekai_util::CommitRef;
+use sekai_util::{CommitRef, HeadState};
 
 use crate::graph::CommitError;
 use crate::meta::MetaStore;
@@ -32,6 +32,15 @@ pub async fn active_ref<M: MetaStore>(
     meta: &M,
 ) -> Result<Option<CommitRef>, CommitError<M::Error>> {
     meta.active_ref().await.map_err(CommitError::Meta)
+}
+
+/// The HEAD of the worktree at `path`, or `None` when no worktree is
+/// registered there.
+pub async fn head<M: MetaStore>(
+    meta: &M,
+    path: &str,
+) -> Result<Option<HeadState>, CommitError<M::Error>> {
+    meta.head(path).await.map_err(CommitError::Meta)
 }
 
 /// The path of the store's main worktree, or `None` when none is
