@@ -7,8 +7,7 @@
   metadata grows with changes, not with universe size. Recording the same
   commit twice is idempotent.
 - **Ref**: a named, movable pointer to a commit - sekai's branch. One
-  ref is active, and new commits hang from it; switching the active ref
-  forks the history. See [Refs](commands/refs.md).
+  ref is active, and new commits hang from it.
 - **Chunk hash (CAS key)**: the normalized digest of a decompressed chunk,
   over a canonical encoding with volatile tags such as `LastUpdate`
   excluded. It is independent of the order of the chunk's top-level keys

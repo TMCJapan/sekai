@@ -10,7 +10,6 @@
 - [Scope selection](scope.md)
 - [Commit](commands/commit.md)
 - [Checkout](commands/checkout.md)
-- [Refs](commands/refs.md)
 - [Inspection](commands/inspection.md)
 - [Cache](commands/cache.md)
 - [Automation](automation.md)

@@ -14,9 +14,8 @@ use fixtures::chunk_nbt;
 
 use sekai_app::{
     CheckoutOptions, ChunkHash, CommitId, CommitOptions, Dimension, HostRegion, HostWorldLock,
-    HostWorldTree, Rect, RefName, RegionFile, RegionFingerprint, RegionKey, RegionKind, Scope,
-    ScopeName, SekaiInstance, SekaiStore, StatusOptions, WorldError, WorldLockMode, WorldLockState,
-    WorldTree,
+    HostWorldTree, Rect, RegionFile, RegionFingerprint, RegionKey, RegionKind, Scope, ScopeName,
+    SekaiInstance, SekaiStore, StatusOptions, WorldError, WorldLockMode, WorldLockState, WorldTree,
 };
 use sekai_storage::MetaStore as _;
 use sekai_storage_local::LocalStore;
@@ -118,8 +117,6 @@ enum Op {
     ListCommits,
     LatestCommit,
     ResolveRef,
-    CreateRef,
-    DeleteRef,
     CreateScope,
     DeleteScope,
     ListScopes,
@@ -136,12 +133,10 @@ enum Op {
 }
 
 impl Op {
-    const ALL: [Self; 18] = [
+    const ALL: [Self; 16] = [
         Self::ListCommits,
         Self::LatestCommit,
         Self::ResolveRef,
-        Self::CreateRef,
-        Self::DeleteRef,
         Self::CreateScope,
         Self::DeleteScope,
         Self::ListScopes,
@@ -166,8 +161,6 @@ impl Op {
             Self::ListCommits
             | Self::LatestCommit
             | Self::ResolveRef
-            | Self::CreateRef
-            | Self::DeleteRef
             | Self::CreateScope
             | Self::DeleteScope
             | Self::ListScopes
@@ -192,14 +185,6 @@ impl Op {
             Self::ResolveRef => {
                 let raw = fx.commit.to_string();
                 instance.resolve_commit_ref(&raw).await.map(drop)
-            }
-            Self::CreateRef => {
-                let name = RefName::parse("lock-matrix").unwrap();
-                instance.create_ref(&name, Some(id), true).await.map(drop)
-            }
-            Self::DeleteRef => {
-                let name = RefName::parse("lock-matrix").unwrap();
-                instance.delete_ref(&name).await.map(drop)
             }
             Self::CreateScope => {
                 let name = ScopeName::parse("lock-matrix").unwrap();
