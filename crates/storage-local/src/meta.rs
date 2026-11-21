@@ -95,8 +95,8 @@ impl SqliteMeta {
                     .execute(&mut *tx)
                     .await
                     .map_err(db_err)?;
-                // The store starts with one active ref, unborn: new
-                // commits hang from it until the first one lands.
+                // The store starts with one active ref, unborn, on the
+                // branch an initialized worktree's HEAD names.
                 sqlx::query(
                     "INSERT INTO refs (name, commit_id, active, created_at_ms)
                      VALUES (?, NULL, 1, ?)",
@@ -117,12 +117,13 @@ impl SqliteMeta {
     /// Blobs must already be flushed to the blob store before calling.
     pub async fn apply_commit(
         &mut self,
+        path: &str,
         created_at_ms: u64,
         parents: &[CommitId],
         entries: &[CommitEntry],
     ) -> Result<CommitId, StorageError> {
         Ok(self
-            .apply_commit_incremental(created_at_ms, parents, entries)
+            .apply_commit_incremental(path, created_at_ms, parents, entries)
             .await?
             .id)
     }
@@ -769,56 +770,64 @@ impl sekai_storage::MetaStore for SqliteMeta {
 
     async fn apply_commit_incremental(
         &mut self,
+        path: &str,
         created_at_ms: u64,
         parents: &[CommitId],
         entries: &[CommitEntry],
     ) -> Result<ApplyOutcome, StorageError> {
-        sekai_storage::tree::apply_entries(self, created_at_ms, parents, entries).await
+        sekai_storage::tree::apply_entries(self, path, created_at_ms, parents, entries).await
     }
 
     async fn commit_tree(
         &mut self,
+        path: &str,
         created_at_ms: u64,
         parents: &[CommitId],
         root: RootHash,
         nodes: &TreeNodes,
     ) -> Result<ApplyOutcome, StorageError> {
         let commit = commit_hash(parents, created_at_ms, root);
+        // Dropping the transaction on an early return rolls it back, so a
+        // rejected call writes nothing.
         let mut tx = self.pool.begin().await.map_err(db_err)?;
-        // The new commit must continue the active ref's target: moving the
-        // ref onto an unrelated history would fork it. Read the target
-        // before inserting, so a rejected call writes nothing.
-        let active_target: Option<Option<Vec<u8>>> =
-            sqlx::query_scalar("SELECT commit_id FROM refs WHERE active = 1")
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(db_err)?;
-        let Some(active_target) = active_target else {
-            tx.rollback().await.map_err(db_err)?;
-            return Err(StorageError::NoActiveRef);
-        };
-        if let Some(target) = active_target {
-            let base = commit_id_from_blob(target)?;
-            if !parents.contains(&base) {
-                tx.rollback().await.map_err(db_err)?;
-                return Err(StorageError::NotContinuing { base });
-            }
+        let state =
+            head_state(&mut tx, path)
+                .await?
+                .ok_or_else(|| StorageError::UnknownWorktree {
+                    path: path.to_owned(),
+                })?;
+        // The new commit must continue HEAD's commit: moving HEAD onto an
+        // unrelated history would fork it.
+        if let Some(base) = state.commit()
+            && !parents.contains(&base)
+        {
+            return Err(StorageError::NotContinuing { base });
         }
         insert_tree_nodes(&mut tx, nodes).await?;
         insert_commit(&mut tx, commit, created_at_ms, parents, root).await?;
-        let id_param = commit_param(commit);
-        // The active ref moves onto the new commit, in the same
-        // transaction: a ref lagging behind its history would fork the
-        // next commit.
-        let moved = sqlx::query("UPDATE refs SET commit_id = ? WHERE active = 1")
-            .bind(&id_param[..])
-            .execute(&mut *tx)
-            .await
-            .map_err(db_err)?
-            .rows_affected();
-        if moved == 0 {
-            tx.rollback().await.map_err(db_err)?;
-            return Err(StorageError::NoActiveRef);
+        // HEAD moves onto the new commit in the same transaction: a HEAD
+        // lagging behind its history would fork the next commit.
+        match &state {
+            HeadState::Attached { branch, .. } | HeadState::Unborn { branch } => {
+                sqlx::query(
+                    "INSERT INTO refs (name, commit_id, active, created_at_ms) VALUES (?, ?, 0, ?)
+                     ON CONFLICT(name) DO UPDATE SET commit_id = excluded.commit_id",
+                )
+                .bind(Ref::branch(branch.clone()).full_name())
+                .bind(commit_param(commit))
+                .bind(millis_param(created_at_ms)?)
+                .execute(&mut *tx)
+                .await
+                .map_err(db_err)?;
+            }
+            HeadState::Detached { .. } => {
+                sqlx::query("UPDATE worktrees SET head_commit = ? WHERE path = ?")
+                    .bind(commit_param(commit))
+                    .bind(path)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db_err)?;
+            }
         }
         tx.commit().await.map_err(db_err)?;
         Ok(ApplyOutcome { id: commit })
@@ -1232,10 +1241,11 @@ mod tests {
         let (dir, _guard) = tempdir("dangling-target");
         let path = dir.join("meta.sqlite");
         let mut meta = SqliteMeta::open(&path).await.unwrap();
+        register_main(&mut meta).await;
         let main = branch(DEFAULT_REF_NAME);
         let feature = branch("feature");
         let root = meta
-            .apply_commit_incremental(1_000, &[], &[])
+            .apply_commit_incremental(WORLD, 1_000, &[], &[])
             .await
             .unwrap()
             .id;
@@ -1263,26 +1273,29 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_unborn_active_ref_starts_a_new_root() {
+    async fn an_unborn_head_starts_a_new_root() {
         let mut meta = memory_meta().await;
         let main = branch(DEFAULT_REF_NAME);
         let first = meta
-            .apply_commit_incremental(1_000, &[], &[])
+            .apply_commit_incremental(WORLD, 1_000, &[], &[])
             .await
             .unwrap()
             .id;
 
-        // Moving the active ref to unborn deliberately drops the parent
+        // Moving HEAD's branch back to unborn deliberately drops the parent
         // constraint: the next commit is a fresh root.
         meta.set_ref(&main, None, 2_000).await.unwrap();
         let second = meta
-            .apply_commit_incremental(3_000, &[], &[])
+            .apply_commit_incremental(WORLD, 3_000, &[], &[])
             .await
             .unwrap()
             .id;
         assert_ne!(first, second);
         assert_eq!(
-            meta.active_ref().await.unwrap().unwrap().commit,
+            meta.head(WORLD)
+                .await
+                .unwrap()
+                .and_then(|head| head.commit()),
             Some(second)
         );
         assert_eq!(meta.commit_parents(second).await.unwrap(), Vec::new());
@@ -1400,7 +1413,7 @@ mod tests {
         );
 
         let first = meta
-            .apply_commit_incremental(1_000, &[], &[])
+            .apply_commit_incremental(WORLD, 1_000, &[], &[])
             .await
             .unwrap()
             .id;
@@ -1470,7 +1483,7 @@ mod tests {
         let mut meta = memory_meta().await;
         let main = branch(DEFAULT_REF_NAME);
         let first = meta
-            .apply_commit_incremental(1_000, &[], &[])
+            .apply_commit_incremental(WORLD, 1_000, &[], &[])
             .await
             .unwrap()
             .id;
@@ -1504,26 +1517,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_commit_must_continue_the_active_ref() {
+    async fn a_commit_must_continue_head() {
         let mut meta = memory_meta().await;
         let root = meta
-            .apply_commit_incremental(1_000, &[], &[])
+            .apply_commit_incremental(WORLD, 1_000, &[], &[])
             .await
             .unwrap()
             .id;
 
         let err = meta
-            .apply_commit_incremental(2_000, &[], &[])
+            .apply_commit_incremental(WORLD, 2_000, &[], &[])
             .await
             .unwrap_err();
         assert!(matches!(err, StorageError::NotContinuing { base } if base == root));
 
         // The rejected call wrote nothing.
         assert_eq!(meta.latest_commit().await.unwrap().unwrap().id, root);
-        assert_eq!(meta.active_ref().await.unwrap().unwrap().commit, Some(root));
+        assert_eq!(
+            meta.head(WORLD)
+                .await
+                .unwrap()
+                .and_then(|head| head.commit()),
+            Some(root)
+        );
 
         let next = meta
-            .apply_commit_incremental(3_000, &[root], &[])
+            .apply_commit_incremental(WORLD, 3_000, &[root], &[])
             .await
             .unwrap()
             .id;
@@ -1583,36 +1602,94 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_commit_without_an_active_ref_writes_nothing() {
+    async fn a_commit_on_an_unknown_worktree_writes_nothing() {
         let mut meta = memory_meta().await;
-        // A first commit gives the store a history.
+        let err = meta
+            .apply_commit_incremental("/elsewhere", 1_000, &[], &[])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StorageError::UnknownWorktree { path } if path == "/elsewhere"));
+        assert!(meta.latest_commit().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_commit_lands_on_head_and_gives_its_branch_a_commit() {
+        let mut meta = memory_meta().await;
+        assert_eq!(
+            meta.head(WORLD).await.unwrap(),
+            Some(HeadState::Unborn {
+                branch: RefName::default_branch()
+            })
+        );
         let first = meta
-            .apply_commit_incremental(1_000, &[], &[])
+            .apply_commit_incremental(WORLD, 1_000, &[], &[])
             .await
             .unwrap()
             .id;
-        // A store whose active flag was lost (corruption or a legacy row),
-        // leaving the history intact but with no head.
-        sqlx::query("UPDATE refs SET active = 0")
-            .execute(&meta.pool)
+        assert_eq!(
+            meta.head(WORLD).await.unwrap(),
+            Some(HeadState::Attached {
+                branch: RefName::default_branch(),
+                commit: first,
+            })
+        );
+        assert!(meta.head("/elsewhere").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn worktrees_commit_onto_their_own_heads() {
+        let mut meta = memory_meta().await;
+        meta.add_worktree(&worktree("/worlds/linked", false, on_branch("feature")))
+            .await
+            .unwrap();
+        let on_main = meta.apply_commit(WORLD, 1_000, &[], &[]).await.unwrap();
+        let on_feature = meta
+            .apply_commit("/worlds/linked", 2_000, &[], &[])
+            .await
+            .unwrap();
+        assert_eq!(
+            meta.lookup_ref(&branch(DEFAULT_REF_NAME))
+                .await
+                .unwrap()
+                .unwrap()
+                .commit,
+            Some(on_main)
+        );
+        assert_eq!(
+            meta.lookup_ref(&branch("feature"))
+                .await
+                .unwrap()
+                .unwrap()
+                .commit,
+            Some(on_feature)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_detached_head_moves_without_a_branch() {
+        let mut meta = memory_meta().await;
+        let first = meta.apply_commit(WORLD, 1_000, &[], &[]).await.unwrap();
+        meta.add_worktree(&worktree("/worlds/linked", false, Head::Detached(first)))
             .await
             .unwrap();
 
-        let err = meta
-            .apply_commit_incremental(2_000, &[], &[])
+        let second = meta
+            .apply_commit("/worlds/linked", 2_000, &[first], &[])
             .await
-            .unwrap_err();
-        assert!(matches!(err, StorageError::NoActiveRef));
-
-        let mut commits = Vec::new();
-        meta.visit_commits(|commit| {
-            commits.push(commit.clone());
-            true
-        })
-        .await
-        .unwrap();
-        assert_eq!(commits.len(), 1, "the failed commit left a row behind");
-        assert_eq!(commits[0].id, first);
+            .unwrap();
+        assert_eq!(
+            meta.head("/worlds/linked").await.unwrap(),
+            Some(HeadState::Detached { commit: second })
+        );
+        assert_eq!(
+            meta.lookup_ref(&branch(DEFAULT_REF_NAME))
+                .await
+                .unwrap()
+                .unwrap()
+                .commit,
+            Some(first),
+            "no branch moves with a detached HEAD"
+        );
     }
 
     #[tokio::test]
@@ -1669,6 +1746,7 @@ mod tests {
         let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 5, 5);
         let id = meta
             .apply_commit_incremental(
+                WORLD,
                 1_000,
                 &[],
                 &[sekai_util::CommitEntry::new(
@@ -1744,7 +1822,10 @@ mod tests {
                 CommitEntry::new(coord, Some(ChunkHash::new(hash)))
             })
             .collect();
-        let commit = meta.apply_commit(1_000, &[], &entries).await.unwrap();
+        let commit = meta
+            .apply_commit(WORLD, 1_000, &[], &entries)
+            .await
+            .unwrap();
 
         let mut recorded = Vec::new();
         meta.visit_commit_chunks(commit, |entry| {

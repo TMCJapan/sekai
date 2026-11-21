@@ -34,8 +34,8 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
         DiffTarget::World { world, commit } => {
             // Resolve an explicit reference before scanning the world: a
             // bad reference must fail without waiting on a full world
-            // read. No reference means the active ref, which may be
-            // unborn: the diff then runs against the empty snapshot.
+            // read. No reference means HEAD, which may be unborn: the
+            // diff then runs against the empty snapshot.
             let commit_id = resolve_world_commit(&instance, commit)
                 .await
                 .with_context(|| "failed to compute chunk diffs between world state and commit")?;
@@ -103,8 +103,8 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
 /// Resolve the commit a world diff compares against.
 ///
 /// An explicit reference must resolve before the world is scanned. `None`
-/// keeps meaning "the active ref"; an unborn active ref yields `None`
-/// again, and the diff runs against the empty snapshot (ADR-0006).
+/// means HEAD; an unborn HEAD yields `None` again, and the diff runs
+/// against the empty snapshot (ADR-0006).
 async fn resolve_world_commit(
     instance: &sekai_app::SekaiInstance<impl SekaiStore>,
     commit: Option<&CommitRef>,
@@ -118,7 +118,7 @@ async fn resolve_world_commit(
         None => instance
             .current_commit_id()
             .await
-            .with_context(|| "failed to resolve the active ref"),
+            .with_context(|| "failed to resolve HEAD"),
     }
 }
 
@@ -136,15 +136,13 @@ async fn resolve_commit_pair(
             .await
             .with_context(|| format!("commit {raw} failed to resolve"))
     }
-    async fn active_commit(
+    async fn head_commit(
         instance: &sekai_app::SekaiInstance<impl SekaiStore>,
     ) -> anyhow::Result<CommitId> {
-        match instance.active_ref().await? {
-            None => anyhow::bail!("no active ref to diff against"),
-            Some(active) => active
-                .commit
-                .map_or_else(|| Err(AppError::NoCommits.into()), Ok),
-        }
+        Ok(instance
+            .current_commit_id()
+            .await?
+            .ok_or(AppError::NoCommits)?)
     }
     /// Commit parents are stored sorted by ID in both backends, so this
     /// returns the lowest-ID parent. For the single-parent commits that
@@ -166,7 +164,7 @@ async fn resolve_commit_pair(
             Ok((resolve(instance, old).await?, resolve(instance, new).await?))
         }
         (Some(old), None) => {
-            let new_id = active_commit(instance).await?;
+            let new_id = head_commit(instance).await?;
             Ok((resolve(instance, old).await?, new_id))
         }
         (None, Some(new)) => {
@@ -174,7 +172,7 @@ async fn resolve_commit_pair(
             Ok((lowest_id_parent(instance, new_id).await?, new_id))
         }
         (None, None) => {
-            let new_id = active_commit(instance).await?;
+            let new_id = head_commit(instance).await?;
             Ok((lowest_id_parent(instance, new_id).await?, new_id))
         }
     }

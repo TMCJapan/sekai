@@ -70,6 +70,11 @@ pub enum StorageError {
         /// Path of the worktree whose HEAD columns are corrupt.
         path: String,
     },
+    /// No worktree is registered at this path.
+    UnknownWorktree {
+        /// Requested worktree path.
+        path: String,
+    },
     /// Stored scope name fails validation.
     InvalidScopeName {
         /// Scope name that failed validation.
@@ -104,10 +109,10 @@ pub enum StorageError {
     /// its parent constraint, so `NoActiveRef` takes priority over
     /// [`Self::NotContinuing`] when both conditions hold.
     NoActiveRef,
-    /// A new commit does not continue the active ref's target, which
-    /// would fork the ref onto another history.
+    /// A new commit does not continue HEAD's commit, which would fork HEAD
+    /// onto another history.
     NotContinuing {
-        /// Target commit ID the new commit had to include as a parent.
+        /// Commit the new commit had to include as a parent.
         base: CommitId,
     },
     /// Stored region-family code does not name a known kind.
@@ -173,6 +178,7 @@ impl fmt::Display for StorageError {
             }
             Self::Tree(err) => write!(f, "stored tree node is invalid: {err}"),
             Self::InvalidRefName { name } => write!(f, "stored ref name is invalid: {name}"),
+            Self::UnknownWorktree { path } => write!(f, "unknown worktree: {path}"),
             Self::CorruptWorktreeHead { path } => {
                 write!(f, "stored worktree {path} has a corrupt HEAD row")
             }
@@ -186,10 +192,7 @@ impl fmt::Display for StorageError {
                 f.write_str("store has no active ref: a new commit has nowhere to hang from")
             }
             Self::NotContinuing { base } => {
-                write!(
-                    f,
-                    "new commit does not continue the active ref's target {base}"
-                )
+                write!(f, "new commit does not continue HEAD's commit {base}")
             }
             Self::UnknownRegionKind { kind } => write!(f, "stored region kind is unknown: {kind}"),
             Self::InvalidTimestamp(millis) => write!(f, "timestamp out of range: {millis}"),

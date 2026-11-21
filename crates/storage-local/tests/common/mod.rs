@@ -125,7 +125,7 @@ where
 {
     assert!(meta.latest_commit().await.unwrap().is_none());
     let id = meta
-        .apply_commit_incremental(1_000, &[], &[present(0, 0, 1)])
+        .apply_commit_incremental(WORLD, 1_000, &[], &[present(0, 0, 1)])
         .await
         .unwrap()
         .id;
@@ -151,12 +151,13 @@ where
 {
     use sekai_storage::graph::{CommitStats, commit_stats};
     let first = meta
-        .apply_commit_incremental(1_000, &[], &[present(0, 0, 1), present(1, 0, 1)])
+        .apply_commit_incremental(WORLD, 1_000, &[], &[present(0, 0, 1), present(1, 0, 1)])
         .await
         .unwrap()
         .id;
     let second = meta
         .apply_commit_incremental(
+            WORLD,
             2_000,
             &[first],
             &[present(0, 0, 2), CommitEntry::new(coord(1, 0), None)],
@@ -200,6 +201,7 @@ where
     // one region node hash.
     let id = meta
         .apply_commit_incremental(
+            WORLD,
             1_000,
             &[],
             &[
@@ -253,7 +255,7 @@ where
         .map(|i| present(i * 32, 0, u8::try_from(i % 251).unwrap()))
         .collect();
     let big = meta
-        .apply_commit_incremental(2_000, &[id], &many)
+        .apply_commit_incremental(WORLD, 2_000, &[id], &many)
         .await
         .unwrap()
         .id;
@@ -285,23 +287,23 @@ where
     // Two independent histories: the second root shares no ancestor with
     // the first. Pointing the active ref back to unborn starts it.
     let first = meta
-        .apply_commit_incremental(1_000, &[], &[present(0, 0, 1)])
+        .apply_commit_incremental(WORLD, 1_000, &[], &[present(0, 0, 1)])
         .await
         .unwrap()
         .id;
     let second = meta
-        .apply_commit_incremental(2_000, &[first], &[])
+        .apply_commit_incremental(WORLD, 2_000, &[first], &[])
         .await
         .unwrap()
         .id;
     meta.set_ref(&main, None, 2_500).await.unwrap();
     let other = meta
-        .apply_commit_incremental(3_000, &[], &[])
+        .apply_commit_incremental(WORLD, 3_000, &[], &[])
         .await
         .unwrap()
         .id;
     let child = meta
-        .apply_commit_incremental(4_000, &[other], &[])
+        .apply_commit_incremental(WORLD, 4_000, &[other], &[])
         .await
         .unwrap()
         .id;
@@ -468,7 +470,12 @@ where
     store.blob_mut().sync().await.unwrap();
     let commit = store
         .meta_mut()
-        .apply_commit_incremental(1_000, &[], &[CommitEntry::new(coord(0, 0), Some(live))])
+        .apply_commit_incremental(
+            WORLD,
+            1_000,
+            &[],
+            &[CommitEntry::new(coord(0, 0), Some(live))],
+        )
         .await
         .unwrap()
         .id;

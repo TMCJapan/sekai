@@ -262,7 +262,7 @@ pub async fn resolve_commit_ref<M: MetaStore>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing::{MemMeta, block_on};
+    use crate::testing::{MAIN_WORKTREE, MemMeta, block_on};
     use alloc::string::ToString;
     use sekai_util::CommitEntry;
 
@@ -358,10 +358,11 @@ mod tests {
     fn counts_fresh_and_effective_rows() {
         use sekai_util::{ChunkCoord, ChunkHash, Dimension, RegionKind};
         let mut meta = MemMeta::default();
-        meta.with_active_ref(&RefName::parse("main").unwrap());
+        meta.with_main_worktree(&RefName::parse("main").unwrap());
         let over = Dimension::OVERWORLD;
         let region = RegionKind::Region;
         let first = block_on(meta.apply_commit_incremental(
+            MAIN_WORKTREE,
             100,
             &[],
             &[
@@ -378,6 +379,7 @@ mod tests {
         .unwrap()
         .id;
         let second = block_on(meta.apply_commit_incremental(
+            MAIN_WORKTREE,
             200,
             &[first],
             &[
@@ -415,7 +417,7 @@ mod tests {
     fn counts_vanished_regions_and_dimensions() {
         use sekai_util::{ChunkCoord, ChunkHash, Dimension, RegionKind};
         let mut meta = MemMeta::default();
-        meta.with_active_ref(&RefName::parse("main").unwrap());
+        meta.with_main_worktree(&RefName::parse("main").unwrap());
         let over = Dimension::OVERWORLD;
         let nether = Dimension::NETHER;
         let region = RegionKind::Region;
@@ -425,6 +427,7 @@ mod tests {
         // Two overworld regions share one node by content, and the nether
         // starts its own dimension.
         let first = block_on(meta.apply_commit_incremental(
+            MAIN_WORKTREE,
             100,
             &[],
             &[
@@ -441,6 +444,7 @@ mod tests {
         // Change one region, drop another whole; the shared node and the
         // nether stay untouched.
         let second = block_on(meta.apply_commit_incremental(
+            MAIN_WORKTREE,
             200,
             &[first],
             &[entry(over, 0, Some([5; 32])), entry(over, 32, None)],
@@ -448,10 +452,14 @@ mod tests {
         .unwrap()
         .id;
         // Drop the nether's last chunk: the whole dimension vanishes.
-        let third =
-            block_on(meta.apply_commit_incremental(300, &[second], &[entry(nether, 0, None)]))
-                .unwrap()
-                .id;
+        let third = block_on(meta.apply_commit_incremental(
+            MAIN_WORKTREE,
+            300,
+            &[second],
+            &[entry(nether, 0, None)],
+        ))
+        .unwrap()
+        .id;
 
         assert_eq!(
             block_on(commit_stats(&meta, first)).unwrap(),
@@ -511,10 +519,11 @@ mod tests {
     fn a_commit_only_inherits_from_its_own_ancestors() {
         use sekai_util::{ChunkCoord, ChunkHash, Dimension, RegionKind};
         let mut meta = MemMeta::default();
-        meta.with_active_ref(&RefName::parse("main").unwrap());
+        meta.with_main_worktree(&RefName::parse("main").unwrap());
         let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
         let first_only = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 1, 0);
         let first = block_on(meta.apply_commit_incremental(
+            MAIN_WORKTREE,
             100,
             &[],
             &[
@@ -528,13 +537,14 @@ mod tests {
         let main = Ref::branch(RefName::parse("main").unwrap());
         block_on(meta.set_ref(&main, None, 150)).unwrap();
         let other = block_on(meta.apply_commit_incremental(
+            MAIN_WORKTREE,
             200,
             &[],
             &[CommitEntry::new(coord, Some(ChunkHash::new([2; 32])))],
         ))
         .unwrap()
         .id;
-        let child = block_on(meta.apply_commit_incremental(300, &[other], &[]))
+        let child = block_on(meta.apply_commit_incremental(MAIN_WORKTREE, 300, &[other], &[]))
             .unwrap()
             .id;
 

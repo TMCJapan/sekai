@@ -78,6 +78,7 @@ async fn sqlite_tombstones_shape_and_walk_drop() {
     let gone = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 1, 0);
     let first = meta
         .apply_commit_incremental(
+            common::WORLD,
             1_000,
             &[],
             &[
@@ -89,7 +90,12 @@ async fn sqlite_tombstones_shape_and_walk_drop() {
         .unwrap()
         .id;
     let second = meta
-        .apply_commit_incremental(2_000, &[first], &[CommitEntry::new(gone, None)])
+        .apply_commit_incremental(
+            common::WORLD,
+            2_000,
+            &[first],
+            &[CommitEntry::new(gone, None)],
+        )
         .await
         .unwrap()
         .id;
