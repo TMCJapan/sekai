@@ -5,11 +5,11 @@
 #![cfg(feature = "backend-local")]
 
 mod fixtures;
+mod support;
 
 use fixtures::chunk_nbt;
 
 use sekai_app::{DEFAULT_REF_NAME, HostWorldTree};
-use sekai_storage_local::LocalStore;
 use std::path::Path;
 
 /// A private temp dir, removed on drop. Nothing is kept, so a panicking
@@ -53,9 +53,7 @@ async fn commit<S: sekai_app::SekaiStore>(
 async fn a_fresh_store_starts_with_one_active_ref() {
     let root = tempdir();
     let store = root.path().join("store").to_string_lossy().into_owned();
-    let instance = sekai_app::SekaiInstance::<LocalStore>::init(&store)
-        .await
-        .unwrap();
+    let instance = support::init_store(&store).await.unwrap();
 
     let active = instance
         .active_ref()
@@ -80,9 +78,7 @@ async fn a_commit_hangs_from_the_active_ref() {
         &[(0, 0, chunk_nbt("marker-1"))],
     );
 
-    let mut instance = sekai_app::SekaiInstance::<LocalStore>::init(&store)
-        .await
-        .unwrap();
+    let mut instance = support::init_store(&store).await.unwrap();
     let first = commit(&mut instance, &mut world).await;
 
     // The active ref moved onto the new commit.
