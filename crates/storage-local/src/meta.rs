@@ -12,7 +12,8 @@ use sekai_storage::{
 };
 use sekai_util::{
     ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DEFAULT_REF_NAME, DimHash,
-    Dimension, NamedScope, NamedScopeError, Rect, Ref, RefKind, RegionHash, RootHash, ScopeName,
+    Dimension, Head, NamedScope, NamedScopeError, Rect, Ref, RefKind, RefName, RegionHash,
+    RootHash, ScopeName, Worktree,
 };
 use sqlx::Row as _;
 use sqlx::sqlite::{
@@ -218,6 +219,37 @@ fn decode_ref(row: &sqlx::sqlite::SqliteRow) -> Result<CommitRef, StorageError> 
         active,
         millis_col(row, "created_at_ms")?,
     ))
+}
+
+/// Decode a stored `head_ref`, which must name a branch. Stored names
+/// always re-validate: anything else is corruption, never silent
+/// reinterpretation.
+fn branch_from_column(raw: String) -> Result<RefName, StorageError> {
+    match Ref::from_full(&raw) {
+        Ok(Ref {
+            kind: RefKind::Branch,
+            name,
+        }) => Ok(name),
+        _ => Err(StorageError::InvalidRefName { name: raw }),
+    }
+}
+
+/// Decode one `worktrees` row.
+fn decode_worktree(row: &sqlx::sqlite::SqliteRow) -> Result<Worktree, StorageError> {
+    let head_ref: Option<String> = row.try_get("head_ref").map_err(db_err)?;
+    let head_commit: Option<Vec<u8>> = row.try_get("head_commit").map_err(db_err)?;
+    let path: String = row.try_get("path").map_err(db_err)?;
+    // The CHECK constraint keeps exactly one of the two columns set.
+    let head = match (head_ref, head_commit) {
+        (Some(branch), None) => Head::Branch(branch_from_column(branch)?),
+        (None, Some(commit)) => Head::Detached(commit_id_from_blob(commit)?),
+        _ => return Err(StorageError::CorruptWorktreeHead { path }),
+    };
+    Ok(Worktree {
+        path,
+        main: row.try_get("main").map_err(db_err)?,
+        head,
+    })
 }
 
 /// One scope's columns, gathered from its joined area rows.
@@ -942,6 +974,42 @@ impl sekai_storage::MetaStore for SqliteMeta {
         Ok(())
     }
 
+    async fn add_worktree(&mut self, worktree: &Worktree) -> Result<(), StorageError> {
+        let (head_ref, head_commit) = match &worktree.head {
+            Head::Branch(branch) => (Some(Ref::branch(branch.clone()).full_name()), None),
+            Head::Detached(commit) => (None, Some(commit_param(*commit))),
+        };
+        sqlx::query(
+            "INSERT INTO worktrees (path, main, head_ref, head_commit) VALUES (?, ?, ?, ?)",
+        )
+        .bind(&worktree.path)
+        .bind(worktree.main)
+        .bind(head_ref)
+        .bind(head_commit)
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    async fn visit_worktrees<F>(&self, mut visit: F) -> Result<(), StorageError>
+    where
+        F: FnMut(&Worktree) -> bool + Send,
+    {
+        let rows = sqlx::query(
+            "SELECT path, main, head_ref, head_commit FROM worktrees ORDER BY path COLLATE BINARY",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        for row in &rows {
+            if !visit(&decode_worktree(row)?) {
+                break;
+            }
+        }
+        Ok(())
+    }
+
     async fn set_scope(&mut self, scope: &NamedScope) -> Result<(), StorageError> {
         let created_at_ms = millis_param(scope.created_at_ms)?;
         let name = scope.name.as_str();
@@ -1211,6 +1279,100 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(stored, seen);
+    }
+
+    fn worktree(path: &str, main: bool, head: Head) -> Worktree {
+        Worktree {
+            path: path.to_owned(),
+            main,
+            head,
+        }
+    }
+
+    fn on_branch(raw: &str) -> Head {
+        Head::Branch(RefName::parse(raw).unwrap())
+    }
+
+    async fn worktrees(meta: &SqliteMeta) -> Vec<Worktree> {
+        let mut out = Vec::new();
+        meta.visit_worktrees(|worktree| {
+            out.push(worktree.clone());
+            true
+        })
+        .await
+        .unwrap();
+        out
+    }
+
+    #[tokio::test]
+    async fn worktrees_round_trip_in_path_order() {
+        let mut meta = memory_meta().await;
+        let first = meta.create_commit(1_000, &[]).await.unwrap();
+        let added = [
+            worktree("/worlds/main", true, on_branch(DEFAULT_REF_NAME)),
+            worktree("/worlds/b", false, on_branch("feature")),
+            worktree("/worlds/a", false, Head::Detached(first)),
+        ];
+        for one in &added {
+            meta.add_worktree(one).await.unwrap();
+        }
+        assert_eq!(
+            worktrees(&meta).await,
+            [added[2].clone(), added[1].clone(), added[0].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn worktrees_keep_one_main_one_path_and_one_head_per_branch() {
+        let mut meta = memory_meta().await;
+        let main = worktree("/worlds/main", true, on_branch(DEFAULT_REF_NAME));
+        meta.add_worktree(&main).await.unwrap();
+
+        for refused in [
+            worktree("/worlds/other", true, on_branch("other")),
+            worktree("/worlds/main", false, on_branch("other")),
+            worktree("/worlds/other", false, on_branch(DEFAULT_REF_NAME)),
+        ] {
+            assert!(
+                meta.add_worktree(&refused).await.is_err(),
+                "{refused:?} is refused"
+            );
+        }
+        assert_eq!(worktrees(&meta).await, [main]);
+    }
+
+    #[tokio::test]
+    async fn a_corrupt_worktree_head_row_fails_loudly() {
+        let (dir, _guard) = tempdir("corrupt-head");
+        let path = dir.join("meta.sqlite");
+        let mut meta = SqliteMeta::open(&path).await.unwrap();
+        let first = meta.create_commit(1_000, &[]).await.unwrap();
+        meta.add_worktree(&worktree("/worlds/main", true, Head::Detached(first)))
+            .await
+            .unwrap();
+
+        // The table's CHECK normally rejects a row with both HEAD columns
+        // set; disable it on a dedicated connection so no pooled
+        // connection inherits the pragma.
+        let mut raw = SqliteConnectOptions::new()
+            .filename(&path)
+            .connect()
+            .await
+            .unwrap();
+        sqlx::query("PRAGMA ignore_check_constraints = ON")
+            .execute(&mut raw)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE worktrees SET head_ref = 'refs/heads/main'")
+            .execute(&mut raw)
+            .await
+            .unwrap();
+        raw.close().await.unwrap();
+
+        assert!(matches!(
+            meta.visit_worktrees(|_| true).await,
+            Err(StorageError::CorruptWorktreeHead { path }) if path == "/worlds/main"
+        ));
     }
 
     #[tokio::test]
