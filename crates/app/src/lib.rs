@@ -43,7 +43,7 @@ pub use instance::{SekaiInstance, WorldHandle, WorldHandleMut};
 pub use progress::{BuildProgress, Progress};
 pub use sekai_core::{
     Area, ChunkCoord, ChunkHash, Commit, CommitId, CommitRef, DEFAULT_REF_NAME, DimHash, Dimension,
-    Head, NamedScope, NamedScopeError, Rect, Ref, RefKind, RefName, RefNameError,
+    Head, HeadState, NamedScope, NamedScopeError, Rect, Ref, RefKind, RefName, RefNameError,
     RegionFingerprint, RegionHash, RegionKey, RegionKind, RootHash, Scope, ScopeName,
     ScopeNameError, Worktree,
 };
