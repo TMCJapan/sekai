@@ -312,6 +312,24 @@ async fn open_gates_the_store_version() {
     );
 }
 
+/// A store from before the active ref and unborn ref rows were dropped
+/// (version 3) is refused, not migrated.
+#[tokio::test]
+async fn open_refuses_a_version_3_store() {
+    let (dir, _guard) = tempdir("version-3");
+    let store = init(&dir).await;
+    drop(store);
+    std::fs::write(dir.join("version"), "3\n").unwrap();
+    let err = LocalStore::open(&dir).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            sekai_storage::StorageError::UnsupportedSchema { found: 3, .. }
+        ),
+        "unexpected error: {err}"
+    );
+}
+
 /// A store from before worktrees were registered (version 2) is refused,
 /// not migrated.
 #[tokio::test]

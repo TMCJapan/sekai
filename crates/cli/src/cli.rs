@@ -387,8 +387,7 @@ impl DiffArgs {
 /// ambiguity resolved statically instead of juggling `Option`s at runtime.
 #[derive(Debug)]
 pub enum DiffTarget<'a> {
-    /// Live world state against one commit (`None` means the active
-    /// ref's target).
+    /// Live world state against one commit (`None` means HEAD's commit).
     World {
         world: &'a Path,
         commit: Option<&'a CommitRef>,

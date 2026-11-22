@@ -200,11 +200,6 @@ pub enum ResolveError<M> {
         /// Requested ref name.
         name: RefName,
     },
-    /// The ref exists but names no commit yet.
-    UnbornRef {
-        /// Requested ref name.
-        name: RefName,
-    },
     /// Reference is neither a commit ID nor a ref name.
     InvalidRef {
         /// Raw reference text.
@@ -218,7 +213,6 @@ impl<M: fmt::Debug> fmt::Display for ResolveError<M> {
             Self::Meta(_) => write!(f, "commit metadata failed"),
             Self::UnknownCommit { id } => write!(f, "unknown commit: {id}"),
             Self::UnknownRef { name } => write!(f, "unknown ref: {name}"),
-            Self::UnbornRef { name } => write!(f, "ref has no commit yet: {name}"),
             Self::InvalidRef { raw } => write!(
                 f,
                 "invalid reference: {raw:?}, expected <64-char commit hash> or <ref>"
@@ -232,8 +226,8 @@ impl<M: fmt::Debug> fmt::Display for ResolveError<M> {
 ///
 /// A bare name is tried as a commit ID first: a 64-character hexadecimal
 /// spelling is either a commit ID or `UnknownCommit`, never a ref, so a ref
-/// whose name is exactly 64 hex characters is shadowed. An unborn ref has
-/// no commit to point at yet.
+/// whose name is exactly 64 hex characters is shadowed. A bare name is a
+/// branch; an unborn branch is not stored, so it is unknown here.
 pub async fn resolve_commit_ref<M: MetaStore>(
     meta: &M,
     raw: &str,
@@ -249,14 +243,11 @@ pub async fn resolve_commit_ref<M: MetaStore>(
     let name = RefName::parse(raw).map_err(|_| ResolveError::InvalidRef {
         raw: alloc::string::String::from(raw),
     })?;
-    let found = meta
-        .lookup_ref(&Ref::branch(name.clone()))
+    meta.lookup_ref(&Ref::branch(name.clone()))
         .await
-        .map_err(ResolveError::Meta)?;
-    let Some(record) = found else {
-        return Err(ResolveError::UnknownRef { name });
-    };
-    record.commit.ok_or(ResolveError::UnbornRef { name })
+        .map_err(ResolveError::Meta)?
+        .map(|record| record.commit)
+        .ok_or(ResolveError::UnknownRef { name })
 }
 
 #[cfg(test)]
@@ -283,7 +274,7 @@ mod tests {
         let first = block_on(meta.create_commit(100, &[])).unwrap();
         let second = block_on(meta.create_commit(200, &[first])).unwrap();
         let branch = Ref::branch(RefName::parse("main").unwrap());
-        block_on(meta.set_ref(&branch, Some(second), 300)).unwrap();
+        block_on(meta.set_ref(&branch, second)).unwrap();
 
         let first_hex = first.to_string();
         assert_eq!(first_hex.len(), 64);
@@ -331,8 +322,9 @@ mod tests {
         // unknown one is `UnknownCommit`, never the ref of the same name.
         let mut meta = MemMeta::default();
         let hex = "a".repeat(64);
+        let stored = block_on(meta.create_commit(100, &[])).unwrap();
         let name = Ref::branch(RefName::parse(&hex).unwrap());
-        block_on(meta.set_ref(&name, None, 100)).unwrap();
+        block_on(meta.set_ref(&name, stored)).unwrap();
         assert_eq!(
             block_on(resolve_commit_ref(&meta, &hex)),
             Err(ResolveError::UnknownCommit {
@@ -342,13 +334,12 @@ mod tests {
     }
 
     #[test]
-    fn an_unborn_ref_resolves_to_nothing() {
+    fn an_unborn_branch_is_unknown() {
         let mut meta = MemMeta::default();
-        let branch = Ref::branch(RefName::parse("main").unwrap());
-        block_on(meta.set_ref(&branch, None, 100)).unwrap();
+        meta.with_main_worktree(&RefName::parse("main").unwrap());
         assert_eq!(
             block_on(resolve_commit_ref(&meta, "main")),
-            Err(ResolveError::UnbornRef {
+            Err(ResolveError::UnknownRef {
                 name: RefName::parse("main").unwrap()
             })
         );
@@ -533,9 +524,10 @@ mod tests {
         ))
         .unwrap()
         .id;
-        // A second history: its root shares no ancestor with `first`.
+        // A second history: deleting HEAD's branch leaves HEAD unborn, so
+        // the next root shares no ancestor with `first`.
         let main = Ref::branch(RefName::parse("main").unwrap());
-        block_on(meta.set_ref(&main, None, 150)).unwrap();
+        block_on(meta.delete_ref(&main)).unwrap();
         let other = block_on(meta.apply_commit_incremental(
             MAIN_WORKTREE,
             200,

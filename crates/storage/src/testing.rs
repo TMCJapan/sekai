@@ -39,16 +39,9 @@ pub enum MemError {
     },
     /// Stored tree bytes failed their canonical check.
     CorruptTree(TreeError),
-    /// The ref does not exist.
-    UnknownRef {
-        /// Ref that was asked for.
-        name: Ref,
-    },
-    /// The store has no active ref to hang a new commit from.
-    NoActiveRef,
-    /// The new commit does not continue the active ref's target.
+    /// The new commit does not continue HEAD's commit.
     NotContinuing {
-        /// Target the new commit had to include as a parent.
+        /// Commit the new commit had to include as a parent.
         base: CommitId,
     },
     /// No worktree is registered at the path.
@@ -61,11 +54,6 @@ pub enum MemError {
     WorktreeConstraint {
         /// Path of the worktree being registered.
         path: String,
-    },
-    /// The active ref cannot be removed.
-    ActiveRefProtected {
-        /// Ref that was asked for.
-        name: Ref,
     },
 }
 
@@ -152,22 +140,6 @@ impl MemMeta {
         Ok(())
     }
 
-    /// Add an active ref, the way a fresh store looks: one ref, unborn,
-    /// waiting for the first commit.
-    ///
-    /// Any previously active ref is deactivated: the fake keeps the same
-    /// single-active-ref invariant as the backend.
-    pub fn with_active_ref(&mut self, name: &RefName) {
-        let name = &Ref::branch(name.clone());
-        for (ref_name, record) in &mut self.refs {
-            record.active = ref_name == name;
-        }
-        self.refs
-            .entry(name.clone())
-            .and_modify(|record| record.active = true)
-            .or_insert_with(|| CommitRef::new(name.clone(), None, true, 0));
-    }
-
     /// Register the main worktree at [`MAIN_WORKTREE`] with HEAD unborn on
     /// `branch`, the way an initialized store looks.
     pub fn with_main_worktree(&mut self, branch: &RefName) {
@@ -181,15 +153,14 @@ impl MemMeta {
         );
     }
 
-    /// The HEAD of the worktree at `path` resolved against the refs. A
-    /// branch whose row names no commit is unborn, as one without a row is.
+    /// The HEAD of the worktree at `path` resolved against the refs.
     fn head_of(&self, path: &str) -> Option<HeadState> {
         self.worktrees.get(path).map(|worktree| {
             let branch_commit = match &worktree.head {
                 Head::Branch(branch) => self
                     .refs
                     .get(&Ref::branch(branch.clone()))
-                    .and_then(|record| record.commit),
+                    .map(|record| record.commit),
                 Head::Detached(_) => None,
             };
             worktree.head.resolve(branch_commit)
@@ -424,10 +395,7 @@ impl MetaStore for MemMeta {
         match state {
             HeadState::Attached { branch, .. } | HeadState::Unborn { branch } => {
                 let name = Ref::branch(branch);
-                self.refs
-                    .entry(name.clone())
-                    .and_modify(|record| record.commit = Some(id))
-                    .or_insert_with(|| CommitRef::new(name, Some(id), false, created_at_ms));
+                self.refs.insert(name.clone(), CommitRef::new(name, id));
             }
             HeadState::Detached { .. } => {
                 if let Some(worktree) = self.worktrees.get_mut(path) {
@@ -441,25 +409,14 @@ impl MetaStore for MemMeta {
     fn set_ref(
         &mut self,
         name: &Ref,
-        commit: Option<CommitId>,
-        created_at_ms: u64,
+        commit: CommitId,
     ) -> impl Future<Output = Result<(), MemError>> + Send {
         // Mirrors the backend: a ref may not name a commit the store lacks.
-        if let Some(id) = commit
-            && !self.commits.iter().any(|held| held.id == id)
-        {
-            return core::future::ready(Err(MemError::UnknownCommit { id }));
+        if !self.commits.iter().any(|held| held.id == commit) {
+            return core::future::ready(Err(MemError::UnknownCommit { id: commit }));
         }
-        let (active, created_at_ms) = self
-            .refs
-            .get(name)
-            .map_or((false, created_at_ms), |existing| {
-                (existing.active, existing.created_at_ms)
-            });
-        self.refs.insert(
-            name.clone(),
-            CommitRef::new(name.clone(), commit, active, created_at_ms),
-        );
+        self.refs
+            .insert(name.clone(), CommitRef::new(name.clone(), commit));
         core::future::ready(Ok(()))
     }
 
@@ -483,37 +440,7 @@ impl MetaStore for MemMeta {
     }
 
     fn delete_ref(&mut self, name: &Ref) -> impl Future<Output = Result<bool, MemError>> + Send {
-        if self.refs.get(name).is_some_and(|record| record.active) {
-            return core::future::ready(Err(MemError::ActiveRefProtected { name: name.clone() }));
-        }
         core::future::ready(Ok(self.refs.remove(name).is_some()))
-    }
-
-    fn active_ref(&self) -> impl Future<Output = Result<Option<CommitRef>, MemError>> + Send {
-        let active = self.refs.values().find(|record| record.active).cloned();
-        // Mirrors the backend: the target commit must exist.
-        if let Some(record) = &active
-            && let Some(commit) = record.commit
-            && !self.commits.iter().any(|held| held.id == commit)
-        {
-            return core::future::ready(Err(MemError::UnknownCommit { id: commit }));
-        }
-        core::future::ready(Ok(active))
-    }
-
-    fn activate_ref(&mut self, name: &Ref) -> impl Future<Output = Result<(), MemError>> + Send {
-        let Some(record) = self.refs.get(name) else {
-            return core::future::ready(Err(MemError::UnknownRef { name: name.clone() }));
-        };
-        if let Some(commit) = record.commit
-            && !self.commits.iter().any(|held| held.id == commit)
-        {
-            return core::future::ready(Err(MemError::UnknownCommit { id: commit }));
-        }
-        for record in self.refs.values_mut() {
-            record.active = record.name == *name;
-        }
-        core::future::ready(Ok(()))
     }
 
     fn add_worktree(
@@ -643,7 +570,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .commit,
-            Some(second)
+            second
         );
     }
 

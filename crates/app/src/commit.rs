@@ -974,7 +974,7 @@ mod tests {
         // commit continues the branch HEAD names. Nothing moves HEAD until
         // `checkout` does, so the fake's row is set directly.
         let feature = RefName::parse("feature").unwrap();
-        block_on(meta.set_ref(&Ref::branch(feature.clone()), Some(first.commit), 1_500)).unwrap();
+        block_on(meta.set_ref(&Ref::branch(feature.clone()), first.commit)).unwrap();
         if let Some(main_worktree) = meta.worktrees.get_mut(MAIN_WORKTREE) {
             main_worktree.head = Head::Branch(feature);
         }
@@ -1000,7 +1000,7 @@ mod tests {
         let main = block_on(meta.lookup_ref(&Ref::branch(main)))
             .unwrap()
             .unwrap();
-        assert_eq!(main.commit, Some(first.commit));
+        assert_eq!(main.commit, first.commit);
     }
 
     #[test]

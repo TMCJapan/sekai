@@ -1,8 +1,9 @@
-//! Ref objects: the store's named, movable pointers to commits.
+//! Ref and HEAD reads: the store's named, movable pointers to commits.
 //!
-//! A ref names a commit and moves with the history it names. Exactly one
-//! ref is active - the one new commits hang from. Reads here are pure
-//! lookups; the mutations live in [`MetaStore`] and the app layer.
+//! A branch names a commit and moves with the history it names. Each
+//! worktree has a HEAD that names a branch or holds a commit directly.
+//! Reads here are pure lookups; the mutations live in [`MetaStore`] and
+//! the app layer.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -23,15 +24,6 @@ pub async fn list_refs<M: MetaStore>(meta: &M) -> Result<Vec<CommitRef>, CommitE
     .await
     .map_err(CommitError::Meta)?;
     Ok(out)
-}
-
-/// The active ref - the one new commits hang from - or `None` when the
-/// store has no active ref row. A fresh store is not `None`: it starts
-/// with an active, unborn ref whose `commit` is `None`.
-pub async fn active_ref<M: MetaStore>(
-    meta: &M,
-) -> Result<Option<CommitRef>, CommitError<M::Error>> {
-    meta.active_ref().await.map_err(CommitError::Meta)
 }
 
 /// The HEAD of the worktree at `path`, or `None` when no worktree is
