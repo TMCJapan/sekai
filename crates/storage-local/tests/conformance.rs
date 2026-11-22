@@ -566,3 +566,56 @@ async fn open_of_a_non_utf8_store_link_fails() {
         "unexpected error: {err}"
     );
 }
+
+/// `add_worktree` writes a store link naming the store's absolute root,
+/// and open follows that link back to the same store.
+#[tokio::test]
+async fn add_worktree_writes_a_link_open_follows() {
+    let (base, _guard) = tempdir("worktree-add");
+    let real = base.join("real-store");
+    let store = init(&real).await;
+
+    let world = base.join("world");
+    std::fs::create_dir_all(&world).unwrap();
+    let link = world.join(".sekai");
+    store.add_worktree(&link).unwrap();
+
+    let content = std::fs::read_to_string(&link).unwrap();
+    let canonical = std::fs::canonicalize(&real).unwrap();
+    assert_eq!(content.trim(), canonical.to_str().unwrap());
+    drop(store);
+    let _store = LocalStore::open(&link).await.unwrap();
+}
+
+/// Registering a worktree never clobbers what is already at the location,
+/// and the worktree directory is not materialized: initialization is still
+/// a TODO, so a missing parent fails without creating anything.
+#[tokio::test]
+async fn add_worktree_refuses_existing_and_missing_locations() {
+    let (base, _guard) = tempdir("worktree-refusal");
+    let real = base.join("real-store");
+    let store = init(&real).await;
+
+    let link = base.join(".sekai");
+    std::fs::write(&link, "keep me").unwrap();
+    let err = store.add_worktree(&link).unwrap_err();
+    assert!(
+        matches!(err, sekai_storage::StorageError::Io { .. }),
+        "unexpected error: {err}"
+    );
+    assert_eq!(std::fs::read_to_string(&link).unwrap(), "keep me");
+
+    let err = store.add_worktree(&real).unwrap_err();
+    assert!(
+        matches!(err, sekai_storage::StorageError::Io { .. }),
+        "unexpected error: {err}"
+    );
+
+    let missing = base.join("missing").join(".sekai");
+    let err = store.add_worktree(&missing).unwrap_err();
+    assert!(
+        matches!(err, sekai_storage::StorageError::Io { .. }),
+        "unexpected error: {err}"
+    );
+    assert!(!base.join("missing").exists());
+}
