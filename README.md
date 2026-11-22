@@ -46,10 +46,6 @@ sekai checkout ./world 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2
 # Compare chunk NBT between two commits (hashes from `log`)
 sekai diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a --in overworld:0,0
 
-# Branch: name the current position, then commit onto it
-sekai ref create feature
-sekai ref activate feature
-
 # Save an area once, then select it by name
 sekai scope create spawn --in overworld:-8,-8..7,7
 sekai commit ./world --scope spawn
@@ -62,7 +58,7 @@ sekai cache clean
 command fails on a missing store) and defaults to `.sekai` when omitted.
 
 Every command accepts `--json` for a single-document machine-readable
-report, and every command except `log`, `ref`, `init`, and `cache` accepts
+report, and every command except `log`, `init`, and `cache` accepts
 `--timing`
 for a per-phase breakdown (combine both for timed JSON). `commit`,
 `status`, `checkout`, and `diff` also take

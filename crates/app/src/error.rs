@@ -130,12 +130,6 @@ pub enum AppError {
         /// The name.
         name: String,
     },
-    /// The active ref cannot be removed.
-    #[error("cannot remove the active ref: {name} (activate another ref first)")]
-    ActiveRef {
-        /// Ref that was asked for.
-        name: String,
-    },
     /// Scope would select nothing.
     #[error(transparent)]
     InvalidScope(#[from] sekai_core::NamedScopeError),

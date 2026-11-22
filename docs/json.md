@@ -19,7 +19,6 @@ carries the bare result only.
 | `status` | preview (+timings with `--timing`) | table + JSON block | read-only: never writes to world or store |
 | `checkout` | report (+timings with `--timing`) | table + JSON block | |
 | `log` | commit array (+stats with `--stat`) | n/a | no phases exist |
-| `ref` | record, deletion record, or ref array | n/a | no phases exist |
 | `scope` | record, deletion record, or scope array | n/a | no phases exist |
 | `cache` | clean record or update report (+timings with `--timing`) | table + JSON block (`update` only) | `clean` has no phases |
 | `diff` | single array, grouped array (multi), or timed object | table + JSON block | `--in`/`--region` select chunks; one chunk keeps the single shape |
@@ -40,7 +39,7 @@ Every invocation prints exactly one JSON object to stdout:
 {"command": "<name>", "status": "error", "error": "<full context chain>"}
 ```
 
-`command` is one of `init`, `commit`, `status`, `checkout`, `log`, `ref`, `scope`, `cache`, `diff`.
+`command` is one of `init`, `commit`, `status`, `checkout`, `log`, `scope`, `cache`, `diff`.
 The error string is the full anyhow context chain (outermost message
 first, then `Caused by:` lines), JSON-escaped.
 
@@ -53,6 +52,11 @@ first, then `Caused by:` lines), JSON-escaped.
 | 2 | Usage error (unknown flags, bad values). clap prints its own human-readable error to stderr. |
 
 ## Compatibility
+
+Breaking change: the `ref` command is removed. `command` no longer takes
+the value `ref`, and the ref record, deletion record, and ref array
+payloads are gone. Commits still move the active ref, and commit
+arguments still accept a bare ref name.
 
 Semantics change (ADR-0034): `commit` no longer populates the region-image
 cache as part of recording; the command runs the `update_cache` pass
@@ -94,6 +98,8 @@ release for newly produced stores.
 ## Result payloads
 
 All durations are integer milliseconds. Paths are OS strings as observed.
+Commit arguments to `checkout` and `diff` accept `<id>` or a bare ref
+name; payloads always carry the resolved numeric ID.
 
 ### `init`
 
@@ -196,29 +202,6 @@ With `--stat`, per-commit change statistics are appended in place:
 `fresh_chunks`/`fresh_tombstones` count the tree diff against the
 commit's first parent, `new_blobs` its distinct new present blobs, and
 `effective_chunks` the live chunks in the snapshot.
-
-### `ref`
-
-Create (`ref create <name> [<commit>]`) and activate (`ref activate
-<name>`) return the record:
-
-```jsonc
-{"name": "main", "commit": 2, "active": true, "created_at_ms": 1700000001000}
-```
-
-Deletion returns `{"name": "main"}`. `ref list` lists all refs in name
-order:
-
-```jsonc
-[{"name": "feature", "commit": null, "active": false, "created_at_ms": 1700000001000},
- {"name": "main", "commit": 2, "active": true, "created_at_ms": 1700000000000}]
-```
-
-A ref created without a commit starts at the active ref's target. The
-active ref is the one new commits hang from; it is never removed.
-
-Commit arguments to `checkout`, `diff`, and `ref create` accept `<id>`
-or a bare ref name; payloads always carry the resolved numeric ID.
 
 ### `scope`
 

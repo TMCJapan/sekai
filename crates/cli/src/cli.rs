@@ -114,11 +114,6 @@ pub enum Command {
         #[arg(long)]
         stat: bool,
     },
-    /// Manage refs: named, movable pointers to commits.
-    Ref {
-        #[command(subcommand)]
-        action: RefCommand,
-    },
     /// Manage named scopes: store-saved world areas selected with `--scope`.
     Scope {
         #[command(subcommand)]
@@ -142,7 +137,6 @@ impl Command {
             Self::Status { .. } => "status",
             Self::Checkout { .. } => "checkout",
             Self::Log { .. } => "log",
-            Self::Ref { .. } => "ref",
             Self::Scope { .. } => "scope",
             Self::Cache { .. } => "cache",
             Self::Diff(_) => "diff",
@@ -157,68 +151,9 @@ impl Command {
             | Self::Status { output, .. }
             | Self::Checkout { output, .. } => output.json,
             Self::Init { json } | Self::Log { json, .. } => *json,
-            Self::Ref { action } => action.output_json(),
             Self::Scope { action } => action.output_json(),
             Self::Cache { action } => action.output_json(),
             Self::Diff(args) => args.output.json,
-        }
-    }
-}
-
-/// Ref operations. The name position is required and the commit target
-/// is optional: a missing name and a `--force` outside `create` stay
-/// statically unrepresentable.
-#[derive(Debug, Subcommand)]
-pub enum RefCommand {
-    /// Point a ref at a commit.
-    Create {
-        /// Ref name (ASCII alphanumerics plus ".", "_", "-", "/"; 1-255
-        /// bytes; no empty component, no "..", no trailing "." or leading
-        /// "-"). Written bare (never `@`-prefixed); ref names feed back as
-        /// `RefName` tokens, not as `CommitRef`s.
-        name: RefName,
-        /// Commit reference (`<64-char hash>` or a ref name) to point at.
-        /// Defaults to the active ref's target.
-        commit: Option<CommitRef>,
-        /// Move an existing ref instead of failing.
-        #[arg(long)]
-        force: bool,
-        /// Emit output as JSON instead of human text. See docs/json.md.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Delete a ref.
-    Delete {
-        /// Ref name to delete.
-        name: RefName,
-        /// Emit output as JSON instead of human text. See docs/json.md.
-        #[arg(long)]
-        json: bool,
-    },
-    /// List all refs in name order.
-    List {
-        /// Emit output as JSON instead of human text. See docs/json.md.
-        #[arg(long)]
-        json: bool,
-    },
-    /// Make a ref the active one: new commits hang from it.
-    Activate {
-        /// Ref name to activate.
-        name: RefName,
-        /// Emit output as JSON instead of human text. See docs/json.md.
-        #[arg(long)]
-        json: bool,
-    },
-}
-
-impl RefCommand {
-    /// Whether the operation runs in JSON mode (`--json`).
-    pub const fn output_json(&self) -> bool {
-        match self {
-            Self::Create { json, .. }
-            | Self::Delete { json, .. }
-            | Self::List { json }
-            | Self::Activate { json, .. } => *json,
         }
     }
 }
