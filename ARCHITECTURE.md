@@ -389,14 +389,34 @@ A new commit continues the target of the active ref - the trait rejects
 one whose parents omit it - and the active ref moves onto the new commit
 in the same transaction. Switching the active ref forks the history: the
 next commit continues the ref it was planned against, not the newest
-commit in the store. Commit references accept a `<64-char commit hash>`
-or a bare ref name. A ref name cannot be spelled like a commit ID (64 hex
-digits), so a reference never means both; Git accepts such a name and
-warns on every use.
+commit in the store.
 
 Refs point at commit hashes. Like Git, identity is derived from content;
 a recorded commit is immutable, so a ref's target keeps resolving to the
 same snapshot tree. See [ADR-0019](docs/adr/0019-ref-objects.md).
+
+### Resolution
+
+Commands that name a commit take a _revision_, the subset of
+gitrevisions sekai adopts:
+
+| Revision | Names |
+|---|---|
+| `HEAD`, `@` | the active ref's commit |
+| `<64-char commit ID>` | that commit |
+| `<branch>` | the branch's commit |
+| `<start>~<n>`, `<start>~` | the `n`-th first-parent ancestor of one of the above (`~` is `~1`) |
+
+The grammar is checked when the command line is parsed (ADR-0013);
+`util::Revision` holds the result and `storage::graph::resolve_revision`
+resolves it against a store. `^`, `@{...}`, `:path`, and the other
+gitrevisions forms are refused; the history is linear, so `^<n>` adds
+nothing over `~`. Only one `~<n>` follows the starting point: Git chains
+steps (`HEAD~~` is `HEAD~2`), but with `~` the only step, a second one
+adds nothing over a larger `n`. A ref name cannot be spelled like a
+commit ID (64 hex digits), so a revision never means both; Git accepts
+such a name and warns on every use. HEAD on an unborn branch fails as Git words it:
+`your current branch '<b>' does not have any commits yet`.
 
 ## Snapshot Tree Storage
 

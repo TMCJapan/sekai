@@ -104,9 +104,9 @@ pub enum AppError {
     /// Commit-graph operation failed.
     #[error("{0}")]
     Commit(sekai_storage::CommitError<sekai_storage::StorageError>),
-    /// Commit reference (`<64-char hash>` or ref name) could not be resolved.
+    /// A revision could not be resolved to a commit.
     #[error("{0}")]
-    CommitRef(sekai_storage::ResolveError<sekai_storage::StorageError>),
+    Revision(sekai_storage::ResolveError<sekai_storage::StorageError>),
     /// A branch or scope of that name already exists.
     #[error("{}", match .kind {
         NameKind::Branch => format!("a branch named '{name}' already exists"),

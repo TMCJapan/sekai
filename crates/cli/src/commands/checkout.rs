@@ -1,14 +1,14 @@
 //! Checkout subcommand execution, DTOs, and output rendering.
 
 use anyhow::Context as _;
-use sekai_app::{CheckoutReport, CheckoutTimings, HostWorldTree};
+use sekai_app::{CheckoutReport, CheckoutTimings, HostWorldTree, Revision};
 use sekai_storage_local::LocalStore;
 use serde::Serialize;
 use std::path::Path;
 
 use super::progress::Bars;
 use super::{ReportOut, resolve_selection};
-use crate::cli::{CommitRef, OnMissingBlob, OnMissingFile, Selection};
+use crate::cli::{OnMissingBlob, OnMissingFile, Selection};
 use crate::envelope::envelope_ok;
 use crate::style::Styler;
 
@@ -42,7 +42,7 @@ const fn map_options(flags: &CheckoutFlags) -> sekai_app::CheckoutOptions {
 pub async fn run(
     store: &str,
     world_path: impl AsRef<Path>,
-    commit: &CommitRef,
+    commit: &Revision,
     selection: &Selection,
     flags: &CheckoutFlags,
     out: ReportOut,
@@ -53,7 +53,7 @@ pub async fn run(
         .await
         .with_context(|| format!("checkout of {} failed", world_path.as_ref().display()))?;
     let id = instance
-        .resolve_commit_ref(commit.as_str())
+        .resolve_revision(commit)
         .await
         .with_context(|| format!("commit {commit} failed to resolve"))?;
     let scope = resolve_selection(&instance, selection).await?;

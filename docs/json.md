@@ -53,6 +53,13 @@ first, then `Caused by:` lines), JSON-escaped.
 
 ## Compatibility
 
+Change: commit arguments (`checkout`, `diff`) take a revision: a
+64-character commit ID, a branch, `HEAD`, or `@`, optionally followed by
+one `~<n>` (`HEAD~1`). A malformed revision is a usage error (exit
+2); a revision that names nothing, such as a step past the root commit
+(`unknown revision: HEAD~5`) or HEAD on an unborn branch, is a runtime
+error envelope.
+
 Breaking change: the `ref` command is removed. `command` no longer takes
 the value `ref`, and the ref record, deletion record, and ref array
 payloads are gone. Commits still move the active ref, and commit

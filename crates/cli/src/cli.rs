@@ -2,9 +2,7 @@
 
 use crate::style::ColorChoice;
 use clap::{Parser, Subcommand};
-use sekai_app::{
-    Area, ChunkCoord, CommitId, Dimension, Rect, RefName, RegionKind, Scope, ScopeName,
-};
+use sekai_app::{Area, ChunkCoord, Dimension, Rect, RegionKind, Revision, Scope, ScopeName};
 use std::path::{Path, PathBuf};
 
 /// Chunk-level deduplicated version control for Minecraft region files.
@@ -70,8 +68,9 @@ pub enum Command {
     Checkout {
         /// World directory to rebuild in place.
         world: PathBuf,
-        /// Commit reference to restore (`<64-char hash>` or a ref name, see `log`).
-        commit: CommitRef,
+        /// Revision to restore: a commit ID, a branch, or `HEAD` / `@`,
+        /// optionally followed by one `~<n>` (see `log`).
+        commit: Revision,
         /// Human or JSON rendering plus optional phase timings.
         #[command(flatten)]
         output: TimingArgs,
@@ -253,53 +252,6 @@ impl CacheCommand {
     }
 }
 
-/// Commit reference on the command line: `<64-char hash>` or a ref name.
-///
-/// Either a 64-character hexadecimal commit ID or a bare valid [`RefName`],
-/// tried in that exclusive order: a bare token is parsed as a commit ID
-/// first and only treated as a [`RefName`] when that fails. Because
-/// [`RefName`] refuses commit-ID spellings, the two namespaces cannot
-/// overlap: a 64-hex token is always a commit ID (or `UnknownCommit`),
-/// never a ref.
-///
-/// The shape is validated at parse time so a malformed reference never
-/// reaches the store; resolving it to an existing commit stays a
-/// runtime step. The grammar mirrors `core`'s `resolve_commit_ref`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CommitRef(String);
-
-impl CommitRef {
-    /// Raw reference text (`<64-char hash>` or a ref name).
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::fmt::Display for CommitRef {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
-    }
-}
-
-impl std::str::FromStr for CommitRef {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        s.parse::<CommitId>()
-            .map(|id| {
-                // Canonicalise so the stored spelling can never diverge from
-                // the validation that accepted it.
-                Self(id.to_string())
-            })
-            .or_else(|id_err| match RefName::parse(s) {
-                Ok(_) => Ok(Self(s.to_owned())),
-                Err(name_err) => Err(format!(
-                    "invalid reference {s:?}: {id_err}; not a valid ref name: {name_err}, expected <64-char commit hash> or <ref>"
-                )),
-            })
-    }
-}
-
 /// `--timing`/`--json`/`--progress` flags shared by every report command
 /// except `log` (which has no phases to time or items to count).
 #[derive(Debug, Clone, Copy, clap::Args)]
@@ -342,15 +294,15 @@ pub struct DiffArgs {
     /// World directory to compare against a commit (if specified).
     #[arg(long)]
     pub world: Option<PathBuf>,
-    /// Older commit reference (`<64-char hash>` or `<ref>`; when comparing
-    /// commits and omitted, defaults to the lowest-ID parent of the newer
-    /// side). With `--world`, the single commit to compare against
-    /// (default: the active ref's target).
-    pub old_commit: Option<CommitRef>,
-    /// Newer commit reference (`<64-char hash>` or `<ref>`; if omitted,
-    /// defaults to the active ref's target). Commit-vs-commit only.
+    /// Older revision (a commit ID, a branch, or `HEAD`, with optional
+    /// `~<n>`; when comparing commits and omitted, defaults to the lowest-ID
+    /// parent of the newer side). With `--world`, the single commit to
+    /// compare against (default: the active ref's target).
+    pub old_commit: Option<Revision>,
+    /// Newer revision (if omitted, defaults to the active ref's target).
+    /// Commit-vs-commit only.
     #[arg(conflicts_with = "world")]
-    pub new_commit: Option<CommitRef>,
+    pub new_commit: Option<Revision>,
     /// Chunks to compare (default: whole world). Only chunks with
     /// differences are reported.
     #[command(flatten)]
@@ -391,15 +343,15 @@ pub enum DiffTarget<'a> {
     /// ref's target).
     World {
         world: &'a Path,
-        commit: Option<&'a CommitRef>,
+        commit: Option<&'a Revision>,
     },
     /// Commit against commit (`None` newer side means the active ref's
     /// target; `None` older side means the newer side's lowest-ID parent).
     /// A root commit has no implicit older side and errors; pass it or
     /// `--world` explicitly in that case.
     Commits {
-        old: Option<&'a CommitRef>,
-        new: Option<&'a CommitRef>,
+        old: Option<&'a Revision>,
+        new: Option<&'a Revision>,
     },
 }
 

@@ -18,7 +18,7 @@
 
 use std::sync::Arc;
 
-use sekai_core::{Commit, CommitId};
+use sekai_core::{Commit, CommitId, Revision};
 use sekai_storage::{CacheStore as _, SekaiStore, SekaiStoreOpener};
 use sekai_world::{WorldLock, WorldLockMode, WorldLockState, WorldTree};
 
@@ -112,11 +112,12 @@ impl<T: SekaiStore> SekaiInstance<T> {
             .ok_or(AppError::NoCommits)
     }
 
-    /// Resolve a commit reference (`<64-char hash>` or a ref name).
-    pub async fn resolve_commit_ref(&self, raw: &str) -> Result<CommitId, AppError> {
-        sekai_storage::graph::resolve_commit_ref(self.store.meta(), raw)
+    /// Resolve a revision (`HEAD`, a commit ID, or a branch, with an
+    /// optional `~<n>`) to a commit.
+    pub async fn resolve_revision(&self, revision: &Revision) -> Result<CommitId, AppError> {
+        sekai_storage::graph::resolve_revision(self.store.meta(), revision)
             .await
-            .map_err(AppError::CommitRef)
+            .map_err(AppError::Revision)
     }
 
     /// Count fresh and effective rows for one commit.

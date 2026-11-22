@@ -3,11 +3,11 @@ use clap::Parser as _;
 const H1: &str = "0101010101010101010101010101010101010101010101010101010101010101";
 const H2: &str = "0202020202020202020202020202020202020202020202020202020202020202";
 const H3: &str = "0303030303030303030303030303030303030303030303030303030303030303";
-use sekai_app::{Dimension, Rect};
+use sekai_app::{Dimension, Rect, Revision};
 use sekai_cli::{
     cli::{
-        CacheCommand, Cli, Command, CommitRef, DiffArgs, InlineSelection, OnMissingBlob,
-        OnMissingFile, RegionSpec, ScopeCommand, Selection, TimingArgs,
+        CacheCommand, Cli, Command, DiffArgs, InlineSelection, OnMissingBlob, OnMissingFile,
+        RegionSpec, ScopeCommand, Selection, TimingArgs,
     },
     style::ColorChoice,
 };
@@ -20,9 +20,9 @@ fn inline(selection: &Selection) -> &InlineSelection {
     }
 }
 
-/// `Option<CommitRef>` as `Option<&str>` for assertions.
-fn ref_str(value: Option<&CommitRef>) -> Option<&str> {
-    value.map(CommitRef::as_str)
+/// `Option<Revision>` as `Option<&str>` for assertions.
+fn ref_str(value: Option<&Revision>) -> Option<&str> {
+    value.map(Revision::as_str)
 }
 
 #[test]
@@ -198,8 +198,9 @@ fn parses_diff_command() {
     let err = Cli::try_parse_from(["sekai", "diff", "@stable", H2])
         .expect_err("@-prefixed tag refs are no longer accepted");
     assert!(
-        err.to_string().contains("invalid reference"),
-        "the @ prefix is refused as a malformed reference: {err}"
+        err.to_string()
+            .contains("expected one ~<n> after the starting point"),
+        "the @ prefix is refused as a malformed revision: {err}"
     );
 
     let cli = Cli::try_parse_from([
@@ -293,17 +294,17 @@ fn parses_diff_command() {
 }
 
 #[test]
-fn validates_commit_refs_at_parse_time() {
-    // Malformed references are refused before any code runs, so they can
-    // never touch the store (a 64-char hash or a bare name following RefName
-    // rules).
+fn validates_revisions_at_parse_time() {
+    // Malformed revisions are refused before any code runs, so they can
+    // never touch the store.
     for args in [
         vec!["sekai", "checkout", "w", ""],
-        vec!["sekai", "checkout", "w", "@"],
         vec!["sekai", "checkout", "w", "@123"],
         vec!["sekai", "checkout", "w", "@bad name"],
         vec!["sekai", "checkout", "w", "bad name"],
-        vec!["sekai", "checkout", "w", "HEAD"],
+        vec!["sekai", "checkout", "w", "HEAD^"],
+        vec!["sekai", "checkout", "w", "main~x"],
+        vec!["sekai", "checkout", "w", "~1"],
         vec!["sekai", "checkout", "w", "/main"],
         vec!["sekai", "checkout", "w", "main/"],
         vec!["sekai", "checkout", "w", "a//b"],
@@ -324,6 +325,12 @@ fn validates_commit_refs_at_parse_time() {
         vec!["sekai", "diff", H1, H2],
         // A digit-only name is a ref: commit IDs are 64 hex characters.
         vec!["sekai", "checkout", "w", "123"],
+        vec!["sekai", "checkout", "w", "HEAD"],
+        vec!["sekai", "checkout", "w", "@"],
+        vec!["sekai", "checkout", "w", "HEAD~1"],
+        vec!["sekai", "checkout", "w", "@~"],
+        vec!["sekai", "checkout", "w", "main~12"],
+        vec!["sekai", "diff", "HEAD~1", "HEAD"],
     ] {
         Cli::try_parse_from(&args).unwrap_or_else(|err| panic!("{args:?} parses: {err}"));
     }
@@ -337,19 +344,29 @@ fn validates_commit_refs_at_parse_time() {
         "diff --world with two commits is refused"
     );
 
-    // The refusal names what a reference may be, so the wording is part
-    // of the contract the parse error carries.
+    // The refusal names what a revision may start from and why the name
+    // failed, so the wording is part of the contract the parse error
+    // carries.
     let err = Cli::try_parse_from(["sekai", "checkout", "w", "a..b"])
         .expect_err("a name with `..` is refused");
     let message = err.to_string();
     assert!(
-        message.contains("invalid reference"),
-        "the refusal names the reference: {message}"
-    );
-    assert!(
-        message.contains("expected <64-char commit hash> or <ref>"),
+        message.contains("not a commit ID or ref name"),
         "the refusal names the accepted shapes: {message}"
     );
+    assert!(
+        message.contains("contains '..'"),
+        "the refusal names the broken rule: {message}"
+    );
+    for step in ["main~x", "main~1~2", "HEAD~~"] {
+        let err = Cli::try_parse_from(["sekai", "checkout", "w", step])
+            .expect_err("anything but one ~<n> after the start is refused");
+        assert!(
+            err.to_string()
+                .contains("expected one ~<n> after the starting point"),
+            "the refusal names the step syntax for {step}: {err}"
+        );
+    }
 }
 
 #[test]

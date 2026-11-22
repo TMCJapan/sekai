@@ -100,6 +100,37 @@ impl fmt::Display for RefNameError {
 
 impl core::error::Error for RefNameError {}
 
+/// A revision outside the adopted grammar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RevisionError {
+    /// The revision, or the part before its `~`, is empty.
+    Empty,
+    /// The starting point is neither `HEAD`, `@`, a commit ID, nor a ref
+    /// name.
+    Name(RefNameError),
+    /// What follows the starting point is not one `~<n>`.
+    BadStep,
+}
+
+impl fmt::Display for RevisionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "revision has no starting point"),
+            Self::Name(err) => write!(f, "not a commit ID or ref name: {err}"),
+            Self::BadStep => write!(f, "expected one ~<n> after the starting point"),
+        }
+    }
+}
+
+impl core::error::Error for RevisionError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Name(err) => Some(err),
+            _ => None,
+        }
+    }
+}
+
 /// Scope name validation failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScopeNameError {

@@ -5,10 +5,11 @@
 //! share one implementation of each graph read.
 
 use alloc::collections::BTreeSet;
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 
-use sekai_util::{Commit, CommitId, Ref, RefName};
+use sekai_util::{Commit, CommitId, Ref, RefName, Revision, RevisionBase};
 
 use crate::meta::MetaStore;
 
@@ -185,7 +186,7 @@ pub async fn latest_commit_id<M: MetaStore>(
     Ok(commit.map(|c| c.id))
 }
 
-/// Failures while resolving a commit reference.
+/// Failures while resolving a revision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolveError<M> {
     /// Metadata backend failure.
@@ -205,11 +206,27 @@ pub enum ResolveError<M> {
         /// Requested ref name.
         name: RefName,
     },
-    /// Reference is neither a commit ID nor a ref name.
-    InvalidRef {
-        /// Raw reference text.
-        raw: alloc::string::String,
+    /// The revision reads HEAD, but the store has no active ref.
+    NoActiveRef,
+    /// The revision reads HEAD, whose branch has no commit yet.
+    UnbornHead {
+        /// Branch HEAD names.
+        branch: RefName,
     },
+    /// A `~` step goes past a commit's parents.
+    UnknownRevision {
+        /// Revision as written.
+        revision: String,
+    },
+}
+
+impl<M> From<CommitError<M>> for ResolveError<M> {
+    fn from(err: CommitError<M>) -> Self {
+        match err {
+            CommitError::Meta(err) => Self::Meta(err),
+            CommitError::UnknownCommit { id } => Self::UnknownCommit { id },
+        }
+    }
 }
 
 impl<M: fmt::Debug> fmt::Display for ResolveError<M> {
@@ -219,35 +236,70 @@ impl<M: fmt::Debug> fmt::Display for ResolveError<M> {
             Self::UnknownCommit { id } => write!(f, "unknown commit: {id}"),
             Self::UnknownRef { name } => write!(f, "unknown ref: {name}"),
             Self::UnbornRef { name } => write!(f, "ref has no commit yet: {name}"),
-            Self::InvalidRef { raw } => write!(
+            Self::NoActiveRef => write!(f, "HEAD names no ref: the store has no active ref"),
+            Self::UnbornHead { branch } => write!(
                 f,
-                "invalid reference: {raw:?}, expected <64-char commit hash> or <ref>"
+                "your current branch '{branch}' does not have any commits yet"
             ),
+            Self::UnknownRevision { revision } => write!(f, "unknown revision: {revision}"),
         }
     }
 }
 
-/// Resolve a commit reference: a 64-character hexadecimal commit ID or a
-/// bare ref name.
+/// Resolve `revision` to a commit.
 ///
-/// A 64-character hexadecimal spelling is a commit ID or `UnknownCommit`,
-/// never a ref: [`RefName`] refuses that spelling, so no ref can carry it.
-/// An unborn ref has no commit to point at yet.
-pub async fn resolve_commit_ref<M: MetaStore>(
+/// `HEAD` is the active ref's commit. A commit ID must name a recorded
+/// commit, and a name is looked up as a branch; an unborn one has no commit
+/// to point at yet. A `~<n>` step then follows the first parent `n`
+/// times, as Git's `get_nth_ancestor` does; a step past a root commit is an
+/// `UnknownRevision`. Parents are stored sorted by ID, so for a commit with
+/// several the first is the lowest-ID one; commits sekai records have one.
+pub async fn resolve_revision<M: MetaStore>(
     meta: &M,
-    raw: &str,
+    revision: &Revision,
 ) -> Result<CommitId, ResolveError<M::Error>> {
-    if let Ok(id) = raw.parse::<CommitId>() {
-        return meta
-            .lookup_commit(id)
-            .await
-            .map_err(ResolveError::Meta)?
-            .map(|commit| commit.id)
-            .ok_or(ResolveError::UnknownCommit { id });
+    let mut commit = match revision.base() {
+        RevisionBase::Head => head_commit(meta).await?,
+        RevisionBase::Commit(id) => known_commit(meta, *id).await?,
+        RevisionBase::Name(name) => branch_commit(meta, name.clone()).await?,
+    };
+    for _ in 0..revision.ancestor() {
+        let parents = commit_parents(meta, commit).await?;
+        commit = *parents
+            .first()
+            .ok_or_else(|| ResolveError::UnknownRevision {
+                revision: String::from(revision.as_str()),
+            })?;
     }
-    let name = RefName::parse(raw).map_err(|_| ResolveError::InvalidRef {
-        raw: alloc::string::String::from(raw),
-    })?;
+    Ok(commit)
+}
+
+async fn head_commit<M: MetaStore>(meta: &M) -> Result<CommitId, ResolveError<M::Error>> {
+    let head = meta
+        .active_ref()
+        .await
+        .map_err(ResolveError::Meta)?
+        .ok_or(ResolveError::NoActiveRef)?;
+    head.commit.ok_or(ResolveError::UnbornHead {
+        branch: head.name.name,
+    })
+}
+
+async fn known_commit<M: MetaStore>(
+    meta: &M,
+    id: CommitId,
+) -> Result<CommitId, ResolveError<M::Error>> {
+    meta.lookup_commit(id)
+        .await
+        .map_err(ResolveError::Meta)?
+        .map(|commit| commit.id)
+        .ok_or(ResolveError::UnknownCommit { id })
+}
+
+async fn branch_commit<M: MetaStore>(
+    meta: &M,
+    name: RefName,
+) -> Result<CommitId, ResolveError<M::Error>> {
     let found = meta
         .lookup_ref(&Ref::branch(name.clone()))
         .await
@@ -276,52 +328,105 @@ mod tests {
         assert_eq!(listed[1].id, second);
     }
 
-    #[test]
-    fn resolves_hashes_and_refs() {
-        let mut meta = MemMeta::default();
-        let first = block_on(meta.create_commit(100, &[])).unwrap();
-        let second = block_on(meta.create_commit(200, &[first])).unwrap();
-        let branch = Ref::branch(RefName::parse("main").unwrap());
-        block_on(meta.set_ref(&branch, Some(second), 300)).unwrap();
+    fn revision(text: &str) -> Revision {
+        Revision::parse(text).unwrap()
+    }
 
-        let first_hex = first.to_string();
-        assert_eq!(first_hex.len(), 64);
-        assert_eq!(block_on(resolve_commit_ref(&meta, &first_hex)), Ok(first));
-        assert_eq!(block_on(resolve_commit_ref(&meta, "main")), Ok(second));
+    /// `root <- middle <- tip`, with `main` active on `tip`.
+    fn linear_history() -> (MemMeta, [CommitId; 3]) {
+        let mut meta = MemMeta::default();
+        let root = block_on(meta.create_commit(100, &[])).unwrap();
+        let middle = block_on(meta.create_commit(200, &[root])).unwrap();
+        let tip = block_on(meta.create_commit(300, &[middle])).unwrap();
+        let main = RefName::parse("main").unwrap();
+        block_on(meta.set_ref(&Ref::branch(main.clone()), Some(tip), 300)).unwrap();
+        meta.with_active_ref(&main);
+        (meta, [root, middle, tip])
+    }
+
+    #[test]
+    fn revisions_walk_first_parents_from_head_ids_and_names() {
+        let (meta, [root, middle, tip]) = linear_history();
+        for (text, commit) in [
+            ("HEAD", tip),
+            ("@", tip),
+            ("HEAD~", middle),
+            ("@~1", middle),
+            ("HEAD~2", root),
+            ("main", tip),
+            ("main~2", root),
+            ("HEAD~0", tip),
+        ] {
+            assert_eq!(
+                block_on(resolve_revision(&meta, &revision(text))),
+                Ok(commit),
+                "{text}"
+            );
+        }
+        let middle_hex = middle.to_string();
         assert_eq!(
-            block_on(resolve_commit_ref(&meta, &"f".repeat(64))),
+            block_on(resolve_revision(&meta, &revision(&middle_hex))),
+            Ok(middle)
+        );
+        assert_eq!(
+            block_on(resolve_revision(
+                &meta,
+                &revision(&alloc::format!("{middle_hex}~"))
+            )),
+            Ok(root)
+        );
+    }
+
+    #[test]
+    fn a_step_past_the_root_is_an_unknown_revision() {
+        let (meta, _) = linear_history();
+        let err = block_on(resolve_revision(&meta, &revision("HEAD~3"))).unwrap_err();
+        assert_eq!(
+            err,
+            ResolveError::UnknownRevision {
+                revision: "HEAD~3".into()
+            }
+        );
+        assert_eq!(err.to_string(), "unknown revision: HEAD~3");
+    }
+
+    #[test]
+    fn head_needs_a_born_active_ref() {
+        let mut meta = MemMeta::default();
+        assert_eq!(
+            block_on(resolve_revision(&meta, &revision("HEAD"))),
+            Err(ResolveError::NoActiveRef)
+        );
+        meta.with_active_ref(&RefName::parse("main").unwrap());
+        let err = block_on(resolve_revision(&meta, &revision("@~1"))).unwrap_err();
+        assert_eq!(
+            err,
+            ResolveError::UnbornHead {
+                branch: RefName::parse("main").unwrap()
+            }
+        );
+        assert_eq!(
+            err.to_string(),
+            "your current branch 'main' does not have any commits yet"
+        );
+    }
+
+    #[test]
+    fn revision_bases_report_what_is_missing() {
+        let (meta, _) = linear_history();
+        let unknown = "f".repeat(64);
+        assert_eq!(
+            block_on(resolve_revision(&meta, &revision(&unknown))),
             Err(ResolveError::UnknownCommit {
-                id: CommitId::from_hex("f".repeat(64).as_bytes()).unwrap()
+                id: CommitId::from_hex(unknown.as_bytes()).unwrap()
             })
         );
         assert_eq!(
-            block_on(resolve_commit_ref(&meta, " 1")),
-            Err(ResolveError::InvalidRef { raw: " 1".into() })
-        );
-        assert_eq!(
-            block_on(resolve_commit_ref(&meta, "")),
-            Err(ResolveError::InvalidRef {
-                raw: alloc::string::String::new()
-            })
-        );
-        assert_eq!(
-            block_on(resolve_commit_ref(&meta, "other")),
+            block_on(resolve_revision(&meta, &revision("other~1"))),
             Err(ResolveError::UnknownRef {
                 name: RefName::parse("other").unwrap()
             })
         );
-        assert!(matches!(
-            block_on(resolve_commit_ref(&meta, "a b")),
-            Err(ResolveError::InvalidRef { .. })
-        ));
-        assert!(matches!(
-            block_on(resolve_commit_ref(&meta, "@123")),
-            Err(ResolveError::InvalidRef { .. })
-        ));
-        assert!(matches!(
-            block_on(resolve_commit_ref(&meta, "@main")),
-            Err(ResolveError::InvalidRef { .. })
-        ));
     }
 
     #[test]
@@ -330,7 +435,7 @@ mod tests {
         let branch = Ref::branch(RefName::parse("main").unwrap());
         block_on(meta.set_ref(&branch, None, 100)).unwrap();
         assert_eq!(
-            block_on(resolve_commit_ref(&meta, "main")),
+            block_on(resolve_revision(&meta, &revision("main"))),
             Err(ResolveError::UnbornRef {
                 name: RefName::parse("main").unwrap()
             })
