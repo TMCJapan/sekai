@@ -28,10 +28,10 @@ sekai diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a
   side diffs as an empty compound there — missing coordinates are never
   errors (see [ADR-0006](https://github.com/tmcjapan/sekai/blob/main/docs/adr/0006-diff-missing-as-empty.md));
   only corrupt payloads and missing blobs fail loudly. With commit
-  arguments, a missing newer side defaults to the active ref's target and
+  arguments, a missing newer side defaults to HEAD's commit and
   a missing older side defaults to the newer side's lowest-ID parent; when
-  both are omitted, diff uses the active ref's target against its
+  both are omitted, diff uses HEAD's commit against its
   lowest-ID parent, so a root commit has no implicit older side and the
   command errors — pass the older commit explicitly or use `--world`
-  (whose single commit defaults to the active ref's target). `--show-values`
+  (whose single commit defaults to HEAD's commit). `--show-values`
   prints concrete old/new values in human output.

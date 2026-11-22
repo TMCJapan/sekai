@@ -33,4 +33,4 @@ pub use region::{ApplyOutcome, CommitEntry, RegionFingerprint, RegionKey};
 pub use region_kind::{RegionKind, UnknownRegionKind};
 pub use scope::{Area, Rect, Scope};
 pub use tree::{DimHash, RegionHash, RootHash};
-pub use worktree::{Head, Worktree};
+pub use worktree::{Head, HeadState, Worktree};

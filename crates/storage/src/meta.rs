@@ -8,8 +8,8 @@
 use alloc::vec::Vec;
 use core::future::Future;
 use sekai_util::{
-    ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DimHash, NamedScope, Ref,
-    RegionHash, RootHash, ScopeName, Worktree, hash_bytes,
+    ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DimHash, HeadState,
+    NamedScope, Ref, RegionHash, RootHash, ScopeName, Worktree, hash_bytes,
 };
 
 use crate::{DimNode, RegionNode, RootNode, TreeNodes};
@@ -121,24 +121,26 @@ pub trait MetaStore {
     ) -> impl Future<Output = Result<Vec<RegionNode>, Self::Error>> + Send;
 
     /// Record a commit whose root tree and newly written nodes are already
-    /// built.
+    /// built, on the HEAD of the worktree at `path`.
     ///
     /// Nodes are inserted children-first, child before parent, in the same
     /// transaction as the commit row. Unchanged subtrees are shared by hash
     /// and not re-inserted. The new commit continues `parents`; an empty
     /// list starts a history. Recording a commit whose hash already exists
-    /// is idempotent: the existing ID is returned, while the active ref
-    /// still moves onto that commit.
+    /// is idempotent: the existing ID is returned, while HEAD still moves
+    /// onto that commit.
     ///
-    /// The new commit must continue the active ref's target: when the ref is
-    /// born, `parents` includes its commit, and backends reject a mismatch
-    /// instead of silently forking the ref onto another history. The active
-    /// ref moves onto the new commit in the same transaction. A store
-    /// without an active ref has nowhere to put the commit and fails.
+    /// The new commit must continue HEAD's commit: when HEAD is born,
+    /// `parents` includes its commit, and backends reject a mismatch
+    /// instead of silently forking HEAD onto another history. HEAD moves
+    /// onto the new commit in the same transaction: an attached HEAD moves
+    /// its branch, giving an unborn branch its first commit, and a detached
+    /// HEAD moves itself. An unknown worktree fails and writes nothing.
     ///
     /// Referenced blobs must already be flushed to CAS.
     fn commit_tree(
         &mut self,
+        path: &str,
         created_at_ms: u64,
         parents: &[CommitId],
         root: RootHash,
@@ -146,9 +148,11 @@ pub trait MetaStore {
     ) -> impl Future<Output = Result<ApplyOutcome, Self::Error>> + Send;
 
     /// Apply fresh entries to the parent snapshot, insert the resulting
-    /// nodes, and record the commit atomically.
+    /// nodes, and record the commit on the HEAD of the worktree at `path`
+    /// atomically, as [`Self::commit_tree`] does.
     fn apply_commit_incremental(
         &mut self,
+        path: &str,
         created_at_ms: u64,
         parents: &[CommitId],
         entries: &[CommitEntry],
@@ -184,8 +188,8 @@ pub trait MetaStore {
     /// The active ref is never removed.
     fn delete_ref(&mut self, name: &Ref) -> impl Future<Output = Result<bool, Self::Error>> + Send;
 
-    /// The active ref - the one new commits hang from - or `None` when the
-    /// store has none.
+    /// The active ref, or `None` when the store has none. Commits land on
+    /// a worktree's HEAD and no longer move it.
     fn active_ref(&self) -> impl Future<Output = Result<Option<CommitRef>, Self::Error>> + Send;
 
     /// Make `name` the active ref. The name and its non-`None` target must
@@ -207,6 +211,13 @@ pub trait MetaStore {
     fn visit_worktrees<F>(&self, visit: F) -> impl Future<Output = Result<(), Self::Error>> + Send
     where
         F: FnMut(&Worktree) -> bool + Send;
+
+    /// The HEAD of the worktree at `path` resolved against the refs, or
+    /// `None` when no worktree is registered there.
+    fn head(
+        &self,
+        path: &str,
+    ) -> impl Future<Output = Result<Option<HeadState>, Self::Error>> + Send;
 
     /// Store `scope`, replacing every area of an existing scope of the same
     /// name in one atomic step.

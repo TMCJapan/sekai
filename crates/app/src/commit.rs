@@ -36,6 +36,7 @@ use crate::cache::prove_regions_unchanged;
 use crate::error::AppError;
 use crate::instance::{WorldGuard, WorldHandle, WorldHandleMut};
 use crate::progress::{BuildProgress, Progress};
+use crate::refs::main_head;
 use crate::regions::discover_regions;
 use crate::time::now_ms;
 use crate::workers::worker_slots;
@@ -56,12 +57,12 @@ pub struct CommitReport {
 
 /// Load prior state and list the in-scope regions to ingest.
 ///
-/// The base is the target of the active ref: a new commit continues the
-/// history that ref names, not the newest commit in the store. A store
-/// without an active ref (or with an unborn one) starts a new history.
+/// The base is `head`, the commit HEAD stands at: a new commit continues
+/// the history HEAD names, not the newest commit in the store. An unborn
+/// HEAD (`None`) starts a new history.
 ///
-/// The caller must hold the world's lock (shared or exclusive) from this
-/// call through [`record_commit`]: a commit that moves the active ref in
+/// The caller must hold the world's lock (shared or exclusive) from
+/// reading HEAD through [`record_commit`]: a commit that moves HEAD in
 /// between would make the plan's base and the recorded parent disagree.
 ///
 /// Regions outside `scope` are ignored entirely: they are neither ingested
@@ -75,14 +76,13 @@ pub struct CommitReport {
 /// already matches the base snapshot.
 pub(crate) async fn plan_commit<M: MetaStore>(
     meta: &M,
+    head: Option<CommitId>,
     discovered: &[RegionKey],
     scope: &Scope,
 ) -> Result<(Previous, Plan), M::Error> {
-    let active = meta.active_ref().await?;
-    // `MetaStore::active_ref` rejects a dangling target (the trait's
-    // contract), so the lookup below always finds the commit the ref
-    // names: a `None` here is an unborn ref.
-    let base = match active.as_ref().and_then(|r| r.commit) {
+    // HEAD's commit always exists (the foreign keys keep it honest), so a
+    // `None` here is an unborn HEAD.
+    let base = match head {
         Some(id) => meta.lookup_commit(id).await?,
         None => None,
     };
@@ -128,13 +128,14 @@ pub(crate) async fn plan_commit<M: MetaStore>(
 /// metadata transaction is committed.
 ///
 /// The new commit continues the history it was planned against: its
-/// parent is `previous.commit` - the target of the active ref, which is
-/// also the base tree its changes were computed against. The active ref moves
-/// onto the new commit in the same transaction. Plan and commit must not be
-/// interleaved with another commit; the app holds the store's writer
-/// lock for the whole run.
+/// parent is `previous.commit` - the commit HEAD of the worktree at `path`
+/// stands at, which is also the base tree its changes were computed
+/// against. HEAD moves onto the new commit in the same transaction. Plan
+/// and commit must not be interleaved with another commit; the app holds
+/// the world's lock for the whole run.
 pub(crate) async fn record_commit<M: MetaStore>(
     meta: &mut M,
+    path: &str,
     previous: &Previous,
     staged: &Assembled,
     created_at_ms: u64,
@@ -144,7 +145,7 @@ pub(crate) async fn record_commit<M: MetaStore>(
         .as_ref()
         .map_or_default(|commit| vec![commit.id]);
     let outcome: ApplyOutcome = meta
-        .apply_commit_incremental(created_at_ms, &parents, &staged.entries)
+        .apply_commit_incremental(path, created_at_ms, &parents, &staged.entries)
         .await?;
     Ok(CommitReport {
         commit: outcome.id,
@@ -175,9 +176,9 @@ pub struct StatusOptions {
 pub struct StatusReport {
     /// Nothing in scope differs from the latest commit.
     pub clean: bool,
-    /// The active ref's target the preview is measured against, if any.
+    /// HEAD's commit the preview is measured against, if any.
     ///
-    /// `None` when that ref is unborn, even if the store already holds
+    /// `None` while HEAD is unborn, even if the store already holds
     /// commits from an earlier history.
     pub latest: Option<CommitId>,
     /// In-scope regions with snapshot changes (changed chunks or absent
@@ -300,6 +301,7 @@ where
         let store = &mut self.instance.store;
 
         let Prepared {
+            worktree,
             previous,
             staged,
             walk,
@@ -325,7 +327,14 @@ where
         store.blob_mut().sync().await?;
         let dir_sync = sync_started.elapsed();
         let db_started = Instant::now();
-        let report = record_commit(store.meta_mut(), &previous, &staged, created_at_ms).await?;
+        let report = record_commit(
+            store.meta_mut(),
+            &worktree,
+            &previous,
+            &staged,
+            created_at_ms,
+        )
+        .await?;
         let db_apply = db_started.elapsed();
 
         let timings = CommitTimings {
@@ -346,6 +355,8 @@ where
 /// Everything a commit records and a status preview counts, before the
 /// commit decision that separates them.
 struct Prepared {
+    /// Path of the worktree whose HEAD the commit lands on.
+    worktree: String,
     previous: Previous,
     staged: Assembled,
     walk: IngestTimings,
@@ -386,7 +397,8 @@ where
 
     let universe_started = Instant::now();
     let keys: Vec<RegionKey> = regions.keys().copied().collect();
-    let (previous, plan) = plan_commit(store.meta(), &keys, scope).await?;
+    let (worktree, head) = main_head(store).await?;
+    let (previous, plan) = plan_commit(store.meta(), head.commit(), &keys, scope).await?;
     // The proof needs the discovered handles, so it runs before the ingest
     // list takes them out of the map.
     let proven = match previous.commit.as_ref().filter(|_| dry_run) {
@@ -415,6 +427,7 @@ where
     let staged = assemble(plan, &previous, ingested, scope);
 
     Ok(Prepared {
+        worktree,
         previous,
         staged,
         walk,
@@ -861,8 +874,8 @@ fn stage_chunk(
 mod tests {
     use super::*;
     use sekai_core::staging::stage_present;
-    use sekai_core::{Area, ChunkHash, Dimension, Rect, Ref, RefName, RegionKind};
-    use sekai_storage::testing::{MemMeta, block_on};
+    use sekai_core::{Area, ChunkHash, Dimension, Head, Rect, Ref, RefName, RegionKind};
+    use sekai_storage::testing::{MAIN_WORKTREE, MemError, MemMeta, block_on};
 
     const OVER: Dimension = Dimension::OVERWORLD;
     const NETHER: Dimension = Dimension::NETHER;
@@ -884,23 +897,50 @@ mod tests {
         ChunkCoord::new(NETHER, REGION, x, z)
     }
 
-    /// The store's active ref: new commits hang from it.
+    /// The branch the main worktree's HEAD starts on.
     fn main_ref() -> RefName {
         RefName::parse("main").unwrap()
     }
 
-    /// A fake store with one active ref, the way a fresh store looks.
-    fn store_with_ref() -> MemMeta {
+    /// A fake store with the main worktree, HEAD unborn on `main`: the way
+    /// an initialized store looks.
+    fn store_with_main() -> MemMeta {
         let mut meta = MemMeta::default();
-        meta.with_active_ref(&main_ref());
+        meta.with_main_worktree(&main_ref());
         meta
+    }
+
+    /// The commit the main worktree's HEAD stands at.
+    fn head(meta: &MemMeta) -> Option<CommitId> {
+        block_on(meta.head(MAIN_WORKTREE))
+            .unwrap()
+            .and_then(|state| state.commit())
+    }
+
+    /// Plan against the main worktree's HEAD, as `prepare` does.
+    async fn plan_head(
+        meta: &MemMeta,
+        discovered: &[RegionKey],
+        scope: &Scope,
+    ) -> Result<(Previous, Plan), MemError> {
+        plan_commit(meta, head(meta), discovered, scope).await
+    }
+
+    /// Record onto the main worktree's HEAD.
+    async fn record_head(
+        meta: &mut MemMeta,
+        previous: &Previous,
+        staged: &Assembled,
+        created_at_ms: u64,
+    ) -> Result<CommitReport, MemError> {
+        record_commit(meta, MAIN_WORKTREE, previous, staged, created_at_ms).await
     }
 
     #[test]
     fn first_commit_ingests_everything() {
-        let meta = store_with_ref();
+        let meta = store_with_main();
         let discovered = [key(0, 0)];
-        let (previous, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &discovered, &Scope::World)).unwrap();
         assert!(previous.commit.is_none());
         assert!(previous.state.is_empty());
         assert_eq!(plan.ingest, vec![key(0, 0)]);
@@ -908,13 +948,13 @@ mod tests {
     }
 
     #[test]
-    fn a_new_commit_continues_the_active_ref() {
-        let mut meta = store_with_ref();
+    fn a_new_commit_continues_head() {
+        let mut meta = store_with_main();
         let main = main_ref();
         let discovered = [key(0, 0)];
 
-        // The active ref is unborn: the commit starts a history.
-        let (previous, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        // HEAD is unborn: the commit starts a history.
+        let (previous, plan) = block_on(plan_head(&meta, &discovered, &Scope::World)).unwrap();
         assert!(previous.commit.is_none());
         let staged = assemble(
             plan,
@@ -926,18 +966,20 @@ mod tests {
             },
             &Scope::World,
         );
-        let first = block_on(record_commit(&mut meta, &previous, &staged, 1_000)).unwrap();
-        // The ref moved onto the new commit.
-        let active = block_on(meta.active_ref()).unwrap().unwrap();
-        assert_eq!(active.commit, Some(first.commit));
+        let first = block_on(record_head(&mut meta, &previous, &staged, 1_000)).unwrap();
+        // HEAD moved onto the new commit.
+        assert_eq!(head(&meta), Some(first.commit));
 
-        // A second ref at the same commit forks the history: the next
-        // commit continues the ref that is active.
-        let feature = Ref::branch(RefName::parse("feature").unwrap());
-        block_on(meta.set_ref(&feature, Some(first.commit), 1_500)).unwrap();
-        block_on(meta.activate_ref(&feature)).unwrap();
+        // A second branch at the same commit forks the history: the next
+        // commit continues the branch HEAD names. Nothing moves HEAD until
+        // `checkout` does, so the fake's row is set directly.
+        let feature = RefName::parse("feature").unwrap();
+        block_on(meta.set_ref(&Ref::branch(feature.clone()), Some(first.commit), 1_500)).unwrap();
+        if let Some(main_worktree) = meta.worktrees.get_mut(MAIN_WORKTREE) {
+            main_worktree.head = Head::Branch(feature);
+        }
 
-        let (previous, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &discovered, &Scope::World)).unwrap();
         assert_eq!(previous.commit.as_ref().map(|c| c.id), Some(first.commit));
         let staged = assemble(
             plan,
@@ -949,7 +991,7 @@ mod tests {
             },
             &Scope::World,
         );
-        let second = block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        let second = block_on(record_head(&mut meta, &previous, &staged, 2_000)).unwrap();
         assert_eq!(
             block_on(meta.commit_parents(second.commit)).unwrap(),
             vec![first.commit]
@@ -963,12 +1005,12 @@ mod tests {
 
     #[test]
     fn the_recorded_commit_continues_the_previous_one() {
-        let mut meta = store_with_ref();
+        let mut meta = store_with_main();
         let discovered = [key(0, 0)];
 
         // The first commit starts a history: no previous commit, no
         // parent.
-        let (previous, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &discovered, &Scope::World)).unwrap();
         let staged = assemble(
             plan,
             &previous,
@@ -979,12 +1021,12 @@ mod tests {
             },
             &Scope::World,
         );
-        let first = block_on(record_commit(&mut meta, &previous, &staged, 1_000)).unwrap();
+        let first = block_on(record_head(&mut meta, &previous, &staged, 1_000)).unwrap();
         assert_eq!(block_on(meta.commit_parents(first.commit)).unwrap(), vec![]);
 
         // The second commit continues the history of the commit it was
         // planned against.
-        let (previous, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &discovered, &Scope::World)).unwrap();
         assert_eq!(previous.commit.as_ref().map(|c| c.id), Some(first.commit));
         let staged = assemble(
             plan,
@@ -996,7 +1038,7 @@ mod tests {
             },
             &Scope::World,
         );
-        let second = block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        let second = block_on(record_head(&mut meta, &previous, &staged, 2_000)).unwrap();
         assert_eq!(
             block_on(meta.commit_parents(second.commit)).unwrap(),
             vec![first.commit]
@@ -1005,9 +1047,9 @@ mod tests {
 
     #[test]
     fn an_empty_region_is_not_a_new_file() {
-        let meta = store_with_ref();
+        let meta = store_with_main();
         let discovered = [key(0, 0)];
-        let (previous, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &discovered, &Scope::World)).unwrap();
         let staged = assemble(plan, &previous, Ingested::default(), &Scope::World);
         assert_eq!(staged.entries, [] as [CommitEntry; 0]);
         assert_eq!(staged.new_files, 0);
@@ -1016,14 +1058,14 @@ mod tests {
 
     #[test]
     fn unchanged_chunks_write_no_rows() {
-        let mut meta = store_with_ref();
+        let mut meta = store_with_main();
         let discovered = [key(0, 0)];
         let entries = [
             stage_present(coord(0, 0), ChunkHash::new([1; 32])),
             stage_present(coord(1, 0), ChunkHash::new([2; 32])),
         ];
         let present = BTreeSet::from([coord(0, 0), coord(1, 0)]);
-        let (previous, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &discovered, &Scope::World)).unwrap();
         let staged = assemble(
             plan,
             &previous,
@@ -1034,9 +1076,9 @@ mod tests {
             },
             &Scope::World,
         );
-        let first = block_on(record_commit(&mut meta, &previous, &staged, 1_000)).unwrap();
+        let first = block_on(record_head(&mut meta, &previous, &staged, 1_000)).unwrap();
 
-        let (previous, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &discovered, &Scope::World)).unwrap();
         let staged = assemble(
             plan,
             &previous,
@@ -1049,7 +1091,7 @@ mod tests {
         );
         assert_eq!(staged.entries, [] as [CommitEntry; 0]);
         assert_eq!(staged.chunks, 2);
-        let report = block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        let report = block_on(record_head(&mut meta, &previous, &staged, 2_000)).unwrap();
         assert_ne!(report.commit, first.commit);
         assert_eq!(report.new_blobs, 0);
         assert_eq!(report.tombstones, 0);
@@ -1061,9 +1103,9 @@ mod tests {
 
     #[test]
     fn changed_chunk_writes_only_its_row() {
-        let mut meta = store_with_ref();
+        let mut meta = store_with_main();
         let discovered = [key(0, 0)];
-        let (previous, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &discovered, &Scope::World)).unwrap();
         let staged = assemble(
             plan,
             &previous,
@@ -1077,9 +1119,9 @@ mod tests {
             },
             &Scope::World,
         );
-        block_on(record_commit(&mut meta, &previous, &staged, 1_000)).unwrap();
+        block_on(record_head(&mut meta, &previous, &staged, 1_000)).unwrap();
 
-        let (previous, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &discovered, &Scope::World)).unwrap();
         let staged = assemble(
             plan,
             &previous,
@@ -1098,7 +1140,7 @@ mod tests {
             vec![stage_present(coord(0, 0), ChunkHash::new([9; 32]))]
         );
         assert_eq!(staged.chunks, 2);
-        let report = block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        let report = block_on(record_head(&mut meta, &previous, &staged, 2_000)).unwrap();
         assert_eq!(report.chunks, 2);
         assert_eq!(report.new_blobs, 1);
         assert_eq!(report.tombstones, 0);
@@ -1115,8 +1157,9 @@ mod tests {
 
     #[test]
     fn missing_coordinates_become_tombstones() {
-        let mut meta = store_with_ref();
+        let mut meta = store_with_main();
         block_on(meta.apply_commit_incremental(
+            MAIN_WORKTREE,
             1_000,
             &[],
             &[
@@ -1125,13 +1168,13 @@ mod tests {
             ],
         ))
         .unwrap();
-        let (previous, plan) = block_on(plan_commit(&meta, &[], &Scope::World)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &[], &Scope::World)).unwrap();
         assert_eq!(plan.removed, vec![key(0, 0)]);
         let staged = assemble(plan, &previous, Ingested::default(), &Scope::World);
         assert_eq!(staged.chunks, 0);
         assert_eq!(staged.tombstones, 2);
 
-        let report = block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        let report = block_on(record_head(&mut meta, &previous, &staged, 2_000)).unwrap();
         assert_eq!(report.tombstones, 2);
         let tomb = block_on(meta.lookup_chunk(report.commit, &coord(0, 0))).unwrap();
         assert!(tomb.is_none(), "absence is the tombstone");
@@ -1139,8 +1182,9 @@ mod tests {
 
     #[test]
     fn already_tombstoned_coordinates_record_no_further_rows() {
-        let mut meta = store_with_ref();
+        let mut meta = store_with_main();
         block_on(meta.apply_commit_incremental(
+            MAIN_WORKTREE,
             1_000,
             &[],
             &[
@@ -1153,7 +1197,7 @@ mod tests {
         // Region (0,0) is gone from disk: its chunk tombstones once while
         // region (1,0) is still present.
         let discovered = [key(1, 0)];
-        let (previous, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &discovered, &Scope::World)).unwrap();
         let staged = assemble(
             plan,
             &previous,
@@ -1166,14 +1210,14 @@ mod tests {
         );
         assert_eq!(staged.tombstones, 1);
         assert_eq!(staged.chunks, 1);
-        let report = block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        let report = block_on(record_head(&mut meta, &previous, &staged, 2_000)).unwrap();
         assert_eq!(report.tombstones, 1);
         assert_eq!(report.chunks, 1);
 
         // Repeat commit with the same world: the tombstone already resolves
         // through fallback, so it records no fresh row and the vanished
         // chunk is not carried back as present.
-        let (previous, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &discovered, &Scope::World)).unwrap();
         assert_eq!(
             previous.state.keys().copied().collect::<Vec<_>>(),
             [coord(32, 0)]
@@ -1192,7 +1236,7 @@ mod tests {
         assert_eq!(staged.tombstones, 0);
         assert_eq!(staged.chunks, 1);
 
-        let report = block_on(record_commit(&mut meta, &previous, &staged, 3_000)).unwrap();
+        let report = block_on(record_head(&mut meta, &previous, &staged, 3_000)).unwrap();
         assert_eq!(report.tombstones, 0);
         assert_eq!(report.chunks, 1);
         assert!(
@@ -1208,8 +1252,9 @@ mod tests {
 
     #[test]
     fn scoped_plan_ignores_out_of_scope_regions() {
-        let mut meta = store_with_ref();
+        let mut meta = store_with_main();
         block_on(meta.apply_commit_incremental(
+            MAIN_WORKTREE,
             1_000,
             &[],
             &[
@@ -1223,20 +1268,21 @@ mod tests {
         // disk), but the overworld scope sees neither ingest nor removal.
         let discovered = [nether_key(0, 0)];
         let scope = Scope::dimension(NETHER);
-        let (_, plan) = block_on(plan_commit(&meta, &discovered, &scope)).unwrap();
+        let (_, plan) = block_on(plan_head(&meta, &discovered, &scope)).unwrap();
         assert_eq!(plan.ingest, vec![nether_key(0, 0)]);
         assert_eq!(plan.removed, [] as [RegionKey; 0]);
 
         // Out-of-scope regions never enter the plan at all.
         let discovered = [key(0, 0), nether_key(0, 0)];
-        let (_, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (_, plan) = block_on(plan_head(&meta, &discovered, &Scope::World)).unwrap();
         assert_eq!(plan.ingest, vec![key(0, 0), nether_key(0, 0)]);
     }
 
     #[test]
     fn scoped_assemble_tombstones_only_in_scope() {
-        let mut meta = store_with_ref();
+        let mut meta = store_with_main();
         block_on(meta.apply_commit_incremental(
+            MAIN_WORKTREE,
             1_000,
             &[],
             &[
@@ -1252,7 +1298,7 @@ mod tests {
         // must not become a tombstone.
         let discovered = [key(0, 0)];
         let scope = Scope::dimension(OVER);
-        let (previous, plan) = block_on(plan_commit(&meta, &discovered, &scope)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &discovered, &scope)).unwrap();
         assert_eq!(plan.ingest, vec![key(0, 0)]);
         assert_eq!(plan.removed, [] as [RegionKey; 0]);
         let staged = assemble(
@@ -1275,7 +1321,7 @@ mod tests {
             .collect();
         assert_eq!(tombstoned, vec![coord(1, 0)]);
 
-        let report = block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        let report = block_on(record_head(&mut meta, &previous, &staged, 2_000)).unwrap();
         assert_eq!(report.tombstones, 1);
         // The nether chunk still resolves through fallback, untouched.
         let kept = block_on(meta.lookup_chunk(report.commit, &nether_coord(0, 0)))
@@ -1293,8 +1339,9 @@ mod tests {
 
     #[test]
     fn partial_scope_then_full_commit_reingests_unread_chunks() {
-        let mut meta = store_with_ref();
+        let mut meta = store_with_main();
         block_on(meta.apply_commit_incremental(
+            MAIN_WORKTREE,
             1_000,
             &[],
             &[
@@ -1307,7 +1354,7 @@ mod tests {
         // Both chunks changed on disk, but the scope reads only (0,0).
         let discovered = [key(0, 0)];
         let scope = over_rect(Rect::new(0, 0, 0, 0));
-        let (previous, plan) = block_on(plan_commit(&meta, &discovered, &scope)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &discovered, &scope)).unwrap();
         assert_eq!(plan.ingest, vec![key(0, 0)]);
         let staged = assemble(
             plan,
@@ -1320,11 +1367,11 @@ mod tests {
             &scope,
         );
         assert_eq!(staged.tombstones, 0);
-        block_on(record_commit(&mut meta, &previous, &staged, 2_000)).unwrap();
+        block_on(record_head(&mut meta, &previous, &staged, 2_000)).unwrap();
 
         // The next full commit rereads the whole file and records the
         // unread (1,0) change, while (0,0) stays unchanged.
-        let (previous, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
+        let (previous, plan) = block_on(plan_head(&meta, &discovered, &Scope::World)).unwrap();
         let staged = assemble(
             plan,
             &previous,
@@ -1342,7 +1389,7 @@ mod tests {
             staged.entries,
             vec![stage_present(coord(1, 0), ChunkHash::new([7; 32]))]
         );
-        let report = block_on(record_commit(&mut meta, &previous, &staged, 3_000)).unwrap();
+        let report = block_on(record_head(&mut meta, &previous, &staged, 3_000)).unwrap();
         let got = block_on(meta.lookup_chunk(report.commit, &coord(1, 0)))
             .unwrap()
             .unwrap();

@@ -541,7 +541,7 @@ where
 mod tests {
     use super::*;
     use sekai_core::{CommitEntry, Dimension, RefName, RegionKind};
-    use sekai_storage::testing::{MemMeta, block_on};
+    use sekai_storage::testing::{MAIN_WORKTREE, MemMeta, block_on};
 
     const OVER: Dimension = Dimension::OVERWORLD;
     const REGION: RegionKind = RegionKind::Region;
@@ -549,11 +549,12 @@ mod tests {
     #[test]
     fn resolves_present_rows_grouped_by_region() {
         let mut meta = MemMeta::default();
-        meta.with_active_ref(&RefName::parse("main").unwrap());
+        meta.with_main_worktree(&RefName::parse("main").unwrap());
         let a = ChunkCoord::new(OVER, REGION, 0, 0);
         let b = ChunkCoord::new(OVER, REGION, 1, 0);
         let gone = ChunkCoord::new(OVER, REGION, 2, 0);
         let id = block_on(meta.apply_commit_incremental(
+            MAIN_WORKTREE,
             1_000,
             &[],
             &[

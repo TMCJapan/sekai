@@ -635,15 +635,18 @@ pub async fn build_update<M: MetaStore>(
     Ok((hash, nodes))
 }
 
-/// Record `entries` as a commit, building its tree from the parent snapshot.
+/// Record `entries` as a commit on the HEAD of the worktree at `path`,
+/// building its tree from the parent snapshot.
 pub async fn apply_entries<M: MetaStore>(
     meta: &mut M,
+    path: &str,
     created_at_ms: u64,
     parents: &[CommitId],
     entries: &[CommitEntry],
 ) -> Result<ApplyOutcome, M::Error> {
     let (root, nodes) = build_update(meta, parents, entries).await?;
-    meta.commit_tree(created_at_ms, parents, root, &nodes).await
+    meta.commit_tree(path, created_at_ms, parents, root, &nodes)
+        .await
 }
 
 /// Effective present entry for one coordinate at a commit.
@@ -1005,7 +1008,7 @@ mod tests {
 
     mod operations {
         use super::*;
-        use crate::testing::{MemMeta, block_on};
+        use crate::testing::{MAIN_WORKTREE, MemMeta, block_on};
         use sekai_util::RefName;
 
         const OVER: Dimension = Dimension::OVERWORLD;
@@ -1031,8 +1034,9 @@ mod tests {
         #[test]
         fn scoped_update_only_reads_and_writes_changed_dimensions() {
             let mut meta = MemMeta::default();
-            meta.with_active_ref(&RefName::parse("main").unwrap());
+            meta.with_main_worktree(&RefName::parse("main").unwrap());
             let first = block_on(meta.apply_commit_incremental(
+                MAIN_WORKTREE,
                 1_000,
                 &[],
                 &[entry(OVER, 0, 0, 1), entry(NETHER, 0, 0, 2)],
@@ -1070,11 +1074,15 @@ mod tests {
         #[test]
         fn an_unchanged_update_reuses_the_parent_root() {
             let mut meta = MemMeta::default();
-            meta.with_active_ref(&RefName::parse("main").unwrap());
-            let first =
-                block_on(meta.apply_commit_incremental(1_000, &[], &[entry(OVER, 0, 0, 1)]))
-                    .unwrap()
-                    .id;
+            meta.with_main_worktree(&RefName::parse("main").unwrap());
+            let first = block_on(meta.apply_commit_incremental(
+                MAIN_WORKTREE,
+                1_000,
+                &[],
+                &[entry(OVER, 0, 0, 1)],
+            ))
+            .unwrap()
+            .id;
             let root = block_on(meta.lookup_commit(first)).unwrap().unwrap().root;
             let (next, nodes) =
                 block_on(build_update(&meta, &[first], &[entry(OVER, 0, 0, 1)])).unwrap();
@@ -1110,13 +1118,13 @@ mod tests {
         #[test]
         fn commit_region_hashes_names_only_stored_regions() {
             let mut meta = MemMeta::default();
-            meta.with_active_ref(&RefName::parse("main").unwrap());
+            meta.with_main_worktree(&RefName::parse("main").unwrap());
             let entries = [
                 entry(OVER, 0, 0, 1),
                 entry(OVER, 1, 0, 2),
                 entry(NETHER, 0, 0, 3),
             ];
-            let id = block_on(meta.apply_commit_incremental(1_000, &[], &entries))
+            let id = block_on(meta.apply_commit_incremental(MAIN_WORKTREE, 1_000, &[], &entries))
                 .unwrap()
                 .id;
 

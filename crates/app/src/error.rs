@@ -130,6 +130,9 @@ pub enum AppError {
         /// The name.
         name: String,
     },
+    /// The store has no main worktree to act on.
+    #[error("store has no main worktree: no world is registered to commit on")]
+    MissingMainWorktree,
     /// The store already belongs to another world: an init may register
     /// only the world it first ran in as the main worktree.
     #[error("store already belongs to world {main}, not {world}")]
@@ -149,8 +152,8 @@ pub enum AppError {
     #[error(transparent)]
     InvalidScope(#[from] sekai_core::NamedScopeError),
     /// No commit is available for the operation: the store is empty or
-    /// the active ref is unborn.
-    #[error("no commit selected: the store is empty or the active ref is unborn")]
+    /// HEAD is unborn.
+    #[error("no commit selected: the store is empty or HEAD is unborn")]
     NoCommits,
     /// I/O operation failed.
     #[error(transparent)]

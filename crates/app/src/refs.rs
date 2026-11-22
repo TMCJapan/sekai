@@ -1,39 +1,44 @@
-//! Ref objects: the store's named, movable pointers to commits.
+//! Ref and HEAD reads: the store's named, movable pointers to commits.
 //!
-//! A ref names a commit and moves with the history it names. Exactly one
-//! ref is active: the one new commits hang from. This layer only reads
-//! refs: commits move the active ref through the store, and no command
-//! creates, deletes, or activates a ref.
+//! A branch names a commit and moves with the history it names. Each
+//! worktree has a HEAD that names a branch or holds a commit directly;
+//! every command acts on the main worktree's HEAD. This layer only reads
+//! them: commits move HEAD through the store.
 
-use sekai_core::{CommitId, CommitRef};
-use sekai_storage::SekaiStore;
+use sekai_core::{CommitId, HeadState};
+use sekai_storage::{MetaStore as _, SekaiStore};
 
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
 
-impl<S: SekaiStore> SekaiInstance<S> {
-    /// The active ref, or `None` when the store has none.
-    pub async fn active_ref(&self) -> Result<Option<CommitRef>, AppError> {
-        sekai_storage::refs::active_ref(self.store.meta())
-            .await
-            .map_err(AppError::Commit)
-    }
+/// The path of the store's main worktree and its HEAD: the worktree every
+/// command acts on.
+pub(crate) async fn main_head<S: SekaiStore>(store: &S) -> Result<(String, HeadState), AppError> {
+    let path = sekai_storage::refs::main_worktree(store.meta())
+        .await
+        .map_err(AppError::Commit)?
+        .ok_or(AppError::MissingMainWorktree)?;
+    let head = store
+        .meta()
+        .head(&path)
+        .await?
+        .ok_or(AppError::MissingMainWorktree)?;
+    Ok((path, head))
+}
 
-    /// The commit the next one would continue: the active ref's target.
+impl<S: SekaiStore> SekaiInstance<S> {
+    /// The commit the next one would continue: the main worktree's HEAD
+    /// commit.
     ///
-    /// `None` when the active ref is unborn. The next commit then records
-    /// with no parents, starting a fresh root even if the store already
-    /// holds commits.
+    /// `None` while HEAD is unborn. The next commit then records with no
+    /// parents, starting a fresh root even if the store already holds
+    /// commits.
     ///
     /// This is not [`SekaiInstance::latest_commit_id`], which reports the
-    /// newest stored commit: the active ref's target need not be the
-    /// newest commit.
+    /// newest stored commit: HEAD's commit need not be the newest commit.
     ///
     /// Any caller may run it, including one holding a world lock.
     pub async fn current_commit_id(&self) -> Result<Option<CommitId>, AppError> {
-        Ok(sekai_storage::refs::active_ref(self.store.meta())
-            .await
-            .map_err(AppError::Commit)?
-            .and_then(|active| active.commit))
+        Ok(main_head(&self.store).await?.1.commit())
     }
 }
