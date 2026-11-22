@@ -11,8 +11,7 @@ pub use cache::SledCache;
 pub use meta::SqliteMeta;
 pub use version::STORE_VERSION;
 
-use std::borrow::Cow;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use sekai_storage::{SekaiStore, SekaiStoreOpener, StorageError, io_error};
 
@@ -107,9 +106,10 @@ impl LocalStore {
     /// target resolves against the link's parent directory, keeping the
     /// link valid when the whole folder moves; the link is followed once,
     /// never chained.
-    fn resolve_root(path: &Path) -> Result<Cow<'_, Path>, StorageError> {
+    fn resolve_root(path: impl AsRef<Path>) -> Result<PathBuf, StorageError> {
+        let path = path.as_ref();
         if !path.is_file() {
-            return Ok(Cow::Borrowed(path));
+            return Ok(path.to_path_buf());
         }
         let text = std::fs::read_to_string(path)
             .map_err(|source| io_error(path.display().to_string(), source))?;
@@ -126,7 +126,7 @@ impl LocalStore {
         } else {
             path.parent().unwrap_or_else(|| Path::new(".")).join(target)
         };
-        Ok(Cow::Owned(root))
+        Ok(root)
     }
 
     /// Each component's existence marker, checked without opening (and
