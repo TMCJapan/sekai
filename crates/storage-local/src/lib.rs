@@ -5,6 +5,7 @@ mod blob;
 mod cache;
 mod meta;
 mod version;
+mod worktree;
 
 pub use blob::SledBlob;
 pub use cache::SledCache;
@@ -17,6 +18,7 @@ use sekai_storage::{SekaiStore, SekaiStoreOpener, StorageError, io_error};
 
 #[derive(Debug)]
 pub struct LocalStore {
+    root: PathBuf,
     meta: SqliteMeta,
     blob: SledBlob,
     cache: SledCache,
@@ -141,11 +143,19 @@ impl LocalStore {
     }
     /// Attach the metadata, blob, and cache adapters to an existing store root;
     /// the root directory must already hold `version`, `meta.sqlite`, and the
-    /// `blobs` and `cache` keyspaces.
+    /// `blobs` and `cache` keyspaces. The canonical absolute root is kept so
+    /// worktree links can name it from any working directory.
     async fn connect(root: impl AsRef<Path>) -> Result<Self, StorageError> {
-        let blob = SledBlob::open(root.as_ref().join("blobs")).await?;
-        let cache = SledCache::open(root.as_ref().join("cache")).await?;
-        let meta = SqliteMeta::open(root.as_ref().join("meta.sqlite")).await?;
-        Ok(Self { meta, blob, cache })
+        let root = std::fs::canonicalize(root.as_ref())
+            .map_err(|source| io_error(root.as_ref().display().to_string(), source))?;
+        let blob = SledBlob::open(root.join("blobs")).await?;
+        let cache = SledCache::open(root.join("cache")).await?;
+        let meta = SqliteMeta::open(root.join("meta.sqlite")).await?;
+        Ok(Self {
+            root,
+            meta,
+            blob,
+            cache,
+        })
     }
 }
