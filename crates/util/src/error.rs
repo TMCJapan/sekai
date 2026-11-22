@@ -115,7 +115,7 @@ pub enum RevisionError {
 impl fmt::Display for RevisionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Empty => write!(f, "revision is empty"),
+            Self::Empty => write!(f, "revision has no starting point"),
             Self::Name(err) => write!(f, "not a commit ID or ref name: {err}"),
             Self::BadStep => write!(f, "expected one ~<n> after the starting point"),
         }

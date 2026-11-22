@@ -198,7 +198,8 @@ fn parses_diff_command() {
     let err = Cli::try_parse_from(["sekai", "diff", "@stable", H2])
         .expect_err("@-prefixed tag refs are no longer accepted");
     assert!(
-        err.to_string().contains("not a commit ID or ref name"),
+        err.to_string()
+            .contains("expected one ~<n> after the starting point"),
         "the @ prefix is refused as a malformed revision: {err}"
     );
 

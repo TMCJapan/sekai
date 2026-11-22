@@ -83,6 +83,11 @@ fn parse_base(base: &str) -> Result<RevisionBase, RevisionError> {
     if base == "HEAD" || base == "@" {
         return Ok(RevisionBase::Head);
     }
+    // `@` never appears in a ref name, so whatever follows a leading `@`
+    // is a step sekai does not adopt (`@^`, `@{1}`).
+    if base.starts_with('@') {
+        return Err(RevisionError::BadStep);
+    }
     if let Ok(id) = base.parse::<CommitId>() {
         return Ok(RevisionBase::Commit(id));
     }
@@ -164,7 +169,8 @@ mod tests {
             ("", RevisionError::Empty),
             ("~1", RevisionError::Empty),
             ("^", RevisionError::Name(RefNameError::BadChar('^'))),
-            ("@^", RevisionError::Name(RefNameError::BadChar('@'))),
+            ("@^", RevisionError::BadStep),
+            ("@{1}", RevisionError::BadStep),
             ("main^", RevisionError::Name(RefNameError::BadChar('^'))),
             ("main~1^2", RevisionError::BadStep),
             ("main~1~2", RevisionError::BadStep),
