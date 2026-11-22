@@ -2,11 +2,12 @@
 
 #[path = "common.rs"]
 mod common;
+#[path = "../tests/support/mod.rs"]
+mod support;
 
 use common::{MEDIUM, SMALL, generate, options, runtime, tempdir};
 use criterion::{Criterion, criterion_group, criterion_main};
 use sekai_app::{HostWorldTree, Scope};
-use sekai_storage_local::LocalStore;
 
 fn benches(c: &mut Criterion) {
     let rt = runtime();
@@ -19,7 +20,7 @@ fn benches(c: &mut Criterion) {
             generate(&world_path, &SMALL);
             let store = root.path().join("store").to_string_lossy().into_owned();
             let mut instance = rt
-                .block_on(sekai_app::SekaiInstance::<LocalStore>::init(&store))
+                .block_on(support::init_store(&store))
                 .expect("open works");
             rt.block_on(
                 instance
@@ -37,7 +38,7 @@ fn benches(c: &mut Criterion) {
         generate(&world_path, &SMALL);
         let store = root.path().join("store").to_string_lossy().into_owned();
         let mut instance = rt
-            .block_on(sekai_app::SekaiInstance::<LocalStore>::init(&store))
+            .block_on(support::init_store(&store))
             .expect("open works");
         rt.block_on(
             instance
@@ -63,7 +64,7 @@ fn benches(c: &mut Criterion) {
             generate(&world_path, &MEDIUM);
             let store = root.path().join("store").to_string_lossy().into_owned();
             let mut instance = rt
-                .block_on(sekai_app::SekaiInstance::<LocalStore>::init(&store))
+                .block_on(support::init_store(&store))
                 .expect("open works");
             rt.block_on(
                 instance

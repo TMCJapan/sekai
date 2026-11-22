@@ -10,14 +10,13 @@
 #![cfg(feature = "backend-local")]
 
 mod fixtures;
+mod support;
 
 use fixtures::chunk_nbt;
 
 use sekai_app::{
-    BuildProgress, ChunkCoord, CommitOptions, Dimension, HostWorldTree, Progress, RegionKind,
-    Scope, SekaiInstance,
+    BuildProgress, ChunkCoord, CommitOptions, Dimension, HostWorldTree, Progress, RegionKind, Scope,
 };
-use sekai_storage_local::LocalStore;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -106,7 +105,7 @@ async fn unchanged_world_diff_skips_chunk_reads() {
         &[(0, 0, chunk_nbt("marker-1")), (1, 0, chunk_nbt("marker-2"))],
     );
 
-    let mut instance = SekaiInstance::<LocalStore>::init(&store).await.unwrap();
+    let mut instance = support::init_store(&store).await.unwrap();
     instance
         .world_mut(&mut world)
         .update_cache(sekai_app::CacheUpdateOptions::default(), &())
@@ -146,7 +145,7 @@ async fn wiped_cache_falls_back_to_chunk_reads() {
         &[(0, 0, chunk_nbt("marker-1"))],
     );
 
-    let mut instance = SekaiInstance::<LocalStore>::init(&store).await.unwrap();
+    let mut instance = support::init_store(&store).await.unwrap();
     instance
         .world_mut(&mut world)
         .update_cache(sekai_app::CacheUpdateOptions::default(), &())
@@ -159,7 +158,7 @@ async fn wiped_cache_falls_back_to_chunk_reads() {
         .unwrap();
     drop(instance);
     std::fs::remove_dir_all(store_dir.join("cache")).unwrap();
-    let instance = SekaiInstance::<LocalStore>::init(&store).await.unwrap();
+    let instance = support::init_store(&store).await.unwrap();
 
     let (diffs, timings) = instance
         .world(&world)
@@ -187,7 +186,7 @@ async fn changed_chunk_falls_back_and_reports_the_change() {
         &[(0, 0, chunk_nbt("marker-1")), (1, 0, chunk_nbt("marker-2"))],
     );
 
-    let mut instance = SekaiInstance::<LocalStore>::init(&store).await.unwrap();
+    let mut instance = support::init_store(&store).await.unwrap();
     instance
         .world_mut(&mut world)
         .update_cache(sekai_app::CacheUpdateOptions::default(), &())
@@ -233,7 +232,7 @@ async fn header_rewrite_falls_back_but_stays_clean() {
     let chunks = [(0, 0, chunk_nbt("marker-1"))];
     write_region(&path, &chunks);
 
-    let mut instance = SekaiInstance::<LocalStore>::init(&store).await.unwrap();
+    let mut instance = support::init_store(&store).await.unwrap();
     instance
         .world_mut(&mut world)
         .update_cache(sekai_app::CacheUpdateOptions::default(), &())
@@ -266,7 +265,7 @@ async fn deleted_file_reports_absence() {
     let path = world_path.join("region/r.0.0.mca");
     write_region(&path, &[(0, 0, chunk_nbt("marker-1"))]);
 
-    let mut instance = SekaiInstance::<LocalStore>::init(&store).await.unwrap();
+    let mut instance = support::init_store(&store).await.unwrap();
     instance
         .world_mut(&mut world)
         .update_cache(sekai_app::CacheUpdateOptions::default(), &())
@@ -305,7 +304,7 @@ async fn mixed_regions_prove_only_the_unchanged_one() {
     let changed_path = world_path.join("region/r.1.0.mca");
     write_region(&changed_path, &[(32, 0, chunk_nbt("marker-3"))]);
 
-    let mut instance = SekaiInstance::<LocalStore>::init(&store).await.unwrap();
+    let mut instance = support::init_store(&store).await.unwrap();
     instance
         .world_mut(&mut world)
         .update_cache(sekai_app::CacheUpdateOptions::default(), &())

@@ -9,6 +9,7 @@
 #![cfg(feature = "backend-local")]
 
 mod fixtures;
+mod support;
 
 use fixtures::chunk_nbt;
 
@@ -65,7 +66,7 @@ impl Fixture {
         write_region(world_path.join("region/r.1.0.mca"), &payload);
         let mut world = HostWorldTree::new(&world_path).unwrap();
         let store = root.join("store").to_string_lossy().into_owned();
-        let mut instance = SekaiInstance::<LocalStore>::init(&store).await.unwrap();
+        let mut instance = support::init_store(&store).await.unwrap();
         let (report, _) = instance
             .world_mut(&mut world)
             .commit(CommitOptions::default(), Scope::World, &())
