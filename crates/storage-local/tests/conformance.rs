@@ -416,3 +416,153 @@ async fn opener_trait_takes_path_like_locations() {
     drop(store);
     let _store = LocalStore::open(dir.as_path()).await.unwrap();
 }
+
+/// A plain file at the store location is a link: its content names the real
+/// root, and every component (meta, blobs, cache) resolves from there. The
+/// link shares the target's keyspace exclusion, and nothing is created
+/// beside the link.
+#[tokio::test]
+async fn open_follows_a_store_link_file() {
+    let (base, _guard) = tempdir("store-link");
+    let real = base.join("real-store");
+    let mut store = init(&real).await;
+    let hash = ChunkHash::new(sekai_util::hash_bytes(b"payload"));
+    assert!(store.blob_mut().put(&hash, b"payload").await.unwrap());
+    store.blob_mut().sync().await.unwrap();
+    drop(store);
+
+    let world = base.join("world");
+    std::fs::create_dir_all(&world).unwrap();
+    let link = world.join(".sekai");
+    std::fs::write(&link, format!("{}\n", real.display())).unwrap();
+
+    let mut store = LocalStore::open(&link).await.unwrap();
+    // The same keyspace: the real root refuses a second opener while the
+    // link handle lives.
+    let err = LocalStore::open(&real).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            sekai_storage::StorageError::Backend {
+                backend: "sled",
+                ..
+            }
+        ),
+        "unexpected error: {err}"
+    );
+    let mut out = Vec::new();
+    store.blob_mut().fetch_into(&hash, &mut out).await.unwrap();
+    assert_eq!(out, b"payload");
+    drop(store);
+
+    assert!(!world.join("version").exists());
+    assert!(!world.join("meta.sqlite").exists());
+    let _store = LocalStore::open(&real).await.unwrap();
+}
+
+/// A relative link target resolves against the link's parent directory, not
+/// the process working directory, so a moved folder keeps working.
+#[tokio::test]
+async fn open_resolves_a_relative_store_link_against_its_parent() {
+    let (base, _guard) = tempdir("store-link-relative");
+    let real = base.join("real-store");
+    let store = init(&real).await;
+    drop(store);
+
+    let world = base.join("world");
+    std::fs::create_dir_all(&world).unwrap();
+    let link = world.join(".sekai");
+    std::fs::write(&link, "../real-store").unwrap();
+    let _store = LocalStore::open(&link).await.unwrap();
+}
+
+/// An empty link file fails loudly instead of opening the link's own folder
+/// or the working directory.
+#[tokio::test]
+async fn open_of_an_empty_store_link_fails() {
+    let (base, _guard) = tempdir("store-link-empty");
+    let link = base.join(".sekai");
+    std::fs::write(&link, "  \n").unwrap();
+    let err = LocalStore::open(&link).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            sekai_storage::StorageError::Backend {
+                backend: "store link",
+                ..
+            }
+        ),
+        "unexpected error: {err}"
+    );
+}
+
+/// A link to an uninitialized root reports the resolved target and creates
+/// nothing, as a direct open of a missing store does.
+#[tokio::test]
+async fn open_of_a_store_link_to_a_missing_root_fails_without_creating_it() {
+    let (base, _guard) = tempdir("store-link-missing");
+    let target = base.join("real-store");
+    let link = base.join(".sekai");
+    std::fs::write(&link, format!("{}\n", target.display())).unwrap();
+    let err = LocalStore::open(&link).await.unwrap_err();
+    assert!(
+        matches!(&err, sekai_storage::StorageError::StoreMissing { path } if Path::new(path) == target),
+        "unexpected error: {err}"
+    );
+    assert!(!target.exists(), "a failed open must not create anything");
+}
+
+/// A link is followed once: a target that is itself a link file is not a
+/// store root, so the open fails instead of chasing the chain.
+#[tokio::test]
+async fn open_does_not_chain_store_links() {
+    let (base, _guard) = tempdir("store-link-chain");
+    let real = base.join("real-store");
+    let store = init(&real).await;
+    drop(store);
+    let second = base.join("second-link");
+    std::fs::write(&second, format!("{}\n", real.display())).unwrap();
+    let first = base.join("first-link");
+    std::fs::write(&first, format!("{}\n", second.display())).unwrap();
+
+    let err = LocalStore::open(&first).await.unwrap_err();
+    assert!(
+        matches!(&err, sekai_storage::StorageError::StoreMissing { path } if Path::new(path) == second),
+        "unexpected error: {err}"
+    );
+}
+
+/// The version gate runs on the resolved root: a link cannot smuggle an
+/// unsupported store past the check.
+#[tokio::test]
+async fn open_of_a_store_link_gates_the_target_version() {
+    let (base, _guard) = tempdir("store-link-version");
+    let real = base.join("real-store");
+    let store = init(&real).await;
+    drop(store);
+    std::fs::write(real.join("version"), "99\n").unwrap();
+    let link = base.join(".sekai");
+    std::fs::write(&link, format!("{}\n", real.display())).unwrap();
+    let err = LocalStore::open(&link).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            sekai_storage::StorageError::UnsupportedSchema { found: 99, .. }
+        ),
+        "unexpected error: {err}"
+    );
+}
+
+/// A link whose content is not UTF-8 fails as an I/O error naming the link,
+/// never as a lossy path.
+#[tokio::test]
+async fn open_of_a_non_utf8_store_link_fails() {
+    let (base, _guard) = tempdir("store-link-non-utf8");
+    let link = base.join(".sekai");
+    std::fs::write(&link, [0xff, 0xfe]).unwrap();
+    let err = LocalStore::open(&link).await.unwrap_err();
+    assert!(
+        matches!(&err, sekai_storage::StorageError::Io { path, .. } if Path::new(path) == link),
+        "unexpected error: {err}"
+    );
+}
