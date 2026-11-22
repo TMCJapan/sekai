@@ -643,13 +643,22 @@ async fn add_worktree_writes_a_link_open_follows() {
     let content = std::fs::read_to_string(&link).unwrap();
     let canonical = std::fs::canonicalize(&real).unwrap();
     assert_eq!(content.trim(), canonical.to_str().unwrap());
-    let expected = [
+    let mut expected = [
         main_worktree(&real),
         Worktree {
             path: link.clone(),
             head: on_branch("feature"),
         },
     ];
+    // Rows come back in byte-wise path order: on Windows the canonical
+    // store root carries a `\\?\` prefix that sorts after a drive-letter
+    // link path.
+    expected.sort_by(|a, b| {
+        a.path
+            .as_os_str()
+            .as_encoded_bytes()
+            .cmp(b.path.as_os_str().as_encoded_bytes())
+    });
     assert_eq!(store.worktrees().await.unwrap(), expected);
     drop(store);
     let store = LocalStore::open(&link).await.unwrap();
