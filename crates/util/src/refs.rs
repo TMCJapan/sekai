@@ -14,7 +14,7 @@ use core::{fmt, str::FromStr};
 
 use crate::commit::CommitId;
 use crate::error::RefNameError;
-use crate::name::{self, NameRule};
+use crate::name;
 
 /// Name of the ref a fresh store starts with: the active one, unborn,
 /// waiting for the first commit.
@@ -22,21 +22,21 @@ pub const DEFAULT_REF_NAME: &str = "main";
 
 /// Validated ref name.
 ///
-/// Ref names are path-like (`main`, `feature/nightly`): 1-64 bytes of
-/// ASCII alphanumerics plus `.`, `_`, `-`, and `/`, with no empty path
-/// component (no leading, trailing, or doubled `/`) and no `.` or `..`
-/// segment. The whole name is never all digits; digit-only segments in a
-/// path-like name are allowed. No ref may be named `HEAD` (the active
-/// ref is the store's HEAD equivalent).
+/// Names are path-like (`main`, `feature/nightly`): 1-255 bytes of ASCII
+/// alphanumerics plus `.`, `_`, `-`, and `/`, with no empty `/`-separated
+/// component, no `..`, no trailing `.`, and no leading `-`.
+/// Git refuses more shapes, such as a `.lock` suffix, which guard its
+/// files backend; sekai keeps refs in a database and accepts them. Only
+/// the exact name `HEAD` is reserved.
 ///
 /// Ordering and uniqueness are byte-wise and case-sensitive, so `main`
-/// and `Main` are distinct refs; only the `HEAD` reservation ignores ASCII
-/// case.
+/// and `Main` are distinct refs.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RefName(String);
 
 impl RefName {
-    /// Longest accepted name, in bytes (names are ASCII-only).
+    /// Longest accepted name, in bytes (names are ASCII-only). Git sets no
+    /// limit.
     pub const MAX_LEN: usize = name::MAX_LEN;
 
     /// Name the store keeps for itself: no ref may carry it.
@@ -49,18 +49,27 @@ impl RefName {
     /// over-long name reports [`RefNameError::TooLong`] even when it also
     /// holds a non-ASCII character.
     pub fn parse(raw: &str) -> Result<Self, RefNameError> {
-        name::check(raw).map_err(|rule| match rule {
-            NameRule::Empty => RefNameError::Empty,
-            NameRule::TooLong => RefNameError::TooLong(Self::MAX_LEN),
-            NameRule::BadChar(c) => RefNameError::BadChar(c),
-            NameRule::BadPath(reason) => RefNameError::BadPath(reason),
-        })?;
-        // A digit-only token is a commit ID on the CLI, so no ref may
-        // shadow one.
-        if raw.bytes().all(|b| b.is_ascii_digit()) {
-            return Err(RefNameError::Numeric);
+        name::check(raw).map_err(RefNameError::from)?;
+        // An empty component would break the ref hierarchy that refnames
+        // and their short forms rely on.
+        if raw.split('/').any(str::is_empty) {
+            return Err(RefNameError::BadPath("empty path component"));
         }
-        if raw.eq_ignore_ascii_case(Self::RESERVED) {
+        // `..` would read as the range in revision syntax such as `a..b`.
+        if raw.contains("..") {
+            return Err(RefNameError::BadPath("contains '..'"));
+        }
+        // A name ending in `.` would fuse with `..b` into `a...b`,
+        // the unsupported symmetric difference. Git refuses it too.
+        if raw.ends_with('.') {
+            return Err(RefNameError::BadPath("ends with '.'"));
+        }
+        // Git accepts such a ref but refuses to create one, as it would
+        // read as an option; refusing it here means no ref ever has one.
+        if raw.starts_with('-') {
+            return Err(RefNameError::LeadingDash);
+        }
+        if raw == Self::RESERVED {
             return Err(RefNameError::Reserved(Self::RESERVED));
         }
         Ok(Self(String::from(raw)))
@@ -137,6 +146,13 @@ mod tests {
     use super::*;
     use alloc::string::ToString;
 
+    fn bad_path(raw: &str) -> Option<&'static str> {
+        match RefName::parse(raw) {
+            Err(RefNameError::BadPath(rule)) => Some(rule),
+            _ => None,
+        }
+    }
+
     #[test]
     fn accepts_path_like_names() {
         for raw in [
@@ -144,10 +160,22 @@ mod tests {
             "feature/nightly",
             "a",
             "x-y.z_w",
-            "v..1",
-            "a..b",
-            "release..2024",
+            "x-",
+            "a/-b",
+            "v1.2",
             "1/2",
+            "123",
+            "head",
+            "Head",
+            "HEAD/x",
+            "x/HEAD",
+            "a.b/c.d",
+            "x.lock",
+            "x.lock/y",
+            ".hidden",
+            "a/.b",
+            "a/./b",
+            "a./b",
         ] {
             assert_eq!(RefName::parse(raw).unwrap().as_str(), raw);
         }
@@ -155,71 +183,62 @@ mod tests {
     }
 
     #[test]
-    fn rejects_bad_names() {
+    fn rejects_bad_characters() {
         assert_eq!(RefName::parse(""), Err(RefNameError::Empty));
-        assert_eq!(RefName::parse("123"), Err(RefNameError::Numeric));
         assert_eq!(RefName::parse("a b"), Err(RefNameError::BadChar(' ')));
         assert_eq!(RefName::parse("@x"), Err(RefNameError::BadChar('@')));
         // A multi-byte character is reported as itself, not as one of its
         // bytes.
         assert_eq!(RefName::parse("bré"), Err(RefNameError::BadChar('é')));
-        assert_eq!(
-            RefName::parse("/main"),
-            Err(RefNameError::BadPath("empty path component"))
-        );
-        assert_eq!(
-            RefName::parse("main/"),
-            Err(RefNameError::BadPath("empty path component"))
-        );
-        assert_eq!(
-            RefName::parse("a//b"),
-            Err(RefNameError::BadPath("empty path component"))
-        );
-        assert_eq!(
-            RefName::parse(".."),
-            Err(RefNameError::BadPath("'.' or '..' segment"))
-        );
-        assert_eq!(
-            RefName::parse("a/../b"),
-            Err(RefNameError::BadPath("'.' or '..' segment"))
-        );
-        assert_eq!(
-            RefName::parse("a/.."),
-            Err(RefNameError::BadPath("'.' or '..' segment"))
-        );
-        assert_eq!(
-            RefName::parse("."),
-            Err(RefNameError::BadPath("'.' or '..' segment"))
-        );
-        assert_eq!(
-            RefName::parse("a/./b"),
-            Err(RefNameError::BadPath("'.' or '..' segment"))
-        );
-        assert_eq!(
-            RefName::parse("a/."),
-            Err(RefNameError::BadPath("'.' or '..' segment"))
-        );
+    }
+
+    #[test]
+    fn rejects_empty_components_and_double_dots() {
+        for raw in ["/main", "main/", "a//b"] {
+            assert_eq!(bad_path(raw), Some("empty path component"), "{raw}");
+        }
+        for raw in ["..", "v..1", "a/../b", "a/..", "x..lock"] {
+            assert_eq!(bad_path(raw), Some("contains '..'"), "{raw}");
+        }
+        for raw in [".", "end.", "a/b."] {
+            assert_eq!(bad_path(raw), Some("ends with '.'"), "{raw}");
+        }
+    }
+
+    #[test]
+    fn rejects_a_leading_dash() {
+        for raw in ["-", "-x", "-x/y"] {
+            assert_eq!(RefName::parse(raw), Err(RefNameError::LeadingDash), "{raw}");
+        }
+    }
+
+    #[test]
+    fn reserves_only_the_exact_name_head() {
         assert_eq!(
             RefName::parse("HEAD"),
             Err(RefNameError::Reserved(RefName::RESERVED))
         );
+    }
+
+    #[test]
+    fn limits_the_whole_name_to_255_bytes() {
+        assert!(RefName::parse(&"a".repeat(RefName::MAX_LEN)).is_ok());
         assert_eq!(
-            RefName::parse("head"),
-            Err(RefNameError::Reserved(RefName::RESERVED))
-        );
-        let long = "a".repeat(RefName::MAX_LEN + 1);
-        assert_eq!(
-            RefName::parse(&long),
+            RefName::parse(&"a".repeat(RefName::MAX_LEN + 1)),
             Err(RefNameError::TooLong(RefName::MAX_LEN))
+        );
+        let component = "a".repeat(100);
+        assert_eq!(
+            RefName::parse(&[component.as_str(); 3].join("/")),
+            Err(RefNameError::TooLong(RefName::MAX_LEN)),
+            "the limit covers the whole name, not each component"
         );
         // The byte-length check runs first: an over-long name reports
         // `TooLong` even when it also holds a non-ASCII character.
-        let long_non_ascii = "é".repeat(RefName::MAX_LEN);
         assert_eq!(
-            RefName::parse(&long_non_ascii),
+            RefName::parse(&"é".repeat(RefName::MAX_LEN)),
             Err(RefNameError::TooLong(RefName::MAX_LEN))
         );
-        assert!(RefName::parse(&"a".repeat(RefName::MAX_LEN)).is_ok());
     }
 
     #[test]

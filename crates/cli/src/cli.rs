@@ -172,9 +172,10 @@ impl Command {
 pub enum RefCommand {
     /// Point a ref at a commit.
     Create {
-        /// Ref name (ASCII alphanumerics plus ".", "_", "-", "/"; 1-64
-        /// bytes; not all digits). Written bare (never `@`-prefixed); ref
-        /// names feed back as `RefName` tokens, not as `CommitRef`s.
+        /// Ref name (ASCII alphanumerics plus ".", "_", "-", "/"; 1-255
+        /// bytes; no empty component, no "..", no trailing "." or leading
+        /// "-"). Written bare (never `@`-prefixed); ref names feed back as
+        /// `RefName` tokens, not as `CommitRef`s.
         name: RefName,
         /// Commit reference (`<64-char hash>` or a ref name) to point at.
         /// Defaults to the active ref's target.
@@ -228,7 +229,7 @@ impl RefCommand {
 pub enum ScopeCommand {
     /// Save one or more areas under a name.
     Create {
-        /// Scope name (ASCII alphanumerics plus ".", "_", "-", "/"; 1-64
+        /// Scope name (ASCII alphanumerics plus ".", "_", "-", "/"; 1-255
         /// bytes).
         name: ScopeName,
         /// Chunk `DIM:x,z` or rectangle `DIM:x0,z0..x1,z1` (inclusive). A

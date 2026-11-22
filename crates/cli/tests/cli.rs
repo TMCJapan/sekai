@@ -315,7 +315,8 @@ fn validates_commit_refs_at_parse_time() {
         vec!["sekai", "ref", "create", "main", "HEAD"],
         vec!["sekai", "ref", "create", "HEAD"],
         vec!["sekai", "ref", "create"],
-        vec!["sekai", "ref", "create", "123"],
+        vec!["sekai", "ref", "create", "a..b"],
+        vec!["sekai", "ref", "create", "end."],
         vec!["sekai", "ref", "create", "main", H3, "4"],
         vec!["sekai", "ref", "delete"],
         vec!["sekai", "ref"],
@@ -329,6 +330,8 @@ fn validates_commit_refs_at_parse_time() {
         vec!["sekai", "checkout", "w", "v1.2_x-1"],
         vec!["sekai", "diff", H1, H2],
         vec!["sekai", "ref", "create", "main"],
+        // A digit-only name is a ref: commit IDs are 64 hex characters.
+        vec!["sekai", "ref", "create", "123"],
         vec![
             "sekai",
             "ref",
@@ -353,8 +356,8 @@ fn validates_commit_refs_at_parse_time() {
 
     // The refusal names what a reference may be, so the wording is part
     // of the contract the parse error carries.
-    let err = Cli::try_parse_from(["sekai", "checkout", "w", "18446744073709551616"])
-        .expect_err("an out-of-range id is refused");
+    let err = Cli::try_parse_from(["sekai", "checkout", "w", "a..b"])
+        .expect_err("a name with `..` is refused");
     let message = err.to_string();
     assert!(
         message.contains("invalid reference"),
@@ -916,7 +919,6 @@ fn parses_scope_subcommands() {
             "sekai", "scope", "create", "spawn", "--in", "ow:0,0", "--kind", "region",
         ],
         vec!["sekai", "scope", "create", "bad name", "--in", "ow:0,0"],
-        vec!["sekai", "scope", "create", "a/../b", "--in", "ow:0,0"],
         vec!["sekai", "scope", "delete", "spawn", "--force"],
         vec!["sekai", "scope", "list", "--force"],
     ] {
@@ -925,6 +927,10 @@ fn parses_scope_subcommands() {
             "{args:?} must be refused"
         );
     }
+
+    // A scope name refuses no path shape: it never reads as a revision.
+    Cli::try_parse_from(["sekai", "scope", "create", "a/../b", "--in", "ow:0,0"])
+        .expect("a path-shaped scope name parses");
 
     // Errors advertise only the forms a scope area accepts.
     for area in ["bogus:0,0", "nether"] {

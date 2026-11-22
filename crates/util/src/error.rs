@@ -2,6 +2,28 @@
 
 use core::fmt;
 
+use crate::name::NameRule;
+
+impl From<NameRule> for RefNameError {
+    fn from(rule: NameRule) -> Self {
+        match rule {
+            NameRule::Empty => Self::Empty,
+            NameRule::TooLong => Self::TooLong(crate::name::MAX_LEN),
+            NameRule::BadChar(c) => Self::BadChar(c),
+        }
+    }
+}
+
+impl From<NameRule> for ScopeNameError {
+    fn from(rule: NameRule) -> Self {
+        match rule {
+            NameRule::Empty => Self::Empty,
+            NameRule::TooLong => Self::TooLong(crate::name::MAX_LEN),
+            NameRule::BadChar(c) => Self::BadChar(c),
+        }
+    }
+}
+
 /// Error returned when parsing an invalid named code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseCodeError(pub ());
@@ -46,12 +68,12 @@ pub enum RefNameError {
     /// or `/`.
     BadChar(char),
     /// Name has an invalid path shape; the payload is the violated rule
-    /// (an empty component, or a `.`/`..` segment).
+    /// (an empty component, a `..`, or a trailing `.`).
     BadPath(&'static str),
-    /// Name consisted of digits alone (confusable with a commit ID).
-    Numeric,
-    /// Name is reserved for the store's active ref; the payload is the
-    /// reserved spelling (`RefName::RESERVED`).
+    /// Name started with `-`, which reads as an option on a command line.
+    LeadingDash,
+    /// Name is reserved; the payload is the reserved spelling
+    /// (`RefName::RESERVED`).
     Reserved(&'static str),
 }
 
@@ -64,7 +86,7 @@ impl fmt::Display for RefNameError {
             Self::BadPath(reason) => {
                 write!(f, "ref name has an invalid path shape: {reason}")
             }
-            Self::Numeric => write!(f, "ref name must not be all digits"),
+            Self::LeadingDash => write!(f, "ref name starts with '-'"),
             Self::Reserved(name) => write!(f, "ref name {name:?} is reserved"),
         }
     }
@@ -72,8 +94,7 @@ impl fmt::Display for RefNameError {
 
 impl core::error::Error for RefNameError {}
 
-/// Scope name validation failure: [`RefNameError`]'s rules without the
-/// reserved name and the all-digits rule.
+/// Scope name validation failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScopeNameError {
     /// Name was empty.
@@ -84,9 +105,6 @@ pub enum ScopeNameError {
     /// Name held a character outside ASCII alphanumerics, `.`, `_`, `-`,
     /// or `/`.
     BadChar(char),
-    /// Name has an invalid path shape; the payload is the violated rule
-    /// (an empty component, or a `.`/`..` segment).
-    BadPath(&'static str),
 }
 
 impl fmt::Display for ScopeNameError {
@@ -95,9 +113,6 @@ impl fmt::Display for ScopeNameError {
             Self::Empty => write!(f, "scope name is empty"),
             Self::TooLong(limit) => write!(f, "scope name exceeds {limit} bytes"),
             Self::BadChar(c) => write!(f, "scope name holds invalid character: {c:?}"),
-            Self::BadPath(reason) => {
-                write!(f, "scope name has an invalid path shape: {reason}")
-            }
         }
     }
 }

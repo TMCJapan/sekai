@@ -9,16 +9,15 @@ use alloc::vec::Vec;
 use core::{fmt, str::FromStr};
 
 use crate::error::{NamedScopeError, ScopeNameError};
-use crate::name::{self, NameRule};
+use crate::name;
 use crate::{Area, Dimension, Rect, Scope};
 
 /// Validated scope name.
 ///
-/// Scope names follow [`RefName`](crate::RefName)'s path grammar (1-64
-/// bytes of ASCII alphanumerics plus `.`, `_`, `-`, and `/`, no empty or
-/// traversing path component) but reserve no name and may be all digits:
-/// no command reads a scope name where a commit ID could stand. The
-/// separate type keeps scope and ref names from being swapped.
+/// Scope names are 1-255 bytes of ASCII alphanumerics plus `.`, `_`, `-`,
+/// and `/`, such as `spawn` or `hub/nether`. Unlike a ref name, a scope
+/// name never reads as a revision or sits in a hierarchy, so it refuses no
+/// path shape and reserves no name.
 ///
 /// Ordering and uniqueness are byte-wise and case-sensitive.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -34,12 +33,7 @@ impl ScopeName {
     /// [`ScopeNameError::TooLong`] even when it also holds a non-ASCII
     /// character.
     pub fn parse(raw: &str) -> Result<Self, ScopeNameError> {
-        name::check(raw).map_err(|rule| match rule {
-            NameRule::Empty => ScopeNameError::Empty,
-            NameRule::TooLong => ScopeNameError::TooLong(Self::MAX_LEN),
-            NameRule::BadChar(c) => ScopeNameError::BadChar(c),
-            NameRule::BadPath(reason) => ScopeNameError::BadPath(reason),
-        })?;
+        name::check(raw).map_err(ScopeNameError::from)?;
         Ok(Self(String::from(raw)))
     }
 
@@ -143,25 +137,34 @@ mod tests {
     }
 
     #[test]
-    fn scope_names_follow_the_ref_grammar_without_reservations() {
-        for raw in ["spawn", "hub/nether", "x-y.z_w", "1/2", "HEAD", "42"] {
+    fn scope_names_refuse_no_path_shape() {
+        for raw in [
+            "spawn",
+            "hub/nether",
+            "x-y.z_w",
+            "1/2",
+            "HEAD",
+            "42",
+            "v..1",
+            ".hidden",
+            "x.lock",
+            "end.",
+            "/",
+            "a//b",
+            "..",
+            "a/../b",
+            ".",
+        ] {
             assert_eq!(ScopeName::parse(raw).unwrap().as_str(), raw);
         }
         assert_eq!(ScopeName::from_str("spawn").unwrap().to_string(), "spawn");
         assert_eq!(ScopeName::parse(""), Err(ScopeNameError::Empty));
         assert_eq!(ScopeName::parse("a b"), Err(ScopeNameError::BadChar(' ')));
         assert_eq!(
-            ScopeName::parse("a//b"),
-            Err(ScopeNameError::BadPath("empty path component"))
-        );
-        assert_eq!(
-            ScopeName::parse("a/.."),
-            Err(ScopeNameError::BadPath("'.' or '..' segment"))
-        );
-        assert_eq!(
             ScopeName::parse(&"a".repeat(ScopeName::MAX_LEN + 1)),
             Err(ScopeNameError::TooLong(ScopeName::MAX_LEN))
         );
+        assert!(ScopeName::parse(&"a".repeat(ScopeName::MAX_LEN)).is_ok());
         assert_eq!(
             ScopeName::parse(&"é".repeat(ScopeName::MAX_LEN)),
             Err(ScopeNameError::TooLong(ScopeName::MAX_LEN)),
