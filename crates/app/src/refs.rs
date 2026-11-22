@@ -5,8 +5,8 @@
 //! refs: commits move the active ref through the store, and no command
 //! creates, deletes, or activates a ref.
 
-use sekai_core::{CommitId, CommitRef};
-use sekai_storage::SekaiStore;
+use sekai_core::{CommitId, CommitRef, Revision};
+use sekai_storage::{ResolveError, SekaiStore};
 
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
@@ -23,7 +23,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
     ///
     /// `None` when the active ref is unborn. The next commit then records
     /// with no parents, starting a fresh root even if the store already
-    /// holds commits.
+    /// holds commits. Fails when the store has no active ref.
     ///
     /// This is not [`SekaiInstance::latest_commit_id`], which reports the
     /// newest stored commit: the active ref's target need not be the
@@ -31,9 +31,10 @@ impl<S: SekaiStore> SekaiInstance<S> {
     ///
     /// Any caller may run it, including one holding a world lock.
     pub async fn current_commit_id(&self) -> Result<Option<CommitId>, AppError> {
-        Ok(sekai_storage::refs::active_ref(self.store.meta())
-            .await
-            .map_err(AppError::Commit)?
-            .and_then(|active| active.commit))
+        match self.resolve_revision(&Revision::head()).await {
+            Ok(id) => Ok(Some(id)),
+            Err(AppError::Revision(ResolveError::UnbornHead { .. })) => Ok(None),
+            Err(err) => Err(err),
+        }
     }
 }

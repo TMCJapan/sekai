@@ -1,9 +1,7 @@
 //! Diff subcommand execution, DTOs, and coordination.
 
 use anyhow::Context as _;
-use sekai_app::{
-    AppError, ChunkCoord, ChunkDiff, CommitId, HostWorldTree, Revision, Scope, SekaiStore,
-};
+use sekai_app::{ChunkCoord, ChunkDiff, CommitId, HostWorldTree, Revision, Scope, SekaiStore};
 use sekai_storage_local::LocalStore;
 
 use super::diff_render::{
@@ -138,16 +136,6 @@ async fn resolve_commit_pair(
             .await
             .with_context(|| format!("commit {raw} failed to resolve"))
     }
-    async fn active_commit(
-        instance: &sekai_app::SekaiInstance<impl SekaiStore>,
-    ) -> anyhow::Result<CommitId> {
-        match instance.active_ref().await? {
-            None => anyhow::bail!("no active ref to diff against"),
-            Some(active) => active
-                .commit
-                .map_or_else(|| Err(AppError::NoCommits.into()), Ok),
-        }
-    }
     /// Commit parents are stored sorted by ID in both backends, so this
     /// returns the lowest-ID parent. For the single-parent commits that
     /// `commit` creates this is the continued commit; a merge's parents
@@ -163,23 +151,13 @@ async fn resolve_commit_pair(
             .min()
             .with_context(|| format!("commit {commit} has no parent to diff against"))
     }
-    match (old_commit, new_commit) {
-        (Some(old), Some(new)) => {
-            Ok((resolve(instance, old).await?, resolve(instance, new).await?))
-        }
-        (Some(old), None) => {
-            let new_id = active_commit(instance).await?;
-            Ok((resolve(instance, old).await?, new_id))
-        }
-        (None, Some(new)) => {
-            let new_id = resolve(instance, new).await?;
-            Ok((lowest_id_parent(instance, new_id).await?, new_id))
-        }
-        (None, None) => {
-            let new_id = active_commit(instance).await?;
-            Ok((lowest_id_parent(instance, new_id).await?, new_id))
-        }
+    let head = Revision::head();
+    let new = new_commit.unwrap_or(&head);
+    if let Some(old) = old_commit {
+        return Ok((resolve(instance, old).await?, resolve(instance, new).await?));
     }
+    let new_id = resolve(instance, new).await?;
+    Ok((lowest_id_parent(instance, new_id).await?, new_id))
 }
 
 fn scoped_coords(mut coords: Vec<ChunkCoord>, scope: &Scope) -> Vec<ChunkCoord> {
