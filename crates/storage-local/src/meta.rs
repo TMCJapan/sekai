@@ -320,6 +320,23 @@ fn decode_commit(
     ))
 }
 
+/// Fail with `UnknownCommit` when `id` is not stored.
+///
+/// A ref naming a missing commit is corruption, not a ref operation:
+/// checking first reports it as such instead of the foreign-key violation
+/// the write would raise. Dropping `tx` on the error path rolls it back.
+async fn check_commit_exists(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    id: CommitId,
+) -> Result<(), StorageError> {
+    let found: Option<i64> = sqlx::query_scalar("SELECT 1 FROM commits WHERE id = ?")
+        .bind(commit_param(id))
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(db_err)?;
+    found.map(drop).ok_or(StorageError::UnknownCommit { id })
+}
+
 /// Insert a commit row and the edges naming its parents.
 ///
 /// Every parent must exist and none of them may be the commit itself; a
@@ -766,44 +783,64 @@ impl sekai_storage::MetaStore for SqliteMeta {
         Ok(ApplyOutcome { id: commit })
     }
 
-    async fn set_ref(
+    async fn create_ref(
         &mut self,
         name: &Ref,
-        commit: Option<CommitId>,
+        commit: CommitId,
         created_at_ms: u64,
     ) -> Result<(), StorageError> {
-        // A new ref starts inactive; a moved ref keeps its flag and
-        // creation time. `commit = None` is the documented unborn state,
-        // so moving a ref back to unborn is allowed.
-        let stored_commit = commit.map(commit_param);
         let created_at_ms = millis_param(created_at_ms)?;
         let mut tx = self.pool.begin().await.map_err(db_err)?;
-        if let Some(id) = commit {
-            // Pointing at a commit that does not exist is corruption, not
-            // a move: report it as such instead of the foreign-key
-            // violation the upsert would raise.
-            let found: Option<i64> = sqlx::query_scalar("SELECT 1 FROM commits WHERE id = ?")
-                .bind(stored_commit.as_deref())
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(db_err)?;
-            if found.is_none() {
-                tx.rollback().await.map_err(db_err)?;
-                return Err(StorageError::UnknownCommit { id });
-            }
-        }
-        sqlx::query(
+        check_commit_exists(&mut tx, commit).await?;
+        let inserted = sqlx::query(
             "INSERT INTO refs (name, commit_id, active, created_at_ms) VALUES (?, ?, 0, ?)
-             ON CONFLICT(name) DO UPDATE SET commit_id = excluded.commit_id",
+             ON CONFLICT(name) DO NOTHING",
         )
         .bind(name.full_name())
-        .bind(stored_commit.as_deref())
+        .bind(commit_param(commit))
         .bind(created_at_ms)
         .execute(&mut *tx)
         .await
-        .map_err(db_err)?;
+        .map_err(db_err)?
+        .rows_affected();
+        if inserted == 0 {
+            tx.rollback().await.map_err(db_err)?;
+            return Err(StorageError::RefExists {
+                name: name.name.as_str().to_owned(),
+            });
+        }
         tx.commit().await.map_err(db_err)?;
         Ok(())
+    }
+
+    async fn move_ref(&mut self, name: &Ref, commit: CommitId) -> Result<(), StorageError> {
+        let full = name.full_name();
+        let mut tx = self.pool.begin().await.map_err(db_err)?;
+        check_commit_exists(&mut tx, commit).await?;
+        let moved = sqlx::query("UPDATE refs SET commit_id = ? WHERE name = ? AND active = 0")
+            .bind(commit_param(commit))
+            .bind(&full)
+            .execute(&mut *tx)
+            .await
+            .map_err(db_err)?
+            .rows_affected();
+        if moved > 0 {
+            tx.commit().await.map_err(db_err)?;
+            return Ok(());
+        }
+        // Nothing moved: the ref is absent or active. The read shares the
+        // UPDATE's snapshot, so it only refines why.
+        let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM refs WHERE name = ?")
+            .bind(&full)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db_err)?;
+        tx.rollback().await.map_err(db_err)?;
+        let name = name.name.as_str().to_owned();
+        Err(match exists {
+            Some(_) => StorageError::ActiveRefProtected { name },
+            None => StorageError::UnknownRef { name },
+        })
     }
 
     async fn lookup_ref(&self, name: &Ref) -> Result<Option<CommitRef>, StorageError> {
@@ -1094,7 +1131,8 @@ mod tests {
         let mut meta = memory_meta().await;
         let main = branch(DEFAULT_REF_NAME);
         let other = branch("feature");
-        meta.set_ref(&other, None, 1_000).await.unwrap();
+        let root = meta.create_commit(500, &[]).await.unwrap();
+        meta.create_ref(&other, root, 1_000).await.unwrap();
 
         meta.activate_ref(&other).await.unwrap();
         assert_eq!(meta.active_ref().await.unwrap().unwrap().name, other);
@@ -1123,7 +1161,7 @@ mod tests {
             .await
             .unwrap()
             .id;
-        meta.set_ref(&feature, Some(root), 2_000).await.unwrap();
+        meta.create_ref(&feature, root, 2_000).await.unwrap();
 
         // Simulate corruption that bypassed the foreign key on a dedicated
         // connection, so no pooled connection inherits the pragma.
@@ -1149,16 +1187,10 @@ mod tests {
     #[tokio::test]
     async fn an_unborn_active_ref_starts_a_new_root() {
         let mut meta = memory_meta().await;
-        let main = branch(DEFAULT_REF_NAME);
-        let first = meta
-            .apply_commit_incremental(1_000, &[], &[])
-            .await
-            .unwrap()
-            .id;
+        // A commit no ref names: the store holds history, but the unborn
+        // active ref has no parent to demand.
+        let first = meta.create_commit(1_000, &[]).await.unwrap();
 
-        // Moving the active ref to unborn deliberately drops the parent
-        // constraint: the next commit is a fresh root.
-        meta.set_ref(&main, None, 2_000).await.unwrap();
         let second = meta
             .apply_commit_incremental(3_000, &[], &[])
             .await
@@ -1180,19 +1212,26 @@ mod tests {
         // A stale target is a typed error, not an opaque foreign-key
         // violation, and the ref does not appear.
         let missing = CommitId([0xEE; 32]);
-        let err = meta
-            .set_ref(&feature, Some(missing), 1_000)
-            .await
-            .unwrap_err();
+        let err = meta.create_ref(&feature, missing, 1_000).await.unwrap_err();
         assert!(matches!(err, StorageError::UnknownCommit { id } if id == missing));
         assert!(meta.lookup_ref(&feature).await.unwrap().is_none());
+
+        let root = meta.create_commit(1_000, &[]).await.unwrap();
+        meta.create_ref(&feature, root, 1_000).await.unwrap();
+        let err = meta.move_ref(&feature, missing).await.unwrap_err();
+        assert!(matches!(err, StorageError::UnknownCommit { id } if id == missing));
+        assert_eq!(
+            meta.lookup_ref(&feature).await.unwrap().unwrap().commit,
+            Some(root)
+        );
     }
 
     #[tokio::test]
     async fn refs_visit_in_full_refname_order() {
         let mut meta = memory_meta().await;
+        let root = meta.create_commit(0, &[]).await.unwrap();
         for name in ["z", "a/b", "a-b", "A"] {
-            meta.set_ref(&branch(name), None, 0).await.unwrap();
+            meta.create_ref(&branch(name), root, 0).await.unwrap();
         }
         let mut seen = Vec::new();
         meta.visit_refs(|record| {
@@ -1225,24 +1264,73 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn moving_a_born_active_ref_back_to_unborn_keeps_its_state() {
+    async fn creating_an_existing_ref_is_refused() {
         let mut meta = memory_meta().await;
         let main = branch(DEFAULT_REF_NAME);
+        let feature = branch("feature");
+        let first = meta.create_commit(1_000, &[]).await.unwrap();
+        let second = meta.create_commit(2_000, &[first]).await.unwrap();
+
+        // The unborn active ref has a row, so its name is taken.
+        let err = meta.create_ref(&main, first, 3_000).await.unwrap_err();
+        assert!(matches!(err, StorageError::RefExists { ref name } if name == "main"));
+        assert_eq!(meta.lookup_ref(&main).await.unwrap().unwrap().commit, None);
+
+        meta.create_ref(&feature, first, 3_000).await.unwrap();
+        let err = meta.create_ref(&feature, second, 4_000).await.unwrap_err();
+        assert!(matches!(err, StorageError::RefExists { .. }));
+        let kept = meta.lookup_ref(&feature).await.unwrap().unwrap();
+        assert_eq!(kept.commit, Some(first));
+        assert_eq!(kept.created_at_ms, 3_000);
+    }
+
+    #[tokio::test]
+    async fn moving_a_ref_keeps_its_flag_and_creation_time() {
+        let mut meta = memory_meta().await;
+        let feature = branch("feature");
+        let first = meta.create_commit(1_000, &[]).await.unwrap();
+        let second = meta.create_commit(2_000, &[first]).await.unwrap();
+        meta.create_ref(&feature, second, 3_000).await.unwrap();
+
+        // A ref may move anywhere, backwards included.
+        meta.move_ref(&feature, first).await.unwrap();
+        let moved = meta.lookup_ref(&feature).await.unwrap().unwrap();
+        assert_eq!(moved.commit, Some(first));
+        assert!(!moved.active);
+        assert_eq!(moved.created_at_ms, 3_000);
+    }
+
+    #[tokio::test]
+    async fn moving_a_missing_ref_is_refused() {
+        let mut meta = memory_meta().await;
+        let root = meta.create_commit(1_000, &[]).await.unwrap();
+        let err = meta.move_ref(&branch("missing"), root).await.unwrap_err();
+        assert!(matches!(err, StorageError::UnknownRef { ref name } if name == "missing"));
+        assert!(meta.lookup_ref(&branch("missing")).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn the_active_ref_cannot_be_moved() {
+        let mut meta = memory_meta().await;
+        let main = branch(DEFAULT_REF_NAME);
+        let loose = meta.create_commit(500, &[]).await.unwrap();
+
+        // Unborn: moving it would bypass the first commit.
+        let err = meta.move_ref(&main, loose).await.unwrap_err();
+        assert!(matches!(err, StorageError::ActiveRefProtected { ref name } if name == "main"));
+        assert_eq!(meta.lookup_ref(&main).await.unwrap().unwrap().commit, None);
+
+        // Born: only a commit moves it.
         let first = meta
             .apply_commit_incremental(1_000, &[], &[])
             .await
             .unwrap()
             .id;
-        let before = meta.lookup_ref(&main).await.unwrap().unwrap();
-        assert_eq!(before.commit, Some(first));
-
-        meta.set_ref(&main, None, 2_000).await.unwrap();
-        let after = meta.lookup_ref(&main).await.unwrap().unwrap();
-        assert_eq!(after.commit, None, "the target moved back to unborn");
-        assert!(after.active, "the move kept the active flag");
+        let err = meta.move_ref(&main, loose).await.unwrap_err();
+        assert!(matches!(err, StorageError::ActiveRefProtected { .. }));
         assert_eq!(
-            after.created_at_ms, before.created_at_ms,
-            "the move kept the creation time"
+            meta.lookup_ref(&main).await.unwrap().unwrap().commit,
+            Some(first)
         );
     }
 
@@ -1379,7 +1467,8 @@ mod tests {
         let mut meta = memory_meta().await;
         let main = branch(DEFAULT_REF_NAME);
         let other = branch("feature");
-        meta.set_ref(&other, None, 1_000).await.unwrap();
+        let root = meta.create_commit(500, &[]).await.unwrap();
+        meta.create_ref(&other, root, 1_000).await.unwrap();
 
         assert!(matches!(
             meta.delete_ref(&main).await,

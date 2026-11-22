@@ -79,14 +79,20 @@ pub enum StorageError {
     /// The named ref does not exist.
     ///
     /// Emitted by operations that require the ref to exist
-    /// (`activate_ref`); lookups and `delete_ref` report absence as
-    /// `None`/`false` instead.
+    /// (`move_ref`, `activate_ref`); lookups and `delete_ref` report
+    /// absence as `None`/`false` instead.
     UnknownRef {
         /// Requested ref name.
         name: String,
     },
-    /// The active ref cannot be removed: a store without one would have
-    /// nowhere to hang new commits from.
+    /// `create_ref` was asked for a name that already exists.
+    RefExists {
+        /// Requested ref name.
+        name: String,
+    },
+    /// The active ref cannot be removed or moved by a ref operation.
+    /// Removing it would leave new commits nowhere to hang from, and only
+    /// a commit moves it, so its target always continues that history.
     ActiveRefProtected {
         /// Ref that was asked for.
         name: String,
@@ -170,8 +176,9 @@ impl fmt::Display for StorageError {
             Self::InvalidScopeName { name } => write!(f, "stored scope name is invalid: {name}"),
             Self::EmptyScope { name } => write!(f, "stored scope has no area: {name}"),
             Self::UnknownRef { name } => write!(f, "unknown ref: {name}"),
+            Self::RefExists { name } => write!(f, "ref already exists: {name}"),
             Self::ActiveRefProtected { name } => {
-                write!(f, "cannot remove the active ref: {name}")
+                write!(f, "the active ref is protected: {name}")
             }
             Self::NoActiveRef => {
                 f.write_str("store has no active ref: a new commit has nowhere to hang from")

@@ -934,7 +934,7 @@ mod tests {
         // A second ref at the same commit forks the history: the next
         // commit continues the ref that is active.
         let feature = Ref::branch(RefName::parse("feature").unwrap());
-        block_on(meta.set_ref(&feature, Some(first.commit), 1_500)).unwrap();
+        block_on(meta.create_ref(&feature, first.commit, 1_500)).unwrap();
         block_on(meta.activate_ref(&feature)).unwrap();
 
         let (previous, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();

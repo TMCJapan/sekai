@@ -174,11 +174,10 @@ impl fmt::Display for Ref {
 ///
 /// The record carries the active flag but cannot enforce the store-wide
 /// invariant on its own: a store holds at most one ref with `active` set,
-/// and the backend maintains that when the flag moves (`set_ref` and
-/// `activate_ref`). An active ref may be unborn; that is the fresh-store
-/// state. The flag is advisory on a value: a hand-built record is not the
-/// store's authority on which ref is active, so callers must not treat it
-/// as one.
+/// and the backend maintains that when the flag moves (`activate_ref`).
+/// An active ref may be unborn; that is the fresh-store state. The flag is
+/// advisory on a value: a hand-built record is not the store's authority
+/// on which ref is active, so callers must not treat it as one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitRef {
     /// Ref.

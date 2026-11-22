@@ -4,8 +4,8 @@
 
 use sekai_storage::{BlobStore, CacheStore, MetaStore};
 use sekai_util::{
-    ChunkCoord, ChunkHash, CommitEntry, CommitId, Dimension, NamedScope, Rect, Ref, RefName,
-    RegionKind, ScopeName,
+    ChunkCoord, ChunkHash, CommitEntry, CommitId, Dimension, NamedScope, Rect, RegionKind,
+    ScopeName,
 };
 
 const OVER: Dimension = Dimension::OVERWORLD;
@@ -278,9 +278,8 @@ where
 {
     use sekai_storage::graph::{commit_ancestors, commit_history};
 
-    let main = Ref::branch(RefName::parse("main").unwrap());
     // Two independent histories: the second root shares no ancestor with
-    // the first. Pointing the active ref back to unborn starts it.
+    // the first. No ref names it, so it is recorded without the active ref.
     let first = meta
         .apply_commit_incremental(1_000, &[], &[present(0, 0, 1)])
         .await
@@ -291,17 +290,8 @@ where
         .await
         .unwrap()
         .id;
-    meta.set_ref(&main, None, 2_500).await.unwrap();
-    let other = meta
-        .apply_commit_incremental(3_000, &[], &[])
-        .await
-        .unwrap()
-        .id;
-    let child = meta
-        .apply_commit_incremental(4_000, &[other], &[])
-        .await
-        .unwrap()
-        .id;
+    let other = meta.create_commit(3_000, &[]).await.unwrap();
+    let child = meta.create_commit(4_000, &[other]).await.unwrap();
 
     // The graph, not the local record order, decides what a commit
     // inherits: the chunk of `first` is invisible from `child`.

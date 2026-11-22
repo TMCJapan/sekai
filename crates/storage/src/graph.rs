@@ -339,7 +339,7 @@ mod tests {
         let middle = block_on(meta.create_commit(200, &[root])).unwrap();
         let tip = block_on(meta.create_commit(300, &[middle])).unwrap();
         let main = RefName::parse("main").unwrap();
-        block_on(meta.set_ref(&Ref::branch(main.clone()), Some(tip), 300)).unwrap();
+        block_on(meta.create_ref(&Ref::branch(main.clone()), tip, 300)).unwrap();
         meta.with_active_ref(&main);
         (meta, [root, middle, tip])
     }
@@ -432,8 +432,7 @@ mod tests {
     #[test]
     fn an_unborn_ref_resolves_to_nothing() {
         let mut meta = MemMeta::default();
-        let branch = Ref::branch(RefName::parse("main").unwrap());
-        block_on(meta.set_ref(&branch, None, 100)).unwrap();
+        meta.with_active_ref(&RefName::parse("main").unwrap());
         assert_eq!(
             block_on(resolve_revision(&meta, &revision("main"))),
             Err(ResolveError::UnbornRef {
@@ -612,9 +611,13 @@ mod tests {
         ))
         .unwrap()
         .id;
-        // A second history: its root shares no ancestor with `first`.
+        // A second history: its root shares no ancestor with `first`. No
+        // ref operation makes a ref unborn again, so the fake's open fields
+        // stand in for one.
         let main = Ref::branch(RefName::parse("main").unwrap());
-        block_on(meta.set_ref(&main, None, 150)).unwrap();
+        if let Some(record) = meta.refs.get_mut(&main) {
+            record.commit = None;
+        }
         let other = block_on(meta.apply_commit_incremental(
             200,
             &[],
