@@ -1,7 +1,9 @@
 //! Diff subcommand execution, DTOs, and coordination.
 
 use anyhow::Context as _;
-use sekai_app::{AppError, ChunkCoord, ChunkDiff, CommitId, HostWorldTree, Scope, SekaiStore};
+use sekai_app::{
+    AppError, ChunkCoord, ChunkDiff, CommitId, HostWorldTree, Revision, Scope, SekaiStore,
+};
 use sekai_storage_local::LocalStore;
 
 use super::diff_render::{
@@ -9,7 +11,7 @@ use super::diff_render::{
 };
 use super::progress::Bars;
 use super::resolve_selection;
-use crate::cli::{CommitRef, DiffArgs, DiffTarget, Selection};
+use crate::cli::{DiffArgs, DiffTarget, Selection};
 use crate::envelope::envelope_ok;
 use crate::style::Styler;
 
@@ -107,11 +109,11 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
 /// again, and the diff runs against the empty snapshot (ADR-0006).
 async fn resolve_world_commit(
     instance: &sekai_app::SekaiInstance<impl SekaiStore>,
-    commit: Option<&CommitRef>,
+    commit: Option<&Revision>,
 ) -> anyhow::Result<Option<CommitId>> {
     match commit {
         Some(raw) => instance
-            .resolve_commit_ref(raw.as_str())
+            .resolve_revision(raw)
             .await
             .map(Some)
             .with_context(|| format!("commit {raw} failed to resolve")),
@@ -124,15 +126,15 @@ async fn resolve_world_commit(
 
 async fn resolve_commit_pair(
     instance: &sekai_app::SekaiInstance<impl SekaiStore>,
-    old_commit: Option<&CommitRef>,
-    new_commit: Option<&CommitRef>,
+    old_commit: Option<&Revision>,
+    new_commit: Option<&Revision>,
 ) -> anyhow::Result<(CommitId, CommitId)> {
     async fn resolve(
         instance: &sekai_app::SekaiInstance<impl SekaiStore>,
-        raw: &CommitRef,
+        raw: &Revision,
     ) -> anyhow::Result<CommitId> {
         instance
-            .resolve_commit_ref(raw.as_str())
+            .resolve_revision(raw)
             .await
             .with_context(|| format!("commit {raw} failed to resolve"))
     }

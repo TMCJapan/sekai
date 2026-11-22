@@ -7,7 +7,7 @@ sekai checkout ./world 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2
 
 Rebuilds the world from a commit, overwriting region files atomically
 (temp file in the target directory + `fsync` + `rename`; in-place
-mutation never happens). The commit argument accepts a 64-character commit hash or a ref name. Files are stamped with the commit time, and
+mutation never happens). The commit argument is a revision: a 64-character commit hash, a ref name, or `HEAD` (alias `@`), optionally followed by one `~<n>` to step back to an ancestor, such as `HEAD~1`. Files are stamped with the commit time, and
 volatile tags are rewound to capture values.
 
 The default policy is strict:

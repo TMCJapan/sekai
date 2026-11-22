@@ -183,8 +183,8 @@ impl Op {
             Self::ListCommits => instance.list_commits().await.map(drop),
             Self::LatestCommit => instance.latest_commit_id().await.map(drop),
             Self::ResolveRef => {
-                let raw = fx.commit.to_string();
-                instance.resolve_commit_ref(&raw).await.map(drop)
+                let revision = sekai_app::Revision::parse(&id.to_string()).unwrap();
+                instance.resolve_revision(&revision).await.map(drop)
             }
             Self::CreateScope => {
                 let name = ScopeName::parse("lock-matrix").unwrap();

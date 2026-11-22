@@ -186,7 +186,7 @@ pub async fn latest_commit_id<M: MetaStore>(
     Ok(commit.map(|c| c.id))
 }
 
-/// Failures while resolving a commit reference.
+/// Failures while resolving a revision.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResolveError<M> {
     /// Metadata backend failure.
@@ -205,11 +205,6 @@ pub enum ResolveError<M> {
     UnbornRef {
         /// Requested ref name.
         name: RefName,
-    },
-    /// Reference is neither a commit ID nor a ref name.
-    InvalidRef {
-        /// Raw reference text.
-        raw: String,
     },
     /// The revision reads HEAD, but the store has no active ref.
     NoActiveRef,
@@ -241,10 +236,6 @@ impl<M: fmt::Debug> fmt::Display for ResolveError<M> {
             Self::UnknownCommit { id } => write!(f, "unknown commit: {id}"),
             Self::UnknownRef { name } => write!(f, "unknown ref: {name}"),
             Self::UnbornRef { name } => write!(f, "ref has no commit yet: {name}"),
-            Self::InvalidRef { raw } => write!(
-                f,
-                "invalid reference: {raw:?}, expected <64-char commit hash> or <ref>"
-            ),
             Self::NoActiveRef => write!(f, "HEAD names no ref: the store has no active ref"),
             Self::UnbornHead { branch } => write!(
                 f,
@@ -255,31 +246,14 @@ impl<M: fmt::Debug> fmt::Display for ResolveError<M> {
     }
 }
 
-/// Resolve a commit reference: a 64-character hexadecimal commit ID or a
-/// bare ref name.
-///
-/// A 64-character hexadecimal spelling is a commit ID or `UnknownCommit`,
-/// never a ref: [`RefName`] refuses that spelling, so no ref can carry it.
-/// An unborn ref has no commit to point at yet.
-pub async fn resolve_commit_ref<M: MetaStore>(
-    meta: &M,
-    raw: &str,
-) -> Result<CommitId, ResolveError<M::Error>> {
-    if let Ok(id) = raw.parse::<CommitId>() {
-        return known_commit(meta, id).await;
-    }
-    let name = RefName::parse(raw).map_err(|_| ResolveError::InvalidRef {
-        raw: String::from(raw),
-    })?;
-    branch_commit(meta, name).await
-}
-
 /// Resolve `revision` to a commit.
 ///
 /// `HEAD` is the active ref's commit. A commit ID must name a recorded
-/// commit, and a name is looked up as a branch. Each `~<n>` step then
-/// follows the first parent `n` times, as Git's `get_nth_ancestor` does;
-/// a step past a root commit is an `UnknownRevision`.
+/// commit, and a name is looked up as a branch; an unborn one has no commit
+/// to point at yet. A `~<n>` step then follows the first parent `n`
+/// times, as Git's `get_nth_ancestor` does; a step past a root commit is an
+/// `UnknownRevision`. Parents are stored sorted by ID, so for a commit with
+/// several the first is the lowest-ID one; commits sekai records have one.
 pub async fn resolve_revision<M: MetaStore>(
     meta: &M,
     revision: &Revision,
@@ -352,52 +326,6 @@ mod tests {
         assert_eq!(listed.len(), 2);
         assert_eq!(listed[0].id, first);
         assert_eq!(listed[1].id, second);
-    }
-
-    #[test]
-    fn resolves_hashes_and_refs() {
-        let mut meta = MemMeta::default();
-        let first = block_on(meta.create_commit(100, &[])).unwrap();
-        let second = block_on(meta.create_commit(200, &[first])).unwrap();
-        let branch = Ref::branch(RefName::parse("main").unwrap());
-        block_on(meta.set_ref(&branch, Some(second), 300)).unwrap();
-
-        let first_hex = first.to_string();
-        assert_eq!(first_hex.len(), 64);
-        assert_eq!(block_on(resolve_commit_ref(&meta, &first_hex)), Ok(first));
-        assert_eq!(block_on(resolve_commit_ref(&meta, "main")), Ok(second));
-        assert_eq!(
-            block_on(resolve_commit_ref(&meta, &"f".repeat(64))),
-            Err(ResolveError::UnknownCommit {
-                id: CommitId::from_hex("f".repeat(64).as_bytes()).unwrap()
-            })
-        );
-        assert_eq!(
-            block_on(resolve_commit_ref(&meta, " 1")),
-            Err(ResolveError::InvalidRef { raw: " 1".into() })
-        );
-        assert_eq!(
-            block_on(resolve_commit_ref(&meta, "")),
-            Err(ResolveError::InvalidRef { raw: String::new() })
-        );
-        assert_eq!(
-            block_on(resolve_commit_ref(&meta, "other")),
-            Err(ResolveError::UnknownRef {
-                name: RefName::parse("other").unwrap()
-            })
-        );
-        assert!(matches!(
-            block_on(resolve_commit_ref(&meta, "a b")),
-            Err(ResolveError::InvalidRef { .. })
-        ));
-        assert!(matches!(
-            block_on(resolve_commit_ref(&meta, "@123")),
-            Err(ResolveError::InvalidRef { .. })
-        ));
-        assert!(matches!(
-            block_on(resolve_commit_ref(&meta, "@main")),
-            Err(ResolveError::InvalidRef { .. })
-        ));
     }
 
     fn revision(text: &str) -> Revision {
@@ -507,7 +435,7 @@ mod tests {
         let branch = Ref::branch(RefName::parse("main").unwrap());
         block_on(meta.set_ref(&branch, None, 100)).unwrap();
         assert_eq!(
-            block_on(resolve_commit_ref(&meta, "main")),
+            block_on(resolve_revision(&meta, &revision("main"))),
             Err(ResolveError::UnbornRef {
                 name: RefName::parse("main").unwrap()
             })
