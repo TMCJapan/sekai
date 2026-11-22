@@ -616,7 +616,7 @@ fn on_branch(raw: &str) -> Head {
 
 /// The store's own worktree row: init registers the canonical store root
 /// with HEAD unborn on the default branch.
-fn main_worktree(root: &Path) -> Worktree {
+fn main_worktree(root: impl AsRef<Path>) -> Worktree {
     Worktree {
         path: std::fs::canonicalize(root).unwrap(),
         head: on_main(),
@@ -767,8 +767,9 @@ async fn add_worktree_refuses_a_non_utf8_link_path() {
     let (base, _guard) = tempdir("worktree-non-utf8");
     let real = base.join("real-store");
     let store = init(&real).await;
+    // No parent directory is created: the key check runs before any I/O,
+    // and macOS filesystems refuse non-UTF-8 names outright.
     let world = base.join(std::ffi::OsString::from_vec(vec![0xff, 0xfe]));
-    std::fs::create_dir_all(&world).unwrap();
     let link = world.join(".sekai");
 
     let err = store

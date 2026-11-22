@@ -1305,9 +1305,12 @@ mod tests {
         assert_eq!(stored, seen);
     }
 
+    /// A worktree row as the store keeps it: keys are absolute, so the
+    /// expectation matches on every platform (`/x` resolves to `C:\x` on
+    /// Windows).
     fn worktree(path: impl AsRef<Path>, head: Head) -> Worktree {
         Worktree {
-            path: path.as_ref().to_path_buf(),
+            path: std::path::absolute(path).unwrap(),
             head,
         }
     }
@@ -1346,7 +1349,9 @@ mod tests {
         );
 
         // A re-init keeps the row even once its HEAD has moved on.
-        sqlx::query("UPDATE worktrees SET head_ref = 'refs/heads/feature' WHERE path = '/store'")
+        let store = std::path::absolute("/store").unwrap();
+        sqlx::query("UPDATE worktrees SET head_ref = 'refs/heads/feature' WHERE path = ?")
+            .bind(store.to_str().unwrap())
             .execute(&meta.pool)
             .await
             .unwrap();
@@ -1425,7 +1430,8 @@ mod tests {
             ),
             "unexpected error: {err}"
         );
-        assert!(err.to_string().contains("/worlds/main"), "{err}");
+        let key = std::path::absolute("/worlds/main").unwrap();
+        assert!(err.to_string().contains(key.to_str().unwrap()), "{err}");
     }
 
     #[tokio::test]

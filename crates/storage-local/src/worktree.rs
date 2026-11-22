@@ -84,7 +84,8 @@ impl LocalStore {
 /// The absolute UTF-8 spelling of a store location, the key a worktree
 /// row carries. A location that is not valid UTF-8 fails loudly instead
 /// of storing a lossy path.
-fn store_key(path: &Path) -> Result<String, StorageError> {
+fn store_key(path: impl AsRef<Path>) -> Result<String, StorageError> {
+    let path = path.as_ref();
     let path =
         std::path::absolute(path).map_err(|source| io_error(path.display().to_string(), source))?;
     path.to_str().map(str::to_owned).ok_or_else(|| {
