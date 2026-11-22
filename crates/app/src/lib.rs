@@ -38,7 +38,7 @@ pub use commit::{
     StatusTimings,
 };
 pub use diff::{ChunkDiff, DiffTimings, world_chunk_coords};
-pub use error::AppError;
+pub use error::{AppError, Lookup, NameKind};
 pub use instance::{SekaiInstance, WorldHandle, WorldHandleMut};
 pub use progress::{BuildProgress, Progress};
 pub use sekai_core::{

@@ -8,16 +8,24 @@
 use sekai_core::{Dimension, NamedScope, Rect, Scope, ScopeName};
 use sekai_storage::{MetaStore as _, SekaiStore};
 
-use crate::error::AppError;
+use crate::error::{AppError, Lookup, NameKind};
 use crate::instance::SekaiInstance;
 use crate::time::now_ms;
+
+/// The error for a scope name the store does not hold.
+fn not_found(name: &ScopeName) -> AppError {
+    AppError::NotFound {
+        kind: Lookup::Scope,
+        name: name.as_str().to_owned(),
+    }
+}
 
 impl<S: SekaiStore> SekaiInstance<S> {
     /// Save the areas as the scope `name`, covering every region family.
     ///
     /// A selection without an area fails with [`AppError::InvalidScope`]
     /// before the store is touched. An existing
-    /// name fails with [`AppError::ScopeExists`] unless `force` replaces
+    /// name fails with [`AppError::AlreadyExists`] unless `force` replaces
     /// it; a replacement keeps the original creation time and swaps every
     /// area at once. Returns the record as stored.
     ///
@@ -34,7 +42,8 @@ impl<S: SekaiStore> SekaiInstance<S> {
         let mut record = NamedScope::new(name.clone(), areas, 0)?;
         record.created_at_ms = match self.store.meta().lookup_scope(name).await? {
             Some(_) if !force => {
-                return Err(AppError::ScopeExists {
+                return Err(AppError::AlreadyExists {
+                    kind: NameKind::Scope,
                     name: name.as_str().to_owned(),
                 });
             }
@@ -45,10 +54,14 @@ impl<S: SekaiStore> SekaiInstance<S> {
         Ok(record)
     }
 
-    /// Remove `name`, returning whether a scope was removed: `false` means
-    /// no scope had that name, not that the removal failed.
-    pub async fn delete_scope(&mut self, name: &ScopeName) -> Result<bool, AppError> {
-        Ok(self.store.meta_mut().delete_scope(name).await?)
+    /// Remove `name`; fails with [`AppError::NotFound`] when no scope has
+    /// that name.
+    pub async fn delete_scope(&mut self, name: &ScopeName) -> Result<(), AppError> {
+        if self.store.meta_mut().delete_scope(name).await? {
+            Ok(())
+        } else {
+            Err(not_found(name))
+        }
     }
 
     /// List scopes in name order.
@@ -58,7 +71,7 @@ impl<S: SekaiStore> SekaiInstance<S> {
 
     /// The selection the scope `name` stands for, for a `--scope` run.
     ///
-    /// An unknown name fails with [`AppError::UnknownScope`]: only the
+    /// An unknown name fails with [`AppError::NotFound`]: only the
     /// store knows its scope names, so the caller cannot check earlier.
     ///
     /// The scope is resolved once per run; a concurrent replacement affects
@@ -69,8 +82,6 @@ impl<S: SekaiStore> SekaiInstance<S> {
             .lookup_scope(name)
             .await?
             .map(|record| record.to_scope())
-            .ok_or_else(|| AppError::UnknownScope {
-                name: name.as_str().to_owned(),
-            })
+            .ok_or_else(|| not_found(name))
     }
 }

@@ -16,6 +16,24 @@ pub(crate) fn duplicate_region(
     ))
 }
 
+/// What a name names, for errors about taken names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameKind {
+    /// A branch.
+    Branch,
+    /// A named scope.
+    Scope,
+}
+
+/// What a command looked up and did not find.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lookup {
+    /// A branch to delete or check out.
+    Branch,
+    /// A named scope.
+    Scope,
+}
+
 /// Failures while committing, checking out, or listing commits.
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
@@ -89,34 +107,33 @@ pub enum AppError {
     /// Commit reference (`<64-char hash>` or ref name) could not be resolved.
     #[error("{0}")]
     CommitRef(sekai_storage::ResolveError<sekai_storage::StorageError>),
-    /// Ref name is already taken.
-    #[error("ref already exists: {name} (use --force to move it)")]
-    RefExists {
-        /// Conflicting ref name.
+    /// A branch or scope of that name already exists.
+    #[error("{}", match .kind {
+        NameKind::Branch => format!("a branch named '{name}' already exists"),
+        NameKind::Scope => format!("a scope named '{name}' already exists"),
+    })]
+    AlreadyExists {
+        /// What the name names.
+        kind: NameKind,
+        /// The name.
         name: String,
     },
-    /// The named ref does not exist.
-    #[error("unknown ref: {name}")]
-    UnknownRef {
-        /// Ref that was asked for.
+    /// No branch or scope has that name. Git words the miss per command
+    /// (git 2.53).
+    #[error("{}", match .kind {
+        Lookup::Branch => format!("branch '{name}' not found"),
+        Lookup::Scope => format!("no scope named '{name}'"),
+    })]
+    NotFound {
+        /// What the command looked for.
+        kind: Lookup,
+        /// The name.
         name: String,
     },
     /// The active ref cannot be removed.
     #[error("cannot remove the active ref: {name} (activate another ref first)")]
     ActiveRef {
         /// Ref that was asked for.
-        name: String,
-    },
-    /// Scope name is already taken.
-    #[error("scope already exists: {name} (use --force to replace it)")]
-    ScopeExists {
-        /// Conflicting scope name.
-        name: String,
-    },
-    /// The named scope does not exist.
-    #[error("unknown scope: {name}")]
-    UnknownScope {
-        /// Scope that was asked for.
         name: String,
     },
     /// Scope would select nothing.

@@ -128,12 +128,15 @@ async fn switching_refs_forks_the_history() {
     assert!(!record.active);
 
     // Moving an existing ref needs `force`.
-    assert!(
+    assert!(matches!(
         instance
             .create_ref(&feature, Some(first.commit), false)
-            .await
-            .is_err()
-    );
+            .await,
+        Err(sekai_app::AppError::AlreadyExists {
+            kind: sekai_app::NameKind::Branch,
+            ..
+        })
+    ));
 
     // The active ref decides where the next commit lands.
     instance.activate_ref(&feature).await.unwrap();
@@ -176,8 +179,14 @@ async fn the_active_ref_is_protected() {
 
     let other = RefName::parse("other").unwrap();
     instance.create_ref(&other, None, false).await.unwrap();
-    assert!(instance.delete_ref(&other).await.unwrap());
-    assert!(!instance.delete_ref(&other).await.unwrap());
+    instance.delete_ref(&other).await.unwrap();
+    assert!(matches!(
+        instance.delete_ref(&other).await,
+        Err(sekai_app::AppError::NotFound {
+            kind: sekai_app::Lookup::Branch,
+            ..
+        })
+    ));
     assert_eq!(instance.list_refs().await.unwrap().len(), 1);
 }
 
@@ -253,7 +262,13 @@ async fn ref_writes_report_a_missing_target() {
     // stays where it was.
     let err = instance.activate_ref(&feature).await.unwrap_err();
     assert!(
-        matches!(err, sekai_app::AppError::UnknownRef { .. }),
+        matches!(
+            err,
+            sekai_app::AppError::NotFound {
+                kind: sekai_app::Lookup::Branch,
+                ..
+            }
+        ),
         "{err}"
     );
     let active = instance

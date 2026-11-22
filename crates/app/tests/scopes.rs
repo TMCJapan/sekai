@@ -9,8 +9,8 @@ mod fixtures;
 use fixtures::chunk_nbt;
 
 use sekai_app::{
-    AppError, Area, ChunkCoord, Dimension, HostWorldTree, NamedScopeError, Rect, RegionKind, Scope,
-    ScopeName,
+    AppError, Area, ChunkCoord, Dimension, HostWorldTree, Lookup, NameKind, NamedScopeError, Rect,
+    RegionKind, Scope, ScopeName,
 };
 use sekai_storage_local::LocalStore;
 use std::path::Path;
@@ -74,8 +74,14 @@ async fn a_scope_is_created_listed_and_deleted() {
         "listed whole, in name order"
     );
 
-    assert!(instance.delete_scope(&spawn).await.unwrap());
-    assert!(!instance.delete_scope(&spawn).await.unwrap());
+    instance.delete_scope(&spawn).await.unwrap();
+    assert!(matches!(
+        instance.delete_scope(&spawn).await,
+        Err(AppError::NotFound {
+            kind: Lookup::Scope,
+            ..
+        })
+    ));
     assert_eq!(instance.list_scopes().await.unwrap().len(), 1);
 }
 
@@ -95,7 +101,9 @@ async fn an_existing_scope_is_replaced_only_with_force() {
         .create_scope(&spawn, vec![(OVER, Rect::new(1, 1, 1, 1))], false)
         .await
         .unwrap_err();
-    assert!(matches!(err, AppError::ScopeExists { name } if name == "spawn"));
+    assert!(
+        matches!(err, AppError::AlreadyExists { kind: NameKind::Scope, name } if name == "spawn")
+    );
     assert_eq!(instance.list_scopes().await.unwrap(), vec![first.clone()]);
 
     let replaced = instance
@@ -131,7 +139,7 @@ async fn a_scope_resolves_to_its_rectangles() {
         .await
         .unwrap();
     let err = instance.resolve_scope(&name("spawn")).await.unwrap_err();
-    assert!(matches!(err, AppError::UnknownScope { name } if name == "spawn"));
+    assert!(matches!(err, AppError::NotFound { kind: Lookup::Scope, name } if name == "spawn"));
 
     instance
         .create_scope(

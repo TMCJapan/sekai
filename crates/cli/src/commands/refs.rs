@@ -57,13 +57,10 @@ pub async fn run(store: &str, action: &RefCommand, style: Styler) -> anyhow::Res
             }
         }
         RefCommand::Delete { name, json } => {
-            let removed = instance
+            instance
                 .delete_ref(name)
                 .await
                 .with_context(|| format!("delete of ref {name} failed"))?;
-            if !removed {
-                anyhow::bail!("unknown ref: {name}");
-            }
             if *json {
                 println!(
                     "{}",
