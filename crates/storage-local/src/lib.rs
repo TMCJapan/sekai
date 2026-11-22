@@ -11,6 +11,7 @@ pub use blob::SledBlob;
 pub use cache::SledCache;
 pub use meta::SqliteMeta;
 pub use version::STORE_VERSION;
+pub use worktree::Worktree;
 
 use std::path::{Path, PathBuf};
 
@@ -61,12 +62,18 @@ impl SekaiStoreOpener for LocalStore {
     /// before any database opens. sled admits a single opener per keyspace,
     /// so a concurrent initialization of the same root fails loudly instead
     /// of racing.
+    ///
+    /// The store registers itself as its main worktree, keyed by the
+    /// canonical root with HEAD unborn on the default branch; a re-init
+    /// keeps that row and its HEAD.
     async fn init(path: impl AsRef<Self::Path>) -> Result<Self, StorageError> {
         let root = path.as_ref();
         std::fs::create_dir_all(root)
             .map_err(|source| io_error(root.display().to_string(), source))?;
         version::init(root)?;
-        Self::connect(root).await
+        let store = Self::connect(root).await?;
+        store.init_worktree().await?;
+        Ok(store)
     }
 
     /// Open the existing store rooted at `root`.
