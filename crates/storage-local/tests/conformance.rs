@@ -292,6 +292,24 @@ async fn open_gates_the_store_version() {
     );
 }
 
+/// A store from before refs were keyed by full refname (version 1) is
+/// refused, not migrated.
+#[tokio::test]
+async fn open_refuses_a_version_1_store() {
+    let (dir, _guard) = tempdir("version-1");
+    let store = init(&dir).await;
+    drop(store);
+    std::fs::write(dir.join("version"), "1\n").unwrap();
+    let err = LocalStore::open(&dir).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            sekai_storage::StorageError::UnsupportedSchema { found: 1, .. }
+        ),
+        "unexpected error: {err}"
+    );
+}
+
 /// Re-initializing a store of another version is refused before any
 /// database opens, as open refuses it.
 #[tokio::test]

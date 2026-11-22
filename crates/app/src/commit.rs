@@ -861,7 +861,7 @@ fn stage_chunk(
 mod tests {
     use super::*;
     use sekai_core::staging::stage_present;
-    use sekai_core::{Area, ChunkHash, Dimension, Rect, RefName, RegionKind};
+    use sekai_core::{Area, ChunkHash, Dimension, Rect, Ref, RefName, RegionKind};
     use sekai_storage::testing::{MemMeta, block_on};
 
     const OVER: Dimension = Dimension::OVERWORLD;
@@ -933,7 +933,7 @@ mod tests {
 
         // A second ref at the same commit forks the history: the next
         // commit continues the ref that is active.
-        let feature = RefName::parse("feature").unwrap();
+        let feature = Ref::branch(RefName::parse("feature").unwrap());
         block_on(meta.set_ref(&feature, Some(first.commit), 1_500)).unwrap();
         block_on(meta.activate_ref(&feature)).unwrap();
 
@@ -955,7 +955,9 @@ mod tests {
             vec![first.commit]
         );
         // The ref that was left behind keeps naming the first commit.
-        let main = block_on(meta.lookup_ref(&main)).unwrap().unwrap();
+        let main = block_on(meta.lookup_ref(&Ref::branch(main)))
+            .unwrap()
+            .unwrap();
         assert_eq!(main.commit, Some(first.commit));
     }
 

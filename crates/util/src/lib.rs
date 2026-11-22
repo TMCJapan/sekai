@@ -27,7 +27,7 @@ pub use dimension::Dimension;
 pub use error::{HexError, NamedScopeError, ParseCodeError, RefNameError, ScopeNameError};
 pub use hash::{BytesHasher, ChunkHash, hash_bytes};
 pub use named_scope::{NamedScope, ScopeName};
-pub use refs::{CommitRef, DEFAULT_REF_NAME, RefName};
+pub use refs::{CommitRef, DEFAULT_REF_NAME, Ref, RefKind, RefName};
 pub use region::{ApplyOutcome, CommitEntry, RegionFingerprint, RegionKey};
 pub use region_kind::{RegionKind, UnknownRegionKind};
 pub use scope::{Area, Rect, Scope};

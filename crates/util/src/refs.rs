@@ -1,7 +1,8 @@
 //! Named, movable pointers to commits.
 //!
 //! Refs are the store's branch model: a name bound to a commit that moves
-//! forward when a new commit lands on it. A ref without a commit is
+//! forward when a new commit lands on it. The store keys them by the full
+//! Git refname (`refs/heads/<name>`). A ref without a commit is
 //! *unborn* - it names a history that has not started yet. At most one ref
 //! is *active*: the one new commits hang from. A store normally has
 //! exactly one, but the invariant is "at most", enforced by the backend.
@@ -20,7 +21,7 @@ use crate::name;
 /// waiting for the first commit.
 pub const DEFAULT_REF_NAME: &str = "main";
 
-/// Validated ref name.
+/// Validated short ref name: the part after `refs/heads/`.
 ///
 /// Names are path-like (`main`, `feature/nightly`): 1-255 bytes of ASCII
 /// alphanumerics plus `.`, `_`, `-`, and `/`, with no empty `/`-separated
@@ -95,6 +96,73 @@ impl FromStr for RefName {
     }
 }
 
+/// Namespace a ref lives in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum RefKind {
+    /// `refs/heads/<name>`.
+    Branch,
+}
+
+impl RefKind {
+    /// Every kind, in refname order.
+    pub const ALL: [Self; 1] = [Self::Branch];
+
+    /// Refname prefix of this namespace, trailing `/` included.
+    pub const fn prefix(self) -> &'static str {
+        match self {
+            Self::Branch => "refs/heads/",
+        }
+    }
+}
+
+/// A ref, identified by its namespace and short name.
+///
+/// The store keys refs by the full Git refname (`refs/heads/main`), which
+/// [`Self::full_name`] and [`Self::from_full`] convert to and from. The
+/// derived order equals the byte order of the full refnames.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Ref {
+    /// Namespace.
+    pub kind: RefKind,
+    /// Short name within the namespace.
+    pub name: RefName,
+}
+
+impl Ref {
+    /// Construct a ref from its parts.
+    pub const fn new(kind: RefKind, name: RefName) -> Self {
+        Self { kind, name }
+    }
+
+    /// The branch `refs/heads/<name>`.
+    pub const fn branch(name: RefName) -> Self {
+        Self::new(RefKind::Branch, name)
+    }
+
+    /// The full Git refname, such as `refs/heads/main`.
+    pub fn full_name(&self) -> String {
+        let mut full = String::from(self.kind.prefix());
+        full.push_str(self.name.as_str());
+        full
+    }
+
+    /// Parse a full refname. Anything outside `refs/heads/` fails with
+    /// [`RefNameError::UnknownNamespace`].
+    pub fn from_full(raw: &str) -> Result<Self, RefNameError> {
+        let (kind, short) = RefKind::ALL
+            .into_iter()
+            .find_map(|kind| raw.strip_prefix(kind.prefix()).map(|short| (kind, short)))
+            .ok_or(RefNameError::UnknownNamespace)?;
+        Ok(Self::new(kind, RefName::parse(short)?))
+    }
+}
+
+impl fmt::Display for Ref {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}{}", self.kind.prefix(), self.name)
+    }
+}
+
 /// A named pointer to a commit.
 ///
 /// The record carries the active flag but cannot enforce the store-wide
@@ -106,8 +174,8 @@ impl FromStr for RefName {
 /// as one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommitRef {
-    /// Ref name.
-    pub name: RefName,
+    /// Ref.
+    pub name: Ref,
     /// Commit the ref points at, or `None` while the ref is unborn.
     pub commit: Option<CommitId>,
     /// Whether this ref is the active one (new commits hang from it).
@@ -122,7 +190,7 @@ impl CommitRef {
     /// A struct literal is equally valid and clearer when only a few
     /// fields differ; this helper exists for all-field construction.
     pub const fn new(
-        name: RefName,
+        name: Ref,
         commit: Option<CommitId>,
         active: bool,
         created_at_ms: u64,
@@ -145,6 +213,7 @@ impl CommitRef {
 mod tests {
     use super::*;
     use alloc::string::ToString;
+    use alloc::vec::Vec;
 
     fn bad_path(raw: &str) -> Option<&'static str> {
         match RefName::parse(raw) {
@@ -242,8 +311,59 @@ mod tests {
     }
 
     #[test]
+    fn full_names_round_trip() {
+        for (full, short) in [
+            ("refs/heads/main", "main"),
+            ("refs/heads/feature/x", "feature/x"),
+        ] {
+            let r = Ref::from_full(full).unwrap();
+            assert_eq!(r, Ref::branch(RefName::parse(short).unwrap()));
+            assert_eq!(r.full_name(), full);
+            assert_eq!(r.to_string(), full);
+        }
+    }
+
+    #[test]
+    fn full_names_outside_heads_are_refused() {
+        for raw in [
+            "main",
+            "refs/tags/v1",
+            "heads/main",
+            "refs/main",
+            "refs/remotes/o/main",
+            "refs/heads",
+        ] {
+            assert_eq!(
+                Ref::from_full(raw),
+                Err(RefNameError::UnknownNamespace),
+                "{raw}"
+            );
+        }
+        assert_eq!(Ref::from_full("refs/heads/"), Err(RefNameError::Empty));
+        assert_eq!(
+            Ref::from_full("refs/heads/HEAD"),
+            Err(RefNameError::Reserved(RefName::RESERVED))
+        );
+    }
+
+    #[test]
+    fn ref_order_matches_full_name_order() {
+        let name = |raw| RefName::parse(raw).unwrap();
+        let mut refs = alloc::vec![
+            Ref::branch(name("z")),
+            Ref::branch(name("a/b")),
+            Ref::branch(name("a-b")),
+            Ref::branch(name("A")),
+        ];
+        let mut full: Vec<String> = refs.iter().map(Ref::full_name).collect();
+        refs.sort();
+        full.sort();
+        assert_eq!(refs.iter().map(Ref::full_name).collect::<Vec<_>>(), full);
+    }
+
+    #[test]
     fn unborn_refs_have_no_commit() {
-        let name = RefName::parse("main").unwrap();
+        let name = Ref::branch(RefName::parse("main").unwrap());
         let record = CommitRef::new(name.clone(), None, true, 1_700_000_000_000);
         assert!(record.is_unborn());
         assert!(record.active);
@@ -252,7 +372,7 @@ mod tests {
 
     #[test]
     fn born_refs_name_a_commit() {
-        let name = RefName::parse("main").unwrap();
+        let name = Ref::branch(RefName::parse("main").unwrap());
         let commit = CommitId([7; 32]);
         let record = CommitRef::new(name, Some(commit), false, 1_700_000_000_000);
         assert!(!record.is_unborn());

@@ -8,8 +8,8 @@
 use alloc::vec::Vec;
 use core::future::Future;
 use sekai_util::{
-    ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DimHash, NamedScope,
-    RefName, RegionHash, RootHash, ScopeName, hash_bytes,
+    ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DimHash, NamedScope, Ref,
+    RegionHash, RootHash, ScopeName, hash_bytes,
 };
 
 use crate::{DimNode, RegionNode, RootNode, TreeNodes};
@@ -163,18 +163,18 @@ pub trait MetaStore {
     /// is first created.
     fn set_ref(
         &mut self,
-        name: &RefName,
+        name: &Ref,
         commit: Option<CommitId>,
         created_at_ms: u64,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
-    /// The ref with this name, or `None` when it does not exist.
+    /// The ref `name`, or `None` when it does not exist.
     fn lookup_ref(
         &self,
-        name: &RefName,
+        name: &Ref,
     ) -> impl Future<Output = Result<Option<CommitRef>, Self::Error>> + Send;
 
-    /// Visit refs in name order.
+    /// Visit refs in full refname order (byte-wise).
     fn visit_refs<F>(&self, visit: F) -> impl Future<Output = Result<(), Self::Error>> + Send
     where
         F: FnMut(&CommitRef) -> bool + Send;
@@ -182,10 +182,7 @@ pub trait MetaStore {
     /// Remove `name`. Returns whether a ref was removed.
     ///
     /// The active ref is never removed.
-    fn delete_ref(
-        &mut self,
-        name: &RefName,
-    ) -> impl Future<Output = Result<bool, Self::Error>> + Send;
+    fn delete_ref(&mut self, name: &Ref) -> impl Future<Output = Result<bool, Self::Error>> + Send;
 
     /// The active ref - the one new commits hang from - or `None` when the
     /// store has none.
@@ -193,10 +190,7 @@ pub trait MetaStore {
 
     /// Make `name` the active ref. The name and its non-`None` target must
     /// exist.
-    fn activate_ref(
-        &mut self,
-        name: &RefName,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+    fn activate_ref(&mut self, name: &Ref) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// Store `scope`, replacing every area of an existing scope of the same
     /// name in one atomic step.

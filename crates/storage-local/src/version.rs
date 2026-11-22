@@ -12,7 +12,7 @@ use sekai_storage::{StorageError, io_error};
 pub(crate) const FILE_NAME: &str = "version";
 
 /// Version of the store format this binary writes and accepts.
-pub const STORE_VERSION: u32 = 1;
+pub const STORE_VERSION: u32 = 2;
 
 /// Read `<root>/version` and refuse any format but [`STORE_VERSION`].
 pub(crate) fn check(root: impl AsRef<Path>) -> Result<(), StorageError> {

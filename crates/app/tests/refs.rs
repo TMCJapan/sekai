@@ -62,7 +62,7 @@ async fn a_fresh_store_starts_with_one_active_ref() {
         .await
         .unwrap()
         .expect("a store always has an active ref");
-    assert_eq!(active.name.as_str(), DEFAULT_REF_NAME);
+    assert_eq!(active.name.name.as_str(), DEFAULT_REF_NAME);
     assert!(active.active);
     // Unborn: the store has no commit yet.
     assert!(active.commit.is_none());
@@ -91,7 +91,7 @@ async fn a_commit_hangs_from_the_active_ref() {
         .await
         .unwrap()
         .expect("a store always has an active ref");
-    assert_eq!(active.name.as_str(), DEFAULT_REF_NAME);
+    assert_eq!(active.name.name.as_str(), DEFAULT_REF_NAME);
     assert_eq!(active.commit, Some(first.commit));
     assert_eq!(
         instance.current_commit_id().await.unwrap(),

@@ -382,6 +382,9 @@ ref without a commit is _unborn_. Exactly one ref is _active_ - the one
 new commits hang from (the store's `HEAD`). A fresh store starts with
 one active ref, `main`, unborn.
 
+The store keys refs by the full Git refname (`refs/heads/main`); commands
+and JSON show the short name (`main`).
+
 A new commit continues the target of the active ref - the trait rejects
 one whose parents omit it - and the active ref moves onto the new commit
 in the same transaction. Switching the active ref forks the history: the

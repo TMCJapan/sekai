@@ -75,6 +75,8 @@ pub enum RefNameError {
     /// Name is reserved; the payload is the reserved spelling
     /// (`RefName::RESERVED`).
     Reserved(&'static str),
+    /// A full refname lay outside `refs/heads/`.
+    UnknownNamespace,
 }
 
 impl fmt::Display for RefNameError {
@@ -88,6 +90,7 @@ impl fmt::Display for RefNameError {
             }
             Self::LeadingDash => write!(f, "ref name starts with '-'"),
             Self::Reserved(name) => write!(f, "ref name {name:?} is reserved"),
+            Self::UnknownNamespace => write!(f, "refname is not under refs/heads/"),
         }
     }
 }
