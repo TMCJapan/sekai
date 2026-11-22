@@ -4,6 +4,7 @@
 //! ref is active - the one new commits hang from. Reads here are pure
 //! lookups; the mutations live in [`MetaStore`] and the app layer.
 
+use alloc::string::String;
 use alloc::vec::Vec;
 
 use sekai_util::CommitRef;
@@ -31,4 +32,22 @@ pub async fn active_ref<M: MetaStore>(
     meta: &M,
 ) -> Result<Option<CommitRef>, CommitError<M::Error>> {
     meta.active_ref().await.map_err(CommitError::Meta)
+}
+
+/// The path of the store's main worktree, or `None` when none is
+/// registered.
+pub async fn main_worktree<M: MetaStore>(
+    meta: &M,
+) -> Result<Option<String>, CommitError<M::Error>> {
+    let mut main = None;
+    meta.visit_worktrees(|worktree| {
+        if worktree.main {
+            main = Some(worktree.path.clone());
+            return false;
+        }
+        true
+    })
+    .await
+    .map_err(CommitError::Meta)?;
+    Ok(main)
 }

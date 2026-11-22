@@ -64,6 +64,12 @@ pub enum StorageError {
         /// Ref name that failed validation.
         name: String,
     },
+    /// A stored worktree row sets neither or both HEAD columns, so HEAD is
+    /// neither a branch nor a commit.
+    CorruptWorktreeHead {
+        /// Path of the worktree whose HEAD columns are corrupt.
+        path: String,
+    },
     /// Stored scope name fails validation.
     InvalidScopeName {
         /// Scope name that failed validation.
@@ -167,6 +173,9 @@ impl fmt::Display for StorageError {
             }
             Self::Tree(err) => write!(f, "stored tree node is invalid: {err}"),
             Self::InvalidRefName { name } => write!(f, "stored ref name is invalid: {name}"),
+            Self::CorruptWorktreeHead { path } => {
+                write!(f, "stored worktree {path} has a corrupt HEAD row")
+            }
             Self::InvalidScopeName { name } => write!(f, "stored scope name is invalid: {name}"),
             Self::EmptyScope { name } => write!(f, "stored scope has no area: {name}"),
             Self::UnknownRef { name } => write!(f, "unknown ref: {name}"),

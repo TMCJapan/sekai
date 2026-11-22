@@ -20,6 +20,7 @@ pub mod region;
 pub mod region_kind;
 pub mod scope;
 pub mod tree;
+pub mod worktree;
 
 pub use chunk_coord::ChunkCoord;
 pub use commit::{Commit, CommitId};
@@ -32,3 +33,4 @@ pub use region::{ApplyOutcome, CommitEntry, RegionFingerprint, RegionKey};
 pub use region_kind::{RegionKind, UnknownRegionKind};
 pub use scope::{Area, Rect, Scope};
 pub use tree::{DimHash, RegionHash, RootHash};
+pub use worktree::{Head, Worktree};

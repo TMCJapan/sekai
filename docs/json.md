@@ -109,7 +109,9 @@ name; payloads always carry the resolved numeric ID.
 
 `store` is the `--store` value as given. `created` is `true` when this run
 materialized the store and `false` when it re-initialized an existing one
-(idempotent, like `git init`).
+(idempotent, like `git init`). `init` registers the current directory as
+the store's main worktree; re-initializing from another directory fails,
+because a store has one main worktree.
 
 ### `commit`
 

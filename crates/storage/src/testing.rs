@@ -5,14 +5,15 @@
 //! implementation here.
 
 use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::string::String;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::pin;
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use sekai_util::{
-    ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DimHash, NamedScope, Ref,
-    RefName, RegionHash, RootHash, ScopeName,
+    ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DimHash, Head, NamedScope,
+    Ref, RefName, RegionHash, RootHash, ScopeName, Worktree,
 };
 
 use crate::meta::{MetaStore, commit_hash};
@@ -49,6 +50,12 @@ pub enum MemError {
     NotContinuing {
         /// Target the new commit had to include as a parent.
         base: CommitId,
+    },
+    /// A worktree registration would break a store constraint: one
+    /// worktree per path, one main worktree, one HEAD per branch.
+    WorktreeConstraint {
+        /// Path of the worktree being registered.
+        path: String,
     },
     /// The active ref cannot be removed.
     ActiveRefProtected {
@@ -90,6 +97,8 @@ pub struct MemMeta {
     pub region_nodes: BTreeMap<RegionHash, RegionNode>,
     /// Refs by full refname order.
     pub refs: BTreeMap<Ref, CommitRef>,
+    /// Worktrees by path.
+    pub worktrees: BTreeMap<String, Worktree>,
     /// Named scopes by name.
     pub scopes: BTreeMap<ScopeName, NamedScope>,
     /// Stable local sequence per commit hash.
@@ -464,6 +473,38 @@ impl MetaStore for MemMeta {
         core::future::ready(Ok(()))
     }
 
+    fn add_worktree(
+        &mut self,
+        worktree: &Worktree,
+    ) -> impl Future<Output = Result<(), MemError>> + Send {
+        let on_branch = matches!(worktree.head, Head::Branch(_));
+        let clashes = self.worktrees.values().any(|held| {
+            held.path == worktree.path
+                || (held.main && worktree.main)
+                || (on_branch && held.head == worktree.head)
+        });
+        if clashes {
+            return core::future::ready(Err(MemError::WorktreeConstraint {
+                path: worktree.path.clone(),
+            }));
+        }
+        self.worktrees
+            .insert(worktree.path.clone(), worktree.clone());
+        core::future::ready(Ok(()))
+    }
+
+    fn visit_worktrees<F>(&self, mut visit: F) -> impl Future<Output = Result<(), MemError>> + Send
+    where
+        F: FnMut(&Worktree) -> bool + Send,
+    {
+        for worktree in self.worktrees.values() {
+            if !visit(worktree) {
+                break;
+            }
+        }
+        core::future::ready(Ok(()))
+    }
+
     fn set_scope(
         &mut self,
         scope: &NamedScope,
@@ -550,6 +591,34 @@ mod tests {
                 .commit,
             Some(second)
         );
+    }
+
+    #[test]
+    fn worktrees_keep_one_main_one_path_and_one_head_per_branch() {
+        let mut meta = MemMeta::default();
+        let head = |raw| Head::Branch(RefName::parse(raw).unwrap());
+        let worktree = |path: &str, main, head| Worktree {
+            path: String::from(path),
+            main,
+            head,
+        };
+        let main = worktree("/main", true, head("main"));
+        block_on(meta.add_worktree(&main)).unwrap();
+        for refused in [
+            worktree("/other", true, head("other")),
+            worktree("/main", false, head("other")),
+            worktree("/other", false, head("main")),
+        ] {
+            assert_eq!(
+                block_on(meta.add_worktree(&refused)),
+                Err(MemError::WorktreeConstraint { path: refused.path })
+            );
+        }
+        // Detached HEADs may share a commit.
+        let id = block_on(meta.create_commit(1_000, &[])).unwrap();
+        block_on(meta.add_worktree(&worktree("/a", false, Head::Detached(id)))).unwrap();
+        block_on(meta.add_worktree(&worktree("/b", false, Head::Detached(id)))).unwrap();
+        assert_eq!(meta.worktrees.len(), 3);
     }
 
     #[test]

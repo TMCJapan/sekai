@@ -130,6 +130,21 @@ pub enum AppError {
         /// The name.
         name: String,
     },
+    /// The store already belongs to another world: an init may register
+    /// only the world it first ran in as the main worktree.
+    #[error("store already belongs to world {main}, not {world}")]
+    StoreHasOtherWorld {
+        /// World the init ran in.
+        world: String,
+        /// World registered as the store's main worktree.
+        main: String,
+    },
+    /// A path is not UTF-8.
+    #[error("path is not UTF-8: {}", path.display())]
+    NonUtf8Path {
+        /// The path.
+        path: std::path::PathBuf,
+    },
     /// Scope would select nothing.
     #[error(transparent)]
     InvalidScope(#[from] sekai_core::NamedScopeError),

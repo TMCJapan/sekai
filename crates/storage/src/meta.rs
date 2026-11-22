@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 use core::future::Future;
 use sekai_util::{
     ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DimHash, NamedScope, Ref,
-    RegionHash, RootHash, ScopeName, hash_bytes,
+    RegionHash, RootHash, ScopeName, Worktree, hash_bytes,
 };
 
 use crate::{DimNode, RegionNode, RootNode, TreeNodes};
@@ -191,6 +191,22 @@ pub trait MetaStore {
     /// Make `name` the active ref. The name and its non-`None` target must
     /// exist.
     fn activate_ref(&mut self, name: &Ref) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// Register `worktree`.
+    ///
+    /// A store holds at most one worktree per path, at most one main
+    /// worktree, and at most one HEAD per branch; a backend refuses a
+    /// registration that breaks one of them and writes nothing.
+    fn add_worktree(
+        &mut self,
+        worktree: &Worktree,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// Visit worktrees in path order (byte-wise). Return `false` to stop
+    /// early.
+    fn visit_worktrees<F>(&self, visit: F) -> impl Future<Output = Result<(), Self::Error>> + Send
+    where
+        F: FnMut(&Worktree) -> bool + Send;
 
     /// Store `scope`, replacing every area of an existing scope of the same
     /// name in one atomic step.
