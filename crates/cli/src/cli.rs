@@ -258,9 +258,9 @@ impl CacheCommand {
 /// Either a 64-character hexadecimal commit ID or a bare valid [`RefName`],
 /// tried in that exclusive order: a bare token is parsed as a commit ID
 /// first and only treated as a [`RefName`] when that fails. Because
-/// [`RefName`] rejects all-digit names, the numeric ID namespace and the
-/// ref-name namespace cannot overlap: a numeric token is always a commit ID
-/// (or `UnknownCommit`), never a ref.
+/// [`RefName`] refuses commit-ID spellings, the two namespaces cannot
+/// overlap: a 64-hex token is always a commit ID (or `UnknownCommit`),
+/// never a ref.
 ///
 /// The shape is validated at parse time so a malformed reference never
 /// reaches the store; resolving it to an existing commit stays a

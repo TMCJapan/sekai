@@ -230,10 +230,9 @@ impl<M: fmt::Debug> fmt::Display for ResolveError<M> {
 /// Resolve a commit reference: a 64-character hexadecimal commit ID or a
 /// bare ref name.
 ///
-/// A bare name is tried as a commit ID first: a 64-character hexadecimal
-/// spelling is either a commit ID or `UnknownCommit`, never a ref, so a ref
-/// whose name is exactly 64 hex characters is shadowed. An unborn ref has
-/// no commit to point at yet.
+/// A 64-character hexadecimal spelling is a commit ID or `UnknownCommit`,
+/// never a ref: [`RefName`] refuses that spelling, so no ref can carry it.
+/// An unborn ref has no commit to point at yet.
 pub async fn resolve_commit_ref<M: MetaStore>(
     meta: &M,
     raw: &str,
@@ -323,22 +322,6 @@ mod tests {
             block_on(resolve_commit_ref(&meta, "@main")),
             Err(ResolveError::InvalidRef { .. })
         ));
-    }
-
-    #[test]
-    fn a_hex_ref_name_is_shadowed_by_commit_resolution() {
-        // A 64-character hex spelling always resolves as a commit ID: an
-        // unknown one is `UnknownCommit`, never the ref of the same name.
-        let mut meta = MemMeta::default();
-        let hex = "a".repeat(64);
-        let name = Ref::branch(RefName::parse(&hex).unwrap());
-        block_on(meta.set_ref(&name, None, 100)).unwrap();
-        assert_eq!(
-            block_on(resolve_commit_ref(&meta, &hex)),
-            Err(ResolveError::UnknownCommit {
-                id: CommitId::from_hex(hex.as_bytes()).unwrap()
-            })
-        );
     }
 
     #[test]

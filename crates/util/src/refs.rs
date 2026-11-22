@@ -28,7 +28,8 @@ pub const DEFAULT_REF_NAME: &str = "main";
 /// component, no `..`, no trailing `.`, and no leading `-`.
 /// Git refuses more shapes, such as a `.lock` suffix, which guard its
 /// files backend; sekai keeps refs in a database and accepts them. Only
-/// the exact name `HEAD` is reserved.
+/// the exact name `HEAD` is reserved, and a name spelled like a commit ID
+/// (64 hexadecimal digits) is refused.
 ///
 /// Ordering and uniqueness are byte-wise and case-sensitive, so `main`
 /// and `Main` are distinct refs.
@@ -72,6 +73,12 @@ impl RefName {
         }
         if raw == Self::RESERVED {
             return Err(RefNameError::Reserved(Self::RESERVED));
+        }
+        // A commit reference reads 64 hex digits as a commit ID, so a ref
+        // of that name could never be named. Git accepts one and warns on
+        // every use (deviation); refusing it keeps the namespaces apart.
+        if raw.parse::<CommitId>().is_ok() {
+            return Err(RefNameError::CommitId);
         }
         Ok(Self(String::from(raw)))
     }
@@ -286,6 +293,25 @@ mod tests {
         assert_eq!(
             RefName::parse("HEAD"),
             Err(RefNameError::Reserved(RefName::RESERVED))
+        );
+    }
+
+    #[test]
+    fn refuses_commit_id_spellings() {
+        for raw in ["a".repeat(64), "A".repeat(64), "0f9E".repeat(16)] {
+            assert_eq!(RefName::parse(&raw), Err(RefNameError::CommitId), "{raw}");
+        }
+        for raw in [
+            "a".repeat(63),
+            "a".repeat(65),
+            "g".repeat(64),
+            alloc::format!("x/{}", "a".repeat(64)),
+        ] {
+            assert!(RefName::parse(&raw).is_ok(), "{raw}");
+        }
+        assert_eq!(
+            Ref::from_full(&alloc::format!("refs/heads/{}", "a".repeat(64))),
+            Err(RefNameError::CommitId)
         );
     }
 
