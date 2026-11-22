@@ -75,6 +75,8 @@ pub enum RefNameError {
     /// Name is reserved; the payload is the reserved spelling
     /// (`RefName::RESERVED`).
     Reserved(&'static str),
+    /// Name is spelled like a commit ID (64 hexadecimal digits).
+    CommitId,
     /// A full refname lay outside `refs/heads/`.
     UnknownNamespace,
 }
@@ -90,6 +92,7 @@ impl fmt::Display for RefNameError {
             }
             Self::LeadingDash => write!(f, "ref name starts with '-'"),
             Self::Reserved(name) => write!(f, "ref name {name:?} is reserved"),
+            Self::CommitId => write!(f, "ref name is spelled like a commit ID"),
             Self::UnknownNamespace => write!(f, "refname is not under refs/heads/"),
         }
     }
