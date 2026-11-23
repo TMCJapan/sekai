@@ -8,7 +8,8 @@
 //! [`WorldTree::lock`] excludes concurrent sekai operations over one
 //! world: [`WorldLockMode`] says how the operation uses it, and the
 //! [`WorldLock`] guard the tree hands out keeps the world excluded until
-//! it drops.
+//! it drops. A tree names its own failure type; [`WorldError`] is the
+//! backend-neutral one the composition layer pins.
 //!
 //! The host filesystem implementation lives in `sekai-world-local`.
 
@@ -16,10 +17,12 @@
 
 extern crate alloc;
 
+mod error;
 mod lock;
 mod region;
 mod tree;
 
+pub use error::WorldError;
 pub use lock::{UnguardedReason, WorldLock, WorldLockMode, WorldLockState};
 pub use region::{Region, RegionFile};
 pub use tree::WorldTree;

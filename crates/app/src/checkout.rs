@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 use sekai_core::{ChunkCoord, ChunkHash, CommitId, RegionKey, Scope};
 use sekai_storage::{MetaStore, SekaiStore, StorageError};
 use sekai_util::{JobSet as _, ThreadRunner, WorkerPanic};
-use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
+use sekai_world::{Region, RegionFile, WorldError, WorldLock, WorldLockMode, WorldTree};
 
 use crate::error::AppError;
 use crate::instance::{WorldGuard, WorldHandleMut};
@@ -152,10 +152,7 @@ pub struct CheckoutOptions {
     pub on_missing_file: MissingFilePolicy,
 }
 
-impl<W: WorldTree, S: SekaiStore, T: ThreadRunner> WorldHandleMut<'_, W, S, T>
-where
-    AppError: From<W::Error>,
-{
+impl<W: WorldTree<Error = WorldError>, S: SekaiStore, T: ThreadRunner> WorldHandleMut<'_, W, S, T> {
     /// Rebuild the bound world from `commit`, returning execution report
     /// and per-phase timings.
     ///
@@ -240,7 +237,7 @@ where
 }
 
 /// What one region file needs.
-enum FileJob<R: RegionFile> {
+enum FileJob<R: RegionFile<Error = WorldError>> {
     Delete(R),
     Rebuild {
         key: RegionKey,
@@ -252,15 +249,12 @@ enum FileJob<R: RegionFile> {
 /// Decide what every region file needs, without touching the disk: present
 /// rows are rebuilt from CAS blobs, absent and post-commit files are
 /// deleted unless kept by [`CheckoutOptions`]. Files left alone get no job.
-fn plan_files<T: WorldTree>(
+fn plan_files<T: WorldTree<Error = WorldError>>(
     mut groups: BTreeMap<RegionKey, Vec<(ChunkCoord, ChunkHash)>>,
     discovered: &BTreeMap<RegionKey, T::Region>,
     world: &T,
     options: CheckoutOptions,
-) -> Result<Vec<FileJob<T::Region>>, AppError>
-where
-    AppError: From<T::Error>,
-{
+) -> Result<Vec<FileJob<T::Region>>, AppError> {
     let mut keys: BTreeSet<RegionKey> = discovered.keys().copied().collect();
     keys.extend(groups.keys().copied());
     keys.into_iter()
@@ -272,16 +266,13 @@ where
 }
 
 /// Decide what `key`'s file needs, or `None` when it is left alone.
-fn plan_file<T: WorldTree>(
+fn plan_file<T: WorldTree<Error = WorldError>>(
     key: RegionKey,
     rows: Option<Vec<(ChunkCoord, ChunkHash)>>,
     discovered: &BTreeMap<RegionKey, T::Region>,
     world: &T,
     options: CheckoutOptions,
-) -> Result<Option<FileJob<T::Region>>, AppError>
-where
-    AppError: From<T::Error>,
-{
+) -> Result<Option<FileJob<T::Region>>, AppError> {
     if let Some(rows) = rows {
         let region = if let Some(region) = discovered.get(&key) {
             region.clone()
@@ -323,10 +314,9 @@ async fn run_files<R, L, C>(
     progress_builder: &impl BuildProgress,
 ) -> Result<CheckoutReport, AppError>
 where
-    R: RegionFile,
+    R: RegionFile<Error = WorldError>,
     L: WorldLock,
     C: sekai_storage::BlobStore<Error = StorageError>,
-    AppError: From<R::Error>,
 {
     let mut progress = progress_builder.build_progress(jobs.len());
     let mut report = CheckoutReport {
@@ -391,9 +381,8 @@ async fn feed_files<R, C>(
     progress: &mut impl Progress,
 ) -> Result<(), AppError>
 where
-    R: RegionFile,
+    R: RegionFile<Error = WorldError>,
     C: sekai_storage::BlobStore<Error = StorageError>,
-    AppError: From<R::Error>,
 {
     for job in jobs {
         // Fetch pass: the blobs reach the caller's executor here; the
@@ -460,7 +449,7 @@ const fn count_outcome(outcome: Outcome, report: &mut CheckoutReport) {
 
 /// One file's write, prepared by the fetch pass: the blobs are already in
 /// hand, so the whole job is synchronous.
-enum WriteJob<R: RegionFile> {
+enum WriteJob<R: RegionFile<Error = WorldError>> {
     Delete(R),
     Rebuild {
         key: RegionKey,
@@ -472,14 +461,11 @@ enum WriteJob<R: RegionFile> {
 /// Carry out one file's write on a runner thread holding a share of the
 /// world lock until it ends (ADR-0022): an abandoned checkout cannot free
 /// the world while a file is still being written.
-fn write_file<R: RegionFile>(
+fn write_file<R: RegionFile<Error = WorldError>>(
     job: WriteJob<R>,
     options: CheckoutOptions,
     timestamp: u32,
-) -> Result<Outcome, AppError>
-where
-    AppError: From<R::Error>,
-{
+) -> Result<Outcome, AppError> {
     match job {
         WriteJob::Delete(region) => {
             if !region.exists() {
@@ -545,16 +531,13 @@ async fn fetch_or_skip<C: sekai_storage::BlobStore<Error = StorageError>>(
 /// snapshot, and absence cannot distinguish a tombstone from a post-commit
 /// chunk, so either keep-policy preserves it. Missing live files contribute
 /// nothing; corrupt ones fail loudly.
-fn merge_live_chunks<R: RegionFile>(
+fn merge_live_chunks<R: RegionFile<Error = WorldError>>(
     region: &R,
     key: RegionKey,
     restored: &BTreeSet<(i32, i32)>,
     options: CheckoutOptions,
     builder: &mut sekai_anvil::RegionBuilder,
-) -> Result<(), AppError>
-where
-    AppError: From<R::Error>,
-{
+) -> Result<(), AppError> {
     if !region.exists() {
         return Ok(());
     }
@@ -579,15 +562,12 @@ where
 
 /// Target region file for a commit-known region whose file is missing on
 /// disk, per [`MissingFilePolicy`].
-fn resolve_target<T: WorldTree>(
+fn resolve_target<T: WorldTree<Error = WorldError>>(
     discovered: &BTreeMap<RegionKey, T::Region>,
     world: &T,
     key: &RegionKey,
     policy: MissingFilePolicy,
-) -> Result<T::Region, AppError>
-where
-    AppError: From<T::Error>,
-{
+) -> Result<T::Region, AppError> {
     match policy {
         MissingFilePolicy::Error => Err(AppError::MissingRegionFile { key: *key }),
         MissingFilePolicy::DerivedOnly => Ok(world.derive_region(*key)?),

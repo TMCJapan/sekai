@@ -9,9 +9,10 @@
 use anyhow::Context as _;
 use sekai_app::{
     CacheUpdateOptions, CacheUpdateTimings, CommitOptions, CommitReport, CommitTimings,
-    HostWorldTree, ThreadRunner,
+    ThreadRunner,
 };
 use sekai_storage_local::LocalStore;
+use sekai_world_local::HostWorldTree;
 use serde::Serialize;
 use std::path::Path;
 

@@ -5,8 +5,9 @@ mod common;
 
 use common::{MEDIUM, SMALL, generate, options, runtime, tempdir};
 use criterion::{Criterion, criterion_group, criterion_main};
-use sekai_app::{HostWorldTree, Scope};
+use sekai_app::Scope;
 use sekai_storage_local::LocalStore;
+use sekai_world_local::HostWorldTree;
 
 fn benches(c: &mut Criterion) {
     let rt = runtime();

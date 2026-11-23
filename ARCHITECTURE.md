@@ -27,19 +27,19 @@ orchestration that runs them lives in `app`
 dependency leaf (nothing in the workspace depends on anything through it).
 
 ```text
-sekai (bin, thin: clap parse + print + exit code)
+sekai (bin, thin: clap parse + print + exit code; picks the backends)
   -> sekai-app (std, no async runtime: orchestration over ThreadRunner, clocks, timing)
     -> sekai-core (no_std + alloc: pure staging policy over shared types)
       -> sekai-util
     -> sekai-anvil (no_std + alloc: pure sector codec, decompress, NBT normalization)
-    -> sekai-world (no_std + alloc: world access boundary - WorldTree trait, RegionFile handle)
+    -> sekai-world (no_std + alloc: world access boundary - WorldTree trait, RegionFile handle, WorldError)
       -> sekai-anvil + sekai-core (types only)
-    -> sekai-world-local (std: host filesystem tree - discover/observe/swap, the world lock)
-      -> sekai-world + sekai-anvil + sekai-core (types only)
     -> sekai-storage (no_std + alloc: store traits + canonical tree codec + generic algorithms)
       -> sekai-util
-    -> sekai-storage-local (std + tokio: SQLite metadata + sled blobs + sled region-image cache)
-      -> sekai-storage + sekai-util
+  -> sekai-world-local (std: host filesystem tree - discover/observe/swap, the world lock)
+    -> sekai-world + sekai-anvil + sekai-core (types only)
+  -> sekai-storage-local (std + tokio: SQLite metadata + sled blobs + sled region-image cache)
+    -> sekai-storage + sekai-util
 sekai-util (no_std, no tokio dependency: coordinates, chunk hashes,
   history value types, the ThreadRunner parallelism boundary) <- anvil,
   core, storage (world/app reach them through `core` re-exports)
@@ -52,10 +52,10 @@ sekai-util (no_std, no tokio dependency: coordinates, chunk hashes,
 | `sekai-core`                      | `no_std` + `alloc`                    | no                                           | Pure staging policy (`Previous`/`Plan`/`Ingested`/`Assembled`, `stage_present`, `assemble`) over util types; no store access. Re-exports every util type at its root, so downstream paths stay stable. `app` composes it with `anvil` for payload digests and diffs.                                                                                                                                                                               |
 | `sekai-storage`                   | `no_std` + `alloc`                    | yes (RPITIT)                                 | Backend-neutral boundaries: async `BlobStore`/`MetaStore`/`CacheStore` traits, the canonical snapshot-tree codec they exchange, the generic tree/graph/ref/scope algorithms over `MetaStore`, the content-addressed `commit_hash` derivation, high-level `SekaiStore`/`SekaiStoreOpener` traits, and shared storage errors. A feature-gated `testing` module holds the in-memory fake. Depends on `util` only.                                                                                                                                                                  |
 | `sekai-storage-local`             | `std` + tokio                         | yes                                          | Concrete local backend: `SqliteMeta` over sqlx plus `SledBlob` and `SledCache` over sled, composed into `LocalStore`, the config version gate, and the openers. Implements the traits from `sekai-storage`. Other backends become sibling crates without touching `core`/`app`.                                                                                                                  |
-| `sekai-world`                     | `no_std` + `alloc`                    | no                                           | World access boundary: the `WorldTree` trait, the `RegionFile` handle, and the `WorldLock` primitives. No filesystem code.                                                                                                                                                                                                                                                                                |
-| `sekai-world-local`               | `std`                                 | no                                           | Host filesystem tree: `HostWorldTree`, layout detection (vanilla, pre-26.1 Bukkit, plugin worlds), the `HostRegion` handles, the `.sekai.lock` file lock, atomic swaps, and the host `WorldError`.                                                                                                                                                                                                      |
+| `sekai-world`                     | `no_std` + `alloc`                    | no                                           | World access boundary: the `WorldTree` trait, the `RegionFile` handle, the `WorldLock` primitives, and `WorldError`. No filesystem code.                                                                                                                                                                                                                                                                  |
+| `sekai-world-local`               | `std`                                 | no                                           | Host filesystem tree: `HostWorldTree`, layout detection (vanilla, pre-26.1 Bukkit, plugin worlds), the `HostRegion` handles, the `.sekai.lock` file lock, and atomic swaps; it reports the shared `WorldError`.                                                                                                                                                                                         |
 | `sekai-app`                       | `std`, no async runtime               | yes                                          | Composition/orchestration library for third parties: store-touching commit/checkout planning (`plan_commit`, `record_commit`, `plan_checkout`), parallel ingest over the instance's `ThreadRunner` (default: the inline `Sequential` runner), clocks, timing, progress callbacks. Executor-agnostic: async store calls stay on the caller's executor, file work runs on the runner; a host embedding composes a parallel runner, a `no_std`/wasm embedding keeps `Sequential` or supplies its own.                                                                                                            |
-| `sekai` bin (`sekai-cli` package) | `std` + tokio                         | yes                                          | Thin clap wrapper over `sekai-app`; owns the `OsThread` host runner it composes into the instance from `--jobs`. Binary name stays `sekai`; package name stays `sekai-cli` so existing CI/artifact names keep working.                                                                                                                                                                                                                                                  |
+| `sekai` bin (`sekai-cli` package) | `std` + tokio                         | yes                                          | Thin clap wrapper over `sekai-app` that picks the backends; owns the `OsThread` host runner it composes into the instance from `--jobs`. Binary name stays `sekai`; package name stays `sekai-cli` so existing CI/artifact names keep working.                                                                                                                                                                                                                          |
 
 ### Why `core` must not depend on `world`
 
@@ -77,12 +77,13 @@ touch. A `WorldTree` names the region files it holds, derives the ones
 that are missing, and hands out `RegionFile` handles: a handle reads,
 sizes, fingerprints, writes, and removes one region file, and nothing
 else. `sekai-world` is the boundary alone (the `WorldTree` trait, the
-`RegionFile` handle, the `WorldLock` primitives); `sekai-world-local`
-holds the host filesystem tree (`HostWorldTree`) behind it, mirroring
-`sekai-storage`/`sekai-storage-local`. The
-operations never see a path, so the flows do not depend on the tree
-behind them. See
-[ADR-0015](docs/adr/0015-world-region-handles.md).
+`RegionFile` handle, the `WorldLock` primitives, and the backend-neutral
+`WorldError`); `sekai-world-local` holds the host filesystem tree
+(`HostWorldTree`) behind it, mirroring `sekai-storage`/`sekai-storage-local`
+and `StorageError`. The operations never see a path, so the flows do not
+depend on the tree behind them. See
+[ADR-0015](docs/adr/0015-world-region-handles.md) and
+[ADR-0040](docs/adr/0040-backend-selection-at-the-binary.md).
 
 ### Shared value types (`sekai-util`)
 
@@ -532,21 +533,23 @@ produced them. The scope is a filter, not a partition:
 
 ## Backend Selection
 
-Compile-time, gated on the backend crate: `app` exposes a `backend-local`
-feature (default-on) that pulls in `sekai-storage-local` and
-`sekai-world-local`; `sekai-cli` inherits it through `sekai-app` and needs
-no features of its own. The local backend is the only one shipped, and
-`--store` names its root directory directly; there is no runtime URL
-selection. A backend crate implements `SekaiStoreOpener` for its store
-type, so the backend owns the location type (`SekaiStoreOpener::Path`)
-that names it; the local backend reads it as a store root directory
+Compile-time, at the binary: `sekai-cli` depends on `sekai-storage-local`
+and `sekai-world-local` directly, the way a composition root picks its
+implementations, and `sekai-app` names no concrete backend
+([ADR-0040](docs/adr/0040-backend-selection-at-the-binary.md)). The local
+backend is the only one shipped, and `--store` names its root directory
+directly; there is no runtime URL selection. A backend crate implements
+`SekaiStoreOpener` for its store type, so the backend owns the location
+type (`SekaiStoreOpener::Path`) that names it; the local backend reads it
+as a store root directory
 ([ADR-0036](docs/adr/0036-opener-path-associated-type.md)).
 
-A build without `backend-local` has no store-opening entry point at all:
-`sekai-storage` ships no stand-in store, so a build that carries no backend
-cannot open one and says so at compile time. The host world tree and its
-`WorldError` are gated the same way; the world operations themselves stay
-generic over `WorldTree` and run on any tree a caller supplies.
+`sekai-app` stays generic over `SekaiStore` and `WorldTree`: the store and
+world traits keep an associated `Error`, and the operations pin it to
+`StorageError` and `WorldError`, so they convert failures without knowing
+which backend runs.
+`sekai-storage` ships no stand-in store, so a caller that links no backend
+cannot open one and says so at compile time.
 
 ## Store Exclusion
 

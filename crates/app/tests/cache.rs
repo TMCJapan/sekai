@@ -7,22 +7,19 @@
 //! cache with `update_cache` before committing. Partial scopes, previews,
 //! and empty files cache nothing, and wiping the cache costs performance
 //! only.
-//!
-//! Requires the `backend-local` feature.
-
-#![cfg(feature = "backend-local")]
 
 mod fixtures;
 
 use fixtures::chunk_nbt;
 
 use sekai_app::{
-    Area, CacheUpdateOptions, CommitId, CommitOptions, Dimension, HostWorldTree, Rect, RegionHash,
-    RegionKey, RegionKind, Scope, SekaiStore, StatusOptions,
+    Area, CacheUpdateOptions, CommitId, CommitOptions, Dimension, Rect, RegionHash, RegionKey,
+    RegionKind, Scope, SekaiStore, StatusOptions,
 };
 use sekai_core::hash_bytes;
 use sekai_storage::{CacheStore as _, MetaStore as _, RegionEntry, RegionNode};
 use sekai_storage_local::LocalStore;
+use sekai_world_local::HostWorldTree;
 use std::path::Path;
 
 /// A temp dir whose name starts with the calling test's name (tempfile

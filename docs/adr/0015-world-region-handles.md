@@ -1,6 +1,6 @@
 # ADR-0015: The world boundary hands out region handles, not paths
 
-- Status: Accepted
+- Status: Accepted (ADR-0040 narrows the error type `sekai-app` accepts to `WorldError`)
 - Date: 2026-10-20
 
 ## Context

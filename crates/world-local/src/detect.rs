@@ -1,7 +1,9 @@
 use std::{fs, path::Path};
 
 use super::vanilla;
-use crate::WorldError;
+use sekai_world::WorldError;
+
+use crate::error;
 
 pub(super) enum Layout {
     Vanilla,
@@ -70,7 +72,7 @@ fn bukkit_bases(root: impl AsRef<Path>) -> Result<Vec<String>, WorldError> {
     }
 
     let mut bases = Vec::new();
-    for entry in vanilla::read_dir_opt(root).map_err(|source| WorldError::io(root, source))? {
+    for entry in vanilla::read_dir_opt(root).map_err(|source| error::io(root, source))? {
         if !vanilla::is_dir(&entry) {
             continue;
         }
@@ -147,12 +149,11 @@ fn is_world_folder(dir: impl AsRef<Path>) -> Result<bool, WorldError> {
         Ok(meta) if meta.is_dir() => {}
         Ok(_) => return Ok(false),
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(source) => return Err(WorldError::io(dir, source)),
+        Err(source) => return Err(error::io(dir, source)),
     }
     for kind_dir in ["region", "entities", "poi"] {
         let path = dir.join(kind_dir);
-        let entries =
-            vanilla::read_dir_opt(&path).map_err(|source| WorldError::io(&path, source))?;
+        let entries = vanilla::read_dir_opt(&path).map_err(|source| error::io(&path, source))?;
         for entry in entries {
             if !vanilla::is_file(&entry) {
                 continue;

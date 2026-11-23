@@ -29,7 +29,6 @@ mod observation;
 mod swap;
 mod vanilla;
 
-pub use error::WorldError;
 pub use fingerprint::fingerprint_file;
 pub use lock::{HostWorldLock, HostWorldLockError};
 pub use swap::{atomic_swap, open_image};
@@ -40,7 +39,7 @@ use std::path::{Path, PathBuf};
 
 use sekai_anvil::RegionImage;
 use sekai_core::{Dimension, RegionFingerprint, RegionKey, RegionKind};
-use sekai_world::{Region, RegionFile, WorldLockMode, WorldLockState, WorldTree};
+use sekai_world::{Region, RegionFile, WorldError, WorldLockMode, WorldLockState, WorldTree};
 
 /// Directory of `kind` under a dimension directory.
 const fn kind_dir(kind: RegionKind) -> &'static str {
@@ -71,19 +70,19 @@ impl Region for McaFile {
         self.image.image()
     }
 
-    fn visit_chunks<F>(&self, visit: F) -> Result<(), Self::Error>
+    fn visit_chunks<F>(&self, visit: F) -> Result<(), WorldError>
     where
         F: FnMut(sekai_anvil::Chunk<'_>) -> bool,
     {
         self.image
             .visit_chunks(visit)
-            .map_err(|source| WorldError::region_file(&self.path, source))
+            .map_err(|source| error::region_file(&self.path, source))
     }
 
-    fn chunk_payload(&self, x: i32, z: i32) -> Result<Option<&[u8]>, Self::Error> {
+    fn chunk_payload(&self, x: i32, z: i32) -> Result<Option<&[u8]>, WorldError> {
         self.image
             .chunk_payload(x, z)
-            .map_err(|source| WorldError::region_file(&self.path, source))
+            .map_err(|source| error::region_file(&self.path, source))
     }
 }
 
@@ -122,12 +121,7 @@ impl HostRegion {
             .and_then(std::ffi::OsStr::to_str)
             .and_then(|name| sekai_anvil::parse_region_name(name).ok());
         if spelled != Some((key.rx, key.rz)) {
-            return Err(WorldError::UnknownRegionPath {
-                dim: key.dim,
-                kind: key.kind,
-                region_x: key.rx,
-                region_z: key.rz,
-            });
+            return Err(WorldError::UnknownRegionPath { key });
         }
         Ok(())
     }
@@ -148,7 +142,7 @@ impl RegionFile for HostRegion {
         self.check_key(key)?;
         let bytes = crate::swap::open_image(&self.0)?;
         let image = RegionImage::from_bytes_with_kind(bytes, key.rx, key.rz, key.kind)
-            .map_err(|source| WorldError::region_file(&self.0, source))?;
+            .map_err(|source| error::region_file(&self.0, source))?;
         Ok(McaFile {
             image,
             path: self.0.clone(),
@@ -165,12 +159,12 @@ impl RegionFile for HostRegion {
         // costs a header per region, not its full sector data.
         let mut header = Vec::new();
         std::fs::File::open(&self.0)
-            .map_err(|source| WorldError::io(&self.0, source))?
+            .map_err(|source| error::io(&self.0, source))?
             .take(sekai_anvil::HEADER_LEN)
             .read_to_end(&mut header)
-            .map_err(|source| WorldError::io(&self.0, source))?;
+            .map_err(|source| error::io(&self.0, source))?;
         sekai_anvil::check_image_len(header.len() as u64)
-            .map_err(|source| WorldError::region_file(&self.0, source))?;
+            .map_err(|source| error::region_file(&self.0, source))?;
         let table_len = sekai_anvil::TABLE_ENTRIES as usize * 4;
         let table = if header.is_empty() {
             &[][..]
@@ -178,13 +172,13 @@ impl RegionFile for HostRegion {
             &header[..table_len]
         };
         sekai_anvil::visit_present_coords(table, key.rx, key.rz, visit)
-            .map_err(|source| WorldError::region_file(&self.0, source))
+            .map_err(|source| error::region_file(&self.0, source))
     }
 
     fn size(&self) -> Result<u64, WorldError> {
         std::fs::metadata(&self.0)
             .map(|meta| meta.len())
-            .map_err(|source| WorldError::io(&self.0, source))
+            .map_err(|source| error::io(&self.0, source))
     }
 
     fn fingerprint(&self, key: RegionKey) -> Result<RegionFingerprint, WorldError> {
@@ -200,7 +194,7 @@ impl RegionFile for HostRegion {
     }
 
     fn remove(&self) -> Result<(), WorldError> {
-        std::fs::remove_file(&self.0).map_err(|source| WorldError::io(&self.0, source))
+        std::fs::remove_file(&self.0).map_err(|source| error::io(&self.0, source))
     }
 }
 
@@ -267,7 +261,7 @@ impl HostWorldTree {
         if self.root.is_dir() {
             return Ok(());
         }
-        Err(WorldError::io(
+        Err(error::io(
             &self.root,
             std::io::Error::new(std::io::ErrorKind::NotFound, "world directory not found"),
         ))
@@ -277,15 +271,16 @@ impl HostWorldTree {
 /// Collect dimension directories, attaching the failing path to I/O errors.
 fn collect_dimensions(dir: impl AsRef<Path>) -> Result<BTreeMap<Dimension, PathBuf>, WorldError> {
     let dir = dir.as_ref();
-    vanilla::collect_dimensions(dir).map_err(|source| WorldError::io(dir, source))
+    vanilla::collect_dimensions(dir).map_err(|source| error::io(dir, source))
 }
 
 impl WorldTree for HostWorldTree {
     type Error = WorldError;
+
     type Region = HostRegion;
     type Lock = HostWorldLock;
 
-    fn get_dims(&self) -> Result<Vec<Dimension>, Self::Error> {
+    fn get_dims(&self) -> Result<Vec<Dimension>, WorldError> {
         self.check_root()?;
         Ok(self.dirs.keys().copied().collect())
     }
@@ -294,7 +289,7 @@ impl WorldTree for HostWorldTree {
         &self,
         dim: Dimension,
         kind: RegionKind,
-    ) -> Result<Vec<(RegionKey, Self::Region)>, Self::Error> {
+    ) -> Result<Vec<(RegionKey, Self::Region)>, WorldError> {
         let Some(dir) = self.dirs.get(&dim) else {
             return Ok(Vec::new());
         };
@@ -304,7 +299,7 @@ impl WorldTree for HostWorldTree {
         // Sorted by name so the reported pair is the same on every run.
         let kind_dir_path = dir.join(name);
         let mut entries = vanilla::read_dir_opt(&kind_dir_path)
-            .map_err(|source| WorldError::io(&kind_dir_path, source))?;
+            .map_err(|source| error::io(&kind_dir_path, source))?;
         entries.sort_unstable_by_key(std::fs::DirEntry::file_name);
         for entry in entries {
             if !vanilla::is_file(&entry) {
@@ -324,12 +319,9 @@ impl WorldTree for HostWorldTree {
             // must not pick one and drop the other.
             if let Some(previous) = regions.get(&(rx, rz)) {
                 return Err(WorldError::AmbiguousRegion {
-                    dim,
-                    kind,
-                    region_x: rx,
-                    region_z: rz,
-                    first: previous.clone(),
-                    second: path,
+                    key: RegionKey { dim, kind, rx, rz },
+                    first: error::location(previous),
+                    second: error::location(&path),
                 });
             }
             // The BTreeMap keeps the result ordered by coordinates
@@ -342,19 +334,12 @@ impl WorldTree for HostWorldTree {
             .collect())
     }
 
-    fn derive_region(
-        &self,
-        RegionKey { dim, kind, rx, rz }: RegionKey,
-    ) -> Result<Self::Region, Self::Error> {
-        // Mirrors `WorldError::UnknownRegionPath`; the CLI troubleshooting
-        // entry refers to this wording.
-        let cannot_derive = || WorldError::UnknownRegionPath {
-            dim,
-            kind,
-            region_x: rx,
-            region_z: rz,
-        };
-        let root = self.dirs.get(&dim).ok_or_else(cannot_derive)?;
+    fn derive_region(&self, key: RegionKey) -> Result<Self::Region, WorldError> {
+        let RegionKey { dim, kind, rx, rz } = key;
+        let root = self
+            .dirs
+            .get(&dim)
+            .ok_or(WorldError::UnknownRegionPath { key })?;
         let name = kind_dir(kind);
 
         Ok(HostRegion(root.join(name).join(format!("r.{rx}.{rz}.mca"))))
@@ -364,7 +349,7 @@ impl WorldTree for HostWorldTree {
         &self,
         region: &Self::Region,
         key: RegionKey,
-    ) -> Result<Self::Region, Self::Error> {
+    ) -> Result<Self::Region, WorldError> {
         // The directory is inherited from the region, so a key from another
         // dimension or family would land in the wrong folder. The caller
         // must not do that; the check catches it in tests and debug builds.
@@ -381,7 +366,7 @@ impl WorldTree for HostWorldTree {
         ))
     }
 
-    fn lock(&self, mode: WorldLockMode) -> Result<WorldLockState<Self::Lock>, Self::Error> {
+    fn lock(&self, mode: WorldLockMode) -> Result<WorldLockState<Self::Lock>, WorldError> {
         // The lock lives in the root as passed, so two roots naming one
         // world (a Bukkit server root and its world folder) do not exclude
         // each other (ADR-0014): each locks its own file, and the guard
@@ -395,8 +380,10 @@ impl WorldTree for HostWorldTree {
             Ok(state) => Ok(state),
             // Contention is its own failure, not an I/O one: a caller has to
             // tell "busy, retry" from a lock file it cannot open at all.
-            Err(HostWorldLockError::Contended) => Err(WorldError::WorldLocked { path }),
-            Err(HostWorldLockError::Io(source)) => Err(WorldError::io(path, source)),
+            Err(HostWorldLockError::Contended) => Err(WorldError::Locked {
+                location: error::location(&path),
+            }),
+            Err(HostWorldLockError::Io(source)) => Err(error::io(path, source)),
         }
     }
 }

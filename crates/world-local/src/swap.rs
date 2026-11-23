@@ -5,7 +5,9 @@ use std::io::Write;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::error::WorldError;
+use sekai_world::WorldError;
+
+use crate::error;
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -19,7 +21,7 @@ impl Drop for TempFileGuard<'_> {
 
 /// Read a whole file into memory with path-carrying errors.
 pub fn open_image(path: impl AsRef<Path>) -> Result<Vec<u8>, WorldError> {
-    fs::read(path.as_ref()).map_err(|e| WorldError::io(path.as_ref(), e))
+    fs::read(path.as_ref()).map_err(|e| error::io(path.as_ref(), e))
 }
 
 /// Swap `image` into place at `target` atomically.
@@ -30,7 +32,7 @@ pub fn atomic_swap(target: impl AsRef<Path>, image: &[u8]) -> Result<(), WorldEr
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
 
-    fs::create_dir_all(parent).map_err(|e| WorldError::io(parent, e))?;
+    fs::create_dir_all(parent).map_err(|e| error::io(parent, e))?;
 
     let file_name = target.as_ref().file_name().map_or_else(
         || "region.mca".to_owned(),
@@ -65,7 +67,7 @@ pub fn atomic_swap(target: impl AsRef<Path>, image: &[u8]) -> Result<(), WorldEr
             match options.open(&candidate) {
                 Ok(f) => break (candidate, f),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(e) => return Err(WorldError::io(&candidate, e)),
+                Err(e) => return Err(error::io(&candidate, e)),
             }
         }
     };
@@ -75,11 +77,11 @@ pub fn atomic_swap(target: impl AsRef<Path>, image: &[u8]) -> Result<(), WorldEr
     #[allow(clippy::collection_is_never_read, reason = "the value is only dropped")]
     let mut guard = Some(TempFileGuard(&tmp));
 
-    file.write_all(image).map_err(|e| WorldError::io(&tmp, e))?;
-    file.sync_all().map_err(|e| WorldError::io(&tmp, e))?;
+    file.write_all(image).map_err(|e| error::io(&tmp, e))?;
+    file.sync_all().map_err(|e| error::io(&tmp, e))?;
     drop(file);
 
-    fs::rename(&tmp, target.as_ref()).map_err(|e| WorldError::io(target.as_ref(), e))?;
+    fs::rename(&tmp, target.as_ref()).map_err(|e| error::io(target.as_ref(), e))?;
 
     // Rename succeeded; disarm the cleanup guard.
     guard.take();
@@ -88,8 +90,8 @@ pub fn atomic_swap(target: impl AsRef<Path>, image: &[u8]) -> Result<(), WorldEr
     // own entry is persisted; no equivalent exists in `std` on Windows.
     #[cfg(unix)]
     {
-        let dir = fs::File::open(parent).map_err(|e| WorldError::io(parent, e))?;
-        dir.sync_all().map_err(|e| WorldError::io(parent, e))?;
+        let dir = fs::File::open(parent).map_err(|e| error::io(parent, e))?;
+        dir.sync_all().map_err(|e| error::io(parent, e))?;
     }
 
     Ok(())

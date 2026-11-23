@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 use sekai_core::{ChunkCoord, CommitEntry, CommitId, RegionHash, RegionKey, hash_bytes};
 use sekai_storage::{CacheStore, MetaStore as _, RegionNode, SekaiStore};
 use sekai_util::{JobSet as _, ThreadRunner};
-use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
+use sekai_world::{Region, RegionFile, WorldError, WorldLock, WorldLockMode, WorldTree};
 
 use crate::error::AppError;
 use crate::instance::{WorldGuard, WorldHandleMut};
@@ -62,7 +62,7 @@ pub(crate) async fn prove_regions_unchanged<R, S, L>(
     guard: &Arc<WorldGuard<L>>,
 ) -> BTreeMap<RegionKey, RegionNode>
 where
-    R: RegionFile,
+    R: RegionFile<Error = WorldError>,
     S: SekaiStore,
     L: WorldLock,
 {
@@ -153,10 +153,7 @@ pub struct CacheUpdateTimings {
     pub cache: Duration,
 }
 
-impl<W: WorldTree, S: SekaiStore, T: ThreadRunner> WorldHandleMut<'_, W, S, T>
-where
-    AppError: From<W::Error>,
-{
+impl<W: WorldTree<Error = WorldError>, S: SekaiStore, T: ThreadRunner> WorldHandleMut<'_, W, S, T> {
     /// Populate the region-image cache from the live world without
     /// recording a commit (ADR-0033). This is the cache's only population
     /// path: commit records history only, and `sekai commit` runs this
@@ -290,10 +287,10 @@ struct HashedRegion {
 /// Read one region file, hash the raw image and every chunk, and derive the
 /// region node the chunks produce. A payload with no normalized view fails
 /// the file with its coordinates attached, exactly like commit ingest.
-fn hash_region<R: RegionFile>(region: &R, key: RegionKey) -> Result<HashedRegion, AppError>
-where
-    AppError: From<R::Error>,
-{
+fn hash_region<R: RegionFile<Error = WorldError>>(
+    region: &R,
+    key: RegionKey,
+) -> Result<HashedRegion, AppError> {
     let opened = Instant::now();
     let image = region.read(key)?;
     let open = opened.elapsed();

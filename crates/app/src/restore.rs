@@ -14,7 +14,7 @@
 use sekai_core::{Revision, Scope};
 use sekai_storage::SekaiStore;
 use sekai_util::ThreadRunner;
-use sekai_world::WorldTree;
+use sekai_world::{WorldError, WorldTree};
 
 use crate::checkout::{
     CheckoutOptions, CheckoutReport, CheckoutTimings, MissingBlobPolicy, MissingFilePolicy,
@@ -58,17 +58,14 @@ impl<S: SekaiStore, T: ThreadRunner> SekaiInstance<S, T> {
     /// world lock like checkout; see
     /// [`WorldHandleMut::checkout`](crate::WorldHandleMut::checkout) for
     /// the failure and cancellation guarantees, which carry over whole.
-    pub async fn restore<W: WorldTree>(
+    pub async fn restore<W: WorldTree<Error = WorldError>>(
         &mut self,
         world: &mut W,
         source: Option<&Revision>,
         scope: Scope,
         options: RestoreOptions,
         progress_builder: &impl BuildProgress,
-    ) -> Result<(CheckoutReport, CheckoutTimings), AppError>
-    where
-        AppError: From<W::Error>,
-    {
+    ) -> Result<(CheckoutReport, CheckoutTimings), AppError> {
         let commit = match source {
             Some(revision) => self.resolve_revision(revision).await?,
             None => self.current_commit_id().await?.ok_or(AppError::NoCommits)?,

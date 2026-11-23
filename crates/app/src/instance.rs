@@ -21,7 +21,7 @@ use std::sync::Arc;
 use sekai_core::{Commit, CommitId, Revision};
 use sekai_storage::{CacheStore as _, SekaiStore, SekaiStoreOpener};
 use sekai_util::{Sequential, ThreadRunner};
-use sekai_world::{WorldLock, WorldLockMode, WorldLockState, WorldTree};
+use sekai_world::{WorldError, WorldLock, WorldLockMode, WorldLockState, WorldTree};
 
 use crate::error::AppError;
 
@@ -61,7 +61,10 @@ impl<S: SekaiStore, T: ThreadRunner> SekaiInstance<S, T> {
     }
 
     /// Read-only handle rooted at `root`.
-    pub const fn world<'a, W: WorldTree>(&'a self, world: &'a W) -> WorldHandle<'a, W, S, T> {
+    pub const fn world<'a, W: WorldTree<Error = WorldError>>(
+        &'a self,
+        world: &'a W,
+    ) -> WorldHandle<'a, W, S, T> {
         WorldHandle {
             instance: self,
             world,
@@ -69,7 +72,7 @@ impl<S: SekaiStore, T: ThreadRunner> SekaiInstance<S, T> {
     }
 
     /// Read-write handle rooted at `root`.
-    pub const fn world_mut<'a, W: WorldTree>(
+    pub const fn world_mut<'a, W: WorldTree<Error = WorldError>>(
         &'a mut self,
         world: &'a mut W,
     ) -> WorldHandleMut<'a, W, S, T> {
@@ -202,13 +205,10 @@ pub(crate) struct WorldGuard<L> {
 }
 
 impl<L: WorldLock> WorldGuard<L> {
-    pub(crate) fn acquire<W: WorldTree<Lock = L>>(
+    pub(crate) fn acquire<W: WorldTree<Error = WorldError, Lock = L>>(
         world: &W,
         mode: WorldLockMode,
-    ) -> Result<Arc<Self>, AppError>
-    where
-        AppError: From<W::Error>,
-    {
+    ) -> Result<Arc<Self>, AppError> {
         Ok(Arc::new(Self {
             _world: world.lock(mode)?,
         }))

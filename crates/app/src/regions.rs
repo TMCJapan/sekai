@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::collections::btree_map::Entry;
 
 use sekai_core::{RegionKey, RegionKind};
-use sekai_world::WorldTree;
+use sekai_world::{WorldError, WorldTree};
 
 use crate::error::{AppError, duplicate_region};
 
@@ -12,12 +12,9 @@ use crate::error::{AppError, duplicate_region};
 ///
 /// Commit, diff, and checkout walk the world the same way, so the walk
 /// lives here once: the duplicate detection cannot drift between them.
-pub(crate) fn discover_regions<T: WorldTree>(
+pub(crate) fn discover_regions<T: WorldTree<Error = WorldError>>(
     world: &T,
-) -> Result<BTreeMap<RegionKey, T::Region>, AppError>
-where
-    AppError: From<T::Error>,
-{
+) -> Result<BTreeMap<RegionKey, T::Region>, AppError> {
     let mut regions = BTreeMap::new();
     for dim in world.get_dims()? {
         for kind in RegionKind::ALL {

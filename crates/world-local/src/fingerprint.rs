@@ -9,7 +9,9 @@ use std::path::Path;
 
 use sekai_core::{RegionFingerprint, RegionKey};
 
-use crate::error::WorldError;
+use sekai_world::WorldError;
+
+use crate::error;
 use crate::observation::{content_hash_of, mtime_ms_from_metadata};
 
 /// Fingerprint one region file.
@@ -22,13 +24,11 @@ pub fn fingerprint_file(
     path: impl AsRef<Path>,
     key: RegionKey,
 ) -> Result<RegionFingerprint, WorldError> {
-    let mut file = File::open(path.as_ref()).map_err(|e| WorldError::io(path.as_ref(), e))?;
-    let meta = file
-        .metadata()
-        .map_err(|e| WorldError::io(path.as_ref(), e))?;
+    let mut file = File::open(path.as_ref()).map_err(|e| error::io(path.as_ref(), e))?;
+    let meta = file.metadata().map_err(|e| error::io(path.as_ref(), e))?;
     let size = meta.len();
     let mtime_ms = mtime_ms_from_metadata(&meta);
-    let content_hash = content_hash_of(&mut file).map_err(|e| WorldError::io(path.as_ref(), e))?;
+    let content_hash = content_hash_of(&mut file).map_err(|e| error::io(path.as_ref(), e))?;
 
     Ok(RegionFingerprint {
         key,

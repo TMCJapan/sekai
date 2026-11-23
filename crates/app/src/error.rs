@@ -37,10 +37,9 @@ pub enum Lookup {
 /// Failures while committing, checking out, or listing commits.
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
-    /// World filesystem operation failed.
-    #[cfg(feature = "backend-local")]
+    /// World tree operation failed.
     #[error(transparent)]
-    World(#[from] sekai_world_local::WorldError),
+    World(#[from] sekai_world::WorldError),
     /// Storage backend operation failed.
     #[error(transparent)]
     Storage(#[from] sekai_storage::StorageError),

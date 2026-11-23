@@ -18,7 +18,9 @@ use std::{
 use sekai_core::Dimension;
 
 use super::vanilla::{self, is_dir, read_dir_opt};
-use crate::WorldError;
+use sekai_world::WorldError;
+
+use crate::error;
 
 /// Fixed overworld/nether/end directories of the split layout around `base`.
 ///
@@ -55,7 +57,7 @@ pub(super) fn collect_custom_dimensions(
     let root = root.as_ref();
     let prefix = format!("{base}_");
     let mut dims = BTreeMap::new();
-    for entry in read_dir_opt(root).map_err(|source| WorldError::io(root, source))? {
+    for entry in read_dir_opt(root).map_err(|source| error::io(root, source))? {
         if !is_dir(&entry) {
             continue;
         }
@@ -71,9 +73,7 @@ pub(super) fn collect_custom_dimensions(
         }
 
         let dir = entry.path().join("dimensions");
-        dims.extend(
-            vanilla::collect_dimensions(&dir).map_err(|source| WorldError::io(&dir, source))?,
-        );
+        dims.extend(vanilla::collect_dimensions(&dir).map_err(|source| error::io(&dir, source))?);
     }
     Ok(dims)
 }

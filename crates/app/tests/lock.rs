@@ -3,10 +3,6 @@
 //! exactly like another process would, so held locks stand in for
 //! concurrent runs here. The store itself never locks: its blobs are
 //! append-only and its metadata resolves conflicts at commit time.
-//!
-//! Requires the `backend-local` feature.
-
-#![cfg(feature = "backend-local")]
 
 mod fixtures;
 
@@ -19,13 +15,13 @@ mod runner;
 use fixtures::chunk_nbt;
 
 use sekai_app::{
-    CheckoutOptions, ChunkHash, CommitId, CommitOptions, Dimension, HostRegion, HostWorldLock,
-    HostWorldTree, Rect, RegionFile, RegionFingerprint, RegionKey, RegionKind, Scope, ScopeName,
-    SekaiInstance, SekaiStore, StatusOptions, ThreadRunner as _, WorldError, WorldLockMode,
-    WorldLockState, WorldTree,
+    CheckoutOptions, ChunkHash, CommitId, CommitOptions, Dimension, Rect, RegionFile,
+    RegionFingerprint, RegionKey, RegionKind, Scope, ScopeName, SekaiInstance, SekaiStore,
+    StatusOptions, ThreadRunner as _, WorldError, WorldLockMode, WorldLockState, WorldTree,
 };
 use sekai_storage::MetaStore as _;
 use sekai_storage_local::LocalStore;
+use sekai_world_local::{HostRegion, HostWorldLock, HostWorldTree};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -117,10 +113,7 @@ impl Fixture {
 }
 
 const fn is_lock_error(err: &sekai_app::AppError) -> bool {
-    matches!(
-        err,
-        sekai_app::AppError::World(WorldError::WorldLocked { .. })
-    )
+    matches!(err, sekai_app::AppError::World(WorldError::Locked { .. }))
 }
 
 /// Every public operation, with the locks ADR-0014 assigns it.
@@ -311,7 +304,7 @@ async fn a_cancelled_checkout_keeps_the_world_locked_until_its_files_finish() {
     assert!(
         matches!(
             other.lock(WorldLockMode::Exclusive),
-            Err(WorldError::WorldLocked { .. })
+            Err(WorldError::Locked { .. })
         ),
         "the world was released while a write was still held"
     );
@@ -321,7 +314,7 @@ async fn a_cancelled_checkout_keeps_the_world_locked_until_its_files_finish() {
     loop {
         match other.lock(WorldLockMode::Exclusive) {
             Ok(held) => drop(held),
-            Err(WorldError::WorldLocked { .. }) => {
+            Err(WorldError::Locked { .. }) => {
                 assert!(Instant::now() < deadline, "the file pass never released");
                 std::thread::sleep(Duration::from_millis(5));
                 continue;
@@ -354,6 +347,7 @@ impl GatedTree {
 
 impl WorldTree for GatedTree {
     type Error = WorldError;
+
     type Region = GatedRegion;
     type Lock = HostWorldLock;
 
@@ -410,6 +404,7 @@ impl std::fmt::Display for GatedRegion {
 
 impl RegionFile for GatedRegion {
     type Error = WorldError;
+
     type RegionImage = <HostRegion as RegionFile>::RegionImage;
 
     fn read(&self, key: RegionKey) -> Result<Self::RegionImage, WorldError> {

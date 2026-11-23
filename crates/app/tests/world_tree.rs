@@ -1,27 +1,27 @@
-//! Pluggable [`WorldTree`] implementations with their own failure types.
+//! Pluggable [`WorldTree`] implementations with their own failure causes.
 //!
-//! Guards the abstraction boundary: a tree outside this workspace names its
-//! own error, hands out its own region handles, and the `sekai-app` entry
-//! points convert the failure via `From`. Nothing in the boundary is
-//! filesystem-bound: this tree only names its region files, and every file
-//! operation on them fails on purpose - the fake serves no bytes.
+//! Guards the abstraction boundary: a tree outside this workspace pins its
+//! `Error` to [`WorldError`], wraps its own causes in [`WorldError::Io`],
+//! hands out its own region handles, and the `sekai-app` entry points carry
+//! the failure unchanged. Nothing in the
+//! boundary is filesystem-bound: this tree only names its region files, and
+//! every file operation on them fails on purpose - the fake serves no bytes.
 
 use sekai_app::{
-    AppError, Dimension, Region, RegionFile, RegionKey, RegionKind, UnguardedReason, WorldLock,
-    WorldLockMode, WorldLockState, WorldTree, world_chunk_coords,
+    AppError, Dimension, Region, RegionFile, RegionKey, RegionKind, UnguardedReason, WorldError,
+    WorldLock, WorldLockMode, WorldLockState, WorldTree, world_chunk_coords,
 };
 
-/// Failure type of [`FakeWorld`], deliberately unrelated to `WorldError`.
+/// Cause of a [`FakeWorld`] failure, deliberately unrelated to any host error.
 #[derive(Debug, thiserror::Error)]
 #[error("fake world failed: {reason}")]
 struct FakeError {
     reason: &'static str,
 }
 
-impl From<FakeError> for AppError {
-    fn from(source: FakeError) -> Self {
-        Self::Io(std::io::Error::other(source))
-    }
+/// Wrap a fake cause the way any tree outside this workspace wraps its own.
+fn fake_failure(location: &str, reason: &'static str) -> WorldError {
+    WorldError::io(location, FakeError { reason })
 }
 
 /// A tree that enumerates one dimension, serves no listed regions but
@@ -35,11 +35,9 @@ struct FakeWorld {
 }
 
 impl FakeWorld {
-    const fn check(fail: bool) -> Result<(), FakeError> {
+    fn check(fail: bool) -> Result<(), WorldError> {
         if fail {
-            Err(FakeError {
-                reason: "unplugged",
-            })
+            Err(fake_failure("/fake", "unplugged"))
         } else {
             Ok(())
         }
@@ -53,20 +51,20 @@ impl FakeWorld {
 struct FakeRegionImage;
 
 impl Region for FakeRegionImage {
-    type Error = FakeError;
+    type Error = WorldError;
 
     fn image(&self) -> &[u8] {
         unreachable!("fake image serves no bytes")
     }
 
-    fn visit_chunks<F>(&self, _visit: F) -> Result<(), Self::Error>
+    fn visit_chunks<F>(&self, _visit: F) -> Result<(), WorldError>
     where
         F: FnMut(sekai_anvil::Chunk<'_>) -> bool,
     {
         unreachable!("fake image serves no chunks")
     }
 
-    fn chunk_payload(&self, _x: i32, _z: i32) -> Result<Option<&[u8]>, Self::Error> {
+    fn chunk_payload(&self, _x: i32, _z: i32) -> Result<Option<&[u8]>, WorldError> {
         unreachable!("fake image serves no chunks")
     }
 }
@@ -85,24 +83,22 @@ impl std::fmt::Display for FakeRegion {
 }
 
 impl RegionFile for FakeRegion {
-    type Error = FakeError;
+    type Error = WorldError;
 
     type RegionImage = FakeRegionImage;
 
-    fn read(&self, _key: RegionKey) -> Result<Self::RegionImage, Self::Error> {
-        Err(FakeError { reason: "no bytes" })
+    fn read(&self, _key: RegionKey) -> Result<Self::RegionImage, WorldError> {
+        Err(fake_failure(&self.name, "no bytes"))
     }
 
-    fn size(&self) -> Result<u64, Self::Error> {
+    fn size(&self) -> Result<u64, WorldError> {
         // Not supported: the fake holds no files.
-        Err(FakeError { reason: "no size" })
+        Err(fake_failure(&self.name, "no size"))
     }
 
-    fn fingerprint(&self, _key: RegionKey) -> Result<sekai_app::RegionFingerprint, Self::Error> {
+    fn fingerprint(&self, _key: RegionKey) -> Result<sekai_app::RegionFingerprint, WorldError> {
         // Not supported: the fake serves no bytes to fingerprint.
-        Err(FakeError {
-            reason: "no fingerprint",
-        })
+        Err(fake_failure(&self.name, "no fingerprint"))
     }
 
     fn exists(&self) -> bool {
@@ -110,18 +106,14 @@ impl RegionFile for FakeRegion {
         false
     }
 
-    fn write(&self, _image: &[u8]) -> Result<(), Self::Error> {
+    fn write(&self, _image: &[u8]) -> Result<(), WorldError> {
         // Not supported: the fake holds no files.
-        Err(FakeError {
-            reason: "no writes",
-        })
+        Err(fake_failure(&self.name, "no writes"))
     }
 
-    fn remove(&self) -> Result<(), Self::Error> {
+    fn remove(&self) -> Result<(), WorldError> {
         // Not supported: the fake holds no files.
-        Err(FakeError {
-            reason: "no removals",
-        })
+        Err(fake_failure(&self.name, "no removals"))
     }
 }
 
@@ -139,11 +131,12 @@ impl WorldLock for FakeLock {
 }
 
 impl WorldTree for FakeWorld {
-    type Error = FakeError;
+    type Error = WorldError;
+
     type Region = FakeRegion;
     type Lock = FakeLock;
 
-    fn get_dims(&self) -> Result<Vec<Dimension>, Self::Error> {
+    fn get_dims(&self) -> Result<Vec<Dimension>, WorldError> {
         Self::check(self.fail_dims).map(|()| vec![Dimension::OVERWORLD])
     }
 
@@ -151,7 +144,7 @@ impl WorldTree for FakeWorld {
         &self,
         dim: Dimension,
         kind: RegionKind,
-    ) -> Result<Vec<(RegionKey, Self::Region)>, Self::Error> {
+    ) -> Result<Vec<(RegionKey, Self::Region)>, WorldError> {
         Self::check(self.fail_regions)?;
         if !self.serve_region {
             return Ok(Vec::new());
@@ -165,7 +158,7 @@ impl WorldTree for FakeWorld {
         )])
     }
 
-    fn derive_region(&self, key: RegionKey) -> Result<Self::Region, Self::Error> {
+    fn derive_region(&self, key: RegionKey) -> Result<Self::Region, WorldError> {
         Ok(FakeRegion {
             name: fake_name(key),
         })
@@ -175,13 +168,13 @@ impl WorldTree for FakeWorld {
         &self,
         _region: &Self::Region,
         key: RegionKey,
-    ) -> Result<Self::Region, Self::Error> {
+    ) -> Result<Self::Region, WorldError> {
         Ok(FakeRegion {
             name: fake_name(key),
         })
     }
 
-    fn lock(&self, _mode: WorldLockMode) -> Result<WorldLockState<Self::Lock>, Self::Error> {
+    fn lock(&self, _mode: WorldLockMode) -> Result<WorldLockState<Self::Lock>, WorldError> {
         // Nothing to exclude: the fake holds no files. The reason is
         // stated, so a caller can see that it runs unguarded.
         Ok(WorldLockState::Unguarded(UnguardedReason::NothingToProtect))
@@ -216,6 +209,7 @@ fn custom_tree_error_crosses_the_app_boundary() {
         serve_region: false,
     })
     .unwrap_err();
+    assert!(matches!(error, AppError::World(WorldError::Io { .. })));
     assert!(error.to_string().contains("fake world failed: unplugged"));
 
     // `get_regions` fails through the same boundary, not only `get_dims`:
@@ -271,7 +265,6 @@ fn custom_tree_reports_its_unguarded_answer() {
 
 /// Only the files a plan ingests are read: an out-of-scope file whose
 /// `read` fails cannot fail the run, while the same failure in scope does.
-#[cfg(feature = "backend-local")]
 #[tokio::test]
 async fn only_planned_files_are_read() {
     use sekai_storage_local::LocalStore;

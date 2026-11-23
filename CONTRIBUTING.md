@@ -11,7 +11,7 @@ This project is organized as a Cargo workspace under `crates/`:
     ├── storage         # Backend-neutral store traits + generic tree/graph algorithms (no_std + alloc)
     ├── storage-local   # Local backend: SQLite metadata (sqlx) + sled blobs + sled region-image cache (std + tokio)
     ├── world           # World access boundary (no_std + alloc): WorldTree trait,
-    │                   # RegionFile handle, WorldLock primitives
+    │                   # RegionFile handle, WorldLock primitives, WorldError
     ├── world-local     # Host filesystem tree (std): HostWorldTree, layout detection,
     │                   # region handles, the world file lock, atomic swaps
     ├── app             # Composition/orchestration library for third parties (std, executor-agnostic)
@@ -23,8 +23,8 @@ This project is organized as a Cargo workspace under `crates/`:
 Keep dependencies strictly unidirectional (inward):
 
 ```text
-sekai (bin) -> app -> {core, world, world-local, storage, storage-local}
-app -> {core, anvil}
+sekai (bin) -> {app, world-local, storage-local} (the binary picks the backends)
+app -> {core, anvil, world, storage}
 app -> util (ThreadRunner boundary; the host OsThread pool lives in the binary)
 world -> {anvil, core}
 world-local -> {world, anvil, core}
@@ -173,15 +173,16 @@ any exception in the PR body.
   the binary executable.
 - **Storage backends**: this project ships one local backend, in the
   `sekai-storage-local` crate (SQLite metadata via sqlx, blobs and the
-  region-image cache via sled; app feature `backend-local`, default-on).
+  region-image cache via sled).
   `sekai-storage` stays
   backend-neutral and owns the traits and locks; it holds no backend
   modules (the `testing` feature's in-memory fake is test-only and never
   compiled into a normal build), so a mysql or postgres backend arrives as
   a sibling crate rather than as a stub.
-  Backend selection is compile-time via the `backend-local` feature;
-  `--store` names the local store's root directory directly. A build
-  without `backend-local` has no store-opening entry point at all.
+  Backend selection is compile-time at the binary, which depends on
+  `sekai-storage-local` and `sekai-world-local` directly; `app` names no
+  concrete backend. `--store` names the local store's root directory
+  directly.
 
 ## Coding Standards
 
@@ -219,19 +220,17 @@ cargo clippy -p sekai-util -p sekai-anvil -p sekai-core -p sekai-world -p sekai-
 # Ensure the pure crates and backend-neutral storage stay lint-clean for wasm
 cargo clippy -p sekai-util -p sekai-anvil -p sekai-core -p sekai-world -p sekai-storage --target wasm32-unknown-unknown --no-default-features -- -D warnings
 
-# Run all unit and integration tests (default backend)
+# Run all unit and integration tests
 cargo nextest run --workspace
 
-# Feature-combination lint: default, none, each backend, all
+# Feature-combination lint: default, none, each feature, all
 cargo hack --each-feature clippy --workspace --all-targets -- -D warnings
 
-# Feature-combination tests: the store-backed suites need `backend-local`,
-# so they are compiled out of the other combinations
+# Feature-combination tests
 cargo hack --each-feature nextest run --workspace --all-targets
 
 # Backend matrix (when touching storage backends)
 cargo nextest run -p sekai-storage -p sekai-storage-local
-cargo nextest run -p sekai-app --no-default-features --features backend-local
 
 # Run dependency, advisory, and license checks
 cargo deny check

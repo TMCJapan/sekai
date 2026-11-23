@@ -31,7 +31,7 @@ use sekai_core::staging::{Assembled, Ingested, Plan, Previous, assemble};
 use sekai_core::{ApplyOutcome, ChunkCoord, CommitEntry, CommitId, RegionKey, Scope};
 use sekai_storage::{BlobStore, MetaStore, RegionNode, SekaiStore};
 use sekai_util::{JobSet as _, ThreadRunner};
-use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
+use sekai_world::{Region, RegionFile, WorldError, WorldLock, WorldLockMode, WorldTree};
 
 use crate::cache::prove_regions_unchanged;
 use crate::error::AppError;
@@ -261,10 +261,7 @@ struct FileOutcome {
     timing: RegionTiming,
 }
 
-impl<W: WorldTree, S: SekaiStore, T: ThreadRunner> WorldHandleMut<'_, W, S, T>
-where
-    AppError: From<W::Error>,
-{
+impl<W: WorldTree<Error = WorldError>, S: SekaiStore, T: ThreadRunner> WorldHandleMut<'_, W, S, T> {
     /// Scan the bound world and record it as a new commit in the store,
     /// additionally returning per-phase timings.
     ///
@@ -353,7 +350,7 @@ struct Prepared {
 /// are the same numbers a real commit would commit. Files proven unchanged
 /// through the region-image cache stage straight from the committed region
 /// nodes. `progress_builder` counts the files to ingest.
-async fn prepare<W: WorldTree, S: SekaiStore>(
+async fn prepare<W: WorldTree<Error = WorldError>, S: SekaiStore>(
     store: &S,
     runner: &impl ThreadRunner,
     world: &W,
@@ -361,10 +358,7 @@ async fn prepare<W: WorldTree, S: SekaiStore>(
     progress_builder: &impl BuildProgress,
     dry_run: bool,
     guard: &Arc<WorldGuard<W::Lock>>,
-) -> Result<Prepared, AppError>
-where
-    AppError: From<W::Error>,
-{
+) -> Result<Prepared, AppError> {
     // Discovery walks directories on the runner, owning a share of the
     // world lock like every file pass.
     let discover_started = Instant::now();
@@ -420,10 +414,7 @@ where
     })
 }
 
-impl<W: WorldTree, S: SekaiStore, T: ThreadRunner> WorldHandle<'_, W, S, T>
-where
-    AppError: From<W::Error>,
-{
+impl<W: WorldTree<Error = WorldError>, S: SekaiStore, T: ThreadRunner> WorldHandle<'_, W, S, T> {
     /// Preview what a commit would record, without recording anything: no
     /// CAS puts, no metadata commit, no region writes. Only lock files may
     /// be created (ADR-0014).
@@ -451,10 +442,7 @@ where
     }
 }
 
-impl<W: WorldTree, S: SekaiStore, T: ThreadRunner> WorldHandleMut<'_, W, S, T>
-where
-    AppError: From<W::Error>,
-{
+impl<W: WorldTree<Error = WorldError>, S: SekaiStore, T: ThreadRunner> WorldHandleMut<'_, W, S, T> {
     /// Preview what a commit would record; see [`WorldHandle::status`].
     pub async fn status(
         &self,
@@ -467,17 +455,14 @@ where
 }
 
 /// Preview implementation shared by read-only and read-write handles.
-async fn status_impl<W: WorldTree, S: SekaiStore>(
+async fn status_impl<W: WorldTree<Error = WorldError>, S: SekaiStore>(
     store: &S,
     runner: &impl ThreadRunner,
     world: &W,
     scope: Scope,
     progress_builder: &impl BuildProgress,
     guard: &Arc<WorldGuard<W::Lock>>,
-) -> Result<(StatusReport, StatusTimings), AppError>
-where
-    AppError: From<W::Error>,
-{
+) -> Result<(StatusReport, StatusTimings), AppError> {
     let total = Instant::now();
 
     // The preview shares the ingest plan but records nothing.
@@ -589,7 +574,7 @@ struct IngestTimings {
 // The proof map joins the existing ingest inputs rather than splitting the
 // shared commit/status pipeline into two functions.
 #[allow(clippy::too_many_arguments)]
-async fn ingest_changed<R: RegionFile, S: SekaiStore, L: WorldLock>(
+async fn ingest_changed<R: RegionFile<Error = WorldError>, S: SekaiStore, L: WorldLock>(
     changed: Vec<(RegionKey, R)>,
     mut cas: S::Blobs,
     runner: &impl ThreadRunner,
@@ -598,10 +583,7 @@ async fn ingest_changed<R: RegionFile, S: SekaiStore, L: WorldLock>(
     progress_builder: &impl BuildProgress,
     dry_run: bool,
     guard: &Arc<WorldGuard<L>>,
-) -> Result<(Ingested, IngestTimings), AppError>
-where
-    AppError: From<R::Error>,
-{
+) -> Result<(Ingested, IngestTimings), AppError> {
     let mut progress = progress_builder.build_progress(changed.len());
     let mut walk = RegionWalk {
         timings: Vec::with_capacity(changed.len()),
@@ -682,7 +664,7 @@ fn merge_outcome(walk: &mut RegionWalk, outcome: FileOutcome) {
 /// chunks are exactly the committed region node's entries, all already
 /// stored, so no blob is new and no work is timed. The present coordinates
 /// still matter: assembly tombstones any in-scope coordinate they miss.
-fn proven_outcome<R: RegionFile>(
+fn proven_outcome<R: RegionFile<Error = WorldError>>(
     key: RegionKey,
     region: &R,
     node: &RegionNode,
@@ -744,10 +726,11 @@ struct ChunkWrite {
 }
 
 /// Open the region file, then hash and stage every in-scope chunk.
-fn stage_file<R: RegionFile>(region: &R, key: RegionKey, scope: &Scope) -> Result<Staged, AppError>
-where
-    AppError: From<R::Error>,
-{
+fn stage_file<R: RegionFile<Error = WorldError>>(
+    region: &R,
+    key: RegionKey,
+    scope: &Scope,
+) -> Result<Staged, AppError> {
     let opened = Instant::now();
     let image: R::RegionImage = region.read(key)?;
     let mut staged = Staged {

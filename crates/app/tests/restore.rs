@@ -1,20 +1,17 @@
 //! End-to-end restore flows over real world folders and local stores:
 //! git-restore semantics (default HEAD source, scoped writes, no-overlay
 //! deletion, no history or ref changes) on top of the checkout machinery.
-//!
-//! Requires the `backend-local` feature.
-
-#![cfg(feature = "backend-local")]
 
 mod fixtures;
 
 use fixtures::chunk_nbt;
 
+use sekai_app::SekaiInstance;
 use sekai_app::{
     AppError, Area, CommitOptions, Dimension, Rect, RegionKind, RestoreOptions, Revision, Scope,
 };
-use sekai_app::{HostWorldTree, SekaiInstance};
 use sekai_storage_local::LocalStore;
+use sekai_world_local::HostWorldTree;
 use std::path::Path;
 
 /// A temp dir whose name starts with the calling test's name (tempfile

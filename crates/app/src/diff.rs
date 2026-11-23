@@ -8,7 +8,7 @@ use sekai_anvil::{Chunk, ChunkHashError, ChunkPayloadDiff};
 use sekai_core::{ChunkCoord, ChunkHash, CommitId, RegionKey, RegionKind};
 use sekai_storage::{BlobStore as _, MetaStore, RegionNode, SekaiStore};
 use sekai_util::{JobSet as _, ThreadRunner};
-use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
+use sekai_world::{Region, RegionFile, WorldError, WorldLock, WorldLockMode, WorldTree};
 
 use crate::cache::prove_regions_unchanged;
 use crate::error::AppError;
@@ -179,10 +179,9 @@ impl<S: SekaiStore, T: ThreadRunner> SekaiInstance<S, T> {
 /// Takes its own shared world lock, so coordinates handed to a later
 /// [`WorldHandle::diff_world_chunks`] go stale if a checkout runs in
 /// between (ADR-0014).
-pub fn world_chunk_coords<T: WorldTree>(world: &T) -> Result<Vec<ChunkCoord>, AppError>
-where
-    AppError: From<T::Error>,
-{
+pub fn world_chunk_coords<T: WorldTree<Error = WorldError>>(
+    world: &T,
+) -> Result<Vec<ChunkCoord>, AppError> {
     let _lock = world.lock(WorldLockMode::Shared)?;
     let mut coords = Vec::new();
     for (key, region) in discover_regions(world)? {
@@ -216,10 +215,7 @@ async fn commit_chunk_hash<S: SekaiStore>(
     Ok(Some(hash))
 }
 
-impl<W: WorldTree, S: SekaiStore, T: ThreadRunner> WorldHandle<'_, W, S, T>
-where
-    AppError: From<W::Error>,
-{
+impl<W: WorldTree<Error = WorldError>, S: SekaiStore, T: ThreadRunner> WorldHandle<'_, W, S, T> {
     /// Compute AST diff for a chunk coordinate between the bound world state
     /// and a commit.
     ///
@@ -348,10 +344,7 @@ where
     }
 }
 
-impl<W: WorldTree, S: SekaiStore, T: ThreadRunner> WorldHandleMut<'_, W, S, T>
-where
-    AppError: From<W::Error>,
-{
+impl<W: WorldTree<Error = WorldError>, S: SekaiStore, T: ThreadRunner> WorldHandleMut<'_, W, S, T> {
     /// Compute AST diff for one chunk; see [`WorldHandle::diff_world_chunk`].
     pub async fn diff_world_chunk(
         &self,
@@ -450,7 +443,7 @@ async fn commit_sides<S: SekaiStore>(
 /// digested there; results scatter back into input positions as jobs
 /// complete, so the output order never depends on completion order.
 #[allow(clippy::too_many_arguments)]
-async fn world_sides<R: RegionFile, L: WorldLock>(
+async fn world_sides<R: RegionFile<Error = WorldError>, L: WorldLock>(
     runner: &impl ThreadRunner,
     regions: &BTreeMap<RegionKey, R>,
     coords: &[ChunkCoord],
@@ -460,10 +453,7 @@ async fn world_sides<R: RegionFile, L: WorldLock>(
     guard: &Arc<WorldGuard<L>>,
     progress: &mut impl Progress,
     timings: &mut DiffTimings,
-) -> Result<(), AppError>
-where
-    AppError: From<R::Error>,
-{
+) -> Result<(), AppError> {
     let mut spawnable = Vec::new();
     for (key, indices) in by_region {
         if let Some(node) = proven.get(key) {
@@ -506,12 +496,9 @@ where
 /// ends (ADR-0022): an abandoned diff cannot free the world while a file
 /// is still being read. The read counts under `blob_fetch`; decompression
 /// and digesting under `decompress`.
-fn read_region_side<R: RegionFile>(
+fn read_region_side<R: RegionFile<Error = WorldError>>(
     file: (RegionKey, R, Vec<(usize, ChunkCoord)>),
-) -> Result<RegionSide, AppError>
-where
-    AppError: From<R::Error>,
-{
+) -> Result<RegionSide, AppError> {
     let (key, region, items) = file;
     let started = Instant::now();
     let image = region.read(key)?;

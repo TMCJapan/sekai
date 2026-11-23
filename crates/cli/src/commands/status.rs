@@ -1,8 +1,9 @@
 //! Status subcommand execution, DTOs, and output rendering.
 
 use anyhow::Context as _;
-use sekai_app::{HostWorldTree, StatusReport, StatusTimings};
+use sekai_app::{StatusReport, StatusTimings};
 use sekai_storage_local::LocalStore;
+use sekai_world_local::HostWorldTree;
 use serde::Serialize;
 use std::path::Path;
 

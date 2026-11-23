@@ -17,7 +17,7 @@ pub trait RegionFile:
     Clone + core::fmt::Debug + core::fmt::Display + Send + Sync + 'static
 {
     /// Failure type for every operation on this file.
-    type Error: core::error::Error;
+    type Error;
 
     /// The parsed image [`RegionFile::read`] returns.
     type RegionImage: Region<Error = Self::Error>;
@@ -73,8 +73,10 @@ pub trait RegionFile:
     /// Delete the file.
     ///
     /// A file that is already gone fails like any other failure. Telling
-    /// that case apart from a real I/O error takes the tree's concrete
-    /// error type: the trait promises no distinguishable failure.
+    /// that case apart from a real I/O error takes the tree's error type -
+    /// for a tree reporting [`WorldError`](crate::WorldError), a downcast of
+    /// the cause inside `WorldError::Io`: the trait promises no
+    /// distinguishable failure.
     fn remove(&self) -> Result<(), Self::Error>;
 }
 

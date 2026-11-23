@@ -1,15 +1,12 @@
 //! End-to-end ref flows over local stores.
-//!
-//! Requires the `backend-local` feature.
-
-#![cfg(feature = "backend-local")]
 
 mod fixtures;
 
 use fixtures::chunk_nbt;
 
-use sekai_app::{DEFAULT_REF_NAME, HostWorldTree};
+use sekai_app::DEFAULT_REF_NAME;
 use sekai_storage_local::LocalStore;
+use sekai_world_local::HostWorldTree;
 use std::path::Path;
 
 /// A private temp dir, removed on drop. Nothing is kept, so a panicking

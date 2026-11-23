@@ -19,13 +19,14 @@ use crate::{WorldLock, WorldLockMode, WorldLockState};
 /// too, behind the [`RegionFile`] handle - a host tree reads and writes the
 /// filesystem, another tree may read and write something else.
 ///
-/// The associated [`WorldTree::Error`] keeps the trait implementable outside
-/// this crate: consumers choose their own failure type and convert it at
-/// their boundary - `sekai-app` operations require
-/// `AppError: From<WorldTree::Error>`.
+/// The associated [`WorldTree::Error`] keeps the trait usable outside the
+/// composition layer: a tree names its own failure type, and each consumer
+/// pins the one it needs. `sekai-app` runs trees whose `Error` is
+/// [`WorldError`](crate::WorldError), the way it runs store backends whose
+/// `Error` is `StorageError`, so it never names a concrete tree.
 pub trait WorldTree: Sync + Send + Clone + 'static {
     /// Failure type for every operation on this tree.
-    type Error: core::error::Error;
+    type Error;
 
     /// Handle to one region file of this tree.
     type Region: RegionFile<Error = Self::Error>;

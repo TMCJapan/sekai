@@ -1,16 +1,13 @@
 //! End-to-end commit flows over real world folders and local stores.
-//!
-//! Requires the `backend-local` feature.
-
-#![cfg(feature = "backend-local")]
 
 mod fixtures;
 
 use fixtures::chunk_nbt;
 
+use sekai_app::WorldTree;
 use sekai_app::{BuildProgress, CommitId, CommitOptions, Progress, RegionKind, Scope, SekaiStore};
-use sekai_app::{HostWorldTree, WorldTree};
 use sekai_storage_local::LocalStore;
+use sekai_world_local::HostWorldTree;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;

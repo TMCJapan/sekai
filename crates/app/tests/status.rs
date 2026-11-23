@@ -1,15 +1,12 @@
 //! Read-only commit previews over real world folders and local stores.
-//!
-//! Requires the `backend-local` feature.
-
-#![cfg(feature = "backend-local")]
 
 mod fixtures;
 
 use fixtures::chunk_nbt;
 
-use sekai_app::{HostWorldTree, SekaiStore};
+use sekai_app::SekaiStore;
 use sekai_storage_local::LocalStore;
+use sekai_world_local::HostWorldTree;
 use std::path::Path;
 
 /// A temp dir whose name starts with the calling test's name (tempfile

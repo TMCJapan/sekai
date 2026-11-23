@@ -1,12 +1,22 @@
 //! World filesystem behavior: discovery, fingerprints, swaps.
 
 use sekai_core::{Dimension, RegionKey, RegionKind};
-use sekai_world::{WorldLockMode, WorldTree};
+use sekai_world::{WorldError, WorldLockMode, WorldTree};
 use sekai_world_local::{
-    HostRegion, HostWorldLock, HostWorldTree, WorldError, atomic_swap, fingerprint_file, open_image,
+    HostRegion, HostWorldLock, HostWorldTree, atomic_swap, fingerprint_file, open_image,
 };
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+/// The host I/O kind behind a [`WorldError::Io`].
+fn io_kind(err: &WorldError) -> Option<std::io::ErrorKind> {
+    let WorldError::Io { source, .. } = err else {
+        return None;
+    };
+    source
+        .downcast_ref::<std::io::Error>()
+        .map(std::io::Error::kind)
+}
 
 /// A temp dir whose name starts with the calling test's name (tempfile
 /// appends a random suffix), removed when its guard is dropped at the end
@@ -269,9 +279,13 @@ fn locking_a_missing_world_reports_the_missing_world() {
     for mode in [WorldLockMode::Shared, WorldLockMode::Exclusive] {
         let err = world.lock(mode).unwrap_err();
         match err {
-            WorldError::Io { path, source } => {
-                assert_eq!(path, root.join("typo"));
-                assert_eq!(source.kind(), std::io::ErrorKind::NotFound, "{mode:?}");
+            WorldError::Io { ref location, .. } => {
+                assert_eq!(*location, root.join("typo").display().to_string());
+                assert_eq!(
+                    io_kind(&err),
+                    Some(std::io::ErrorKind::NotFound),
+                    "{mode:?}"
+                );
             }
             other => panic!("expected Io/NotFound for {mode:?}, got {other:?}"),
         }
@@ -303,7 +317,7 @@ fn the_world_lock_lives_in_the_root_and_stays_out_of_discovery() {
     assert_eq!(paths_of(&discover(&reopened)), paths_of(&before));
     assert!(matches!(
         reopened.lock(WorldLockMode::Exclusive),
-        Err(WorldError::WorldLocked { .. })
+        Err(WorldError::Locked { .. })
     ));
     drop(reader);
 
@@ -367,7 +381,7 @@ fn an_exclusive_world_lock_excludes_another_writer() {
     let other = HostWorldTree::new(&world_path).unwrap();
     for mode in [WorldLockMode::Shared, WorldLockMode::Exclusive] {
         assert!(
-            matches!(other.lock(mode), Err(WorldError::WorldLocked { .. })),
+            matches!(other.lock(mode), Err(WorldError::Locked { .. })),
             "{mode:?} must not join a held writer"
         );
     }
@@ -834,7 +848,7 @@ fn an_unlistable_kind_directory_is_an_error() {
 
     assert!(matches!(
         HostWorldTree::new(&world_path),
-        Err(sekai_world_local::WorldError::Io { .. })
+        Err(WorldError::Io { .. })
     ));
 }
 
@@ -854,10 +868,7 @@ fn a_permission_denied_kind_directory_is_an_error() {
 
     std::fs::set_permissions(&region, std::fs::Permissions::from_mode(0o755)).unwrap();
     if denied {
-        assert!(matches!(
-            result,
-            Err(sekai_world_local::WorldError::Io { .. })
-        ));
+        assert!(matches!(result, Err(WorldError::Io { .. })));
     }
 }
 
@@ -1138,7 +1149,7 @@ fn missing_world_is_an_error() {
     // as empty.
     assert!(matches!(
         world.get_dims(),
-        Err(WorldError::Io { source, .. }) if source.kind() == std::io::ErrorKind::NotFound
+        Err(ref err @ WorldError::Io { .. }) if io_kind(err) == Some(std::io::ErrorKind::NotFound)
     ));
     // Region enumeration is a plain directory read, and a missing root
     // holds no regions.
@@ -1201,7 +1212,7 @@ fn fingerprints_are_stable_and_change_sensitive() {
     // Missing file is an I/O error, not a fingerprint.
     assert!(matches!(
         fingerprint_file(&path, key),
-        Err(sekai_world_local::WorldError::Io { .. })
+        Err(WorldError::Io { .. })
     ));
 }
 
@@ -1291,10 +1302,7 @@ fn atomic_swap_replaces_and_cleans_up() {
     assert_eq!(open_image(&nested).unwrap(), b"data");
     std::fs::remove_file(&target).expect("the image is gone so the next open is an I/O error");
     // Missing source is an I/O error.
-    assert!(matches!(
-        open_image(&target),
-        Err(sekai_world_local::WorldError::Io { .. })
-    ));
+    assert!(matches!(open_image(&target), Err(WorldError::Io { .. })));
 }
 
 #[cfg(unix)]
@@ -1338,10 +1346,6 @@ fn read_refuses_a_key_that_names_another_region() {
     let foreign = RegionKey { rx: 1, ..own };
     assert!(matches!(
         region.read(foreign),
-        Err(sekai_world_local::WorldError::UnknownRegionPath {
-            region_x: 1,
-            region_z: 0,
-            ..
-        })
+        Err(WorldError::UnknownRegionPath { key }) if key == foreign
     ));
 }

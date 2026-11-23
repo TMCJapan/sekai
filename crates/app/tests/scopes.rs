@@ -1,18 +1,15 @@
 //! End-to-end named scope flows over local stores.
-//!
-//! Requires the `backend-local` feature.
-
-#![cfg(feature = "backend-local")]
 
 mod fixtures;
 
 use fixtures::chunk_nbt;
 
 use sekai_app::{
-    AppError, Area, ChunkCoord, Dimension, HostWorldTree, Lookup, NameKind, NamedScopeError, Rect,
-    RegionKind, Scope, ScopeName,
+    AppError, Area, ChunkCoord, Dimension, Lookup, NameKind, NamedScopeError, Rect, RegionKind,
+    Scope, ScopeName,
 };
 use sekai_storage_local::LocalStore;
+use sekai_world_local::HostWorldTree;
 use std::path::Path;
 
 /// A private temp dir, removed on drop. Nothing is kept, so a panicking
