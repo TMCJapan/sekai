@@ -125,6 +125,9 @@ pub enum Command {
     },
     /// Compare chunk NBT AST between two commits or between world state and a commit.
     Diff(DiffArgs),
+    /// Restore selected world portions from a source commit (git restore):
+    /// overwrites only the selection, records nothing, and moves no ref.
+    Restore(RestoreArgs),
 }
 
 impl Command {
@@ -139,6 +142,7 @@ impl Command {
             Self::Scope { .. } => "scope",
             Self::Cache { .. } => "cache",
             Self::Diff(_) => "diff",
+            Self::Restore(_) => "restore",
         }
     }
 
@@ -153,6 +157,7 @@ impl Command {
             Self::Scope { action } => action.output_json(),
             Self::Cache { action } => action.output_json(),
             Self::Diff(args) => args.output.json,
+            Self::Restore(args) => args.output.json,
         }
     }
 }
@@ -355,8 +360,59 @@ pub enum DiffTarget<'a> {
     },
 }
 
-/// World-portion selection shared by commit, status, checkout, and diff:
-/// spelled inline, or named by a scope saved in the store.
+/// `restore` arguments: git restore's shape over sekai's selection flags.
+///
+/// Sekai has no index, so git's `--staged`/`--worktree` locations do not
+/// apply: the live world is always the restore location, and the default
+/// source is the active ref's target (`HEAD`) instead of the index.
+#[derive(Debug, clap::Args)]
+pub struct RestoreArgs {
+    /// World directory to restore in place.
+    pub world: PathBuf,
+    /// Restore source: a commit ID, a branch, or `HEAD` / `@`, optionally
+    /// followed by one `~<n>` (see `log`). Defaults to the active ref's
+    /// target (`HEAD`).
+    #[arg(long, short = 's', value_name = "REV")]
+    pub source: Option<Revision>,
+    /// Overlay mode: keep region files unknown to the source instead of
+    /// deleting them. The default (no-overlay) deletes selected files the
+    /// source does not know, matching git restore.
+    #[arg(long)]
+    pub overlay: bool,
+    /// Human or JSON rendering plus optional phase timings.
+    #[command(flatten)]
+    pub output: TimingArgs,
+    /// Rebuild worker count. `0` means one per CPU.
+    #[arg(long, default_value = "0")]
+    pub jobs: usize,
+    /// World portion to restore. Required, like git restore's pathspec:
+    /// spell `--in`/`--region` areas or name a saved `--scope`.
+    #[command(flatten)]
+    pub selection: Selection,
+    /// How to handle a source blob missing from CAS.
+    #[arg(long, value_enum, default_value_t = OnMissingBlob::Abort)]
+    pub on_missing_blob: OnMissingBlob,
+    /// Where to rebuild a source-known region whose file is missing on
+    /// disk.
+    #[arg(long, value_enum, default_value_t = OnMissingFile::SiblingFirst)]
+    pub on_missing_file: OnMissingFile,
+}
+
+impl RestoreArgs {
+    /// Whether the selection spells at least one path. git restore
+    /// demands a pathspec; an empty selection would silently widen the
+    /// run to the whole world, which is checkout's job. `--kind` alone
+    /// narrows families but spells no path, so it does not count.
+    pub const fn has_paths(&self) -> bool {
+        match &self.selection {
+            Selection::Inline(inline) => !inline.areas.is_empty() || !inline.region.is_empty(),
+            Selection::Scope(_) => true,
+        }
+    }
+}
+
+/// World-portion selection shared by commit, status, checkout, diff, and
+/// restore: spelled inline, or named by a scope saved in the store.
 #[derive(Debug, Clone)]
 pub enum Selection {
     /// `--in`/`--region`/`--kind` spelled on the command line.

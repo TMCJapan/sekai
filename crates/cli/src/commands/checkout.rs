@@ -102,7 +102,7 @@ pub async fn run(
 }
 
 #[derive(Serialize)]
-struct CheckoutPayload {
+pub(crate) struct CheckoutPayload {
     files_written: usize,
     files_deleted: usize,
     chunks_restored: usize,
@@ -124,7 +124,7 @@ struct CheckoutPhases {
     checkout_files_ms: u128,
 }
 
-fn checkout_payload(
+pub(crate) fn checkout_payload(
     report: &CheckoutReport,
     timings: &CheckoutTimings,
     timing: bool,
@@ -144,7 +144,7 @@ fn checkout_payload(
     }
 }
 
-fn print_checkout_timing_table(timings: &CheckoutTimings, style: Styler) {
+pub(crate) fn print_checkout_timing_table(timings: &CheckoutTimings, style: Styler) {
     println!(
         "{}",
         style.dim(&format!(
