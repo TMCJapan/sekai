@@ -290,7 +290,7 @@ async fn only_planned_files_are_read() {
         fail_regions: false,
         serve_region: true,
     };
-    let options = sekai_app::StatusOptions { concurrency: 1 };
+    let options = sekai_app::StatusOptions {};
 
     let (report, _) = instance
         .world(&world)

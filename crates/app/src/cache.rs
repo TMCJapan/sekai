@@ -24,15 +24,15 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use sekai_core::{ChunkCoord, CommitEntry, CommitId, RegionHash, RegionKey, hash_bytes};
-use sekai_storage::{CacheStore, MetaStore as _, RegionNode, SekaiStore, StorageError};
+use sekai_storage::{CacheStore, MetaStore as _, RegionNode, SekaiStore};
+use sekai_util::{JobSet as _, ThreadRunner};
 use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
-use tokio::task::JoinSet;
 
 use crate::error::AppError;
 use crate::instance::{WorldGuard, WorldHandleMut};
 use crate::progress::{BuildProgress, Progress};
 use crate::regions::discover_regions;
-use crate::workers::worker_slots;
+use crate::workers::worker_error;
 
 /// One file's proof task: the committed region hash, the cached image
 /// digest to compare against, and the discovered handle to re-read.
@@ -54,6 +54,7 @@ struct Candidate<R> {
 /// file re-read, a worker panic - only costs the proof, never correctness.
 /// The caller answers unproven regions through its full per-chunk path.
 pub(crate) async fn prove_regions_unchanged<R, S, L>(
+    runner: &impl ThreadRunner,
     store: &S,
     commit: CommitId,
     regions: &BTreeMap<RegionKey, R>,
@@ -86,20 +87,19 @@ where
     }
 
     // Same bounded fan-out as ingest: a finished file frees its slot. The
-    // raw reads run on the blocking pool, each holding a share of the world
-    // lock until it ends (ADR-0022).
-    let mut queued = candidates.into_iter();
-    let mut set = JoinSet::new();
-    for candidate in queued.by_ref().take(worker_slots(0)) {
-        set.spawn(prove_file(candidate, Arc::clone(guard)));
-    }
+    // raw reads run on the runner's threads, each holding a share of the
+    // world lock until it ends (ADR-0022).
+    let proof_guard = Arc::clone(guard);
+    let mut jobs = runner.run(candidates, move |candidate| {
+        let _guard = Arc::clone(&proof_guard);
+        let image = candidate.handle.read(candidate.key).ok()?;
+        (hash_bytes(image.image()) == candidate.mca_hash)
+            .then_some((candidate.key, candidate.region))
+    });
     let mut proven = Vec::new();
-    while let Some(joined) = set.join_next().await {
+    while let Some(joined) = jobs.join_next().await {
         if let Ok(Some(pair)) = joined {
             proven.push(pair);
-        }
-        if let Some(candidate) = queued.next() {
-            set.spawn(prove_file(candidate, Arc::clone(guard)));
         }
     }
     if proven.is_empty() {
@@ -119,30 +119,9 @@ where
         .collect()
 }
 
-/// Re-read one file raw and compare its content hash against the cached
-/// image digest. `None` when the file cannot be read or has changed.
-async fn prove_file<R: RegionFile, L: WorldLock>(
-    candidate: Candidate<R>,
-    guard: Arc<WorldGuard<L>>,
-) -> Option<(RegionKey, RegionHash)> {
-    tokio::task::spawn_blocking(move || {
-        let _guard = guard;
-        let image = candidate.handle.read(candidate.key).ok()?;
-        (hash_bytes(image.image()) == candidate.mca_hash)
-            .then_some((candidate.key, candidate.region))
-    })
-    .await
-    .ok()
-    .flatten()
-}
-
 /// Cache-update behavior knobs.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct CacheUpdateOptions {
-    /// How many files hash at once. `0` means one per CPU, `1` stays
-    /// sequential.
-    pub concurrency: usize,
-}
+pub struct CacheUpdateOptions {}
 
 /// What a cache update populated, without recording a commit.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -174,7 +153,7 @@ pub struct CacheUpdateTimings {
     pub cache: Duration,
 }
 
-impl<W: WorldTree, S: SekaiStore> WorldHandleMut<'_, W, S>
+impl<W: WorldTree, S: SekaiStore, T: ThreadRunner> WorldHandleMut<'_, W, S, T>
 where
     AppError: From<W::Error>,
 {
@@ -204,23 +183,26 @@ where
     /// [`file_region_hash`]: sekai_storage::tree::file_region_hash
     pub async fn update_cache(
         &mut self,
-        options: CacheUpdateOptions,
+        _options: CacheUpdateOptions,
         progress_builder: &impl BuildProgress,
     ) -> Result<(CacheUpdateReport, CacheUpdateTimings), AppError> {
         let total = Instant::now();
         let guard = WorldGuard::acquire(self.world, WorldLockMode::Shared)?;
+        let runner = &self.instance.runner;
         let store = &mut self.instance.store;
 
-        // Discovery walks directories on the blocking pool, owning a share
-        // of the world lock like every file pass.
+        // Discovery walks directories on the runner, owning a share of the
+        // world lock like every file pass.
         let discover_started = Instant::now();
         let world_handle = self.world.clone();
         let discover_guard = Arc::clone(&guard);
-        let regions = tokio::task::spawn_blocking(move || {
-            let _guard = discover_guard;
-            discover_regions(&world_handle)
-        })
-        .await??;
+        let regions = runner
+            .call(move || {
+                let _guard = discover_guard;
+                discover_regions(&world_handle)
+            })
+            .await
+            .map_err(worker_error("cache update worker"))??;
         let discover = discover_started.elapsed();
 
         let mut progress = progress_builder.build_progress(regions.len());
@@ -233,42 +215,42 @@ where
         let mut cache = Duration::ZERO;
 
         // Same bounded fan-out as ingest: a finished file frees its slot.
-        // Workers clone the cache adapter over the same session; puts are
-        // insert-if-absent, so concurrent writers never conflict.
-        let adapter = store.cache().clone();
-        let mut queued = regions.into_iter();
-        let mut set = JoinSet::new();
-        let spawn = |set: &mut JoinSet<Result<FileUpdate, AppError>>,
-                     (key, region): (RegionKey, W::Region)| {
-            let cache = adapter.clone();
-            let guard = Arc::clone(&guard);
-            set.spawn(async move { update_file(region, key, cache, guard).await });
-        };
-        for file in queued.by_ref().take(worker_slots(options.concurrency)) {
-            spawn(&mut set, file);
-        }
+        // Reads and hashing run on the runner's threads; the cache writes
+        // stay here on the caller's executor, interleaved with the joins.
+        // Puts are insert-if-absent, so the sequential writes never
+        // conflict with anything.
+        let mut adapter = store.cache().clone();
+        let hash_guard = Arc::clone(&guard);
+        let mut jobs = runner.run(regions, move |(key, region)| {
+            let _guard = Arc::clone(&hash_guard);
+            hash_region(&region, key)
+        });
         // Completion order surfaces a failed file at once; returning drops
-        // the set, which aborts the files still in flight. Entries already
+        // the set, which stops the files still queued. Entries already
         // written stay: the cache is append-only derived state.
-        while let Some(joined) = set.join_next().await {
-            let outcome = joined.map_err(|source| {
-                AppError::Storage(StorageError::backend("cache update worker", source))
-            })??;
+        while let Some(joined) = jobs.join_next().await {
+            let hashed = joined.map_err(worker_error("cache update worker"))??;
+            let (inserted, put) = if let Some(region_hash) = hashed.region {
+                let started = Instant::now();
+                let inserted = adapter
+                    .put(region_hash, hashed.mca_hash, &hashed.image)
+                    .await?;
+                (inserted, started.elapsed())
+            } else {
+                (false, Duration::ZERO)
+            };
             progress.step();
-            report.chunks += outcome.chunks;
-            if outcome.empty {
+            report.chunks += hashed.chunks;
+            if hashed.region.is_none() {
                 report.empty += 1;
-            } else if outcome.inserted {
+            } else if inserted {
                 report.entries += 1;
             } else {
                 report.existing += 1;
             }
-            ingest += outcome.open + outcome.hash;
-            hash += outcome.hash;
-            cache += outcome.put;
-            if let Some(file) = queued.next() {
-                spawn(&mut set, file);
-            }
+            ingest += hashed.open + hashed.hash;
+            hash += hashed.hash;
+            cache += put;
         }
 
         // Advisory flush: the cache is derived, so this keeps the log small
@@ -286,60 +268,6 @@ where
         };
         Ok((report, timings))
     }
-}
-
-/// One file's contribution to the update report and timings.
-struct FileUpdate {
-    /// Chunks hashed from the file.
-    chunks: usize,
-    /// The file holds no chunks, so it names no region node.
-    empty: bool,
-    /// The cache entry was newly inserted (vs. already present).
-    inserted: bool,
-    /// File open time.
-    open: Duration,
-    /// Chunk hashing time.
-    hash: Duration,
-    /// Cache write time.
-    put: Duration,
-}
-
-/// Hash one file and store its image under the region node its chunks
-/// produce. The read and hash run on the blocking pool holding `guard`;
-/// the cache write then awaits with the captured bytes, no world access.
-async fn update_file<R: RegionFile, C: CacheStore<Error = StorageError>, L: WorldLock>(
-    region: R,
-    key: RegionKey,
-    mut cache: C,
-    guard: Arc<WorldGuard<L>>,
-) -> Result<FileUpdate, AppError>
-where
-    AppError: From<R::Error>,
-{
-    let hashed = tokio::task::spawn_blocking(move || {
-        let _guard = guard;
-        hash_region(&region, key)
-    })
-    .await
-    .map_err(|source| AppError::Storage(StorageError::backend("cache update worker", source)))??;
-
-    let (inserted, put) = if let Some(region_hash) = hashed.region {
-        let started = Instant::now();
-        let inserted = cache
-            .put(region_hash, hashed.mca_hash, &hashed.image)
-            .await?;
-        (inserted, started.elapsed())
-    } else {
-        (false, Duration::ZERO)
-    };
-    Ok(FileUpdate {
-        chunks: hashed.chunks,
-        empty: hashed.region.is_none(),
-        inserted,
-        open: hashed.open,
-        hash: hashed.hash,
-        put,
-    })
 }
 
 /// One file read, hashed, and retained for its cache write.

@@ -6,16 +6,16 @@ use std::time::{Duration, Instant};
 
 use sekai_anvil::{Chunk, ChunkHashError, ChunkPayloadDiff};
 use sekai_core::{ChunkCoord, ChunkHash, CommitId, RegionKey, RegionKind};
-use sekai_storage::{BlobStore as _, MetaStore, RegionNode, SekaiStore, StorageError};
+use sekai_storage::{BlobStore as _, MetaStore, RegionNode, SekaiStore};
+use sekai_util::{JobSet as _, ThreadRunner};
 use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
-use tokio::task::JoinSet;
 
 use crate::cache::prove_regions_unchanged;
 use crate::error::AppError;
 use crate::instance::{SekaiInstance, WorldGuard, WorldHandle, WorldHandleMut};
 use crate::progress::{BuildProgress, Progress};
 use crate::regions::discover_regions;
-use crate::workers::worker_slots;
+use crate::workers::worker_error;
 
 /// Per-phase timings for chunk AST diffs. Informational only; never
 /// changes diff semantics.
@@ -34,7 +34,7 @@ pub struct DiffTimings {
     pub diff_compute: Duration,
 }
 
-impl<S: SekaiStore> SekaiInstance<S> {
+impl<S: SekaiStore, T: ThreadRunner> SekaiInstance<S, T> {
     /// Compute AST diff between two stored chunk blob hashes.
     pub async fn diff_blobs(
         &self,
@@ -91,7 +91,7 @@ fn chunk_digest(coord: ChunkCoord, payload: &[u8]) -> Result<ChunkHash, AppError
         })
 }
 
-impl<S: SekaiStore> SekaiInstance<S> {
+impl<S: SekaiStore, T: ThreadRunner> SekaiInstance<S, T> {
     /// Compute AST diff for a chunk coordinate between two commits.
     pub async fn diff_chunk(
         &self,
@@ -119,7 +119,7 @@ pub struct ChunkDiff {
     pub entries: ChunkPayloadDiff,
 }
 
-impl<S: SekaiStore> SekaiInstance<S> {
+impl<S: SekaiStore, T: ThreadRunner> SekaiInstance<S, T> {
     /// Compute AST diffs for explicit chunk coordinates.
     ///
     /// Compares two commits in the store, additionally returning
@@ -216,7 +216,7 @@ async fn commit_chunk_hash<S: SekaiStore>(
     Ok(Some(hash))
 }
 
-impl<W: WorldTree, S: SekaiStore> WorldHandle<'_, W, S>
+impl<W: WorldTree, S: SekaiStore, T: ThreadRunner> WorldHandle<'_, W, S, T>
 where
     AppError: From<W::Error>,
 {
@@ -245,7 +245,7 @@ where
     /// no commit to continue) diffs against the empty snapshot: every chunk
     /// the world holds is reported as added. The commit side is a metadata
     /// lookup; the world side reads each region file once and digests its
-    /// requested chunks, fanned out across the blocking pool. Decompression
+    /// requested chunks, fanned out across the instance's runner. Decompression
     /// and digesting count under `decompress`, the reads and metadata lookups
     /// under `blob_fetch`, and comparing the two digests under `diff_compute`.
     /// `progress_builder` counts the region files `coords` span, stepping once
@@ -288,7 +288,15 @@ where
         let keys: Vec<RegionKey> = by_region.keys().copied().collect();
         let proven = match base {
             Some(id) => {
-                prove_regions_unchanged(&self.instance.store, id, &regions, &keys, &guard).await
+                prove_regions_unchanged(
+                    &self.instance.runner,
+                    &self.instance.store,
+                    id,
+                    &regions,
+                    &keys,
+                    &guard,
+                )
+                .await
             }
             None => BTreeMap::new(),
         };
@@ -312,6 +320,7 @@ where
         let mut new_side: Vec<Option<ChunkHash>> = vec![None; coords.len()];
         let mut progress = progress_builder.build_progress(by_region.len());
         world_sides(
+            &self.instance.runner,
             &regions,
             coords,
             &by_region,
@@ -339,7 +348,7 @@ where
     }
 }
 
-impl<W: WorldTree, S: SekaiStore> WorldHandleMut<'_, W, S>
+impl<W: WorldTree, S: SekaiStore, T: ThreadRunner> WorldHandleMut<'_, W, S, T>
 where
     AppError: From<W::Error>,
 {
@@ -369,13 +378,6 @@ where
 /// Above this many unproven coordinates the commit side answers from one
 /// materialized tree walk instead of a metadata lookup per chunk.
 const BULK_COMMIT_THRESHOLD: usize = 1024;
-
-/// Diff fans out one task per region file. The work is dominated by
-/// decompression and hashing, so oversubscribing the blocking pool keeps
-/// every CPU busy while some tasks wait on reads.
-fn diff_worker_slots() -> usize {
-    worker_slots(0).saturating_mul(2)
-}
 
 /// One region's world-side outcome: each requested coordinate's digest
 /// with its position in the input, plus the phase timings of the run that
@@ -444,11 +446,12 @@ async fn commit_sides<S: SekaiStore>(
 ///
 /// Proven regions answer from their committed node and step at once; a
 /// region whose file is gone leaves its coordinates absent and steps too.
-/// Every remaining file is read once on the blocking pool, its requested
-/// chunks digested there; results scatter back into input positions as
-/// tasks complete, so the output order never depends on completion order.
+/// Every remaining file is read once on the runner, its requested chunks
+/// digested there; results scatter back into input positions as jobs
+/// complete, so the output order never depends on completion order.
 #[allow(clippy::too_many_arguments)]
 async fn world_sides<R: RegionFile, L: WorldLock>(
+    runner: &impl ThreadRunner,
     regions: &BTreeMap<RegionKey, R>,
     coords: &[ChunkCoord],
     by_region: &BTreeMap<RegionKey, Vec<usize>>,
@@ -479,66 +482,56 @@ where
     }
 
     // Same bounded fan-out as ingest: a finished file frees its slot.
-    // Returning on error drops the set, aborting the files still queued.
-    let mut queued = spawnable.into_iter();
-    let mut set = JoinSet::new();
-    for file in queued.by_ref().take(diff_worker_slots()) {
-        set.spawn(read_region_side(file, Arc::clone(guard)));
-    }
-    while let Some(joined) = set.join_next().await {
-        let side = joined
-            .map_err(|source| AppError::Storage(StorageError::backend("diff worker", source)))??;
+    // Returning on error drops the set, stopping the files still queued.
+    let read_guard = Arc::clone(guard);
+    let mut jobs = runner.run(spawnable, move |file| {
+        let _guard = Arc::clone(&read_guard);
+        read_region_side(file)
+    });
+    while let Some(joined) = jobs.join_next().await {
+        let side = joined.map_err(worker_error("diff worker"))??;
         for (index, digest) in side.digests {
             new_side[index] = digest;
         }
         timings.blob_fetch += side.read;
         timings.decompress += side.prepare;
         progress.step();
-        if let Some(file) = queued.next() {
-            set.spawn(read_region_side(file, Arc::clone(guard)));
-        }
     }
     Ok(())
 }
 
 /// Read one region file once and digest every requested chunk it holds.
 ///
-/// Runs on the blocking pool holding a share of the world lock until it
+/// Runs on a runner thread holding a share of the world lock until it
 /// ends (ADR-0022): an abandoned diff cannot free the world while a file
 /// is still being read. The read counts under `blob_fetch`; decompression
 /// and digesting under `decompress`.
-async fn read_region_side<R: RegionFile, L: WorldLock>(
+fn read_region_side<R: RegionFile>(
     file: (RegionKey, R, Vec<(usize, ChunkCoord)>),
-    guard: Arc<WorldGuard<L>>,
 ) -> Result<RegionSide, AppError>
 where
     AppError: From<R::Error>,
 {
-    tokio::task::spawn_blocking(move || {
-        let _guard = guard;
-        let (key, region, items) = file;
+    let (key, region, items) = file;
+    let started = Instant::now();
+    let image = region.read(key)?;
+    let read = started.elapsed();
+    let mut digests = Vec::with_capacity(items.len());
+    let mut prepare = Duration::ZERO;
+    for (index, coord) in items {
         let started = Instant::now();
-        let image = region.read(key)?;
-        let read = started.elapsed();
-        let mut digests = Vec::with_capacity(items.len());
-        let mut prepare = Duration::ZERO;
-        for (index, coord) in items {
-            let started = Instant::now();
-            let digest = match image.chunk_payload(coord.x, coord.z)? {
-                Some(payload) => Some(chunk_digest(coord, payload)?),
-                None => None,
-            };
-            prepare += started.elapsed();
-            digests.push((index, digest));
-        }
-        Ok(RegionSide {
-            digests,
-            read,
-            prepare,
-        })
+        let digest = match image.chunk_payload(coord.x, coord.z)? {
+            Some(payload) => Some(chunk_digest(coord, payload)?),
+            None => None,
+        };
+        prepare += started.elapsed();
+        digests.push((index, digest));
+    }
+    Ok(RegionSide {
+        digests,
+        read,
+        prepare,
     })
-    .await
-    .map_err(|source| AppError::Storage(StorageError::backend("diff worker", source)))?
 }
 
 /// What one source has to say about a chunk.

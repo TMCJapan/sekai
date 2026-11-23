@@ -53,7 +53,7 @@ fn write_region_at(path: impl AsRef<Path>, chunks: &[(i32, i32, Vec<u8>)], times
 }
 
 const fn options() -> CommitOptions {
-    CommitOptions { concurrency: 2 }
+    CommitOptions {}
 }
 
 const fn coord(x: i32, z: i32) -> ChunkCoord {
@@ -109,7 +109,7 @@ async fn unchanged_world_diff_skips_chunk_reads() {
     let mut instance = SekaiInstance::<LocalStore>::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .update_cache(sekai_app::CacheUpdateOptions::default(), &())
+        .update_cache(sekai_app::CacheUpdateOptions {}, &())
         .await
         .unwrap();
     instance
@@ -149,7 +149,7 @@ async fn wiped_cache_falls_back_to_chunk_reads() {
     let mut instance = SekaiInstance::<LocalStore>::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .update_cache(sekai_app::CacheUpdateOptions::default(), &())
+        .update_cache(sekai_app::CacheUpdateOptions {}, &())
         .await
         .unwrap();
     instance
@@ -190,7 +190,7 @@ async fn changed_chunk_falls_back_and_reports_the_change() {
     let mut instance = SekaiInstance::<LocalStore>::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .update_cache(sekai_app::CacheUpdateOptions::default(), &())
+        .update_cache(sekai_app::CacheUpdateOptions {}, &())
         .await
         .unwrap();
     instance
@@ -236,7 +236,7 @@ async fn header_rewrite_falls_back_but_stays_clean() {
     let mut instance = SekaiInstance::<LocalStore>::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .update_cache(sekai_app::CacheUpdateOptions::default(), &())
+        .update_cache(sekai_app::CacheUpdateOptions {}, &())
         .await
         .unwrap();
     instance
@@ -269,7 +269,7 @@ async fn deleted_file_reports_absence() {
     let mut instance = SekaiInstance::<LocalStore>::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .update_cache(sekai_app::CacheUpdateOptions::default(), &())
+        .update_cache(sekai_app::CacheUpdateOptions {}, &())
         .await
         .unwrap();
     instance
@@ -308,7 +308,7 @@ async fn mixed_regions_prove_only_the_unchanged_one() {
     let mut instance = SekaiInstance::<LocalStore>::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
-        .update_cache(sekai_app::CacheUpdateOptions::default(), &())
+        .update_cache(sekai_app::CacheUpdateOptions {}, &())
         .await
         .unwrap();
     instance

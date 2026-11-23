@@ -36,7 +36,7 @@ fn write_region(path: impl AsRef<Path>, chunks: &[(i32, i32, Vec<u8>)]) {
 }
 
 const fn options() -> sekai_app::StatusOptions {
-    sekai_app::StatusOptions { concurrency: 2 }
+    sekai_app::StatusOptions {}
 }
 
 /// Stored blob count, read through the live instance's store handle: the
@@ -69,11 +69,7 @@ async fn status_counts_tombstones_without_writing() {
         .unwrap();
     let (committed, _) = instance
         .world_mut(&mut world)
-        .commit(
-            sekai_app::CommitOptions::default(),
-            sekai_app::Scope::World,
-            &(),
-        )
+        .commit(sekai_app::CommitOptions {}, sekai_app::Scope::World, &())
         .await
         .unwrap();
     write_region(&region, &[(0, 0, chunk_nbt("marker-1"))]);
@@ -117,11 +113,7 @@ async fn status_reports_a_clean_world_after_commit() {
         .unwrap();
     let (committed, _) = instance
         .world_mut(&mut world)
-        .commit(
-            sekai_app::CommitOptions::default(),
-            sekai_app::Scope::World,
-            &(),
-        )
+        .commit(sekai_app::CommitOptions {}, sekai_app::Scope::World, &())
         .await
         .unwrap();
 
@@ -161,16 +153,12 @@ async fn status_proves_a_clean_world_without_hashing() {
         .unwrap();
     instance
         .world_mut(&mut world)
-        .update_cache(sekai_app::CacheUpdateOptions::default(), &())
+        .update_cache(sekai_app::CacheUpdateOptions {}, &())
         .await
         .unwrap();
     instance
         .world_mut(&mut world)
-        .commit(
-            sekai_app::CommitOptions::default(),
-            sekai_app::Scope::World,
-            &(),
-        )
+        .commit(sekai_app::CommitOptions {}, sekai_app::Scope::World, &())
         .await
         .unwrap();
 
@@ -208,16 +196,12 @@ async fn status_wiped_cache_falls_back_to_hashing() {
         .unwrap();
     instance
         .world_mut(&mut world)
-        .update_cache(sekai_app::CacheUpdateOptions::default(), &())
+        .update_cache(sekai_app::CacheUpdateOptions {}, &())
         .await
         .unwrap();
     instance
         .world_mut(&mut world)
-        .commit(
-            sekai_app::CommitOptions::default(),
-            sekai_app::Scope::World,
-            &(),
-        )
+        .commit(sekai_app::CommitOptions {}, sekai_app::Scope::World, &())
         .await
         .unwrap();
     drop(instance);
@@ -257,16 +241,12 @@ async fn status_partial_scope_proves_without_false_tombstones() {
         .unwrap();
     instance
         .world_mut(&mut world)
-        .update_cache(sekai_app::CacheUpdateOptions::default(), &())
+        .update_cache(sekai_app::CacheUpdateOptions {}, &())
         .await
         .unwrap();
     instance
         .world_mut(&mut world)
-        .commit(
-            sekai_app::CommitOptions::default(),
-            sekai_app::Scope::World,
-            &(),
-        )
+        .commit(sekai_app::CommitOptions {}, sekai_app::Scope::World, &())
         .await
         .unwrap();
 
@@ -308,16 +288,12 @@ async fn status_out_of_scope_change_falls_back_and_stays_clean() {
         .unwrap();
     instance
         .world_mut(&mut world)
-        .update_cache(sekai_app::CacheUpdateOptions::default(), &())
+        .update_cache(sekai_app::CacheUpdateOptions {}, &())
         .await
         .unwrap();
     instance
         .world_mut(&mut world)
-        .commit(
-            sekai_app::CommitOptions::default(),
-            sekai_app::Scope::World,
-            &(),
-        )
+        .commit(sekai_app::CommitOptions {}, sekai_app::Scope::World, &())
         .await
         .unwrap();
     write_region(

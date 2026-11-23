@@ -5,6 +5,7 @@
 pub mod cli;
 pub mod commands;
 pub mod envelope;
+pub mod runner;
 pub mod style;
 
 use cli::Cli;

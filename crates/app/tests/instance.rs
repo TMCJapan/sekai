@@ -7,6 +7,8 @@
 
 use sekai_storage_local::LocalStore;
 
+mod fixtures;
+
 /// A temp dir whose name starts with the calling test's name (tempfile
 /// appends a random suffix), removed when its guard is dropped at the end
 /// of the test, panics included.
@@ -86,4 +88,47 @@ async fn open_and_init_take_path_like_locations() {
     SekaiInstance::<LocalStore>::open(store.as_path())
         .await
         .unwrap();
+}
+
+/// The whole write/read pipeline runs over any `ThreadRunner`, not just
+/// the host pool: the inline `Sequential` runner (the `no_std` baseline)
+/// commits and checks out the same world through the same flows.
+#[tokio::test]
+async fn the_flows_run_over_a_custom_runner() {
+    use sekai_app::{
+        CheckoutOptions, CommitOptions, Scope, SekaiInstance, Sequential, ThreadRunner,
+    };
+
+    let (root, _guard) = tempdir("custom-runner");
+    let world_path = root.join("world");
+    let region = world_path.join("region/r.0.0.mca");
+    let mut builder = sekai_anvil::RegionBuilder::new(0, 0, 0).unwrap();
+    builder
+        .stage_chunk(0, 0, &fixtures::chunk_nbt("sequential"))
+        .unwrap();
+    std::fs::create_dir_all(region.parent().unwrap()).unwrap();
+    std::fs::write(&region, builder.image().unwrap()).unwrap();
+    let mut world = sekai_app::HostWorldTree::new(&world_path).unwrap();
+
+    let store = root.join("store").to_string_lossy().into_owned();
+    let mut instance =
+        SekaiInstance::<LocalStore, Sequential>::init_with(&store, Sequential::new(0))
+            .await
+            .unwrap();
+    let (report, _) = instance
+        .world_mut(&mut world)
+        .commit(CommitOptions::default(), Scope::World, &())
+        .await
+        .unwrap();
+    assert_eq!(report.chunks, 1);
+
+    std::fs::remove_file(&region).unwrap();
+    let (checked_out, _) = instance
+        .world_mut(&mut world)
+        .checkout(report.commit, CheckoutOptions::default(), Scope::World, &())
+        .await
+        .unwrap();
+    assert_eq!(checked_out.files_written, 1);
+    assert_eq!(checked_out.chunks_restored, 1);
+    assert!(region.exists());
 }

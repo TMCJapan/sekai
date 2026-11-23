@@ -57,11 +57,11 @@ fn write_region_at(path: impl AsRef<Path>, chunks: &[(i32, i32, Vec<u8>)], times
 }
 
 const fn options() -> CommitOptions {
-    CommitOptions { concurrency: 2 }
+    CommitOptions {}
 }
 
 const fn update_options() -> CacheUpdateOptions {
-    CacheUpdateOptions { concurrency: 2 }
+    CacheUpdateOptions {}
 }
 
 /// The region node hash the commit names for `key`, if any.

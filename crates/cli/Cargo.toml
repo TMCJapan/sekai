@@ -21,11 +21,11 @@ clap.workspace = true
 indicatif.workspace = true
 sekai-app.workspace = true
 sekai-storage-local.workspace = true
+sekai-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
 sekai-anvil.workspace = true
-sekai-util.workspace = true
 tempfile.workspace = true

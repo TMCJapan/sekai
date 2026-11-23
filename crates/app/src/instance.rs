@@ -20,35 +20,48 @@ use std::sync::Arc;
 
 use sekai_core::{Commit, CommitId, Revision};
 use sekai_storage::{CacheStore as _, SekaiStore, SekaiStoreOpener};
+use sekai_util::{Sequential, ThreadRunner};
 use sekai_world::{WorldLock, WorldLockMode, WorldLockState, WorldTree};
 
 use crate::error::AppError;
 
 /// An opened store; all store-scoped operations go through this.
-pub struct SekaiInstance<T: SekaiStore> {
-    pub(crate) store: T,
+///
+/// The runner is the instance's parallelism: every fan-out (ingest, cache
+/// update, diff reads, checkout writes) runs over it. The default is the
+/// inline [`Sequential`] runner; a host embedding composes a parallel one
+/// (the `sekai` binary's OS-thread pool) through [`Self::new`] /
+/// [`Self::open_with`] / [`Self::init_with`].
+pub struct SekaiInstance<S: SekaiStore, T: ThreadRunner = Sequential> {
+    pub(crate) store: S,
+    pub(crate) runner: T,
 }
 
-impl<T: SekaiStore> SekaiInstance<T> {
-    /// Compose an instance from an already opened store.
-    pub const fn new(store: T) -> Self {
-        Self { store }
+impl<S: SekaiStore, T: ThreadRunner> SekaiInstance<S, T> {
+    /// Compose an instance from an already opened store and its runner.
+    pub const fn new(store: S, runner: T) -> Self {
+        Self { store, runner }
     }
 
     /// Store handle (metadata plus CAS) for escape-hatch access: CAS
     /// operations take no lock, and metadata writes go through their own
     /// transactions.
-    pub const fn store(&self) -> &T {
+    pub const fn store(&self) -> &S {
         &self.store
     }
 
     /// Mutable store handle for escape-hatch access; see [`Self::store`].
-    pub const fn store_mut(&mut self) -> &mut T {
+    pub const fn store_mut(&mut self) -> &mut S {
         &mut self.store
     }
 
+    /// The runner every fan-out of this instance executes over.
+    pub const fn runner(&self) -> &T {
+        &self.runner
+    }
+
     /// Read-only handle rooted at `root`.
-    pub const fn world<'a, W: WorldTree>(&'a self, world: &'a W) -> WorldHandle<'a, W, T> {
+    pub const fn world<'a, W: WorldTree>(&'a self, world: &'a W) -> WorldHandle<'a, W, S, T> {
         WorldHandle {
             instance: self,
             world,
@@ -59,7 +72,7 @@ impl<T: SekaiStore> SekaiInstance<T> {
     pub const fn world_mut<'a, W: WorldTree>(
         &'a mut self,
         world: &'a mut W,
-    ) -> WorldHandleMut<'a, W, T> {
+    ) -> WorldHandleMut<'a, W, S, T> {
         WorldHandleMut {
             instance: self,
             world,
@@ -145,30 +158,43 @@ impl<T: SekaiStore> SekaiInstance<T> {
     }
 }
 
-impl<T: SekaiStore + SekaiStoreOpener> SekaiInstance<T> {
-    /// Open the existing store of an explicitly chosen backend type.
-    pub async fn open(path: impl AsRef<T::Path>) -> Result<Self, AppError> {
-        Ok(Self {
-            store: T::open(path).await?,
-        })
+impl<S: SekaiStore + SekaiStoreOpener> SekaiInstance<S, Sequential> {
+    /// Open the existing store of an explicitly chosen backend type, with
+    /// the inline default runner; compose a parallel one through
+    /// [`Self::open_with`].
+    pub async fn open(path: impl AsRef<S::Path>) -> Result<Self, AppError> {
+        Self::open_with(path, Sequential::new(0)).await
     }
 
     /// Initialize the store of an explicitly chosen backend type and open
-    /// it; the only entry point that materializes a store. Initializing an
-    /// existing store again is idempotent.
-    pub async fn init(path: impl AsRef<T::Path>) -> Result<Self, AppError> {
-        Ok(Self {
-            store: T::init(path).await?,
-        })
+    /// it, with the inline default runner; the only entry point that
+    /// materializes a store. Initializing an existing store again is
+    /// idempotent.
+    pub async fn init(path: impl AsRef<S::Path>) -> Result<Self, AppError> {
+        Self::init_with(path, Sequential::new(0)).await
     }
 }
 
-/// A world lock shared (`Arc`) into the blocking tasks that touch files.
+impl<S: SekaiStore + SekaiStoreOpener, T: ThreadRunner> SekaiInstance<S, T> {
+    /// Open the existing store of an explicitly chosen backend type,
+    /// composing it with `runner`; see [`SekaiInstance::open`].
+    pub async fn open_with(path: impl AsRef<S::Path>, runner: T) -> Result<Self, AppError> {
+        Ok(Self::new(S::open(path).await?, runner))
+    }
+
+    /// Initialize the store of an explicitly chosen backend type and open
+    /// it, composing it with `runner`; see [`SekaiInstance::init`].
+    pub async fn init_with(path: impl AsRef<S::Path>, runner: T) -> Result<Self, AppError> {
+        Ok(Self::new(S::init(path).await?, runner))
+    }
+}
+
+/// A world lock shared (`Arc`) into the runner jobs that touch files.
 ///
 /// The lock is released when the last share drops. A cancelled future drops
-/// its own share at once, but a blocking task cannot be aborted once it has
-/// started, so each one holds a share of its own: the world stays locked
-/// until every file it is reading or writing is done.
+/// its own share at once, but a job already running cannot be aborted, so
+/// each one holds a share of its own: the world stays locked until every
+/// file it is reading or writing is done.
 #[derive(Debug)]
 pub(crate) struct WorldGuard<L> {
     /// Held for its drop: the lock must outlive the operation.
@@ -190,8 +216,8 @@ impl<L: WorldLock> WorldGuard<L> {
 }
 
 /// Read-only handle to one world directory bound to an instance.
-pub struct WorldHandle<'a, W, S: SekaiStore> {
-    pub(crate) instance: &'a SekaiInstance<S>,
+pub struct WorldHandle<'a, W, S: SekaiStore, T: ThreadRunner = Sequential> {
+    pub(crate) instance: &'a SekaiInstance<S, T>,
     pub(crate) world: &'a W,
 }
 
@@ -201,15 +227,15 @@ pub struct WorldHandle<'a, W, S: SekaiStore> {
 /// handle borrows the instance mutably: while a write session is alive, no
 /// second handle for the same instance can exist, so store-scoped
 /// operations and other world writes cannot start.
-pub struct WorldHandleMut<'a, W, S: SekaiStore> {
-    pub(crate) instance: &'a mut SekaiInstance<S>,
+pub struct WorldHandleMut<'a, W, S: SekaiStore, T: ThreadRunner = Sequential> {
+    pub(crate) instance: &'a mut SekaiInstance<S, T>,
     pub(crate) world: &'a mut W,
 }
 
-impl<W, S: SekaiStore> WorldHandleMut<'_, W, S> {
+impl<W, S: SekaiStore, T: ThreadRunner> WorldHandleMut<'_, W, S, T> {
     /// Read-only view of the same world, for read operations issued while a
     /// write session is held.
-    pub(crate) const fn view(&self) -> WorldHandle<'_, W, S> {
+    pub(crate) const fn view(&self) -> WorldHandle<'_, W, S, T> {
         WorldHandle {
             instance: &*self.instance,
             world: &*self.world,

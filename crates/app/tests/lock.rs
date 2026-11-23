@@ -10,12 +10,19 @@
 
 mod fixtures;
 
+// The lock suite observes cross-thread cancellation, so it composes a host
+// thread runner (a test mirror of the binary's pool); the library default
+// is the inline `Sequential` runner.
+#[path = "fixtures/runner.rs"]
+mod runner;
+
 use fixtures::chunk_nbt;
 
 use sekai_app::{
     CheckoutOptions, ChunkHash, CommitId, CommitOptions, Dimension, HostRegion, HostWorldLock,
     HostWorldTree, Rect, RegionFile, RegionFingerprint, RegionKey, RegionKind, Scope, ScopeName,
-    SekaiInstance, SekaiStore, StatusOptions, WorldError, WorldLockMode, WorldLockState, WorldTree,
+    SekaiInstance, SekaiStore, StatusOptions, ThreadRunner as _, WorldError, WorldLockMode,
+    WorldLockState, WorldTree,
 };
 use sekai_storage::MetaStore as _;
 use sekai_storage_local::LocalStore;
@@ -39,7 +46,7 @@ struct Fixture {
     _guard: tempfile::TempDir,
     world_path: PathBuf,
     world: HostWorldTree,
-    instance: SekaiInstance<LocalStore>,
+    instance: SekaiInstance<LocalStore, runner::OsThread>,
     /// The fixture's only commit.
     commit: CommitId,
     /// A blob that the fixture commit references, for blob-level operations.
@@ -65,7 +72,12 @@ impl Fixture {
         write_region(world_path.join("region/r.1.0.mca"), &payload);
         let mut world = HostWorldTree::new(&world_path).unwrap();
         let store = root.join("store").to_string_lossy().into_owned();
-        let mut instance = SekaiInstance::<LocalStore>::init(&store).await.unwrap();
+        let mut instance = SekaiInstance::<LocalStore, runner::OsThread>::init_with(
+            &store,
+            runner::OsThread::new(0),
+        )
+        .await
+        .unwrap();
         let (report, _) = instance
             .world_mut(&mut world)
             .commit(CommitOptions::default(), Scope::World, &())

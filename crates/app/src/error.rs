@@ -146,7 +146,4 @@ pub enum AppError {
     /// System clock reading does not fit a Unix-millisecond `u64`.
     #[error("system clock is out of range")]
     ClockOutOfRange,
-    /// Background worker task failed.
-    #[error("worker task failed: {0}")]
-    Join(#[from] tokio::task::JoinError),
 }
