@@ -131,3 +131,115 @@ impl From<AnvilError> for WorldError {
         Self::Anvil(source)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::borrow::ToOwned;
+    use alloc::format;
+    use alloc::string::ToString;
+    use core::error::Error as _;
+    use sekai_core::{Dimension, RegionKind};
+
+    /// Stand-in tree failure: the boundary only needs `Error`, never a
+    /// concrete host I/O type.
+    #[derive(Debug)]
+    struct TestSource(&'static str);
+
+    impl fmt::Display for TestSource {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str(self.0)
+        }
+    }
+
+    impl core::error::Error for TestSource {}
+
+    const KEY: RegionKey = RegionKey::new(Dimension::new(4242), RegionKind::Region, -1, 2);
+
+    fn parse_failure() -> AnvilError {
+        AnvilError::TruncatedFile { len: 3 }
+    }
+
+    #[test]
+    fn io_error_keeps_location_and_a_downcastable_source() {
+        let err = WorldError::io("w/region/r.0.0.mca", TestSource("disk full"));
+        let WorldError::Io { location, source } = &err else {
+            panic!("io must build the Io variant");
+        };
+
+        assert_eq!(location, "w/region/r.0.0.mca");
+        assert_eq!(
+            source.downcast_ref::<TestSource>().map(|cause| cause.0),
+            Some("disk full")
+        );
+        assert_eq!(
+            err.to_string(),
+            "file I/O failed for w/region/r.0.0.mca: disk full"
+        );
+        assert_eq!(
+            err.source().map(ToString::to_string).as_deref(),
+            Some("disk full")
+        );
+    }
+
+    #[test]
+    fn parse_failures_chain_the_anvil_error() {
+        let located = WorldError::region_file("w/region/r.0.0.mca", parse_failure());
+        assert_eq!(
+            located.to_string(),
+            format!(
+                "failed to process region file w/region/r.0.0.mca: {}",
+                parse_failure()
+            )
+        );
+        let unlocated = WorldError::from(parse_failure());
+        assert_eq!(
+            unlocated.to_string(),
+            format!("region image error: {}", parse_failure())
+        );
+
+        for err in [located, unlocated] {
+            assert_eq!(
+                err.source()
+                    .and_then(|source| source.downcast_ref::<AnvilError>()),
+                Some(&parse_failure()),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn layout_and_lock_failures_name_their_subject_without_a_source() {
+        let cases = [
+            (
+                WorldError::Locked {
+                    location: "w/.sekai.lock".to_owned(),
+                },
+                "world is in use by another sekai operation (lock w/.sekai.lock): wait for it to finish, or stop the operation holding it, then retry".to_owned(),
+            ),
+            (
+                WorldError::UnknownRegionPath { key: KEY },
+                format!(
+                    "cannot derive region path for dim 4242, kind {}, r.-1.2",
+                    RegionKind::Region.raw()
+                ),
+            ),
+            (
+                WorldError::AmbiguousRegion {
+                    key: KEY,
+                    first: "w/r.-1.2.mca".to_owned(),
+                    second: "w/r.-01.02.mca".to_owned(),
+                },
+                format!(
+                    "two region files spell the same region (-1,2) of dim 4242, kind {}: w/r.-1.2.mca and w/r.-01.02.mca",
+                    RegionKind::Region.raw()
+                ),
+            ),
+        ];
+
+        for (err, message) in cases {
+            assert_eq!(err.to_string(), message);
+            assert!(err.source().is_none(), "{err}");
+        }
+    }
+}
