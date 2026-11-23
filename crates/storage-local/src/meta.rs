@@ -165,6 +165,18 @@ impl SqliteMeta {
         Ok(())
     }
 
+    /// Delete the worktree row keyed by `path`, the normalized key
+    /// `store_key` produced. Rolls back an `add_worktree` whose store
+    /// link could not be written; an absent key is a no-op.
+    pub(crate) async fn remove_worktree(&self, path: &str) -> Result<(), StorageError> {
+        sqlx::query("DELETE FROM worktrees WHERE path = ?")
+            .bind(path)
+            .execute(&self.pool)
+            .await
+            .map_err(db_err)?;
+        Ok(())
+    }
+
     /// Register the store's own worktree at init under `path`, the
     /// normalized key `store_key` produced, with HEAD unborn on the
     /// default branch. A re-init keeps the existing row and its HEAD,
@@ -1338,6 +1350,25 @@ mod tests {
             meta.worktrees().await.unwrap(),
             [added[2].clone(), added[1].clone(), added[0].clone()]
         );
+    }
+
+    #[tokio::test]
+    async fn remove_worktree_deletes_only_the_named_row() {
+        let meta = memory_meta().await;
+        meta.add_worktree(&key("/worlds/a"), on_branch("feature"))
+            .await
+            .unwrap();
+        meta.add_worktree(&key("/worlds/b"), on_branch("other"))
+            .await
+            .unwrap();
+
+        meta.remove_worktree(&key("/worlds/a")).await.unwrap();
+        assert_eq!(
+            meta.worktrees().await.unwrap(),
+            [worktree("/worlds/b", on_branch("other"))]
+        );
+        // An absent key is a no-op, so a rollback stays safe to retry.
+        meta.remove_worktree(&key("/worlds/a")).await.unwrap();
     }
 
     #[tokio::test]

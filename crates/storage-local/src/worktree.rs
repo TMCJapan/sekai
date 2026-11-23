@@ -33,6 +33,13 @@ impl LocalStore {
     /// cache. The worktree row is keyed by `path` itself, made absolute,
     /// with `head` as its HEAD.
     ///
+    /// The row is inserted before the link is written: the insert is the
+    /// likelier failure (a duplicate path, an already-checked-out branch,
+    /// a missing commit for a detached HEAD), and a refused insert must
+    /// not leave a link behind that blocks every retry. A failed link
+    /// write rolls the fresh row back, so a retry can complete the
+    /// registration.
+    ///
     /// The link is created exclusively and synced, like the version file:
     /// an existing file or directory at `path` is refused rather than
     /// overwritten, and a crash cannot leave a torn link. The link format
@@ -54,16 +61,13 @@ impl LocalStore {
             )
         })?;
         let key = store_key(path)?;
-        let mut file = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(path)
-            .map_err(|source| io_error(path.display().to_string(), source))?;
-        file.write_all(format!("{root}\n").as_bytes())
-            .and_then(|()| file.sync_all())
-            .map_err(|source| io_error(path.display().to_string(), source))?;
-
         self.meta.add_worktree(&key, head).await?;
+        if let Err(source) = write_link(path, root) {
+            // The insert just succeeded, so the row is this call's own:
+            // drop it to restore the pre-call state.
+            self.meta.remove_worktree(&key).await?;
+            return Err(source);
+        }
         Ok(())
     }
 
@@ -79,6 +83,27 @@ impl LocalStore {
         let key = store_key(&self.root)?;
         self.meta.init_worktree(&key).await
     }
+}
+
+/// Create the store link at `path` naming `root`, exclusively and synced.
+/// A write or sync failure removes the file this call created, so a torn
+/// link never survives to block a retry; a file that already existed is
+/// left untouched.
+fn write_link(path: impl AsRef<Path>, root: &str) -> Result<(), StorageError> {
+    let path = path.as_ref();
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|source| io_error(path.display().to_string(), source))?;
+    if let Err(source) = file
+        .write_all(format!("{root}\n").as_bytes())
+        .and_then(|()| file.sync_all())
+    {
+        let _ = std::fs::remove_file(path);
+        return Err(io_error(path.display().to_string(), source));
+    }
+    Ok(())
 }
 
 /// The absolute UTF-8 spelling of a store location, the key a worktree

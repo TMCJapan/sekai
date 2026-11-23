@@ -36,8 +36,11 @@ paths:
   HEAD unborn on the default branch) with `ON CONFLICT DO NOTHING`, so
   a re-init keeps the row and its HEAD. No external registration call
   exists.
-- `LocalStore::add_worktree(link, head)` writes the store link and
-  registers the link path with the given HEAD.
+- `LocalStore::add_worktree(link, head)` inserts the worktree row before
+  writing the store link: the insert is the likelier failure (duplicate
+  path, checked-out branch, missing commit), and a refused insert must
+  not leave a link that blocks every retry. A failed link write rolls
+  the row back.
 - `sekai-app`, `sekai-storage`, and the CLI's init flow are unchanged.
 
 ## Consequences

@@ -665,7 +665,9 @@ async fn add_worktree_writes_a_link_open_follows() {
 
 /// Registering a worktree never clobbers what is already at the location,
 /// and the worktree directory is not materialized: a missing parent fails
-/// without creating anything. A refused registration writes no row.
+/// without creating anything. A refused registration leaves no row: the
+/// insert rolls back when the link write fails, and no link is written
+/// when the insert fails.
 #[tokio::test]
 async fn add_worktree_refuses_existing_and_missing_locations() {
     let (base, _guard) = tempdir("worktree-refusal");
@@ -674,27 +676,80 @@ async fn add_worktree_refuses_existing_and_missing_locations() {
 
     let link = base.join(".sekai");
     std::fs::write(&link, "keep me").unwrap();
-    let err = store.add_worktree(&link, on_main()).await.unwrap_err();
+    let err = store
+        .add_worktree(&link, on_branch("feature"))
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, sekai_storage::StorageError::Io { .. }),
         "unexpected error: {err}"
     );
     assert_eq!(std::fs::read_to_string(&link).unwrap(), "keep me");
 
+    // The store root is already the main worktree's key: the insert
+    // refuses it before any link I/O.
     let err = store.add_worktree(&real, on_main()).await.unwrap_err();
     assert!(
-        matches!(err, sekai_storage::StorageError::Io { .. }),
+        matches!(err, sekai_storage::StorageError::Backend { .. }),
         "unexpected error: {err}"
     );
 
     let missing = base.join("missing").join(".sekai");
-    let err = store.add_worktree(&missing, on_main()).await.unwrap_err();
+    let err = store
+        .add_worktree(&missing, on_branch("other"))
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, sekai_storage::StorageError::Io { .. }),
         "unexpected error: {err}"
     );
     assert!(!base.join("missing").exists());
     assert_eq!(store.worktrees().await.unwrap(), [main_worktree(&real)]);
+}
+
+/// A failed link write rolls back the row it inserted: removing the
+/// obstacle and retrying completes the registration instead of failing
+/// on a leftover row.
+#[tokio::test]
+async fn add_worktree_rolls_back_a_failed_link_write() {
+    let (base, _guard) = tempdir("worktree-rollback");
+    let real = base.join("real-store");
+    let store = init(&real).await;
+
+    let link = base.join(".sekai");
+    std::fs::write(&link, "keep me").unwrap();
+    assert!(
+        store
+            .add_worktree(&link, on_branch("feature"))
+            .await
+            .is_err()
+    );
+    assert_eq!(store.worktrees().await.unwrap(), [main_worktree(&real)]);
+
+    std::fs::remove_file(&link).unwrap();
+    store
+        .add_worktree(&link, on_branch("feature"))
+        .await
+        .unwrap();
+    let root = std::path::absolute(&real).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&link).unwrap().trim(),
+        root.to_str().unwrap()
+    );
+    let mut expected = [
+        main_worktree(&real),
+        Worktree {
+            path: link.clone(),
+            head: on_branch("feature"),
+        },
+    ];
+    expected.sort_by(|a, b| {
+        a.path
+            .as_os_str()
+            .as_encoded_bytes()
+            .cmp(b.path.as_os_str().as_encoded_bytes())
+    });
+    assert_eq!(store.worktrees().await.unwrap(), expected);
 }
 
 /// A branch is the HEAD of at most one worktree: the store itself holds
@@ -723,6 +778,8 @@ async fn add_worktree_refuses_a_branch_already_checked_out() {
             matches!(err, sekai_storage::StorageError::Backend { .. }),
             "unexpected error: {err}"
         );
+        // The refused insert never reached the link write.
+        assert!(!world.join(".sekai").exists());
     }
     assert_eq!(store.worktrees().await.unwrap().len(), 2);
 }
