@@ -614,11 +614,11 @@ fn on_branch(raw: &str) -> Head {
     Head::Branch(RefName::parse(raw).unwrap())
 }
 
-/// The store's own worktree row: init registers the canonical store root
+/// The store's own worktree row: init registers the absolute store root
 /// with HEAD unborn on the default branch.
 fn main_worktree(root: impl AsRef<Path>) -> Worktree {
     Worktree {
-        path: std::fs::canonicalize(root).unwrap(),
+        path: std::path::absolute(root).unwrap(),
         head: on_main(),
     }
 }
@@ -641,8 +641,8 @@ async fn add_worktree_writes_a_link_open_follows() {
         .unwrap();
 
     let content = std::fs::read_to_string(&link).unwrap();
-    let canonical = std::fs::canonicalize(&real).unwrap();
-    assert_eq!(content.trim(), canonical.to_str().unwrap());
+    let root = std::path::absolute(&real).unwrap();
+    assert_eq!(content.trim(), root.to_str().unwrap());
     let mut expected = [
         main_worktree(&real),
         Worktree {
@@ -650,9 +650,7 @@ async fn add_worktree_writes_a_link_open_follows() {
             head: on_branch("feature"),
         },
     ];
-    // Rows come back in byte-wise path order: on Windows the canonical
-    // store root carries a `\\?\` prefix that sorts after a drive-letter
-    // link path.
+    // Rows come back in byte-wise path order.
     expected.sort_by(|a, b| {
         a.path
             .as_os_str()
@@ -752,7 +750,7 @@ async fn add_worktree_allows_detached_heads_on_one_commit() {
 }
 
 /// Init registers the store itself as its main worktree, keyed by the
-/// canonical store root with HEAD unborn on `main`; a re-init keeps the
+/// absolute store root with HEAD unborn on `main`; a re-init keeps the
 /// row and its HEAD.
 #[tokio::test]
 async fn init_registers_the_store_as_its_own_worktree() {
@@ -763,6 +761,46 @@ async fn init_registers_the_store_as_its_own_worktree() {
     drop(store);
 
     let store = LocalStore::init(&dir).await.unwrap();
+    assert_eq!(store.worktrees().await.unwrap(), expected);
+}
+
+/// Worktree keys keep the caller's absolute spelling, symlinks included:
+/// the main root and a linked location resolve through the same rule, so
+/// opening the store through its link sees the very same rows.
+#[cfg(unix)]
+#[tokio::test]
+async fn worktree_keys_keep_the_spelling_through_symlinks() {
+    let (base, _guard) = tempdir("worktree-symlink");
+    let real = base.join("real");
+    std::fs::create_dir_all(&real).unwrap();
+    let alias = base.join("alias");
+    std::os::unix::fs::symlink(&real, &alias).unwrap();
+
+    let store = init(alias.join("store")).await;
+    let world = alias.join("world");
+    std::fs::create_dir_all(&world).unwrap();
+    let link = world.join(".sekai");
+    store
+        .add_worktree(&link, on_branch("feature"))
+        .await
+        .unwrap();
+
+    let mut expected = [
+        main_worktree(alias.join("store")),
+        Worktree {
+            path: std::path::absolute(&link).unwrap(),
+            head: on_branch("feature"),
+        },
+    ];
+    expected.sort_by(|a, b| {
+        a.path
+            .as_os_str()
+            .as_encoded_bytes()
+            .cmp(b.path.as_os_str().as_encoded_bytes())
+    });
+    assert_eq!(store.worktrees().await.unwrap(), expected);
+    drop(store);
+    let store = LocalStore::open(&link).await.unwrap();
     assert_eq!(store.worktrees().await.unwrap(), expected);
 }
 

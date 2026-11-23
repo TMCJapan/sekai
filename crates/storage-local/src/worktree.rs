@@ -73,7 +73,7 @@ impl LocalStore {
     }
 
     /// Register the store itself as its main worktree, keyed by the
-    /// canonical store root with HEAD unborn on the default branch.
+    /// absolute store root with HEAD unborn on the default branch.
     /// Called by init; a re-init keeps the existing row and its HEAD.
     pub(crate) async fn init_worktree(&self) -> Result<(), StorageError> {
         let key = store_key(&self.root)?;
@@ -82,8 +82,11 @@ impl LocalStore {
 }
 
 /// The absolute UTF-8 spelling of a store location, the key a worktree
-/// row carries. A location that is not valid UTF-8 fails loudly instead
-/// of storing a lossy path.
+/// row carries. The single normalization point for worktree keys: the
+/// store root and every link location resolve through this same rule,
+/// symlinks deliberately unresolved so the key keeps the caller's
+/// spelling. A location that is not valid UTF-8 fails loudly instead of
+/// storing a lossy path.
 fn store_key(path: impl AsRef<Path>) -> Result<String, StorageError> {
     let path = path.as_ref();
     let path =

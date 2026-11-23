@@ -90,10 +90,10 @@ async fn init_creates_the_store_every_other_command_opens() {
         .expect("init is idempotent");
 
     // The store registers itself as its main worktree, keyed by the
-    // canonical store root with HEAD unborn on `main`, and a re-init
+    // absolute store root with HEAD unborn on `main`, and a re-init
     // leaves exactly that one row.
     let opened = LocalStore::open(store).await.unwrap();
-    let root = std::fs::canonicalize(root.join("store")).unwrap();
+    let root = std::path::absolute(root.join("store")).unwrap();
     assert_eq!(
         opened.worktrees().await.unwrap(),
         [Worktree {

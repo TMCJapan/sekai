@@ -26,10 +26,13 @@ paths:
 - The `worktrees` table lives in the local schema; `STORE_VERSION`
   bumps to 3. `path` is the absolute store location a worktree opens:
   the store root itself for the store's own (main) worktree, a store
-  link file for a linked one. `head_ref`/`head_commit` hold the HEAD,
-  exactly one set; a partial unique index on `head_ref` keeps a branch
-  checked out by at most one worktree. No `main` flag is stored.
-- `LocalStore::init` registers the store's own row (canonical root,
+  link file for a linked one. Every key resolves through
+  `std::path::absolute` alone - symlinks stay unresolved, so the
+  registered spelling is the identity a later open reproduces.
+  `head_ref`/`head_commit` hold the HEAD, exactly one set; a partial
+  unique index on `head_ref` keeps a branch checked out by at most one
+  worktree. No `main` flag is stored.
+- `LocalStore::init` registers the store's own row (absolute root,
   HEAD unborn on the default branch) with `ON CONFLICT DO NOTHING`, so
   a re-init keeps the row and its HEAD. No external registration call
   exists.

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use sekai_storage::{
-    DimNode, MetaStore, RegionNode, RootNode, StorageError, TreeNodes, commit_hash, io_error,
+    DimNode, MetaStore, RegionNode, RootNode, StorageError, TreeNodes, commit_hash,
 };
 use sekai_util::{
     ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DEFAULT_REF_NAME, DimHash,
@@ -148,20 +148,15 @@ impl SqliteMeta {
         Ok(map)
     }
 
-    pub(crate) async fn add_worktree(
-        &self,
-        path: impl AsRef<Path>,
-        head: Head,
-    ) -> Result<(), StorageError> {
+    /// Record a linked worktree under `path`, the normalized key
+    /// `store_key` produced.
+    pub(crate) async fn add_worktree(&self, path: &str, head: Head) -> Result<(), StorageError> {
         let (head_ref, head_commit) = match &head {
             Head::Branch(branch) => (Some(Ref::branch(branch.clone()).full_name()), None),
             Head::Detached(commit) => (None, Some(commit_param(*commit))),
         };
-        let path = path.as_ref();
-        let path = std::path::absolute(path)
-            .map_err(|source| io_error(path.display().to_string(), source))?;
         sqlx::query("INSERT INTO worktrees (path, head_ref, head_commit) VALUES (?, ?, ?)")
-            .bind(path.to_string_lossy())
+            .bind(path)
             .bind(head_ref)
             .bind(head_commit)
             .execute(&self.pool)
@@ -170,18 +165,16 @@ impl SqliteMeta {
         Ok(())
     }
 
-    /// Register the store's own worktree at init, with HEAD unborn on
-    /// the default branch. A re-init keeps the existing row and its
-    /// HEAD, so initializing again never moves it.
-    pub(crate) async fn init_worktree(&self, path: impl AsRef<Path>) -> Result<(), StorageError> {
-        let path = path.as_ref();
-        let path = std::path::absolute(path)
-            .map_err(|source| io_error(path.display().to_string(), source))?;
+    /// Register the store's own worktree at init under `path`, the
+    /// normalized key `store_key` produced, with HEAD unborn on the
+    /// default branch. A re-init keeps the existing row and its HEAD,
+    /// so initializing again never moves it.
+    pub(crate) async fn init_worktree(&self, path: &str) -> Result<(), StorageError> {
         sqlx::query(
             "INSERT INTO worktrees (path, head_ref, head_commit) VALUES (?, ?, NULL)
              ON CONFLICT (path) DO NOTHING",
         )
-        .bind(path.to_string_lossy())
+        .bind(path)
         .bind(Ref::branch(RefName::default_branch()).full_name())
         .execute(&self.pool)
         .await
@@ -1305,12 +1298,20 @@ mod tests {
         assert_eq!(stored, seen);
     }
 
-    /// A worktree row as the store keeps it: keys are absolute, so the
-    /// expectation matches on every platform (`/x` resolves to `C:\x` on
-    /// Windows).
+    /// The normalized key a worktree row carries for `path`, absolute on
+    /// every platform (`/x` resolves to `C:\x` on Windows).
+    fn key(path: impl AsRef<Path>) -> String {
+        std::path::absolute(path)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    /// A worktree row as the store keeps it.
     fn worktree(path: impl AsRef<Path>, head: Head) -> Worktree {
         Worktree {
-            path: std::path::absolute(path).unwrap(),
+            path: PathBuf::from(key(path)),
             head,
         }
     }
@@ -1329,7 +1330,7 @@ mod tests {
             worktree("/worlds/a", Head::Detached(first)),
         ];
         for one in &added {
-            meta.add_worktree(&one.path, one.head.clone())
+            meta.add_worktree(one.path.to_str().unwrap(), one.head.clone())
                 .await
                 .unwrap();
         }
@@ -1342,20 +1343,19 @@ mod tests {
     #[tokio::test]
     async fn init_worktree_is_idempotent_and_keeps_head() {
         let meta = memory_meta().await;
-        meta.init_worktree("/store").await.unwrap();
+        meta.init_worktree(&key("/store")).await.unwrap();
         assert_eq!(
             meta.worktrees().await.unwrap(),
             [worktree("/store", on_branch(DEFAULT_REF_NAME))]
         );
 
         // A re-init keeps the row even once its HEAD has moved on.
-        let store = std::path::absolute("/store").unwrap();
         sqlx::query("UPDATE worktrees SET head_ref = 'refs/heads/feature' WHERE path = ?")
-            .bind(store.to_str().unwrap())
+            .bind(key("/store"))
             .execute(&meta.pool)
             .await
             .unwrap();
-        meta.init_worktree("/store").await.unwrap();
+        meta.init_worktree(&key("/store")).await.unwrap();
         assert_eq!(
             meta.worktrees().await.unwrap(),
             [worktree("/store", on_branch("feature"))]
@@ -1366,7 +1366,7 @@ mod tests {
     async fn worktrees_keep_one_path_and_one_head_per_branch() {
         let mut meta = memory_meta().await;
         let main = worktree("/worlds/main", on_branch(DEFAULT_REF_NAME));
-        meta.add_worktree(&main.path, main.head.clone())
+        meta.add_worktree(main.path.to_str().unwrap(), main.head.clone())
             .await
             .unwrap();
 
@@ -1375,7 +1375,7 @@ mod tests {
             worktree("/worlds/other", on_branch(DEFAULT_REF_NAME)),
         ] {
             assert!(
-                meta.add_worktree(&refused.path, refused.head.clone())
+                meta.add_worktree(refused.path.to_str().unwrap(), refused.head.clone())
                     .await
                     .is_err(),
                 "{refused:?} is refused"
@@ -1384,7 +1384,7 @@ mod tests {
         // Detached HEADs may share a commit.
         let first = meta.apply_commit(1_000, &[], &[]).await.unwrap();
         for path in ["/worlds/a", "/worlds/b"] {
-            meta.add_worktree(path, Head::Detached(first))
+            meta.add_worktree(&key(path), Head::Detached(first))
                 .await
                 .unwrap();
         }
@@ -1397,7 +1397,7 @@ mod tests {
         let path = dir.join("meta.sqlite");
         let mut meta = SqliteMeta::open(&path).await.unwrap();
         let first = meta.apply_commit(1_000, &[], &[]).await.unwrap();
-        meta.add_worktree("/worlds/main", Head::Detached(first))
+        meta.add_worktree(&key("/worlds/main"), Head::Detached(first))
             .await
             .unwrap();
 
@@ -1430,8 +1430,7 @@ mod tests {
             ),
             "unexpected error: {err}"
         );
-        let key = std::path::absolute("/worlds/main").unwrap();
-        assert!(err.to_string().contains(key.to_str().unwrap()), "{err}");
+        assert!(err.to_string().contains(&key("/worlds/main")), "{err}");
     }
 
     #[tokio::test]
