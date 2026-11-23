@@ -2,7 +2,10 @@
 //! must fail loudly on a missing store and leave nothing behind (issue #80).
 
 use clap::Parser as _;
+use sekai_app::SekaiStoreOpener as _;
 use sekai_cli::cli::Cli;
+use sekai_storage_local::{LocalStore, Worktree};
+use sekai_util::{Head, RefName};
 
 const HASH: &str = "0101010101010101010101010101010101010101010101010101010101010101";
 
@@ -85,6 +88,20 @@ async fn init_creates_the_store_every_other_command_opens() {
     run(&["sekai", "--store", store, "init", "--json"])
         .await
         .expect("init is idempotent");
+
+    // The store registers itself as its main worktree, keyed by the
+    // absolute store root with HEAD unborn on `main`, and a re-init
+    // leaves exactly that one row.
+    let opened = LocalStore::open(store).await.unwrap();
+    let root = std::path::absolute(root.join("store")).unwrap();
+    assert_eq!(
+        opened.worktrees().await.unwrap(),
+        [Worktree {
+            path: root,
+            head: Head::Branch(RefName::default_branch()),
+        }]
+    );
+    drop(opened);
 
     for args in [
         vec!["sekai", "--store", store, "commit", world],

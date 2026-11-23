@@ -385,6 +385,19 @@ one active ref, `main`, unborn.
 The store keys refs by the full Git refname (`refs/heads/main`); commands
 and JSON show the short name (`main`).
 
+A worktree is one world the store backs up, keyed by the absolute store
+location it opens: the store root itself for the store's own (main)
+worktree, a store link file for a linked one. Each worktree records a
+HEAD, which names a branch (born or unborn) or holds a commit directly
+(detached). A branch is the HEAD of at most one worktree. `sekai init`
+registers the store's own worktree with HEAD unborn on `main`; a
+re-initialization keeps that row and its HEAD, so no separate world
+registration exists. Worktrees are a local-backend feature: they name
+host filesystem paths, so `sekai-storage-local` owns them alone and the
+backend-neutral layers know nothing about them
+([ADR-0038](docs/adr/0038-worktrees-local-only.md)). Commits still land
+on the active ref; worktree HEADs take over that role in a later change.
+
 A new commit continues the target of the active ref - the trait rejects
 one whose parents omit it - and the active ref moves onto the new commit
 in the same transaction. Switching the active ref forks the history: the
@@ -498,7 +511,8 @@ produced them. The scope is a filter, not a partition:
   strand a lock.
 - `sekai-storage-local` is the concrete local backend. It owns `SqliteMeta`
   (sqlx), `SledBlob` and `SledCache` (sled), `LocalStore`, the schemas and
-  the config version gate, and implements the storage traits. Keeping sqlx
+  the config version gate, worktree registration, and implements the
+  storage traits. Keeping sqlx
   and sled out of `sekai-storage` keeps the abstraction crate free of native
   database dependencies.
 - New backends (mysql, postgres, embedded, in-memory, wasm) become sibling
@@ -554,7 +568,7 @@ the pass still writes files.
 
 Owned by the backend crate (`crates/storage-local/schema/sqlite.sql` for
 metadata; `commits`, `commit_parents`, `root_tree`, `dim_tree`,
-`region_tree`, `refs`, `scopes`, `scope_areas`). One version gate covers
+`region_tree`, `refs`, `worktrees`, `scopes`, `scope_areas`). One version gate covers
 the whole store: `<root>/version` records the format version
 (`STORE_VERSION` in `crates/storage-local/src/version.rs`), read and
 enforced before any database opens; pre-release policy = recreate, don't

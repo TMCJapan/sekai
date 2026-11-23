@@ -62,6 +62,24 @@ CREATE TABLE refs(
 CREATE UNIQUE INDEX idx_refs_active
     ON refs(active) WHERE active = 1;
 
+-- The worktrees a store backs up, keyed by the absolute store location
+-- each opens: the store root itself (the main worktree, registered at
+-- init) or a store link file (a linked worktree). Each row holds its
+-- own HEAD: `head_ref` names a branch (born or unborn), or
+-- `head_commit` holds a commit directly (detached); exactly one is set.
+-- `head_ref` is no foreign key, because a branch a HEAD names need not
+-- exist yet. A branch is checked out by at most one worktree, enforced
+-- by the partial index below.
+CREATE TABLE worktrees(
+    path TEXT NOT NULL COLLATE BINARY PRIMARY KEY,
+    head_ref TEXT NULL CHECK (head_ref GLOB 'refs/heads/?*'),
+    head_commit BLOB NULL REFERENCES commits(id),
+    CHECK ((head_ref IS NULL) != (head_commit IS NULL))
+) WITHOUT ROWID;
+
+CREATE UNIQUE INDEX idx_worktrees_head_ref
+    ON worktrees(head_ref) WHERE head_ref IS NOT NULL;
+
 -- Named scopes: store-saved world areas selected by name. A scope
 -- names no commit, so history operations never touch these rows. It
 -- always covers every region family, so no kind is stored. Names order

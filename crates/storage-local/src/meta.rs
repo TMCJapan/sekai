@@ -4,7 +4,7 @@
 //! before the metadata commit by the caller. The pool has one connection.
 
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use sekai_storage::{
@@ -12,12 +12,15 @@ use sekai_storage::{
 };
 use sekai_util::{
     ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DEFAULT_REF_NAME, DimHash,
-    Dimension, NamedScope, NamedScopeError, Rect, Ref, RefKind, RegionHash, RootHash, ScopeName,
+    Dimension, Head, NamedScope, NamedScopeError, Rect, Ref, RefKind, RefName, RegionHash,
+    RootHash, ScopeName,
 };
 use sqlx::Row as _;
 use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
 };
+
+use crate::worktree::Worktree;
 
 const SCHEMA: &str = include_str!("../schema/sqlite.sql");
 
@@ -144,6 +147,62 @@ impl SqliteMeta {
         }
         Ok(map)
     }
+
+    /// Record a linked worktree under `path`, the normalized key
+    /// `store_key` produced.
+    pub(crate) async fn add_worktree(&self, path: &str, head: Head) -> Result<(), StorageError> {
+        let (head_ref, head_commit) = match &head {
+            Head::Branch(branch) => (Some(Ref::branch(branch.clone()).full_name()), None),
+            Head::Detached(commit) => (None, Some(commit_param(*commit))),
+        };
+        sqlx::query("INSERT INTO worktrees (path, head_ref, head_commit) VALUES (?, ?, ?)")
+            .bind(path)
+            .bind(head_ref)
+            .bind(head_commit)
+            .execute(&self.pool)
+            .await
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Delete the worktree row keyed by `path`, the normalized key
+    /// `store_key` produced. Rolls back an `add_worktree` whose store
+    /// link could not be written; an absent key is a no-op.
+    pub(crate) async fn remove_worktree(&self, path: &str) -> Result<(), StorageError> {
+        sqlx::query("DELETE FROM worktrees WHERE path = ?")
+            .bind(path)
+            .execute(&self.pool)
+            .await
+            .map_err(db_err)?;
+        Ok(())
+    }
+
+    /// Register the store's own worktree at init under `path`, the
+    /// normalized key `store_key` produced, with HEAD unborn on the
+    /// default branch. A re-init keeps the existing row and its HEAD,
+    /// so initializing again never moves it.
+    pub(crate) async fn init_worktree(&self, path: &str) -> Result<(), StorageError> {
+        sqlx::query(
+            "INSERT INTO worktrees (path, head_ref, head_commit) VALUES (?, ?, NULL)
+             ON CONFLICT (path) DO NOTHING",
+        )
+        .bind(path)
+        .bind(Ref::branch(RefName::default_branch()).full_name())
+        .execute(&self.pool)
+        .await
+        .map_err(db_err)?;
+        Ok(())
+    }
+
+    pub(crate) async fn worktrees(&self) -> Result<Vec<Worktree>, StorageError> {
+        let rows = sqlx::query(
+            "SELECT path, head_ref, head_commit FROM worktrees ORDER BY path COLLATE BINARY",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(db_err)?;
+        rows.iter().map(decode_worktree).collect()
+    }
 }
 
 /// Fallible `i64` -> `i32` narrowing for SQLite integer columns.
@@ -218,6 +277,44 @@ fn decode_ref(row: &sqlx::sqlite::SqliteRow) -> Result<CommitRef, StorageError> 
         active,
         millis_col(row, "created_at_ms")?,
     ))
+}
+
+/// Decode a stored `head_ref`, which must name a branch. Stored names
+/// always re-validate: anything else is corruption, never silent
+/// reinterpretation.
+fn branch_from_column(raw: String) -> Result<RefName, StorageError> {
+    match Ref::from_full(&raw) {
+        Ok(Ref {
+            kind: RefKind::Branch,
+            name,
+        }) => Ok(name),
+        _ => Err(StorageError::InvalidRefName { name: raw }),
+    }
+}
+
+/// Decode one `worktrees` row.
+fn decode_worktree(row: &sqlx::sqlite::SqliteRow) -> Result<Worktree, StorageError> {
+    let path: String = row.try_get("path").map_err(db_err)?;
+    let head_ref: Option<String> = row.try_get("head_ref").map_err(db_err)?;
+    let head_commit: Option<Vec<u8>> = row.try_get("head_commit").map_err(db_err)?;
+    // The CHECK constraint keeps exactly one of the two columns set.
+    let head = match (head_ref, head_commit) {
+        (Some(branch), None) => Head::Branch(branch_from_column(branch)?),
+        (None, Some(commit)) => Head::Detached(commit_id_from_blob(commit)?),
+        _ => {
+            return Err(StorageError::backend(
+                "worktree",
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("worktree {path} has a corrupt HEAD row"),
+                ),
+            ));
+        }
+    };
+    Ok(Worktree {
+        path: PathBuf::from(path),
+        head,
+    })
 }
 
 /// One scope's columns, gathered from its joined area rows.
@@ -1211,6 +1308,160 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(stored, seen);
+    }
+
+    /// The normalized key a worktree row carries for `path`, absolute on
+    /// every platform (`/x` resolves to `C:\x` on Windows).
+    fn key(path: impl AsRef<Path>) -> String {
+        std::path::absolute(path)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    /// A worktree row as the store keeps it.
+    fn worktree(path: impl AsRef<Path>, head: Head) -> Worktree {
+        Worktree {
+            path: PathBuf::from(key(path)),
+            head,
+        }
+    }
+
+    fn on_branch(raw: &str) -> Head {
+        Head::Branch(RefName::parse(raw).unwrap())
+    }
+
+    #[tokio::test]
+    async fn worktrees_round_trip_in_path_order() {
+        let mut meta = memory_meta().await;
+        let first = meta.apply_commit(1_000, &[], &[]).await.unwrap();
+        let added = [
+            worktree("/worlds/main", on_branch(DEFAULT_REF_NAME)),
+            worktree("/worlds/b", on_branch("feature")),
+            worktree("/worlds/a", Head::Detached(first)),
+        ];
+        for one in &added {
+            meta.add_worktree(one.path.to_str().unwrap(), one.head.clone())
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            meta.worktrees().await.unwrap(),
+            [added[2].clone(), added[1].clone(), added[0].clone()]
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_worktree_deletes_only_the_named_row() {
+        let meta = memory_meta().await;
+        meta.add_worktree(&key("/worlds/a"), on_branch("feature"))
+            .await
+            .unwrap();
+        meta.add_worktree(&key("/worlds/b"), on_branch("other"))
+            .await
+            .unwrap();
+
+        meta.remove_worktree(&key("/worlds/a")).await.unwrap();
+        assert_eq!(
+            meta.worktrees().await.unwrap(),
+            [worktree("/worlds/b", on_branch("other"))]
+        );
+        // An absent key is a no-op, so a rollback stays safe to retry.
+        meta.remove_worktree(&key("/worlds/a")).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn init_worktree_is_idempotent_and_keeps_head() {
+        let meta = memory_meta().await;
+        meta.init_worktree(&key("/store")).await.unwrap();
+        assert_eq!(
+            meta.worktrees().await.unwrap(),
+            [worktree("/store", on_branch(DEFAULT_REF_NAME))]
+        );
+
+        // A re-init keeps the row even once its HEAD has moved on.
+        sqlx::query("UPDATE worktrees SET head_ref = 'refs/heads/feature' WHERE path = ?")
+            .bind(key("/store"))
+            .execute(&meta.pool)
+            .await
+            .unwrap();
+        meta.init_worktree(&key("/store")).await.unwrap();
+        assert_eq!(
+            meta.worktrees().await.unwrap(),
+            [worktree("/store", on_branch("feature"))]
+        );
+    }
+
+    #[tokio::test]
+    async fn worktrees_keep_one_path_and_one_head_per_branch() {
+        let mut meta = memory_meta().await;
+        let main = worktree("/worlds/main", on_branch(DEFAULT_REF_NAME));
+        meta.add_worktree(main.path.to_str().unwrap(), main.head.clone())
+            .await
+            .unwrap();
+
+        for refused in [
+            worktree("/worlds/main", on_branch("other")),
+            worktree("/worlds/other", on_branch(DEFAULT_REF_NAME)),
+        ] {
+            assert!(
+                meta.add_worktree(refused.path.to_str().unwrap(), refused.head.clone())
+                    .await
+                    .is_err(),
+                "{refused:?} is refused"
+            );
+        }
+        // Detached HEADs may share a commit.
+        let first = meta.apply_commit(1_000, &[], &[]).await.unwrap();
+        for path in ["/worlds/a", "/worlds/b"] {
+            meta.add_worktree(&key(path), Head::Detached(first))
+                .await
+                .unwrap();
+        }
+        assert_eq!(meta.worktrees().await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_corrupt_worktree_head_row_fails_loudly() {
+        let (dir, _guard) = tempdir("corrupt-head");
+        let path = dir.join("meta.sqlite");
+        let mut meta = SqliteMeta::open(&path).await.unwrap();
+        let first = meta.apply_commit(1_000, &[], &[]).await.unwrap();
+        meta.add_worktree(&key("/worlds/main"), Head::Detached(first))
+            .await
+            .unwrap();
+
+        // The table's CHECK normally rejects a row with both HEAD columns
+        // set; disable it on a dedicated connection so no pooled
+        // connection inherits the pragma.
+        let mut raw = SqliteConnectOptions::new()
+            .filename(&path)
+            .connect()
+            .await
+            .unwrap();
+        sqlx::query("PRAGMA ignore_check_constraints = ON")
+            .execute(&mut raw)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE worktrees SET head_ref = 'refs/heads/main'")
+            .execute(&mut raw)
+            .await
+            .unwrap();
+        raw.close().await.unwrap();
+
+        let err = meta.worktrees().await.unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                StorageError::Backend {
+                    backend: "worktree",
+                    ..
+                }
+            ),
+            "unexpected error: {err}"
+        );
+        assert!(err.to_string().contains(&key("/worlds/main")), "{err}");
     }
 
     #[tokio::test]

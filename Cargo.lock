@@ -1304,6 +1304,7 @@ dependencies = [
  "sekai-anvil",
  "sekai-app",
  "sekai-storage-local",
+ "sekai-util",
  "serde",
  "serde_json",
  "tempfile",

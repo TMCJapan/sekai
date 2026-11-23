@@ -11,6 +11,7 @@ pub use blob::SledBlob;
 pub use cache::SledCache;
 pub use meta::SqliteMeta;
 pub use version::STORE_VERSION;
+pub use worktree::Worktree;
 
 use std::path::{Path, PathBuf};
 
@@ -61,12 +62,18 @@ impl SekaiStoreOpener for LocalStore {
     /// before any database opens. sled admits a single opener per keyspace,
     /// so a concurrent initialization of the same root fails loudly instead
     /// of racing.
+    ///
+    /// The store registers itself as its main worktree, keyed by the
+    /// absolute root with HEAD unborn on the default branch; a re-init
+    /// keeps that row and its HEAD.
     async fn init(path: impl AsRef<Self::Path>) -> Result<Self, StorageError> {
         let root = path.as_ref();
         std::fs::create_dir_all(root)
             .map_err(|source| io_error(root.display().to_string(), source))?;
         version::init(root)?;
-        Self::connect(root).await
+        let store = Self::connect(root).await?;
+        store.init_worktree().await?;
+        Ok(store)
     }
 
     /// Open the existing store rooted at `root`.
@@ -143,10 +150,11 @@ impl LocalStore {
     }
     /// Attach the metadata, blob, and cache adapters to an existing store root;
     /// the root directory must already hold `version`, `meta.sqlite`, and the
-    /// `blobs` and `cache` keyspaces. The canonical absolute root is kept so
-    /// worktree links can name it from any working directory.
+    /// `blobs` and `cache` keyspaces. The root is made absolute, not canonical:
+    /// worktree links name it from any working directory, and the absolute
+    /// spelling is the identity every worktree key shares (`store_key`).
     async fn connect(root: impl AsRef<Path>) -> Result<Self, StorageError> {
-        let root = std::fs::canonicalize(root.as_ref())
+        let root = std::path::absolute(root.as_ref())
             .map_err(|source| io_error(root.as_ref().display().to_string(), source))?;
         let blob = SledBlob::open(root.join("blobs")).await?;
         let cache = SledCache::open(root.join("cache")).await?;

@@ -5,8 +5,10 @@ mod common;
 use sekai_storage::{
     BlobStore as _, CacheStore as _, MetaStore as _, SekaiStore as _, SekaiStoreOpener,
 };
-use sekai_storage_local::LocalStore;
-use sekai_util::{ChunkCoord, ChunkHash, CommitEntry, Dimension, RegionHash, RegionKind};
+use sekai_storage_local::{LocalStore, Worktree};
+use sekai_util::{
+    ChunkCoord, ChunkHash, CommitEntry, Dimension, Head, RefName, RegionHash, RegionKind,
+};
 use std::path::Path;
 
 /// A temp dir whose name starts with the calling test's name (tempfile
@@ -287,6 +289,24 @@ async fn open_gates_the_store_version() {
             err,
             sekai_storage::StorageError::UnsupportedSchema { found: 99, supported }
                 if supported == i64::from(sekai_storage_local::STORE_VERSION)
+        ),
+        "unexpected error: {err}"
+    );
+}
+
+/// A store from before worktrees were registered (version 2) is refused,
+/// not migrated.
+#[tokio::test]
+async fn open_refuses_a_version_2_store() {
+    let (dir, _guard) = tempdir("version-2");
+    let store = init(&dir).await;
+    drop(store);
+    std::fs::write(dir.join("version"), "2\n").unwrap();
+    let err = LocalStore::open(&dir).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            sekai_storage::StorageError::UnsupportedSchema { found: 2, .. }
         ),
         "unexpected error: {err}"
     );
@@ -585,8 +605,27 @@ async fn open_of_a_non_utf8_store_link_fails() {
     );
 }
 
+/// The HEAD a fresh worktree starts on: unborn, on the default branch.
+fn on_main() -> Head {
+    Head::Branch(RefName::default_branch())
+}
+
+fn on_branch(raw: &str) -> Head {
+    Head::Branch(RefName::parse(raw).unwrap())
+}
+
+/// The store's own worktree row: init registers the absolute store root
+/// with HEAD unborn on the default branch.
+fn main_worktree(root: impl AsRef<Path>) -> Worktree {
+    Worktree {
+        path: std::path::absolute(root).unwrap(),
+        head: on_main(),
+    }
+}
+
 /// `add_worktree` writes a store link naming the store's absolute root,
-/// and open follows that link back to the same store.
+/// registers the link path with its HEAD, and open follows that link
+/// back to the same store.
 #[tokio::test]
 async fn add_worktree_writes_a_link_open_follows() {
     let (base, _guard) = tempdir("worktree-add");
@@ -596,18 +635,39 @@ async fn add_worktree_writes_a_link_open_follows() {
     let world = base.join("world");
     std::fs::create_dir_all(&world).unwrap();
     let link = world.join(".sekai");
-    store.add_worktree(&link).unwrap();
+    store
+        .add_worktree(&link, on_branch("feature"))
+        .await
+        .unwrap();
 
     let content = std::fs::read_to_string(&link).unwrap();
-    let canonical = std::fs::canonicalize(&real).unwrap();
-    assert_eq!(content.trim(), canonical.to_str().unwrap());
+    let root = std::path::absolute(&real).unwrap();
+    assert_eq!(content.trim(), root.to_str().unwrap());
+    let mut expected = [
+        main_worktree(&real),
+        Worktree {
+            path: link.clone(),
+            head: on_branch("feature"),
+        },
+    ];
+    // Rows come back in byte-wise path order.
+    expected.sort_by(|a, b| {
+        a.path
+            .as_os_str()
+            .as_encoded_bytes()
+            .cmp(b.path.as_os_str().as_encoded_bytes())
+    });
+    assert_eq!(store.worktrees().await.unwrap(), expected);
     drop(store);
-    let _store = LocalStore::open(&link).await.unwrap();
+    let store = LocalStore::open(&link).await.unwrap();
+    assert_eq!(store.worktrees().await.unwrap(), expected);
 }
 
 /// Registering a worktree never clobbers what is already at the location,
-/// and the worktree directory is not materialized: initialization is still
-/// a TODO, so a missing parent fails without creating anything.
+/// and the worktree directory is not materialized: a missing parent fails
+/// without creating anything. A refused registration leaves no row: the
+/// insert rolls back when the link write fails, and no link is written
+/// when the insert fails.
 #[tokio::test]
 async fn add_worktree_refuses_existing_and_missing_locations() {
     let (base, _guard) = tempdir("worktree-refusal");
@@ -616,24 +676,220 @@ async fn add_worktree_refuses_existing_and_missing_locations() {
 
     let link = base.join(".sekai");
     std::fs::write(&link, "keep me").unwrap();
-    let err = store.add_worktree(&link).unwrap_err();
+    let err = store
+        .add_worktree(&link, on_branch("feature"))
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, sekai_storage::StorageError::Io { .. }),
         "unexpected error: {err}"
     );
     assert_eq!(std::fs::read_to_string(&link).unwrap(), "keep me");
 
-    let err = store.add_worktree(&real).unwrap_err();
+    // The store root is already the main worktree's key: the insert
+    // refuses it before any link I/O.
+    let err = store.add_worktree(&real, on_main()).await.unwrap_err();
     assert!(
-        matches!(err, sekai_storage::StorageError::Io { .. }),
+        matches!(err, sekai_storage::StorageError::Backend { .. }),
         "unexpected error: {err}"
     );
 
     let missing = base.join("missing").join(".sekai");
-    let err = store.add_worktree(&missing).unwrap_err();
+    let err = store
+        .add_worktree(&missing, on_branch("other"))
+        .await
+        .unwrap_err();
     assert!(
         matches!(err, sekai_storage::StorageError::Io { .. }),
         "unexpected error: {err}"
     );
     assert!(!base.join("missing").exists());
+    assert_eq!(store.worktrees().await.unwrap(), [main_worktree(&real)]);
+}
+
+/// A failed link write rolls back the row it inserted: removing the
+/// obstacle and retrying completes the registration instead of failing
+/// on a leftover row.
+#[tokio::test]
+async fn add_worktree_rolls_back_a_failed_link_write() {
+    let (base, _guard) = tempdir("worktree-rollback");
+    let real = base.join("real-store");
+    let store = init(&real).await;
+
+    let link = base.join(".sekai");
+    std::fs::write(&link, "keep me").unwrap();
+    assert!(
+        store
+            .add_worktree(&link, on_branch("feature"))
+            .await
+            .is_err()
+    );
+    assert_eq!(store.worktrees().await.unwrap(), [main_worktree(&real)]);
+
+    std::fs::remove_file(&link).unwrap();
+    store
+        .add_worktree(&link, on_branch("feature"))
+        .await
+        .unwrap();
+    let root = std::path::absolute(&real).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&link).unwrap().trim(),
+        root.to_str().unwrap()
+    );
+    let mut expected = [
+        main_worktree(&real),
+        Worktree {
+            path: link.clone(),
+            head: on_branch("feature"),
+        },
+    ];
+    expected.sort_by(|a, b| {
+        a.path
+            .as_os_str()
+            .as_encoded_bytes()
+            .cmp(b.path.as_os_str().as_encoded_bytes())
+    });
+    assert_eq!(store.worktrees().await.unwrap(), expected);
+}
+
+/// A branch is the HEAD of at most one worktree: the store itself holds
+/// `main`, and a second registration on any already-checked-out branch
+/// is refused and writes no row.
+#[tokio::test]
+async fn add_worktree_refuses_a_branch_already_checked_out() {
+    let (base, _guard) = tempdir("worktree-head-clash");
+    let store = init(base.join("real-store")).await;
+
+    let first = base.join("first");
+    std::fs::create_dir_all(&first).unwrap();
+    store
+        .add_worktree(first.join(".sekai"), on_branch("feature"))
+        .await
+        .unwrap();
+
+    for (name, head) in [("second", on_branch("feature")), ("third", on_main())] {
+        let world = base.join(name);
+        std::fs::create_dir_all(&world).unwrap();
+        let err = store
+            .add_worktree(world.join(".sekai"), head)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, sekai_storage::StorageError::Backend { .. }),
+            "unexpected error: {err}"
+        );
+        // The refused insert never reached the link write.
+        assert!(!world.join(".sekai").exists());
+    }
+    assert_eq!(store.worktrees().await.unwrap().len(), 2);
+}
+
+/// Detached HEADs may share a commit: only branch HEADs are exclusive.
+#[tokio::test]
+async fn add_worktree_allows_detached_heads_on_one_commit() {
+    let (base, _guard) = tempdir("worktree-detached");
+    let mut store = init(base.join("real-store")).await;
+    let commit = store
+        .meta_mut()
+        .apply_commit(1_000, &[], &[])
+        .await
+        .unwrap();
+
+    for name in ["a", "b"] {
+        let world = base.join(name);
+        std::fs::create_dir_all(&world).unwrap();
+        store
+            .add_worktree(world.join(".sekai"), Head::Detached(commit))
+            .await
+            .unwrap();
+    }
+    assert_eq!(store.worktrees().await.unwrap().len(), 3);
+}
+
+/// Init registers the store itself as its main worktree, keyed by the
+/// absolute store root with HEAD unborn on `main`; a re-init keeps the
+/// row and its HEAD.
+#[tokio::test]
+async fn init_registers_the_store_as_its_own_worktree() {
+    let (dir, _guard) = tempdir("worktree-init");
+    let store = init(&dir).await;
+    let expected = [main_worktree(&dir)];
+    assert_eq!(store.worktrees().await.unwrap(), expected);
+    drop(store);
+
+    let store = LocalStore::init(&dir).await.unwrap();
+    assert_eq!(store.worktrees().await.unwrap(), expected);
+}
+
+/// Worktree keys keep the caller's absolute spelling, symlinks included:
+/// the main root and a linked location resolve through the same rule, so
+/// opening the store through its link sees the very same rows.
+#[cfg(unix)]
+#[tokio::test]
+async fn worktree_keys_keep_the_spelling_through_symlinks() {
+    let (base, _guard) = tempdir("worktree-symlink");
+    let real = base.join("real");
+    std::fs::create_dir_all(&real).unwrap();
+    let alias = base.join("alias");
+    std::os::unix::fs::symlink(&real, &alias).unwrap();
+
+    let store = init(alias.join("store")).await;
+    let world = alias.join("world");
+    std::fs::create_dir_all(&world).unwrap();
+    let link = world.join(".sekai");
+    store
+        .add_worktree(&link, on_branch("feature"))
+        .await
+        .unwrap();
+
+    let mut expected = [
+        main_worktree(alias.join("store")),
+        Worktree {
+            path: std::path::absolute(&link).unwrap(),
+            head: on_branch("feature"),
+        },
+    ];
+    expected.sort_by(|a, b| {
+        a.path
+            .as_os_str()
+            .as_encoded_bytes()
+            .cmp(b.path.as_os_str().as_encoded_bytes())
+    });
+    assert_eq!(store.worktrees().await.unwrap(), expected);
+    drop(store);
+    let store = LocalStore::open(&link).await.unwrap();
+    assert_eq!(store.worktrees().await.unwrap(), expected);
+}
+
+/// A store location that is not valid UTF-8 fails loudly before any link
+/// is written, never as a lossy path.
+#[cfg(unix)]
+#[tokio::test]
+async fn add_worktree_refuses_a_non_utf8_link_path() {
+    use std::os::unix::ffi::OsStringExt as _;
+
+    let (base, _guard) = tempdir("worktree-non-utf8");
+    let real = base.join("real-store");
+    let store = init(&real).await;
+    // No parent directory is created: the key check runs before any I/O,
+    // and macOS filesystems refuse non-UTF-8 names outright.
+    let world = base.join(std::ffi::OsString::from_vec(vec![0xff, 0xfe]));
+    let link = world.join(".sekai");
+
+    let err = store
+        .add_worktree(&link, on_branch("feature"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            sekai_storage::StorageError::Backend {
+                backend: "worktree",
+                ..
+            }
+        ),
+        "unexpected error: {err}"
+    );
+    assert!(!link.exists());
+    assert_eq!(store.worktrees().await.unwrap(), [main_worktree(&real)]);
 }
