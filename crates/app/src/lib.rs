@@ -14,6 +14,8 @@
 //! hang off the handles it hands out: [`WorldHandle`] for read-only work
 //! (`status`, `diff_world_*`) and [`WorldHandleMut`] for runs that write
 //! the store or the world (`commit`, `checkout`, `update_cache`).
+//! [`SekaiInstance::restore`] composes a source resolution with a scoped
+//! checkout under git-restore defaults.
 //!
 //! A world is any [`WorldTree`]: the operations reach its region files
 //! through [`RegionFile`] handles, so a tree that is not backed by a
@@ -28,6 +30,7 @@ mod instance;
 mod progress;
 mod refs;
 mod regions;
+mod restore;
 mod scopes;
 mod time;
 mod workers;
@@ -45,6 +48,7 @@ pub use diff::{ChunkDiff, DiffTimings, world_chunk_coords};
 pub use error::{AppError, Lookup, NameKind};
 pub use instance::{SekaiInstance, WorldHandle, WorldHandleMut};
 pub use progress::{BuildProgress, Progress};
+pub use restore::RestoreOptions;
 pub use sekai_core::{
     Area, ChunkCoord, ChunkHash, Commit, CommitId, CommitRef, DEFAULT_REF_NAME, DimHash, Dimension,
     NamedScope, NamedScopeError, Rect, Ref, RefKind, RefName, RefNameError, RegionFingerprint,

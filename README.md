@@ -43,6 +43,10 @@ sekai log
 # Rebuild the world from a known commit (overwrites region files)
 sekai checkout ./world 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a
 
+# Restore one area from HEAD (or --source <rev>), like git restore:
+# only the selection is touched, nothing is recorded, no ref moves
+sekai restore ./world --in overworld:-8,-8..7,7
+
 # Compare chunk NBT between two commits (hashes from `log`)
 sekai diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a --in overworld:0,0
 
@@ -61,13 +65,15 @@ Every command accepts `--json` for a single-document machine-readable
 report, and every command except `log`, `init`, and `cache` accepts
 `--timing`
 for a per-phase breakdown (combine both for timed JSON). `commit`,
-`status`, `checkout`, and `diff` also take
+`status`, `checkout`, `restore`, and `diff` also take
 `--progress` for a stderr progress bar (refused with `--json`).
-Commit, status, checkout, and diff
+Commit, status, checkout, diff, and restore
 accept a scope: repeatable `--in DIM[:x,z|x0,z0..x1,z1]`,
 `--region DIM:RX,RZ`, and repeatable `--kind` (empty means all);
 nothing selected means the whole world. `--scope NAME` selects an area
-saved with `scope create` instead. See `docs/json.md` for the
+saved with `scope create` instead. Restore is the exception: like git
+restore's pathspec, it requires a selection (`--in`, `--region`, or
+`--scope`). See `docs/json.md` for the
 output contract.
 
 > [!Note]

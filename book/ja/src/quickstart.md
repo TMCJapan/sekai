@@ -17,6 +17,9 @@ sekai log
 # タグ付けしたコミットからワールドを再構築（リージョンファイルを上書き）
 sekai checkout ./world 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a
 
+# 指定した範囲だけを HEAD（または --source <rev>）から復元（git restore 相当）
+sekai restore ./world --in overworld:-8,-8..7,7
+
 # 2 つのコミット間でチャンクの NBT を比較（ハッシュは `log` で確認）
 sekai diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a --in overworld:0,0
 ```
@@ -25,6 +28,6 @@ sekai diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a
 
 すべてのコマンドは機械可読な出力を得るための `--json` に対応しています。また、`log`、`init`、`cache clean` を除くすべてのコマンドは、フェーズごとの処理時間内訳を表示する `--timing` に対応しています。
 
-`commit`、`status`、`checkout`、`diff`、`cache update` では、標準エラー出力に進捗バーを表示する `--progress` を利用できます（`--json` との併用は不可）。
+`commit`、`status`、`checkout`、`restore`、`diff`、`cache update` では、標準エラー出力に進捗バーを表示する `--progress` を利用できます（`--json` との併用は不可）。
 
-`commit`、`status`、`checkout`、`diff` はスコープ（`--in`, `--region`, `--kind`）による対象範囲の絞り込みに対応しています。スコープを指定しない場合はワールド全体が対象となります。
+`commit`、`status`、`checkout`、`restore`、`diff` はスコープ（`--in`, `--region`, `--kind`）による対象範囲の絞り込みに対応しています。スコープを指定しない場合はワールド全体が対象となります。ただし `restore` は例外で、git restore の pathspec と同様に選択範囲の指定が必須です。

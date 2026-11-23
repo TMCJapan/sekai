@@ -87,6 +87,77 @@ fn parses_subcommands() {
 }
 
 #[test]
+fn parses_restore() {
+    // The source is optional (HEAD at runtime); the selection flags parse
+    // like every other scoped command.
+    let cli = Cli::try_parse_from(["sekai", "restore", "w", "--in", "overworld:0,0"])
+        .expect("restore parses");
+    assert!(matches!(
+        &cli.command,
+        Command::Restore(args) if args.source.is_none() && !args.overlay && args.jobs == 0
+    ));
+    assert_eq!(cli.command.name(), "restore");
+    assert!(!cli.command.output_json());
+
+    // git restore's `-s <tree>` short form, plus the long spelling.
+    for source in ["-s", "--source"] {
+        let cli = Cli::try_parse_from([
+            "sekai",
+            "restore",
+            "w",
+            source,
+            "main~1",
+            "--region",
+            "overworld:0,0",
+        ])
+        .expect("restore --source parses");
+        assert!(matches!(
+            &cli.command,
+            Command::Restore(args) if ref_str(args.source.as_ref()) == Some("main~1")
+        ));
+    }
+
+    let cli = Cli::try_parse_from([
+        "sekai",
+        "restore",
+        "w",
+        "--overlay",
+        "--in",
+        "overworld:0,0",
+        "--json",
+        "--jobs",
+        "4",
+    ])
+    .expect("restore options parse");
+    assert!(matches!(
+        &cli.command,
+        Command::Restore(args) if args.overlay && args.jobs == 4
+    ));
+    assert!(cli.command.output_json());
+
+    // Malformed revisions are refused at parse time, like checkout's.
+    for bad in ["", "HEAD^", "main~x", "@{1}"] {
+        assert!(
+            Cli::try_parse_from(["sekai", "restore", "w", "-s", bad, "--in", "overworld:0,0"])
+                .is_err(),
+            "{bad:?} must be refused"
+        );
+    }
+    assert!(
+        Cli::try_parse_from([
+            "sekai",
+            "restore",
+            "w",
+            "--in",
+            "overworld:0,0",
+            "--progress",
+            "--json"
+        ])
+        .is_err()
+    );
+}
+
+#[test]
 fn parses_progress_flag() {
     let cli = Cli::try_parse_from(["sekai", "commit", "world", "--progress"])
         .expect("commit --progress parses");

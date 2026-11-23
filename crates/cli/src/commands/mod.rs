@@ -8,6 +8,7 @@ mod diff_render;
 mod init;
 mod log;
 mod progress;
+mod restore;
 mod scopes;
 mod status;
 
@@ -134,5 +135,6 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
         Command::Scope { action } => scopes::run(&cli.store, action, style).await,
         Command::Cache { action } => cache::run(&cli.store, action, style).await,
         Command::Diff(args) => diff::run(&cli.store, args, style).await,
+        Command::Restore(args) => restore::run(&cli.store, args, style).await,
     }
 }

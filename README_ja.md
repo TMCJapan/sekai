@@ -40,8 +40,9 @@ sekai log
 # 特定のコミットからワールドを再構築（リージョンファイルを上書き）
 sekai checkout ./world 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a
 
-# 特定のコミットからワールドを再構築（リージョンファイルを上書き）
-# 特定のコミットからワールドを再構築（リージョンファイルを上書き）
+# 指定した範囲だけを HEAD（または --source <rev>）から復元（git restore 相当）:
+# 選択範囲外には触れず、コミットも記録せず、ref も移動しない
+sekai restore ./world --in overworld:-8,-8..7,7
 
 # 2 つのコミット間でチャンクの NBT を比較（ハッシュは `log` で確認）
 sekai diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a --in overworld:0,0
@@ -56,9 +57,9 @@ sekai cache clean
 
 `--store` はストアディレクトリを指定します（`init` が作成し、他のコマンドはストアが存在しない場合に失敗します）。省略時のデフォルトは `.sekai` です。
 
-すべてのコマンドは `--json` オプションに対応しており、単一の機械可読な JSON レポートを出力できます。また、`log`、`init`、`cache` を除くすべてのコマンドは `--timing` オプションでフェーズごとの処理時間内訳を表示できます（両方を組み合わせることで、所要時間付きの JSON が得られます）。さらに、`commit`、`status`、`checkout`、`diff` では `--progress` を指定すると標準エラー出力に進捗バーを表示できます（`--json` との併用は不可）。
+すべてのコマンドは `--json` オプションに対応しており、単一の機械可読な JSON レポートを出力できます。また、`log`、`init`、`cache` を除くすべてのコマンドは `--timing` オプションでフェーズごとの処理時間内訳を表示できます（両方を組み合わせることで、所要時間付きの JSON が得られます）。さらに、`commit`、`status`、`checkout`、`restore`、`diff` では `--progress` を指定すると標準エラー出力に進捗バーを表示できます（`--json` との併用は不可）。
 
-`commit`、`status`、`checkout`、`diff` はスコープ（対象範囲）の絞り込みに対応しています。複数指定可能な `--in DIM[:x,z|x0,z0..x1,z1]`、`--region DIM:RX,RZ`、および複数指定可能な `--kind`（省略時はすべて）が利用可能です。スコープを指定しない場合は、ワールド全体が対象となります。`--scope NAME` を使うと、`scope create` で保存した範囲を名前で選択できます。出力フォーマットの仕様については `docs/json.md` を参照してください。
+`commit`、`status`、`checkout`、`diff`、`restore` はスコープ（対象範囲）の絞り込みに対応しています。複数指定可能な `--in DIM[:x,z|x0,z0..x1,z1]`、`--region DIM:RX,RZ`、および複数指定可能な `--kind`（省略時はすべて）が利用可能です。スコープを指定しない場合は、ワールド全体が対象となります。`--scope NAME` を使うと、`scope create` で保存した範囲を名前で選択できます。ただし `restore` は例外で、git restore の pathspec と同様に選択範囲（`--in`、`--region`、`--scope` のいずれか）が必須です。出力フォーマットの仕様については `docs/json.md` を参照してください。
 
 > [!Note]
 > すべてのコミットとストレージの二次バックアップを作成したい場合は、

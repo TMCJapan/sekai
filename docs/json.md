@@ -18,6 +18,7 @@ carries the bare result only.
 | `commit` | report (+timings with `--timing`) | table + JSON block | regions list is timing detail, JSON-only |
 | `status` | preview (+timings with `--timing`) | table + JSON block | read-only: never writes to world or store |
 | `checkout` | report (+timings with `--timing`) | table + JSON block | |
+| `restore` | report (+timings with `--timing`) | table + JSON block | checkout's payload; selection required |
 | `log` | commit array (+stats with `--stat`) | n/a | no phases exist |
 | `scope` | record, deletion record, or scope array | n/a | no phases exist |
 | `cache` | clean record or update report (+timings with `--timing`) | table + JSON block (`update` only) | `clean` has no phases |
@@ -26,7 +27,7 @@ carries the bare result only.
 Without `--timing`, `--json` emits the bare result. With `--timing`,
 the report that would be a bare array (`diff`) is promoted to an object
 holding the array (`diffs`) plus the timing block; object reports
-(commit/status/checkout/cache update) append the block in place.
+(commit/status/checkout/restore/cache update) append the block in place.
 
 ## Envelope
 
@@ -39,7 +40,7 @@ Every invocation prints exactly one JSON object to stdout:
 {"command": "<name>", "status": "error", "error": "<full context chain>"}
 ```
 
-`command` is one of `init`, `commit`, `status`, `checkout`, `log`, `scope`, `cache`, `diff`.
+`command` is one of `init`, `commit`, `status`, `checkout`, `restore`, `log`, `scope`, `cache`, `diff`.
 The error string is the full anyhow context chain (outermost message
 first, then `Caused by:` lines), JSON-escaped.
 
@@ -52,6 +53,11 @@ first, then `Caused by:` lines), JSON-escaped.
 | 2 | Usage error (unknown flags, bad values). clap prints its own human-readable error to stderr. |
 
 ## Compatibility
+
+Change (ADR-0039): the `restore` command is added. `command` gains the
+value `restore`; its payload is checkout's shape under git-restore
+defaults (default source HEAD, required selection, `--overlay` keeps
+source-unknown files). Existing commands are unchanged.
 
 Change: commit arguments (`checkout`, `diff`) take a revision: a
 64-character commit ID, a branch, `HEAD`, or `@`, optionally followed by
@@ -191,6 +197,22 @@ Restore strategy flags (`--keep-post-commit-files`,
 `--on-missing-blob`, `--on-missing-file`) change what is written or
 deleted, so the counts reflect the applied policy; the payload shape is
 unchanged.
+
+### `restore`
+
+```jsonc
+{
+  "files_written": 1, "files_deleted": 0, "chunks_restored": 40,
+  "total_ms": 120,
+  "phases": {"plan_ms": 30, "discover_ms": 4, "checkout_files_ms": 80}
+}
+```
+
+The payload is checkout's (ADR-0039): restore is a scoped checkout under
+git-restore defaults, so the counts and the `total_ms`/`phases` block
+(the latter only with `--timing`, phase names included) are identical.
+`--overlay`, `--on-missing-blob`, and `--on-missing-file` change what is
+written or deleted; the payload shape is unchanged.
 
 ### `log`
 

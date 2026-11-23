@@ -15,6 +15,7 @@ Dry runs by command:
 |---|---|
 | `status` | the whole command (commit has no `--dry-run` by design) |
 | `checkout` | none (checkout is destructive by definition) |
+| `restore` | none (restore is destructive by definition) |
 
 The full contract — flag matrix, envelope, per-command payloads, and the
 compatibility promise — is [docs/json.md](https://github.com/tmcjapan/sekai/blob/main/docs/json.md). That page
