@@ -50,7 +50,12 @@ pub enum MemError {
         /// Target the new commit had to include as a parent.
         base: CommitId,
     },
-    /// The active ref cannot be removed.
+    /// The ref already exists.
+    RefExists {
+        /// Ref that was asked for.
+        name: Ref,
+    },
+    /// The active ref cannot be removed or moved by a ref operation.
     ActiveRefProtected {
         /// Ref that was asked for.
         name: Ref,
@@ -101,6 +106,10 @@ pub struct MemMeta {
 impl MemMeta {
     fn seq_of(&self, id: CommitId) -> Option<u64> {
         self.seqs.get(&id).copied()
+    }
+
+    fn holds_commit(&self, id: CommitId) -> bool {
+        self.commits.iter().any(|held| held.id == id)
     }
 
     /// Assign a local sequence and append the commit. Returns `false`
@@ -386,29 +395,46 @@ impl MetaStore for MemMeta {
         core::future::ready(Ok(ApplyOutcome { id }))
     }
 
-    fn set_ref(
+    fn create_ref(
         &mut self,
         name: &Ref,
-        commit: Option<CommitId>,
+        commit: CommitId,
         created_at_ms: u64,
     ) -> impl Future<Output = Result<(), MemError>> + Send {
-        // Mirrors the backend: a ref may not name a commit the store lacks.
-        if let Some(id) = commit
-            && !self.commits.iter().any(|held| held.id == id)
-        {
-            return core::future::ready(Err(MemError::UnknownCommit { id }));
+        // Mirrors the backend: the commit is checked before the name.
+        if !self.holds_commit(commit) {
+            return core::future::ready(Err(MemError::UnknownCommit { id: commit }));
         }
-        let (active, created_at_ms) = self
-            .refs
-            .get(name)
-            .map_or((false, created_at_ms), |existing| {
-                (existing.active, existing.created_at_ms)
-            });
+        if self.refs.contains_key(name) {
+            return core::future::ready(Err(MemError::RefExists { name: name.clone() }));
+        }
         self.refs.insert(
             name.clone(),
-            CommitRef::new(name.clone(), commit, active, created_at_ms),
+            CommitRef::new(name.clone(), Some(commit), false, created_at_ms),
         );
         core::future::ready(Ok(()))
+    }
+
+    fn move_ref(
+        &mut self,
+        name: &Ref,
+        commit: CommitId,
+    ) -> impl Future<Output = Result<(), MemError>> + Send {
+        // Mirrors the backend: the commit is checked before the name.
+        if !self.holds_commit(commit) {
+            return core::future::ready(Err(MemError::UnknownCommit { id: commit }));
+        }
+        let result = match self.refs.get_mut(name) {
+            None => Err(MemError::UnknownRef { name: name.clone() }),
+            Some(record) if record.active => {
+                Err(MemError::ActiveRefProtected { name: name.clone() })
+            }
+            Some(record) => {
+                record.commit = Some(commit);
+                Ok(())
+            }
+        };
+        core::future::ready(result)
     }
 
     fn lookup_ref(
@@ -566,6 +592,66 @@ mod tests {
             block_on(meta.lookup_commit(CommitId([0xFF; 32])))
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    fn branch(raw: &str) -> Ref {
+        Ref::branch(RefName::parse(raw).unwrap())
+    }
+
+    #[test]
+    fn create_ref_refuses_a_taken_name_or_a_missing_commit() {
+        let mut meta = store_with_ref();
+        let root = block_on(meta.create_commit(1_000, &[])).unwrap();
+        let missing = CommitId([0xEE; 32]);
+
+        assert_eq!(
+            block_on(meta.create_ref(&branch("dev"), missing, 0)),
+            Err(MemError::UnknownCommit { id: missing })
+        );
+        // The unborn active ref has a row, so its name is taken.
+        assert_eq!(
+            block_on(meta.create_ref(&branch("main"), root, 0)),
+            Err(MemError::RefExists {
+                name: branch("main")
+            })
+        );
+
+        block_on(meta.create_ref(&branch("dev"), root, 7)).unwrap();
+        let created = block_on(meta.lookup_ref(&branch("dev"))).unwrap().unwrap();
+        assert_eq!(created, CommitRef::new(branch("dev"), Some(root), false, 7));
+    }
+
+    #[test]
+    fn move_ref_moves_only_an_existing_inactive_ref() {
+        let mut meta = store_with_ref();
+        let first = block_on(meta.create_commit(1_000, &[])).unwrap();
+        let second = block_on(meta.create_commit(2_000, &[first])).unwrap();
+        block_on(meta.create_ref(&branch("dev"), first, 7)).unwrap();
+
+        block_on(meta.move_ref(&branch("dev"), second)).unwrap();
+        assert_eq!(
+            block_on(meta.lookup_ref(&branch("dev"))).unwrap().unwrap(),
+            CommitRef::new(branch("dev"), Some(second), false, 7)
+        );
+        assert_eq!(
+            block_on(meta.move_ref(&branch("gone"), first)),
+            Err(MemError::UnknownRef {
+                name: branch("gone")
+            })
+        );
+        assert_eq!(
+            block_on(meta.move_ref(&branch("main"), first)),
+            Err(MemError::ActiveRefProtected {
+                name: branch("main")
+            })
+        );
+        assert_eq!(
+            block_on(meta.lookup_ref(&branch("main")))
+                .unwrap()
+                .unwrap()
+                .commit,
+            None
         );
     }
 }

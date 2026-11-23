@@ -154,18 +154,29 @@ pub trait MetaStore {
         entries: &[CommitEntry],
     ) -> impl Future<Output = Result<ApplyOutcome, Self::Error>> + Send;
 
-    /// Point `name` at `commit`, creating the ref when it does not exist.
-    /// `commit = None` leaves the ref unborn: it names a history without a
-    /// commit, and the next commit starts a new root from it.
+    /// Create the ref `name`, inactive, pointing at `commit`.
     ///
-    /// A new ref starts inactive; moving an existing one leaves its flag and
-    /// creation time untouched. `created_at_ms` is stored only when the ref
-    /// is first created.
-    fn set_ref(
+    /// Fails when `name` already exists or `commit` does not. A new ref
+    /// always names a commit: the only unborn ref is the one a fresh store
+    /// starts with.
+    fn create_ref(
         &mut self,
         name: &Ref,
-        commit: Option<CommitId>,
+        commit: CommitId,
         created_at_ms: u64,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send;
+
+    /// Point the existing ref `name` at `commit`, keeping its active flag
+    /// and creation time.
+    ///
+    /// Fails when `name` or `commit` does not exist, and when `name` is the
+    /// active ref: only a commit ([`Self::commit_tree`] or
+    /// [`Self::apply_commit_incremental`]) moves the active ref, so that its
+    /// target always continues the history new commits hang from.
+    fn move_ref(
+        &mut self,
+        name: &Ref,
+        commit: CommitId,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send;
 
     /// The ref `name`, or `None` when it does not exist.
