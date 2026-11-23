@@ -36,3 +36,6 @@ Each behavior is configurable without changing the default:
   `--timing`/`--json` as usual.
 - Before rebuilding, the CLI echoes the target commit, scope, and
   policy to stderr (human output only).
+
+For the narrower case — undo local changes in one area against HEAD (or
+another source) without recording anything — see [Restore](restore.md).

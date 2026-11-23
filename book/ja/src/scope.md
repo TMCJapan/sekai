@@ -1,12 +1,13 @@
 # スコープ（対象範囲）の選択
 
-`commit`、`checkout`、`diff` ではスコープを指定できます。
+`commit`、`checkout`、`restore`、`diff` ではスコープを指定できます。
 デフォルトではワールド全体が対象ですが、ディメンションごとの領域を指定することも可能です。複数の領域指定は和集合（OR条件）として結合されます。
-また、`--kind`（複数指定可、省略時はすべて）は指定されたすべての領域に適用されます。
+また、`--kind`（複数指定可、省略時はすべて）は指定されたすべての領域に適用されます。ただし `restore` は例外で、git restore の pathspec と同様に選択範囲の指定が必須です。
 
 ```sh
 sekai commit ./world --in overworld --kind region --kind entities
 sekai checkout ./world 3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d --in overworld:0,0..31,31
+sekai restore ./world --in overworld:0,0..31,31
 sekai diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a --in overworld:0,0
 ```
 
@@ -18,7 +19,7 @@ sekai diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a
 
 ## 名前付きスコープ
 
-繰り返し使う範囲は、一度 store に保存しておけば、`commit`、`status`、`checkout`、`diff` で `--scope` に名前を指定して選択できます。スコープは store に保存されるため、先に store が必要です。新しい store では、`scope create` の前に `sekai init` を実行してください。
+繰り返し使う範囲は、一度 store に保存しておけば、`commit`、`status`、`checkout`、`restore`、`diff` で `--scope` に名前を指定して選択できます。スコープは store に保存されるため、先に store が必要です。新しい store では、`scope create` の前に `sekai init` を実行してください。
 
 ```sh
 sekai scope create spawn --in overworld:-8,-8..7,7 --region nether:0,0

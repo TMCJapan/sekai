@@ -7,10 +7,18 @@
   store. Check `log` and copy the full 64-character hash. IDs are
   content-derived: the same parents, timestamp, and delta always produce
   the same hash, so an identical history in another store shares it.
+- `you must specify path(s) to restore` — restore requires a selection,
+  like git restore's pathspec. Spell areas with `--in`/`--region` or
+  name a saved scope with `--scope`; `--kind` alone spells no path.
+  Whole-world rebuilding is [Checkout](commands/checkout.md)'s job.
+- `no commit selected: the store is empty or the active ref is unborn`
+  — restore without `--source` defaults to HEAD, and there is no commit
+  to restore from yet. Record a `commit` first, or pass `--source`
+  explicitly.
 - `blob missing from CAS: <hex>` — store corruption (or a store copied
   incompletely). Checkout aborts rather than writing a partial world;
-  `--on-missing-blob skip-chunk` (checkout) continues without the
-  affected chunks. Restore the store from the secondary copy, then
+  `--on-missing-blob skip-chunk` (checkout and restore) continues without
+  the affected chunks. Restore the store from the secondary copy, then
   investigate.
 - `cannot derive region path for dim ...` (`UnknownRegionPath`) — a
   custom-dimension region whose folder the world's layout cannot map.

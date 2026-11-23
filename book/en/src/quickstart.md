@@ -19,6 +19,9 @@ sekai log
 # Rebuild the world from a known commit (overwrites region files)
 sekai checkout ./world 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a
 
+# Restore one area from HEAD (or --source <rev>), like git restore
+sekai restore ./world --in overworld:-8,-8..7,7
+
 # Compare chunk NBT between two commits (hashes from `log`)
 sekai diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a --in overworld:0,0
 ```
@@ -27,7 +30,9 @@ The store defaults to `.sekai`; see [Store location](store.md) for
 using another location. Every
 command accepts `--json` for machine-readable output and, except `log`,
 `init`, and `cache clean`, `--timing` for a per-phase breakdown.
-`commit`, `status`, `checkout`, `diff`, and `cache update` take `--progress`
-for a stderr progress bar (refused with `--json`). `commit`, `status`,
-`checkout`, and `diff` accept a scope
+`commit`, `status`, `checkout`, `restore`, `diff`, and `cache update` take
+`--progress` for a stderr progress bar (refused with `--json`). `commit`,
+`status`, `checkout`, `restore`, and `diff` accept a scope
 (`--in`, `--region`, `--kind`); nothing selected means the whole world.
+Restore is the exception: like git restore's pathspec, it requires a
+selection.

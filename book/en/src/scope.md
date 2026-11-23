@@ -1,12 +1,14 @@
 # Scope selection
 
-`commit`, `checkout`, and `diff` accept a scope: the whole
+`commit`, `checkout`, `restore`, and `diff` accept a scope: the whole
 world by default, or per-dimension areas. Entries compose by union;
-`--kind` (repeatable, empty means all) applies to every area.
+`--kind` (repeatable, empty means all) applies to every area. Restore
+is the exception: like git restore's pathspec, it requires a selection.
 
 ```sh
 sekai commit ./world --in overworld --kind region --kind entities
 sekai checkout ./world 3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d --in overworld:0,0..31,31
+sekai restore ./world --in overworld:0,0..31,31
 sekai diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a --in overworld:0,0
 ```
 
@@ -26,7 +28,7 @@ files outside the scope. See [ADR-0003](https://github.com/tmcjapan/sekai/blob/m
 
 An area you select over and over can be saved in the store once and
 selected by name with `--scope` on `commit`, `status`, `checkout`,
-and `diff`. Scopes live in the store, so it must exist first:
+`restore`, and `diff`. Scopes live in the store, so it must exist first:
 run `sekai init` before `scope create` on a new store.
 
 ```sh

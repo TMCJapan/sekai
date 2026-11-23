@@ -10,6 +10,7 @@
 - [スコープ（対象範囲）の選択](scope.md)
 - [コミット](commands/commit.md)
 - [チェックアウト](commands/checkout.md)
+- [リストア](commands/restore.md)
 - [検証・検査](commands/inspection.md)
 - [キャッシュ](commands/cache.md)
 - [自動化](automation.md)
