@@ -6,8 +6,8 @@ const H3: &str = "03030303030303030303030303030303030303030303030303030303030303
 use sekai_app::{Dimension, Rect, Revision};
 use sekai_cli::{
     cli::{
-        CacheCommand, Cli, Command, DiffArgs, InlineSelection, OnMissingBlob, OnMissingFile,
-        RegionSpec, ScopeCommand, Selection, TimingArgs,
+        BranchArgs, CacheCommand, Cli, Command, DiffArgs, InlineSelection, OnMissingBlob,
+        OnMissingFile, RegionSpec, ScopeCommand, Selection, TimingArgs,
     },
     style::ColorChoice,
 };
@@ -969,5 +969,33 @@ fn parses_scope_selection_flag() {
             Cli::try_parse_from(&args).is_err(),
             "{args:?} must be refused"
         );
+    }
+}
+
+/// The `branch` arguments, or a panic for another command.
+fn branch_args(argv: &[&str]) -> BranchArgs {
+    match Cli::try_parse_from(argv).expect("branch parses").command {
+        Command::Branch(args) => args,
+        other => panic!("expected branch, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_branch_listing() {
+    assert!(!branch_args(&["sekai", "branch"]).json);
+
+    let cli = Cli::try_parse_from(["sekai", "branch", "--json"]).expect("parses");
+    assert_eq!(cli.command.name(), "branch");
+    assert!(cli.command.output_json());
+}
+
+#[test]
+fn branch_takes_no_patterns() {
+    for argv in [
+        &["sekai", "branch", "dev"][..],
+        &["sekai", "branch", "--list", "m*"],
+    ] {
+        let err = Cli::try_parse_from(argv).expect_err("no patterns");
+        assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
     }
 }

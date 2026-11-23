@@ -5,7 +5,7 @@
 //! refs: commits move the active ref through the store, and no command
 //! creates, deletes, or activates a ref.
 
-use sekai_core::{CommitId, CommitRef, Revision};
+use sekai_core::{CommitId, CommitRef, RefKind, Revision};
 use sekai_storage::{ResolveError, SekaiStore};
 use sekai_util::ThreadRunner;
 
@@ -16,6 +16,14 @@ impl<S: SekaiStore, T: ThreadRunner> SekaiInstance<S, T> {
     /// The active ref, or `None` when the store has none.
     pub async fn active_ref(&self) -> Result<Option<CommitRef>, AppError> {
         sekai_storage::refs::active_ref(self.store.meta())
+            .await
+            .map_err(AppError::Commit)
+    }
+
+    /// Every branch in full refname order, the active one flagged. The
+    /// unborn active ref of a fresh store is listed too, with no commit.
+    pub async fn list_branches(&self) -> Result<Vec<CommitRef>, AppError> {
+        sekai_storage::refs::list_refs_of(self.store.meta(), RefKind::Branch)
             .await
             .map_err(AppError::Commit)
     }
