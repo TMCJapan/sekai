@@ -11,10 +11,9 @@ use crate::envelope::envelope_ok;
 use crate::style::Styler;
 
 pub async fn run(store: &str, action: &CacheCommand, style: Styler) -> anyhow::Result<()> {
-    let mut instance = sekai_app::SekaiInstance::<LocalStore>::open(store).await?;
-
     match action {
         CacheCommand::Clean { json } => {
+            let mut instance = sekai_app::SekaiInstance::<LocalStore>::open(store).await?;
             let entries = instance
                 .clean_cache()
                 .await
@@ -33,10 +32,15 @@ pub async fn run(store: &str, action: &CacheCommand, style: Styler) -> anyhow::R
             output,
             jobs,
         } => {
+            let mut instance = sekai_app::SekaiInstance::<LocalStore, _>::open_with(
+                store,
+                <crate::runner::OsThread as sekai_app::ThreadRunner>::new(*jobs),
+            )
+            .await?;
             let mut world_tree = HostWorldTree::new(world)
                 .with_context(|| format!("failed to inspect world {}", world.display()))?;
             let bars = Bars::new(output.progress);
-            let options = CacheUpdateOptions { concurrency: *jobs };
+            let options = CacheUpdateOptions::default();
             let (report, timings) = instance
                 .world_mut(&mut world_tree)
                 .update_cache(options, &bars)

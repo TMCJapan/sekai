@@ -18,10 +18,10 @@ backend-local = ["dep:sekai-world-local"]
 sekai-anvil.workspace = true
 sekai-core.workspace = true
 sekai-storage.workspace = true
+sekai-util.workspace = true
 sekai-world.workspace = true
 sekai-world-local = { workspace = true, optional = true }
 thiserror.workspace = true
-tokio.workspace = true
 
 [[bench]]
 name = "commit"
@@ -44,3 +44,6 @@ miniz_oxide.workspace = true
 sekai-storage = { workspace = true, features = ["testing"] }
 sekai-storage-local.workspace = true
 tempfile.workspace = true
+# Tests and benches drive the async flows on a runtime; the library itself
+# names none.
+tokio = { workspace = true, features = ["time"] }

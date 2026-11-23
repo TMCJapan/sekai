@@ -1286,6 +1286,7 @@ dependencies = [
  "sekai-core",
  "sekai-storage",
  "sekai-storage-local",
+ "sekai-util",
  "sekai-world",
  "sekai-world-local",
  "tempfile",

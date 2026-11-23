@@ -21,10 +21,13 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let world = HostWorldTree::new(&world_path)
         .with_context(|| format!("failed to inspect world {}", world_path.as_ref().display()))?;
-    let options = sekai_app::StatusOptions { concurrency: jobs };
-    let instance = sekai_app::SekaiInstance::<LocalStore>::open(store)
-        .await
-        .with_context(|| format!("status of {} failed", world_path.as_ref().display()))?;
+    let options = sekai_app::StatusOptions::default();
+    let instance = sekai_app::SekaiInstance::<LocalStore, _>::open_with(
+        store,
+        <crate::runner::OsThread as sekai_app::ThreadRunner>::new(jobs),
+    )
+    .await
+    .with_context(|| format!("status of {} failed", world_path.as_ref().display()))?;
     let scope = resolve_selection(&instance, selection).await?;
     let bars = Bars::new(out.progress);
     let (report, timings) = instance

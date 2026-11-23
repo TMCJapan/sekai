@@ -10,10 +10,11 @@
 //! world discovery (filesystem), concurrent blob ingest, the wall clock,
 //! and timing collection for `--timing` output.
 //!
-//! Ingest is fully async: region reads run on the blocking pool (the
+//! Ingest is split by executor: region reads and hashing run on the
+//! instance's [`ThreadRunner`](sekai_util::ThreadRunner) threads (the
 //! [`WorldTree`] boundary stays synchronous), and every blob put is an
-//! async CAS call. The CAS is append-only, so concurrent workers need no
-//! lock at all.
+//! async CAS call on the caller's executor, interleaved with the joins.
+//! The CAS is append-only, so the writes need no lock at all.
 //!
 //! Crash order mirrors the core contract: every blob is flushed to CAS
 //! *before* the single metadata batch commits, so a torn commit leaves at
@@ -28,9 +29,9 @@ use std::time::{Duration, Instant};
 
 use sekai_core::staging::{Assembled, Ingested, Plan, Previous, assemble};
 use sekai_core::{ApplyOutcome, ChunkCoord, CommitEntry, CommitId, RegionKey, Scope};
-use sekai_storage::{BlobStore, MetaStore, RegionNode, SekaiStore, StorageError};
+use sekai_storage::{BlobStore, MetaStore, RegionNode, SekaiStore};
+use sekai_util::{JobSet as _, ThreadRunner};
 use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
-use tokio::task::JoinSet;
 
 use crate::cache::prove_regions_unchanged;
 use crate::error::AppError;
@@ -38,7 +39,7 @@ use crate::instance::{WorldGuard, WorldHandle, WorldHandleMut};
 use crate::progress::{BuildProgress, Progress};
 use crate::regions::discover_regions;
 use crate::time::now_ms;
-use crate::workers::worker_slots;
+use crate::workers::worker_error;
 
 /// Outcome of one commit run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -156,19 +157,11 @@ pub(crate) async fn record_commit<M: MetaStore>(
 
 /// Commit behavior knobs.
 #[derive(Debug, Clone, Default)]
-pub struct CommitOptions {
-    /// How many files ingest at once. `0` means one per CPU, `1` stays
-    /// sequential.
-    pub concurrency: usize,
-}
+pub struct CommitOptions {}
 
 /// Preview behavior knobs.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct StatusOptions {
-    /// How many files ingest at once. `0` means one per CPU, `1` stays
-    /// sequential.
-    pub concurrency: usize,
-}
+pub struct StatusOptions {}
 
 /// What a commit would record, without recording anything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -268,7 +261,7 @@ struct FileOutcome {
     timing: RegionTiming,
 }
 
-impl<W: WorldTree, S: SekaiStore> WorldHandleMut<'_, W, S>
+impl<W: WorldTree, S: SekaiStore, T: ThreadRunner> WorldHandleMut<'_, W, S, T>
 where
     AppError: From<W::Error>,
 {
@@ -289,7 +282,7 @@ where
     /// is durable yet. The report is identical with or without timings.
     pub async fn commit(
         &mut self,
-        options: CommitOptions,
+        _options: CommitOptions,
         scope: Scope,
         progress_builder: &impl BuildProgress,
     ) -> Result<(CommitReport, CommitTimings), AppError> {
@@ -307,8 +300,8 @@ where
             universe_load,
         } = prepare(
             store,
+            &self.instance.runner,
             self.world,
-            &options,
             &scope,
             progress_builder,
             false,
@@ -362,8 +355,8 @@ struct Prepared {
 /// nodes. `progress_builder` counts the files to ingest.
 async fn prepare<W: WorldTree, S: SekaiStore>(
     store: &S,
+    runner: &impl ThreadRunner,
     world: &W,
-    options: &CommitOptions,
     scope: &Scope,
     progress_builder: &impl BuildProgress,
     dry_run: bool,
@@ -372,16 +365,18 @@ async fn prepare<W: WorldTree, S: SekaiStore>(
 where
     AppError: From<W::Error>,
 {
-    // Discovery walks directories on the blocking pool, owning a share of
-    // the world lock like every file pass.
+    // Discovery walks directories on the runner, owning a share of the
+    // world lock like every file pass.
     let discover_started = Instant::now();
     let world_handle = world.clone();
     let discover_guard = Arc::clone(guard);
-    let mut regions = tokio::task::spawn_blocking(move || {
-        let _guard = discover_guard;
-        discover_regions(&world_handle)
-    })
-    .await??;
+    let mut regions = runner
+        .call(move || {
+            let _guard = discover_guard;
+            discover_regions(&world_handle)
+        })
+        .await
+        .map_err(worker_error("ingest worker"))??;
     let discover = discover_started.elapsed();
 
     let universe_started = Instant::now();
@@ -390,7 +385,9 @@ where
     // The proof needs the discovered handles, so it runs before the ingest
     // list takes them out of the map.
     let proven = match previous.commit.as_ref().filter(|_| dry_run) {
-        Some(base) => prove_regions_unchanged(store, base.id, &regions, &plan.ingest, guard).await,
+        Some(base) => {
+            prove_regions_unchanged(runner, store, base.id, &regions, &plan.ingest, guard).await
+        }
         None => BTreeMap::new(),
     };
     let universe_load = universe_started.elapsed();
@@ -404,7 +401,7 @@ where
     let (ingested, walk) = ingest_changed::<W::Region, S, W::Lock>(
         changed,
         store.blob().clone(),
-        options,
+        runner,
         scope.clone(),
         &proven,
         progress_builder,
@@ -423,7 +420,7 @@ where
     })
 }
 
-impl<W: WorldTree, S: SekaiStore> WorldHandle<'_, W, S>
+impl<W: WorldTree, S: SekaiStore, T: ThreadRunner> WorldHandle<'_, W, S, T>
 where
     AppError: From<W::Error>,
 {
@@ -437,15 +434,15 @@ where
     /// unless the world changes in between.
     pub async fn status(
         &self,
-        options: StatusOptions,
+        _options: StatusOptions,
         scope: Scope,
         progress_builder: &impl BuildProgress,
     ) -> Result<(StatusReport, StatusTimings), AppError> {
         let guard = WorldGuard::acquire(self.world, WorldLockMode::Shared)?;
         status_impl(
             &self.instance.store,
+            &self.instance.runner,
             self.world,
-            options,
             scope,
             progress_builder,
             &guard,
@@ -454,7 +451,7 @@ where
     }
 }
 
-impl<W: WorldTree, S: SekaiStore> WorldHandleMut<'_, W, S>
+impl<W: WorldTree, S: SekaiStore, T: ThreadRunner> WorldHandleMut<'_, W, S, T>
 where
     AppError: From<W::Error>,
 {
@@ -472,8 +469,8 @@ where
 /// Preview implementation shared by read-only and read-write handles.
 async fn status_impl<W: WorldTree, S: SekaiStore>(
     store: &S,
+    runner: &impl ThreadRunner,
     world: &W,
-    options: StatusOptions,
     scope: Scope,
     progress_builder: &impl BuildProgress,
     guard: &Arc<WorldGuard<W::Lock>>,
@@ -484,9 +481,6 @@ where
     let total = Instant::now();
 
     // The preview shares the ingest plan but records nothing.
-    let preview = CommitOptions {
-        concurrency: options.concurrency,
-    };
     let Prepared {
         previous,
         staged,
@@ -494,16 +488,7 @@ where
         discover,
         universe_load,
         ..
-    } = prepare(
-        store,
-        world,
-        &preview,
-        &scope,
-        progress_builder,
-        true,
-        guard,
-    )
-    .await?;
+    } = prepare(store, runner, world, &scope, progress_builder, true, guard).await?;
 
     let new_chunks = staged.entries.iter().filter(|e| e.blob.is_some()).count();
     let changed_regions: BTreeSet<RegionKey> = staged
@@ -587,24 +572,27 @@ struct IngestTimings {
     regions: Vec<RegionTiming>,
 }
 
-/// Ingest changed files concurrently, at most `options.concurrency` at once.
+/// Ingest changed files concurrently, at most the runner's parallelism at
+/// once.
 ///
-/// Each file is its own task, and a finished file frees its slot for the
-/// next, so a slow file never holds back the files queued behind it. Tasks
-/// clone the blob adapter over the same store and need no lock: the store
-/// is append-only, so concurrent puts never conflict. Nothing here syncs
-/// the store; the caller places that barrier before the metadata commit.
+/// Each file's read and hash pass is its own job on the runner, and a
+/// finished file frees its slot for the next, so a slow file never holds
+/// back the files queued behind it. Every job holds a share of the world
+/// lock until it ends (ADR-0022): an abandoned ingest cannot free the
+/// world while a file is still being read. The CAS pass stays on the
+/// caller's executor, interleaved with the joins: the store is
+/// append-only, so the puts need no lock. Nothing here syncs the store;
+/// the caller places that barrier before the metadata commit.
 ///
 /// Proven-unchanged files stage straight from their committed region node
-/// and step at once; `progress` steps as each remaining file's task is
-/// joined.
+/// and step at once; `progress` steps as each remaining file is stored.
 // The proof map joins the existing ingest inputs rather than splitting the
 // shared commit/status pipeline into two functions.
 #[allow(clippy::too_many_arguments)]
 async fn ingest_changed<R: RegionFile, S: SekaiStore, L: WorldLock>(
     changed: Vec<(RegionKey, R)>,
-    cas: S::Blobs,
-    options: &CommitOptions,
+    mut cas: S::Blobs,
+    runner: &impl ThreadRunner,
     scope: Scope,
     proven: &BTreeMap<RegionKey, RegionNode>,
     progress_builder: &impl BuildProgress,
@@ -628,31 +616,49 @@ where
             spawnable.push((key, region));
         }
     }
-    let slots = worker_slots(options.concurrency);
-    let spawn = |set: &mut JoinSet<Result<FileOutcome, AppError>>,
-                 (key, region): (RegionKey, R)| {
-        let mut cas = cas.clone();
-        let scope = scope.clone();
-        let guard = Arc::clone(guard);
-        set.spawn(async move { ingest_file(region, key, &mut cas, scope, dry_run, guard).await });
-    };
-
-    let mut queued = spawnable.into_iter();
-    let mut set = JoinSet::new();
-    for file in queued.by_ref().take(slots) {
-        spawn(&mut set, file);
-    }
+    let stage_guard = Arc::clone(guard);
+    let mut jobs = runner.run(spawnable, move |(key, region)| {
+        let _guard = Arc::clone(&stage_guard);
+        let location = region.to_string();
+        (key, location, stage_file(&region, key, &scope))
+    });
     // Completion order surfaces a failed file at once; returning drops the
-    // set, which aborts the files still in flight.
-    while let Some(joined) = set.join_next().await {
-        let outcome = joined.map_err(|source| {
-            AppError::Storage(StorageError::backend("ingest worker", source))
-        })??;
-        progress.step();
-        merge_outcome(&mut walk, outcome);
-        if let Some(file) = queued.next() {
-            spawn(&mut set, file);
+    // set, which stops the files still queued.
+    while let Some(joined) = jobs.join_next().await {
+        let (key, location, staged) = joined.map_err(worker_error("ingest worker"))?;
+        let staged = staged?;
+        let mut new_blobs = 0usize;
+        let mut cas_elapsed = Duration::ZERO;
+        // Store pass: every staged payload reaches the CAS. Stops at the
+        // first failure; the rows it staged are discarded with the error.
+        for write in staged.writes {
+            let started = Instant::now();
+            let stored = if dry_run {
+                cas.contains(&write.hash).await.map(|exists| !exists)
+            } else {
+                cas.put(&write.hash, &write.payload).await
+            };
+            cas_elapsed += started.elapsed();
+            new_blobs += usize::from(stored?);
         }
+        progress.step();
+        merge_outcome(
+            &mut walk,
+            FileOutcome {
+                key,
+                entries: staged.entries,
+                present: staged.present,
+                new_blobs,
+                timing: RegionTiming {
+                    location,
+                    chunks: staged.chunks,
+                    open: staged.open,
+                    ingest: staged.open + staged.hash + cas_elapsed,
+                    hash: staged.hash,
+                    cas: cas_elapsed,
+                },
+            },
+        );
     }
     // Completion order is nondeterministic; keep timing output stable.
     // The identity is the stable key, not the file's location text: a
@@ -717,67 +723,6 @@ fn slot_coord(key: RegionKey, cx: u8, cz: u8) -> ChunkCoord {
         key.rx * 32 + i32::from(cx),
         key.rz * 32 + i32::from(cz),
     )
-}
-
-/// Read, hash, and store one changed region file, staging its changes.
-/// Chunks outside `scope` are skipped before hashing: their parent subtree
-/// hash stays untouched. Under `dry_run` blobs are probed, never stored.
-///
-/// `key` names the file: discovery found it under that identity, and the
-/// timing row reports the same one.
-///
-/// Reading and hashing touch the world and run on the blocking pool, which
-/// holds `guard` until they end (ADR-0022): an abandoned ingest cannot free
-/// the world while a file is still being read. The store pass then awaits
-/// the CAS for each payload. Splitting the passes this way keeps chunk
-/// bytes from outliving the image that owns them.
-async fn ingest_file<R: RegionFile, C: BlobStore<Error = StorageError>, L: WorldLock>(
-    region: R,
-    key: RegionKey,
-    cas: &mut C,
-    scope: Scope,
-    dry_run: bool,
-    guard: Arc<WorldGuard<L>>,
-) -> Result<FileOutcome, AppError>
-where
-    AppError: From<R::Error>,
-{
-    let location = region.to_string();
-    let staged = tokio::task::spawn_blocking(move || {
-        let _guard = guard;
-        stage_file(&region, key, &scope)
-    })
-    .await
-    .map_err(|source| AppError::Storage(StorageError::backend("ingest worker", source)))??;
-
-    let mut new_blobs = 0usize;
-    let mut cas_elapsed = Duration::ZERO;
-    // Store pass: every staged payload reaches the CAS. Stops at the first
-    // failure; the rows it staged are discarded with the error.
-    for write in staged.writes {
-        let started = Instant::now();
-        let stored = if dry_run {
-            cas.contains(&write.hash).await.map(|exists| !exists)
-        } else {
-            cas.put(&write.hash, &write.payload).await
-        };
-        cas_elapsed += started.elapsed();
-        new_blobs += usize::from(stored?);
-    }
-    Ok(FileOutcome {
-        key,
-        entries: staged.entries,
-        present: staged.present,
-        new_blobs,
-        timing: RegionTiming {
-            location,
-            chunks: staged.chunks,
-            open: staged.open,
-            ingest: staged.open + staged.hash + cas_elapsed,
-            hash: staged.hash,
-            cas: cas_elapsed,
-        },
-    })
 }
 
 /// Rows staged by the visit pass, plus what it cost. Payloads are owned so

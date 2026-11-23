@@ -7,6 +7,7 @@
 
 use sekai_core::{Dimension, NamedScope, Rect, Scope, ScopeName};
 use sekai_storage::{MetaStore as _, SekaiStore};
+use sekai_util::ThreadRunner;
 
 use crate::error::{AppError, Lookup, NameKind};
 use crate::instance::SekaiInstance;
@@ -20,7 +21,7 @@ fn not_found(name: &ScopeName) -> AppError {
     }
 }
 
-impl<S: SekaiStore> SekaiInstance<S> {
+impl<S: SekaiStore, T: ThreadRunner> SekaiInstance<S, T> {
     /// Save the areas as the scope `name`, covering every region family.
     ///
     /// A selection without an area fails with [`AppError::InvalidScope`]

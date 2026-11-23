@@ -35,7 +35,6 @@ const fn map_options(flags: &CheckoutFlags) -> sekai_app::CheckoutOptions {
             OnMissingFile::DerivedOnly => sekai_app::MissingFilePolicy::DerivedOnly,
             OnMissingFile::Error => sekai_app::MissingFilePolicy::Error,
         },
-        concurrency: flags.jobs,
     }
 }
 
@@ -49,9 +48,12 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let mut world = HostWorldTree::new(&world_path)
         .with_context(|| format!("failed to inspect world {}", world_path.as_ref().display()))?;
-    let mut instance = sekai_app::SekaiInstance::<LocalStore>::open(store)
-        .await
-        .with_context(|| format!("checkout of {} failed", world_path.as_ref().display()))?;
+    let mut instance = sekai_app::SekaiInstance::<LocalStore, _>::open_with(
+        store,
+        <crate::runner::OsThread as sekai_app::ThreadRunner>::new(flags.jobs),
+    )
+    .await
+    .with_context(|| format!("checkout of {} failed", world_path.as_ref().display()))?;
     let id = instance
         .resolve_revision(commit)
         .await
@@ -241,7 +243,6 @@ mod tests {
                 keep_tombstoned_chunks: true,
                 on_missing_blob: sekai_app::MissingBlobPolicy::SkipChunk,
                 on_missing_file: sekai_app::MissingFilePolicy::Error,
-                concurrency: 3,
             }
         );
     }

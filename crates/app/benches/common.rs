@@ -226,9 +226,10 @@ fn write_region(path: impl AsRef<Path>, image: &[u8]) {
     });
 }
 
-/// Default bench options (workers follow CPU count).
+/// Default bench options (parallelism belongs to the instance's runner;
+/// these benches use the inline default).
 pub const fn options() -> sekai_app::CommitOptions {
-    sekai_app::CommitOptions { concurrency: 0 }
+    sekai_app::CommitOptions {}
 }
 
 /// Multi-threaded runtime shared by async benches.

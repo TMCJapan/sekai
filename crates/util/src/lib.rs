@@ -2,7 +2,11 @@
 //! the record types every other crate passes around.
 //!
 //! Pure data plus the invariants that belong to it (coordinate arithmetic,
-//! hex encoding, chunk digests); no I/O and no policy.
+//! hex encoding, chunk digests); no I/O and no policy. The one execution
+//! boundary lives here too: [`ThreadRunner`], the parallelism seam the
+//! orchestration runs over, with the inline [`Sequential`] runner as the
+//! `no_std` baseline. A host embedding composes its own runner (the `sekai`
+//! binary's `OsThread` pool).
 
 #![no_std]
 
@@ -20,6 +24,7 @@ pub mod region;
 pub mod region_kind;
 pub mod revision;
 pub mod scope;
+pub mod thread;
 pub mod tree;
 pub mod worktree;
 
@@ -36,5 +41,6 @@ pub use region::{ApplyOutcome, CommitEntry, RegionFingerprint, RegionKey};
 pub use region_kind::{RegionKind, UnknownRegionKind};
 pub use revision::{Revision, RevisionBase};
 pub use scope::{Area, Rect, Scope};
+pub use thread::{JobSet, Sequential, ThreadRunner, WorkerPanic};
 pub use tree::{DimHash, RegionHash, RootHash};
 pub use worktree::Head;

@@ -5,7 +5,7 @@ This project is organized as a Cargo workspace under `crates/`:
 ```text
 .
 └── crates
-    ├── util            # Shared value types: coordinates, hashes, snapshot records (no_std, zero dependencies)
+    ├── util            # Shared value types + the ThreadRunner parallelism boundary (no_std)
     ├── anvil           # Pure Anvil sector codec, decompression, and normalized chunk hashing (no_std + alloc, ex-mca)
     ├── core            # Pure staging policy over shared types (no_std + alloc, depends on util only)
     ├── storage         # Backend-neutral store traits + generic tree/graph algorithms (no_std + alloc)
@@ -14,8 +14,8 @@ This project is organized as a Cargo workspace under `crates/`:
     │                   # RegionFile handle, WorldLock primitives
     ├── world-local     # Host filesystem tree (std): HostWorldTree, layout detection,
     │                   # region handles, the world file lock, atomic swaps
-    ├── app             # Composition/orchestration library for third parties (std + tokio)
-    └── cli             # Thin clap binary over sekai-app (package sekai-cli, binary sekai, no logic)
+    ├── app             # Composition/orchestration library for third parties (std, executor-agnostic)
+    └── cli             # Thin clap binary over sekai-app (package sekai-cli, binary sekai); owns the OsThread host runner
 ```
 
 ## Dependency Flow
@@ -25,6 +25,7 @@ Keep dependencies strictly unidirectional (inward):
 ```text
 sekai (bin) -> app -> {core, world, world-local, storage, storage-local}
 app -> {core, anvil}
+app -> util (ThreadRunner boundary; the host OsThread pool lives in the binary)
 world -> {anvil, core}
 world-local -> {world, anvil, core}
 core -> util (pure staging policy; no store access)
@@ -42,8 +43,10 @@ Rules:
   `app`. `world` already depends on `core` types, so a `core -> world`
   edge would be a Cargo package cycle.
 - `util` is a dependency leaf: pure data plus total validation only, plus
-  the shared Blake3 primitive (`hash_bytes`, `BytesHasher`). It owns no
-  codecs, store traits, or orchestration. `anvil` names util types directly
+  the shared Blake3 primitive (`hash_bytes`, `BytesHasher`) and the one
+  execution boundary (`ThreadRunner`/`JobSet` and the inline `Sequential`
+  runner). It owns no codecs, store traits,
+  or orchestration. `anvil` names util types directly
   (`Dimension` custom ids, `RegionKind`); `core` re-exports every util type
   at its root so downstream paths stay stable, and `app` composes `core`
   policy with the `anvil` codec.
@@ -51,10 +54,14 @@ Rules:
   `Chunk::normalized_hash()` and never sees raw NBT types, so the
   parser cannot drift into a second public path. Compression framing and
   chunk schema knowledge both live in `anvil`.
-- `async`/tokio lives in `storage-local`, `app`, and the binary only.
-  `anvil` is sync-only; `core` and `storage` carry no runtime: `async fn`
+- `async`/tokio lives in `storage-local` and the binary only (plus `app`'s
+  dev-dependencies for tests). `anvil` is sync-only; `core` and `storage`
+  carry no runtime: `async fn`
   appears only in the `storage` traits (RPITIT, see below) and the
-  `storage` algorithms and `app` orchestration generic over them.
+  `storage` algorithms and `app` orchestration generic over them. `app`
+  itself names no runtime: its fan-outs run over the `ThreadRunner`
+  composed into the instance, and `util`'s join futures are waker-driven
+  signals, not executor dependencies.
 - `storage` owns backend-neutral boundaries (`blob` / `meta` / `cache` /
   `tree` / `graph` / `refs` / `scopes` / `api` / `store`, plus the
   feature-gated `testing` fake); concrete database backends live in sibling
@@ -70,7 +77,8 @@ any exception in the PR body.
   stay `no_std` + `alloc`.
   No `std::fs`, `Path`, `std::time`, `std::io::Error`, or `thiserror` there;
   hand-written `core::fmt::Display` error enums only. No `tokio`, no
-  `async-trait` macro.
+  `async-trait` macro. Host threading lives in the binary (`OsThread`),
+  never in the pure layers.
 - **`core` is pure policy; `storage` is the trait hub**: `core` owns the
   store-free staging policy over shared `util` types and re-exports every
   util type at its root; `storage` owns the async
@@ -141,7 +149,9 @@ any exception in the PR body.
   `Send`-bounded for tokio. Static dispatch (`generics`) is preferred over
   `dyn Trait`; if `dyn` is ever needed, box at the outer (`app`) layer, not
   in `core`.
-- **Runtime**: tokio in `storage-local`, `app`, and the binary only;
+- **Runtime**: tokio in `storage-local` and the binary only (plus `app`'s
+  dev-dependencies, which drive its tests); `app` itself names no runtime -
+  its flows run over the `ThreadRunner` composed into the instance.
   `world` and `world-local` are sync (blocking file I/O lives in
   `world-local`).
 - **Portability targets**: CI lints the pure crates on every push and pull request.

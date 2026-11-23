@@ -28,7 +28,7 @@ dependency leaf (nothing in the workspace depends on anything through it).
 
 ```text
 sekai (bin, thin: clap parse + print + exit code)
-  -> sekai-app (std + tokio: orchestration, parallelism, clocks, timing)
+  -> sekai-app (std, no async runtime: orchestration over ThreadRunner, clocks, timing)
     -> sekai-core (no_std + alloc: pure staging policy over shared types)
       -> sekai-util
     -> sekai-anvil (no_std + alloc: pure sector codec, decompress, NBT normalization)
@@ -41,21 +41,21 @@ sekai (bin, thin: clap parse + print + exit code)
     -> sekai-storage-local (std + tokio: SQLite metadata + sled blobs + sled region-image cache)
       -> sekai-storage + sekai-util
 sekai-util (no_std, no tokio dependency: coordinates, chunk hashes,
-  history value types) <- anvil, core, storage (world/app reach them
-  through `core` re-exports)
+  history value types, the ThreadRunner parallelism boundary) <- anvil,
+  core, storage (world/app reach them through `core` re-exports)
 ```
 
 | Crate                             | `std`                                 | `async`                                      | Role                                                                                                                                                                                                                                                                                                                                                                                                 |
 | --------------------------------- | ------------------------------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sekai-util`                      | `no_std`, no `std`/tokio dependencies | no                                           | Shared value types: coordinates, the chunk digest (`ChunkHash`, `hash_bytes`, `BytesHasher`), region/history/commit records, hex errors. Pure data plus total validation only.                                                                                                                                                                                                                    |
+| `sekai-util`                      | `no_std`                              | join futures (RPITIT)                        | Shared value types: coordinates, the chunk digest (`ChunkHash`, `hash_bytes`, `BytesHasher`), region/history/commit records, hex errors. Pure data plus total validation only. Also owns the one execution boundary: the `ThreadRunner`/`JobSet` parallelism seam and the inline `Sequential` reference runner, all `no_std`; a host embedding composes its own runner (the binary's `OsThread` pool).                                                                                    |
 | `sekai-anvil`                     | `no_std` + `alloc`                    | no                                           | Pure Anvil sector codec including decompression and chunk NBT normalization. A stored sector payload becomes a `Chunk` whose `normalized_hash()` is the only public NBT-derived digest; the parser and normalized views stay internal. Owns `ChunkPayloadDiff`, the two-sided digest comparison diff flows report. Also builds `Vec<u8>` images. Compression framing is MCA spec knowledge, so it lives here. No `Path`, no `fs`. Names custom dimensions with util `Dimension`. |
 | `sekai-core`                      | `no_std` + `alloc`                    | no                                           | Pure staging policy (`Previous`/`Plan`/`Ingested`/`Assembled`, `stage_present`, `assemble`) over util types; no store access. Re-exports every util type at its root, so downstream paths stay stable. `app` composes it with `anvil` for payload digests and diffs.                                                                                                                                                                               |
 | `sekai-storage`                   | `no_std` + `alloc`                    | yes (RPITIT)                                 | Backend-neutral boundaries: async `BlobStore`/`MetaStore`/`CacheStore` traits, the canonical snapshot-tree codec they exchange, the generic tree/graph/ref/scope algorithms over `MetaStore`, the content-addressed `commit_hash` derivation, high-level `SekaiStore`/`SekaiStoreOpener` traits, and shared storage errors. A feature-gated `testing` module holds the in-memory fake. Depends on `util` only.                                                                                                                                                                  |
 | `sekai-storage-local`             | `std` + tokio                         | yes                                          | Concrete local backend: `SqliteMeta` over sqlx plus `SledBlob` and `SledCache` over sled, composed into `LocalStore`, the config version gate, and the openers. Implements the traits from `sekai-storage`. Other backends become sibling crates without touching `core`/`app`.                                                                                                                  |
 | `sekai-world`                     | `no_std` + `alloc`                    | no                                           | World access boundary: the `WorldTree` trait, the `RegionFile` handle, and the `WorldLock` primitives. No filesystem code.                                                                                                                                                                                                                                                                                |
 | `sekai-world-local`               | `std`                                 | no                                           | Host filesystem tree: `HostWorldTree`, layout detection (vanilla, pre-26.1 Bukkit, plugin worlds), the `HostRegion` handles, the `.sekai.lock` file lock, atomic swaps, and the host `WorldError`.                                                                                                                                                                                                      |
-| `sekai-app`                       | `std` + tokio                         | yes                                          | Composition/orchestration library for third parties: store-touching commit/checkout planning (`plan_commit`, `record_commit`, `plan_checkout`), parallel ingest, clocks, timing, progress callbacks.                                                                                                                                                                                                                                            |
-| `sekai` bin (`sekai-cli` package) | `std` + tokio                         | yes                                          | Thin clap wrapper over `sekai-app`. No logic. Binary name stays `sekai`; package name stays `sekai-cli` so existing CI/artifact names keep working.                                                                                                                                                                                                                                                  |
+| `sekai-app`                       | `std`, no async runtime               | yes                                          | Composition/orchestration library for third parties: store-touching commit/checkout planning (`plan_commit`, `record_commit`, `plan_checkout`), parallel ingest over the instance's `ThreadRunner` (default: the inline `Sequential` runner), clocks, timing, progress callbacks. Executor-agnostic: async store calls stay on the caller's executor, file work runs on the runner; a host embedding composes a parallel runner, a `no_std`/wasm embedding keeps `Sequential` or supplies its own.                                                                                                            |
+| `sekai` bin (`sekai-cli` package) | `std` + tokio                         | yes                                          | Thin clap wrapper over `sekai-app`; owns the `OsThread` host runner it composes into the instance from `--jobs`. Binary name stays `sekai`; package name stays `sekai-cli` so existing CI/artifact names keep working.                                                                                                                                                                                                                                                  |
 
 ### Why `core` must not depend on `world`
 
@@ -93,7 +93,11 @@ The boundary rules:
 - `util` holds pure data plus total validation only: no codecs, no store
   traits, no orchestration. It owns the one Blake3 primitive (`hash_bytes`,
   `BytesHasher`) so every digest in the system comes from the same
-  function; `anvil` builds on it instead of linking its own.
+  function; `anvil` builds on it instead of linking its own. The one
+  execution boundary lives here too: `ThreadRunner`/`JobSet` name the
+  parallelism seam the orchestration runs over, with the inline
+  `Sequential` runner as the `no_std` baseline; the host OS-thread pool
+  lives in the binary (ADR-0039).
 - `anvil` implements over util types (`Dimension` custom ids, `RegionKind`
   chunk families); `storage` owns the store traits, the canonical tree
   codec, and the generic algorithms over them, `core` owns the store-free
@@ -126,7 +130,7 @@ checkout:
 diff:
   cache proof: committed region hash vs live file digest (best-effort)
     -> proven region: the committed region node answers both sides
-  fallback: one world read per region file (blocking pool, fanned out)
+  fallback: one world read per region file (runner threads, fanned out)
     -> Chunk::normalized_hash per requested chunk; commit side: recorded digests
   unborn active ref: the empty snapshot is the base (every chunk added)
 ```
@@ -560,9 +564,10 @@ of an opened handle share that session, so ingest workers still share the
 CAS and the cache without exclusion.
 
 Only the world excludes per operation, through `WorldTree::lock`
-(ADR-0014). A blocking file pass owns its share of that lock _inside_
-the blocking task, so a cancelled future cannot release the world while
-the pass still writes files.
+(ADR-0014). A runner job owns its share of that lock _inside_ the job, so
+a cancelled future cannot release the world while the job still writes
+files; the shares drop when the job ends, and joining a run to exhaustion
+waits for that release.
 
 ## Schema
 
@@ -588,6 +593,12 @@ code.
   no `async-trait` macro, no boxing, static dispatch preserved); the
   `storage` algorithms and `app` orchestration are generic over them, so
   implementations can be `tokio`-backed while policy stays runtime-free.
+  `util`'s `JobSet::join_next` is the one future below `app`: a waker-driven
+  completion signal, not an executor dependency.
+- Parallelism runs over `util`'s `ThreadRunner` boundary, composed into the
+  instance (`SekaiInstance<S, T>`); `app` names no runtime. Per-item functions
+  are synchronous file work on the runner's threads; async store calls stay
+  on the caller's executor, interleaved with the joins (ADR-0039).
 - Pure orchestration steps (`assemble`, image building, canonical digest)
   stay synchronous.
 

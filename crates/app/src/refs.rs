@@ -7,11 +7,12 @@
 
 use sekai_core::{CommitId, CommitRef, Revision};
 use sekai_storage::{ResolveError, SekaiStore};
+use sekai_util::ThreadRunner;
 
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
 
-impl<S: SekaiStore> SekaiInstance<S> {
+impl<S: SekaiStore, T: ThreadRunner> SekaiInstance<S, T> {
     /// The active ref, or `None` when the store has none.
     pub async fn active_ref(&self) -> Result<Option<CommitRef>, AppError> {
         sekai_storage::refs::active_ref(self.store.meta())

@@ -9,7 +9,7 @@
 use anyhow::Context as _;
 use sekai_app::{
     CacheUpdateOptions, CacheUpdateTimings, CommitOptions, CommitReport, CommitTimings,
-    HostWorldTree,
+    HostWorldTree, ThreadRunner,
 };
 use sekai_storage_local::LocalStore;
 use serde::Serialize;
@@ -19,11 +19,8 @@ use super::progress::Bars;
 use super::{ReportOut, resolve_selection};
 use crate::cli::Selection;
 use crate::envelope::envelope_ok;
+use crate::runner::OsThread;
 use crate::style::Styler;
-
-const fn options(jobs: usize) -> CommitOptions {
-    CommitOptions { concurrency: jobs }
-}
 
 pub async fn run(
     store: &str,
@@ -35,9 +32,12 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let mut world = HostWorldTree::new(&world_path)
         .with_context(|| format!("failed to inspect world {}", world_path.as_ref().display()))?;
-    let mut instance = sekai_app::SekaiInstance::<LocalStore>::open(store)
-        .await
-        .with_context(|| format!("commit of {} failed", world_path.as_ref().display()))?;
+    let mut instance = sekai_app::SekaiInstance::<LocalStore, _>::open_with(
+        store,
+        <OsThread as ThreadRunner>::new(jobs),
+    )
+    .await
+    .with_context(|| format!("commit of {} failed", world_path.as_ref().display()))?;
     let scope = resolve_selection(&instance, selection).await?;
     let bars = Bars::new(out.progress);
     // Cache update first, record second: the update keys each file under
@@ -50,7 +50,7 @@ pub async fn run(
     } else {
         let (_, update_timings) = instance
             .world_mut(&mut world)
-            .update_cache(CacheUpdateOptions { concurrency: jobs }, &bars)
+            .update_cache(CacheUpdateOptions::default(), &bars)
             .await
             .with_context(|| {
                 format!(
@@ -62,7 +62,7 @@ pub async fn run(
     };
     let (report, timings) = instance
         .world_mut(&mut world)
-        .commit(options(jobs), scope, &bars)
+        .commit(CommitOptions::default(), scope, &bars)
         .await
         .with_context(|| format!("commit of {} failed", world_path.as_ref().display()))?;
     if out.json {

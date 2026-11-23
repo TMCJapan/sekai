@@ -14,19 +14,20 @@
 //! [`CheckoutOptions`] relax each of those strict behaviors explicitly.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
+use std::sync::mpsc::{self, TrySendError};
 use std::time::{Duration, Instant};
 
 use sekai_core::{ChunkCoord, ChunkHash, CommitId, RegionKey, Scope};
 use sekai_storage::{MetaStore, SekaiStore, StorageError};
+use sekai_util::{JobSet as _, ThreadRunner, WorkerPanic};
 use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
-use tokio::task::JoinSet;
 
 use crate::error::AppError;
 use crate::instance::{WorldGuard, WorldHandleMut};
 use crate::progress::{BuildProgress, Progress};
 use crate::regions::discover_regions;
-use crate::workers::worker_slots;
+use crate::workers::worker_error;
 
 /// Outcome of one checkout run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,11 +130,11 @@ pub enum MissingFilePolicy {
     Error,
 }
 
-/// Checkout restore policy and worker count.
+/// Checkout restore policy.
 ///
 /// `Default` is strict: commit-unknown files are deleted, tombstoned
 /// chunks vanish, missing blobs abort, and missing files resolve
-/// sibling-first. It rebuilds up to one file per CPU at once.
+/// sibling-first. The rebuild fan-out follows the instance's runner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct CheckoutOptions {
     /// Keep region files unknown to the commit instead of deleting them.
@@ -149,12 +150,9 @@ pub struct CheckoutOptions {
     pub on_missing_blob: MissingBlobPolicy,
     /// Where to rebuild a commit-known region whose file is missing.
     pub on_missing_file: MissingFilePolicy,
-    /// How many files rebuild at once. `0` means one per CPU, `1` stays
-    /// sequential.
-    pub concurrency: usize,
 }
 
-impl<W: WorldTree, S: SekaiStore> WorldHandleMut<'_, W, S>
+impl<W: WorldTree, S: SekaiStore, T: ThreadRunner> WorldHandleMut<'_, W, S, T>
 where
     AppError: From<W::Error>,
 {
@@ -164,7 +162,7 @@ where
     /// Only `scope` is rebuilt: region files outside the scope are never
     /// written, deleted, or otherwise touched. `progress_builder` counts the
     /// files to write or delete, stepping on the async side as each one
-    /// finishes, never on the blocking pool.
+    /// finishes, never on the runner's threads.
     ///
     /// What each file needs is decided before any is touched, so refusing a
     /// missing file ([`MissingFilePolicy::Error`]) leaves the world as it
@@ -182,6 +180,7 @@ where
         progress_builder: &impl BuildProgress,
     ) -> Result<(CheckoutReport, CheckoutTimings), AppError> {
         let guard = WorldGuard::acquire(self.world, WorldLockMode::Exclusive)?;
+        let runner = &self.instance.runner;
         let store = &self.instance.store;
         let world = &*self.world;
         let total_started = Instant::now();
@@ -200,12 +199,18 @@ where
         let mut groups = plan.groups;
         groups.retain(|key, _| scope.matches_region(*key));
 
-        // Discovery walks the filesystem, so it runs on the blocking pool
-        // with its own share of the world lock, like every file write.
+        // Discovery walks the filesystem, so it runs on the runner with
+        // its own share of the world lock, like every file write.
         let discover_started = Instant::now();
         let world_handle = world.clone();
-        let mut discovered =
-            on_blocking_pool(Arc::clone(&guard), move || discover_regions(&world_handle)).await?;
+        let discover_guard = Arc::clone(&guard);
+        let mut discovered = runner
+            .call(move || {
+                let _guard = discover_guard;
+                discover_regions(&world_handle)
+            })
+            .await
+            .map_err(worker_error("checkout worker"))??;
         let discover_dt = discover_started.elapsed();
         discovered.retain(|key, _| scope.matches_region(*key));
 
@@ -214,6 +219,7 @@ where
         let report = run_files(
             jobs,
             store.blob(),
+            runner,
             options,
             timestamp,
             &guard,
@@ -297,19 +303,20 @@ where
     }
 }
 
-/// Run every job as its own task, at most `options.concurrency` at once
-/// (one per CPU by default) since each holds a whole region image. A
-/// finished file frees its slot for the next, and `progress` steps as each
-/// one is joined.
+/// Run every job at the runner's parallelism: the caller fetches each
+/// file's blobs and hands the prepared write to the pool through a bounded
+/// channel, so at most one prepared image per slot is in flight and a
+/// finished file frees its slot for the next.
 ///
-/// Tasks hold the world lock only weakly while they fetch: a share is taken
-/// just as a file's write or delete goes to the blocking pool. So when the
-/// run fails or is cancelled, the tasks still fetching are aborted without
-/// extending the lock, and only the writes already on the blocking pool
-/// keep the world locked until they end.
+/// Write outcomes are small, so they drain as they land - during the feed
+/// and after it - keeping `progress` and failure surfacing live while the
+/// fetches continue. A failed fetch or write stops the feed; the writes
+/// already running keep their share of the world lock until they end, and
+/// the run waits for them before returning.
 async fn run_files<R, L, C>(
     jobs: Vec<FileJob<R>>,
     cas: &C,
+    runner: &impl ThreadRunner,
     options: CheckoutOptions,
     timestamp: u32,
     guard: &Arc<WorldGuard<L>>,
@@ -318,7 +325,7 @@ async fn run_files<R, L, C>(
 where
     R: RegionFile,
     L: WorldLock,
-    C: sekai_storage::BlobStore<Error = StorageError> + Clone + Send + Sync + 'static,
+    C: sekai_storage::BlobStore<Error = StorageError>,
     AppError: From<R::Error>,
 {
     let mut progress = progress_builder.build_progress(jobs.len());
@@ -327,118 +334,184 @@ where
         files_deleted: 0,
         chunks_restored: 0,
     };
-    let slots = worker_slots(options.concurrency);
-    let spawn = |set: &mut JoinSet<Result<Outcome, AppError>>, job: FileJob<R>| {
-        set.spawn(run_file(
-            job,
-            cas.clone(),
-            options,
-            timestamp,
-            Arc::downgrade(guard),
-        ));
-    };
-    let mut queued = jobs.into_iter();
-    let mut set = JoinSet::new();
-    for job in queued.by_ref().take(slots) {
-        spawn(&mut set, job);
+    let (tx, rx) = mpsc::sync_channel::<WriteJob<R>>(runner.parallelism());
+    let write_guard = Arc::clone(guard);
+    let mut writes = runner.run(rx, move |job| {
+        let _guard = Arc::clone(&write_guard);
+        write_file(job, options, timestamp)
+    });
+    let fed = feed_files(
+        jobs,
+        cas,
+        options,
+        &tx,
+        &mut writes,
+        &mut report,
+        &mut progress,
+    )
+    .await;
+    // Cut the channel off before joining or abandoning the pool: a worker
+    // blocked on the receiver only retires once the sender is gone.
+    drop(tx);
+    let mut outcome = fed;
+    if outcome.is_err() {
+        writes.cancel();
     }
-    while let Some(joined) = set.join_next().await {
-        match joined?? {
-            Outcome::Written { chunks } => {
-                report.files_written += 1;
-                report.chunks_restored += chunks;
+    // Drain to retirement even after a failure: the workers hold shares of
+    // the world lock, and the run must not return (letting the caller retry
+    // or release the world) until every one of them has ended.
+    while let Some(joined) = writes.join_next().await {
+        if outcome.is_ok() {
+            outcome = joined
+                .map_err(worker_error("checkout worker"))
+                .and_then(|result| result)
+                .map(|done| {
+                    count_outcome(done, &mut report);
+                    progress.step();
+                });
+            if outcome.is_err() {
+                writes.cancel();
             }
-            Outcome::Deleted => report.files_deleted += 1,
-            // `guard` outlives this loop, so no joined task can find the run
-            // gone; only one left running after a return can.
-            Outcome::AlreadyAbsent | Outcome::Abandoned => {}
-        }
-        progress.step();
-        if let Some(job) = queued.next() {
-            spawn(&mut set, job);
         }
     }
+    outcome?;
     Ok(report)
 }
 
-/// Carry out one file's job: fetch its blobs here, then write (or delete)
-/// it on the blocking pool.
-async fn run_file<R, L, C>(
-    job: FileJob<R>,
-    cas: C,
+/// Fetch each file's blobs on the caller's executor and feed the prepared
+/// writes to the pool, joining completions whenever every slot is busy.
+#[allow(clippy::too_many_arguments)]
+async fn feed_files<R, C>(
+    jobs: Vec<FileJob<R>>,
+    cas: &C,
     options: CheckoutOptions,
-    timestamp: u32,
-    lock: Weak<WorldGuard<L>>,
-) -> Result<Outcome, AppError>
+    tx: &mpsc::SyncSender<WriteJob<R>>,
+    writes: &mut impl sekai_util::JobSet<Result<Outcome, AppError>>,
+    report: &mut CheckoutReport,
+    progress: &mut impl Progress,
+) -> Result<(), AppError>
 where
     R: RegionFile,
-    L: WorldLock,
     C: sekai_storage::BlobStore<Error = StorageError>,
     AppError: From<R::Error>,
 {
-    match job {
-        FileJob::Delete(region) => {
-            write_while_running(&lock, move || {
-                if !region.exists() {
-                    return Ok(Outcome::AlreadyAbsent);
+    for job in jobs {
+        // Fetch pass: the blobs reach the caller's executor here; the
+        // rebuild itself (builder, live merge, write) runs on the pool.
+        let prepared = match job {
+            FileJob::Delete(region) => WriteJob::Delete(region),
+            FileJob::Rebuild { key, region, rows } => {
+                let mut chunks = Vec::with_capacity(rows.len());
+                let mut blob_buf = Vec::new();
+                for (coord, hash) in &rows {
+                    if fetch_or_skip(cas, hash, options.on_missing_blob, &mut blob_buf).await? {
+                        chunks.push((coord.x, coord.z, blob_buf.clone()));
+                    }
                 }
-                region.remove()?;
-                Ok(Outcome::Deleted)
-            })
-            .await
-        }
-        FileJob::Rebuild { key, region, rows } => {
-            let mut builder = sekai_anvil::RegionBuilder::new(key.rx, key.rz, timestamp)?;
-            let mut restored: BTreeSet<(i32, i32)> = BTreeSet::new();
-            let mut blob_buf = Vec::new();
-            for (coord, hash) in &rows {
-                if fetch_or_skip(&cas, hash, options.on_missing_blob, &mut blob_buf).await? {
-                    builder.stage_chunk(coord.x, coord.z, &blob_buf)?;
-                    restored.insert((coord.x, coord.z));
+                WriteJob::Rebuild {
+                    key,
+                    region,
+                    chunks,
                 }
             }
-            let keep_live = options.keep_post_commit_chunks || options.keep_tombstoned_chunks;
-            write_while_running(&lock, move || {
-                if keep_live {
-                    merge_live_chunks(&region, key, &restored, options, &mut builder)?;
+        };
+        // Feed with backpressure: when every slot is busy, join one write
+        // before handing over the next image.
+        let mut prepared = Some(prepared);
+        while let Some(job) = prepared.take() {
+            while let Some(joined) = writes.try_join_next() {
+                count_outcome(joined.map_err(worker_error("checkout worker"))??, report);
+                progress.step();
+            }
+            match tx.try_send(job) {
+                Ok(()) => {}
+                Err(TrySendError::Full(job)) => {
+                    prepared = Some(job);
+                    let joined = writes.join_next().await.ok_or_else(pool_stopped)?;
+                    count_outcome(joined.map_err(worker_error("checkout worker"))??, report);
+                    progress.step();
                 }
-                region.write(&builder.image()?)?;
-                Ok(Outcome::Written {
-                    chunks: restored.len(),
-                })
-            })
-            .await
+                Err(TrySendError::Disconnected(_)) => return Err(pool_stopped()),
+            }
         }
     }
+    Ok(())
 }
 
-/// Hand `work` to the blocking pool with a fresh share of the world lock,
-/// unless the run that spawned this task is already gone.
-async fn write_while_running<L: WorldLock>(
-    lock: &Weak<WorldGuard<L>>,
-    work: impl FnOnce() -> Result<Outcome, AppError> + Send + 'static,
-) -> Result<Outcome, AppError> {
-    match lock.upgrade() {
-        Some(guard) => on_blocking_pool(guard, work).await,
-        None => Ok(Outcome::Abandoned),
+/// The write pool retired while the feed still had work for it.
+fn pool_stopped() -> AppError {
+    AppError::Storage(StorageError::backend(
+        "checkout worker",
+        WorkerPanic::new("write pool stopped early"),
+    ))
+}
+
+/// Fold one finished write into the report.
+const fn count_outcome(outcome: Outcome, report: &mut CheckoutReport) {
+    match outcome {
+        Outcome::Written { chunks } => {
+            report.files_written += 1;
+            report.chunks_restored += chunks;
+        }
+        Outcome::Deleted => report.files_deleted += 1,
+        Outcome::AlreadyAbsent => {}
     }
 }
 
-/// Run `work` on the blocking pool with its own share of the world lock:
-/// a cancelled future cannot stop it once started, so the world stays
-/// locked until it ends.
-async fn on_blocking_pool<L: WorldLock, T: Send + 'static>(
-    guard: Arc<WorldGuard<L>>,
-    work: impl FnOnce() -> Result<T, AppError> + Send + 'static,
-) -> Result<T, AppError> {
-    tokio::task::spawn_blocking(move || {
-        let _guard = guard;
-        work()
-    })
-    .await?
+/// One file's write, prepared by the fetch pass: the blobs are already in
+/// hand, so the whole job is synchronous.
+enum WriteJob<R: RegionFile> {
+    Delete(R),
+    Rebuild {
+        key: RegionKey,
+        region: R,
+        chunks: Vec<(i32, i32, Vec<u8>)>,
+    },
+}
+
+/// Carry out one file's write on a runner thread holding a share of the
+/// world lock until it ends (ADR-0022): an abandoned checkout cannot free
+/// the world while a file is still being written.
+fn write_file<R: RegionFile>(
+    job: WriteJob<R>,
+    options: CheckoutOptions,
+    timestamp: u32,
+) -> Result<Outcome, AppError>
+where
+    AppError: From<R::Error>,
+{
+    match job {
+        WriteJob::Delete(region) => {
+            if !region.exists() {
+                return Ok(Outcome::AlreadyAbsent);
+            }
+            region.remove()?;
+            Ok(Outcome::Deleted)
+        }
+        WriteJob::Rebuild {
+            key,
+            region,
+            chunks,
+        } => {
+            let mut builder = sekai_anvil::RegionBuilder::new(key.rx, key.rz, timestamp)?;
+            let mut restored: BTreeSet<(i32, i32)> = BTreeSet::new();
+            for (x, z, payload) in &chunks {
+                builder.stage_chunk(*x, *z, payload)?;
+                restored.insert((*x, *z));
+            }
+            if options.keep_post_commit_chunks || options.keep_tombstoned_chunks {
+                merge_live_chunks(&region, key, &restored, options, &mut builder)?;
+            }
+            region.write(&builder.image()?)?;
+            Ok(Outcome::Written {
+                chunks: chunks.len(),
+            })
+        }
+    }
 }
 
 /// What one file job did to its region file.
+#[derive(Clone, Copy)]
 enum Outcome {
     /// Rebuilt from `chunks` restored chunks.
     Written { chunks: usize },
@@ -446,8 +519,6 @@ enum Outcome {
     Deleted,
     /// Due for deletion, but gone by the time its job ran.
     AlreadyAbsent,
-    /// Not started: the run had already failed or been cancelled.
-    Abandoned,
 }
 
 /// Fetch one blob into `out`, honoring `policy` when CAS has no such blob.

@@ -76,7 +76,7 @@ fn chunk_map(path: impl AsRef<Path>) -> ChunkMap {
 }
 
 const fn options() -> CommitOptions {
-    CommitOptions { concurrency: 2 }
+    CommitOptions {}
 }
 
 /// Initialize the store right after the last handle was dropped in the
