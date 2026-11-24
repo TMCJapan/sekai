@@ -1,51 +1,92 @@
 //! Ref objects: the store's named, movable pointers to commits.
 //!
-//! A ref names a commit and moves with the history it names. Exactly one
-//! ref is active: the one new commits hang from. This layer only reads
-//! refs: commits move the active ref through the store, and no command
-//! creates, deletes, or activates a ref.
+//! A ref names a commit and moves with the history it names. New commits
+//! land on the HEAD of the worktree the store was opened from. This layer
+//! only reads refs: commits move HEAD's branch through the store, and no
+//! command creates or deletes a ref.
 
 use alloc::vec::Vec;
 
 use sekai_platform::{thread::ThreadRunner, time::Clock};
-use sekai_storage::{ResolveError, SekaiStore};
-use sekai_util::{CommitId, CommitRef, RefKind, Revision};
+use sekai_storage::SekaiStore;
+use sekai_util::{
+    CommitId, RefKind, RefName,
+    worktree::{Head, HeadState},
+};
 
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
 
+/// A branch as [`SekaiInstance::list_branches`] lists it from the opened
+/// worktree: `head` depends on where the store was opened, and the unborn
+/// branch HEAD names is listed with no ref behind it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListedBranch {
+    /// The branch.
+    pub name: RefName,
+    /// Its commit; `None` for the unborn branch HEAD names.
+    pub commit: Option<CommitId>,
+    /// Whether the opened worktree's HEAD names it.
+    pub head: bool,
+}
+
 impl<S: SekaiStore, T: ThreadRunner, B: Clock> SekaiInstance<S, T, B> {
-    /// The active ref, or `None` when the store has none.
-    pub async fn active_ref(&self) -> Result<Option<CommitRef>, AppError> {
-        sekai_storage::refs::active_ref(self.store.meta())
-            .await
-            .map_err(AppError::Commit)
+    /// The opened worktree's HEAD, resolved against the refs.
+    pub async fn head(&self) -> Result<HeadState, AppError> {
+        Ok(sekai_storage::refs::head_state(self.store.meta()).await?)
     }
 
-    /// Every branch in full refname order, the active one flagged. The
-    /// unborn active ref of a fresh store is listed too, with no commit.
-    pub async fn list_branches(&self) -> Result<Vec<CommitRef>, AppError> {
-        sekai_storage::refs::list_refs_of(self.store.meta(), RefKind::Branch)
-            .await
-            .map_err(AppError::Commit)
+    /// `head`, any worktree's, resolved against the refs. Unlike
+    /// [`Self::head`], it works from any location the store was opened at.
+    pub async fn resolve_head(&self, head: Head) -> Result<HeadState, AppError> {
+        Ok(sekai_storage::refs::resolve_head(self.store.meta(), head).await?)
     }
 
-    /// The commit the next one would continue: the active ref's target.
+    /// Every branch in full refname order, HEAD's flagged.
     ///
-    /// `None` when the active ref is unborn. The next commit then records
-    /// with no parents, starting a fresh root even if the store already
-    /// holds commits. Fails when the store has no active ref.
+    /// The unborn branch HEAD names is listed too, with no commit, so a
+    /// fresh store lists `main` (deviation: Git lists only refs, and an
+    /// unborn branch has none).
+    pub async fn list_branches(&self) -> Result<Vec<ListedBranch>, AppError> {
+        let head = self.head().await?;
+        let refs = sekai_storage::refs::list_refs_of(self.store.meta(), RefKind::Branch)
+            .await
+            .map_err(AppError::Commit)?;
+        let mut branches: Vec<ListedBranch> = refs
+            .into_iter()
+            .map(|record| ListedBranch {
+                head: head.branch() == Some(&record.name.name),
+                name: record.name.name,
+                commit: record.commit,
+            })
+            .collect();
+        // Within one ref kind, short names sort as their full refnames do.
+        if let HeadState::Unborn { branch } = head
+            && let Err(at) = branches.binary_search_by(|listed| listed.name.cmp(&branch))
+        {
+            branches.insert(
+                at,
+                ListedBranch {
+                    name: branch,
+                    commit: None,
+                    head: true,
+                },
+            );
+        }
+        Ok(branches)
+    }
+
+    /// The commit the next one would continue: HEAD's commit.
+    ///
+    /// `None` when HEAD is unborn. The next commit then records with no
+    /// parents, starting a fresh root even if the store already holds
+    /// commits. Fails when the store was opened from no worktree.
     ///
     /// This is not [`SekaiInstance::latest_commit_id`], which reports the
-    /// newest stored commit: the active ref's target need not be the
-    /// newest commit.
+    /// newest stored commit: HEAD's commit need not be the newest.
     ///
     /// Any caller may run it, including one holding a world lock.
     pub async fn current_commit_id(&self) -> Result<Option<CommitId>, AppError> {
-        match self.resolve_revision(&Revision::head()).await {
-            Ok(id) => Ok(Some(id)),
-            Err(AppError::Revision(ResolveError::UnbornHead { .. })) => Ok(None),
-            Err(err) => Err(err),
-        }
+        Ok(self.head().await?.commit())
     }
 }
