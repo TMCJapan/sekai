@@ -15,12 +15,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-use std::sync::mpsc::{self, TrySendError};
 use std::time::{Duration, Instant};
 
 use sekai_core::{ChunkCoord, ChunkHash, CommitId, RegionKey, Scope};
 use sekai_storage::{MetaStore, SekaiStore, StorageError};
-use sekai_util::{JobSet as _, ThreadRunner, WorkerPanic};
+use sekai_util::{JobSet as _, ThreadRunner};
 use sekai_world::{Region, RegionFile, WorldLockMode, WorldTree};
 
 use crate::error::{AppError, image_error, world_error};
@@ -303,16 +302,17 @@ where
     }
 }
 
-/// Run every job at the runner's parallelism: the caller fetches each
-/// file's blobs and hands the prepared write to the pool through a bounded
-/// channel, so at most one prepared image per slot is in flight and a
-/// finished file frees its slot for the next.
+/// Run every job at the runner's parallelism: each file is one async job
+/// that fetches its blobs on the caller's executor, then hands the prepared
+/// write to a runner thread through [`ThreadRunner::call`]. At most one
+/// prepared image per slot is in flight, and a finished file frees its slot
+/// for the next.
 ///
-/// Write outcomes are small, so they drain as they land - during the feed
-/// and after it - keeping `progress` and failure surfacing live while the
-/// fetches continue. A failed fetch or write stops the feed; the writes
-/// already running keep their share of the world lock until they end, and
-/// the run waits for them before returning.
+/// Write outcomes are small, so they drain as they land, keeping `progress`
+/// and failure surfacing live while the fetches continue. A failed fetch or
+/// write stops the fan-out; the writes already running keep their share of
+/// the world lock until they end, and the run waits for them before
+/// returning.
 async fn run_files<W: WorldTree, C>(
     jobs: Vec<FileJob<W::Region>>,
     cas: &C,
@@ -332,30 +332,21 @@ where
         files_deleted: 0,
         chunks_restored: 0,
     };
-    let (tx, rx) = mpsc::sync_channel::<WriteJob<W::Region>>(runner.parallelism());
-    let write_guard = Arc::clone(guard);
-    let mut writes = runner.run(rx, move |job| {
-        let _guard = Arc::clone(&write_guard);
-        write_file::<W>(job, options, timestamp)
+    let mut writes = runner.run_async(jobs, |job| {
+        let write_guard = Arc::clone(guard);
+        async move {
+            let prepared = prepare_file::<W, _>(job, cas, options).await?;
+            runner
+                .call(move || {
+                    let _guard = write_guard;
+                    write_file::<W>(prepared, options, timestamp)
+                })
+                .await
+                .map_err(worker_error("checkout worker"))?
+        }
     });
-    let fed = feed_files::<W, _>(
-        jobs,
-        cas,
-        options,
-        &tx,
-        &mut writes,
-        &mut report,
-        &mut progress,
-    )
-    .await;
-    // Cut the channel off before joining or abandoning the pool: a worker
-    // blocked on the receiver only retires once the sender is gone.
-    drop(tx);
-    let mut outcome = fed;
-    if outcome.is_err() {
-        writes.cancel();
-    }
-    // Drain to retirement even after a failure: the workers hold shares of
+    let mut outcome = Ok(());
+    // Drain to retirement even after a failure: the writes hold shares of
     // the world lock, and the run must not return (letting the caller retry
     // or release the world) until every one of them has ended.
     while let Some(joined) = writes.join_next().await {
@@ -376,71 +367,34 @@ where
     Ok(report)
 }
 
-/// Fetch each file's blobs on the caller's executor and feed the prepared
-/// writes to the pool, joining completions whenever every slot is busy.
-#[allow(clippy::too_many_arguments)]
-async fn feed_files<W: WorldTree, C>(
-    jobs: Vec<FileJob<W::Region>>,
+/// Fetch one file's blobs on the caller's executor, preparing the write a
+/// runner thread will carry out. The rebuild itself (builder, live merge,
+/// write) stays synchronous on that thread.
+async fn prepare_file<W: WorldTree, C>(
+    job: FileJob<W::Region>,
     cas: &C,
     options: CheckoutOptions,
-    tx: &mpsc::SyncSender<WriteJob<W::Region>>,
-    writes: &mut impl sekai_util::JobSet<Result<Outcome, AppError>>,
-    report: &mut CheckoutReport,
-    progress: &mut impl Progress,
-) -> Result<(), AppError>
+) -> Result<WriteJob<W::Region>, AppError>
 where
     C: sekai_storage::BlobStore<Error = StorageError>,
-    W::Error: Send + Sync + 'static,
 {
-    for job in jobs {
-        // Fetch pass: the blobs reach the caller's executor here; the
-        // rebuild itself (builder, live merge, write) runs on the pool.
-        let prepared = match job {
-            FileJob::Delete(region) => WriteJob::Delete(region),
-            FileJob::Rebuild { key, region, rows } => {
-                let mut chunks = Vec::with_capacity(rows.len());
-                let mut blob_buf = Vec::new();
-                for (coord, hash) in &rows {
-                    if fetch_or_skip(cas, hash, options.on_missing_blob, &mut blob_buf).await? {
-                        chunks.push((coord.x, coord.z, blob_buf.clone()));
-                    }
-                }
-                WriteJob::Rebuild {
-                    key,
-                    region,
-                    chunks,
+    match job {
+        FileJob::Delete(region) => Ok(WriteJob::Delete(region)),
+        FileJob::Rebuild { key, region, rows } => {
+            let mut chunks = Vec::with_capacity(rows.len());
+            let mut blob_buf = Vec::new();
+            for (coord, hash) in &rows {
+                if fetch_or_skip(cas, hash, options.on_missing_blob, &mut blob_buf).await? {
+                    chunks.push((coord.x, coord.z, blob_buf.clone()));
                 }
             }
-        };
-        // Feed with backpressure: when every slot is busy, join one write
-        // before handing over the next image.
-        let mut prepared = Some(prepared);
-        while let Some(job) = prepared.take() {
-            while let Some(joined) = writes.try_join_next() {
-                count_outcome(joined.map_err(worker_error("checkout worker"))??, report);
-                progress.step();
-            }
-            match tx.try_send(job) {
-                Ok(()) => {}
-                Err(TrySendError::Full(job)) => {
-                    prepared = Some(job);
-                    let joined = writes.join_next().await.ok_or_else(pool_stopped)?;
-                    count_outcome(joined.map_err(worker_error("checkout worker"))??, report);
-                    progress.step();
-                }
-                Err(TrySendError::Disconnected(_)) => return Err(pool_stopped()),
-            }
+            Ok(WriteJob::Rebuild {
+                key,
+                region,
+                chunks,
+            })
         }
     }
-    Ok(())
-}
-
-/// The write pool retired while the feed still had work for it.
-fn pool_stopped() -> AppError {
-    AppError::Storage(StorageError::backend(
-        "checkout worker",
-        WorkerPanic::new("write pool stopped early"),
-    ))
 }
 
 /// Fold one finished write into the report.
