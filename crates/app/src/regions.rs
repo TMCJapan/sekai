@@ -6,7 +6,7 @@ use std::collections::btree_map::Entry;
 use sekai_core::{RegionKey, RegionKind};
 use sekai_world::WorldTree;
 
-use crate::error::{AppError, duplicate_region};
+use crate::error::{AppError, duplicate_region, world_error};
 
 /// Every region file the tree reports, keyed by identity.
 ///
@@ -16,12 +16,12 @@ pub(crate) fn discover_regions<T: WorldTree>(
     world: &T,
 ) -> Result<BTreeMap<RegionKey, T::Region>, AppError>
 where
-    AppError: From<T::Error>,
+    T::Error: Send + Sync + 'static,
 {
     let mut regions = BTreeMap::new();
-    for dim in world.get_dims()? {
+    for dim in world.get_dims().map_err(world_error::<T>)? {
         for kind in RegionKind::ALL {
-            for (key, region) in world.get_regions(dim, kind)? {
+            for (key, region) in world.get_regions(dim, kind).map_err(world_error::<T>)? {
                 match regions.entry(key) {
                     Entry::Vacant(entry) => {
                         entry.insert(region);

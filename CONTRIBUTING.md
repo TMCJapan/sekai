@@ -23,8 +23,8 @@ This project is organized as a Cargo workspace under `crates/`:
 Keep dependencies strictly unidirectional (inward):
 
 ```text
-sekai (bin) -> app -> {core, world, world-local, storage, storage-local}
-app -> {core, anvil}
+sekai (bin) -> {app, world-local, storage-local}
+app -> {core, anvil, world, storage}
 app -> util (ThreadRunner boundary; the host OsThread pool lives in the binary)
 world -> {anvil, core}
 world-local -> {world, anvil, core}
@@ -34,6 +34,10 @@ storage -> util (owns the async store traits, the canonical tree codec,
 storage-local -> {storage, util}
 {anvil, core, storage} -> util (world/world-local/app reach shared types through `core` re-exports)
 ```
+
+`app`'s tests and benches compose the local backends through
+dev-dependencies on `world-local` and `storage-local`; the library itself
+names neither.
 
 Rules:
 
@@ -173,15 +177,16 @@ any exception in the PR body.
   the binary executable.
 - **Storage backends**: this project ships one local backend, in the
   `sekai-storage-local` crate (SQLite metadata via sqlx, blobs and the
-  region-image cache via sled; app feature `backend-local`, default-on).
+  region-image cache via sled).
   `sekai-storage` stays
   backend-neutral and owns the traits and locks; it holds no backend
   modules (the `testing` feature's in-memory fake is test-only and never
   compiled into a normal build), so a mysql or postgres backend arrives as
   a sibling crate rather than as a stub.
-  Backend selection is compile-time via the `backend-local` feature;
+  Backend selection is compile-time by crate dependency: the binary
+  depends on the backend crates directly, `app` stays generic;
   `--store` names the local store's root directory directly. A build
-  without `backend-local` has no store-opening entry point at all.
+  that carries no backend crate has no store-opening entry point at all.
 
 ## Coding Standards
 
@@ -222,16 +227,15 @@ cargo clippy -p sekai-util -p sekai-anvil -p sekai-core -p sekai-world -p sekai-
 # Run all unit and integration tests (default backend)
 cargo nextest run --workspace
 
-# Feature-combination lint: default, none, each backend, all
+# Feature-combination lint: default, none, each feature, all
 cargo hack --each-feature clippy --workspace --all-targets -- -D warnings
 
-# Feature-combination tests: the store-backed suites need `backend-local`,
-# so they are compiled out of the other combinations
+# Feature-combination tests
 cargo hack --each-feature nextest run --workspace --all-targets
 
 # Backend matrix (when touching storage backends)
 cargo nextest run -p sekai-storage -p sekai-storage-local
-cargo nextest run -p sekai-app --no-default-features --features backend-local
+cargo nextest run -p sekai-app
 
 # Run dependency, advisory, and license checks
 cargo deny check

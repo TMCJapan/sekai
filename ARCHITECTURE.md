@@ -34,12 +34,12 @@ sekai (bin, thin: clap parse + print + exit code)
     -> sekai-anvil (no_std + alloc: pure sector codec, decompress, NBT normalization)
     -> sekai-world (no_std + alloc: world access boundary - WorldTree trait, RegionFile handle)
       -> sekai-anvil + sekai-core (types only)
-    -> sekai-world-local (std: host filesystem tree - discover/observe/swap, the world lock)
-      -> sekai-world + sekai-anvil + sekai-core (types only)
     -> sekai-storage (no_std + alloc: store traits + canonical tree codec + generic algorithms)
       -> sekai-util
-    -> sekai-storage-local (std + tokio: SQLite metadata + sled blobs + sled region-image cache)
-      -> sekai-storage + sekai-util
+  -> sekai-world-local (std: host filesystem tree - discover/observe/swap, the world lock)
+    -> sekai-world + sekai-anvil + sekai-core (types only)
+  -> sekai-storage-local (std + tokio: SQLite metadata + sled blobs + sled region-image cache)
+    -> sekai-storage + sekai-util
 sekai-util (no_std, no tokio dependency: coordinates, chunk hashes,
   history value types, the ThreadRunner parallelism boundary) <- anvil,
   core, storage (world/app reach them through `core` re-exports)
@@ -532,21 +532,23 @@ produced them. The scope is a filter, not a partition:
 
 ## Backend Selection
 
-Compile-time, gated on the backend crate: `app` exposes a `backend-local`
-feature (default-on) that pulls in `sekai-storage-local` and
-`sekai-world-local`; `sekai-cli` inherits it through `sekai-app` and needs
-no features of its own. The local backend is the only one shipped, and
+Compile-time, by crate dependency: the host composes the backend crates it
+needs. `sekai-cli` depends on `sekai-storage-local` and `sekai-world-local`
+directly; `sekai-app` depends on neither and stays generic over `SekaiStore`
+and `WorldTree` (its tests and benches pull the local crates in as
+dev-dependencies). The local backend is the only one shipped, and
 `--store` names its root directory directly; there is no runtime URL
 selection. A backend crate implements `SekaiStoreOpener` for its store
 type, so the backend owns the location type (`SekaiStoreOpener::Path`)
 that names it; the local backend reads it as a store root directory
 ([ADR-0036](docs/adr/0036-opener-path-associated-type.md)).
 
-A build without `backend-local` has no store-opening entry point at all:
-`sekai-storage` ships no stand-in store, so a build that carries no backend
-cannot open one and says so at compile time. The host world tree and its
-`WorldError` are gated the same way; the world operations themselves stay
-generic over `WorldTree` and run on any tree a caller supplies.
+A build that carries no backend crate has no store-opening entry point at
+all: `sekai-storage` ships no stand-in store, so such a build cannot open
+one and says so at compile time. The world operations stay generic over
+`WorldTree` and run on any tree a caller supplies; a tree's own error type
+is type-erased into `AppError::World(Box<dyn Error + Send + Sync>)` at the
+app boundary, so a host needs no conversion impl into the app's error type.
 
 ## Store Exclusion
 

@@ -4,8 +4,9 @@
 //! a scoped checkout under git-restore defaults (ADR-0039).
 
 use anyhow::Context as _;
-use sekai_app::{HostWorldTree, RestoreOptions, Revision};
+use sekai_app::{RestoreOptions, Revision};
 use sekai_storage_local::LocalStore;
+use sekai_world_local::HostWorldTree;
 
 use super::checkout::{checkout_payload, print_checkout_timing_table};
 use super::progress::Bars;

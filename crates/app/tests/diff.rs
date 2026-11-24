@@ -1,9 +1,5 @@
 //! Blob-level diffs: both stored payloads digest through the same
 //! normalized view ingest uses, and every failure keeps its class.
-//!
-//! Requires the `backend-local` feature.
-
-#![cfg(feature = "backend-local")]
 
 mod fixtures;
 

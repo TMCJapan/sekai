@@ -31,10 +31,10 @@ use sekai_core::staging::{Assembled, Ingested, Plan, Previous, assemble};
 use sekai_core::{ApplyOutcome, ChunkCoord, CommitEntry, CommitId, RegionKey, Scope};
 use sekai_storage::{BlobStore, MetaStore, RegionNode, SekaiStore};
 use sekai_util::{JobSet as _, ThreadRunner};
-use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
+use sekai_world::{Region, RegionFile, WorldLockMode, WorldTree};
 
 use crate::cache::prove_regions_unchanged;
-use crate::error::AppError;
+use crate::error::{AppError, image_error, world_error};
 use crate::instance::{WorldGuard, WorldHandle, WorldHandleMut};
 use crate::progress::{BuildProgress, Progress};
 use crate::regions::discover_regions;
@@ -263,7 +263,7 @@ struct FileOutcome {
 
 impl<W: WorldTree, S: SekaiStore, T: ThreadRunner> WorldHandleMut<'_, W, S, T>
 where
-    AppError: From<W::Error>,
+    W::Error: Send + Sync + 'static,
 {
     /// Scan the bound world and record it as a new commit in the store,
     /// additionally returning per-phase timings.
@@ -363,7 +363,7 @@ async fn prepare<W: WorldTree, S: SekaiStore>(
     guard: &Arc<WorldGuard<W::Lock>>,
 ) -> Result<Prepared, AppError>
 where
-    AppError: From<W::Error>,
+    W::Error: Send + Sync + 'static,
 {
     // Discovery walks directories on the runner, owning a share of the
     // world lock like every file pass.
@@ -398,7 +398,7 @@ where
         .filter_map(|key| regions.remove_entry(key))
         .collect();
 
-    let (ingested, walk) = ingest_changed::<W::Region, S, W::Lock>(
+    let (ingested, walk) = ingest_changed::<W, S>(
         changed,
         store.blob().clone(),
         runner,
@@ -422,7 +422,7 @@ where
 
 impl<W: WorldTree, S: SekaiStore, T: ThreadRunner> WorldHandle<'_, W, S, T>
 where
-    AppError: From<W::Error>,
+    W::Error: Send + Sync + 'static,
 {
     /// Preview what a commit would record, without recording anything: no
     /// CAS puts, no metadata commit, no region writes. Only lock files may
@@ -453,7 +453,7 @@ where
 
 impl<W: WorldTree, S: SekaiStore, T: ThreadRunner> WorldHandleMut<'_, W, S, T>
 where
-    AppError: From<W::Error>,
+    W::Error: Send + Sync + 'static,
 {
     /// Preview what a commit would record; see [`WorldHandle::status`].
     pub async fn status(
@@ -476,7 +476,7 @@ async fn status_impl<W: WorldTree, S: SekaiStore>(
     guard: &Arc<WorldGuard<W::Lock>>,
 ) -> Result<(StatusReport, StatusTimings), AppError>
 where
-    AppError: From<W::Error>,
+    W::Error: Send + Sync + 'static,
 {
     let total = Instant::now();
 
@@ -589,18 +589,18 @@ struct IngestTimings {
 // The proof map joins the existing ingest inputs rather than splitting the
 // shared commit/status pipeline into two functions.
 #[allow(clippy::too_many_arguments)]
-async fn ingest_changed<R: RegionFile, S: SekaiStore, L: WorldLock>(
-    changed: Vec<(RegionKey, R)>,
+async fn ingest_changed<W: WorldTree, S: SekaiStore>(
+    changed: Vec<(RegionKey, W::Region)>,
     mut cas: S::Blobs,
     runner: &impl ThreadRunner,
     scope: Scope,
     proven: &BTreeMap<RegionKey, RegionNode>,
     progress_builder: &impl BuildProgress,
     dry_run: bool,
-    guard: &Arc<WorldGuard<L>>,
+    guard: &Arc<WorldGuard<W::Lock>>,
 ) -> Result<(Ingested, IngestTimings), AppError>
 where
-    AppError: From<R::Error>,
+    W::Error: Send + Sync + 'static,
 {
     let mut progress = progress_builder.build_progress(changed.len());
     let mut walk = RegionWalk {
@@ -620,7 +620,7 @@ where
     let mut jobs = runner.run(spawnable, move |(key, region)| {
         let _guard = Arc::clone(&stage_guard);
         let location = region.to_string();
-        (key, location, stage_file(&region, key, &scope))
+        (key, location, stage_file::<W>(&region, key, &scope))
     });
     // Completion order surfaces a failed file at once; returning drops the
     // set, which stops the files still queued.
@@ -744,24 +744,30 @@ struct ChunkWrite {
 }
 
 /// Open the region file, then hash and stage every in-scope chunk.
-fn stage_file<R: RegionFile>(region: &R, key: RegionKey, scope: &Scope) -> Result<Staged, AppError>
+fn stage_file<W: WorldTree>(
+    region: &W::Region,
+    key: RegionKey,
+    scope: &Scope,
+) -> Result<Staged, AppError>
 where
-    AppError: From<R::Error>,
+    W::Error: Send + Sync + 'static,
 {
     let opened = Instant::now();
-    let image: R::RegionImage = region.read(key)?;
+    let image = region.read(key).map_err(world_error::<W>)?;
     let mut staged = Staged {
         open: opened.elapsed(),
         ..Default::default()
     };
     let mut failure = None;
-    image.visit_chunks(|chunk| match stage_chunk(chunk, key, scope, &mut staged) {
-        Ok(keep_going) => keep_going,
-        Err(error) => {
-            failure = Some(error);
-            false
-        }
-    })?;
+    image
+        .visit_chunks(|chunk| match stage_chunk(chunk, key, scope, &mut staged) {
+            Ok(keep_going) => keep_going,
+            Err(error) => {
+                failure = Some(error);
+                false
+            }
+        })
+        .map_err(image_error::<W>)?;
     failure.map_or(Ok(staged), Err)
 }
 

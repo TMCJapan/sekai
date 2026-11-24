@@ -2,26 +2,22 @@
 //!
 //! Guards the abstraction boundary: a tree outside this workspace names its
 //! own error, hands out its own region handles, and the `sekai-app` entry
-//! points convert the failure via `From`. Nothing in the boundary is
+//! points type-erase the failure into a boxed error - no `From` impl into
+//! the app's error type is required. Nothing in the boundary is
 //! filesystem-bound: this tree only names its region files, and every file
 //! operation on them fails on purpose - the fake serves no bytes.
 
 use sekai_app::{
-    AppError, Dimension, Region, RegionFile, RegionKey, RegionKind, UnguardedReason, WorldLock,
+    Dimension, Region, RegionFile, RegionKey, RegionKind, UnguardedReason, WorldLock,
     WorldLockMode, WorldLockState, WorldTree, world_chunk_coords,
 };
 
-/// Failure type of [`FakeWorld`], deliberately unrelated to `WorldError`.
+/// Failure type of [`FakeWorld`], deliberately unrelated to any host
+/// backend's error.
 #[derive(Debug, thiserror::Error)]
 #[error("fake world failed: {reason}")]
 struct FakeError {
     reason: &'static str,
-}
-
-impl From<FakeError> for AppError {
-    fn from(source: FakeError) -> Self {
-        Self::Io(std::io::Error::other(source))
-    }
 }
 
 /// A tree that enumerates one dimension, serves no listed regions but
@@ -271,7 +267,6 @@ fn custom_tree_reports_its_unguarded_answer() {
 
 /// Only the files a plan ingests are read: an out-of-scope file whose
 /// `read` fails cannot fail the run, while the same failure in scope does.
-#[cfg(feature = "backend-local")]
 #[tokio::test]
 async fn only_planned_files_are_read() {
     use sekai_storage_local::LocalStore;

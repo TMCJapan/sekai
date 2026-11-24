@@ -1,8 +1,9 @@
 //! Diff subcommand execution, DTOs, and coordination.
 
 use anyhow::Context as _;
-use sekai_app::{ChunkCoord, ChunkDiff, CommitId, HostWorldTree, Revision, Scope, SekaiStore};
+use sekai_app::{ChunkCoord, ChunkDiff, CommitId, Revision, Scope, SekaiStore};
 use sekai_storage_local::LocalStore;
+use sekai_world_local::HostWorldTree;
 
 use super::diff_render::{
     TimedDiffs, diff_group_payload, print_diff_timing_table, render_diff_coords,

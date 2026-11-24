@@ -1,8 +1,9 @@
 //! Checkout subcommand execution, DTOs, and output rendering.
 
 use anyhow::Context as _;
-use sekai_app::{CheckoutReport, CheckoutTimings, HostWorldTree, Revision};
+use sekai_app::{CheckoutReport, CheckoutTimings, Revision};
 use sekai_storage_local::LocalStore;
+use sekai_world_local::HostWorldTree;
 use serde::Serialize;
 use std::path::Path;
 

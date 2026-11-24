@@ -10,39 +10,32 @@ keywords = ["minecraft", "version-control"]
 [lints]
 workspace = true
 
-[features]
-default = ["backend-local"]
-backend-local = ["dep:sekai-world-local"]
-
 [dependencies]
 sekai-anvil.workspace = true
 sekai-core.workspace = true
 sekai-storage.workspace = true
 sekai-util.workspace = true
 sekai-world.workspace = true
-sekai-world-local = { workspace = true, optional = true }
 thiserror.workspace = true
 
 [[bench]]
 name = "commit"
 harness = false
-required-features = ["backend-local"]
 
 [[bench]]
 name = "checkout"
 harness = false
-required-features = ["backend-local"]
 
 [[bench]]
 name = "diff"
 harness = false
-required-features = ["backend-local"]
 
 [dev-dependencies]
 criterion.workspace = true
 miniz_oxide.workspace = true
 sekai-storage = { workspace = true, features = ["testing"] }
 sekai-storage-local.workspace = true
+sekai-world-local.workspace = true
 tempfile.workspace = true
 # Tests and benches drive the async flows on a runtime; the library itself
 # names none.

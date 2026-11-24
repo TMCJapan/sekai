@@ -21,9 +21,9 @@ use std::time::{Duration, Instant};
 use sekai_core::{ChunkCoord, ChunkHash, CommitId, RegionKey, Scope};
 use sekai_storage::{MetaStore, SekaiStore, StorageError};
 use sekai_util::{JobSet as _, ThreadRunner, WorkerPanic};
-use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
+use sekai_world::{Region, RegionFile, WorldLockMode, WorldTree};
 
-use crate::error::AppError;
+use crate::error::{AppError, image_error, world_error};
 use crate::instance::{WorldGuard, WorldHandleMut};
 use crate::progress::{BuildProgress, Progress};
 use crate::regions::discover_regions;
@@ -154,7 +154,7 @@ pub struct CheckoutOptions {
 
 impl<W: WorldTree, S: SekaiStore, T: ThreadRunner> WorldHandleMut<'_, W, S, T>
 where
-    AppError: From<W::Error>,
+    W::Error: Send + Sync + 'static,
 {
     /// Rebuild the bound world from `commit`, returning execution report
     /// and per-phase timings.
@@ -216,7 +216,7 @@ where
 
         let files_started = Instant::now();
         let jobs = plan_files(groups, &discovered, world, options)?;
-        let report = run_files(
+        let report = run_files::<W, _>(
             jobs,
             store.blob(),
             runner,
@@ -259,7 +259,7 @@ fn plan_files<T: WorldTree>(
     options: CheckoutOptions,
 ) -> Result<Vec<FileJob<T::Region>>, AppError>
 where
-    AppError: From<T::Error>,
+    T::Error: Send + Sync + 'static,
 {
     let mut keys: BTreeSet<RegionKey> = discovered.keys().copied().collect();
     keys.extend(groups.keys().copied());
@@ -280,7 +280,7 @@ fn plan_file<T: WorldTree>(
     options: CheckoutOptions,
 ) -> Result<Option<FileJob<T::Region>>, AppError>
 where
-    AppError: From<T::Error>,
+    T::Error: Send + Sync + 'static,
 {
     if let Some(rows) = rows {
         let region = if let Some(region) = discovered.get(&key) {
@@ -313,20 +313,18 @@ where
 /// fetches continue. A failed fetch or write stops the feed; the writes
 /// already running keep their share of the world lock until they end, and
 /// the run waits for them before returning.
-async fn run_files<R, L, C>(
-    jobs: Vec<FileJob<R>>,
+async fn run_files<W: WorldTree, C>(
+    jobs: Vec<FileJob<W::Region>>,
     cas: &C,
     runner: &impl ThreadRunner,
     options: CheckoutOptions,
     timestamp: u32,
-    guard: &Arc<WorldGuard<L>>,
+    guard: &Arc<WorldGuard<W::Lock>>,
     progress_builder: &impl BuildProgress,
 ) -> Result<CheckoutReport, AppError>
 where
-    R: RegionFile,
-    L: WorldLock,
     C: sekai_storage::BlobStore<Error = StorageError>,
-    AppError: From<R::Error>,
+    W::Error: Send + Sync + 'static,
 {
     let mut progress = progress_builder.build_progress(jobs.len());
     let mut report = CheckoutReport {
@@ -334,13 +332,13 @@ where
         files_deleted: 0,
         chunks_restored: 0,
     };
-    let (tx, rx) = mpsc::sync_channel::<WriteJob<R>>(runner.parallelism());
+    let (tx, rx) = mpsc::sync_channel::<WriteJob<W::Region>>(runner.parallelism());
     let write_guard = Arc::clone(guard);
     let mut writes = runner.run(rx, move |job| {
         let _guard = Arc::clone(&write_guard);
-        write_file(job, options, timestamp)
+        write_file::<W>(job, options, timestamp)
     });
-    let fed = feed_files(
+    let fed = feed_files::<W, _>(
         jobs,
         cas,
         options,
@@ -381,19 +379,18 @@ where
 /// Fetch each file's blobs on the caller's executor and feed the prepared
 /// writes to the pool, joining completions whenever every slot is busy.
 #[allow(clippy::too_many_arguments)]
-async fn feed_files<R, C>(
-    jobs: Vec<FileJob<R>>,
+async fn feed_files<W: WorldTree, C>(
+    jobs: Vec<FileJob<W::Region>>,
     cas: &C,
     options: CheckoutOptions,
-    tx: &mpsc::SyncSender<WriteJob<R>>,
+    tx: &mpsc::SyncSender<WriteJob<W::Region>>,
     writes: &mut impl sekai_util::JobSet<Result<Outcome, AppError>>,
     report: &mut CheckoutReport,
     progress: &mut impl Progress,
 ) -> Result<(), AppError>
 where
-    R: RegionFile,
     C: sekai_storage::BlobStore<Error = StorageError>,
-    AppError: From<R::Error>,
+    W::Error: Send + Sync + 'static,
 {
     for job in jobs {
         // Fetch pass: the blobs reach the caller's executor here; the
@@ -472,20 +469,20 @@ enum WriteJob<R: RegionFile> {
 /// Carry out one file's write on a runner thread holding a share of the
 /// world lock until it ends (ADR-0022): an abandoned checkout cannot free
 /// the world while a file is still being written.
-fn write_file<R: RegionFile>(
-    job: WriteJob<R>,
+fn write_file<W: WorldTree>(
+    job: WriteJob<W::Region>,
     options: CheckoutOptions,
     timestamp: u32,
 ) -> Result<Outcome, AppError>
 where
-    AppError: From<R::Error>,
+    W::Error: Send + Sync + 'static,
 {
     match job {
         WriteJob::Delete(region) => {
             if !region.exists() {
                 return Ok(Outcome::AlreadyAbsent);
             }
-            region.remove()?;
+            region.remove().map_err(world_error::<W>)?;
             Ok(Outcome::Deleted)
         }
         WriteJob::Rebuild {
@@ -500,9 +497,9 @@ where
                 restored.insert((*x, *z));
             }
             if options.keep_post_commit_chunks || options.keep_tombstoned_chunks {
-                merge_live_chunks(&region, key, &restored, options, &mut builder)?;
+                merge_live_chunks::<W>(&region, key, &restored, options, &mut builder)?;
             }
-            region.write(&builder.image()?)?;
+            region.write(&builder.image()?).map_err(world_error::<W>)?;
             Ok(Outcome::Written {
                 chunks: chunks.len(),
             })
@@ -545,32 +542,34 @@ async fn fetch_or_skip<C: sekai_storage::BlobStore<Error = StorageError>>(
 /// snapshot, and absence cannot distinguish a tombstone from a post-commit
 /// chunk, so either keep-policy preserves it. Missing live files contribute
 /// nothing; corrupt ones fail loudly.
-fn merge_live_chunks<R: RegionFile>(
-    region: &R,
+fn merge_live_chunks<W: WorldTree>(
+    region: &W::Region,
     key: RegionKey,
     restored: &BTreeSet<(i32, i32)>,
     options: CheckoutOptions,
     builder: &mut sekai_anvil::RegionBuilder,
 ) -> Result<(), AppError>
 where
-    AppError: From<R::Error>,
+    W::Error: Send + Sync + 'static,
 {
     if !region.exists() {
         return Ok(());
     }
-    let image = region.read(key)?;
+    let image = region.read(key).map_err(world_error::<W>)?;
     let mut failed = None;
-    image.visit_chunks(|chunk| {
-        if restored.contains(&(chunk.x, chunk.z)) {
-            return true;
-        }
-        let keep = options.keep_tombstoned_chunks || options.keep_post_commit_chunks;
-        if keep && let Err(source) = builder.stage_chunk(chunk.x, chunk.z, chunk.payload) {
-            failed = Some(source);
-            return false;
-        }
-        true
-    })?;
+    image
+        .visit_chunks(|chunk| {
+            if restored.contains(&(chunk.x, chunk.z)) {
+                return true;
+            }
+            let keep = options.keep_tombstoned_chunks || options.keep_post_commit_chunks;
+            if keep && let Err(source) = builder.stage_chunk(chunk.x, chunk.z, chunk.payload) {
+                failed = Some(source);
+                return false;
+            }
+            true
+        })
+        .map_err(image_error::<W>)?;
     if let Some(source) = failed {
         return Err(AppError::Anvil(source));
     }
@@ -586,11 +585,13 @@ fn resolve_target<T: WorldTree>(
     policy: MissingFilePolicy,
 ) -> Result<T::Region, AppError>
 where
-    AppError: From<T::Error>,
+    T::Error: Send + Sync + 'static,
 {
     match policy {
         MissingFilePolicy::Error => Err(AppError::MissingRegionFile { key: *key }),
-        MissingFilePolicy::DerivedOnly => Ok(world.derive_region(*key)?),
+        MissingFilePolicy::DerivedOnly => {
+            Ok(world.derive_region(*key).map_err(world_error::<T>)?)
+        }
         // Folders may have moved since the commit (e.g. across a 26.1
         // migration), so a same-dimension sibling's directory wins over
         // the layout-derived one. Any sibling of that dimension and family
@@ -602,8 +603,10 @@ where
             .iter()
             .find(|(found, _)| found.dim == key.dim && found.kind == key.kind)
         {
-            Some((_, sibling)) => Ok(world.sibling_region(sibling, *key)?),
-            None => Ok(world.derive_region(*key)?),
+            Some((_, sibling)) => Ok(world
+                .sibling_region(sibling, *key)
+                .map_err(world_error::<T>)?),
+            None => Ok(world.derive_region(*key).map_err(world_error::<T>)?),
         },
     }
 }
