@@ -67,7 +67,7 @@ impl<S: SekaiStore, T: ThreadRunner> SekaiInstance<S, T> {
         progress_builder: &impl BuildProgress,
     ) -> Result<(CheckoutReport, CheckoutTimings), AppError>
     where
-        AppError: From<W::Error>,
+        W::Error: Send + Sync + 'static,
     {
         let commit = match source {
             Some(revision) => self.resolve_revision(revision).await?,

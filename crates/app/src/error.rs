@@ -3,6 +3,31 @@
 use std::fmt::Display;
 
 use sekai_core::{ChunkCoord, RegionKey};
+use sekai_world::{RegionFile, WorldTree};
+
+/// Lift a world-tree or region-handle failure into [`AppError`]. The tree's
+/// own error type decides how a region failure surfaces
+/// (`From<RegionFile::Error>`); the result is then type-erased, so `app`
+/// names no concrete world backend and a host needs no `From` impl.
+pub(crate) fn world_error<W: WorldTree>(error: impl Into<W::Error>) -> AppError
+where
+    W::Error: Send + Sync + 'static,
+{
+    let error: W::Error = error.into();
+    AppError::World(Box::new(error))
+}
+
+/// Lift a region-image failure into [`AppError`]: it converts into the
+/// handle's error, then the tree's, then is type-erased like [`world_error`].
+pub(crate) fn image_error<W: WorldTree>(
+    error: impl Into<<W::Region as RegionFile>::Error>,
+) -> AppError
+where
+    W::Error: Send + Sync + 'static,
+{
+    let error: <W::Region as RegionFile>::Error = error.into();
+    world_error::<W>(error)
+}
 
 /// Failure for a world tree that reports one region identity twice.
 pub(crate) fn duplicate_region(
@@ -38,9 +63,8 @@ pub enum Lookup {
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     /// World filesystem operation failed.
-    #[cfg(feature = "backend-local")]
     #[error(transparent)]
-    World(#[from] sekai_world_local::WorldError),
+    World(#[from] Box<dyn core::error::Error + Send + Sync>),
     /// Storage backend operation failed.
     #[error(transparent)]
     Storage(#[from] sekai_storage::StorageError),

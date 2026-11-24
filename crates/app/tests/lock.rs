@@ -3,10 +3,6 @@
 //! exactly like another process would, so held locks stand in for
 //! concurrent runs here. The store itself never locks: its blobs are
 //! append-only and its metadata resolves conflicts at commit time.
-//!
-//! Requires the `backend-local` feature.
-
-#![cfg(feature = "backend-local")]
 
 mod fixtures;
 
@@ -19,13 +15,13 @@ mod runner;
 use fixtures::chunk_nbt;
 
 use sekai_app::{
-    CheckoutOptions, ChunkHash, CommitId, CommitOptions, Dimension, HostRegion, HostWorldLock,
-    HostWorldTree, Rect, RegionFile, RegionFingerprint, RegionKey, RegionKind, Scope, ScopeName,
-    SekaiInstance, SekaiStore, StatusOptions, ThreadRunner as _, WorldError, WorldLockMode,
-    WorldLockState, WorldTree,
+    CheckoutOptions, ChunkHash, CommitId, CommitOptions, Dimension, Rect, RegionFile,
+    RegionFingerprint, RegionKey, RegionKind, Scope, ScopeName, SekaiInstance, SekaiStore,
+    StatusOptions, ThreadRunner as _, WorldLockMode, WorldLockState, WorldTree,
 };
 use sekai_storage::MetaStore as _;
 use sekai_storage_local::LocalStore;
+use sekai_world_local::{HostRegion, HostWorldLock, HostWorldTree, WorldError};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -116,11 +112,13 @@ impl Fixture {
     }
 }
 
-const fn is_lock_error(err: &sekai_app::AppError) -> bool {
-    matches!(
-        err,
-        sekai_app::AppError::World(WorldError::WorldLocked { .. })
-    )
+fn is_lock_error(err: &sekai_app::AppError) -> bool {
+    match err {
+        sekai_app::AppError::World(source) => source
+            .downcast_ref::<WorldError>()
+            .is_some_and(|e| matches!(e, WorldError::WorldLocked { .. })),
+        _ => false,
+    }
 }
 
 /// Every public operation, with the locks ADR-0014 assigns it.

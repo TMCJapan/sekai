@@ -60,7 +60,3 @@ pub use sekai_util::{JobSet, Sequential, ThreadRunner, WorkerPanic};
 pub use sekai_world::{
     Region, RegionFile, UnguardedReason, WorldLock, WorldLockMode, WorldLockState, WorldTree,
 };
-#[cfg(feature = "backend-local")]
-pub use sekai_world_local::{
-    HostRegion, HostWorldLock, HostWorldLockError, HostWorldTree, WorldError,
-};

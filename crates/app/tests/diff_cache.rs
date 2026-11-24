@@ -4,20 +4,16 @@
 //! A proven-unchanged region skips per-chunk decompression entirely; a
 //! cache miss, a byte mismatch, or a changed file falls back to the full
 //! per-chunk path with identical results.
-//!
-//! Requires the `backend-local` feature.
-
-#![cfg(feature = "backend-local")]
 
 mod fixtures;
 
 use fixtures::chunk_nbt;
 
 use sekai_app::{
-    BuildProgress, ChunkCoord, CommitOptions, Dimension, HostWorldTree, Progress, RegionKind,
-    Scope, SekaiInstance,
+    BuildProgress, ChunkCoord, CommitOptions, Dimension, Progress, RegionKind, Scope, SekaiInstance,
 };
 use sekai_storage_local::LocalStore;
+use sekai_world_local::HostWorldTree;
 use std::path::Path;
 use std::sync::Mutex;
 

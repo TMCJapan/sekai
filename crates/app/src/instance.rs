@@ -23,7 +23,7 @@ use sekai_storage::{CacheStore as _, SekaiStore, SekaiStoreOpener};
 use sekai_util::{Sequential, ThreadRunner};
 use sekai_world::{WorldLock, WorldLockMode, WorldLockState, WorldTree};
 
-use crate::error::AppError;
+use crate::error::{AppError, world_error};
 
 /// An opened store; all store-scoped operations go through this.
 ///
@@ -207,10 +207,10 @@ impl<L: WorldLock> WorldGuard<L> {
         mode: WorldLockMode,
     ) -> Result<Arc<Self>, AppError>
     where
-        AppError: From<W::Error>,
+        W::Error: Send + Sync + 'static,
     {
         Ok(Arc::new(Self {
-            _world: world.lock(mode)?,
+            _world: world.lock(mode).map_err(world_error::<W>)?,
         }))
     }
 }

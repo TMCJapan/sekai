@@ -21,6 +21,7 @@ clap.workspace = true
 indicatif.workspace = true
 sekai-app.workspace = true
 sekai-storage-local.workspace = true
+sekai-world-local.workspace = true
 sekai-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true

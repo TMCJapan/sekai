@@ -20,15 +20,16 @@ use crate::{WorldLock, WorldLockMode, WorldLockState};
 /// filesystem, another tree may read and write something else.
 ///
 /// The associated [`WorldTree::Error`] keeps the trait implementable outside
-/// this crate: consumers choose their own failure type and convert it at
-/// their boundary - `sekai-app` operations require
-/// `AppError: From<WorldTree::Error>`.
+/// this crate: consumers choose their own failure type. `sekai-app` erases it
+/// into a boxed error at its boundary, so it only requires the failure to be
+/// sendable (`WorldTree::Error: Send + Sync + 'static`) - no `From` impl into
+/// the app's error type is needed.
 pub trait WorldTree: Sync + Send + Clone + 'static {
     /// Failure type for every operation on this tree.
-    type Error: core::error::Error;
+    type Error: core::error::Error + From<<Self::Region as RegionFile>::Error>;
 
     /// Handle to one region file of this tree.
-    type Region: RegionFile<Error = Self::Error>;
+    type Region: RegionFile;
 
     /// Guard [`WorldTree::lock`] hands out.
     type Lock: WorldLock;

@@ -8,10 +8,10 @@ use sekai_anvil::{Chunk, ChunkHashError, ChunkPayloadDiff};
 use sekai_core::{ChunkCoord, ChunkHash, CommitId, RegionKey, RegionKind};
 use sekai_storage::{BlobStore as _, MetaStore, RegionNode, SekaiStore};
 use sekai_util::{JobSet as _, ThreadRunner};
-use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
+use sekai_world::{Region, RegionFile, WorldLockMode, WorldTree};
 
 use crate::cache::prove_regions_unchanged;
-use crate::error::AppError;
+use crate::error::{AppError, image_error, world_error};
 use crate::instance::{SekaiInstance, WorldGuard, WorldHandle, WorldHandleMut};
 use crate::progress::{BuildProgress, Progress};
 use crate::regions::discover_regions;
@@ -181,15 +181,19 @@ impl<S: SekaiStore, T: ThreadRunner> SekaiInstance<S, T> {
 /// between (ADR-0014).
 pub fn world_chunk_coords<T: WorldTree>(world: &T) -> Result<Vec<ChunkCoord>, AppError>
 where
-    AppError: From<T::Error>,
+    T::Error: Send + Sync + 'static,
 {
-    let _lock = world.lock(WorldLockMode::Shared)?;
+    let _lock = world
+        .lock(WorldLockMode::Shared)
+        .map_err(world_error::<T>)?;
     let mut coords = Vec::new();
     for (key, region) in discover_regions(world)? {
-        region.visit_present(key, |x, z| {
-            coords.push(ChunkCoord::new(key.dim, key.kind, x, z));
-            true
-        })?;
+        region
+            .visit_present(key, |x, z| {
+                coords.push(ChunkCoord::new(key.dim, key.kind, x, z));
+                true
+            })
+            .map_err(world_error::<T>)?;
     }
     coords.sort();
     coords.dedup();
@@ -218,7 +222,7 @@ async fn commit_chunk_hash<S: SekaiStore>(
 
 impl<W: WorldTree, S: SekaiStore, T: ThreadRunner> WorldHandle<'_, W, S, T>
 where
-    AppError: From<W::Error>,
+    W::Error: Send + Sync + 'static,
 {
     /// Compute AST diff for a chunk coordinate between the bound world state
     /// and a commit.
@@ -319,7 +323,7 @@ where
         // from their committed node without a read.
         let mut new_side: Vec<Option<ChunkHash>> = vec![None; coords.len()];
         let mut progress = progress_builder.build_progress(by_region.len());
-        world_sides(
+        world_sides::<W>(
             &self.instance.runner,
             &regions,
             coords,
@@ -350,7 +354,7 @@ where
 
 impl<W: WorldTree, S: SekaiStore, T: ThreadRunner> WorldHandleMut<'_, W, S, T>
 where
-    AppError: From<W::Error>,
+    W::Error: Send + Sync + 'static,
 {
     /// Compute AST diff for one chunk; see [`WorldHandle::diff_world_chunk`].
     pub async fn diff_world_chunk(
@@ -450,19 +454,19 @@ async fn commit_sides<S: SekaiStore>(
 /// digested there; results scatter back into input positions as jobs
 /// complete, so the output order never depends on completion order.
 #[allow(clippy::too_many_arguments)]
-async fn world_sides<R: RegionFile, L: WorldLock>(
+async fn world_sides<W: WorldTree>(
     runner: &impl ThreadRunner,
-    regions: &BTreeMap<RegionKey, R>,
+    regions: &BTreeMap<RegionKey, W::Region>,
     coords: &[ChunkCoord],
     by_region: &BTreeMap<RegionKey, Vec<usize>>,
     proven: &BTreeMap<RegionKey, RegionNode>,
     new_side: &mut [Option<ChunkHash>],
-    guard: &Arc<WorldGuard<L>>,
+    guard: &Arc<WorldGuard<W::Lock>>,
     progress: &mut impl Progress,
     timings: &mut DiffTimings,
 ) -> Result<(), AppError>
 where
-    AppError: From<R::Error>,
+    W::Error: Send + Sync + 'static,
 {
     let mut spawnable = Vec::new();
     for (key, indices) in by_region {
@@ -486,7 +490,7 @@ where
     let read_guard = Arc::clone(guard);
     let mut jobs = runner.run(spawnable, move |file| {
         let _guard = Arc::clone(&read_guard);
-        read_region_side(file)
+        read_region_side::<W>(file)
     });
     while let Some(joined) = jobs.join_next().await {
         let side = joined.map_err(worker_error("diff worker"))??;
@@ -506,21 +510,24 @@ where
 /// ends (ADR-0022): an abandoned diff cannot free the world while a file
 /// is still being read. The read counts under `blob_fetch`; decompression
 /// and digesting under `decompress`.
-fn read_region_side<R: RegionFile>(
-    file: (RegionKey, R, Vec<(usize, ChunkCoord)>),
+fn read_region_side<W: WorldTree>(
+    file: (RegionKey, W::Region, Vec<(usize, ChunkCoord)>),
 ) -> Result<RegionSide, AppError>
 where
-    AppError: From<R::Error>,
+    W::Error: Send + Sync + 'static,
 {
     let (key, region, items) = file;
     let started = Instant::now();
-    let image = region.read(key)?;
+    let image = region.read(key).map_err(world_error::<W>)?;
     let read = started.elapsed();
     let mut digests = Vec::with_capacity(items.len());
     let mut prepare = Duration::ZERO;
     for (index, coord) in items {
         let started = Instant::now();
-        let digest = match image.chunk_payload(coord.x, coord.z)? {
+        let digest = match image
+            .chunk_payload(coord.x, coord.z)
+            .map_err(image_error::<W>)?
+        {
             Some(payload) => Some(chunk_digest(coord, payload)?),
             None => None,
         };

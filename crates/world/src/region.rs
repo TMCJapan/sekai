@@ -17,10 +17,10 @@ pub trait RegionFile:
     Clone + core::fmt::Debug + core::fmt::Display + Send + Sync + 'static
 {
     /// Failure type for every operation on this file.
-    type Error: core::error::Error;
+    type Error: core::error::Error + From<<Self::RegionImage as Region>::Error>;
 
     /// The parsed image [`RegionFile::read`] returns.
-    type RegionImage: Region<Error = Self::Error>;
+    type RegionImage: Region;
 
     /// Read the whole file and parse it into an image.
     ///
@@ -38,7 +38,8 @@ pub trait RegionFile:
         F: FnMut(i32, i32) -> bool,
     {
         let image = self.read(key)?;
-        image.visit_chunks(|chunk| visit(chunk.x, chunk.z))
+        image.visit_chunks(|chunk| visit(chunk.x, chunk.z))?;
+        Ok(())
     }
 
     /// The file's size in bytes, from its metadata alone: the content is
@@ -91,7 +92,7 @@ pub trait RegionFile:
 /// in-memory fake, another backend) can serve images of its own.
 pub trait Region {
     /// Failure type for every query on this image.
-    type Error;
+    type Error: core::error::Error;
 
     /// The undecomposed file bytes this image was parsed from.
     fn image(&self) -> &[u8];

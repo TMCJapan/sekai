@@ -1,9 +1,5 @@
 //! Store lifecycle: only `init` materializes a store, while `open` must fail
 //! loudly on a root that was never initialized (issue #80).
-//!
-//! Requires the `backend-local` feature.
-
-#![cfg(feature = "backend-local")]
 
 use sekai_storage_local::LocalStore;
 
@@ -108,7 +104,7 @@ async fn the_flows_run_over_a_custom_runner() {
         .unwrap();
     std::fs::create_dir_all(region.parent().unwrap()).unwrap();
     std::fs::write(&region, builder.image().unwrap()).unwrap();
-    let mut world = sekai_app::HostWorldTree::new(&world_path).unwrap();
+    let mut world = sekai_world_local::HostWorldTree::new(&world_path).unwrap();
 
     let store = root.join("store").to_string_lossy().into_owned();
     let mut instance =

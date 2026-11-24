@@ -28,7 +28,7 @@ use sekai_storage::{CacheStore, MetaStore as _, RegionNode, SekaiStore};
 use sekai_util::{JobSet as _, ThreadRunner};
 use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
 
-use crate::error::AppError;
+use crate::error::{AppError, image_error, world_error};
 use crate::instance::{WorldGuard, WorldHandleMut};
 use crate::progress::{BuildProgress, Progress};
 use crate::regions::discover_regions;
@@ -155,7 +155,7 @@ pub struct CacheUpdateTimings {
 
 impl<W: WorldTree, S: SekaiStore, T: ThreadRunner> WorldHandleMut<'_, W, S, T>
 where
-    AppError: From<W::Error>,
+    W::Error: Send + Sync + 'static,
 {
     /// Populate the region-image cache from the live world without
     /// recording a commit (ADR-0033). This is the cache's only population
@@ -223,7 +223,7 @@ where
         let hash_guard = Arc::clone(&guard);
         let mut jobs = runner.run(regions, move |(key, region)| {
             let _guard = Arc::clone(&hash_guard);
-            hash_region(&region, key)
+            hash_region::<W>(&region, key)
         });
         // Completion order surfaces a failed file at once; returning drops
         // the set, which stops the files still queued. Entries already
@@ -290,39 +290,41 @@ struct HashedRegion {
 /// Read one region file, hash the raw image and every chunk, and derive the
 /// region node the chunks produce. A payload with no normalized view fails
 /// the file with its coordinates attached, exactly like commit ingest.
-fn hash_region<R: RegionFile>(region: &R, key: RegionKey) -> Result<HashedRegion, AppError>
+fn hash_region<W: WorldTree>(region: &W::Region, key: RegionKey) -> Result<HashedRegion, AppError>
 where
-    AppError: From<R::Error>,
+    W::Error: Send + Sync + 'static,
 {
     let opened = Instant::now();
-    let image = region.read(key)?;
+    let image = region.read(key).map_err(world_error::<W>)?;
     let open = opened.elapsed();
     let mca_hash = hash_bytes(image.image());
 
     let mut entries = Vec::new();
     let mut failure = None;
     let hash_started = Instant::now();
-    image.visit_chunks(|chunk| {
-        let coord = ChunkCoord::new(key.dim, key.kind, chunk.x, chunk.z);
-        match chunk.normalized_hash() {
-            Ok(hash) => {
-                entries.push(CommitEntry::new(coord, Some(hash)));
-                true
+    image
+        .visit_chunks(|chunk| {
+            let coord = ChunkCoord::new(key.dim, key.kind, chunk.x, chunk.z);
+            match chunk.normalized_hash() {
+                Ok(hash) => {
+                    entries.push(CommitEntry::new(coord, Some(hash)));
+                    true
+                }
+                Err(source) => {
+                    failure = Some(match source {
+                        sekai_anvil::ChunkHashError::Decompress(source) => AppError::Anvil(source),
+                        source => AppError::UnhashableChunk {
+                            coord,
+                            rx: key.rx,
+                            rz: key.rz,
+                            source,
+                        },
+                    });
+                    false
+                }
             }
-            Err(source) => {
-                failure = Some(match source {
-                    sekai_anvil::ChunkHashError::Decompress(source) => AppError::Anvil(source),
-                    source => AppError::UnhashableChunk {
-                        coord,
-                        rx: key.rx,
-                        rz: key.rz,
-                        source,
-                    },
-                });
-                false
-            }
-        }
-    })?;
+        })
+        .map_err(image_error::<W>)?;
     if let Some(error) = failure {
         return Err(error);
     }
