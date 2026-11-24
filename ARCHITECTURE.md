@@ -598,9 +598,11 @@ code.
   `util`'s `JobSet::join_next` is the one future below `app`: a waker-driven
   completion signal, not an executor dependency.
 - Parallelism runs over `util`'s `ThreadRunner` boundary, composed into the
-  instance (`SekaiInstance<S, T>`); `app` names no runtime. Per-item functions
-  are synchronous file work on the runner's threads; async store calls stay
-  on the caller's executor, interleaved with the joins (ADR-0039).
+  instance (`SekaiInstance<S, T>`); `app` names no runtime. `run` applies
+  synchronous file work per item on the runner's threads while async store
+  calls stay on the caller's executor, interleaved with the joins;
+  `run_async` drives async per-item futures on the caller's executor, with
+  any blocking file work going back through `call` (ADR-0039).
 - Pure orchestration steps (`assemble`, image building, canonical digest)
   stay synchronous.
 

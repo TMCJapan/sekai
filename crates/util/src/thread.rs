@@ -6,16 +6,22 @@
 //! own runner (the `sekai` binary's OS-thread pool), and a `no_std`/wasm
 //! embedding uses [`Sequential`], the inline reference implementation.
 //!
-//! The per-item function is synchronous by contract. Async store calls
-//! stay on the caller's executor, interleaved with completions through
-//! [`JobSet::join_next`]: a worker thread has no runtime to drive a store
-//! future, and the caller's runtime must not be blocked by file work.
+//! [`ThreadRunner::run`] applies a synchronous function per item on the
+//! runner's threads; async store calls stay on the caller's executor,
+//! interleaved with completions through [`JobSet::join_next`]: a worker
+//! thread has no runtime to drive a store future, and the caller's runtime
+//! must not be blocked by file work. [`ThreadRunner::run_async`] is the
+//! async-per-item variant: its futures are driven on the caller's executor,
+//! and any blocking file work inside them goes back through
+//! [`ThreadRunner::call`].
 
 use core::future::Future;
 use core::marker::PhantomData;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
+use alloc::boxed::Box;
+use alloc::collections::VecDeque;
 use alloc::string::String;
 
 /// A worker that panicked while running its item.
@@ -88,6 +94,33 @@ pub trait ThreadRunner: Sized {
     where
         F: FnOnce() -> R + Send + 'static,
         R: Send + 'static;
+
+    /// Fan `items` out as async per-item work, at most [`Self::parallelism`]
+    /// futures in flight, driven on the caller's executor.
+    ///
+    /// The async counterpart of [`Self::run`]: each item's future is polled
+    /// by [`JobSet::join_next`] on the joining thread, so it may await store
+    /// calls directly. Blocking file work inside it must still go through
+    /// [`Self::call`], keeping it off the caller's executor and its
+    /// world-lock share on a worker thread. Nothing runs in the background,
+    /// so [`JobSet::try_join_next`] never has a completion ready; cancelling
+    /// stops queuing new items while the futures already in flight are
+    /// polled to completion, and dropping the set abandons them.
+    fn run_async<I, F, Fut, T, R>(&self, items: I, f: F) -> impl JobSet<R>
+    where
+        I: IntoIterator<Item = T>,
+        F: Fn(T) -> Fut,
+        Fut: Future<Output = R>,
+    {
+        AsyncJobs {
+            items: items.into_iter(),
+            f,
+            active: VecDeque::new(),
+            capacity: self.parallelism(),
+            stopped: false,
+            _output: PhantomData,
+        }
+    }
 }
 
 /// The completions of one [`ThreadRunner::run`].
@@ -208,13 +241,92 @@ where
     }
 }
 
+/// The completions of one [`ThreadRunner::run_async`]: up to `capacity`
+/// per-item futures polled in turn on the joining thread.
+///
+/// A future only advances while [`JobSet::join_next`] polls it, so the bytes
+/// each item holds stay bounded by the fan-out. Cancelling stops pulling new
+/// items; the futures already in flight are polled to completion, which is
+/// what lets a caller wait for every blocking write they spawned to release
+/// what it holds before returning.
+pub struct AsyncJobs<I, F, Fut, R> {
+    items: I,
+    f: F,
+    active: VecDeque<Pin<Box<Fut>>>,
+    capacity: usize,
+    stopped: bool,
+    _output: PhantomData<R>,
+}
+
+impl<I, F, Fut, R> JobSet<R> for AsyncJobs<I, F, Fut, R>
+where
+    I: Iterator,
+    F: Fn(I::Item) -> Fut,
+    Fut: Future<Output = R>,
+{
+    fn join_next(&mut self) -> impl Future<Output = Option<Result<R, WorkerPanic>>> {
+        AsyncNext { jobs: self }
+    }
+
+    fn try_join_next(&mut self) -> Option<Result<R, WorkerPanic>> {
+        // Futures advance only during a join, so nothing is ever ready
+        // without one.
+        None
+    }
+
+    fn cancel(&mut self) {
+        self.stopped = true;
+    }
+}
+
+/// One async join: refill the free slots, then poll the in-flight futures in
+/// turn until one completes.
+struct AsyncNext<'a, I, F, Fut, R> {
+    jobs: &'a mut AsyncJobs<I, F, Fut, R>,
+}
+
+impl<I, F, Fut, R> Future for AsyncNext<'_, I, F, Fut, R>
+where
+    I: Iterator,
+    F: Fn(I::Item) -> Fut,
+    Fut: Future<Output = R>,
+{
+    type Output = Option<Result<R, WorkerPanic>>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let jobs = &mut *self.get_mut().jobs;
+        while !jobs.stopped && jobs.active.len() < jobs.capacity {
+            match jobs.items.next() {
+                Some(item) => jobs.active.push_back(Box::pin((jobs.f)(item))),
+                None => break,
+            }
+        }
+        // Rotate through the in-flight futures once; the first completion
+        // wins, the rest keep their place for the next join.
+        for _ in 0..jobs.active.len() {
+            let Some(mut fut) = jobs.active.pop_front() else {
+                break;
+            };
+            match fut.as_mut().poll(cx) {
+                Poll::Ready(out) => return Poll::Ready(Some(Ok(out))),
+                Poll::Pending => jobs.active.push_back(fut),
+            }
+        }
+        if jobs.active.is_empty() {
+            Poll::Ready(None)
+        } else {
+            Poll::Pending
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{JobSet, Sequential, ThreadRunner};
+    use super::{JobSet, Sequential, ThreadRunner, WorkerPanic};
     use alloc::vec;
     use alloc::vec::Vec;
     use core::future::Future;
-    use core::pin::pin;
+    use core::pin::{Pin, pin};
     use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
     /// A waker that does nothing: the inline futures complete in one poll.
@@ -253,5 +365,107 @@ mod tests {
     fn sequential_call_runs_inline() {
         let runner = Sequential::new(0);
         assert!(matches!(poll_once(runner.call(|| 7)), Poll::Ready(Ok(7))));
+    }
+
+    /// A runner with a fixed fan-out, to exercise `run_async`'s capacity.
+    struct Fixed(usize);
+
+    impl ThreadRunner for Fixed {
+        fn new(n: usize) -> Self {
+            Self(n.max(1))
+        }
+
+        fn parallelism(&self) -> usize {
+            self.0
+        }
+
+        fn run<I, F, T, R>(&self, items: I, f: F) -> impl JobSet<R>
+        where
+            I: IntoIterator<Item = T>,
+            I::IntoIter: Send + 'static,
+            T: Send + 'static,
+            R: Send + 'static,
+            F: Fn(T) -> R + Send + Sync + 'static,
+        {
+            Sequential.run(items, f)
+        }
+
+        fn call<F, R>(&self, f: F) -> impl Future<Output = Result<R, WorkerPanic>>
+        where
+            F: FnOnce() -> R + Send + 'static,
+            R: Send + 'static,
+        {
+            Sequential.call(f)
+        }
+    }
+
+    /// A future that yields `Pending` for `remaining` polls, then completes.
+    struct Steps {
+        remaining: usize,
+        value: usize,
+    }
+
+    impl Future for Steps {
+        type Output = usize;
+
+        fn poll(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<usize> {
+            if self.remaining == 0 {
+                Poll::Ready(self.value)
+            } else {
+                self.remaining -= 1;
+                Poll::Pending
+            }
+        }
+    }
+
+    fn drain<R>(jobs: &mut impl JobSet<R>) -> Vec<R> {
+        let mut out = Vec::new();
+        while let Poll::Ready(Some(item)) = poll_once(jobs.join_next()) {
+            out.push(item.unwrap());
+        }
+        out
+    }
+
+    #[test]
+    fn run_async_runs_every_item() {
+        let runner = Fixed::new(2);
+        let mut jobs = runner.run_async(0..4, |x| async move { x * 2 });
+        assert_eq!(drain(&mut jobs), vec![0, 2, 4, 6]);
+    }
+
+    #[test]
+    fn run_async_bounds_the_futures_in_flight() {
+        use alloc::rc::Rc;
+        use core::cell::Cell;
+
+        let started = Rc::new(Cell::new(0));
+        let count = Rc::clone(&started);
+        let runner = Fixed::new(3);
+        let mut jobs = runner.run_async(0..10, move |x| {
+            count.set(count.get() + 1);
+            async move { x }
+        });
+        // Futures are created lazily during a join, capped at the fan-out.
+        assert_eq!(started.get(), 0);
+        assert!(matches!(
+            poll_once(jobs.join_next()),
+            Poll::Ready(Some(Ok(0)))
+        ));
+        assert_eq!(started.get(), 3);
+        assert_eq!(drain(&mut jobs).len(), 9);
+    }
+
+    #[test]
+    fn run_async_cancel_drains_the_in_flight_futures() {
+        let runner = Fixed::new(2);
+        let mut jobs = runner.run_async(vec![10, 11, 12, 13], |x| Steps {
+            remaining: 1,
+            value: x,
+        });
+        // Start the first two futures; both are still pending.
+        assert!(matches!(poll_once(jobs.join_next()), Poll::Pending));
+        jobs.cancel();
+        // The queued items are dropped, but the two in flight still finish.
+        assert_eq!(drain(&mut jobs), vec![10, 11]);
     }
 }
