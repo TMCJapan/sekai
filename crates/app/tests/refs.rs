@@ -67,6 +67,8 @@ async fn a_fresh_store_starts_with_one_active_ref() {
     // Unborn: the store has no commit yet.
     assert!(active.commit.is_none());
     assert_eq!(instance.current_commit_id().await.unwrap(), None);
+    // Listed although unborn: the row exists.
+    assert_eq!(instance.list_branches().await.unwrap(), vec![active]);
 }
 
 #[tokio::test]
@@ -97,6 +99,8 @@ async fn a_commit_hangs_from_the_active_ref() {
         instance.current_commit_id().await.unwrap(),
         Some(first.commit)
     );
+
+    assert_eq!(instance.list_branches().await.unwrap(), vec![active]);
 
     // A second commit continues it.
     let second = commit(&mut instance, &mut world).await;

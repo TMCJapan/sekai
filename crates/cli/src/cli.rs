@@ -128,6 +128,8 @@ pub enum Command {
     /// Restore selected world portions from a source commit (git restore):
     /// overwrites only the selection, records nothing, and moves no ref.
     Restore(RestoreArgs),
+    /// List branches.
+    Branch(BranchArgs),
 }
 
 impl Command {
@@ -143,6 +145,7 @@ impl Command {
             Self::Cache { .. } => "cache",
             Self::Diff(_) => "diff",
             Self::Restore(_) => "restore",
+            Self::Branch(_) => "branch",
         }
     }
 
@@ -158,8 +161,18 @@ impl Command {
             Self::Cache { action } => action.output_json(),
             Self::Diff(args) => args.output.json,
             Self::Restore(args) => args.output.json,
+            Self::Branch(args) => args.json,
         }
     }
+}
+
+/// `branch`: list every branch. Filtering is left to the shell (`grep`,
+/// or `jq` over `--json`), so Git's `--list <pattern>` is not adopted.
+#[derive(Debug, clap::Args)]
+pub struct BranchArgs {
+    /// Emit output as JSON instead of human text. See docs/json.md.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Named scope operations (ADR-0021). A scope covers every region family,

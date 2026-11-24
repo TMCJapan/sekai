@@ -23,6 +23,7 @@ carries the bare result only.
 | `scope` | record, deletion record, or scope array | n/a | no phases exist |
 | `cache` | clean record or update report (+timings with `--timing`) | table + JSON block (`update` only) | `clean` has no phases |
 | `diff` | single array, grouped array (multi), or timed object | table + JSON block | `--in`/`--region` select chunks; one chunk keeps the single shape |
+| `branch` | branch array | n/a | no phases exist |
 
 Without `--timing`, `--json` emits the bare result. With `--timing`,
 the report that would be a bare array (`diff`) is promoted to an object
@@ -40,7 +41,7 @@ Every invocation prints exactly one JSON object to stdout:
 {"command": "<name>", "status": "error", "error": "<full context chain>"}
 ```
 
-`command` is one of `init`, `commit`, `status`, `checkout`, `restore`, `log`, `scope`, `cache`, `diff`.
+`command` is one of `init`, `commit`, `status`, `checkout`, `restore`, `log`, `scope`, `cache`, `diff`, `branch`.
 The error string is the full anyhow context chain (outermost message
 first, then `Caused by:` lines), JSON-escaped.
 
@@ -53,6 +54,9 @@ first, then `Caused by:` lines), JSON-escaped.
 | 2 | Usage error (unknown flags, bad values). clap prints its own human-readable error to stderr. |
 
 ## Compatibility
+
+Change: the new `branch` command lists branches, and `command` gains
+the value `branch`. See the `branch` payload below.
 
 Change (ADR-0039): the `restore` command is added. `command` gains the
 value `restore`; its payload is checkout's shape under git-restore
@@ -343,6 +347,20 @@ acquisition; `decompress` world-side decompression and digesting (the
 commit side is a recorded digest, so it contributes nothing); `diff_compute`
 the digest comparison. Commit-ID resolution and coordinate enumeration stay
 outside the measured phases.
+
+### `branch`
+
+`branch` returns an array of every branch in full refname order:
+
+```jsonc
+[{"name": "refs/heads/dev", "commit": "1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b", "head": false},
+ {"name": "refs/heads/main", "commit": null, "head": true}]
+```
+
+`name` is the full refname. `commit` is `null` while the branch is
+unborn: a fresh store lists `main` that way, before its first commit.
+`head` is `true` on HEAD's branch. There are no patterns; filter with
+`jq` (`.result[] | select(.name | startswith("refs/heads/feature/"))`).
 
 ## Compatibility promise
 
