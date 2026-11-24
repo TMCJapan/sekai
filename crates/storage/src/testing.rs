@@ -11,8 +11,8 @@ use core::pin::pin;
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use sekai_util::{
-    ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DimHash, NamedScope, Ref,
-    RefName, RegionHash, RootHash, ScopeName,
+    ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DimHash, Head, NamedScope,
+    Ref, RefKind, RefName, RegionHash, RootHash, ScopeName,
 };
 
 use crate::meta::{MetaStore, commit_hash};
@@ -60,6 +60,13 @@ pub enum MemError {
         /// Ref that was asked for.
         name: Ref,
     },
+    /// The branch is a worktree's HEAD.
+    BranchCheckedOut {
+        /// Branch that was asked for.
+        name: Ref,
+    },
+    /// The fake was given no HEAD for the worktree it stands for.
+    UnknownWorktree,
 }
 
 /// Drive an immediately-ready future without an executor.
@@ -95,6 +102,11 @@ pub struct MemMeta {
     pub region_nodes: BTreeMap<RegionHash, RegionNode>,
     /// Refs by full refname order.
     pub refs: BTreeMap<Ref, CommitRef>,
+    /// HEAD of the worktree the fake stands for, as if opened from it;
+    /// `None` is a location no worktree is registered at.
+    pub head: Option<Head>,
+    /// HEADs of the store's other worktrees.
+    pub worktrees: Vec<Head>,
     /// Named scopes by name.
     pub scopes: BTreeMap<ScopeName, NamedScope>,
     /// Stable local sequence per commit hash.
@@ -161,6 +173,30 @@ impl MemMeta {
             .entry(name.clone())
             .and_modify(|record| record.active = true)
             .or_insert_with(|| CommitRef::new(name.clone(), None, true, 0));
+    }
+}
+
+impl MemMeta {
+    /// Open the fake from a worktree whose HEAD is `head`. A fresh store
+    /// looks like `with_head(Head::Branch(main))`: HEAD unborn on `main`,
+    /// with no ref row.
+    pub fn with_head(&mut self, head: Head) {
+        self.head = Some(head);
+    }
+
+    /// Register another worktree, whose HEAD is `head`.
+    pub fn with_worktree(&mut self, head: Head) {
+        self.worktrees.push(head);
+    }
+
+    /// Whether `name` is the branch some worktree's HEAD names.
+    fn checked_out(&self, name: &Ref) -> bool {
+        name.kind == RefKind::Branch
+            && self
+                .head
+                .iter()
+                .chain(&self.worktrees)
+                .any(|head| matches!(head, Head::Branch(branch) if *branch == name.name))
     }
 }
 
@@ -353,24 +389,22 @@ impl MetaStore for MemMeta {
         root: RootHash,
         nodes: &TreeNodes,
     ) -> impl Future<Output = Result<ApplyOutcome, MemError>> + Send {
-        // The active ref decides where the commit lands: bind it before
-        // any write, so a store without one changes nothing (the backend
+        // HEAD decides where the commit lands: bind it before any write,
+        // so a fake opened from no worktree changes nothing (the backend
         // does the same in one transaction and rolls back on failure).
-        let Some((active, mut record)) = self
-            .refs
-            .iter()
-            .find(|(_, record)| record.active)
-            .map(|(name, record)| (name.clone(), record.clone()))
-        else {
-            return core::future::ready(Err(MemError::NoActiveRef));
+        let Some(head) = self.head.clone() else {
+            return core::future::ready(Err(MemError::UnknownWorktree));
         };
-        debug_assert!(
-            self.refs.values().filter(|record| record.active).count() <= 1,
-            "fake store holds more than one active ref"
-        );
-        // A born ref moves along its own history: unrelated parents would
-        // fork it away from its target.
-        if let Some(base) = record.commit
+        let base = match &head {
+            Head::Branch(branch) => self
+                .refs
+                .get(&Ref::branch(branch.clone()))
+                .and_then(|record| record.commit),
+            Head::Detached(commit) => Some(*commit),
+        };
+        // A born HEAD moves along its own history: unrelated parents would
+        // fork it away from its commit.
+        if let Some(base) = base
             && !parents.contains(&base)
         {
             return core::future::ready(Err(MemError::NotContinuing { base }));
@@ -388,10 +422,18 @@ impl MetaStore for MemMeta {
             return core::future::ready(Err(err));
         }
         self.insert_commit(id, created_at_ms, canonical, root);
-        // The active ref moves onto the new commit, in the same step: a
-        // ref that lags behind its history would fork the next commit.
-        record.commit = Some(id);
-        self.refs.insert(active, record);
+        // HEAD moves onto the new commit, in the same step: a HEAD that
+        // lags behind its history would fork the next commit.
+        match head {
+            Head::Branch(branch) => {
+                let name = Ref::branch(branch);
+                self.refs
+                    .entry(name.clone())
+                    .and_modify(|record| record.commit = Some(id))
+                    .or_insert_with(|| CommitRef::new(name, Some(id), false, created_at_ms));
+            }
+            Head::Detached(_) => self.head = Some(Head::Detached(id)),
+        }
         core::future::ready(Ok(ApplyOutcome { id }))
     }
 
@@ -424,11 +466,11 @@ impl MetaStore for MemMeta {
         if !self.holds_commit(commit) {
             return core::future::ready(Err(MemError::UnknownCommit { id: commit }));
         }
+        if self.checked_out(name) {
+            return core::future::ready(Err(MemError::BranchCheckedOut { name: name.clone() }));
+        }
         let result = match self.refs.get_mut(name) {
             None => Err(MemError::UnknownRef { name: name.clone() }),
-            Some(record) if record.active => {
-                Err(MemError::ActiveRefProtected { name: name.clone() })
-            }
             Some(record) => {
                 record.commit = Some(commit);
                 Ok(())
@@ -457,10 +499,14 @@ impl MetaStore for MemMeta {
     }
 
     fn delete_ref(&mut self, name: &Ref) -> impl Future<Output = Result<bool, MemError>> + Send {
-        if self.refs.get(name).is_some_and(|record| record.active) {
-            return core::future::ready(Err(MemError::ActiveRefProtected { name: name.clone() }));
+        if self.checked_out(name) {
+            return core::future::ready(Err(MemError::BranchCheckedOut { name: name.clone() }));
         }
         core::future::ready(Ok(self.refs.remove(name).is_some()))
+    }
+
+    fn head(&self) -> impl Future<Output = Result<Head, MemError>> + Send {
+        core::future::ready(self.head.clone().ok_or(MemError::UnknownWorktree))
     }
 
     fn active_ref(&self) -> impl Future<Output = Result<Option<CommitRef>, MemError>> + Send {
@@ -545,21 +591,22 @@ mod tests {
         CommitEntry::new(coord(x, z), Some(ChunkHash::new([byte; 32])))
     }
 
+    /// A fresh store: HEAD unborn on `main`, with no ref row.
     fn store_with_ref() -> MemMeta {
         let mut meta = MemMeta::default();
-        meta.with_active_ref(&RefName::parse("main").unwrap());
+        meta.with_head(Head::Branch(RefName::parse("main").unwrap()));
         meta
     }
 
     #[test]
-    fn a_commit_must_continue_the_active_ref() {
+    fn a_commit_must_continue_heads_commit() {
         let mut meta = store_with_ref();
         let first = block_on(meta.apply_commit_incremental(1_000, &[], &[present(0, 0, 1)]))
             .unwrap()
             .id;
 
-        // An empty parent list on a born ref would move the active ref
-        // into an unrelated history.
+        // An empty parent list on a born HEAD would move HEAD into an
+        // unrelated history.
         let err =
             block_on(meta.apply_commit_incremental(2_000, &[], &[present(1, 0, 2)])).unwrap_err();
         assert_eq!(err, MemError::NotContinuing { base: first });
@@ -609,21 +656,19 @@ mod tests {
             block_on(meta.create_ref(&branch("dev"), missing, 0)),
             Err(MemError::UnknownCommit { id: missing })
         );
-        // The unborn active ref has a row, so its name is taken.
-        assert_eq!(
-            block_on(meta.create_ref(&branch("main"), root, 0)),
-            Err(MemError::RefExists {
-                name: branch("main")
-            })
-        );
-
         block_on(meta.create_ref(&branch("dev"), root, 7)).unwrap();
         let created = block_on(meta.lookup_ref(&branch("dev"))).unwrap().unwrap();
         assert_eq!(created, CommitRef::new(branch("dev"), Some(root), false, 7));
+        assert_eq!(
+            block_on(meta.create_ref(&branch("dev"), root, 8)),
+            Err(MemError::RefExists {
+                name: branch("dev")
+            })
+        );
     }
 
     #[test]
-    fn move_ref_moves_only_an_existing_inactive_ref() {
+    fn move_ref_moves_only_an_existing_branch_no_head_names() {
         let mut meta = store_with_ref();
         let first = block_on(meta.create_commit(1_000, &[])).unwrap();
         let second = block_on(meta.create_commit(2_000, &[first])).unwrap();
@@ -640,18 +685,62 @@ mod tests {
                 name: branch("gone")
             })
         );
+        // HEAD's branch, unborn here, and another worktree's are refused
+        // before the lookup.
+        meta.with_worktree(Head::Branch(RefName::parse("dev").unwrap()));
+        for name in ["main", "dev"] {
+            assert_eq!(
+                block_on(meta.move_ref(&branch(name), first)),
+                Err(MemError::BranchCheckedOut { name: branch(name) })
+            );
+            assert_eq!(
+                block_on(meta.delete_ref(&branch(name))),
+                Err(MemError::BranchCheckedOut { name: branch(name) })
+            );
+        }
+        assert_eq!(block_on(meta.lookup_ref(&branch("main"))).unwrap(), None);
+    }
+
+    #[test]
+    fn a_commit_lands_on_the_opened_worktrees_head() {
+        // A fake opened from no worktree writes nothing.
+        let mut meta = MemMeta::default();
         assert_eq!(
-            block_on(meta.move_ref(&branch("main"), first)),
-            Err(MemError::ActiveRefProtected {
-                name: branch("main")
-            })
+            block_on(meta.apply_commit_incremental(1_000, &[], &[present(0, 0, 1)])),
+            Err(MemError::UnknownWorktree)
         );
+        assert_eq!(meta.commits, []);
+
+        // The first commit on an unborn HEAD creates its branch; another
+        // worktree's branch stays where it was.
+        let mut meta = store_with_ref();
+        let first = block_on(meta.apply_commit_incremental(1_000, &[], &[present(0, 0, 1)]))
+            .unwrap()
+            .id;
+        block_on(meta.create_ref(&branch("other"), first, 0)).unwrap();
+        meta.with_worktree(Head::Branch(RefName::parse("other").unwrap()));
+        let second = block_on(meta.apply_commit_incremental(2_000, &[first], &[present(1, 0, 2)]))
+            .unwrap()
+            .id;
+        let target = |meta: &MemMeta, name| {
+            block_on(meta.lookup_ref(&branch(name)))
+                .unwrap()
+                .and_then(|record| record.commit)
+        };
         assert_eq!(
-            block_on(meta.lookup_ref(&branch("main")))
-                .unwrap()
-                .unwrap()
-                .commit,
-            None
+            (target(&meta, "main"), target(&meta, "other")),
+            (Some(second), Some(first))
+        );
+
+        // A detached HEAD moves itself and no branch.
+        meta.with_head(Head::Detached(first));
+        let third = block_on(meta.apply_commit_incremental(3_000, &[first], &[present(2, 0, 3)]))
+            .unwrap()
+            .id;
+        assert_eq!(meta.head, Some(Head::Detached(third)));
+        assert_eq!(
+            (target(&meta, "main"), target(&meta, "other")),
+            (Some(second), Some(first))
         );
     }
 }

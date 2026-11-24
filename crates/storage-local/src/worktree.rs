@@ -165,7 +165,7 @@ fn worktree_refusal(message: String) -> StorageError {
 /// symlinks deliberately unresolved so the key keeps the caller's
 /// spelling. A location that is not valid UTF-8 fails loudly instead of
 /// storing a lossy path.
-fn store_key(path: impl AsRef<Path>) -> Result<String, StorageError> {
+pub(crate) fn store_key(path: impl AsRef<Path>) -> Result<String, StorageError> {
     let path = path.as_ref();
     let path =
         std::path::absolute(path).map_err(|source| io_error(path.display().to_string(), source))?;

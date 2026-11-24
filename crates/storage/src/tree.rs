@@ -1006,7 +1006,7 @@ mod tests {
     mod operations {
         use super::*;
         use crate::testing::{MemMeta, block_on};
-        use sekai_util::RefName;
+        use sekai_util::{Head, RefName};
 
         const OVER: Dimension = Dimension::OVERWORLD;
         const NETHER: Dimension = Dimension::NETHER;
@@ -1031,7 +1031,7 @@ mod tests {
         #[test]
         fn scoped_update_only_reads_and_writes_changed_dimensions() {
             let mut meta = MemMeta::default();
-            meta.with_active_ref(&RefName::parse("main").unwrap());
+            meta.with_head(Head::Branch(RefName::parse("main").unwrap()));
             let first = block_on(meta.apply_commit_incremental(
                 1_000,
                 &[],
@@ -1070,7 +1070,7 @@ mod tests {
         #[test]
         fn an_unchanged_update_reuses_the_parent_root() {
             let mut meta = MemMeta::default();
-            meta.with_active_ref(&RefName::parse("main").unwrap());
+            meta.with_head(Head::Branch(RefName::parse("main").unwrap()));
             let first =
                 block_on(meta.apply_commit_incremental(1_000, &[], &[entry(OVER, 0, 0, 1)]))
                     .unwrap()
@@ -1110,7 +1110,7 @@ mod tests {
         #[test]
         fn commit_region_hashes_names_only_stored_regions() {
             let mut meta = MemMeta::default();
-            meta.with_active_ref(&RefName::parse("main").unwrap());
+            meta.with_head(Head::Branch(RefName::parse("main").unwrap()));
             let entries = [
                 entry(OVER, 0, 0, 1),
                 entry(OVER, 1, 0, 2),

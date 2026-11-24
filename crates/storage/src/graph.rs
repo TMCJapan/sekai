@@ -9,7 +9,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 
-use sekai_util::{Commit, CommitId, Ref, RefName, Revision, RevisionBase};
+use sekai_util::{Commit, CommitId, HeadState, Ref, RefName, Revision, RevisionBase};
 
 use crate::meta::MetaStore;
 
@@ -248,9 +248,9 @@ impl<M: fmt::Debug> fmt::Display for ResolveError<M> {
 
 /// Resolve `revision` to a commit.
 ///
-/// `HEAD` is the active ref's commit. A commit ID must name a recorded
-/// commit, and a name is looked up as a branch; an unborn one has no commit
-/// to point at yet. A `~<n>` step then follows the first parent `n`
+/// `HEAD` is the commit of the opened worktree's HEAD. A commit ID must
+/// name a recorded commit, and a name is looked up as a branch; an unborn
+/// one has no commit to point at yet. A `~<n>` step then follows the first parent `n`
 /// times, as Git's `get_nth_ancestor` does; a step past a root commit is an
 /// `UnknownRevision`. Parents are stored sorted by ID, so for a commit with
 /// several the first is the lowest-ID one; commits sekai records have one.
@@ -275,14 +275,13 @@ pub async fn resolve_revision<M: MetaStore>(
 }
 
 async fn head_commit<M: MetaStore>(meta: &M) -> Result<CommitId, ResolveError<M::Error>> {
-    let head = meta
-        .active_ref()
+    match crate::refs::head_state(meta)
         .await
         .map_err(ResolveError::Meta)?
-        .ok_or(ResolveError::NoActiveRef)?;
-    head.commit.ok_or(ResolveError::UnbornHead {
-        branch: head.name.name,
-    })
+    {
+        HeadState::Attached { commit, .. } | HeadState::Detached { commit } => Ok(commit),
+        HeadState::Unborn { branch } => Err(ResolveError::UnbornHead { branch }),
+    }
 }
 
 async fn known_commit<M: MetaStore>(
@@ -315,7 +314,7 @@ mod tests {
     use super::*;
     use crate::testing::{MemMeta, block_on};
     use alloc::string::ToString;
-    use sekai_util::CommitEntry;
+    use sekai_util::{CommitEntry, Head};
 
     #[test]
     fn lists_in_local_sequence_order() {
@@ -340,7 +339,7 @@ mod tests {
         let tip = block_on(meta.create_commit(300, &[middle])).unwrap();
         let main = RefName::parse("main").unwrap();
         block_on(meta.create_ref(&Ref::branch(main.clone()), tip, 300)).unwrap();
-        meta.with_active_ref(&main);
+        meta.with_head(Head::Branch(main));
         (meta, [root, middle, tip])
     }
 
@@ -391,13 +390,15 @@ mod tests {
     }
 
     #[test]
-    fn head_needs_a_born_active_ref() {
+    fn head_needs_a_worktree_and_a_born_branch() {
         let mut meta = MemMeta::default();
         assert_eq!(
             block_on(resolve_revision(&meta, &revision("HEAD"))),
-            Err(ResolveError::NoActiveRef)
+            Err(ResolveError::Meta(
+                crate::testing::MemError::UnknownWorktree
+            ))
         );
-        meta.with_active_ref(&RefName::parse("main").unwrap());
+        meta.with_head(Head::Branch(RefName::parse("main").unwrap()));
         let err = block_on(resolve_revision(&meta, &revision("@~1"))).unwrap_err();
         assert_eq!(
             err,
@@ -445,7 +446,7 @@ mod tests {
     fn counts_fresh_and_effective_rows() {
         use sekai_util::{ChunkCoord, ChunkHash, Dimension, RegionKind};
         let mut meta = MemMeta::default();
-        meta.with_active_ref(&RefName::parse("main").unwrap());
+        meta.with_head(Head::Branch(RefName::parse("main").unwrap()));
         let over = Dimension::OVERWORLD;
         let region = RegionKind::Region;
         let first = block_on(meta.apply_commit_incremental(
@@ -502,7 +503,7 @@ mod tests {
     fn counts_vanished_regions_and_dimensions() {
         use sekai_util::{ChunkCoord, ChunkHash, Dimension, RegionKind};
         let mut meta = MemMeta::default();
-        meta.with_active_ref(&RefName::parse("main").unwrap());
+        meta.with_head(Head::Branch(RefName::parse("main").unwrap()));
         let over = Dimension::OVERWORLD;
         let nether = Dimension::NETHER;
         let region = RegionKind::Region;
@@ -598,7 +599,7 @@ mod tests {
     fn a_commit_only_inherits_from_its_own_ancestors() {
         use sekai_util::{ChunkCoord, ChunkHash, Dimension, RegionKind};
         let mut meta = MemMeta::default();
-        meta.with_active_ref(&RefName::parse("main").unwrap());
+        meta.with_head(Head::Branch(RefName::parse("main").unwrap()));
         let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);
         let first_only = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 1, 0);
         let first = block_on(meta.apply_commit_incremental(

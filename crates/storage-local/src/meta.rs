@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use sekai_storage::{
-    DimNode, MetaStore, RegionNode, RootNode, StorageError, TreeNodes, commit_hash,
+    DimNode, MetaStore, RegionNode, RootNode, StorageError, TreeNodes, commit_hash, io_error,
 };
 use sekai_util::{
     ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DEFAULT_REF_NAME, DimHash,
@@ -20,7 +20,7 @@ use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
 };
 
-use crate::worktree::Worktree;
+use crate::worktree::{Worktree, store_key};
 
 const SCHEMA: &str = include_str!("../schema/sqlite.sql");
 
@@ -30,9 +30,13 @@ fn db_err(source: sqlx::Error) -> StorageError {
 }
 
 /// SQLite-backed commit metadata: the history graph and snapshot trees.
+///
+/// Opened from one worktree: `opened` is the absolute location the store
+/// was opened from, whose HEAD new commits land on.
 #[derive(Debug, Clone)]
 pub struct SqliteMeta {
     pool: SqlitePool,
+    opened: PathBuf,
 }
 
 /// How long a connect keeps retrying `SQLITE_BUSY`, matching sqlx's
@@ -76,12 +80,26 @@ async fn has_schema<'c>(executor: impl sqlx::SqliteExecutor<'c>) -> Result<bool,
 }
 
 impl SqliteMeta {
-    /// Open the database at `path`, creating the schema when missing.
+    /// Open the database at `path` from the store location `opened`,
+    /// creating the schema when missing.
     ///
     /// The parent directory must already exist; this type never creates it
     /// (directory layout is the store's concern). Opening while another
     /// opener creates the schema waits for it, up to the busy timeout.
-    pub async fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
+    ///
+    /// `opened` names the worktree whose HEAD new commits land on. It is
+    /// made absolute here, against the working directory of the open,
+    /// and keyed the way worktree rows are only when HEAD is read: a
+    /// location that cannot be a key (not UTF-8) still serves every read
+    /// that never needs HEAD. The worktree need not be registered yet
+    /// either.
+    pub async fn open(
+        path: impl AsRef<Path>,
+        opened: impl AsRef<Path>,
+    ) -> Result<Self, StorageError> {
+        let opened = opened.as_ref();
+        let opened = std::path::absolute(opened)
+            .map_err(|source| io_error(opened.display().to_string(), source))?;
         let options = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
@@ -96,8 +114,8 @@ impl SqliteMeta {
                     .execute(&mut *tx)
                     .await
                     .map_err(db_err)?;
-                // The store starts with one active ref, unborn: new
-                // commits hang from it until the first one lands.
+                // A fresh store seeds `main`, unborn and flagged active.
+                // The flag no longer steers commits: HEAD does.
                 sqlx::query(
                     "INSERT INTO refs (name, commit_id, active, created_at_ms)
                      VALUES (?, NULL, 1, ?)",
@@ -110,7 +128,7 @@ impl SqliteMeta {
             }
             tx.commit().await.map_err(db_err)?;
         }
-        Ok(Self { pool })
+        Ok(Self { pool, opened })
     }
 
     /// Record a whole commit atomically; returns its new ID.
@@ -315,6 +333,43 @@ fn decode_worktree(row: &sqlx::sqlite::SqliteRow) -> Result<Worktree, StorageErr
         path: PathBuf::from(path),
         head,
     })
+}
+
+/// The HEAD of the worktree keyed by `path`, read in `executor`'s
+/// snapshot. A key no worktree carries is a store opened from somewhere
+/// it does not know.
+async fn read_head<'c>(
+    executor: impl sqlx::SqliteExecutor<'c>,
+    path: &str,
+) -> Result<Head, StorageError> {
+    let row = sqlx::query("SELECT path, head_ref, head_commit FROM worktrees WHERE path = ?")
+        .bind(path)
+        .fetch_optional(executor)
+        .await
+        .map_err(db_err)?
+        .ok_or_else(|| StorageError::UnknownWorktree {
+            location: path.to_owned(),
+        })?;
+    decode_worktree(&row).map(|worktree| worktree.head)
+}
+
+/// Refuse `name` when some worktree's HEAD names it, born or unborn: only
+/// a commit moves the branch a HEAD names.
+async fn refuse_checked_out<'c>(
+    executor: impl sqlx::SqliteExecutor<'c>,
+    name: &Ref,
+) -> Result<(), StorageError> {
+    let held: Option<i64> = sqlx::query_scalar("SELECT 1 FROM worktrees WHERE head_ref = ?")
+        .bind(name.full_name())
+        .fetch_optional(executor)
+        .await
+        .map_err(db_err)?;
+    match held {
+        Some(_) => Err(StorageError::BranchCheckedOut {
+            name: name.name.as_str().to_owned(),
+        }),
+        None => Ok(()),
+    }
 }
 
 /// One scope's columns, gathered from its joined area rows.
@@ -840,42 +895,56 @@ impl sekai_storage::MetaStore for SqliteMeta {
         nodes: &TreeNodes,
     ) -> Result<ApplyOutcome, StorageError> {
         let commit = commit_hash(parents, created_at_ms, root);
+        let created = millis_param(created_at_ms)?;
+        // Every early return drops `tx`, which rolls it back: a rejected
+        // call writes nothing.
+        let worktree = store_key(&self.opened)?;
         let mut tx = self.pool.begin().await.map_err(db_err)?;
-        // The new commit must continue the active ref's target: moving the
-        // ref onto an unrelated history would fork it. Read the target
-        // before inserting, so a rejected call writes nothing.
-        let active_target: Option<Option<Vec<u8>>> =
-            sqlx::query_scalar("SELECT commit_id FROM refs WHERE active = 1")
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(db_err)?;
-        let Some(active_target) = active_target else {
-            tx.rollback().await.map_err(db_err)?;
-            return Err(StorageError::NoActiveRef);
-        };
-        if let Some(target) = active_target {
-            let base = commit_id_from_blob(target)?;
-            if !parents.contains(&base) {
-                tx.rollback().await.map_err(db_err)?;
-                return Err(StorageError::NotContinuing { base });
+        // HEAD decides where the commit lands, and the new commit must
+        // continue HEAD's commit: moving HEAD onto an unrelated history
+        // would fork it. Read both before inserting.
+        let head = read_head(&mut *tx, &worktree).await?;
+        let (base, branch) = match head {
+            Head::Branch(branch) => {
+                let full = Ref::branch(branch).full_name();
+                let row: Option<Option<Vec<u8>>> =
+                    sqlx::query_scalar("SELECT commit_id FROM refs WHERE name = ?")
+                        .bind(&full)
+                        .fetch_optional(&mut *tx)
+                        .await
+                        .map_err(db_err)?;
+                let exists = row.is_some();
+                let base = row.flatten().map(commit_id_from_blob).transpose()?;
+                (base, Some((full, exists)))
             }
+            Head::Detached(commit) => (Some(commit), None),
+        };
+        if let Some(base) = base
+            && !parents.contains(&base)
+        {
+            return Err(StorageError::NotContinuing { base });
         }
         insert_tree_nodes(&mut tx, nodes).await?;
         insert_commit(&mut tx, commit, created_at_ms, parents, root).await?;
         let id_param = commit_param(commit);
-        // The active ref moves onto the new commit, in the same
-        // transaction: a ref lagging behind its history would fork the
-        // next commit.
-        let moved = sqlx::query("UPDATE refs SET commit_id = ? WHERE active = 1")
+        // HEAD moves onto the new commit in the same transaction: a HEAD
+        // lagging behind its history would fork the next commit.
+        let landed = match branch {
+            Some((full, true)) => sqlx::query("UPDATE refs SET commit_id = ? WHERE name = ?")
+                .bind(&id_param[..])
+                .bind(full),
+            // The first commit on an unborn branch creates it.
+            Some((full, false)) => sqlx::query(
+                "INSERT INTO refs (name, commit_id, active, created_at_ms) VALUES (?, ?, 0, ?)",
+            )
+            .bind(full)
             .bind(&id_param[..])
-            .execute(&mut *tx)
-            .await
-            .map_err(db_err)?
-            .rows_affected();
-        if moved == 0 {
-            tx.rollback().await.map_err(db_err)?;
-            return Err(StorageError::NoActiveRef);
-        }
+            .bind(created),
+            None => sqlx::query("UPDATE worktrees SET head_commit = ? WHERE path = ?")
+                .bind(&id_param[..])
+                .bind(&worktree),
+        };
+        landed.execute(&mut *tx).await.map_err(db_err)?;
         tx.commit().await.map_err(db_err)?;
         Ok(ApplyOutcome { id: commit })
     }
@@ -911,33 +980,23 @@ impl sekai_storage::MetaStore for SqliteMeta {
     }
 
     async fn move_ref(&mut self, name: &Ref, commit: CommitId) -> Result<(), StorageError> {
-        let full = name.full_name();
         let mut tx = self.pool.begin().await.map_err(db_err)?;
         check_commit_exists(&mut tx, commit).await?;
-        let moved = sqlx::query("UPDATE refs SET commit_id = ? WHERE name = ? AND active = 0")
+        refuse_checked_out(&mut *tx, name).await?;
+        let moved = sqlx::query("UPDATE refs SET commit_id = ? WHERE name = ?")
             .bind(commit_param(commit))
-            .bind(&full)
+            .bind(name.full_name())
             .execute(&mut *tx)
             .await
             .map_err(db_err)?
             .rows_affected();
-        if moved > 0 {
-            tx.commit().await.map_err(db_err)?;
-            return Ok(());
+        if moved == 0 {
+            return Err(StorageError::UnknownRef {
+                name: name.name.as_str().to_owned(),
+            });
         }
-        // Nothing moved: the ref is absent or active. The read shares the
-        // UPDATE's snapshot, so it only refines why.
-        let exists: Option<i64> = sqlx::query_scalar("SELECT 1 FROM refs WHERE name = ?")
-            .bind(&full)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(db_err)?;
-        tx.rollback().await.map_err(db_err)?;
-        let name = name.name.as_str().to_owned();
-        Err(match exists {
-            Some(_) => StorageError::ActiveRefProtected { name },
-            None => StorageError::UnknownRef { name },
-        })
+        tx.commit().await.map_err(db_err)?;
+        Ok(())
     }
 
     async fn lookup_ref(&self, name: &Ref) -> Result<Option<CommitRef>, StorageError> {
@@ -970,34 +1029,22 @@ impl sekai_storage::MetaStore for SqliteMeta {
     }
 
     async fn delete_ref(&mut self, name: &Ref) -> Result<bool, StorageError> {
-        let full = name.full_name();
-        // One transaction so the DELETE and the follow-up read see the
-        // same snapshot: the DELETE refuses the active ref, and the read
-        // only refines why nothing was removed.
+        // One transaction, so no worktree can check the branch out between
+        // the refusal and the DELETE.
         let mut tx = self.pool.begin().await.map_err(db_err)?;
-        let deleted = sqlx::query("DELETE FROM refs WHERE name = ? AND active = 0")
-            .bind(&full)
+        refuse_checked_out(&mut *tx, name).await?;
+        let deleted = sqlx::query("DELETE FROM refs WHERE name = ?")
+            .bind(name.full_name())
             .execute(&mut *tx)
             .await
-            .map_err(db_err)?;
-        if deleted.rows_affected() > 0 {
-            tx.commit().await.map_err(db_err)?;
-            return Ok(true);
-        }
-        // Nothing was deleted: the ref is absent or active.
-        let active: Option<i64> =
-            sqlx::query_scalar("SELECT 1 FROM refs WHERE name = ? AND active = 1")
-                .bind(&full)
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(db_err)?;
+            .map_err(db_err)?
+            .rows_affected();
         tx.commit().await.map_err(db_err)?;
-        match active {
-            Some(_) => Err(StorageError::ActiveRefProtected {
-                name: name.name.as_str().to_owned(),
-            }),
-            None => Ok(false),
-        }
+        Ok(deleted > 0)
+    }
+
+    async fn head(&self) -> Result<Head, StorageError> {
+        read_head(&self.pool, &store_key(&self.opened)?).await
     }
 
     async fn active_ref(&self) -> Result<Option<CommitRef>, StorageError> {
@@ -1182,17 +1229,43 @@ mod tests {
         (guard.path().to_path_buf(), guard)
     }
 
-    async fn memory_meta() -> SqliteMeta {
-        SqliteMeta::open(&std::path::PathBuf::from(":memory:"))
+    /// Location the test stores are opened from.
+    const OPENED: &str = "/store";
+
+    /// An in-memory store opened from no registered worktree.
+    async fn bare_meta() -> SqliteMeta {
+        SqliteMeta::open(&std::path::PathBuf::from(":memory:"), OPENED)
             .await
             .unwrap()
+    }
+
+    /// An in-memory store opened from its own worktree, as init leaves it:
+    /// HEAD unborn on `main`.
+    async fn memory_meta() -> SqliteMeta {
+        let meta = bare_meta().await;
+        meta.init_worktree(&key(OPENED)).await.unwrap();
+        meta
+    }
+
+    /// The store at `path`, opened from its own registered worktree.
+    async fn file_meta(path: impl AsRef<Path>) -> SqliteMeta {
+        let meta = SqliteMeta::open(path, OPENED).await.unwrap();
+        meta.init_worktree(&key(OPENED)).await.unwrap();
+        meta
+    }
+
+    fn target(record: Option<CommitRef>) -> Option<CommitId> {
+        record.and_then(|record| record.commit)
     }
 
     #[tokio::test]
     async fn concurrent_openers_create_the_schema_once() {
         let (dir, _guard) = tempdir("concurrent-open");
         let path = dir.join("meta.sqlite");
-        let (a, b) = tokio::join!(SqliteMeta::open(&path), SqliteMeta::open(&path));
+        let (a, b) = tokio::join!(
+            SqliteMeta::open(&path, OPENED),
+            SqliteMeta::open(&path, OPENED)
+        );
         let a = a.unwrap();
         let _b = b.unwrap();
         let active = a.active_ref().await.unwrap().unwrap();
@@ -1250,7 +1323,7 @@ mod tests {
     async fn activating_a_ref_refuses_a_dangling_target() {
         let (dir, _guard) = tempdir("dangling-target");
         let path = dir.join("meta.sqlite");
-        let mut meta = SqliteMeta::open(&path).await.unwrap();
+        let mut meta = file_meta(&path).await;
         let main = branch(DEFAULT_REF_NAME);
         let feature = branch("feature");
         let root = meta
@@ -1282,10 +1355,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_unborn_active_ref_starts_a_new_root() {
+    async fn an_unborn_head_starts_a_new_root() {
         let mut meta = memory_meta().await;
         // A commit no ref names: the store holds history, but the unborn
-        // active ref has no parent to demand.
+        // HEAD has no parent to demand.
         let first = meta.create_commit(1_000, &[]).await.unwrap();
 
         let second = meta
@@ -1294,11 +1367,130 @@ mod tests {
             .unwrap()
             .id;
         assert_ne!(first, second);
-        assert_eq!(
-            meta.active_ref().await.unwrap().unwrap().commit,
-            Some(second)
-        );
+        let main = branch(DEFAULT_REF_NAME);
+        assert_eq!(target(meta.lookup_ref(&main).await.unwrap()), Some(second));
         assert_eq!(meta.commit_parents(second).await.unwrap(), Vec::new());
+    }
+
+    #[tokio::test]
+    async fn the_first_commit_on_a_branch_without_a_row_creates_it() {
+        let mut meta = memory_meta().await;
+        sqlx::query("UPDATE worktrees SET head_ref = 'refs/heads/fresh'")
+            .execute(&meta.pool)
+            .await
+            .unwrap();
+        let first = meta
+            .apply_commit_incremental(1_000, &[], &[])
+            .await
+            .unwrap()
+            .id;
+        let created = meta.lookup_ref(&branch("fresh")).await.unwrap().unwrap();
+        assert_eq!(
+            created,
+            CommitRef::new(branch("fresh"), Some(first), false, 1_000)
+        );
+        // `main` keeps its unborn row: the commit landed on HEAD alone.
+        let main = branch(DEFAULT_REF_NAME);
+        assert_eq!(target(meta.lookup_ref(&main).await.unwrap()), None);
+    }
+
+    #[tokio::test]
+    async fn a_commit_moves_only_the_opened_worktrees_head() {
+        let mut meta = memory_meta().await;
+        let first = meta
+            .apply_commit_incremental(1_000, &[], &[])
+            .await
+            .unwrap()
+            .id;
+        meta.create_ref(&branch("other"), first, 1_000)
+            .await
+            .unwrap();
+        meta.add_worktree(&key("/worlds/other"), on_branch("other"))
+            .await
+            .unwrap();
+        meta.add_worktree(&key("/worlds/detached"), Head::Detached(first))
+            .await
+            .unwrap();
+
+        let second = meta
+            .apply_commit_incremental(2_000, &[first], &[])
+            .await
+            .unwrap()
+            .id;
+        let main = branch(DEFAULT_REF_NAME);
+        assert_eq!(target(meta.lookup_ref(&main).await.unwrap()), Some(second));
+        assert_eq!(
+            target(meta.lookup_ref(&branch("other")).await.unwrap()),
+            Some(first)
+        );
+        assert!(
+            meta.worktrees()
+                .await
+                .unwrap()
+                .contains(&worktree("/worlds/detached", Head::Detached(first)))
+        );
+    }
+
+    #[tokio::test]
+    async fn open_keys_the_location_as_worktree_rows_are_keyed() {
+        // A relative spelling finds the row its absolute key carries.
+        let meta = SqliteMeta::open(&std::path::PathBuf::from(":memory:"), "worlds/store")
+            .await
+            .unwrap();
+        meta.init_worktree(&key("worlds/store")).await.unwrap();
+        assert_eq!(meta.head().await.unwrap(), on_branch(DEFAULT_REF_NAME));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_location_that_cannot_be_a_key_still_serves_reads() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let opened = std::ffi::OsStr::from_bytes(b"/st\xffore");
+        let mut meta = SqliteMeta::open(&std::path::PathBuf::from(":memory:"), opened)
+            .await
+            .unwrap();
+        let first = meta.create_commit(1_000, &[]).await.unwrap();
+        assert!(meta.lookup_commit(first).await.unwrap().is_some());
+        assert!(matches!(
+            meta.head().await.unwrap_err(),
+            StorageError::Backend { .. }
+        ));
+        assert!(matches!(
+            meta.apply_commit_incremental(2_000, &[first], &[])
+                .await
+                .unwrap_err(),
+            StorageError::Backend { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_detached_head_moves_itself_and_no_branch() {
+        let mut meta = memory_meta().await;
+        let first = meta
+            .apply_commit_incremental(1_000, &[], &[])
+            .await
+            .unwrap()
+            .id;
+        sqlx::query("UPDATE worktrees SET head_ref = NULL, head_commit = ?")
+            .bind(commit_param(first))
+            .execute(&meta.pool)
+            .await
+            .unwrap();
+        assert_eq!(meta.head().await.unwrap(), Head::Detached(first));
+
+        let err = meta
+            .apply_commit_incremental(2_000, &[], &[])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, StorageError::NotContinuing { base } if base == first));
+        let second = meta
+            .apply_commit_incremental(3_000, &[first], &[])
+            .await
+            .unwrap()
+            .id;
+        assert_eq!(meta.head().await.unwrap(), Head::Detached(second));
+        let main = branch(DEFAULT_REF_NAME);
+        assert_eq!(target(meta.lookup_ref(&main).await.unwrap()), Some(first));
     }
 
     #[tokio::test]
@@ -1373,8 +1565,8 @@ mod tests {
 
     #[tokio::test]
     async fn worktrees_round_trip_in_path_order() {
-        let mut meta = memory_meta().await;
-        let first = meta.apply_commit(1_000, &[], &[]).await.unwrap();
+        let mut meta = bare_meta().await;
+        let first = meta.create_commit(1_000, &[]).await.unwrap();
         let added = [
             worktree("/worlds/main", on_branch(DEFAULT_REF_NAME)),
             worktree("/worlds/b", on_branch("feature")),
@@ -1393,7 +1585,7 @@ mod tests {
 
     #[tokio::test]
     async fn remove_worktree_deletes_only_the_named_row() {
-        let meta = memory_meta().await;
+        let meta = bare_meta().await;
         meta.add_worktree(&key("/worlds/a"), on_branch("feature"))
             .await
             .unwrap();
@@ -1412,7 +1604,7 @@ mod tests {
 
     #[tokio::test]
     async fn init_worktree_is_idempotent_and_keeps_head() {
-        let meta = memory_meta().await;
+        let meta = bare_meta().await;
         meta.init_worktree(&key("/store")).await.unwrap();
         assert_eq!(
             meta.worktrees().await.unwrap(),
@@ -1434,7 +1626,7 @@ mod tests {
 
     #[tokio::test]
     async fn worktrees_keep_one_path_and_one_head_per_branch() {
-        let mut meta = memory_meta().await;
+        let mut meta = bare_meta().await;
         let main = worktree("/worlds/main", on_branch(DEFAULT_REF_NAME));
         meta.add_worktree(main.path.to_str().unwrap(), main.head.clone())
             .await
@@ -1452,7 +1644,7 @@ mod tests {
             );
         }
         // Detached HEADs may share a commit.
-        let first = meta.apply_commit(1_000, &[], &[]).await.unwrap();
+        let first = meta.create_commit(1_000, &[]).await.unwrap();
         for path in ["/worlds/a", "/worlds/b"] {
             meta.add_worktree(&key(path), Head::Detached(first))
                 .await
@@ -1465,8 +1657,8 @@ mod tests {
     async fn a_corrupt_worktree_head_row_fails_loudly() {
         let (dir, _guard) = tempdir("corrupt-head");
         let path = dir.join("meta.sqlite");
-        let mut meta = SqliteMeta::open(&path).await.unwrap();
-        let first = meta.apply_commit(1_000, &[], &[]).await.unwrap();
+        let mut meta = SqliteMeta::open(&path, OPENED).await.unwrap();
+        let first = meta.create_commit(1_000, &[]).await.unwrap();
         meta.add_worktree(&key("/worlds/main"), Head::Detached(first))
             .await
             .unwrap();
@@ -1561,15 +1753,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_active_ref_cannot_be_moved() {
+    async fn a_branch_a_head_names_cannot_be_moved() {
         let mut meta = memory_meta().await;
         let main = branch(DEFAULT_REF_NAME);
         let loose = meta.create_commit(500, &[]).await.unwrap();
 
         // Unborn: moving it would bypass the first commit.
         let err = meta.move_ref(&main, loose).await.unwrap_err();
-        assert!(matches!(err, StorageError::ActiveRefProtected { ref name } if name == "main"));
-        assert_eq!(meta.lookup_ref(&main).await.unwrap().unwrap().commit, None);
+        assert!(matches!(err, StorageError::BranchCheckedOut { ref name } if name == "main"));
+        assert_eq!(target(meta.lookup_ref(&main).await.unwrap()), None);
 
         // Born: only a commit moves it.
         let first = meta
@@ -1578,11 +1770,18 @@ mod tests {
             .unwrap()
             .id;
         let err = meta.move_ref(&main, loose).await.unwrap_err();
-        assert!(matches!(err, StorageError::ActiveRefProtected { .. }));
-        assert_eq!(
-            meta.lookup_ref(&main).await.unwrap().unwrap().commit,
-            Some(first)
-        );
+        assert!(matches!(err, StorageError::BranchCheckedOut { .. }));
+        assert_eq!(target(meta.lookup_ref(&main).await.unwrap()), Some(first));
+
+        // Another worktree's HEAD is held the same way.
+        meta.create_ref(&branch("other"), first, 1_000)
+            .await
+            .unwrap();
+        meta.add_worktree(&key("/worlds/other"), on_branch("other"))
+            .await
+            .unwrap();
+        let err = meta.move_ref(&branch("other"), loose).await.unwrap_err();
+        assert!(matches!(err, StorageError::BranchCheckedOut { ref name } if name == "other"));
     }
 
     #[tokio::test]
@@ -1602,7 +1801,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_commit_must_continue_the_active_ref() {
+    async fn a_commit_must_continue_heads_commit() {
         let mut meta = memory_meta().await;
         let root = meta
             .apply_commit_incremental(1_000, &[], &[])
@@ -1618,7 +1817,8 @@ mod tests {
 
         // The rejected call wrote nothing.
         assert_eq!(meta.latest_commit().await.unwrap().unwrap().id, root);
-        assert_eq!(meta.active_ref().await.unwrap().unwrap().commit, Some(root));
+        let main = branch(DEFAULT_REF_NAME);
+        assert_eq!(target(meta.lookup_ref(&main).await.unwrap()), Some(root));
 
         let next = meta
             .apply_commit_incremental(3_000, &[root], &[])
@@ -1632,7 +1832,7 @@ mod tests {
     async fn a_corrupt_ref_row_fails_loudly() {
         let (dir, _guard) = tempdir("corrupt-ref");
         let path = dir.join("meta.sqlite");
-        let meta = SqliteMeta::open(&path).await.unwrap();
+        let meta = file_meta(&path).await;
         // Names are re-validated on decode: a row the schema no longer
         // accepts is corruption, never a new ref name.
         sqlx::query(
@@ -1681,26 +1881,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_commit_without_an_active_ref_writes_nothing() {
-        let mut meta = memory_meta().await;
-        // A first commit gives the store a history.
-        let first = meta
-            .apply_commit_incremental(1_000, &[], &[])
-            .await
-            .unwrap()
-            .id;
-        // A store whose active flag was lost (corruption or a legacy row),
-        // leaving the history intact but with no head.
-        sqlx::query("UPDATE refs SET active = 0")
-            .execute(&meta.pool)
-            .await
-            .unwrap();
+    async fn a_commit_from_an_unknown_worktree_writes_nothing() {
+        // Opened from a location no worktree is registered at: the store
+        // holds a history but has no HEAD.
+        let mut meta = bare_meta().await;
+        let first = meta.create_commit(1_000, &[]).await.unwrap();
 
         let err = meta
-            .apply_commit_incremental(2_000, &[], &[])
+            .apply_commit_incremental(2_000, &[first], &[])
             .await
             .unwrap_err();
-        assert!(matches!(err, StorageError::NoActiveRef));
+        assert!(
+            matches!(&err, StorageError::UnknownWorktree { location } if *location == key(OPENED))
+        );
+        assert!(matches!(
+            meta.head().await,
+            Err(StorageError::UnknownWorktree { .. })
+        ));
 
         let mut commits = Vec::new();
         meta.visit_commits(|commit| {
@@ -1714,18 +1911,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_active_ref_survives_a_delete_attempt() {
+    async fn a_branch_a_head_names_survives_a_delete_attempt() {
         let mut meta = memory_meta().await;
         let main = branch(DEFAULT_REF_NAME);
         let other = branch("feature");
+        let held = branch("held");
         let root = meta.create_commit(500, &[]).await.unwrap();
         meta.create_ref(&other, root, 1_000).await.unwrap();
+        meta.create_ref(&held, root, 1_000).await.unwrap();
+        meta.add_worktree(&key("/worlds/held"), on_branch("held"))
+            .await
+            .unwrap();
 
-        assert!(matches!(
-            meta.delete_ref(&main).await,
-            Err(StorageError::ActiveRefProtected { .. })
-        ));
-        assert!(meta.lookup_ref(&main).await.unwrap().is_some());
+        for name in [&main, &held] {
+            assert!(matches!(
+                meta.delete_ref(name).await,
+                Err(StorageError::BranchCheckedOut { .. })
+            ));
+            assert!(meta.lookup_ref(name).await.unwrap().is_some());
+        }
         assert!(meta.delete_ref(&other).await.unwrap());
         assert!(!meta.delete_ref(&other).await.unwrap());
     }
