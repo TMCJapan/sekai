@@ -95,6 +95,19 @@ pub enum StorageError {
         /// Ref that was asked for.
         name: String,
     },
+    /// The branch is a worktree's HEAD, so a ref operation may neither
+    /// delete nor move it: only a commit moves the branch HEAD names, so
+    /// that the branch always continues the history that worktree records.
+    BranchCheckedOut {
+        /// Branch that was asked for.
+        name: String,
+    },
+    /// The store was opened from a location no worktree is registered
+    /// at, so it has no HEAD: a new commit has nowhere to land.
+    UnknownWorktree {
+        /// The location the store was opened from.
+        location: String,
+    },
     /// The store has no active ref, so a new commit has nowhere to land.
     ///
     /// Field-less on purpose: the condition is store-wide, not tied to a
@@ -102,8 +115,8 @@ pub enum StorageError {
     /// its parent constraint, so `NoActiveRef` takes priority over
     /// [`Self::NotContinuing`] when both conditions hold.
     NoActiveRef,
-    /// A new commit does not continue the active ref's target, which
-    /// would fork the ref onto another history.
+    /// A new commit does not continue HEAD's commit, which would fork
+    /// HEAD onto another history.
     NotContinuing {
         /// Target commit ID the new commit had to include as a parent.
         base: CommitId,
@@ -178,14 +191,17 @@ impl fmt::Display for StorageError {
             Self::ActiveRefProtected { name } => {
                 write!(f, "the active ref is protected: {name}")
             }
+            Self::BranchCheckedOut { name } => {
+                write!(f, "branch is checked out by a worktree: {name}")
+            }
+            Self::UnknownWorktree { location } => {
+                write!(f, "no worktree of this store is registered at {location}")
+            }
             Self::NoActiveRef => {
                 f.write_str("store has no active ref: a new commit has nowhere to hang from")
             }
             Self::NotContinuing { base } => {
-                write!(
-                    f,
-                    "new commit does not continue the active ref's target {base}"
-                )
+                write!(f, "new commit does not continue HEAD's commit {base}")
             }
             Self::UnknownRegionKind { kind } => write!(f, "stored region kind is unknown: {kind}"),
             Self::InvalidTimestamp(millis) => write!(f, "timestamp out of range: {millis}"),
