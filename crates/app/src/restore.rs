@@ -13,7 +13,7 @@
 
 use sekai_core::{Revision, Scope};
 use sekai_storage::SekaiStore;
-use sekai_util::ThreadRunner;
+use sekai_util::{Clock, ThreadRunner};
 use sekai_world::WorldTree;
 
 use crate::checkout::{
@@ -41,7 +41,7 @@ pub struct RestoreOptions {
     pub on_missing_file: MissingFilePolicy,
 }
 
-impl<S: SekaiStore, T: ThreadRunner> SekaiInstance<S, T> {
+impl<S: SekaiStore, T: ThreadRunner, B: Clock> SekaiInstance<S, T, B> {
     /// Restore the selected portion of `world` from a source commit,
     /// returning the checkout report and per-phase timings of the run.
     ///

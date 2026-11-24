@@ -14,7 +14,7 @@ mod scopes;
 mod status;
 
 use anyhow::Context as _;
-use sekai_app::{Scope, SekaiInstance, SekaiStore, ThreadRunner};
+use sekai_app::{Clock, Scope, SekaiInstance, SekaiStore, ThreadRunner};
 
 use crate::cli::{Cli, Command, Selection, TimingArgs};
 use crate::style::Styler;
@@ -33,8 +33,8 @@ fn format_time(created_at_ms: u64) -> String {
 
 /// The scope a selection stands for: `--scope NAME` looked up in the
 /// store, or the inline `--in`/`--region`/`--kind` spelling.
-async fn resolve_selection<S: SekaiStore, T: ThreadRunner>(
-    instance: &SekaiInstance<S, T>,
+async fn resolve_selection<S: SekaiStore, T: ThreadRunner, B: Clock>(
+    instance: &SekaiInstance<S, T, B>,
     selection: &Selection,
 ) -> anyhow::Result<Scope> {
     match selection {

@@ -1,13 +1,15 @@
 //! Chunk AST diff operations over CAS and metadata stores.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::sync::Arc;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::time::Duration;
 
 use sekai_anvil::{Chunk, ChunkHashError, ChunkPayloadDiff};
 use sekai_core::{ChunkCoord, ChunkHash, CommitId, RegionKey, RegionKind};
 use sekai_storage::{BlobStore as _, MetaStore, RegionNode, SekaiStore};
-use sekai_util::{JobSet as _, ThreadRunner};
+use sekai_util::{Clock, JobSet as _, ThreadRunner, Timer as _};
 use sekai_world::{Region, RegionFile, WorldLockMode, WorldTree};
 
 use crate::cache::prove_regions_unchanged;
@@ -34,7 +36,7 @@ pub struct DiffTimings {
     pub diff_compute: Duration,
 }
 
-impl<S: SekaiStore, T: ThreadRunner> SekaiInstance<S, T> {
+impl<S: SekaiStore, T: ThreadRunner, B: Clock> SekaiInstance<S, T, B> {
     /// Compute AST diff between two stored chunk blob hashes.
     pub async fn diff_blobs(
         &self,
@@ -91,7 +93,7 @@ fn chunk_digest(coord: ChunkCoord, payload: &[u8]) -> Result<ChunkHash, AppError
         })
 }
 
-impl<S: SekaiStore, T: ThreadRunner> SekaiInstance<S, T> {
+impl<S: SekaiStore, T: ThreadRunner, B: Clock> SekaiInstance<S, T, B> {
     /// Compute AST diff for a chunk coordinate between two commits.
     pub async fn diff_chunk(
         &self,
@@ -119,7 +121,7 @@ pub struct ChunkDiff {
     pub entries: ChunkPayloadDiff,
 }
 
-impl<S: SekaiStore, T: ThreadRunner> SekaiInstance<S, T> {
+impl<S: SekaiStore, T: ThreadRunner, B: Clock> SekaiInstance<S, T, B> {
     /// Compute AST diffs for explicit chunk coordinates.
     ///
     /// Compares two commits in the store, additionally returning
@@ -136,7 +138,7 @@ impl<S: SekaiStore, T: ThreadRunner> SekaiInstance<S, T> {
         coords: &[ChunkCoord],
         progress_builder: &impl BuildProgress,
     ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
-        let total_started = Instant::now();
+        let total_started = self.time.timer();
         let mut timings = DiffTimings::default();
         // Both sides are recorded digests: no world file to prove.
         let proven = BTreeMap::new();
@@ -153,10 +155,11 @@ impl<S: SekaiStore, T: ThreadRunner> SekaiInstance<S, T> {
                 proven: &proven,
             },
             progress_builder,
+            &self.time,
             &mut timings,
         )
         .await?;
-        timings.total = total_started.elapsed();
+        timings.total = total_started.stop();
         Ok((out, timings))
     }
 
@@ -220,7 +223,7 @@ async fn commit_chunk_hash<S: SekaiStore>(
     Ok(Some(hash))
 }
 
-impl<W: WorldTree, S: SekaiStore, T: ThreadRunner> WorldHandle<'_, W, S, T>
+impl<W: WorldTree, S: SekaiStore, T: ThreadRunner, B: Clock> WorldHandle<'_, W, S, T, B>
 where
     W::Error: Send + Sync + 'static,
 {
@@ -267,7 +270,7 @@ where
         // Held across resolution and the reads below: the world snapshot
         // must outlive the operation.
         let guard = WorldGuard::acquire(self.world, WorldLockMode::Shared)?;
-        let total_started = Instant::now();
+        let total_started = self.instance.time.timer();
         let base = match commit {
             Some(id) => Some(id),
             None => self.instance.current_commit_id().await?,
@@ -288,7 +291,7 @@ where
 
         // Only the regions `coords` span are worth proving: a single-chunk
         // diff must not re-hash the whole world.
-        let prepass_started = Instant::now();
+        let prepass_started = self.instance.time.timer();
         let keys: Vec<RegionKey> = by_region.keys().copied().collect();
         let proven = match base {
             Some(id) => {
@@ -304,7 +307,7 @@ where
             }
             None => BTreeMap::new(),
         };
-        timings.blob_fetch += prepass_started.elapsed();
+        timings.blob_fetch += prepass_started.stop();
 
         // Commit side: recorded digests, indexed by coordinate position.
         let mut old_side: Vec<Option<ChunkHash>> = vec![None; coords.len()];
@@ -315,6 +318,7 @@ where
             &by_region,
             &proven,
             &mut old_side,
+            &self.instance.time,
             &mut timings,
         )
         .await?;
@@ -332,11 +336,12 @@ where
             &mut new_side,
             &guard,
             &mut progress,
+            &self.instance.time,
             &mut timings,
         )
         .await?;
 
-        let combine_started = Instant::now();
+        let combine_started = self.instance.time.timer();
         let out = coords
             .iter()
             .zip(old_side.iter().zip(new_side.iter()))
@@ -345,14 +350,14 @@ where
                 entries: ChunkPayloadDiff::from_sides(*old, *new),
             })
             .collect();
-        timings.diff_compute += combine_started.elapsed();
-        timings.total = total_started.elapsed();
+        timings.diff_compute += combine_started.stop();
+        timings.total = total_started.stop();
         drop(guard);
         Ok((out, timings))
     }
 }
 
-impl<W: WorldTree, S: SekaiStore, T: ThreadRunner> WorldHandleMut<'_, W, S, T>
+impl<W: WorldTree, S: SekaiStore, T: ThreadRunner, B: Clock> WorldHandleMut<'_, W, S, T, B>
 where
     W::Error: Send + Sync + 'static,
 {
@@ -398,6 +403,9 @@ struct RegionSide {
 /// absent. Proven regions answer from their committed node; the rest come
 /// from metadata lookups, or one bulk tree walk when there are enough of
 /// them to amortize materializing the snapshot.
+// The clock joins the existing side inputs rather than splitting
+/// the fill into two functions.
+#[allow(clippy::too_many_arguments)]
 async fn commit_sides<S: SekaiStore>(
     store: &S,
     base: Option<CommitId>,
@@ -405,12 +413,13 @@ async fn commit_sides<S: SekaiStore>(
     by_region: &BTreeMap<RegionKey, Vec<usize>>,
     proven: &BTreeMap<RegionKey, RegionNode>,
     old_side: &mut [Option<ChunkHash>],
+    time: &impl Clock,
     timings: &mut DiffTimings,
 ) -> Result<(), AppError> {
     let Some(id) = base else {
         return Ok(());
     };
-    let started = Instant::now();
+    let started = time.timer();
     let mut unproven = Vec::new();
     for (key, indices) in by_region {
         if let Some(node) = proven.get(key) {
@@ -442,7 +451,7 @@ async fn commit_sides<S: SekaiStore>(
             old_side[index] = commit_chunk_hash(store, id, &coords[index]).await?;
         }
     }
-    timings.blob_fetch += started.elapsed();
+    timings.blob_fetch += started.stop();
     Ok(())
 }
 
@@ -463,6 +472,7 @@ async fn world_sides<W: WorldTree>(
     new_side: &mut [Option<ChunkHash>],
     guard: &Arc<WorldGuard<W::Lock>>,
     progress: &mut impl Progress,
+    time: &impl Clock,
     timings: &mut DiffTimings,
 ) -> Result<(), AppError>
 where
@@ -488,9 +498,10 @@ where
     // Same bounded fan-out as ingest: a finished file frees its slot.
     // Returning on error drops the set, stopping the files still queued.
     let read_guard = Arc::clone(guard);
+    let read_time = time.clone();
     let mut jobs = runner.run(spawnable, move |file| {
         let _guard = Arc::clone(&read_guard);
-        read_region_side::<W>(file)
+        read_region_side::<W>(file, &read_time)
     });
     while let Some(joined) = jobs.join_next().await {
         let side = joined.map_err(worker_error("diff worker"))??;
@@ -512,18 +523,19 @@ where
 /// and digesting under `decompress`.
 fn read_region_side<W: WorldTree>(
     file: (RegionKey, W::Region, Vec<(usize, ChunkCoord)>),
+    time: &impl Clock,
 ) -> Result<RegionSide, AppError>
 where
     W::Error: Send + Sync + 'static,
 {
     let (key, region, items) = file;
-    let started = Instant::now();
+    let started = time.timer();
     let image = region.read(key).map_err(world_error::<W>)?;
-    let read = started.elapsed();
+    let read = started.stop();
     let mut digests = Vec::with_capacity(items.len());
     let mut prepare = Duration::ZERO;
     for (index, coord) in items {
-        let started = Instant::now();
+        let started = time.timer();
         let digest = match image
             .chunk_payload(coord.x, coord.z)
             .map_err(image_error::<W>)?
@@ -531,7 +543,7 @@ where
             Some(payload) => Some(chunk_digest(coord, payload)?),
             None => None,
         };
-        prepare += started.elapsed();
+        prepare += started.stop();
         digests.push((index, digest));
     }
     Ok(RegionSide {
@@ -612,6 +624,7 @@ async fn diff_coords(
     old: impl DiffSource,
     new: impl DiffSource,
     progress_builder: &impl BuildProgress,
+    time: &impl Clock,
     timings: &mut DiffTimings,
 ) -> Result<Vec<ChunkDiff>, AppError> {
     let mut pending: BTreeMap<RegionKey, usize> = BTreeMap::new();
@@ -621,14 +634,14 @@ async fn diff_coords(
     let mut progress = progress_builder.build_progress(pending.len());
     let mut out = Vec::with_capacity(coords.len());
     for coord in coords {
-        let started = Instant::now();
+        let started = time.timer();
         let old_side = old.payload(coord).await?;
         let new_side = new.payload(coord).await?;
-        timings.blob_fetch += started.elapsed();
+        timings.blob_fetch += started.stop();
         timings.decompress += old_side.prepare + new_side.prepare;
-        let started = Instant::now();
+        let started = time.timer();
         let entries = ChunkPayloadDiff::from_sides(old_side.digest?, new_side.digest?);
-        timings.diff_compute += started.elapsed();
+        timings.diff_compute += started.stop();
         if let Some(left) = pending.get_mut(&RegionKey::of(*coord)) {
             *left -= 1;
             if *left == 0 {

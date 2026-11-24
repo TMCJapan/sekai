@@ -23,9 +23,10 @@ pub async fn run(
     let world = HostWorldTree::new(&world_path)
         .with_context(|| format!("failed to inspect world {}", world_path.as_ref().display()))?;
     let options = sekai_app::StatusOptions::default();
-    let instance = sekai_app::SekaiInstance::<LocalStore, _>::open_with(
+    let instance = sekai_app::SekaiInstance::<LocalStore, _, _>::open_with(
         store,
         <crate::runner::OsThread as sekai_app::ThreadRunner>::new(jobs),
+        crate::time::OsTime,
     )
     .await
     .with_context(|| format!("status of {} failed", world_path.as_ref().display()))?;

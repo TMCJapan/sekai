@@ -5,7 +5,7 @@ This project is organized as a Cargo workspace under `crates/`:
 ```text
 .
 └── crates
-    ├── util            # Shared value types + the ThreadRunner parallelism boundary (no_std)
+    ├── util            # Shared value types + the ThreadRunner/Clock boundaries (no_std)
     ├── anvil           # Pure Anvil sector codec, decompression, and normalized chunk hashing (no_std + alloc, ex-mca)
     ├── core            # Pure staging policy over shared types (no_std + alloc, depends on util only)
     ├── storage         # Backend-neutral store traits + generic tree/graph algorithms (no_std + alloc)
@@ -14,8 +14,8 @@ This project is organized as a Cargo workspace under `crates/`:
     │                   # RegionFile handle, WorldLock primitives
     ├── world-local     # Host filesystem tree (std): HostWorldTree, layout detection,
     │                   # region handles, the world file lock, atomic swaps
-    ├── app             # Composition/orchestration library for third parties (std, executor-agnostic)
-    └── cli             # Thin clap binary over sekai-app (package sekai-cli, binary sekai); owns the OsThread host runner
+    ├── app             # Composition/orchestration library for third parties (no_std + alloc, executor-agnostic)
+    └── cli             # Thin clap binary over sekai-app (package sekai-cli, binary sekai); owns the OsThread host runner and OsTime clock
 ```
 
 ## Dependency Flow
@@ -25,7 +25,7 @@ Keep dependencies strictly unidirectional (inward):
 ```text
 sekai (bin) -> {app, world-local, storage-local}
 app -> {core, anvil, world, storage}
-app -> util (ThreadRunner boundary; the host OsThread pool lives in the binary)
+app -> util (ThreadRunner/Clock boundaries; the host OsThread pool and OsTime clock live in the binary)
 world -> {anvil, core}
 world-local -> {world, anvil, core}
 core -> util (pure staging policy; no store access)
@@ -47,9 +47,10 @@ Rules:
   `app`. `world` already depends on `core` types, so a `core -> world`
   edge would be a Cargo package cycle.
 - `util` is a dependency leaf: pure data plus total validation only, plus
-  the shared Blake3 primitive (`hash_bytes`, `BytesHasher`) and the one
-  execution boundary (`ThreadRunner`/`JobSet` and the inline `Sequential`
-  runner). It owns no codecs, store traits,
+  the shared Blake3 primitive (`hash_bytes`, `BytesHasher`) and the
+  execution boundaries (`ThreadRunner`/`JobSet` with the inline `Sequential`
+  runner, `Clock`/`Timer` with the timing-free `Zero` baseline). It
+  owns no codecs, store traits,
   or orchestration. `anvil` names util types directly
   (`Dimension` custom ids, `RegionKind`); `core` re-exports every util type
   at its root so downstream paths stay stable, and `app` composes `core`
@@ -82,7 +83,10 @@ any exception in the PR body.
   No `std::fs`, `Path`, `std::time`, `std::io::Error`, or `thiserror` there;
   hand-written `core::fmt::Display` error enums only. No `tokio`, no
   `async-trait` macro. Host threading lives in the binary (`OsThread`),
-  never in the pure layers.
+  never in the pure layers. `app` is `no_std` + `alloc` too: it measures
+  and stamps through the `Clock` composed into the instance (the
+  host `OsTime` clock lives in the binary), and uses `thiserror` with
+  `default-features = false`.
 - **`core` is pure policy; `storage` is the trait hub**: `core` owns the
   store-free staging policy over shared `util` types and re-exports every
   util type at its root; `storage` owns the async
@@ -158,12 +162,12 @@ any exception in the PR body.
   its flows run over the `ThreadRunner` composed into the instance.
   `world` and `world-local` are sync (blocking file I/O lives in
   `world-local`).
-- **Portability targets**: CI lints the pure crates on every push and pull request.
-- `no_std`: `util`, `anvil`, `core`, `world`, and `storage` must keep
+- **Portability targets**: CI lints the pure crates and `app` on every push and pull request.
+- `no_std`: `util`, `anvil`, `core`, `world`, `storage`, and `app` must keep
   linting clean for `thumbv7m-none-eabi`.
-- `wasm`: `util`, `anvil`, `core`, `world`, and the backend-neutral
-  `storage` crate must keep linting clean for `wasm32-unknown-unknown`.
-  `world-local`, `storage-local`, `app`, and the binary own host file I/O, locks,
+- `wasm`: `util`, `anvil`, `core`, `world`, the backend-neutral
+  `storage` crate, and `app` must keep linting clean for `wasm32-unknown-unknown`.
+  `world-local`, `storage-local`, and the binary own host file I/O, locks,
   and the databases (SQLite, sled) and are intentionally **not** wasm targets yet. The
   backend-neutral store traits exist so a wasm backend can be added as a
   sibling crate without touching `core`/`app`.
@@ -196,7 +200,8 @@ any exception in the PR body.
 - For pure crates (`util`, `anvil`, `core`, `world`, `storage`), use
   hand-written error types
   (`core::fmt::Display` without external dependencies).
-- For `std` library crates (`world-local`, `app`), use `thiserror`.
+- For `std` library crates (`world-local`), use `thiserror`; `app` uses
+  `thiserror` with `default-features = false` (`no_std`).
 - For the binary, use `anyhow`.
 - Do **NOT** use `panic!`, `unwrap()`, or `expect()` in non-test library code.
 
@@ -218,11 +223,11 @@ cargo fmt --all -- --check
 # Lint check
 cargo clippy --workspace --all-targets -- -D warnings
 
-# Ensure the pure crates remain no_std
-cargo clippy -p sekai-util -p sekai-anvil -p sekai-core -p sekai-world -p sekai-storage --target thumbv7m-none-eabi -- -D warnings
+# Ensure the pure crates and app remain no_std
+cargo clippy -p sekai-util -p sekai-anvil -p sekai-core -p sekai-world -p sekai-storage -p sekai-app --target thumbv7m-none-eabi -- -D warnings
 
-# Ensure the pure crates and backend-neutral storage stay lint-clean for wasm
-cargo clippy -p sekai-util -p sekai-anvil -p sekai-core -p sekai-world -p sekai-storage --target wasm32-unknown-unknown --no-default-features -- -D warnings
+# Ensure the pure crates, backend-neutral storage, and app stay lint-clean for wasm
+cargo clippy -p sekai-util -p sekai-anvil -p sekai-core -p sekai-world -p sekai-storage -p sekai-app --target wasm32-unknown-unknown --no-default-features -- -D warnings
 
 # Run all unit and integration tests (default backend)
 cargo nextest run --workspace

@@ -19,13 +19,14 @@
 //! that names it. Commit itself records history only; `sekai commit` runs
 //! the update pass before recording (ADR-0034).
 
-use std::collections::BTreeMap;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::time::Duration;
 
 use sekai_core::{ChunkCoord, CommitEntry, CommitId, RegionHash, RegionKey, hash_bytes};
 use sekai_storage::{CacheStore, MetaStore as _, RegionNode, SekaiStore};
-use sekai_util::{JobSet as _, ThreadRunner};
+use sekai_util::{Clock, JobSet as _, ThreadRunner, Timer as _};
 use sekai_world::{Region, RegionFile, WorldLock, WorldLockMode, WorldTree};
 
 use crate::error::{AppError, image_error, world_error};
@@ -153,7 +154,7 @@ pub struct CacheUpdateTimings {
     pub cache: Duration,
 }
 
-impl<W: WorldTree, S: SekaiStore, T: ThreadRunner> WorldHandleMut<'_, W, S, T>
+impl<W: WorldTree, S: SekaiStore, T: ThreadRunner, B: Clock> WorldHandleMut<'_, W, S, T, B>
 where
     W::Error: Send + Sync + 'static,
 {
@@ -186,14 +187,15 @@ where
         _options: CacheUpdateOptions,
         progress_builder: &impl BuildProgress,
     ) -> Result<(CacheUpdateReport, CacheUpdateTimings), AppError> {
-        let total = Instant::now();
+        let total = self.instance.time.timer();
         let guard = WorldGuard::acquire(self.world, WorldLockMode::Shared)?;
         let runner = &self.instance.runner;
+        let time = &self.instance.time;
         let store = &mut self.instance.store;
 
         // Discovery walks directories on the runner, owning a share of the
         // world lock like every file pass.
-        let discover_started = Instant::now();
+        let discover_started = time.timer();
         let world_handle = self.world.clone();
         let discover_guard = Arc::clone(&guard);
         let regions = runner
@@ -203,7 +205,7 @@ where
             })
             .await
             .map_err(worker_error("cache update worker"))??;
-        let discover = discover_started.elapsed();
+        let discover = discover_started.stop();
 
         let mut progress = progress_builder.build_progress(regions.len());
         let mut report = CacheUpdateReport {
@@ -221,9 +223,10 @@ where
         // conflict with anything.
         let mut adapter = store.cache().clone();
         let hash_guard = Arc::clone(&guard);
+        let hash_time = time.clone();
         let mut jobs = runner.run(regions, move |(key, region)| {
             let _guard = Arc::clone(&hash_guard);
-            hash_region::<W>(&region, key)
+            hash_region::<W>(&region, key, &hash_time)
         });
         // Completion order surfaces a failed file at once; returning drops
         // the set, which stops the files still queued. Entries already
@@ -231,11 +234,11 @@ where
         while let Some(joined) = jobs.join_next().await {
             let hashed = joined.map_err(worker_error("cache update worker"))??;
             let (inserted, put) = if let Some(region_hash) = hashed.region {
-                let started = Instant::now();
+                let started = time.timer();
                 let inserted = adapter
                     .put(region_hash, hashed.mca_hash, &hashed.image)
                     .await?;
-                (inserted, started.elapsed())
+                (inserted, started.stop())
             } else {
                 (false, Duration::ZERO)
             };
@@ -255,12 +258,12 @@ where
 
         // Advisory flush: the cache is derived, so this keeps the log small
         // rather than guarding a crash order.
-        let sync_started = Instant::now();
+        let sync_started = time.timer();
         store.cache_mut().sync().await?;
-        cache += sync_started.elapsed();
+        cache += sync_started.stop();
 
         let timings = CacheUpdateTimings {
-            total: total.elapsed(),
+            total: total.stop(),
             discover,
             ingest,
             hash,
@@ -290,18 +293,22 @@ struct HashedRegion {
 /// Read one region file, hash the raw image and every chunk, and derive the
 /// region node the chunks produce. A payload with no normalized view fails
 /// the file with its coordinates attached, exactly like commit ingest.
-fn hash_region<W: WorldTree>(region: &W::Region, key: RegionKey) -> Result<HashedRegion, AppError>
+fn hash_region<W: WorldTree>(
+    region: &W::Region,
+    key: RegionKey,
+    time: &impl Clock,
+) -> Result<HashedRegion, AppError>
 where
     W::Error: Send + Sync + 'static,
 {
-    let opened = Instant::now();
+    let opened = time.timer();
     let image = region.read(key).map_err(world_error::<W>)?;
-    let open = opened.elapsed();
+    let open = opened.stop();
     let mca_hash = hash_bytes(image.image());
 
     let mut entries = Vec::new();
     let mut failure = None;
-    let hash_started = Instant::now();
+    let hash_started = time.timer();
     image
         .visit_chunks(|chunk| {
             let coord = ChunkCoord::new(key.dim, key.kind, chunk.x, chunk.z);
@@ -328,7 +335,7 @@ where
     if let Some(error) = failure {
         return Err(error);
     }
-    let hash = hash_started.elapsed();
+    let hash = hash_started.stop();
     let chunks = entries.len();
     let region = sekai_storage::tree::file_region_hash(&entries);
     Ok(HashedRegion {

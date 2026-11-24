@@ -33,9 +33,10 @@ pub async fn run(store: &str, action: &CacheCommand, style: Styler) -> anyhow::R
             output,
             jobs,
         } => {
-            let mut instance = sekai_app::SekaiInstance::<LocalStore, _>::open_with(
+            let mut instance = sekai_app::SekaiInstance::<LocalStore, _, _>::open_with(
                 store,
                 <crate::runner::OsThread as sekai_app::ThreadRunner>::new(*jobs),
+                crate::time::OsTime,
             )
             .await?;
             let mut world_tree = HostWorldTree::new(world)

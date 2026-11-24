@@ -1,7 +1,9 @@
 //! Diff subcommand execution, DTOs, and coordination.
 
 use anyhow::Context as _;
-use sekai_app::{ChunkCoord, ChunkDiff, CommitId, Revision, Scope, SekaiStore};
+use sekai_app::{
+    ChunkCoord, ChunkDiff, Clock, CommitId, Revision, Scope, SekaiStore, ThreadRunner,
+};
 use sekai_storage_local::LocalStore;
 use sekai_world_local::HostWorldTree;
 
@@ -27,7 +29,14 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
         // filters.
         Selection::Scope(_) => (Vec::new(), true),
     };
-    let instance = sekai_app::SekaiInstance::<LocalStore>::open(store).await?;
+    // The inline runner stays (a diff reads few files), but the timing
+    // output needs the host clock.
+    let instance = sekai_app::SekaiInstance::<LocalStore, _, _>::open_with(
+        store,
+        sekai_app::Sequential::new(0),
+        crate::time::OsTime,
+    )
+    .await?;
     let scope = resolve_selection(&instance, &args.selection).await?;
     let bars = Bars::new(args.output.progress);
 
@@ -107,7 +116,7 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
 /// keeps meaning "the active ref"; an unborn active ref yields `None`
 /// again, and the diff runs against the empty snapshot (ADR-0006).
 async fn resolve_world_commit(
-    instance: &sekai_app::SekaiInstance<impl SekaiStore>,
+    instance: &sekai_app::SekaiInstance<impl SekaiStore, impl ThreadRunner, impl Clock>,
     commit: Option<&Revision>,
 ) -> anyhow::Result<Option<CommitId>> {
     match commit {
@@ -124,12 +133,12 @@ async fn resolve_world_commit(
 }
 
 async fn resolve_commit_pair(
-    instance: &sekai_app::SekaiInstance<impl SekaiStore>,
+    instance: &sekai_app::SekaiInstance<impl SekaiStore, impl ThreadRunner, impl Clock>,
     old_commit: Option<&Revision>,
     new_commit: Option<&Revision>,
 ) -> anyhow::Result<(CommitId, CommitId)> {
     async fn resolve(
-        instance: &sekai_app::SekaiInstance<impl SekaiStore>,
+        instance: &sekai_app::SekaiInstance<impl SekaiStore, impl ThreadRunner, impl Clock>,
         raw: &Revision,
     ) -> anyhow::Result<CommitId> {
         instance
@@ -142,7 +151,7 @@ async fn resolve_commit_pair(
     /// `commit` creates this is the continued commit; a merge's parents
     /// are reported in ID order.
     async fn lowest_id_parent(
-        instance: &sekai_app::SekaiInstance<impl SekaiStore>,
+        instance: &sekai_app::SekaiInstance<impl SekaiStore, impl ThreadRunner, impl Clock>,
         commit: CommitId,
     ) -> anyhow::Result<CommitId> {
         instance

@@ -5,9 +5,12 @@
 //! commit is recorded, so replacing a scope changes what later runs select
 //! and never what earlier commits hold.
 
+use alloc::borrow::ToOwned;
+use alloc::vec::Vec;
+
 use sekai_core::{Dimension, NamedScope, Rect, Scope, ScopeName};
 use sekai_storage::{MetaStore as _, SekaiStore};
-use sekai_util::ThreadRunner;
+use sekai_util::{Clock, ThreadRunner};
 
 use crate::error::{AppError, Lookup, NameKind};
 use crate::instance::SekaiInstance;
@@ -21,7 +24,7 @@ fn not_found(name: &ScopeName) -> AppError {
     }
 }
 
-impl<S: SekaiStore, T: ThreadRunner> SekaiInstance<S, T> {
+impl<S: SekaiStore, T: ThreadRunner, B: Clock> SekaiInstance<S, T, B> {
     /// Save the areas as the scope `name`, covering every region family.
     ///
     /// A selection without an area fails with [`AppError::InvalidScope`]
@@ -49,7 +52,7 @@ impl<S: SekaiStore, T: ThreadRunner> SekaiInstance<S, T> {
                 });
             }
             Some(existing) => existing.created_at_ms,
-            None => now_ms()?,
+            None => now_ms(&self.time)?,
         };
         self.store.meta_mut().set_scope(&record).await?;
         Ok(record)

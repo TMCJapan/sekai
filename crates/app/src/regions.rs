@@ -1,7 +1,7 @@
 //! Region discovery shared by the world operations.
 
-use std::collections::BTreeMap;
-use std::collections::btree_map::Entry;
+use alloc::collections::BTreeMap;
+use alloc::collections::btree_map::Entry;
 
 use sekai_core::{RegionKey, RegionKind};
 use sekai_world::WorldTree;

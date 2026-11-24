@@ -8,7 +8,6 @@ use sekai_app::{
     AppError, Area, ChunkCoord, Dimension, Lookup, NameKind, NamedScopeError, Rect, RegionKind,
     Scope, ScopeName,
 };
-use sekai_storage_local::LocalStore;
 use sekai_world_local::HostWorldTree;
 use std::path::Path;
 
@@ -41,9 +40,7 @@ fn name(raw: &str) -> ScopeName {
 #[tokio::test]
 async fn a_scope_is_created_listed_and_deleted() {
     let root = tempdir();
-    let mut instance = sekai_app::SekaiInstance::<LocalStore>::init(root.path().join("store"))
-        .await
-        .unwrap();
+    let mut instance = fixtures::init(root.path().join("store")).await.unwrap();
     assert_eq!(instance.list_scopes().await.unwrap(), Vec::new());
 
     let spawn = name("spawn");
@@ -85,9 +82,7 @@ async fn a_scope_is_created_listed_and_deleted() {
 #[tokio::test]
 async fn an_existing_scope_is_replaced_only_with_force() {
     let root = tempdir();
-    let mut instance = sekai_app::SekaiInstance::<LocalStore>::init(root.path().join("store"))
-        .await
-        .unwrap();
+    let mut instance = fixtures::init(root.path().join("store")).await.unwrap();
     let spawn = name("spawn");
     let first = instance
         .create_scope(&spawn, vec![(OVER, Rect::new(0, 0, 0, 0))], false)
@@ -115,9 +110,7 @@ async fn an_existing_scope_is_replaced_only_with_force() {
 #[tokio::test]
 async fn a_selection_of_nothing_is_refused() {
     let root = tempdir();
-    let mut instance = sekai_app::SekaiInstance::<LocalStore>::init(root.path().join("store"))
-        .await
-        .unwrap();
+    let mut instance = fixtures::init(root.path().join("store")).await.unwrap();
     let err = instance
         .create_scope(&name("spawn"), Vec::new(), false)
         .await
@@ -132,9 +125,7 @@ async fn a_selection_of_nothing_is_refused() {
 #[tokio::test]
 async fn a_scope_resolves_to_its_rectangles() {
     let root = tempdir();
-    let mut instance = sekai_app::SekaiInstance::<LocalStore>::init(root.path().join("store"))
-        .await
-        .unwrap();
+    let mut instance = fixtures::init(root.path().join("store")).await.unwrap();
     let err = instance.resolve_scope(&name("spawn")).await.unwrap_err();
     assert!(matches!(err, AppError::NotFound { kind: Lookup::Scope, name } if name == "spawn"));
 
@@ -174,9 +165,7 @@ async fn a_resolved_scope_limits_a_commit() {
             (5, 5, chunk_nbt("marker-3")),
         ],
     );
-    let mut instance = sekai_app::SekaiInstance::<LocalStore>::init(root.path().join("store"))
-        .await
-        .unwrap();
+    let mut instance = fixtures::init(root.path().join("store")).await.unwrap();
     instance
         .create_scope(
             &name("spawn"),

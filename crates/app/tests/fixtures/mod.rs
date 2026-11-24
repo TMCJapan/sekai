@@ -5,6 +5,37 @@
 //! real 1.18+ chunk whose only content is a distinguishable `Status`, which
 //! keeps each test's payloads distinct while staying parseable.
 
+pub mod time;
+
+use sekai_app::{AppError, SekaiInstance, SekaiStoreOpener, Sequential, ThreadRunner as _};
+use sekai_storage_local::LocalStore;
+use time::HostTime;
+
+/// An instance composed with the inline runner and the host clock: tests
+/// that commit or stamp scopes need a real clock, which the `Zero` default
+/// does not provide.
+// Shared per test binary via `mod fixtures`; not every binary uses it.
+#[allow(dead_code)]
+pub type Instance = SekaiInstance<LocalStore, Sequential, HostTime>;
+
+/// Initialize a store and open it over [`Instance`]'s composition.
+// Shared per test binary via `mod fixtures`; not every binary uses it.
+#[allow(dead_code)]
+pub async fn init(
+    path: impl AsRef<<LocalStore as SekaiStoreOpener>::Path>,
+) -> Result<Instance, AppError> {
+    Instance::init_with(path, Sequential::new(0), HostTime).await
+}
+
+/// Open an existing store over [`Instance`]'s composition.
+// Shared per test binary via `mod fixtures`; not every binary uses it.
+#[allow(dead_code)]
+pub async fn open(
+    path: impl AsRef<<LocalStore as SekaiStoreOpener>::Path>,
+) -> Result<Instance, AppError> {
+    Instance::open_with(path, Sequential::new(0), HostTime).await
+}
+
 fn name(out: &mut Vec<u8>, key: &str) {
     out.extend_from_slice(&u16::try_from(key.len()).unwrap().to_be_bytes());
     out.extend_from_slice(key.as_bytes());

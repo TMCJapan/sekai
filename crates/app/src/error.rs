@@ -1,6 +1,9 @@
 //! Composition failures with their source attached.
 
-use std::fmt::Display;
+use alloc::boxed::Box;
+use alloc::format;
+use alloc::string::{String, ToString};
+use core::fmt::Display;
 
 use sekai_core::{ChunkCoord, RegionKey};
 use sekai_world::{RegionFile, WorldTree};
@@ -35,10 +38,11 @@ pub(crate) fn duplicate_region(
     first: &impl Display,
     second: &impl Display,
 ) -> AppError {
-    AppError::Io(std::io::Error::new(
-        std::io::ErrorKind::InvalidData,
-        format!("world tree enumerated region {key:?} twice ({first} and {second})"),
-    ))
+    AppError::DuplicateRegion {
+        key: *key,
+        first: first.to_string(),
+        second: second.to_string(),
+    }
 }
 
 /// What a name names, for errors about taken names.
@@ -161,13 +165,18 @@ pub enum AppError {
     /// the active ref is unborn.
     #[error("no commit selected: the store is empty or the active ref is unborn")]
     NoCommits,
-    /// I/O operation failed.
-    #[error(transparent)]
-    Io(#[from] std::io::Error),
-    /// System clock went backwards or overflowed.
-    #[error("system clock error: {0}")]
-    Clock(#[from] std::time::SystemTimeError),
-    /// System clock reading does not fit a Unix-millisecond `u64`.
-    #[error("system clock is out of range")]
-    ClockOutOfRange,
+    /// A world tree enumerated one region identity twice.
+    #[error("world tree enumerated region {key:?} twice ({first} and {second})")]
+    DuplicateRegion {
+        /// Identity reported twice.
+        key: RegionKey,
+        /// Location of the first enumeration.
+        first: String,
+        /// Location of the second enumeration.
+        second: String,
+    },
+    /// The instance's clock could not produce a Unix-millisecond reading:
+    /// no clock is composed, it is before the epoch, or it overflows `u64`.
+    #[error("system clock is unavailable or out of range")]
+    Clock,
 }

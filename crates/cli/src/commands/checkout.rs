@@ -49,9 +49,10 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let mut world = HostWorldTree::new(&world_path)
         .with_context(|| format!("failed to inspect world {}", world_path.as_ref().display()))?;
-    let mut instance = sekai_app::SekaiInstance::<LocalStore, _>::open_with(
+    let mut instance = sekai_app::SekaiInstance::<LocalStore, _, _>::open_with(
         store,
         <crate::runner::OsThread as sekai_app::ThreadRunner>::new(flags.jobs),
+        crate::time::OsTime,
     )
     .await
     .with_context(|| format!("checkout of {} failed", world_path.as_ref().display()))?;
