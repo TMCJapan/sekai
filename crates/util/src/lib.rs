@@ -46,4 +46,4 @@ pub use scope::{Area, Rect, Scope};
 pub use thread::{JobSet, Sequential, ThreadRunner, WorkerPanic};
 pub use time::{Clock, Timer, Zero};
 pub use tree::{DimHash, RegionHash, RootHash};
-pub use worktree::Head;
+pub use worktree::{Head, HeadState};
