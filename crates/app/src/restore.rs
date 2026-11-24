@@ -4,7 +4,7 @@
 //! Rationale: `restore` is
 //! [`checkout`](crate::WorldHandleMut::checkout) narrowed to
 //! `git restore` semantics. Sekai has no index, so the default source
-//! is the active ref's target (`HEAD`) rather than git's index, and the
+//! is HEAD's commit rather than git's index, and the
 //! caller's [`Scope`] plays the pathspec. Region files are still rebuilt
 //! wholesale from CAS blobs: a restored file's content is replaced, not
 //! merged, so checkout's keep-chunk policies have no git analog here and
@@ -45,9 +45,9 @@ impl<S: SekaiStore, T: ThreadRunner, B: Clock> SekaiInstance<S, T, B> {
     /// Restore the selected portion of `world` from a source commit,
     /// returning the checkout report and per-phase timings of the run.
     ///
-    /// `source` defaults to the active ref's target when `None` - git
-    /// restore restores from the index, and sekai has no index, so HEAD
-    /// is the default source. An unborn active ref fails with
+    /// `source` defaults to HEAD's commit when `None` - git restore
+    /// restores from the index, and sekai has no index, so HEAD is the
+    /// default source. An unborn HEAD fails with
     /// [`AppError::NoCommits`]. Nothing is recorded and no ref moves.
     ///
     /// Only `scope` is rebuilt: region files outside it are never

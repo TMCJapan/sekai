@@ -44,8 +44,8 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
         DiffTarget::World { world, commit } => {
             // Resolve an explicit reference before scanning the world: a
             // bad reference must fail without waiting on a full world
-            // read. No reference means the active ref, which may be
-            // unborn: the diff then runs against the empty snapshot.
+            // read. No reference means HEAD, which may be unborn: the
+            // diff then runs against the empty snapshot.
             let commit_id = resolve_world_commit(&instance, commit)
                 .await
                 .with_context(|| "failed to compute chunk diffs between world state and commit")?;
@@ -113,8 +113,8 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
 /// Resolve the commit a world diff compares against.
 ///
 /// An explicit reference must resolve before the world is scanned. `None`
-/// keeps meaning "the active ref"; an unborn active ref yields `None`
-/// again, and the diff runs against the empty snapshot (ADR-0006).
+/// keeps meaning HEAD; an unborn HEAD yields `None` again, and the diff
+/// runs against the empty snapshot (ADR-0006).
 async fn resolve_world_commit(
     instance: &sekai_app::SekaiInstance<impl SekaiStore, impl ThreadRunner, impl Clock>,
     commit: Option<&Revision>,
@@ -128,7 +128,7 @@ async fn resolve_world_commit(
         None => instance
             .current_commit_id()
             .await
-            .with_context(|| "failed to resolve the active ref"),
+            .with_context(|| "failed to resolve HEAD"),
     }
 }
 

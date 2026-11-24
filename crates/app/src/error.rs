@@ -184,8 +184,8 @@ pub enum AppError {
     #[error(transparent)]
     InvalidScope(#[from] sekai_core::NamedScopeError),
     /// No commit is available for the operation: the store is empty or
-    /// the active ref is unborn.
-    #[error("no commit selected: the store is empty or the active ref is unborn")]
+    /// HEAD is unborn.
+    #[error("no commit selected: the store is empty or HEAD is unborn")]
     NoCommits,
     /// A world tree enumerated one region identity twice.
     #[error("world tree enumerated region {key:?} twice ({first} and {second})")]

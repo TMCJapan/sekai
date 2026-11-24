@@ -279,7 +279,7 @@ where
     use sekai_storage::graph::{commit_ancestors, commit_history};
 
     // Two independent histories: the second root shares no ancestor with
-    // the first. No ref names it, so it is recorded without the active ref.
+    // the first. No ref names it, so it is recorded without moving HEAD.
     let first = meta
         .apply_commit_incremental(1_000, &[], &[present(0, 0, 1)])
         .await

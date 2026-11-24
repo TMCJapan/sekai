@@ -133,7 +133,7 @@ diff:
     -> proven region: the committed region node answers both sides
   fallback: one world read per region file (runner threads, fanned out)
     -> Chunk::normalized_hash per requested chunk; commit side: recorded digests
-  unborn active ref: the empty snapshot is the base (every chunk added)
+  unborn HEAD: the empty snapshot is the base (every chunk added)
 ```
 
 A chunk has exactly one hash: the `Chunk::normalized_hash` digest of its
@@ -383,9 +383,9 @@ part of the public ID. See
 
 Ref objects are the store's movable pointers to commits: named
 branches. A ref names a commit and moves with the history it names; a
-ref without a commit is _unborn_. Exactly one ref is _active_ - the one
-new commits hang from (the store's `HEAD`). A fresh store starts with
-one active ref, `main`, unborn.
+branch without a commit is _unborn_. New commits land on `HEAD`, the
+HEAD of the worktree the store was opened from (below). A fresh store's
+HEAD names `main`, unborn.
 
 The store keys refs by the full Git refname (`refs/heads/main`); commands
 and JSON show the short name (`main`).
@@ -400,14 +400,21 @@ re-initialization keeps that row and its HEAD, so no separate world
 registration exists. Worktrees are a local-backend feature: they name
 host filesystem paths, so `sekai-storage-local` owns them alone and the
 backend-neutral layers know nothing about them
-([ADR-0038](docs/adr/0038-worktrees-local-only.md)). Commits still land
-on the active ref; worktree HEADs take over that role in a later change.
+([ADR-0038](docs/adr/0038-worktrees-local-only.md)). Those layers still
+read HEAD: `MetaStore::head()` returns the HEAD of the worktree the store
+was opened from, and the backend alone maps an opened store to its
+worktree (`LocalStore::open` keys it by the location the caller named,
+so a store link opens its linked worktree). A store opened from a
+location no worktree is registered at has no HEAD and cannot commit.
 
-A new commit continues the target of the active ref - the trait rejects
-one whose parents omit it - and the active ref moves onto the new commit
-in the same transaction. Switching the active ref forks the history: the
-next commit continues the ref it was planned against, not the newest
-commit in the store.
+A new commit continues HEAD's commit - the trait rejects one whose
+parents omit it - and HEAD moves onto the new commit in the same
+transaction: the branch HEAD names moves (an unborn one is created), and
+a detached HEAD moves itself. A branch any worktree's HEAD names cannot
+be deleted or moved by a ref operation: only a commit moves it. Two
+worktrees on different branches fork the history: each commit continues
+its own HEAD, not the newest commit in the store. The legacy active-ref
+flag on `refs` no longer steers anything and is being removed.
 
 Refs point at commit hashes. Like Git, identity is derived from content;
 a recorded commit is immutable, so a ref's target keeps resolving to the
@@ -420,7 +427,7 @@ gitrevisions sekai adopts:
 
 | Revision | Names |
 |---|---|
-| `HEAD`, `@` | the active ref's commit |
+| `HEAD`, `@` | the commit of the opened worktree's HEAD |
 | `<64-char commit ID>` | that commit |
 | `<branch>` | the branch's commit |
 | `<start>~<n>`, `<start>~` | the `n`-th first-parent ancestor of one of the above (`~` is `~1`) |

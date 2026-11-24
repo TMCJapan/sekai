@@ -458,9 +458,9 @@ pub struct DiffArgs {
     /// Older revision (a commit ID, a branch, or `HEAD`, with optional
     /// `~<n>`; when comparing commits and omitted, defaults to the lowest-ID
     /// parent of the newer side). With `--world`, the single commit to
-    /// compare against (default: the active ref's target).
+    /// compare against (default: HEAD's commit).
     pub old_commit: Option<Revision>,
-    /// Newer revision (if omitted, defaults to the active ref's target).
+    /// Newer revision (if omitted, defaults to HEAD's commit).
     /// Commit-vs-commit only.
     #[arg(conflicts_with = "world")]
     pub new_commit: Option<Revision>,
@@ -500,14 +500,13 @@ impl DiffArgs {
 /// ambiguity resolved statically instead of juggling `Option`s at runtime.
 #[derive(Debug)]
 pub enum DiffTarget<'a> {
-    /// Live world state against one commit (`None` means the active
-    /// ref's target).
+    /// Live world state against one commit (`None` means HEAD's commit).
     World {
         world: &'a Path,
         commit: Option<&'a Revision>,
     },
-    /// Commit against commit (`None` newer side means the active ref's
-    /// target; `None` older side means the newer side's lowest-ID parent).
+    /// Commit against commit (`None` newer side means HEAD's commit;
+    /// `None` older side means the newer side's lowest-ID parent).
     /// A root commit has no implicit older side and errors; pass it or
     /// `--world` explicitly in that case.
     Commits {
@@ -520,14 +519,13 @@ pub enum DiffTarget<'a> {
 ///
 /// Sekai has no index, so git's `--staged`/`--worktree` locations do not
 /// apply: the live world is always the restore location, and the default
-/// source is the active ref's target (`HEAD`) instead of the index.
+/// source is HEAD's commit instead of the index.
 #[derive(Debug, clap::Args)]
 pub struct RestoreArgs {
     /// World directory to restore in place.
     pub world: PathBuf,
     /// Restore source: a commit ID, a branch, or `HEAD` / `@`, optionally
-    /// followed by one `~<n>` (see `log`). Defaults to the active ref's
-    /// target (`HEAD`).
+    /// followed by one `~<n>` (see `log`). Defaults to HEAD's commit.
     #[arg(long, short = 's', value_name = "REV")]
     pub source: Option<Revision>,
     /// Overlay mode: keep region files unknown to the source instead of

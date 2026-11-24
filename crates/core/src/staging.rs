@@ -32,11 +32,11 @@ use sekai_util::{ChunkCoord, ChunkHash, Commit, CommitEntry, RegionKey, Scope};
 /// Previous commit plus the state the walk needs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Previous {
-    /// The commit the new one continues: the target of the active ref,
-    /// when the store has one (`None` on an unborn ref).
+    /// The commit the new one continues: HEAD's commit (`None` on an
+    /// unborn HEAD).
     pub commit: Option<Commit>,
     /// Effective present entries of the base commit (empty on an unborn
-    /// ref). Keyed by coordinate; the entry carries the blob hash used
+    /// HEAD). Keyed by coordinate; the entry carries the blob hash used
     /// for chunk-level change detection. Absent coordinates are not part
     /// of the snapshot, so they never appear here.
     pub state: BTreeMap<ChunkCoord, CommitEntry>,

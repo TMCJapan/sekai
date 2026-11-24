@@ -230,8 +230,8 @@ where
     /// Compute AST diff for a chunk coordinate between the bound world state
     /// and a commit.
     ///
-    /// If `commit` is `None`, the active ref's target is used; an unborn
-    /// active ref diffs against the empty snapshot (the chunk is added).
+    /// If `commit` is `None`, HEAD's commit is used; an unborn HEAD diffs
+    /// against the empty snapshot (the chunk is added).
     pub async fn diff_world_chunk(
         &self,
         commit: Option<CommitId>,
@@ -247,9 +247,9 @@ where
     /// Compute AST diffs for explicit chunk coordinates between the bound
     /// world state and a commit, additionally returning per-phase timings.
     ///
-    /// If `commit` is `None`, the active ref's target is used - the
-    /// commit the next one would continue. An unborn active ref (a store with
-    /// no commit to continue) diffs against the empty snapshot: every chunk
+    /// If `commit` is `None`, HEAD's commit is used - the commit the next
+    /// one would continue. An unborn HEAD (no commit to continue) diffs
+    /// against the empty snapshot: every chunk
     /// the world holds is reported as added. The commit side is a metadata
     /// lookup; the world side reads each region file once and digests its
     /// requested chunks, fanned out across the instance's runner. Decompression

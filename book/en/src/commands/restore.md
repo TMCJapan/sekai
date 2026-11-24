@@ -24,7 +24,7 @@ payloads, exactly like checkout.
   stays checkout's job.
 - `--source <rev>` / `-s <rev>` names the restore source: any revision
   checkout accepts (a commit hash, a ref name, `HEAD`/`@`, optionally
-  one `~<n>` step). Omitted, it defaults to the active ref's target
+  one `~<n>` step). Omitted, it defaults to HEAD's commit
   (`HEAD`) — sekai has no index, so HEAD replaces git's index default.
   An unborn HEAD (no commit to continue) fails with `no commit
   selected`.
