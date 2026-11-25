@@ -3,11 +3,12 @@
 //! Assembles `core` policy over `world` observations and `storage` backends
 //! selected by URL. Parallelism runs over a [`ThreadRunner`] composed into
 //! the instance (the default is the inline [`Sequential`] runner; the
-//! `sekai` binary composes its OS-thread pool); clocks and timing live
-//! here because `core` is `no_std`; argument parsing and output formatting
-//! live in the `sekai` binary. No async runtime is named here: the flows
-//! are executor-agnostic, and a `no_std`/wasm embedding supplies its own
-//! runner.
+//! `sekai` binary composes its OS-thread pool), and clocks and timing run
+//! over a [`Clock`] composed the same way (the default [`Zero`]
+//! reads no time; the `sekai` binary composes its OS clock). Argument
+//! parsing and output formatting live in the `sekai` binary. No async
+//! runtime is named here: the flows are executor-agnostic, and a
+//! `no_std`/wasm embedding supplies its own runner and clock.
 //!
 //! Store-scoped operations hang off [`SekaiInstance`] (open once, then
 //! `list_commits`, ...); operations that touch a world
@@ -20,6 +21,10 @@
 //! A world is any [`WorldTree`]: the operations reach its region files
 //! through [`RegionFile`] handles, so a tree that is not backed by a
 //! filesystem runs the same flows as one that is.
+
+#![no_std]
+
+extern crate alloc;
 
 mod cache;
 mod checkout;
@@ -56,7 +61,7 @@ pub use sekai_core::{
     ScopeName, ScopeNameError,
 };
 pub use sekai_storage::{CommitStats, SekaiStore, SekaiStoreOpener};
-pub use sekai_util::{JobSet, Sequential, ThreadRunner, WorkerPanic};
+pub use sekai_util::{Clock, JobSet, Sequential, ThreadRunner, Timer, WorkerPanic, Zero};
 pub use sekai_world::{
     Region, RegionFile, UnguardedReason, WorldLock, WorldLockMode, WorldLockState, WorldTree,
 };

@@ -18,7 +18,7 @@
 
 ## Verification
 
-<!-- Paste or link: fmt, clippy (incl. thumbv7m/wasm when util/core/anvil/world/storage touched), tests.
+<!-- Paste or link: fmt, clippy (incl. thumbv7m/wasm when util/core/anvil/world/storage/app touched), tests.
       For perf-labeled or hot-path changes, paste the affected command's
       `--timing` before/after (release build). -->
 
@@ -26,8 +26,8 @@
 typos
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo clippy -p sekai-util -p sekai-anvil -p sekai-core -p sekai-world -p sekai-storage --target thumbv7m-none-eabi -- -D warnings
-cargo clippy -p sekai-util -p sekai-anvil -p sekai-core -p sekai-world -p sekai-storage --target wasm32-unknown-unknown --no-default-features -- -D warnings
+cargo clippy -p sekai-util -p sekai-anvil -p sekai-core -p sekai-world -p sekai-storage -p sekai-app --target thumbv7m-none-eabi -- -D warnings
+cargo clippy -p sekai-util -p sekai-anvil -p sekai-core -p sekai-world -p sekai-storage -p sekai-app --target wasm32-unknown-unknown --no-default-features -- -D warnings
 cargo hack --each-feature clippy --workspace --all-targets -- -D warnings
 cargo hack --each-feature nextest run --workspace --all-targets
 cargo deny check

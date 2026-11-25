@@ -232,6 +232,48 @@ pub const fn options() -> sekai_app::CommitOptions {
     sekai_app::CommitOptions {}
 }
 
+/// A [`Clock`](sekai_util::Clock) over the host clock, mirroring the
+/// binary's `OsTime`: benches commit, so they need a real clock, which the
+/// `Zero` default does not provide.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct HostTime;
+
+impl sekai_util::Clock for HostTime {
+    fn timer(&self) -> impl sekai_util::Timer {
+        HostTimer(std::time::Instant::now())
+    }
+
+    fn now_ms(&self) -> Option<u64> {
+        let elapsed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?;
+        u64::try_from(elapsed.as_millis()).ok()
+    }
+}
+
+struct HostTimer(std::time::Instant);
+
+impl sekai_util::Timer for HostTimer {
+    fn stop(self) -> std::time::Duration {
+        self.0.elapsed()
+    }
+}
+
+/// Initialize a store and open it over the inline runner and [`HostTime`].
+pub async fn init(
+    path: impl AsRef<<sekai_storage_local::LocalStore as sekai_app::SekaiStoreOpener>::Path>,
+) -> Result<
+    sekai_app::SekaiInstance<sekai_storage_local::LocalStore, sekai_app::Sequential, HostTime>,
+    sekai_app::AppError,
+> {
+    sekai_app::SekaiInstance::init_with(
+        path,
+        <sekai_app::Sequential as sekai_app::ThreadRunner>::new(0),
+        HostTime,
+    )
+    .await
+}
+
 /// Multi-threaded runtime shared by async benches.
 pub fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_multi_thread()

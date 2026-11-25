@@ -39,9 +39,10 @@ pub async fn run(store: &str, args: &RestoreArgs, style: Styler) -> anyhow::Resu
     let out = ReportOut::of(args.output, style);
     let mut world = HostWorldTree::new(&args.world)
         .with_context(|| format!("failed to inspect world {}", args.world.display()))?;
-    let mut instance = sekai_app::SekaiInstance::<LocalStore, _>::open_with(
+    let mut instance = sekai_app::SekaiInstance::<LocalStore, _, _>::open_with(
         store,
         <crate::runner::OsThread as sekai_app::ThreadRunner>::new(args.jobs),
+        crate::time::OsTime,
     )
     .await
     .with_context(|| format!("restore of {} failed", args.world.display()))?;

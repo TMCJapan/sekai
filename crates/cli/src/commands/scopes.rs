@@ -10,7 +10,14 @@ use crate::envelope::envelope_ok;
 use crate::style::Styler;
 
 pub async fn run(store: &str, action: &ScopeCommand, style: Styler) -> anyhow::Result<()> {
-    let mut instance = sekai_app::SekaiInstance::<LocalStore>::open(store).await?;
+    // Scope creation stamps a Unix-millisecond time, so the host clock is
+    // composed even though the runner stays inline.
+    let mut instance = sekai_app::SekaiInstance::<LocalStore, _, _>::open_with(
+        store,
+        <sekai_app::Sequential as sekai_app::ThreadRunner>::new(0),
+        crate::time::OsTime,
+    )
+    .await?;
 
     match action {
         ScopeCommand::Create {

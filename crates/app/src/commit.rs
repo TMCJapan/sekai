@@ -23,14 +23,17 @@
 //! [`WorldHandleMut::update_cache`] pass, which `sekai commit` runs before
 //! recording (ADR-0034).
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::string::{String, ToString};
+use alloc::sync::Arc;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::time::Duration;
 
 use sekai_core::staging::{Assembled, Ingested, Plan, Previous, assemble};
 use sekai_core::{ApplyOutcome, ChunkCoord, CommitEntry, CommitId, RegionKey, Scope};
 use sekai_storage::{BlobStore, MetaStore, RegionNode, SekaiStore};
-use sekai_util::{JobSet as _, ThreadRunner};
+use sekai_util::{Clock, JobSet as _, ThreadRunner, Timer as _};
 use sekai_world::{Region, RegionFile, WorldLockMode, WorldTree};
 
 use crate::cache::prove_regions_unchanged;
@@ -254,14 +257,14 @@ struct FileOutcome {
     /// History rows for the file's chunks.
     entries: Vec<CommitEntry>,
     /// Coordinates present in the file.
-    present: HashSet<ChunkCoord>,
+    present: BTreeSet<ChunkCoord>,
     /// Blobs newly written to CAS.
     new_blobs: usize,
     /// Per-region timing slice.
     timing: RegionTiming,
 }
 
-impl<W: WorldTree, S: SekaiStore, T: ThreadRunner> WorldHandleMut<'_, W, S, T>
+impl<W: WorldTree, S: SekaiStore, T: ThreadRunner, B: Clock> WorldHandleMut<'_, W, S, T, B>
 where
     W::Error: Send + Sync + 'static,
 {
@@ -286,7 +289,7 @@ where
         scope: Scope,
         progress_builder: &impl BuildProgress,
     ) -> Result<(CommitReport, CommitTimings), AppError> {
-        let total = Instant::now();
+        let total = self.instance.time.timer();
         // The world stays stable for the whole read pass; the store needs no
         // lock - blobs are append-only and the metadata write is atomic.
         let guard = WorldGuard::acquire(self.world, WorldLockMode::Shared)?;
@@ -301,6 +304,7 @@ where
         } = prepare(
             store,
             &self.instance.runner,
+            &self.instance.time,
             self.world,
             &scope,
             progress_builder,
@@ -309,20 +313,20 @@ where
         )
         .await?;
 
-        let created_at_ms = now_ms()?;
+        let created_at_ms = now_ms(&self.instance.time)?;
         // Persist blob writes before the metadata commit: puts only append
         // to the blob log, and this single flush fsyncs it. Timed under
         // `cas`, the durability bucket. This is the only barrier: ingest
         // leaves it to the call site, never hidden inside adapters.
-        let sync_started = Instant::now();
+        let sync_started = self.instance.time.timer();
         store.blob_mut().sync().await?;
-        let dir_sync = sync_started.elapsed();
-        let db_started = Instant::now();
+        let dir_sync = sync_started.stop();
+        let db_started = self.instance.time.timer();
         let report = record_commit(store.meta_mut(), &previous, &staged, created_at_ms).await?;
-        let db_apply = db_started.elapsed();
+        let db_apply = db_started.stop();
 
         let timings = CommitTimings {
-            total: total.elapsed(),
+            total: total.stop(),
             discover,
             universe_load,
             region_open: walk.region_open,
@@ -353,9 +357,13 @@ struct Prepared {
 /// are the same numbers a real commit would commit. Files proven unchanged
 /// through the region-image cache stage straight from the committed region
 /// nodes. `progress_builder` counts the files to ingest.
+// The clock joins the existing pipeline inputs rather than
+// splitting the shared commit/status pipeline into two functions.
+#[allow(clippy::too_many_arguments)]
 async fn prepare<W: WorldTree, S: SekaiStore>(
     store: &S,
     runner: &impl ThreadRunner,
+    time: &impl Clock,
     world: &W,
     scope: &Scope,
     progress_builder: &impl BuildProgress,
@@ -367,7 +375,7 @@ where
 {
     // Discovery walks directories on the runner, owning a share of the
     // world lock like every file pass.
-    let discover_started = Instant::now();
+    let discover_started = time.timer();
     let world_handle = world.clone();
     let discover_guard = Arc::clone(guard);
     let mut regions = runner
@@ -377,9 +385,9 @@ where
         })
         .await
         .map_err(worker_error("ingest worker"))??;
-    let discover = discover_started.elapsed();
+    let discover = discover_started.stop();
 
-    let universe_started = Instant::now();
+    let universe_started = time.timer();
     let keys: Vec<RegionKey> = regions.keys().copied().collect();
     let (previous, plan) = plan_commit(store.meta(), &keys, scope).await?;
     // The proof needs the discovered handles, so it runs before the ingest
@@ -390,7 +398,7 @@ where
         }
         None => BTreeMap::new(),
     };
-    let universe_load = universe_started.elapsed();
+    let universe_load = universe_started.stop();
 
     let changed: Vec<(RegionKey, W::Region)> = plan
         .ingest
@@ -402,6 +410,7 @@ where
         changed,
         store.blob().clone(),
         runner,
+        time,
         scope.clone(),
         &proven,
         progress_builder,
@@ -420,7 +429,7 @@ where
     })
 }
 
-impl<W: WorldTree, S: SekaiStore, T: ThreadRunner> WorldHandle<'_, W, S, T>
+impl<W: WorldTree, S: SekaiStore, T: ThreadRunner, B: Clock> WorldHandle<'_, W, S, T, B>
 where
     W::Error: Send + Sync + 'static,
 {
@@ -442,6 +451,7 @@ where
         status_impl(
             &self.instance.store,
             &self.instance.runner,
+            &self.instance.time,
             self.world,
             scope,
             progress_builder,
@@ -451,7 +461,7 @@ where
     }
 }
 
-impl<W: WorldTree, S: SekaiStore, T: ThreadRunner> WorldHandleMut<'_, W, S, T>
+impl<W: WorldTree, S: SekaiStore, T: ThreadRunner, B: Clock> WorldHandleMut<'_, W, S, T, B>
 where
     W::Error: Send + Sync + 'static,
 {
@@ -470,6 +480,7 @@ where
 async fn status_impl<W: WorldTree, S: SekaiStore>(
     store: &S,
     runner: &impl ThreadRunner,
+    time: &impl Clock,
     world: &W,
     scope: Scope,
     progress_builder: &impl BuildProgress,
@@ -478,7 +489,7 @@ async fn status_impl<W: WorldTree, S: SekaiStore>(
 where
     W::Error: Send + Sync + 'static,
 {
-    let total = Instant::now();
+    let total = time.timer();
 
     // The preview shares the ingest plan but records nothing.
     let Prepared {
@@ -488,7 +499,17 @@ where
         discover,
         universe_load,
         ..
-    } = prepare(store, runner, world, &scope, progress_builder, true, guard).await?;
+    } = prepare(
+        store,
+        runner,
+        time,
+        world,
+        &scope,
+        progress_builder,
+        true,
+        guard,
+    )
+    .await?;
 
     let new_chunks = staged.entries.iter().filter(|e| e.blob.is_some()).count();
     let changed_regions: BTreeSet<RegionKey> = staged
@@ -507,7 +528,7 @@ where
         new_blobs: staged.new_blobs,
     };
     let timings = StatusTimings {
-        total: total.elapsed(),
+        total: total.stop(),
         discover,
         universe_load,
         region_open: walk.region_open,
@@ -524,7 +545,7 @@ struct RegionWalk {
     /// assembly.
     entries: Vec<CommitEntry>,
     /// Coordinates present on disk.
-    present: HashSet<ChunkCoord>,
+    present: BTreeSet<ChunkCoord>,
     /// Blobs newly written to CAS.
     new_blobs: usize,
     /// Time spent opening changed region files.
@@ -593,6 +614,7 @@ async fn ingest_changed<W: WorldTree, S: SekaiStore>(
     changed: Vec<(RegionKey, W::Region)>,
     mut cas: S::Blobs,
     runner: &impl ThreadRunner,
+    time: &impl Clock,
     scope: Scope,
     proven: &BTreeMap<RegionKey, RegionNode>,
     progress_builder: &impl BuildProgress,
@@ -617,10 +639,15 @@ where
         }
     }
     let stage_guard = Arc::clone(guard);
+    let stage_time = time.clone();
     let mut jobs = runner.run(spawnable, move |(key, region)| {
         let _guard = Arc::clone(&stage_guard);
         let location = region.to_string();
-        (key, location, stage_file::<W>(&region, key, &scope))
+        (
+            key,
+            location,
+            stage_file::<W>(&region, key, &scope, &stage_time),
+        )
     });
     // Completion order surfaces a failed file at once; returning drops the
     // set, which stops the files still queued.
@@ -632,13 +659,13 @@ where
         // Store pass: every staged payload reaches the CAS. Stops at the
         // first failure; the rows it staged are discarded with the error.
         for write in staged.writes {
-            let started = Instant::now();
+            let started = time.timer();
             let stored = if dry_run {
                 cas.contains(&write.hash).await.map(|exists| !exists)
             } else {
                 cas.put(&write.hash, &write.payload).await
             };
-            cas_elapsed += started.elapsed();
+            cas_elapsed += started.stop();
             new_blobs += usize::from(stored?);
         }
         progress.step();
@@ -689,7 +716,7 @@ fn proven_outcome<R: RegionFile>(
     scope: &Scope,
 ) -> FileOutcome {
     let mut entries = Vec::new();
-    let mut present = HashSet::new();
+    let mut present = BTreeSet::new();
     for entry in node.entries() {
         let coord = slot_coord(key, entry.cx, entry.cz);
         if !scope.contains(coord) {
@@ -731,7 +758,7 @@ fn slot_coord(key: RegionKey, cx: u8, cz: u8) -> ChunkCoord {
 struct Staged {
     writes: Vec<ChunkWrite>,
     entries: Vec<CommitEntry>,
-    present: HashSet<ChunkCoord>,
+    present: BTreeSet<ChunkCoord>,
     chunks: usize,
     open: Duration,
     hash: Duration,
@@ -748,25 +775,28 @@ fn stage_file<W: WorldTree>(
     region: &W::Region,
     key: RegionKey,
     scope: &Scope,
+    time: &impl Clock,
 ) -> Result<Staged, AppError>
 where
     W::Error: Send + Sync + 'static,
 {
-    let opened = Instant::now();
+    let opened = time.timer();
     let image = region.read(key).map_err(world_error::<W>)?;
     let mut staged = Staged {
-        open: opened.elapsed(),
+        open: opened.stop(),
         ..Default::default()
     };
     let mut failure = None;
     image
-        .visit_chunks(|chunk| match stage_chunk(chunk, key, scope, &mut staged) {
-            Ok(keep_going) => keep_going,
-            Err(error) => {
-                failure = Some(error);
-                false
-            }
-        })
+        .visit_chunks(
+            |chunk| match stage_chunk(chunk, key, scope, &mut staged, time) {
+                Ok(keep_going) => keep_going,
+                Err(error) => {
+                    failure = Some(error);
+                    false
+                }
+            },
+        )
         .map_err(image_error::<W>)?;
     failure.map_or(Ok(staged), Err)
 }
@@ -782,12 +812,13 @@ fn stage_chunk(
     key: RegionKey,
     scope: &Scope,
     staged: &mut Staged,
+    time: &impl Clock,
 ) -> Result<bool, AppError> {
     let coord = ChunkCoord::new(key.dim, key.kind, chunk.x, chunk.z);
     if !scope.contains(coord) {
         return Ok(true);
     }
-    let hash_started = Instant::now();
+    let hash_started = time.timer();
     let hash = chunk.normalized_hash().map_err(|source| match source {
         sekai_anvil::ChunkHashError::Decompress(source) => AppError::Anvil(source),
         source => AppError::UnhashableChunk {
@@ -797,7 +828,7 @@ fn stage_chunk(
             source,
         },
     })?;
-    staged.hash += hash_started.elapsed();
+    staged.hash += hash_started.stop();
     staged.entries.push(CommitEntry::new(coord, Some(hash)));
     staged.present.insert(coord);
     staged.writes.push(ChunkWrite {

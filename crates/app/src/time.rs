@@ -1,23 +1,19 @@
-//! Wall-clock helpers.
+//! Wall-clock reading through the instance's clock.
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use sekai_util::Clock;
 
 use crate::error::AppError;
 
 /// The current time in Unix milliseconds.
 ///
-/// A clock before the epoch returns [`AppError::Clock`]; a reading beyond
-/// `u64` milliseconds returns [`AppError::ClockOutOfRange`]. Neither is a
-/// sentinel timestamp: the trait requires `created_at_ms` to be storable,
+/// No composed clock, a reading before the epoch, or one beyond `u64`
+/// milliseconds yields `None`, surfaced as [`AppError::Clock`]. Neither is
+/// a sentinel timestamp: the trait requires `created_at_ms` to be storable,
 /// and substituting a value would hide the anomaly.
 ///
-/// The app's `ClockOutOfRange` covers only the `u64` conversion. A
-/// backend whose stored range is narrower may reject the value with its
-/// own error after it reaches the backend; callers see that as
-/// [`AppError::Storage`].
-pub(crate) fn now_ms() -> Result<u64, AppError> {
-    let elapsed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(AppError::Clock)?;
-    u64::try_from(elapsed.as_millis()).map_err(|_| AppError::ClockOutOfRange)
+/// The error covers only the reading itself. A backend whose stored range
+/// is narrower may reject the value with its own error after it reaches the
+/// backend; callers see that as [`AppError::Storage`].
+pub(crate) fn now_ms(clock: &impl Clock) -> Result<u64, AppError> {
+    clock.now_ms().ok_or(AppError::Clock)
 }

@@ -13,13 +13,14 @@
 //! partial world would be worse than writing none. Keep-policies in
 //! [`CheckoutOptions`] relax each of those strict behaviors explicitly.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::time::Duration;
 
 use sekai_core::{ChunkCoord, ChunkHash, CommitId, RegionKey, Scope};
 use sekai_storage::{MetaStore, SekaiStore, StorageError};
-use sekai_util::{JobSet as _, ThreadRunner};
+use sekai_util::{Clock, JobSet as _, ThreadRunner, Timer as _};
 use sekai_world::{Region, RegionFile, WorldLockMode, WorldTree};
 
 use crate::error::{AppError, image_error, world_error};
@@ -151,7 +152,7 @@ pub struct CheckoutOptions {
     pub on_missing_file: MissingFilePolicy,
 }
 
-impl<W: WorldTree, S: SekaiStore, T: ThreadRunner> WorldHandleMut<'_, W, S, T>
+impl<W: WorldTree, S: SekaiStore, T: ThreadRunner, B: Clock> WorldHandleMut<'_, W, S, T, B>
 where
     W::Error: Send + Sync + 'static,
 {
@@ -180,16 +181,17 @@ where
     ) -> Result<(CheckoutReport, CheckoutTimings), AppError> {
         let guard = WorldGuard::acquire(self.world, WorldLockMode::Exclusive)?;
         let runner = &self.instance.runner;
+        let time = &self.instance.time;
         let store = &self.instance.store;
         let world = &*self.world;
-        let total_started = Instant::now();
+        let total_started = time.timer();
 
-        let plan_started = Instant::now();
+        let plan_started = time.timer();
         // The commit's creation time stamps every rebuilt file.
         let plan = plan_checkout(store.meta(), commit)
             .await
             .map_err(AppError::Checkout)?;
-        let plan_dt = plan_started.elapsed();
+        let plan_dt = plan_started.stop();
 
         let timestamp = u32::try_from(plan.created_at_ms / 1000).unwrap_or(u32::MAX);
 
@@ -200,7 +202,7 @@ where
 
         // Discovery walks the filesystem, so it runs on the runner with
         // its own share of the world lock, like every file write.
-        let discover_started = Instant::now();
+        let discover_started = time.timer();
         let world_handle = world.clone();
         let discover_guard = Arc::clone(&guard);
         let mut discovered = runner
@@ -210,10 +212,10 @@ where
             })
             .await
             .map_err(worker_error("checkout worker"))??;
-        let discover_dt = discover_started.elapsed();
+        let discover_dt = discover_started.stop();
         discovered.retain(|key, _| scope.matches_region(*key));
 
-        let files_started = Instant::now();
+        let files_started = time.timer();
         let jobs = plan_files(groups, &discovered, world, options)?;
         let report = run_files::<W, _>(
             jobs,
@@ -225,10 +227,10 @@ where
             progress_builder,
         )
         .await?;
-        let files_dt = files_started.elapsed();
+        let files_dt = files_started.stop();
 
         let timings = CheckoutTimings {
-            total: total_started.elapsed(),
+            total: total_started.stop(),
             plan: plan_dt,
             discover: discover_dt,
             checkout_files: files_dt,

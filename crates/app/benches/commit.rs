@@ -6,7 +6,6 @@ mod common;
 use common::{MEDIUM, SMALL, generate, options, runtime, tempdir};
 use criterion::{Criterion, criterion_group, criterion_main};
 use sekai_app::Scope;
-use sekai_storage_local::LocalStore;
 use sekai_world_local::HostWorldTree;
 
 fn benches(c: &mut Criterion) {
@@ -19,9 +18,7 @@ fn benches(c: &mut Criterion) {
             let mut world = HostWorldTree::new(&world_path).expect("world resolves");
             generate(&world_path, &SMALL);
             let store = root.path().join("store").to_string_lossy().into_owned();
-            let mut instance = rt
-                .block_on(sekai_app::SekaiInstance::<LocalStore>::init(&store))
-                .expect("open works");
+            let mut instance = rt.block_on(common::init(&store)).expect("open works");
             rt.block_on(
                 instance
                     .world_mut(&mut world)
@@ -37,9 +34,7 @@ fn benches(c: &mut Criterion) {
         let mut world = HostWorldTree::new(&world_path).expect("world resolves");
         generate(&world_path, &SMALL);
         let store = root.path().join("store").to_string_lossy().into_owned();
-        let mut instance = rt
-            .block_on(sekai_app::SekaiInstance::<LocalStore>::init(&store))
-            .expect("open works");
+        let mut instance = rt.block_on(common::init(&store)).expect("open works");
         rt.block_on(
             instance
                 .world_mut(&mut world)
@@ -63,9 +58,7 @@ fn benches(c: &mut Criterion) {
             let mut world = HostWorldTree::new(&world_path).expect("world resolves");
             generate(&world_path, &MEDIUM);
             let store = root.path().join("store").to_string_lossy().into_owned();
-            let mut instance = rt
-                .block_on(sekai_app::SekaiInstance::<LocalStore>::init(&store))
-                .expect("open works");
+            let mut instance = rt.block_on(common::init(&store)).expect("open works");
             rt.block_on(
                 instance
                     .world_mut(&mut world)

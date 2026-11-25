@@ -5,14 +5,16 @@
 //! refs: commits move the active ref through the store, and no command
 //! creates, deletes, or activates a ref.
 
+use alloc::vec::Vec;
+
 use sekai_core::{CommitId, CommitRef, RefKind, Revision};
 use sekai_storage::{ResolveError, SekaiStore};
-use sekai_util::ThreadRunner;
+use sekai_util::{Clock, ThreadRunner};
 
 use crate::error::AppError;
 use crate::instance::SekaiInstance;
 
-impl<S: SekaiStore, T: ThreadRunner> SekaiInstance<S, T> {
+impl<S: SekaiStore, T: ThreadRunner, B: Clock> SekaiInstance<S, T, B> {
     /// The active ref, or `None` when the store has none.
     pub async fn active_ref(&self) -> Result<Option<CommitRef>, AppError> {
         sekai_storage::refs::active_ref(self.store.meta())

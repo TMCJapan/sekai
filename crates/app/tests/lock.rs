@@ -42,7 +42,7 @@ struct Fixture {
     _guard: tempfile::TempDir,
     world_path: PathBuf,
     world: HostWorldTree,
-    instance: SekaiInstance<LocalStore, runner::OsThread>,
+    instance: SekaiInstance<LocalStore, runner::OsThread, fixtures::time::HostTime>,
     /// The fixture's only commit.
     commit: CommitId,
     /// A blob that the fixture commit references, for blob-level operations.
@@ -68,9 +68,10 @@ impl Fixture {
         write_region(world_path.join("region/r.1.0.mca"), &payload);
         let mut world = HostWorldTree::new(&world_path).unwrap();
         let store = root.join("store").to_string_lossy().into_owned();
-        let mut instance = SekaiInstance::<LocalStore, runner::OsThread>::init_with(
+        let mut instance = SekaiInstance::<LocalStore, runner::OsThread, _>::init_with(
             &store,
             runner::OsThread::new(0),
+            fixtures::time::HostTime,
         )
         .await
         .unwrap();

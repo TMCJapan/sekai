@@ -5,7 +5,6 @@ mod fixtures;
 use fixtures::chunk_nbt;
 
 use sekai_app::DEFAULT_REF_NAME;
-use sekai_storage_local::LocalStore;
 use sekai_world_local::HostWorldTree;
 use std::path::Path;
 
@@ -31,7 +30,7 @@ fn write_region(path: impl AsRef<Path>, chunks: &[(i32, i32, Vec<u8>)]) {
 }
 
 async fn commit<S: sekai_app::SekaiStore>(
-    instance: &mut sekai_app::SekaiInstance<S>,
+    instance: &mut sekai_app::SekaiInstance<S, impl sekai_app::ThreadRunner, impl sekai_app::Clock>,
     world_tree: &mut HostWorldTree,
 ) -> sekai_app::CommitReport {
     instance
@@ -50,9 +49,7 @@ async fn commit<S: sekai_app::SekaiStore>(
 async fn a_fresh_store_starts_with_one_active_ref() {
     let root = tempdir();
     let store = root.path().join("store").to_string_lossy().into_owned();
-    let instance = sekai_app::SekaiInstance::<LocalStore>::init(&store)
-        .await
-        .unwrap();
+    let instance = fixtures::init(&store).await.unwrap();
 
     let active = instance
         .active_ref()
@@ -79,9 +76,7 @@ async fn a_commit_hangs_from_the_active_ref() {
         &[(0, 0, chunk_nbt("marker-1"))],
     );
 
-    let mut instance = sekai_app::SekaiInstance::<LocalStore>::init(&store)
-        .await
-        .unwrap();
+    let mut instance = fixtures::init(&store).await.unwrap();
     let first = commit(&mut instance, &mut world).await;
 
     // The active ref moved onto the new commit.

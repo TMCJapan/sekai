@@ -7,6 +7,7 @@ pub mod commands;
 pub mod envelope;
 pub mod runner;
 pub mod style;
+pub mod time;
 
 use cli::Cli;
 use envelope::{envelope_err, render_error};

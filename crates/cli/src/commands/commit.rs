@@ -22,6 +22,7 @@ use crate::cli::Selection;
 use crate::envelope::envelope_ok;
 use crate::runner::OsThread;
 use crate::style::Styler;
+use crate::time::OsTime;
 
 pub async fn run(
     store: &str,
@@ -33,9 +34,10 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     let mut world = HostWorldTree::new(&world_path)
         .with_context(|| format!("failed to inspect world {}", world_path.as_ref().display()))?;
-    let mut instance = sekai_app::SekaiInstance::<LocalStore, _>::open_with(
+    let mut instance = sekai_app::SekaiInstance::<LocalStore, _, _>::open_with(
         store,
         <OsThread as ThreadRunner>::new(jobs),
+        OsTime,
     )
     .await
     .with_context(|| format!("commit of {} failed", world_path.as_ref().display()))?;

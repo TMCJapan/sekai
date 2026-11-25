@@ -8,9 +8,7 @@ use fixtures::chunk_nbt;
 
 use sekai_app::{
     AppError, Area, CommitOptions, Dimension, Rect, RegionKind, RestoreOptions, Revision, Scope,
-    SekaiInstance,
 };
-use sekai_storage_local::LocalStore;
 use sekai_world_local::HostWorldTree;
 use std::path::Path;
 
@@ -77,7 +75,7 @@ async fn restore_defaults_to_the_active_ref_and_moves_nothing() {
     let region = world_path.join("region/r.0.0.mca");
     write_region(&region, &[(0, 0, chunk_nbt("marker-1"))]);
 
-    let mut instance = SekaiInstance::<LocalStore>::init(&store).await.unwrap();
+    let mut instance = fixtures::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
         .commit(options(), Scope::World, &())
@@ -121,7 +119,7 @@ async fn restore_only_touches_the_selection() {
     write_region(&selected, &[(0, 0, chunk_nbt("marker-1"))]);
     write_region(&outside, &[(32, 0, chunk_nbt("marker-2"))]);
 
-    let mut instance = SekaiInstance::<LocalStore>::init(&store).await.unwrap();
+    let mut instance = fixtures::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
         .commit(options(), Scope::World, &())
@@ -162,7 +160,7 @@ async fn no_overlay_deletes_source_unknown_files_and_overlay_keeps_them() {
     let added = world_path.join("region/r.1.0.mca");
     write_region(&known, &[(0, 0, chunk_nbt("marker-1"))]);
 
-    let mut instance = SekaiInstance::<LocalStore>::init(&store).await.unwrap();
+    let mut instance = fixtures::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
         .commit(options(), Scope::World, &())
@@ -215,7 +213,7 @@ async fn restore_replaces_file_content_wholesale_even_in_overlay() {
     let region = world_path.join("region/r.0.0.mca");
     write_region(&region, &[(0, 0, chunk_nbt("marker-1"))]);
 
-    let mut instance = SekaiInstance::<LocalStore>::init(&store).await.unwrap();
+    let mut instance = fixtures::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
         .commit(options(), Scope::World, &())
@@ -251,7 +249,7 @@ async fn restore_from_an_explicit_source_leaves_head_alone() {
     let region = world_path.join("region/r.0.0.mca");
     write_region(&region, &[(0, 0, chunk_nbt("marker-1"))]);
 
-    let mut instance = SekaiInstance::<LocalStore>::init(&store).await.unwrap();
+    let mut instance = fixtures::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
         .commit(options(), Scope::World, &())
@@ -315,7 +313,7 @@ async fn restore_recreates_a_deleted_file() {
     let region = world_path.join("region/r.0.0.mca");
     write_region(&region, &[(0, 0, chunk_nbt("marker-1"))]);
 
-    let mut instance = SekaiInstance::<LocalStore>::init(&store).await.unwrap();
+    let mut instance = fixtures::init(&store).await.unwrap();
     instance
         .world_mut(&mut world)
         .commit(options(), Scope::World, &())
@@ -351,7 +349,7 @@ async fn restore_fails_without_a_source_commit() {
         &[(0, 0, chunk_nbt("marker-1"))],
     );
 
-    let mut instance = SekaiInstance::<LocalStore>::init(&store).await.unwrap();
+    let mut instance = fixtures::init(&store).await.unwrap();
     // Unborn HEAD: no default source exists.
     let err = instance
         .restore(
