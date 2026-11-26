@@ -24,6 +24,7 @@ carries the bare result only.
 | `cache` | clean record or update report (+timings with `--timing`) | table + JSON block (`update` only) | `clean` has no phases |
 | `diff` | single array, grouped array (multi), or timed object | table + JSON block | `--in`/`--region` select chunks; one chunk keeps the single shape |
 | `branch` | branch array | n/a | no phases exist |
+| `repo` | record | n/a | no phases exist |
 
 Without `--timing`, `--json` emits the bare result. With `--timing`,
 the report that would be a bare array (`diff`) is promoted to an object
@@ -41,7 +42,7 @@ Every invocation prints exactly one JSON object to stdout:
 {"command": "<name>", "status": "error", "error": "<full context chain>"}
 ```
 
-`command` is one of `init`, `commit`, `status`, `checkout`, `restore`, `log`, `scope`, `cache`, `diff`, `branch`.
+`command` is one of `init`, `commit`, `status`, `checkout`, `restore`, `log`, `scope`, `cache`, `diff`, `branch`, `repo`.
 The error string is the full anyhow context chain (outermost message
 first, then `Caused by:` lines), JSON-escaped.
 
@@ -54,6 +55,10 @@ first, then `Caused by:` lines), JSON-escaped.
 | 2 | Usage error (unknown flags, bad values). clap prints its own human-readable error to stderr. |
 
 ## Compatibility
+
+Change (ADR-0040): the `repo` command is added, with `create` as its
+first operation. `command` gains the value `repo`; its payload is the
+repository record the remote reports. See the `repo` payload below.
 
 Change: the new `branch` command lists branches, and `command` gains
 the value `branch`. See the `branch` payload below.
@@ -361,6 +366,23 @@ outside the measured phases.
 unborn: a fresh store lists `main` that way, before its first commit.
 `head` is `true` on HEAD's branch. There are no patterns; filter with
 `jq` (`.result[] | select(.name | startswith("refs/heads/feature/"))`).
+
+### `repo`
+
+Create (`repo create <organization/name> --remote <URL> [-d <text>]`)
+returns the repository record the remote reports:
+
+```jsonc
+{"organization": "my-org", "name": "my-project", "description": "My new repository", "created": true}
+```
+
+`description` is `null` when none was given. `created` is `true` when
+this run created the repository and `false` when it already existed
+(idempotent, like `git init`); the remote worker currently always
+reports `true` because creation is stubbed (ADR-0040). A remote
+rejection (non-2xx) is a runtime error envelope carrying the remote's
+`{"code", "message"}` body; an address outside the `organization/name`
+grammar or a remote URL that is not http(s) is a usage error (exit 2).
 
 ## Compatibility promise
 

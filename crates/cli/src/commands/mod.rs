@@ -9,6 +9,7 @@ mod diff_render;
 mod init;
 mod log;
 mod progress;
+mod repo;
 mod restore;
 mod scopes;
 mod status;
@@ -138,5 +139,6 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
         Command::Diff(args) => diff::run(&cli.store, args, style).await,
         Command::Restore(args) => restore::run(&cli.store, args, style).await,
         Command::Branch(args) => branch::run(&cli.store, args, style).await,
+        Command::Repo { action } => repo::run(action, style).await,
     }
 }
