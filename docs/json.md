@@ -24,7 +24,7 @@ carries the bare result only.
 | `cache` | clean record or update report (+timings with `--timing`) | table + JSON block (`update` only) | `clean` has no phases |
 | `diff` | single array, grouped array (multi), or timed object | table + JSON block | `--in`/`--region` select chunks; one chunk keeps the single shape |
 | `branch` | branch array | n/a | no phases exist |
-| `repo` | record | n/a | no phases exist |
+| `repo` | record or repository array | n/a | no phases exist |
 
 Without `--timing`, `--json` emits the bare result. With `--timing`,
 the report that would be a bare array (`diff`) is promoted to an object
@@ -55,6 +55,10 @@ first, then `Caused by:` lines), JSON-escaped.
 | 2 | Usage error (unknown flags, bad values). clap prints its own human-readable error to stderr. |
 
 ## Compatibility
+
+Change (ADR-0041): the `repo` command gains `list`. Its payload is an
+array of repository summaries; `create` keeps its existing record
+payload. See the `repo` payload below.
 
 Change (ADR-0040): the `repo` command is added, with `create` as its
 first operation. `command` gains the value `repo`; its payload is the
@@ -383,6 +387,21 @@ reports `true` because creation is stubbed (ADR-0040). A remote
 rejection (non-2xx) is a runtime error envelope carrying the remote's
 `{"code", "message"}` body; an address outside the `organization/name`
 grammar or a remote URL that is not http(s) is a usage error (exit 2).
+
+List (`repo list [ORGANIZATION] --remote <URL> [-L <int>]`) returns an
+array of repository summaries in the remote's listing order:
+
+```jsonc
+[{"organization": "my-org", "name": "my-project", "description": "My new repository"},
+ {"organization": "my-org", "name": "my-world", "description": null}]
+```
+
+`description` is `null` when none was given. `--limit` caps the array
+(default 30; `0` keeps every row), and the organization filter is
+optional. Like `create`, a remote rejection is a runtime error envelope
+and malformed arguments are usage errors (exit 2). The remote worker
+currently returns an empty array because listing storage is stubbed
+(ADR-0041).
 
 ## Compatibility promise
 

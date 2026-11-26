@@ -193,6 +193,90 @@ fn an_unreachable_remote_fails_with_an_error_envelope() {
 }
 
 #[test]
+fn lists_repositories_over_http() {
+    let body = r#"[{"organization":"my-org","name":"alpha","description":"First repository"},{"organization":"my-org","name":"beta","description":null}]"#;
+    let (url, server) = mock_remote(200, body);
+    let output = sekai(&["repo", "list", "--remote", &url, "--json"]);
+    assert_eq!(
+        stdout(&output),
+        format!("{{\"command\":\"repo\",\"status\":\"ok\",\"result\":{body}}}\n")
+    );
+    let captured = server.join().unwrap();
+    assert_eq!(captured.request_line, "GET /v1/repos HTTP/1.1");
+}
+
+#[test]
+fn filters_by_organization_and_limits_the_listing() {
+    let (url, server) = mock_remote(
+        200,
+        r#"[{"organization":"my-org","name":"alpha","description":"First repository"},{"organization":"my-org","name":"beta","description":null},{"organization":"my-org","name":"gamma","description":"Third repository"}]"#,
+    );
+    let output = sekai(&["repo", "list", "my-org", "--remote", &url, "--limit", "2"]);
+    assert_eq!(
+        stdout(&output),
+        "my-org/alpha\tFirst repository\nmy-org/beta\n"
+    );
+    let captured = server.join().unwrap();
+    assert_eq!(
+        captured.request_line,
+        "GET /v1/repos?organization=my-org HTTP/1.1"
+    );
+}
+
+#[test]
+fn a_zero_limit_lists_every_repository() {
+    let (url, server) = mock_remote(
+        200,
+        r#"[{"organization":"my-org","name":"alpha","description":null},{"organization":"my-org","name":"beta","description":null}]"#,
+    );
+    let output = sekai(&["repo", "list", "--remote", &url, "-L", "0", "--json"]);
+    assert_eq!(
+        stdout(&output),
+        "{\"command\":\"repo\",\"status\":\"ok\",\"result\":[{\"organization\":\"my-org\",\"name\":\"alpha\",\"description\":null},{\"organization\":\"my-org\",\"name\":\"beta\",\"description\":null}]}\n"
+    );
+    server.join().unwrap();
+}
+
+#[test]
+fn a_listing_rejection_fails_with_an_error_envelope() {
+    let (url, server) = mock_remote(
+        503,
+        r#"{"code":"unavailable","message":"storage is not bound"}"#,
+    );
+    let output = sekai(&["repo", "list", "--remote", &url, "--json"]);
+    assert_eq!(output.status.code(), Some(1));
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["command"], "repo");
+    assert_eq!(envelope["status"], "error");
+    let error = envelope["error"].as_str().unwrap();
+    assert!(error.contains("HTTP 503"), "{error}");
+    assert!(error.contains("unavailable"), "{error}");
+    assert!(error.contains("storage is not bound"), "{error}");
+    server.join().unwrap();
+}
+
+#[test]
+fn an_unreachable_remote_fails_a_listing() {
+    // Bind then drop: the port is almost certainly closed again.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    let output = sekai(&["repo", "list", "--remote", &url, "--json"]);
+    assert_eq!(output.status.code(), Some(1));
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["command"], "repo");
+    assert_eq!(envelope["status"], "error");
+    assert!(
+        envelope["error"]
+            .as_str()
+            .unwrap()
+            .contains("failed to reach"),
+        "{}",
+        envelope["error"]
+    );
+}
+
+#[test]
 fn usage_errors_exit_two() {
     for args in [
         // Both address parts are required.
@@ -205,6 +289,24 @@ fn usage_errors_exit_two() {
         ],
         // The remote is required.
         vec!["repo", "create", "my-org/my-project"],
+        // The list remote is required too, and its organization must be
+        // one valid name component.
+        vec!["repo", "list"],
+        vec![
+            "repo",
+            "list",
+            "my org",
+            "--remote",
+            "http://localhost:8787",
+        ],
+        vec![
+            "repo",
+            "list",
+            "--remote",
+            "http://localhost:8787",
+            "--limit",
+            "-1",
+        ],
     ] {
         let output = sekai(&args);
         assert_eq!(output.status.code(), Some(2), "{args:?}");

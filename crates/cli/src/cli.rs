@@ -4,7 +4,7 @@ use crate::style::ColorChoice;
 use clap::{Parser, Subcommand};
 use reqwest::Url;
 use sekai_app::{Area, ChunkCoord, Dimension, Rect, RegionKind, Revision, Scope, ScopeName};
-use sekai_util::RepoAddress;
+use sekai_util::{RepoAddress, RepoName};
 use std::path::{Path, PathBuf};
 
 /// Chunk-level deduplicated version control for Minecraft region files.
@@ -305,13 +305,31 @@ pub enum RepoCommand {
         #[arg(long)]
         json: bool,
     },
+    /// List repositories on the remote (like `gh repo list`).
+    #[command(visible_alias = "ls")]
+    List {
+        /// Organization whose repositories to list. Omit to list every
+        /// organization.
+        #[arg(value_name = "ORGANIZATION")]
+        organization: Option<RepoName>,
+        /// Base URL of the sekai remote, e.g. `http://localhost:8787`.
+        #[arg(long, value_name = "URL", value_parser = parse_remote_url)]
+        remote: Url,
+        /// Maximum number of repositories to list. `0` lists every
+        /// repository. Defaults to 30, like `gh repo list`.
+        #[arg(long, short = 'L', value_name = "INT", default_value_t = 30)]
+        limit: usize,
+        /// Emit output as JSON instead of human text. See docs/json.md.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 impl RepoCommand {
     /// Whether the operation runs in JSON mode (`--json`).
     pub const fn output_json(&self) -> bool {
         match self {
-            Self::Create { json, .. } => *json,
+            Self::Create { json, .. } | Self::List { json, .. } => *json,
         }
     }
 }
