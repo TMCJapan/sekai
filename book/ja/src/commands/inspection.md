@@ -6,8 +6,10 @@
 sekai log
 sekai status ./world
 sekai diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a --in overworld:0,0
+sekai worktree list
 ```
 
 - `log`: コミットを古い順に表示します。日時は Unix ミリ秒タイムスタンプで保持されます（RFC 3339 形式の日時表示は通常テキスト出力時のみ）。`--stat` を指定すると、コミットごとの変更統計（fresh / tombstone / new-blob / effective の件数）も追加表示されます。ストアが空の場合は標準エラー出力に案内を表示し、終了コード 0 で正常終了します。
 - `status`: コミットを実行した場合に何が記録されるかをプレビューします。比較基準となるコミット（`latest`、ストアが空の場合は `null`）、変更のあったリージョン（新規追加・削除されたファイルを区別して表示）、新規に記録されるチャンク数、ツームストーン数、CAS に存在しない Blob などを報告します。`clean` は指定スコープ内が最新コミットと完全に一致していることを示し、その間にワールドが更新されない限り、直後に実行する `commit` の記録件数と完全に一致します。なお、`commit --dry-run` というオプションはあえて用意されておらず、この `status` コマンドがその役割を担います。`--jobs N` でプレビュー処理のワーカースレッド数（`0` は CPU コア数）を指定できます。
 - `diff`: 2つのコミット間、または稼働中の実ワールド（`--world`）とコミット間のチャンク NBT を比較します。`--in DIM:x,z` で単一チャンクを指定した場合はそのチャンクの詳細な差分が出力されます。複数の範囲を指定した場合はグループ化された出力に切り替わり、差分のないチャンクは自動的に省略されます。スコープフラグ（`--in`, `--region`, `--kind`）で比較対象を指定できます（詳細は[スコープ（対象範囲）の選択](../scope.md)を参照）。比較対象の一方にチャンクが存在しないかツームストーンになっている場合は、空の NBT compound として扱って比較されます。存在しない座標を指定してもエラーにはなりません（[ADR-0006](https://github.com/tmcjapan/sekai/blob/main/docs/adr/0006-diff-missing-as-empty.md) を参照）。データが破損している場合や必要な Blob が欠損している場合のみエラーとなります。`--show-values` を指定すると、通常テキスト出力時に新旧の具体的な値を表示します。
+- `worktree list`: ストアがバックアップするすべてのワークツリーを `git worktree list` と同じ形式で表示します。ストア自身（メイン）のワークツリーが先頭、以降はパス順で、各行に短縮された HEAD と `[branch]` または `(detached HEAD)` を表示します。未出生（unborn）の HEAD はゼロ表示です。`--porcelain` は機械可読のレコードブロックを出力します（`-z` を指定すると改行の代わりに NUL で終端）。`-v` は受け付けますが効果はありません（sekai のワークツリーには locked / prunable の注釈がないため）。ワークツリーはローカルストアの機能です（[ADR-0038](https://github.com/tmcjapan/sekai/blob/main/docs/adr/0038-worktrees-local-only.md) を参照）。
