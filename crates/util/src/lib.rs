@@ -23,6 +23,7 @@ pub mod named_scope;
 pub mod refs;
 pub mod region;
 pub mod region_kind;
+pub mod repo;
 pub mod revision;
 pub mod scope;
 pub mod thread;
@@ -34,13 +35,15 @@ pub use chunk_coord::ChunkCoord;
 pub use commit::{Commit, CommitId};
 pub use dimension::Dimension;
 pub use error::{
-    HexError, NamedScopeError, ParseCodeError, RefNameError, RevisionError, ScopeNameError,
+    HexError, NamedScopeError, ParseCodeError, RefNameError, RepoAddressError, RepoNameError,
+    RevisionError, ScopeNameError,
 };
 pub use hash::{BytesHasher, ChunkHash, hash_bytes};
 pub use named_scope::{NamedScope, ScopeName};
 pub use refs::{CommitRef, DEFAULT_REF_NAME, Ref, RefKind, RefName};
 pub use region::{ApplyOutcome, CommitEntry, RegionFingerprint, RegionKey};
 pub use region_kind::{RegionKind, UnknownRegionKind};
+pub use repo::{RepoAddress, RepoName};
 pub use revision::{Revision, RevisionBase};
 pub use scope::{Area, Rect, Scope};
 pub use thread::{JobSet, Sequential, ThreadRunner, WorkerPanic};

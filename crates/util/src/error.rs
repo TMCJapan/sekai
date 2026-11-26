@@ -24,6 +24,16 @@ impl From<NameRule> for ScopeNameError {
     }
 }
 
+impl From<NameRule> for RepoNameError {
+    fn from(rule: NameRule) -> Self {
+        match rule {
+            NameRule::Empty => Self::Empty,
+            NameRule::TooLong => Self::TooLong(crate::name::MAX_LEN),
+            NameRule::BadChar(c) => Self::BadChar(c),
+        }
+    }
+}
+
 /// Error returned when parsing an invalid named code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParseCodeError(pub ());
@@ -155,6 +165,68 @@ impl fmt::Display for ScopeNameError {
 }
 
 impl core::error::Error for ScopeNameError {}
+
+/// Repository name validation failure: one component of a repository
+/// address (an organization or a repository name).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepoNameError {
+    /// Name was empty.
+    Empty,
+    /// Name exceeded the limit; the payload is that limit in bytes
+    /// (`RepoName::MAX_LEN`).
+    TooLong(usize),
+    /// Name held a character outside ASCII alphanumerics, `.`, `_`, `-`.
+    /// A `/` lands here too: an address component never holds a separator.
+    BadChar(char),
+    /// Name is `.` or `..`, which traverse a path instead of naming one.
+    Traversal,
+}
+
+impl fmt::Display for RepoNameError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "repository name is empty"),
+            Self::TooLong(limit) => write!(f, "repository name exceeds {limit} bytes"),
+            Self::BadChar(c) => write!(f, "repository name holds invalid character: {c:?}"),
+            Self::Traversal => write!(f, "repository name is '.' or '..', which traverse"),
+        }
+    }
+}
+
+impl core::error::Error for RepoNameError {}
+
+/// Repository address validation failure: an `organization/name` pair
+/// outside the grammar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepoAddressError {
+    /// The address holds no `/` separator; both parts are required.
+    MissingSeparator,
+    /// The organization part is not a valid name.
+    Organization(RepoNameError),
+    /// The repository name part is not a valid name.
+    Name(RepoNameError),
+}
+
+impl fmt::Display for RepoAddressError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingSeparator => {
+                write!(f, "repository address expects organization/name")
+            }
+            Self::Organization(err) => write!(f, "invalid organization: {err}"),
+            Self::Name(err) => write!(f, "invalid repository name: {err}"),
+        }
+    }
+}
+
+impl core::error::Error for RepoAddressError {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Organization(err) | Self::Name(err) => Some(err),
+            Self::MissingSeparator => None,
+        }
+    }
+}
 
 /// A named scope record that would select nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
