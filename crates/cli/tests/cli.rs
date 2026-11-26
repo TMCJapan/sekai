@@ -7,7 +7,7 @@ use sekai_app::{Dimension, Rect, Revision};
 use sekai_cli::{
     cli::{
         BranchArgs, CacheCommand, Cli, Command, DiffArgs, InlineSelection, OnMissingBlob,
-        OnMissingFile, RegionSpec, ScopeCommand, Selection, TimingArgs,
+        OnMissingFile, RegionSpec, RepoCommand, ScopeCommand, Selection, TimingArgs,
     },
     style::ColorChoice,
 };
@@ -997,5 +997,105 @@ fn branch_takes_no_patterns() {
     ] {
         let err = Cli::try_parse_from(argv).expect_err("no patterns");
         assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+}
+
+#[test]
+fn parses_repo_create() {
+    let cli = Cli::try_parse_from([
+        "sekai",
+        "repo",
+        "create",
+        "my-org/my-project",
+        "--remote",
+        "http://localhost:8787",
+        "-d",
+        "My new repository",
+        "--json",
+    ])
+    .expect("repo create parses");
+    let Command::Repo {
+        action:
+            RepoCommand::Create {
+                address,
+                description,
+                remote,
+                json: true,
+            },
+    } = &cli.command
+    else {
+        panic!("unexpected command: {:?}", cli.command);
+    };
+    assert_eq!(address.to_string(), "my-org/my-project");
+    assert_eq!(description.as_deref(), Some("My new repository"));
+    assert_eq!(remote.as_str(), "http://localhost:8787/");
+    assert_eq!(cli.command.name(), "repo");
+    assert!(cli.command.output_json());
+
+    // The description is optional; --description spells -d.
+    let cli = Cli::try_parse_from([
+        "sekai",
+        "repo",
+        "create",
+        "my-org/my-project",
+        "--remote",
+        "http://localhost:8787",
+        "--description",
+        "desc",
+    ])
+    .expect("repo create parses");
+    assert!(matches!(
+        &cli.command,
+        Command::Repo {
+            action: RepoCommand::Create { description: Some(desc), json: false, .. }
+        } if desc == "desc"
+    ));
+    assert!(!cli.command.output_json());
+
+    for args in [
+        // Both address parts are required: there is no default organization.
+        vec![
+            "sekai",
+            "repo",
+            "create",
+            "my-project",
+            "--remote",
+            "http://h",
+        ],
+        vec!["sekai", "repo", "create", "a/b/c", "--remote", "http://h"],
+        vec![
+            "sekai",
+            "repo",
+            "create",
+            "my-org/my project",
+            "--remote",
+            "http://h",
+        ],
+        vec!["sekai", "repo", "create", "org/..", "--remote", "http://h"],
+        // The remote is required and must be an http(s) URL.
+        vec!["sekai", "repo", "create", "my-org/my-project"],
+        vec![
+            "sekai",
+            "repo",
+            "create",
+            "my-org/my-project",
+            "--remote",
+            "not a url",
+        ],
+        vec![
+            "sekai",
+            "repo",
+            "create",
+            "my-org/my-project",
+            "--remote",
+            "ftp://host",
+        ],
+        vec!["sekai", "repo", "create"],
+        vec!["sekai", "repo"],
+    ] {
+        assert!(
+            Cli::try_parse_from(&args).is_err(),
+            "{args:?} must be refused"
+        );
     }
 }

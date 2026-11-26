@@ -2,7 +2,9 @@
 
 use crate::style::ColorChoice;
 use clap::{Parser, Subcommand};
+use reqwest::Url;
 use sekai_app::{Area, ChunkCoord, Dimension, Rect, RegionKind, Revision, Scope, ScopeName};
+use sekai_util::RepoAddress;
 use std::path::{Path, PathBuf};
 
 /// Chunk-level deduplicated version control for Minecraft region files.
@@ -130,6 +132,11 @@ pub enum Command {
     Restore(RestoreArgs),
     /// List branches.
     Branch(BranchArgs),
+    /// Manage repositories hosted on a sekai remote (ADR-0035).
+    Repo {
+        #[command(subcommand)]
+        action: RepoCommand,
+    },
 }
 
 impl Command {
@@ -146,6 +153,7 @@ impl Command {
             Self::Diff(_) => "diff",
             Self::Restore(_) => "restore",
             Self::Branch(_) => "branch",
+            Self::Repo { .. } => "repo",
         }
     }
 
@@ -162,6 +170,7 @@ impl Command {
             Self::Diff(args) => args.output.json,
             Self::Restore(args) => args.output.json,
             Self::Branch(args) => args.json,
+            Self::Repo { action } => action.output_json(),
         }
     }
 }
@@ -268,6 +277,53 @@ impl CacheCommand {
             Self::Update { output, .. } => output.json,
         }
     }
+}
+
+/// Hosted-repository operations (ADR-0035, ADR-0040).
+///
+/// The remote is a sekai HTTP API server - the Cloudflare worker today,
+/// a self-hosted `sekai serve` later - named by its base URL. No local
+/// store is involved: like `gh repo create`, these run outside any
+/// repository.
+#[derive(Debug, Subcommand)]
+pub enum RepoCommand {
+    /// Create a repository on the remote (like `gh repo create`).
+    Create {
+        /// Repository address, `organization/name`. Both parts are
+        /// required: sekai has no accounts, so there is no default
+        /// organization. Each part is 1-255 bytes of ASCII alphanumerics
+        /// plus ".", "_", "-".
+        #[arg(value_name = "ORGANIZATION/NAME")]
+        address: RepoAddress,
+        /// Description of the repository.
+        #[arg(long, short = 'd', value_name = "TEXT")]
+        description: Option<String>,
+        /// Base URL of the sekai remote, e.g. `http://localhost:8787`.
+        #[arg(long, value_name = "URL", value_parser = parse_remote_url)]
+        remote: Url,
+        /// Emit output as JSON instead of human text. See docs/json.md.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+impl RepoCommand {
+    /// Whether the operation runs in JSON mode (`--json`).
+    pub const fn output_json(&self) -> bool {
+        match self {
+            Self::Create { json, .. } => *json,
+        }
+    }
+}
+
+/// Parse a remote base URL at the command line (ADR-0013): only `http`
+/// and `https` name a sekai API server.
+fn parse_remote_url(raw: &str) -> Result<Url, String> {
+    let url = Url::parse(raw).map_err(|err| format!("invalid remote URL {raw:?}: {err}"))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(format!("remote URL {raw:?} must be http or https"));
+    }
+    Ok(url)
 }
 
 /// `--timing`/`--json`/`--progress` flags shared by every report command

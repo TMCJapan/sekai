@@ -25,7 +25,19 @@ allow-git = [
 version = 2
 # BSD-3-Clause covers `instant`, a non-optional transitive dep of sled
 # (parking_lot <- sled).
-allow = ["MIT", "Apache-2.0", "Unicode-3.0", "Zlib", "BSD-3-Clause"]
+# ISC covers `ring`, the rustls crypto provider the CLI installs for
+# reqwest (ADR-0040); ring is Apache-2.0 AND ISC.
+# CDLA-Permissive-2.0 covers `webpki-root-certs`, the Mozilla root-store
+# data bundle behind rustls-platform-verifier (reqwest's TLS roots).
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Unicode-3.0",
+  "Zlib",
+  "BSD-3-Clause",
+  "ISC",
+  "CDLA-Permissive-2.0",
+]
 
 [bans]
 multiple-versions = "warn"
