@@ -107,6 +107,12 @@ pub fn local_store_exists(root: impl AsRef<Path>) -> bool {
 }
 
 impl LocalStore {
+    /// The absolute root this handle opened: the key of the store's own
+    /// (main) worktree row, so a caller can tell it from the linked ones.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     /// Resolve the location the caller named to the store root.
     ///
     /// A directory (or a path that does not exist) is the root itself. A
