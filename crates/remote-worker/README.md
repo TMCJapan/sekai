@@ -12,7 +12,10 @@ the pure crates (`util`, `anvil`, `core`, `storage`) already lint clean
 for wasm, so the wire codec and verification rules can be shared with
 the native `remote` crate.
 
-Only `GET /health` is implemented so far.
+`GET /health` and `POST /v1/repos` are implemented so far. Creation
+validates and logs the request but runs no storage yet - the init is a
+`// TODO` until a wasm storage backend is bound
+([ADR-0040](../../docs/adr/0040-repo-create.md)).
 
 ## Develop
 
@@ -24,6 +27,10 @@ and `worker-build` (`cargo install worker-build`).
 cd crates/remote-worker
 wrangler dev    # builds via worker-build, serves on http://localhost:8787
 curl http://localhost:8787/health   # {"status":"ok"}
+curl -X POST http://localhost:8787/v1/repos \
+  -H 'Content-Type: application/json' \
+  -d '{"organization":"my-org","name":"my-project","description":"My new repository"}'
+# 201 {"organization":"my-org","name":"my-project","description":"My new repository","created":true}
 ```
 
 ## Deploy
