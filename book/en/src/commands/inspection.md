@@ -45,3 +45,5 @@ sekai worktree list
   effect, since sekai worktrees carry no locked or prunable annotations.
   Worktrees are a local-store feature
   ([ADR-0038](https://github.com/tmcjapan/sekai/blob/main/docs/adr/0038-worktrees-local-only.md)).
+  Removing a linked worktree writes to the store, so it is documented
+  under [Store location](../store.md) (`sekai worktree remove`).
