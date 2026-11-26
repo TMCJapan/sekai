@@ -3,10 +3,11 @@
 //! This is the edge deployment of the API, separate from `sekai serve`:
 //! it compiles to `wasm32-unknown-unknown` on the Workers runtime, so there
 //! is no tokio and no filesystem - repository state will come from platform
-//! bindings through a wasm storage backend. `GET /health` and
-//! `POST /v1/repos` exist so far; creation acknowledges the request but
-//! runs no storage yet (ADR-0040). The rest of the `/v1/repos` surface
-//! lands with the `remote` crate's wire codec.
+//! bindings through a wasm storage backend. `GET /health`,
+//! `GET /v1/repos`, and `POST /v1/repos` exist so far; creation and
+//! listing acknowledge the request but run no storage yet (ADR-0040,
+//! ADR-0041). The rest of the `/v1/repos` surface lands with the
+//! `remote` crate's wire codec.
 //!
 //! Layout: this file is only the fetch entry point. `routes` holds the
 //! route map and one module per resource (handler next to its wire
