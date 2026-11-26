@@ -7,7 +7,7 @@ use sekai_app::{Dimension, Rect, Revision};
 use sekai_cli::{
     cli::{
         BranchArgs, CacheCommand, Cli, Command, DiffArgs, InlineSelection, OnMissingBlob,
-        OnMissingFile, RegionSpec, ScopeCommand, Selection, TimingArgs,
+        OnMissingFile, RegionSpec, ScopeCommand, Selection, TimingArgs, WorktreeCommand,
     },
     style::ColorChoice,
 };
@@ -997,5 +997,64 @@ fn branch_takes_no_patterns() {
     ] {
         let err = Cli::try_parse_from(argv).expect_err("no patterns");
         assert_eq!(err.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+}
+
+/// The `worktree list` arguments, or a panic for another command.
+fn worktree_list_args(argv: &[&str]) -> sekai_cli::cli::WorktreeListArgs {
+    match Cli::try_parse_from(argv)
+        .expect("worktree list parses")
+        .command
+    {
+        Command::Worktree {
+            action: WorktreeCommand::List(args),
+        } => args,
+        other => panic!("expected worktree list, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_worktree_listing() {
+    let args = worktree_list_args(&["sekai", "worktree", "list"]);
+    assert!(!args.porcelain && !args.z && !args.verbose && !args.json);
+
+    let cli = Cli::try_parse_from(["sekai", "worktree", "list"]).expect("parses");
+    assert_eq!(cli.command.name(), "worktree");
+    assert!(!cli.command.output_json());
+
+    let cli = Cli::try_parse_from(["sekai", "worktree", "list", "--json"]).expect("parses");
+    assert!(cli.command.output_json());
+
+    // Git's flags: --porcelain, -z, and -v.
+    let args = worktree_list_args(&["sekai", "worktree", "list", "--porcelain", "-z"]);
+    assert!(args.porcelain && args.z);
+    let args = worktree_list_args(&["sekai", "worktree", "list", "-v"]);
+    assert!(args.verbose);
+    let args = worktree_list_args(&["sekai", "worktree", "list", "--verbose"]);
+    assert!(args.verbose);
+}
+
+#[test]
+fn worktree_list_mirrors_git_flag_rules() {
+    for argv in [
+        // The subcommand is required; there is no bare `worktree` run.
+        &["sekai", "worktree"][..],
+        &["sekai", "worktree", "bogus"],
+        // List takes no positional argument.
+        &["sekai", "worktree", "list", "extra"],
+        // -z requires --porcelain, as in Git.
+        &["sekai", "worktree", "list", "-z"],
+        // --verbose and --porcelain are exclusive, as in Git.
+        &["sekai", "worktree", "list", "-v", "--porcelain"],
+        // JSON is its own machine format; porcelain is another.
+        &["sekai", "worktree", "list", "--json", "--porcelain"],
+        &["sekai", "worktree", "list", "--json", "-z"],
+        // Git's --expire annotates prunable worktrees; sekai has no prune.
+        &["sekai", "worktree", "list", "--expire", "now"],
+    ] {
+        assert!(
+            Cli::try_parse_from(argv).is_err(),
+            "{argv:?} must be refused"
+        );
     }
 }

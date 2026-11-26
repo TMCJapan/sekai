@@ -24,6 +24,7 @@ carries the bare result only.
 | `cache` | clean record or update report (+timings with `--timing`) | table + JSON block (`update` only) | `clean` has no phases |
 | `diff` | single array, grouped array (multi), or timed object | table + JSON block | `--in`/`--region` select chunks; one chunk keeps the single shape |
 | `branch` | branch array | n/a | no phases exist |
+| `worktree` | worktree array (`list`) | n/a | no phases exist |
 
 Without `--timing`, `--json` emits the bare result. With `--timing`,
 the report that would be a bare array (`diff`) is promoted to an object
@@ -41,7 +42,7 @@ Every invocation prints exactly one JSON object to stdout:
 {"command": "<name>", "status": "error", "error": "<full context chain>"}
 ```
 
-`command` is one of `init`, `commit`, `status`, `checkout`, `restore`, `log`, `scope`, `cache`, `diff`, `branch`.
+`command` is one of `init`, `commit`, `status`, `checkout`, `restore`, `log`, `scope`, `cache`, `diff`, `branch`, `worktree`.
 The error string is the full anyhow context chain (outermost message
 first, then `Caused by:` lines), JSON-escaped.
 
@@ -54,6 +55,11 @@ first, then `Caused by:` lines), JSON-escaped.
 | 2 | Usage error (unknown flags, bad values). clap prints its own human-readable error to stderr. |
 
 ## Compatibility
+
+Change: the new `worktree` command lists worktrees (`worktree list`),
+and `command` gains the value `worktree`. See the `worktree` payload
+below. The human and `--porcelain` output mirror `git worktree list`;
+`--json` is exclusive with `--porcelain`/`-z`.
 
 Change: the new `branch` command lists branches, and `command` gains
 the value `branch`. See the `branch` payload below.
@@ -361,6 +367,29 @@ outside the measured phases.
 unborn: a fresh store lists `main` that way, before its first commit.
 `head` is `true` on HEAD's branch. There are no patterns; filter with
 `jq` (`.result[] | select(.name | startswith("refs/heads/feature/"))`).
+
+### `worktree`
+
+`worktree list` returns an array of every worktree the store backs up:
+the store's own (main) one first, then the linked ones in path order,
+as Git lists them. Worktrees are a local-backend feature (ADR-0038).
+
+```jsonc
+[{"path": "/srv/world/.sekai", "commit": "1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b", "branch": "refs/heads/main", "main": true},
+ {"path": "/srv/world-2/.sekai", "commit": null, "branch": "refs/heads/feature", "main": false}]
+```
+
+`path` is the absolute store location the worktree opens (the store
+root itself for the main one, a store link file for a linked one).
+`commit` is the HEAD commit's full ID, or `null` while unborn - a HEAD
+on a branch with no commits yet, as in `branch`. `branch` is the full
+refname HEAD sits on, or `null` when HEAD is detached. `main` is `true`
+on the store's own worktree.
+
+The human and `--porcelain` output (including `-z`) mirror
+`git worktree list`: the main worktree first, abbreviated HEADs padded
+to a common width, `[branch]` or `(detached HEAD)` suffixes, and zeros
+for unborn HEADs. `--json` is exclusive with `--porcelain`/`-z`.
 
 ## Compatibility promise
 

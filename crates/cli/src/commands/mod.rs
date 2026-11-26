@@ -12,6 +12,7 @@ mod progress;
 mod restore;
 mod scopes;
 mod status;
+mod worktree;
 
 use anyhow::Context as _;
 use sekai_app::{Clock, Scope, SekaiInstance, SekaiStore, ThreadRunner};
@@ -138,5 +139,6 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
         Command::Diff(args) => diff::run(&cli.store, args, style).await,
         Command::Restore(args) => restore::run(&cli.store, args, style).await,
         Command::Branch(args) => branch::run(&cli.store, args, style).await,
+        Command::Worktree { action } => worktree::run(&cli.store, action).await,
     }
 }

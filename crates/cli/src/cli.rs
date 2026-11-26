@@ -130,6 +130,11 @@ pub enum Command {
     Restore(RestoreArgs),
     /// List branches.
     Branch(BranchArgs),
+    /// Manage worktrees: the worlds a store backs up, each with its own HEAD.
+    Worktree {
+        #[command(subcommand)]
+        action: WorktreeCommand,
+    },
 }
 
 impl Command {
@@ -146,6 +151,7 @@ impl Command {
             Self::Diff(_) => "diff",
             Self::Restore(_) => "restore",
             Self::Branch(_) => "branch",
+            Self::Worktree { .. } => "worktree",
         }
     }
 
@@ -162,6 +168,7 @@ impl Command {
             Self::Diff(args) => args.output.json,
             Self::Restore(args) => args.output.json,
             Self::Branch(args) => args.json,
+            Self::Worktree { action } => action.output_json(),
         }
     }
 }
@@ -172,6 +179,54 @@ impl Command {
 pub struct BranchArgs {
     /// Emit output as JSON instead of human text. See docs/json.md.
     #[arg(long)]
+    pub json: bool,
+}
+
+/// Worktree operations (ADR-0038).
+///
+/// A worktree is one world the store backs up, keyed by the store
+/// location it opens: the store root itself (the main worktree) or a
+/// store link file (a linked one). Worktrees are a local-backend
+/// feature; the backend-neutral layers know nothing of them.
+#[derive(Debug, Subcommand)]
+pub enum WorktreeCommand {
+    /// List every worktree: the store's own (main) one first, then the
+    /// linked ones in path order.
+    List(WorktreeListArgs),
+}
+
+impl WorktreeCommand {
+    /// Whether the operation runs in JSON mode (`--json`).
+    pub const fn output_json(&self) -> bool {
+        match self {
+            Self::List(args) => args.json,
+        }
+    }
+}
+
+/// `worktree list` arguments, mirroring `git worktree list [-v | --porcelain [-z]]`.
+/// Git's `--expire` is not adopted: it annotates prunable worktrees, and
+/// sekai has no prune.
+// The flags are Git's independent switches plus sekai's `--json`; each
+// maps one-to-one to a CLI argument, so bools are the honest shape.
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, clap::Args)]
+pub struct WorktreeListArgs {
+    /// Machine-readable output: one record block per worktree
+    /// (`worktree`, `HEAD`, then `branch` or `detached`), blank-line
+    /// separated.
+    #[arg(long, conflicts_with = "verbose")]
+    pub porcelain: bool,
+    /// Terminate porcelain records with a NUL character instead of a
+    /// newline. Requires `--porcelain`, as in Git.
+    #[arg(short = 'z', requires = "porcelain")]
+    pub z: bool,
+    /// Accepted for compatibility; sekai worktrees carry no locked or
+    /// prunable annotations, so this flag has no effect.
+    #[arg(short = 'v', long)]
+    pub verbose: bool,
+    /// Emit output as JSON instead of human text. See docs/json.md.
+    #[arg(long, conflicts_with_all = ["porcelain", "z"])]
     pub json: bool,
 }
 

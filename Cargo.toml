@@ -64,6 +64,7 @@ tokio = { version = "1", default-features = false, features = [
 ] }
 tempfile = { version = "3.27.0", default-features = false }
 twox-hash = { version = "2", default-features = false, features = ["xxhash32"] }
+unicode-width = { version = "0.2.2", default-features = false }
 
 # SQLx 0.9.0 pins `libsqlite3-sys < 0.38`, which bundles a SQLite version affected
 # by RUSTSEC-2026-0459. The fix is on the unreleased `release/0.9.1` branch.
