@@ -240,8 +240,8 @@ fn a_missing_store_fails_with_an_error_envelope() {
 /// leaving a `level.dat` behind so a removal can prove the world survives.
 /// Returns the link path. The store handle is dropped so the binary can
 /// take the session lock.
-async fn linked_worktree(store: &Path, root: &Path) -> std::path::PathBuf {
-    let world = root.join("world");
+async fn linked_worktree(store: impl AsRef<Path>, root: impl AsRef<Path>) -> std::path::PathBuf {
+    let world = root.as_ref().join("world");
     std::fs::create_dir_all(&world).unwrap();
     std::fs::write(world.join("level.dat"), "world data").unwrap();
     let link = world.join(".sekai");
