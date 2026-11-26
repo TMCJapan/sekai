@@ -893,3 +893,100 @@ async fn add_worktree_refuses_a_non_utf8_link_path() {
     assert!(!link.exists());
     assert_eq!(store.worktrees().await.unwrap(), [main_worktree(&real)]);
 }
+
+/// Removing a linked worktree deletes its store link and its row, and
+/// returns the absolute key it was registered under. The world directory
+/// it backs up is never touched: add did not materialize it, so remove
+/// does not delete it.
+#[tokio::test]
+async fn remove_worktree_deletes_the_link_and_the_row() {
+    let (base, _guard) = tempdir("worktree-remove");
+    let real = base.join("real-store");
+    let store = init(&real).await;
+
+    let world = base.join("world");
+    std::fs::create_dir_all(&world).unwrap();
+    std::fs::write(world.join("level.dat"), "world data").unwrap();
+    let link = world.join(".sekai");
+    store
+        .add_worktree(&link, on_branch("feature"))
+        .await
+        .unwrap();
+
+    let removed = store.remove_worktree(&link).await.unwrap();
+    assert_eq!(removed, std::path::absolute(&link).unwrap());
+    assert!(!link.exists());
+    // The world the worktree backed up survives the removal.
+    assert_eq!(
+        std::fs::read_to_string(world.join("level.dat")).unwrap(),
+        "world data"
+    );
+    assert_eq!(store.worktrees().await.unwrap(), [main_worktree(&real)]);
+}
+
+/// The store's own (main) worktree cannot be removed, as Git refuses its
+/// main working tree; the refusal leaves every row and the store intact.
+#[tokio::test]
+async fn remove_worktree_refuses_the_main_worktree() {
+    let (base, _guard) = tempdir("worktree-remove-main");
+    let real = base.join("real-store");
+    let store = init(&real).await;
+
+    let err = store.remove_worktree(&real).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            sekai_storage::StorageError::Backend {
+                backend: "worktree",
+                ..
+            }
+        ),
+        "unexpected error: {err}"
+    );
+    assert!(err.to_string().contains("main worktree"), "got: {err}");
+    assert_eq!(store.worktrees().await.unwrap(), [main_worktree(&real)]);
+}
+
+/// An unregistered location is refused, as Git refuses a path that is not
+/// a working tree; nothing is removed.
+#[tokio::test]
+async fn remove_worktree_refuses_an_unregistered_location() {
+    let (base, _guard) = tempdir("worktree-remove-unknown");
+    let real = base.join("real-store");
+    let store = init(&real).await;
+
+    let err = store.remove_worktree(base.join("nope")).await.unwrap_err();
+    assert!(
+        matches!(
+            err,
+            sekai_storage::StorageError::Backend {
+                backend: "worktree",
+                ..
+            }
+        ),
+        "unexpected error: {err}"
+    );
+    assert!(err.to_string().contains("not a worktree"), "got: {err}");
+    assert_eq!(store.worktrees().await.unwrap(), [main_worktree(&real)]);
+}
+
+/// A link that vanished is Git's missing-worktree case: the row is still
+/// removed, so a stale registration can be cleaned up without `--force`.
+#[tokio::test]
+async fn remove_worktree_cleans_a_row_whose_link_vanished() {
+    let (base, _guard) = tempdir("worktree-remove-missing");
+    let real = base.join("real-store");
+    let store = init(&real).await;
+
+    let world = base.join("world");
+    std::fs::create_dir_all(&world).unwrap();
+    let link = world.join(".sekai");
+    store
+        .add_worktree(&link, on_branch("feature"))
+        .await
+        .unwrap();
+    std::fs::remove_file(&link).unwrap();
+
+    store.remove_worktree(&link).await.unwrap();
+    assert_eq!(store.worktrees().await.unwrap(), [main_worktree(&real)]);
+}

@@ -1147,3 +1147,56 @@ fn config_refuses_invalid_combinations() {
         );
     }
 }
+
+/// The `worktree remove` arguments, or a panic for another command.
+fn worktree_remove_args(argv: &[&str]) -> sekai_cli::cli::WorktreeRemoveArgs {
+    match Cli::try_parse_from(argv)
+        .expect("worktree remove parses")
+        .command
+    {
+        Command::Worktree {
+            action: WorktreeCommand::Remove(args),
+        } => args,
+        other => panic!("expected worktree remove, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_worktree_removal() {
+    let args = worktree_remove_args(&["sekai", "worktree", "remove", "../wt"]);
+    assert_eq!(args.worktree, std::path::PathBuf::from("../wt"));
+    assert!(!args.force && !args.json);
+
+    // Git's force: -f / --force, repeatable (-f -f).
+    let args = worktree_remove_args(&["sekai", "worktree", "remove", "-f", "../wt"]);
+    assert!(args.force);
+    let args = worktree_remove_args(&["sekai", "worktree", "remove", "--force", "../wt"]);
+    assert!(args.force);
+    let args = worktree_remove_args(&["sekai", "worktree", "remove", "-f", "-f", "../wt"]);
+    assert!(args.force);
+
+    let args = worktree_remove_args(&["sekai", "worktree", "remove", "--json", "../wt"]);
+    assert!(args.json);
+    let cli =
+        Cli::try_parse_from(["sekai", "worktree", "remove", "--json", "../wt"]).expect("parses");
+    assert_eq!(cli.command.name(), "worktree");
+    assert!(cli.command.output_json());
+}
+
+#[test]
+fn worktree_remove_mirrors_git_flag_rules() {
+    for argv in [
+        // The worktree positional is required.
+        &["sekai", "worktree", "remove"][..],
+        // Only one worktree per run.
+        &["sekai", "worktree", "remove", "a", "b"],
+        // Git's remove has no listing formats.
+        &["sekai", "worktree", "remove", "--porcelain", "a"],
+        &["sekai", "worktree", "remove", "-z", "a"],
+    ] {
+        assert!(
+            Cli::try_parse_from(argv).is_err(),
+            "{argv:?} must be refused"
+        );
+    }
+}

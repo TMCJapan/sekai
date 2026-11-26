@@ -199,6 +199,9 @@ pub enum WorktreeCommand {
     /// List every worktree: the store's own (main) one first, then the
     /// linked ones in path order.
     List(WorktreeListArgs),
+    /// Remove a linked worktree: delete its store link and registration,
+    /// leaving the world directory it backs up untouched.
+    Remove(WorktreeRemoveArgs),
 }
 
 impl WorktreeCommand {
@@ -206,6 +209,7 @@ impl WorktreeCommand {
     pub const fn output_json(&self) -> bool {
         match self {
             Self::List(args) => args.json,
+            Self::Remove(args) => args.json,
         }
     }
 }
@@ -292,6 +296,26 @@ fn non_empty_value(s: &str) -> Result<String, String> {
     } else {
         Ok(s.to_owned())
     }
+}
+
+/// `worktree remove` arguments, mirroring `git worktree remove [-f] <worktree>`.
+/// The positional is the store location the worktree opens (its store link
+/// file), the same spelling `--store` accepts for it.
+#[derive(Debug, clap::Args)]
+pub struct WorktreeRemoveArgs {
+    /// Store location of the worktree to remove: the store link file a
+    /// linked worktree opens. The store's own (main) worktree cannot be
+    /// removed.
+    pub worktree: PathBuf,
+    /// Accepted for compatibility; sekai worktrees carry no dirty or locked
+    /// state, so this flag has no effect. The main-worktree and unregistered
+    /// refusals are never overridden, as in Git. Repeatable, as Git's force
+    /// is (`-f -f`).
+    #[arg(short = 'f', long, overrides_with = "force")]
+    pub force: bool,
+    /// Emit output as JSON instead of human text. See docs/json.md.
+    #[arg(long)]
+    pub json: bool,
 }
 
 /// Named scope operations (ADR-0021). A scope covers every region family,

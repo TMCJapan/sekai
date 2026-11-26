@@ -1,7 +1,7 @@
 //! Worktree subcommand execution, DTOs, and output rendering.
 //!
-//! Worktrees are a local-backend feature (ADR-0038), so the listing reads
-//! them through the opened `LocalStore` rather than an app operation.
+//! Worktrees are a local-backend feature (ADR-0038), so listing and removal
+//! go through the opened `LocalStore` rather than an app operation.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -14,12 +14,13 @@ use sekai_util::Head;
 use serde::Serialize;
 use unicode_width::UnicodeWidthStr as _;
 
-use crate::cli::{WorktreeCommand, WorktreeListArgs};
+use crate::cli::{WorktreeCommand, WorktreeListArgs, WorktreeRemoveArgs};
 use crate::envelope::envelope_ok;
 
 pub async fn run(store: &str, action: &WorktreeCommand) -> anyhow::Result<()> {
     match action {
         WorktreeCommand::List(args) => list(store, args).await,
+        WorktreeCommand::Remove(args) => remove(store, args).await,
     }
 }
 
@@ -40,6 +41,24 @@ async fn list(store: &str, args: &WorktreeListArgs) -> anyhow::Result<()> {
             .with_context(|| format!("worktree list for {store} failed"))?;
         let ids: Vec<CommitId> = commits.iter().map(|commit| commit.id).collect();
         print!("{}", human(&rows, &ids));
+    }
+    Ok(())
+}
+
+/// Remove a linked worktree through the local backend (ADR-0038). The
+/// refusals (main worktree, unregistered location) surface as Git words
+/// them; `--force` is accepted but inert, since sekai worktrees carry no
+/// dirty or locked state to override.
+async fn remove(store: &str, args: &WorktreeRemoveArgs) -> anyhow::Result<()> {
+    let instance = SekaiInstance::<LocalStore>::open(store).await?;
+    let removed = instance.store().remove_worktree(&args.worktree).await?;
+    // Worktree keys are UTF-8 by construction (`store_key`), so the lossy
+    // conversion never replaces anything.
+    let path = removed.to_string_lossy().into_owned();
+    if args.json {
+        println!("{}", envelope_ok("worktree", &WorktreeRemoveJson { path })?);
+    } else {
+        println!("removed worktree {path}");
     }
     Ok(())
 }
@@ -196,6 +215,13 @@ impl From<&Listed> for WorktreeJson {
             main: row.main,
         }
     }
+}
+
+/// A removed worktree: the absolute store location it was keyed by, the
+/// identity `worktree list` reports.
+#[derive(Serialize)]
+struct WorktreeRemoveJson {
+    path: String,
 }
 
 #[cfg(test)]
