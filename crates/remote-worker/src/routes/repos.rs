@@ -29,6 +29,31 @@ struct RepoRecord {
     created: bool,
 }
 
+/// One repository in a `GET /v1/repos` listing (ADR-0041). Unlike
+/// [`RepoRecord`], it carries no create-only `created` flag.
+#[derive(Serialize)]
+struct RepoSummary {
+    organization: String,
+    name: String,
+    description: Option<String>,
+}
+
+/// List hosted repositories, optionally filtered by `?organization=`.
+/// Every received request is logged so receipt is verifiable while the
+/// storage side is still stubbed.
+pub async fn list(req: Request, _ctx: RouteContext<()>) -> Result<Response> {
+    let organization = req
+        .url()?
+        .query_pairs()
+        .find_map(|(key, value)| (key == "organization").then(|| value.into_owned()));
+    console_log!("GET /v1/repos: organization={organization:?}");
+    // TODO: enumerate hosted repositories through a wasm storage backend,
+    // honoring the organization filter and returning records in address
+    // order. Until then the listing is empty.
+    let repositories: Vec<RepoSummary> = Vec::new();
+    Response::from_json(&repositories)
+}
+
 /// Create a repository. Every received request is logged so receipt is
 /// verifiable while the storage side is still stubbed.
 pub async fn create(mut req: Request, _ctx: RouteContext<()>) -> Result<Response> {
@@ -121,6 +146,19 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&record).unwrap(),
             r#"{"organization":"my-org","name":"my-project","description":null,"created":true}"#
+        );
+    }
+
+    #[test]
+    fn renders_repo_summary() {
+        let summary = RepoSummary {
+            organization: "my-org".to_owned(),
+            name: "my-project".to_owned(),
+            description: Some("My new repository".to_owned()),
+        };
+        assert_eq!(
+            serde_json::to_string(&summary).unwrap(),
+            r#"{"organization":"my-org","name":"my-project","description":"My new repository"}"#
         );
     }
 

@@ -2,7 +2,8 @@
 
 use anyhow::Context as _;
 use reqwest::Url;
-use sekai_util::RepoAddress;
+use sekai_util::{RepoAddress, RepoName};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::cli::RepoCommand;
@@ -17,6 +18,12 @@ pub async fn run(action: &RepoCommand, style: Styler) -> anyhow::Result<()> {
             remote,
             json,
         } => create(address, description.as_deref(), remote, *json, style).await,
+        RepoCommand::List {
+            organization,
+            remote,
+            limit,
+            json,
+        } => list(organization.as_ref(), remote, *limit, *json, style).await,
     }
 }
 
@@ -38,19 +45,7 @@ async fn create(
         .send()
         .await
         .with_context(|| format!("repo create of {address} failed to reach {remote}"))?;
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        let message = match serde_json::from_str::<RemoteError>(&body) {
-            Ok(err) => format!("{} ({})", err.message, err.code),
-            Err(_) => body,
-        };
-        anyhow::bail!("repo create of {address} failed (HTTP {status}): {message}");
-    }
-    let record: RepoRecord = response
-        .json()
-        .await
-        .with_context(|| format!("repo create of {address} got an unreadable response"))?;
+    let record: RepoRecord = response_json(response, &format!("repo create of {address}")).await?;
     if json {
         println!("{}", envelope_ok("repo", &record)?);
         return Ok(());
@@ -69,6 +64,68 @@ async fn create(
         );
     }
     Ok(())
+}
+
+/// List repositories, optionally filtered by organization. The API
+/// contract carries only the organization filter; `--limit` caps the
+/// answer locally until the collection endpoint grows pagination
+/// (ADR-0041).
+async fn list(
+    organization: Option<&RepoName>,
+    remote: &Url,
+    limit: usize,
+    json: bool,
+    style: Styler,
+) -> anyhow::Result<()> {
+    let mut endpoint = repos_endpoint(remote)?;
+    if let Some(organization) = organization {
+        endpoint
+            .query_pairs_mut()
+            .append_pair("organization", organization.as_str());
+    }
+    let response = client()?
+        .get(endpoint)
+        .send()
+        .await
+        .with_context(|| format!("repo list from {remote} failed to reach the remote"))?;
+    let mut records: Vec<RepoSummary> =
+        response_json(response, &format!("repo list from {remote}")).await?;
+    if limit > 0 {
+        records.truncate(limit);
+    }
+    if json {
+        println!("{}", envelope_ok("repo", &records)?);
+        return Ok(());
+    }
+    for record in &records {
+        let address = style.bold(&record.address());
+        match &record.description {
+            Some(description) => println!("{address}\t{description}"),
+            None => println!("{address}"),
+        }
+    }
+    Ok(())
+}
+
+/// Decode a successful response body, or turn the remote's error body
+/// into the command's context chain.
+async fn response_json<T: DeserializeOwned>(
+    response: reqwest::Response,
+    operation: &str,
+) -> anyhow::Result<T> {
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        let message = match serde_json::from_str::<RemoteError>(&body) {
+            Ok(err) => format!("{} ({})", err.message, err.code),
+            Err(_) => body,
+        };
+        anyhow::bail!("{operation} failed (HTTP {status}): {message}");
+    }
+    response
+        .json()
+        .await
+        .with_context(|| format!("{operation} got an unreadable response"))
 }
 
 /// HTTP client for the remote API. reqwest's `rustls-no-provider`
@@ -115,6 +172,23 @@ struct RepoRecord {
 }
 
 impl RepoRecord {
+    /// The `organization/name` address for human output.
+    fn address(&self) -> String {
+        format!("{}/{}", self.organization, self.name)
+    }
+}
+
+/// One repository in the `GET /v1/repos` listing (ADR-0041). Unlike
+/// [`RepoRecord`], it carries no create-only `created` flag.
+#[derive(Deserialize, Serialize)]
+struct RepoSummary {
+    organization: String,
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+impl RepoSummary {
     /// The `organization/name` address for human output.
     fn address(&self) -> String {
         format!("{}/{}", self.organization, self.name)
@@ -168,6 +242,29 @@ mod tests {
             r#"{"organization":"my-org","name":"my-project","description":"My new repository","created":true}"#
         );
         assert_eq!(record.address(), "my-org/my-project");
+    }
+
+    #[test]
+    fn renders_repo_summary() {
+        let record = RepoSummary {
+            organization: "my-org".to_owned(),
+            name: "my-project".to_owned(),
+            description: Some("My new repository".to_owned()),
+        };
+        assert_eq!(
+            serde_json::to_string(&record).unwrap(),
+            r#"{"organization":"my-org","name":"my-project","description":"My new repository"}"#
+        );
+        assert_eq!(record.address(), "my-org/my-project");
+        let record = RepoSummary {
+            organization: "my-org".to_owned(),
+            name: "my-project".to_owned(),
+            description: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&record).unwrap(),
+            r#"{"organization":"my-org","name":"my-project","description":null}"#
+        );
     }
 
     #[test]

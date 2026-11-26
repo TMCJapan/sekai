@@ -11,6 +11,7 @@ use sekai_cli::{
     },
     style::ColorChoice,
 };
+use sekai_util::RepoName;
 
 /// The inline flags of a selection, or a panic for a named scope.
 fn inline(selection: &Selection) -> &InlineSelection {
@@ -1092,6 +1093,86 @@ fn parses_repo_create() {
         ],
         vec!["sekai", "repo", "create"],
         vec!["sekai", "repo"],
+    ] {
+        assert!(
+            Cli::try_parse_from(&args).is_err(),
+            "{args:?} must be refused"
+        );
+    }
+}
+
+#[test]
+fn parses_repo_list() {
+    let cli = Cli::try_parse_from([
+        "sekai",
+        "repo",
+        "list",
+        "my-org",
+        "--remote",
+        "http://localhost:8787",
+        "-L",
+        "5",
+        "--json",
+    ])
+    .expect("repo list parses");
+    let Command::Repo {
+        action:
+            RepoCommand::List {
+                organization,
+                remote,
+                limit,
+                json: true,
+            },
+    } = &cli.command
+    else {
+        panic!("unexpected command: {:?}", cli.command);
+    };
+    assert_eq!(organization.as_ref().map(RepoName::as_str), Some("my-org"));
+    assert_eq!(remote.as_str(), "http://localhost:8787/");
+    assert_eq!(*limit, 5);
+    assert_eq!(cli.command.name(), "repo");
+    assert!(cli.command.output_json());
+
+    // The organization and the limit are optional; gh's default is 30.
+    let cli = Cli::try_parse_from(["sekai", "repo", "list", "--remote", "http://localhost:8787"])
+        .expect("repo list parses without the optional arguments");
+    assert!(matches!(
+        &cli.command,
+        Command::Repo {
+            action: RepoCommand::List {
+                organization: None,
+                limit: 30,
+                json: false,
+                ..
+            }
+        }
+    ));
+    assert!(!cli.command.output_json());
+
+    let cli = Cli::try_parse_from(["sekai", "repo", "ls", "--remote", "http://localhost:8787"])
+        .expect("gh-style alias parses");
+    assert!(matches!(
+        cli.command,
+        Command::Repo {
+            action: RepoCommand::List { .. }
+        }
+    ));
+
+    for args in [
+        // The remote is required and must be an http(s) URL.
+        vec!["sekai", "repo", "list"],
+        vec!["sekai", "repo", "list", "--remote", "not a url"],
+        vec!["sekai", "repo", "list", "--remote", "ftp://host"],
+        // The organization must be one valid name component.
+        vec!["sekai", "repo", "list", "my org", "--remote", "http://h"],
+        vec!["sekai", "repo", "list", "a/b", "--remote", "http://h"],
+        // The limit is a non-negative integer.
+        vec![
+            "sekai", "repo", "list", "--remote", "http://h", "--limit", "-1",
+        ],
+        vec![
+            "sekai", "repo", "list", "--remote", "http://h", "--limit", "zero",
+        ],
     ] {
         assert!(
             Cli::try_parse_from(&args).is_err(),

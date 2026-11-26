@@ -12,10 +12,12 @@ the pure crates (`util`, `anvil`, `core`, `storage`) already lint clean
 for wasm, so the wire codec and verification rules can be shared with
 the native `remote` crate.
 
-`GET /health` and `POST /v1/repos` are implemented so far. Creation
-validates and logs the request but runs no storage yet - the init is a
-`// TODO` until a wasm storage backend is bound
-([ADR-0040](../../docs/adr/0040-repo-create.md)).
+`GET /health`, `GET /v1/repos`, and `POST /v1/repos` are implemented so
+far. Creation validates and logs the request but runs no storage yet -
+the init is a `// TODO` until a wasm storage backend is bound
+([ADR-0040](../../docs/adr/0040-repo-create.md)). Listing logs the
+optional organization filter and returns an empty array, with the same
+storage TODO ([ADR-0041](../../docs/adr/0041-repo-list.md)).
 
 ## Develop
 
@@ -31,6 +33,8 @@ curl -X POST http://localhost:8787/v1/repos \
   -H 'Content-Type: application/json' \
   -d '{"organization":"my-org","name":"my-project","description":"My new repository"}'
 # 201 {"organization":"my-org","name":"my-project","description":"My new repository","created":true}
+curl 'http://localhost:8787/v1/repos?organization=my-org'
+# 200 [] (storage is stubbed)
 ```
 
 ## Deploy

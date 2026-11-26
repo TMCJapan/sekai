@@ -15,5 +15,6 @@ use worker::Router;
 pub fn router() -> Router<'static, ()> {
     Router::new()
         .get("/health", health::get)
+        .get_async("/v1/repos", repos::list)
         .post_async("/v1/repos", repos::create)
 }
