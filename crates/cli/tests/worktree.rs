@@ -45,8 +45,9 @@ fn init(root: impl AsRef<Path>) -> std::path::PathBuf {
 }
 
 /// Record one commit and return its ID.
-fn first_commit(store: &Path, root: &Path) -> String {
-    let world = root.join("world");
+fn first_commit(store: impl AsRef<Path>, root: impl AsRef<Path>) -> String {
+    let store = store.as_ref();
+    let world = root.as_ref().join("world");
     std::fs::create_dir_all(&world).unwrap();
     stdout(&sekai(store, &["commit", world.to_str().unwrap()]));
     let log: serde_json::Value =
@@ -72,11 +73,20 @@ fn lists_the_unborn_main_worktree_of_a_fresh_store() {
             zeros = "0".repeat(64)
         )
     );
+    let listed: serde_json::Value =
+        serde_json::from_str(stdout(&sekai(&store, &["worktree", "list", "--json"]))).unwrap();
     assert_eq!(
-        stdout(&sekai(&store, &["worktree", "list", "--json"])),
-        format!(
-            "{{\"command\":\"worktree\",\"status\":\"ok\",\"result\":[{{\"path\":\"{path}\",\"commit\":null,\"branch\":\"refs/heads/main\",\"main\":true}}]}}\n"
-        )
+        listed,
+        serde_json::json!({
+            "command": "worktree",
+            "status": "ok",
+            "result": [{
+                "path": path,
+                "commit": null,
+                "branch": "refs/heads/main",
+                "main": true,
+            }],
+        })
     );
 }
 

@@ -81,7 +81,7 @@ async fn listed(instance: &SekaiInstance<LocalStore>) -> anyhow::Result<Vec<List
 fn resolve(
     worktree: &Worktree,
     branches: &HashMap<RefName, Option<CommitId>>,
-    root: &Path,
+    root: impl AsRef<Path>,
 ) -> Listed {
     let (commit, branch) = match &worktree.head {
         Head::Branch(name) => (branches.get(name).copied().flatten(), Some(name.clone())),
@@ -93,7 +93,7 @@ fn resolve(
         path: worktree.path.to_string_lossy().into_owned(),
         commit,
         branch,
-        main: worktree.path == root,
+        main: worktree.path == root.as_ref(),
     }
 }
 
