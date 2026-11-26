@@ -1,0 +1,10 @@
+id: no-pub-use
+language: rust
+severity: error
+message: "`pub use` re-exports are prohibited"
+note: "Do not re-export items with `pub use`; import from the defining module instead."
+rule:
+  kind: use_declaration
+  has:
+    kind: visibility_modifier
+    stopBy: end

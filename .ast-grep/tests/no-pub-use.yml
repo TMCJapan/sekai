@@ -1,0 +1,20 @@
+id: no-pub-use
+valid:
+  - "use foo::bar;"
+  - "use foo::{bar, baz};"
+  - "mod m { use foo::bar; }"
+  - "pub mod m { use foo::bar; }"
+  - "pub fn f() { use foo::bar; }"
+  - "pub struct S;"
+invalid:
+  - "pub use foo::bar;"
+  - "pub(crate) use foo::bar;"
+  - "pub(super) use foo::bar;"
+  - "pub(in crate::m) use foo::bar;"
+  - "pub use foo::bar as baz;"
+  - "pub use foo::{bar, baz};"
+  - "pub use crate::foo::*;"
+  - "pub use self::foo::Bar;"
+  - "pub use super::foo;"
+  - "pub(self) use foo::bar;"
+  - "pub mod m { pub use inner::Thing; }"
