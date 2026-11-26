@@ -138,8 +138,8 @@ impl LocalStore {
     }
 }
 
-fn load(root: &Path) -> Result<Config, StorageError> {
-    let path = root.join(FILE_NAME);
+fn load(root: impl AsRef<Path>) -> Result<Config, StorageError> {
+    let path = root.as_ref().join(FILE_NAME);
     match std::fs::read_to_string(&path) {
         Ok(text) => {
             toml::from_str(&text).map_err(|source| StorageError::backend("config.toml", source))
@@ -149,7 +149,8 @@ fn load(root: &Path) -> Result<Config, StorageError> {
     }
 }
 
-fn save(root: &Path, config: &Config) -> Result<(), StorageError> {
+fn save(root: impl AsRef<Path>, config: &Config) -> Result<(), StorageError> {
+    let root = root.as_ref();
     let text =
         toml::to_string(config).map_err(|source| StorageError::backend("config.toml", source))?;
     let path = root.join(FILE_NAME);
