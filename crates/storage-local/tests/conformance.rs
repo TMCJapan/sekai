@@ -862,17 +862,17 @@ async fn the_root_opens_the_main_worktree_under_any_spelling() {
     let root = base.join("store");
     drop(init(&root).await);
 
-    let mut spellings = vec![
+    let spellings = vec![
         std::path::PathBuf::from(format!("{}{}", root.display(), std::path::MAIN_SEPARATOR)),
         root.join("."),
         root.join("..").join("store"),
     ];
     #[cfg(unix)]
-    {
+    let spellings = {
         let alias = base.join("alias");
         std::os::unix::fs::symlink(&root, &alias).unwrap();
-        spellings.push(alias);
-    }
+        [spellings, vec![alias]].concat()
+    };
     let mut parents = Vec::new();
     for (time, location) in (1_000..).zip(&spellings) {
         let mut store = LocalStore::open(location).await.unwrap();
