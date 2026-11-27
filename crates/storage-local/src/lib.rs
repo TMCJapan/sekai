@@ -3,12 +3,14 @@
 
 mod blob;
 mod cache;
+mod config;
 mod meta;
 mod version;
 mod worktree;
 
 pub use blob::SledBlob;
 pub use cache::SledCache;
+pub use config::{Config, ConfigKey, UnknownConfigKey, User};
 pub use meta::SqliteMeta;
 pub use version::STORE_VERSION;
 pub use worktree::Worktree;

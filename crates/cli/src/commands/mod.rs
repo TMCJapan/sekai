@@ -4,6 +4,7 @@ mod branch;
 mod cache;
 mod checkout;
 mod commit;
+mod config;
 mod diff;
 mod diff_render;
 mod init;
@@ -140,5 +141,6 @@ pub async fn run(cli: &Cli) -> anyhow::Result<()> {
         Command::Restore(args) => restore::run(&cli.store, args, style).await,
         Command::Branch(args) => branch::run(&cli.store, args, style).await,
         Command::Worktree { action } => worktree::run(&cli.store, action).await,
+        Command::Config(args) => config::run(&cli.store, args).await,
     }
 }

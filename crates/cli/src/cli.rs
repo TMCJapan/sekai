@@ -3,6 +3,7 @@
 use crate::style::ColorChoice;
 use clap::{Parser, Subcommand};
 use sekai_app::{Area, ChunkCoord, Dimension, Rect, RegionKind, Revision, Scope, ScopeName};
+use sekai_storage_local::ConfigKey;
 use std::path::{Path, PathBuf};
 
 /// Chunk-level deduplicated version control for Minecraft region files.
@@ -135,6 +136,9 @@ pub enum Command {
         #[command(subcommand)]
         action: WorktreeCommand,
     },
+    /// Read and write store configuration (`<store>/config.toml`), like
+    /// `git config` limited to the repository scope.
+    Config(ConfigArgs),
 }
 
 impl Command {
@@ -152,6 +156,7 @@ impl Command {
             Self::Restore(_) => "restore",
             Self::Branch(_) => "branch",
             Self::Worktree { .. } => "worktree",
+            Self::Config(_) => "config",
         }
     }
 
@@ -169,6 +174,7 @@ impl Command {
             Self::Restore(args) => args.output.json,
             Self::Branch(args) => args.json,
             Self::Worktree { action } => action.output_json(),
+            Self::Config(args) => args.json,
         }
     }
 }
@@ -228,6 +234,64 @@ pub struct WorktreeListArgs {
     /// Emit output as JSON instead of human text. See docs/json.md.
     #[arg(long, conflicts_with_all = ["porcelain", "z"])]
     pub json: bool,
+}
+
+/// `config`: git-style settings in `<store>/config.toml`.
+///
+/// Only the store scope exists, so git's `--global`/`--system`/`--local`
+/// location flags do not apply. Every key holds one typed value, so the
+/// multivar actions (`--add`, `--replace-all`, `--get-all`, `--unset-all`)
+/// and the regex/section operations have no meaning here.
+#[derive(Debug, clap::Args)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "mutually exclusive action flags; clap enforces the exclusivity"
+)]
+pub struct ConfigArgs {
+    /// Config key, `section.name` (e.g. `user.name`), case-insensitive.
+    /// With no value and no action flag, reads the key.
+    #[arg(value_name = "KEY", required_unless_present = "list")]
+    pub key: Option<ConfigKey>,
+    /// New value for the key; an empty value is refused (use `--unset`).
+    #[arg(
+        value_name = "VALUE",
+        value_parser = non_empty_value,
+        conflicts_with_all = ["get", "unset", "list", "default"],
+    )]
+    pub value: Option<String>,
+    /// Read the key's value (the default action for a bare key).
+    #[arg(long, conflicts_with_all = ["unset", "list"], requires = "key")]
+    pub get: bool,
+    /// Remove the key from the config file.
+    #[arg(long, conflicts_with_all = ["list", "default"], requires = "key")]
+    pub unset: bool,
+    /// List every set key as `key=value`.
+    #[arg(long, short = 'l', conflicts_with_all = ["key", "default"])]
+    pub list: bool,
+    /// With `--list`, print key names only. Human output only, like
+    /// `--progress`: JSON always carries the full entries.
+    #[arg(
+        long,
+        requires = "list",
+        conflicts_with_all = ["key", "value", "get", "unset", "default", "json"],
+    )]
+    pub name_only: bool,
+    /// Value to report when a read key is unset (exit 0 instead of 1).
+    #[arg(long, value_name = "VALUE", conflicts_with_all = ["unset", "list"])]
+    pub default: Option<String>,
+    /// Emit output as JSON instead of human text. See docs/json.md.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// A stored config value is never empty: empty reads as unset, so an
+/// empty write would silently remove the key instead of setting it.
+fn non_empty_value(s: &str) -> Result<String, String> {
+    if s.is_empty() {
+        Err("config value must not be empty; use --unset to remove a key".to_owned())
+    } else {
+        Ok(s.to_owned())
+    }
 }
 
 /// Named scope operations (ADR-0021). A scope covers every region family,

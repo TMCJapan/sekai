@@ -9,7 +9,7 @@ This project is organized as a Cargo workspace under `crates/`:
     ├── anvil           # Pure Anvil sector codec, decompression, and normalized chunk hashing (no_std + alloc, ex-mca)
     ├── core            # Pure staging policy over shared types (no_std + alloc, depends on util only)
     ├── storage         # Backend-neutral store traits + generic tree/graph algorithms (no_std + alloc)
-    ├── storage-local   # Local backend: SQLite metadata (sqlx) + sled blobs + sled region-image cache (std + tokio)
+    ├── storage-local   # Local backend: SQLite metadata (sqlx) + sled blobs + sled region-image cache + store config (std + tokio)
     ├── world           # World access boundary (no_std + alloc): WorldTree trait,
     │                   # RegionFile handle, WorldLock primitives
     ├── world-local     # Host filesystem tree (std): HostWorldTree, layout detection,

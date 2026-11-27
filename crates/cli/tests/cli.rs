@@ -6,8 +6,9 @@ const H3: &str = "03030303030303030303030303030303030303030303030303030303030303
 use sekai_app::{Dimension, Rect, Revision};
 use sekai_cli::{
     cli::{
-        BranchArgs, CacheCommand, Cli, Command, DiffArgs, InlineSelection, OnMissingBlob,
-        OnMissingFile, RegionSpec, ScopeCommand, Selection, TimingArgs, WorktreeCommand,
+        BranchArgs, CacheCommand, Cli, Command, ConfigArgs, DiffArgs, InlineSelection,
+        OnMissingBlob, OnMissingFile, RegionSpec, ScopeCommand, Selection, TimingArgs,
+        WorktreeCommand,
     },
     style::ColorChoice,
 };
@@ -1051,6 +1052,94 @@ fn worktree_list_mirrors_git_flag_rules() {
         &["sekai", "worktree", "list", "--json", "-z"],
         // Git's --expire annotates prunable worktrees; sekai has no prune.
         &["sekai", "worktree", "list", "--expire", "now"],
+    ] {
+        assert!(
+            Cli::try_parse_from(argv).is_err(),
+            "{argv:?} must be refused"
+        );
+    }
+}
+
+/// The `config` arguments, or a panic for another command.
+fn config_args(argv: &[&str]) -> ConfigArgs {
+    match Cli::try_parse_from(argv).expect("config parses").command {
+        Command::Config(args) => args,
+        other => panic!("expected config, got {other:?}"),
+    }
+}
+
+#[test]
+fn parses_config_actions() {
+    use sekai_storage_local::ConfigKey;
+
+    // Set: key plus value.
+    let args = config_args(&["sekai", "config", "user.name", "foo"]);
+    assert_eq!(args.key, Some(ConfigKey::UserName));
+    assert_eq!(args.value.as_deref(), Some("foo"));
+    assert!(!args.get && !args.unset && !args.list && !args.json);
+
+    // Get: bare key or `--get`; keys are case-insensitive.
+    for argv in [
+        &["sekai", "config", "user.name"][..],
+        &["sekai", "config", "--get", "user.name"],
+        &["sekai", "config", "USER.NAME"],
+    ] {
+        let args = config_args(argv);
+        assert_eq!(args.key, Some(ConfigKey::UserName));
+        assert!(args.value.is_none());
+    }
+
+    // Unset, list (long and short), name-only, default, and JSON.
+    assert!(config_args(&["sekai", "config", "user.name", "--unset"]).unset);
+    for argv in [
+        &["sekai", "config", "--list"][..],
+        &["sekai", "config", "-l"],
+    ] {
+        let args = config_args(argv);
+        assert!(args.list && args.key.is_none());
+    }
+    assert!(config_args(&["sekai", "config", "-l", "--name-only"]).name_only);
+    assert_eq!(
+        config_args(&["sekai", "config", "user.name", "--default", "fallback"])
+            .default
+            .as_deref(),
+        Some("fallback")
+    );
+    let cli = Cli::try_parse_from(["sekai", "config", "--list", "--json"]).expect("parses");
+    assert_eq!(cli.command.name(), "config");
+    assert!(cli.command.output_json());
+}
+
+#[test]
+fn config_refuses_invalid_combinations() {
+    for argv in [
+        // A key is required for every action but `--list`.
+        &["sekai", "config"][..],
+        &["sekai", "config", "--get"],
+        &["sekai", "config", "--unset"],
+        // Actions are mutually exclusive, and `--list` takes no key.
+        &["sekai", "config", "user.name", "foo", "--get"],
+        &["sekai", "config", "user.name", "foo", "--unset"],
+        &["sekai", "config", "user.name", "foo", "--default", "x"],
+        &["sekai", "config", "user.name", "--get", "--unset"],
+        &["sekai", "config", "--list", "user.name"],
+        &["sekai", "config", "--list", "--default", "x"],
+        &["sekai", "config", "user.name", "--unset", "--default", "x"],
+        // `--name-only` modifies `--list` and stays human-only.
+        &["sekai", "config", "user.name", "--name-only"],
+        &["sekai", "config", "--list", "--name-only", "--json"],
+        // Unknown keys and empty values are refused at parse time.
+        &["sekai", "config", "user.email", "foo"],
+        &["sekai", "config", "user.name", ""],
+        // No location flags: the store is the only scope.
+        &["sekai", "config", "--global", "user.name", "foo"],
+        &["sekai", "config", "--file", "other.toml", "user.name"],
+        // Git's multivar actions have no meaning for typed single values.
+        &["sekai", "config", "--add", "user.name", "foo"],
+        &["sekai", "config", "--get-all", "user.name"],
+        &["sekai", "config", "--unset-all", "user.name"],
+        // At most two positionals: key and value.
+        &["sekai", "config", "user.name", "foo", "bar"],
     ] {
         assert!(
             Cli::try_parse_from(argv).is_err(),

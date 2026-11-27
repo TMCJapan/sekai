@@ -47,6 +47,9 @@ async fn commands_on_a_missing_store_fail_without_creating_it() {
         vec![
             "sekai", "--store", store, "scope", "create", "spawn", "--in", "ow:0,0",
         ],
+        vec!["sekai", "--store", store, "config", "user.name"],
+        vec!["sekai", "--store", store, "config", "user.name", "foo"],
+        vec!["sekai", "--store", store, "config", "--list"],
     ] {
         let err = run(&args).await.expect_err("a missing store must fail");
         assert!(

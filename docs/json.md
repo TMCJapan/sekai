@@ -25,6 +25,7 @@ carries the bare result only.
 | `diff` | single array, grouped array (multi), or timed object | table + JSON block | `--in`/`--region` select chunks; one chunk keeps the single shape |
 | `branch` | branch array | n/a | no phases exist |
 | `worktree` | worktree array (`list`) | n/a | no phases exist |
+| `config` | entry record, key record, or entry array | n/a | no phases exist |
 
 Without `--timing`, `--json` emits the bare result. With `--timing`,
 the report that would be a bare array (`diff`) is promoted to an object
@@ -42,7 +43,7 @@ Every invocation prints exactly one JSON object to stdout:
 {"command": "<name>", "status": "error", "error": "<full context chain>"}
 ```
 
-`command` is one of `init`, `commit`, `status`, `checkout`, `restore`, `log`, `scope`, `cache`, `diff`, `branch`, `worktree`.
+`command` is one of `init`, `commit`, `status`, `checkout`, `restore`, `log`, `scope`, `cache`, `diff`, `branch`, `worktree`, `config`.
 The error string is the full anyhow context chain (outermost message
 first, then `Caused by:` lines), JSON-escaped.
 
@@ -55,6 +56,10 @@ first, then `Caused by:` lines), JSON-escaped.
 | 2 | Usage error (unknown flags, bad values). clap prints its own human-readable error to stderr. |
 
 ## Compatibility
+
+Change (ADR-0040): the `config` command is added. `command` gains the
+value `config`; its payloads are the entry record, the key record, and
+the entry array below. Existing commands are unchanged.
 
 Change: the new `worktree` command lists worktrees (`worktree list`),
 and `command` gains the value `worktree`. See the `worktree` payload
@@ -390,6 +395,34 @@ The human and `--porcelain` output (including `-z`) mirror
 `git worktree list`: the main worktree first, abbreviated HEADs padded
 to a common width, `[branch]` or `(detached HEAD)` suffixes, and zeros
 for unborn HEADs. `--json` is exclusive with `--porcelain`/`-z`.
+
+### `config`
+
+Get (`config <key>` or `config --get <key>`) and set (`config <key>
+<value>`) return the entry:
+
+```jsonc
+{"key": "user.name", "value": "foo"}
+```
+
+A get on an unset key falls back to `--default <value>` when given;
+without it the run fails with the `error` envelope (exit 1), like git.
+Unset (`config <key> --unset`) returns the removed key:
+
+```jsonc
+{"key": "user.name"}
+```
+
+List (`config --list`) returns every set key as an array of entries in
+canonical key order:
+
+```jsonc
+[{"key": "user.name", "value": "foo"}]
+```
+
+`--name-only` is human-only (refused with `--json`, like `--progress`);
+filter names with `jq` (`.result[].key`). Keys are case-insensitive on
+input and always print in their canonical lowercase spelling.
 
 ## Compatibility promise
 
