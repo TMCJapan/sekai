@@ -18,14 +18,12 @@ mod reader;
 mod region;
 mod writer;
 
-pub use codec::{Compression, compression_of, decompress_into};
+pub use codec::{Compression, decompress_into};
 pub use diff::ChunkPayloadDiff;
 pub use error::{AnvilError, ChunkHashError, ChunkNbtError};
 pub use hash::{custom_dimension_id, custom_dimension_id_bytes};
-pub use reader::{Chunk, RegionImage, RegionImageIter};
+pub use reader::{Chunk, RegionImage};
 pub use region::{
-    FIRST_DATA_SECTOR, HEADER_LEN, MAX_SECTOR_OFFSET, MAX_SECTORS_PER_CHUNK, ROW_WIDTH, RegionLoc,
-    SECTOR_LEN, TABLE_ENTRIES, base_coords, check_image_len, parse_region_name, sectors_for,
-    visit_present_coords,
+    HEADER_LEN, RegionLoc, TABLE_ENTRIES, check_image_len, parse_region_name, visit_present_coords,
 };
 pub use writer::RegionBuilder;

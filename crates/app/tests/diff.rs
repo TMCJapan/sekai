@@ -28,7 +28,7 @@ fn chunk_key_of(framed: &[u8]) -> ChunkHash {
 #[tokio::test]
 async fn missing_blob_is_a_backend_error() {
     let (instance, _guard) = instance("missing-blob").await;
-    let missing = ChunkHash::new(sekai_core::hash_bytes(b"never-stored"));
+    let missing = ChunkHash::new(sekai_util::hash_bytes(b"never-stored"));
     let err = instance.diff_blobs(&missing, &missing).await.unwrap_err();
     assert!(matches!(
         err,
@@ -41,7 +41,7 @@ async fn undecodable_payload_is_a_codec_error() {
     let (mut instance, _guard) = instance("bad-codec").await;
     // Unknown compression type byte: anvil rejects before NBT sees it.
     let bad_codec = vec![9u8, 0, 0];
-    let hash_bad = ChunkHash::new(sekai_core::hash_bytes(&bad_codec));
+    let hash_bad = ChunkHash::new(sekai_util::hash_bytes(&bad_codec));
     instance
         .store_mut()
         .blob_mut()
@@ -72,7 +72,7 @@ async fn corrupt_nbt_is_a_decode_error() {
     let (mut instance, _guard) = instance("corrupt-nbt").await;
     // Type 3 framing with truncated NBT body.
     let corrupt = vec![3u8, 10, 0];
-    let hash_corrupt = ChunkHash::new(sekai_core::hash_bytes(&corrupt));
+    let hash_corrupt = ChunkHash::new(sekai_util::hash_bytes(&corrupt));
     instance
         .store_mut()
         .blob_mut()

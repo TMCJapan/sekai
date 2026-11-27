@@ -31,7 +31,7 @@ mod checkout;
 mod commit;
 mod diff;
 mod error;
-mod instance;
+pub mod instance;
 mod progress;
 mod refs;
 mod regions;
@@ -42,8 +42,8 @@ mod workers;
 
 pub use cache::{CacheUpdateOptions, CacheUpdateReport, CacheUpdateTimings};
 pub use checkout::{
-    CheckoutError, CheckoutOptions, CheckoutPlan, CheckoutReport, CheckoutTimings,
-    MissingBlobPolicy, MissingFilePolicy,
+    CheckoutError, CheckoutOptions, CheckoutReport, CheckoutTimings, MissingBlobPolicy,
+    MissingFilePolicy,
 };
 pub use commit::{
     CommitOptions, CommitReport, CommitTimings, RegionTiming, StatusOptions, StatusReport,
@@ -51,17 +51,12 @@ pub use commit::{
 };
 pub use diff::{ChunkDiff, DiffTimings, world_chunk_coords};
 pub use error::{AppError, Lookup, NameKind};
-pub use instance::{SekaiInstance, WorldHandle, WorldHandleMut};
+pub use instance::SekaiInstance;
 pub use progress::{BuildProgress, Progress};
 pub use restore::RestoreOptions;
-pub use sekai_core::{
-    Area, ChunkCoord, ChunkHash, Commit, CommitId, CommitRef, DEFAULT_REF_NAME, DimHash, Dimension,
-    NamedScope, NamedScopeError, Rect, Ref, RefKind, RefName, RefNameError, RegionFingerprint,
-    RegionHash, RegionKey, RegionKind, Revision, RevisionBase, RevisionError, RootHash, Scope,
-    ScopeName, ScopeNameError,
-};
 pub use sekai_storage::{CommitStats, SekaiStore, SekaiStoreOpener};
-pub use sekai_util::{Clock, JobSet, Sequential, ThreadRunner, Timer, WorkerPanic, Zero};
-pub use sekai_world::{
-    Region, RegionFile, UnguardedReason, WorldLock, WorldLockMode, WorldLockState, WorldTree,
+pub use sekai_util::{
+    Area, ChunkHash, Commit, CommitId, CommitRef, DEFAULT_REF_NAME, DimHash, Dimension, NamedScope,
+    Rect, Ref, RefKind, RefName, RegionFingerprint, RegionHash, RegionKey, RegionKind, Revision,
+    RevisionBase, RootHash, Scope, ScopeName, chunk_coord::ChunkCoord, error::*, worktree::Head,
 };

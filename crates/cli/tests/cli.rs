@@ -1070,7 +1070,7 @@ fn config_args(argv: &[&str]) -> ConfigArgs {
 
 #[test]
 fn parses_config_actions() {
-    use sekai_storage_local::ConfigKey;
+    use sekai_storage_local::config::ConfigKey;
 
     // Set: key plus value.
     let args = config_args(&["sekai", "config", "user.name", "foo"]);

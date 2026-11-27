@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use sekai_core::{Dimension, RegionKind};
+use sekai_util::{Dimension, RegionKind};
 
 /// Failures while discovering, reading, or swapping world files.
 #[derive(Debug, thiserror::Error)]

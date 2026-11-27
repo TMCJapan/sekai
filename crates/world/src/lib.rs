@@ -16,10 +16,9 @@
 
 extern crate alloc;
 
-mod lock;
+pub mod lock;
 mod region;
 mod tree;
 
-pub use lock::{UnguardedReason, WorldLock, WorldLockMode, WorldLockState};
 pub use region::{Region, RegionFile};
 pub use tree::WorldTree;

@@ -30,7 +30,11 @@ fn write_region(path: impl AsRef<Path>, chunks: &[(i32, i32, Vec<u8>)]) {
 }
 
 async fn commit<S: sekai_app::SekaiStore>(
-    instance: &mut sekai_app::SekaiInstance<S, impl sekai_app::ThreadRunner, impl sekai_app::Clock>,
+    instance: &mut sekai_app::SekaiInstance<
+        S,
+        impl sekai_platform::thread::ThreadRunner,
+        impl sekai_platform::time::Clock,
+    >,
     world_tree: &mut HostWorldTree,
 ) -> sekai_app::CommitReport {
     instance

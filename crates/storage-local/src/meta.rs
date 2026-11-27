@@ -11,9 +11,9 @@ use sekai_storage::{
     DimNode, MetaStore, RegionNode, RootNode, StorageError, TreeNodes, commit_hash,
 };
 use sekai_util::{
-    ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DEFAULT_REF_NAME, DimHash,
-    Dimension, Head, NamedScope, NamedScopeError, Rect, Ref, RefKind, RefName, RegionHash,
-    RootHash, ScopeName,
+    ApplyOutcome, Commit, CommitEntry, CommitId, CommitRef, DEFAULT_REF_NAME, DimHash, Dimension,
+    NamedScope, Rect, Ref, RefKind, RefName, RegionHash, RootHash, ScopeName,
+    chunk_coord::ChunkCoord, error::NamedScopeError, worktree::Head,
 };
 use sqlx::Row as _;
 use sqlx::sqlite::{
@@ -81,7 +81,7 @@ impl SqliteMeta {
     /// The parent directory must already exist; this type never creates it
     /// (directory layout is the store's concern). Opening while another
     /// opener creates the schema waits for it, up to the busy timeout.
-    pub async fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
+    pub(crate) async fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
         let options = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)

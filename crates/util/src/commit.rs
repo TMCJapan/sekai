@@ -19,14 +19,8 @@ use crate::tree::RootHash;
 pub struct CommitId(pub [u8; 32]);
 
 impl CommitId {
-    /// Raw 32 bytes (e.g. for binary DB columns).
-    #[inline]
-    pub const fn as_bytes(self) -> [u8; 32] {
-        self.0
-    }
-
     /// Encode as lowercase hex without allocation.
-    pub const fn hex_into(self) -> [u8; 64] {
+    const fn hex_into(self) -> [u8; 64] {
         hex32_into(self.0)
     }
 

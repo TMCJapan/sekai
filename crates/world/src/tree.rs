@@ -2,10 +2,10 @@
 
 use alloc::vec::Vec;
 
-use sekai_core::{Dimension, RegionKey, RegionKind};
+use sekai_util::{Dimension, RegionKey, RegionKind};
 
+use crate::lock::{WorldLock, WorldLockMode, WorldLockState};
 use crate::region::RegionFile;
-use crate::{WorldLock, WorldLockMode, WorldLockState};
 
 /// World access shared by commit, checkout, and diff.
 ///

@@ -7,9 +7,9 @@
 
 use alloc::vec::Vec;
 
-use sekai_core::{CommitId, CommitRef, RefKind, Revision};
+use sekai_platform::{thread::ThreadRunner, time::Clock};
 use sekai_storage::{ResolveError, SekaiStore};
-use sekai_util::{Clock, ThreadRunner};
+use sekai_util::{CommitId, CommitRef, RefKind, Revision};
 
 use crate::error::AppError;
 use crate::instance::SekaiInstance;

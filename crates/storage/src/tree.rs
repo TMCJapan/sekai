@@ -14,8 +14,8 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use sekai_util::{
-    ApplyOutcome, ChunkCoord, ChunkHash, CommitEntry, CommitId, DimHash, Dimension, RegionHash,
-    RegionKey, RegionKind, RootHash, hash_bytes,
+    ApplyOutcome, ChunkHash, CommitEntry, CommitId, DimHash, Dimension, RegionHash, RegionKey,
+    RegionKind, RootHash, chunk_coord::ChunkCoord, hash_bytes,
 };
 
 use crate::meta::MetaStore;
@@ -137,9 +137,9 @@ fn read_hash(bytes: &[u8], offset: usize) -> [u8; 32] {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RootEntry {
     /// Dimension namespace code.
-    pub dim: i32,
+    dim: i32,
     /// Hash of the dimension's node.
-    pub hash: DimHash,
+    hash: DimHash,
 }
 
 /// Canonical root node.
@@ -150,14 +150,14 @@ pub struct RootNode {
 
 impl RootNode {
     /// Build a canonical node: entries sort by dimension, duplicates collapse.
-    pub fn new(mut entries: Vec<RootEntry>) -> Self {
+    fn new(mut entries: Vec<RootEntry>) -> Self {
         entries.sort_by_key(|entry| entry.dim);
         entries.dedup_by_key(|entry| entry.dim);
         Self { entries }
     }
 
     /// Entries in canonical order.
-    pub fn entries(&self) -> &[RootEntry] {
+    fn entries(&self) -> &[RootEntry] {
         &self.entries
     }
 
@@ -170,7 +170,7 @@ impl RootNode {
     }
 
     /// Canonical encoding (the hash preimage without the domain tag).
-    pub fn encode(&self) -> Vec<u8> {
+    fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.entries.len() * ROOT_ENTRY_LEN);
         for entry in &self.entries {
             push_i32(&mut out, entry.dim);
@@ -180,7 +180,7 @@ impl RootNode {
     }
 
     /// Node digest.
-    pub fn hash(&self) -> RootHash {
+    fn hash(&self) -> RootHash {
         RootHash::new(tagged_hash(ROOT_DOMAIN, &self.encode()))
     }
 
@@ -226,13 +226,13 @@ impl RootNode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct DimEntry {
     /// Region family.
-    pub kind: RegionKind,
+    kind: RegionKind,
     /// Region X.
-    pub rx: i32,
+    rx: i32,
     /// Region Z.
-    pub rz: i32,
+    rz: i32,
     /// Hash of the region's node.
-    pub hash: RegionHash,
+    hash: RegionHash,
 }
 
 /// Canonical dimension node.
@@ -247,14 +247,14 @@ fn dim_key(entry: &DimEntry) -> (i32, i32, i32) {
 
 impl DimNode {
     /// Build a canonical node: entries sort by `(kind, rx, rz)`.
-    pub fn new(mut entries: Vec<DimEntry>) -> Self {
+    fn new(mut entries: Vec<DimEntry>) -> Self {
         entries.sort_by_key(dim_key);
         entries.dedup_by_key(|entry| (i32::from(entry.kind.raw()), entry.rx, entry.rz));
         Self { entries }
     }
 
     /// Entries in canonical order.
-    pub fn entries(&self) -> &[DimEntry] {
+    fn entries(&self) -> &[DimEntry] {
         &self.entries
     }
 
@@ -268,7 +268,7 @@ impl DimNode {
     }
 
     /// Canonical encoding (the hash preimage without the domain tag).
-    pub fn encode(&self) -> Vec<u8> {
+    fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.entries.len() * DIM_ENTRY_LEN);
         for entry in &self.entries {
             push_i32(&mut out, i32::from(entry.kind.raw()));
@@ -280,7 +280,7 @@ impl DimNode {
     }
 
     /// Node digest.
-    pub fn hash(&self) -> DimHash {
+    fn hash(&self) -> DimHash {
         DimHash::new(tagged_hash(DIM_DOMAIN, &self.encode()))
     }
 
@@ -368,7 +368,7 @@ impl RegionNode {
     }
 
     /// Canonical encoding (the hash preimage without the domain tag).
-    pub fn encode(&self) -> Vec<u8> {
+    fn encode(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.entries.len() * REGION_ENTRY_LEN);
         for entry in &self.entries {
             out.push(entry.cx);
@@ -438,18 +438,6 @@ pub struct TreeNodes {
     pub region: BTreeMap<RegionHash, Vec<u8>>,
 }
 
-impl TreeNodes {
-    /// Total node count.
-    pub fn len(&self) -> usize {
-        self.root.len() + self.dim.len() + self.region.len()
-    }
-
-    /// Whether no node is present.
-    pub fn is_empty(&self) -> bool {
-        self.root.is_empty() && self.dim.is_empty() && self.region.is_empty()
-    }
-}
-
 /// Empty tree as a stored root node.
 pub fn empty_tree() -> (RootHash, TreeNodes) {
     let node = RootNode::default();
@@ -460,7 +448,7 @@ pub fn empty_tree() -> (RootHash, TreeNodes) {
 }
 
 #[allow(clippy::cast_possible_truncation)]
-pub(crate) const fn local_slot(coord: ChunkCoord) -> (u8, u8) {
+const fn local_slot(coord: ChunkCoord) -> (u8, u8) {
     // `rem_euclid(32)` is always in `0..32`, so the cast cannot truncate.
     (coord.x.rem_euclid(32) as u8, coord.z.rem_euclid(32) as u8)
 }
@@ -485,7 +473,7 @@ type RegionChanges = BTreeMap<RegionKeyParts, SlotChanges>;
 /// creates merges. Out-of-scope subtrees are never read: only the changed
 /// regions and their dim nodes are loaded, and every unchanged hash is
 /// reused.
-pub async fn build_update<M: MetaStore>(
+async fn build_update<M: MetaStore>(
     meta: &M,
     parents: &[CommitId],
     entries: &[CommitEntry],
@@ -724,13 +712,13 @@ where
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DiffStats {
     /// Present chunks whose blob differs from the base.
-    pub fresh_chunks: usize,
+    pub(crate) fresh_chunks: usize,
     /// Chunks present in the base but absent from the snapshot.
-    pub fresh_tombstones: usize,
+    pub(crate) fresh_tombstones: usize,
     /// Distinct blobs among the fresh chunks.
-    pub new_blobs: usize,
+    pub(crate) new_blobs: usize,
     /// Present chunks in the snapshot.
-    pub effective_chunks: usize,
+    pub(crate) effective_chunks: usize,
 }
 
 /// Diff a snapshot against its base region-by-region.
@@ -739,7 +727,7 @@ pub struct DiffStats {
 /// base side is read only along changed paths; a `None` base diffs against
 /// the empty snapshot. The current side is read whole because no node
 /// carries a chunk count, and effective chunks need every region's size.
-pub async fn diff_stats<M: MetaStore>(
+pub(crate) async fn diff_stats<M: MetaStore>(
     meta: &M,
     root: RootHash,
     base: Option<RootHash>,
@@ -1079,7 +1067,10 @@ mod tests {
             let (next, nodes) =
                 block_on(build_update(&meta, &[first], &[entry(OVER, 0, 0, 1)])).unwrap();
             assert_eq!(next, root);
-            assert!(nodes.is_empty(), "an unchanged tree writes no node");
+            assert!(
+                nodes.root.is_empty() && nodes.dim.is_empty() && nodes.region.is_empty(),
+                "an unchanged tree writes no node"
+            );
         }
 
         #[test]

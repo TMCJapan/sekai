@@ -5,7 +5,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use core::fmt::Display;
 
-use sekai_core::{ChunkCoord, RegionKey};
+use sekai_util::{RegionKey, chunk_coord::ChunkCoord};
 use sekai_world::{RegionFile, WorldTree};
 
 /// Lift a world-tree or region-handle failure into [`AppError`]. The tree's
@@ -160,7 +160,7 @@ pub enum AppError {
     },
     /// Scope would select nothing.
     #[error(transparent)]
-    InvalidScope(#[from] sekai_core::NamedScopeError),
+    InvalidScope(#[from] sekai_util::error::NamedScopeError),
     /// No commit is available for the operation: the store is empty or
     /// the active ref is unborn.
     #[error("no commit selected: the store is empty or the active ref is unborn")]

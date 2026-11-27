@@ -14,7 +14,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::task::{Context, Poll, Waker};
 use std::thread;
 
-use sekai_util::{JobSet, ThreadRunner, WorkerPanic};
+use sekai_platform::thread::{JobSet, ThreadRunner, WorkerPanic};
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)

@@ -6,7 +6,7 @@
 
 use alloc::vec::Vec;
 
-use super::{ChunkCoord, Dimension, RegionKey, RegionKind};
+use super::{Dimension, RegionKey, RegionKind, chunk_coord::ChunkCoord};
 
 /// Inclusive chunk-coordinate rectangle, normalized so minima come first.
 ///
@@ -49,7 +49,7 @@ impl Rect {
     }
 
     /// Whether a chunk coordinate falls inside the rectangle.
-    pub const fn contains(self, x: i32, z: i32) -> bool {
+    const fn contains(self, x: i32, z: i32) -> bool {
         self.x0 <= x && x <= self.x1 && self.z0 <= z && z <= self.z1
     }
 
@@ -57,7 +57,7 @@ impl Rect {
     ///
     /// Spans come from the same clamping as [`Rect::region`], so the two
     /// always agree: `32 * rx` would overflow `i32` for absurd coordinates.
-    pub const fn overlaps_region(self, rx: i32, rz: i32) -> bool {
+    const fn overlaps_region(self, rx: i32, rz: i32) -> bool {
         self.x0 <= region_last(rx)
             && region_first(rx) <= self.x1
             && self.z0 <= region_last(rz)
@@ -67,7 +67,8 @@ impl Rect {
     /// Whether this rectangle contains every chunk of region file `(rx, rz)`.
     ///
     /// Uses the same clamped spans as [`Rect::overlaps_region`].
-    pub const fn covers_region(self, rx: i32, rz: i32) -> bool {
+    #[allow(dead_code)]
+    const fn covers_region(self, rx: i32, rz: i32) -> bool {
         self.x0 <= region_first(rx)
             && region_last(rx) <= self.x1
             && self.z0 <= region_first(rz)
@@ -213,7 +214,8 @@ impl Scope {
     /// chunks unrecorded (ADR-0023), so the merged node is not the file's
     /// own. Coverage by the union of several areas is reported as partial,
     /// which costs a re-ingest rather than correctness.
-    pub fn covers_region(&self, key: RegionKey) -> bool {
+    #[allow(dead_code)]
+    pub(crate) fn covers_region(&self, key: RegionKey) -> bool {
         match self {
             Self::World => true,
             Self::Kinds(kinds) => kinds.contains(&key.kind),

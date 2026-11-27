@@ -5,7 +5,7 @@
 
 use anyhow::{Context as _, bail};
 use sekai_app::SekaiStoreOpener as _;
-use sekai_storage_local::{Config, LocalStore};
+use sekai_storage_local::{LocalStore, config::Config};
 use serde::Serialize;
 
 use crate::cli::ConfigArgs;
@@ -125,7 +125,7 @@ struct KeyJson<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sekai_storage_local::ConfigKey;
+    use sekai_storage_local::config::ConfigKey;
 
     const KEY: ConfigKey = ConfigKey::UserName;
 

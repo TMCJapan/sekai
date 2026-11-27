@@ -25,7 +25,7 @@ pub async fn run(
     let options = sekai_app::StatusOptions::default();
     let instance = sekai_app::SekaiInstance::<LocalStore, _, _>::open_with(
         store,
-        <crate::runner::OsThread as sekai_app::ThreadRunner>::new(jobs),
+        <crate::runner::OsThread as sekai_platform::thread::ThreadRunner>::new(jobs),
         crate::time::OsTime,
     )
     .await

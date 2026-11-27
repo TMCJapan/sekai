@@ -6,9 +6,7 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use core::fmt;
 
-pub use sekai_util::CommitId;
-
-pub use crate::{BlobStore, MetaStore};
+use sekai_util::{ChunkHash, CommitId};
 
 /// Failures while storing blobs or metadata.
 ///
@@ -28,7 +26,7 @@ pub enum StorageError {
     /// are represented in metadata.
     BlobMissing {
         /// Hex-encoded hash of the absent blob.
-        hex: String,
+        hex: ChunkHash,
     },
     /// The root holds no initialized store. Only an explicit init creates
     /// one; every other operation must fail here instead of materializing
@@ -243,38 +241,33 @@ pub struct Store<M, C, K> {
 }
 
 impl<M, C, K> Store<M, C, K> {
-    /// Compose an opened store from its adapters.
-    pub const fn new(meta: M, blob: C, cache: K) -> Self {
-        Self { meta, blob, cache }
-    }
-
     /// Metadata adapter.
-    pub const fn meta(&self) -> &M {
+    pub(crate) const fn meta(&self) -> &M {
         &self.meta
     }
 
     /// Mutable metadata adapter.
-    pub const fn meta_mut(&mut self) -> &mut M {
+    pub(crate) const fn meta_mut(&mut self) -> &mut M {
         &mut self.meta
     }
 
     /// Blob adapter.
-    pub const fn blob(&self) -> &C {
+    pub(crate) const fn blob(&self) -> &C {
         &self.blob
     }
 
     /// Mutable blob adapter.
-    pub const fn blob_mut(&mut self) -> &mut C {
+    pub(crate) const fn blob_mut(&mut self) -> &mut C {
         &mut self.blob
     }
 
     /// Cache adapter.
-    pub const fn cache(&self) -> &K {
+    pub(crate) const fn cache(&self) -> &K {
         &self.cache
     }
 
     /// Mutable cache adapter.
-    pub const fn cache_mut(&mut self) -> &mut K {
+    pub(crate) const fn cache_mut(&mut self) -> &mut K {
         &mut self.cache
     }
 }
@@ -297,7 +290,6 @@ pub fn io_error(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::borrow::ToOwned;
     use alloc::string::ToString;
     use core::error::Error as _;
 
@@ -338,18 +330,5 @@ mod tests {
             err.source().map(ToString::to_string).as_deref(),
             Some("corrupt tree")
         );
-    }
-
-    #[test]
-    fn store_exposes_all_adapters() {
-        let mut store = Store::new("meta".to_owned(), "blob".to_owned(), "cache".to_owned());
-
-        assert_eq!(store.meta().as_str(), "meta");
-        assert_eq!(store.blob().as_str(), "blob");
-        assert_eq!(store.cache().as_str(), "cache");
-
-        *store.meta_mut() = "new meta".to_owned();
-        *store.blob_mut() = "new blob".to_owned();
-        *store.cache_mut() = "new cache".to_owned();
     }
 }

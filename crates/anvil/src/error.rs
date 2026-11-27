@@ -177,13 +177,6 @@ pub enum ChunkHashError {
     Normalize(ChunkNbtError),
 }
 
-impl ChunkHashError {
-    /// Whether the payload ended before its NBT value did.
-    pub const fn is_truncated(&self) -> bool {
-        matches!(self, Self::Invalid(source) if source.is_truncated())
-    }
-}
-
 impl From<AnvilError> for ChunkHashError {
     fn from(source: AnvilError) -> Self {
         Self::Decompress(source)

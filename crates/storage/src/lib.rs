@@ -41,6 +41,6 @@ pub use graph::{CommitError, CommitStats, ResolveError};
 pub use meta::{MetaStore, commit_hash};
 pub use store::{SekaiStore, SekaiStoreOpener};
 pub use tree::{
-    DiffStats, DimEntry, DimNode, NodeLevel, RegionEntry, RegionNode, RootEntry, RootNode,
-    TreeError, TreeNodes, empty_tree, file_region_hash,
+    DimEntry, DimNode, NodeLevel, RegionEntry, RegionNode, RootEntry, RootNode, TreeError,
+    TreeNodes, empty_tree, file_region_hash,
 };

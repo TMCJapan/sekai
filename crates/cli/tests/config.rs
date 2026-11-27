@@ -3,7 +3,8 @@
 use clap::Parser as _;
 use sekai_app::SekaiStoreOpener as _;
 use sekai_cli::cli::Cli;
-use sekai_storage_local::{Config, ConfigKey, LocalStore};
+use sekai_storage_local::LocalStore;
+use sekai_storage_local::config::{Config, ConfigKey};
 
 /// A temp dir whose name starts with the calling test's name (tempfile
 /// appends a random suffix), removed when its guard is dropped.

@@ -3,17 +3,17 @@
 
 mod blob;
 mod cache;
-mod config;
+pub mod config;
 mod meta;
-mod version;
-mod worktree;
+pub mod version;
+pub mod worktree;
 
+// ast-grep-ignore: no-pub-use
 pub use blob::SledBlob;
+// ast-grep-ignore: no-pub-use
 pub use cache::SledCache;
-pub use config::{Config, ConfigKey, UnknownConfigKey, User};
+// ast-grep-ignore: no-pub-use
 pub use meta::SqliteMeta;
-pub use version::STORE_VERSION;
-pub use worktree::Worktree;
 
 use std::path::{Path, PathBuf};
 

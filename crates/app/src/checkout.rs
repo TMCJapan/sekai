@@ -18,10 +18,11 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::time::Duration;
 
-use sekai_core::{ChunkCoord, ChunkHash, CommitId, RegionKey, Scope};
+use sekai_platform::thread::{JobSet as _, ThreadRunner};
+use sekai_platform::time::{Clock, Timer as _};
 use sekai_storage::{MetaStore, SekaiStore, StorageError};
-use sekai_util::{Clock, JobSet as _, ThreadRunner, Timer as _};
-use sekai_world::{Region, RegionFile, WorldLockMode, WorldTree};
+use sekai_util::{ChunkHash, CommitId, RegionKey, Scope, chunk_coord::ChunkCoord};
+use sekai_world::{Region, RegionFile, WorldTree, lock::WorldLockMode};
 
 use crate::error::{AppError, image_error, world_error};
 use crate::instance::{WorldGuard, WorldHandleMut};
@@ -65,7 +66,7 @@ pub enum CheckoutError<M> {
 }
 
 /// Resolve present commit rows grouped by region.
-pub(crate) async fn plan_checkout<M: MetaStore>(
+async fn plan_checkout<M: MetaStore>(
     meta: &M,
     commit: CommitId,
 ) -> Result<CheckoutPlan, CheckoutError<M::Error>> {
@@ -570,8 +571,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sekai_core::{CommitEntry, Dimension, RefName, RegionKind};
     use sekai_storage::testing::{MemMeta, block_on};
+    use sekai_util::{CommitEntry, Dimension, RefName, RegionKind};
 
     const OVER: Dimension = Dimension::OVERWORLD;
     const REGION: RegionKind = RegionKind::Region;

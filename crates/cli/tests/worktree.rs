@@ -8,7 +8,7 @@ use std::process::{Command, Output};
 
 use sekai_app::SekaiStoreOpener as _;
 use sekai_storage_local::LocalStore;
-use sekai_util::{Head, RefName};
+use sekai_util::{RefName, worktree::Head};
 
 /// A temp dir whose name starts with the calling test's name (tempfile
 /// appends a random suffix), removed when its guard is dropped.

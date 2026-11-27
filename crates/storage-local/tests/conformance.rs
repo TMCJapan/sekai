@@ -5,9 +5,10 @@ mod common;
 use sekai_storage::{
     BlobStore as _, CacheStore as _, MetaStore as _, SekaiStore as _, SekaiStoreOpener,
 };
-use sekai_storage_local::{LocalStore, Worktree};
+use sekai_storage_local::{LocalStore, worktree::Worktree};
 use sekai_util::{
-    ChunkCoord, ChunkHash, CommitEntry, Dimension, Head, RefName, RegionHash, RegionKind,
+    ChunkHash, CommitEntry, Dimension, RefName, RegionHash, RegionKind, chunk_coord::ChunkCoord,
+    worktree::Head,
 };
 use std::path::Path;
 
@@ -264,12 +265,12 @@ async fn init_writes_version_and_reinit_keeps_it() {
     let version = dir.join("version");
     assert_eq!(
         std::fs::read_to_string(&version).unwrap(),
-        format!("{}\n", sekai_storage_local::STORE_VERSION)
+        format!("{}\n", sekai_storage_local::version::STORE_VERSION)
     );
 
     // A spelling only a preserved file can carry (no trailing newline):
     // re-init must not rewrite it.
-    let kept = sekai_storage_local::STORE_VERSION.to_string();
+    let kept = sekai_storage_local::version::STORE_VERSION.to_string();
     std::fs::write(&version, &kept).unwrap();
     let store = LocalStore::init(&dir).await.unwrap();
     drop(store);
@@ -288,7 +289,7 @@ async fn open_gates_the_store_version() {
         matches!(
             err,
             sekai_storage::StorageError::UnsupportedSchema { found: 99, supported }
-                if supported == i64::from(sekai_storage_local::STORE_VERSION)
+                if supported == i64::from(sekai_storage_local::version::STORE_VERSION)
         ),
         "unexpected error: {err}"
     );

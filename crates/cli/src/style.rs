@@ -23,7 +23,7 @@ pub struct Styler {
 
 impl Styler {
     /// Resolve styling from the CLI flag, `NO_COLOR`, and stdout TTY state.
-    pub fn new(choice: ColorChoice) -> Self {
+    pub(crate) fn new(choice: ColorChoice) -> Self {
         Self::from_tty(choice, std::io::IsTerminal::is_terminal(&std::io::stdout()))
     }
 
@@ -31,7 +31,7 @@ impl Styler {
     ///
     /// Error output goes to stderr, which may be a TTY while stdout is
     /// piped (or vice versa); gate each stream independently.
-    pub fn new_stderr(choice: ColorChoice) -> Self {
+    pub(crate) fn new_stderr(choice: ColorChoice) -> Self {
         Self::from_tty(choice, std::io::IsTerminal::is_terminal(&std::io::stderr()))
     }
 
@@ -43,19 +43,19 @@ impl Styler {
 
     /// Styling unconditionally on (tests, `--color=always` plumbing).
     #[cfg(test)]
-    pub const fn enabled() -> Self {
+    pub(crate) const fn enabled() -> Self {
         Self { enabled: true }
     }
 
     /// Styling unconditionally off (tests, JSON mode).
     #[cfg(test)]
-    pub const fn disabled() -> Self {
+    pub(crate) const fn disabled() -> Self {
         Self { enabled: false }
     }
 
     /// Whether escapes are emitted.
     #[cfg(test)]
-    pub const fn is_enabled(self) -> bool {
+    const fn is_enabled(self) -> bool {
         self.enabled
     }
 
@@ -99,7 +99,7 @@ impl Styler {
 
 /// Pure TTY/`NO_COLOR`/flag resolution. Kept free of I/O so tests never
 /// touch the process environment.
-pub const fn resolve_color(choice: ColorChoice, no_color: bool, is_tty: bool) -> bool {
+const fn resolve_color(choice: ColorChoice, no_color: bool, is_tty: bool) -> bool {
     match choice {
         ColorChoice::Always => true,
         ColorChoice::Never => false,

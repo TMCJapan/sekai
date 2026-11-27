@@ -14,7 +14,7 @@ pub async fn run(store: &str, action: &ScopeCommand, style: Styler) -> anyhow::R
     // composed even though the runner stays inline.
     let mut instance = sekai_app::SekaiInstance::<LocalStore, _, _>::open_with(
         store,
-        <sekai_app::Sequential as sekai_app::ThreadRunner>::new(0),
+        <sekai_platform::thread::Sequential as sekai_platform::thread::ThreadRunner>::new(0),
         crate::time::OsTime,
     )
     .await?;

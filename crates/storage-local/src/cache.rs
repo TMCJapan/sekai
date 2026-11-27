@@ -19,7 +19,7 @@
 //! sled is a synchronous embedded database, so every operation runs on the
 //! runtime's blocking pool, never inline on an async worker.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use sekai_storage::{CacheStore, StorageError, io_error};
 use sekai_util::RegionHash;
@@ -60,7 +60,6 @@ where
 /// Region-image cache backed by the sled keyspace at `<store>/cache`.
 #[derive(Debug, Clone)]
 pub struct SledCache {
-    path: PathBuf,
     db: sled::Db,
     hashes: sled::Tree,
 }
@@ -71,7 +70,7 @@ impl SledCache {
     /// The parent directory must already exist; this type never creates it
     /// (directory layout is the store's concern). While another handle holds
     /// the keyspace, this fails instead of waiting: sled admits one opener.
-    pub async fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
+    pub(crate) async fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
         let path = path.as_ref().to_path_buf();
         if !path.parent().is_some_and(Path::is_dir) {
             return Err(io_error(
@@ -90,12 +89,7 @@ impl SledCache {
         })
         .await
         .map_err(join_err)??;
-        Ok(Self { path, db, hashes })
-    }
-
-    /// Keyspace directory this cache owns.
-    pub fn path(&self) -> &Path {
-        &self.path
+        Ok(Self { db, hashes })
     }
 }
 

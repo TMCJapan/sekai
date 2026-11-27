@@ -15,7 +15,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use sekai_core::Dimension;
+use sekai_util::Dimension;
 
 use super::vanilla::{self, is_dir, read_dir_opt};
 use crate::WorldError;

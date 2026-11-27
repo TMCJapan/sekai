@@ -1,7 +1,5 @@
 //! Content hashes: the normalized chunk digest and its CAS key.
 
-use alloc::string::String;
-
 use super::error::HexError;
 
 /// Digest of an arbitrary byte slice.
@@ -43,6 +41,15 @@ impl BytesHasher {
 /// absent chunk never compares equal to a present one by construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ChunkHash([u8; 32]);
+
+impl alloc::fmt::Display for ChunkHash {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for i in self.0 {
+            write!(f, "{i:02x}")?;
+        }
+        Ok(())
+    }
+}
 
 /// Lowercase alphabet for CAS paths.
 const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -97,48 +104,11 @@ impl ChunkHash {
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
-
-    /// Encode as lowercase hex without allocation.
-    pub const fn hex_into(self) -> [u8; 64] {
-        hex32_into(self.0)
-    }
-
-    /// Encode as a lowercase hex string.
-    pub fn hex_string(self) -> String {
-        let raw = self.hex_into();
-        String::from_utf8(raw.to_vec()).unwrap_or_default()
-    }
-
-    /// Parse a 64-byte hexadecimal value.
-    pub fn from_hex(input: &[u8]) -> Result<Self, HexError> {
-        hex32_from(input).map(Self)
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn hex_round_trip() {
-        let h = ChunkHash([7; 32]);
-        let hex = h.hex_into();
-        assert_eq!(ChunkHash::from_hex(&hex), Ok(h));
-        let mut upper = hex;
-        for b in &mut upper {
-            *b = b.to_ascii_uppercase();
-        }
-        assert_eq!(ChunkHash::from_hex(&upper), Ok(h));
-        assert_eq!(h.hex_string().as_bytes(), hex);
-    }
-
-    #[test]
-    fn hex_rejects_bad_length_and_chars() {
-        assert_eq!(ChunkHash::from_hex(b"abc"), Err(HexError::BadHexLength(3)));
-        let mut bad = [b'0'; 64];
-        bad[0] = b'z';
-        assert_eq!(ChunkHash::from_hex(&bad), Err(HexError::BadHexChar(b'z')));
-    }
 
     #[test]
     fn bytes_hasher_matches_a_single_shot_digest() {

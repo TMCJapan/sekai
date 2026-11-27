@@ -11,9 +11,9 @@
 //! stay off. Only the overlay choice (git's `--overlay`/`--no-overlay`)
 //! and the rebuild mechanics remain configurable.
 
-use sekai_core::{Revision, Scope};
+use sekai_platform::{thread::ThreadRunner, time::Clock};
 use sekai_storage::SekaiStore;
-use sekai_util::{Clock, ThreadRunner};
+use sekai_util::{Revision, Scope};
 use sekai_world::WorldTree;
 
 use crate::checkout::{

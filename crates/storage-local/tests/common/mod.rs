@@ -4,8 +4,8 @@
 
 use sekai_storage::{BlobStore, CacheStore, MetaStore};
 use sekai_util::{
-    ChunkCoord, ChunkHash, CommitEntry, CommitId, Dimension, NamedScope, Rect, RegionKind,
-    ScopeName,
+    ChunkHash, CommitEntry, CommitId, Dimension, NamedScope, Rect, RegionKind, ScopeName,
+    chunk_coord::ChunkCoord,
 };
 
 const OVER: Dimension = Dimension::OVERWORLD;

@@ -3,7 +3,7 @@
 use alloc::collections::BTreeMap;
 use alloc::collections::btree_map::Entry;
 
-use sekai_core::{RegionKey, RegionKind};
+use sekai_util::{RegionKey, RegionKind};
 use sekai_world::WorldTree;
 
 use crate::error::{AppError, duplicate_region, world_error};

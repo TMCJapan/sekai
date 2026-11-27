@@ -1,6 +1,6 @@
 //! Wall-clock reading through the instance's clock.
 
-use sekai_util::Clock;
+use sekai_platform::time::Clock;
 
 use crate::error::AppError;
 

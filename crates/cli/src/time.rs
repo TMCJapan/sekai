@@ -7,7 +7,7 @@
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use sekai_util::{Clock, Timer};
+use sekai_platform::time::{Clock, Timer};
 
 /// A [`Clock`] over the OS clock: monotonic [`Instant`]s for elapsed
 /// phases, [`SystemTime`] for Unix-millisecond stamps.
@@ -39,7 +39,7 @@ impl Timer for OsTimer {
 #[cfg(test)]
 mod tests {
     use super::OsTime;
-    use sekai_util::{Clock, Timer};
+    use sekai_platform::time::{Clock, Timer};
 
     #[test]
     fn a_timer_measures_elapsed_time() {

@@ -51,7 +51,7 @@ pub async fn run(
         .with_context(|| format!("failed to inspect world {}", world_path.as_ref().display()))?;
     let mut instance = sekai_app::SekaiInstance::<LocalStore, _, _>::open_with(
         store,
-        <crate::runner::OsThread as sekai_app::ThreadRunner>::new(flags.jobs),
+        <crate::runner::OsThread as sekai_platform::thread::ThreadRunner>::new(flags.jobs),
         crate::time::OsTime,
     )
     .await

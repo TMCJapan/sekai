@@ -31,14 +31,6 @@ impl RegionBuilder {
         })
     }
 
-    pub const fn region_x(&self) -> i32 {
-        self.loc.region_x()
-    }
-
-    pub const fn region_z(&self) -> i32 {
-        self.loc.region_z()
-    }
-
     /// Adds or replaces a stored chunk payload.
     pub fn stage_chunk(&mut self, x: i32, z: i32, payload: &[u8]) -> Result<(), AnvilError> {
         if payload.is_empty() {
@@ -63,17 +55,6 @@ impl RegionBuilder {
                     },
                 );
             }
-        }
-
-        Ok(())
-    }
-
-    /// Removes a previously staged chunk.
-    pub fn remove_chunk(&mut self, x: i32, z: i32) -> Result<(), AnvilError> {
-        let slot = self.loc.slot_of(x, z)?;
-
-        if let Ok(index) = self.staged.binary_search_by_key(&slot, |chunk| chunk.slot) {
-            self.staged.remove(index);
         }
 
         Ok(())
@@ -153,19 +134,6 @@ mod tests {
 
     fn builder() -> RegionBuilder {
         RegionBuilder::new(0, 0, 0x1234_5678).unwrap()
-    }
-
-    #[test]
-    fn stages_and_forgets() {
-        let mut builder = builder();
-
-        builder.stage_chunk(1, 2, &[2, 9, 9]).unwrap();
-
-        builder.remove_chunk(1, 2).unwrap();
-
-        builder.remove_chunk(1, 2).unwrap();
-
-        assert_eq!(builder.image().unwrap().len(), 8192);
     }
 
     #[test]

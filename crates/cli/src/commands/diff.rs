@@ -1,9 +1,8 @@
 //! Diff subcommand execution, DTOs, and coordination.
 
 use anyhow::Context as _;
-use sekai_app::{
-    ChunkCoord, ChunkDiff, Clock, CommitId, Revision, Scope, SekaiStore, ThreadRunner,
-};
+use sekai_app::{ChunkCoord, ChunkDiff, CommitId, Revision, Scope, SekaiStore};
+use sekai_platform::{thread::ThreadRunner, time::Clock};
 use sekai_storage_local::LocalStore;
 use sekai_world_local::HostWorldTree;
 
@@ -33,7 +32,7 @@ pub async fn run(store: &str, args: &DiffArgs, style: Styler) -> anyhow::Result<
     // output needs the host clock.
     let instance = sekai_app::SekaiInstance::<LocalStore, _, _>::open_with(
         store,
-        sekai_app::Sequential::new(0),
+        sekai_platform::thread::Sequential::new(0),
         crate::time::OsTime,
     )
     .await?;

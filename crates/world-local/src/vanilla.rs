@@ -5,7 +5,7 @@ use std::{
 };
 
 use sekai_anvil::custom_dimension_id_bytes;
-use sekai_core::Dimension;
+use sekai_util::Dimension;
 
 pub(super) fn collect_dimensions(
     root: impl AsRef<Path>,

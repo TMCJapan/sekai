@@ -26,7 +26,7 @@ const TMP_FILE_NAME: &str = "config.toml.tmp";
 pub struct Config {
     /// Commit author identity.
     #[serde(default)]
-    pub user: User,
+    user: User,
 }
 
 /// The `[user]` section.
@@ -34,7 +34,7 @@ pub struct Config {
 pub struct User {
     /// Author name; empty means unset.
     #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub name: String,
+    name: String,
 }
 
 /// A known config key, spelled `section.name` like git's.
@@ -46,7 +46,7 @@ pub enum ConfigKey {
 
 impl ConfigKey {
     /// Every known key, in listing order.
-    pub const ALL: [Self; 1] = [Self::UserName];
+    const ALL: [Self; 1] = [Self::UserName];
 
     /// The canonical `section.name` spelling.
     pub const fn name(self) -> &'static str {
@@ -76,7 +76,7 @@ impl std::fmt::Display for ConfigKey {
 
 /// A config key this binary does not know.
 #[derive(Debug)]
-pub struct UnknownConfigKey(pub String);
+pub struct UnknownConfigKey(String);
 
 impl std::fmt::Display for UnknownConfigKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

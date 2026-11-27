@@ -1,7 +1,7 @@
 //! Worker-failure attribution shared by the per-file pipelines.
 
+use sekai_platform::thread::WorkerPanic;
 use sekai_storage::StorageError;
-use sekai_util::WorkerPanic;
 
 use crate::error::AppError;
 

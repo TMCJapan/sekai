@@ -8,7 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// overhead negligible, small enough to stay off the heap's slow path.
 const HASH_CHUNK: usize = 128 * 1024;
 
-pub(crate) fn mtime_ms_from_system_time(t: SystemTime) -> Option<u64> {
+fn mtime_ms_from_system_time(t: SystemTime) -> Option<u64> {
     let elapsed = t.duration_since(UNIX_EPOCH).ok()?;
     Some(u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX))
 }
@@ -23,7 +23,7 @@ pub(crate) fn mtime_ms_from_metadata(meta: &Metadata) -> Option<u64> {
 /// prefix cannot see a payload edit, and mtime is not trustworthy when a
 /// copy, an archive extraction, or a filesystem snapshot preserves it.
 pub(crate) fn content_hash_of(reader: &mut impl Read) -> std::io::Result<[u8; 32]> {
-    let mut hasher = sekai_core::BytesHasher::new();
+    let mut hasher = sekai_util::BytesHasher::new();
     let mut buf = vec![0u8; HASH_CHUNK];
     loop {
         let read = reader.read(&mut buf)?;

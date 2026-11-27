@@ -7,14 +7,15 @@ use alloc::vec::Vec;
 use core::time::Duration;
 
 use sekai_anvil::{Chunk, ChunkHashError, ChunkPayloadDiff};
-use sekai_core::{ChunkCoord, ChunkHash, CommitId, RegionKey, RegionKind};
+use sekai_platform::thread::{JobSet as _, ThreadRunner};
+use sekai_platform::time::{Clock, Timer as _};
 use sekai_storage::{BlobStore as _, MetaStore, RegionNode, SekaiStore};
-use sekai_util::{Clock, JobSet as _, ThreadRunner, Timer as _};
-use sekai_world::{Region, RegionFile, WorldLockMode, WorldTree};
+use sekai_util::{ChunkHash, CommitId, RegionKey, RegionKind, chunk_coord::ChunkCoord};
+use sekai_world::{Region, RegionFile, WorldTree, lock::WorldLockMode};
 
 use crate::cache::prove_regions_unchanged;
 use crate::error::{AppError, image_error, world_error};
-use crate::instance::{SekaiInstance, WorldGuard, WorldHandle, WorldHandleMut};
+use crate::instance::{SekaiInstance, WorldGuard, WorldHandle};
 use crate::progress::{BuildProgress, Progress};
 use crate::regions::discover_regions;
 use crate::workers::worker_error;
@@ -354,33 +355,6 @@ where
         timings.total = total_started.stop();
         drop(guard);
         Ok((out, timings))
-    }
-}
-
-impl<W: WorldTree, S: SekaiStore, T: ThreadRunner, B: Clock> WorldHandleMut<'_, W, S, T, B>
-where
-    W::Error: Send + Sync + 'static,
-{
-    /// Compute AST diff for one chunk; see [`WorldHandle::diff_world_chunk`].
-    pub async fn diff_world_chunk(
-        &self,
-        commit: Option<CommitId>,
-        coord: &ChunkCoord,
-    ) -> Result<ChunkPayloadDiff, AppError> {
-        self.view().diff_world_chunk(commit, coord).await
-    }
-
-    /// Compute AST diffs for explicit chunks; see
-    /// [`WorldHandle::diff_world_chunks`].
-    pub async fn diff_world_chunks(
-        &self,
-        commit: Option<CommitId>,
-        coords: &[ChunkCoord],
-        progress_builder: &impl BuildProgress,
-    ) -> Result<(Vec<ChunkDiff>, DiffTimings), AppError> {
-        self.view()
-            .diff_world_chunks(commit, coords, progress_builder)
-            .await
     }
 }
 
