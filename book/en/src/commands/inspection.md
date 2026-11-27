@@ -6,7 +6,6 @@ These commands never write to the world or the store.
 sekai log
 sekai status ./world
 sekai diff 1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b 2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a --in overworld:0,0
-sekai worktree list
 ```
 
 - `log` prints commits oldest first with raw Unix-millis timestamps
@@ -36,12 +35,5 @@ sekai worktree list
   command errors — pass the older commit explicitly or use `--world`
   (whose single commit defaults to the active ref's target). `--show-values`
   prints concrete old/new values in human output.
-- `worktree list` prints every worktree the store backs up, mirroring
-  `git worktree list`: the store's own (main) worktree first, then the
-  linked ones in path order, each with its abbreviated HEAD and
-  `[branch]` or `(detached HEAD)`. An unborn HEAD shows zeros.
-  `--porcelain` emits machine-readable record blocks (`-z` terminates
-  them with NULs instead of newlines); `-v` is accepted but has no
-  effect, since sekai worktrees carry no locked or prunable annotations.
-  Worktrees are a local-store feature
-  ([ADR-0038](https://github.com/tmcjapan/sekai/blob/main/docs/adr/0038-worktrees-local-only.md)).
+- Worktree administration has its own page: `worktree list` and
+  `worktree remove` are covered under [Worktrees](worktree.md).

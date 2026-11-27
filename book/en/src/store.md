@@ -47,6 +47,15 @@ opens the store exclusively, so it cannot run while another process
 holds the store (a running backup); a store link resolves to the real
 store root. `--json` emits the standard envelope (see `docs/json.md`).
 
+## Worktrees
+
+A store can back up several worlds, each registered as a worktree keyed
+by the store location it opens: the store root itself for the store's own
+(main) worktree, a store link file for a linked one. Linked worktrees
+share the store's history, blobs, and cache. See
+[Worktrees](commands/worktree.md) for `sekai worktree list` and
+`sekai worktree remove`.
+
 ## Secondary backups
 
 For a full secondary backup of everything — commits, metadata, blobs,

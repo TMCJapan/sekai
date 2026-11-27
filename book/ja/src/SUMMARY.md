@@ -12,6 +12,7 @@
 - [チェックアウト](commands/checkout.md)
 - [リストア](commands/restore.md)
 - [検証・検査](commands/inspection.md)
+- [ワークツリー](commands/worktree.md)
 - [キャッシュ](commands/cache.md)
 - [自動化](automation.md)
 - [トラブルシューティング](troubleshooting.md)

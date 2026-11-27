@@ -24,7 +24,7 @@ carries the bare result only.
 | `cache` | clean record or update report (+timings with `--timing`) | table + JSON block (`update` only) | `clean` has no phases |
 | `diff` | single array, grouped array (multi), or timed object | table + JSON block | `--in`/`--region` select chunks; one chunk keeps the single shape |
 | `branch` | branch array | n/a | no phases exist |
-| `worktree` | worktree array (`list`) | n/a | no phases exist |
+| `worktree` | worktree array (`list`) or removal record (`remove`) | n/a | no phases exist |
 | `config` | entry record, key record, or entry array | n/a | no phases exist |
 
 Without `--timing`, `--json` emits the bare result. With `--timing`,
@@ -60,6 +60,15 @@ first, then `Caused by:` lines), JSON-escaped.
 Change (ADR-0040): the `config` command is added. `command` gains the
 value `config`; its payloads are the entry record, the key record, and
 the entry array below. Existing commands are unchanged.
+
+Change: `worktree` gains a `remove` subcommand (`worktree remove [-f]
+<worktree>`), mirroring `git worktree remove`. It returns a removal
+record; see the `worktree` payload below. The positional is the store
+location the worktree opens (its store link file). The main worktree and
+an unregistered location are refused, as Git refuses them; `--force` is
+accepted (and repeatable) but inert, since sekai worktrees carry no dirty
+or locked state. Removal deletes the store link and the registration row
+only — the world directory the worktree backs up is left untouched.
 
 Change: the new `worktree` command lists worktrees (`worktree list`),
 and `command` gains the value `worktree`. See the `worktree` payload
@@ -395,6 +404,28 @@ The human and `--porcelain` output (including `-z`) mirror
 `git worktree list`: the main worktree first, abbreviated HEADs padded
 to a common width, `[branch]` or `(detached HEAD)` suffixes, and zeros
 for unborn HEADs. `--json` is exclusive with `--porcelain`/`-z`.
+
+`worktree remove <worktree>` returns the removal record:
+
+```jsonc
+{"path": "/srv/world-2/.sekai"}
+```
+
+`path` is the absolute store location the removed worktree was keyed by,
+the same identity `worktree list` reports. The positional `<worktree>` is
+the store location the worktree opens (its store link file), the same
+spelling `--store` accepts for it. Removal deletes that store link and the
+registration row only; the world directory the worktree backs up is left
+untouched (add never materialized it, so remove never deletes it). A link
+that is already gone is not an error — the row is still removed, like Git
+cleaning up a worktree whose directory vanished.
+
+The refusals mirror `git worktree remove`: the store's own (main) worktree
+(`'<path>' is a main worktree`) and an unregistered location (`'<path>' is
+not a worktree`) fail with exit 1 and are never overridden. `-f`/`--force`
+is accepted and repeatable (`-f -f`) as Git's force is, but inert: sekai
+worktrees carry no dirty or locked state to override. Human output prints
+`removed worktree <path>` on success.
 
 ### `config`
 

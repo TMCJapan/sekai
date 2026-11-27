@@ -12,6 +12,7 @@
 - [Checkout](commands/checkout.md)
 - [Restore](commands/restore.md)
 - [Inspection](commands/inspection.md)
+- [Worktrees](commands/worktree.md)
 - [Cache](commands/cache.md)
 - [Automation](automation.md)
 - [Troubleshooting](troubleshooting.md)

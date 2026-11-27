@@ -1,7 +1,7 @@
-//! `sekai worktree list` run as a process over a local store, so stdout
-//! and the exit code are what a script sees. Linked worktrees are
-//! registered through `LocalStore::add_worktree`: the CLI has no
-//! `worktree add` yet.
+//! `sekai worktree list` and `sekai worktree remove` run as a process over
+//! a local store, so stdout and the exit code are what a script sees.
+//! Linked worktrees are registered through `LocalStore::add_worktree`: the
+//! CLI has no `worktree add` yet.
 
 use std::path::Path;
 use std::process::{Command, Output};
@@ -234,4 +234,131 @@ fn a_missing_store_fails_with_an_error_envelope() {
     let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(envelope["command"], "worktree");
     assert_eq!(envelope["status"], "error");
+}
+
+/// Register a linked worktree at `<root>/world/.sekai` on `feature`,
+/// leaving a `level.dat` behind so a removal can prove the world survives.
+/// Returns the link path. The store handle is dropped so the binary can
+/// take the session lock.
+async fn linked_worktree(store: impl AsRef<Path>, root: impl AsRef<Path>) -> std::path::PathBuf {
+    let world = root.as_ref().join("world");
+    std::fs::create_dir_all(&world).unwrap();
+    std::fs::write(world.join("level.dat"), "world data").unwrap();
+    let link = world.join(".sekai");
+    let opened = LocalStore::open(store).await.unwrap();
+    opened
+        .add_worktree(&link, Head::Branch(RefName::parse("feature").unwrap()))
+        .await
+        .unwrap();
+    drop(opened);
+    link
+}
+
+#[tokio::test]
+async fn removes_a_linked_worktree_and_leaves_the_world() {
+    let root = tempdir("worktree-remove");
+    let store = init(root.path());
+    let link = linked_worktree(&store, root.path()).await;
+    let abs = std::path::absolute(&link).unwrap();
+    let abs = abs.to_str().unwrap();
+
+    assert_eq!(
+        stdout(&sekai(
+            &store,
+            &["worktree", "remove", link.to_str().unwrap()]
+        )),
+        format!("removed worktree {abs}\n")
+    );
+    assert!(!link.exists());
+    // The world the worktree backed up is untouched.
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("world/level.dat")).unwrap(),
+        "world data"
+    );
+    // Only the store's own (main) worktree remains.
+    let listed: serde_json::Value =
+        serde_json::from_str(stdout(&sekai(&store, &["worktree", "list", "--json"]))).unwrap();
+    let rows = listed["result"].as_array().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["main"], true);
+}
+
+#[tokio::test]
+async fn remove_reports_the_removed_path_as_json() {
+    let root = tempdir("worktree-remove-json");
+    let store = init(root.path());
+    let link = linked_worktree(&store, root.path()).await;
+    let abs = std::path::absolute(&link).unwrap();
+
+    let envelope: serde_json::Value = serde_json::from_str(stdout(&sekai(
+        &store,
+        &["worktree", "remove", "--json", link.to_str().unwrap()],
+    )))
+    .unwrap();
+    assert_eq!(envelope["command"], "worktree");
+    assert_eq!(envelope["status"], "ok");
+    assert_eq!(envelope["result"]["path"], abs.to_str().unwrap());
+}
+
+/// `--force` is inert (sekai worktrees carry no dirty or locked state) but
+/// accepted, and repeatable as Git's force is.
+#[tokio::test]
+async fn remove_accepts_a_repeatable_force() {
+    let root = tempdir("worktree-remove-force");
+    let store = init(root.path());
+    let link = linked_worktree(&store, root.path()).await;
+
+    stdout(&sekai(
+        &store,
+        &["worktree", "remove", "-f", "-f", link.to_str().unwrap()],
+    ));
+    assert!(!link.exists());
+}
+
+#[test]
+fn remove_refuses_the_main_worktree() {
+    let root = tempdir("worktree-remove-main");
+    let store = init(root.path());
+    let output = sekai(&store, &["worktree", "remove", store.to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("main worktree"), "got: {stderr}");
+}
+
+#[test]
+fn remove_refuses_an_unregistered_location() {
+    let root = tempdir("worktree-remove-unknown");
+    let store = init(root.path());
+    let output = sekai(
+        &store,
+        &[
+            "worktree",
+            "remove",
+            root.path().join("nope").to_str().unwrap(),
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not a worktree"), "got: {stderr}");
+}
+
+#[test]
+fn remove_refusal_is_an_error_envelope_in_json() {
+    let root = tempdir("worktree-remove-main-json");
+    let store = init(root.path());
+    let output = sekai(
+        &store,
+        &["worktree", "remove", "--json", store.to_str().unwrap()],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let envelope: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(envelope["command"], "worktree");
+    assert_eq!(envelope["status"], "error");
+    assert!(
+        envelope["error"]
+            .as_str()
+            .unwrap()
+            .contains("main worktree"),
+        "got: {envelope}"
+    );
 }

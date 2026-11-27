@@ -71,6 +71,49 @@ impl LocalStore {
         Ok(())
     }
 
+    /// Remove a linked worktree: delete its store link and its row, the
+    /// inverse of [`Self::add_worktree`]. Returns the absolute location the
+    /// removed worktree was keyed by.
+    ///
+    /// The world directory the worktree backs up is left untouched: add
+    /// never materialized it, so remove never deletes it. Only the link
+    /// this store wrote and the registration row are this operation's own.
+    ///
+    /// The store's own (main) worktree and an unregistered location are
+    /// refused, as Git refuses them. A link that is already gone is not an
+    /// error: the row is still removed, like Git cleaning up a worktree
+    /// whose directory vanished.
+    ///
+    /// The link is deleted before the row so a failed delete leaves a row
+    /// a retry can finish, never a leftover link that no later remove can
+    /// reach (an absent row is refused as unregistered).
+    pub async fn remove_worktree(&self, path: impl AsRef<Path>) -> Result<PathBuf, StorageError> {
+        let path = path.as_ref();
+        let key = store_key(path)?;
+        let worktrees = self.meta.worktrees().await?;
+        let Some(worktree) = worktrees.iter().find(|w| w.path == Path::new(&key)) else {
+            return Err(worktree_refusal(format!(
+                "'{}' is not a worktree",
+                path.display()
+            )));
+        };
+        if worktree.path == self.root {
+            return Err(worktree_refusal(format!(
+                "'{}' is a main worktree",
+                path.display()
+            )));
+        }
+        let link = Path::new(&key);
+        match std::fs::remove_file(link) {
+            Ok(()) => {}
+            // A vanished link is Git's missing-worktree case: clean the row.
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => return Err(io_error(link.display().to_string(), source)),
+        }
+        self.meta.remove_worktree(&key).await?;
+        Ok(worktree.path.clone())
+    }
+
     /// The worktrees registered in this store, in byte-wise path order.
     pub async fn worktrees(&self) -> Result<Vec<Worktree>, StorageError> {
         self.meta.worktrees().await
@@ -104,6 +147,16 @@ fn write_link(path: impl AsRef<Path>, root: &str) -> Result<(), StorageError> {
         return Err(io_error(path.display().to_string(), source));
     }
     Ok(())
+}
+
+/// A worktree removal refusal, worded as Git words it. The location is an
+/// invalid argument (the main worktree or an unregistered one), not an I/O
+/// failure, so it carries `InvalidInput`.
+fn worktree_refusal(message: String) -> StorageError {
+    StorageError::backend(
+        "worktree",
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, message),
+    )
 }
 
 /// The absolute UTF-8 spelling of a store location, the key a worktree
