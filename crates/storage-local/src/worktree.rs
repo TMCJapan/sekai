@@ -1,3 +1,8 @@
+//! Worktrees: the worlds a store backs up. The store's own (main)
+//! worktree is registered at init and is whatever the store root is
+//! opened as; a linked worktree is a store link that points another world
+//! folder at this store, keyed by the link's location.
+
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
@@ -6,16 +11,20 @@ use sekai_util::worktree::Head;
 
 use crate::LocalStore;
 
-/// One worktree registered in a store, keyed by the absolute store
-/// location it opens: the store root itself for the store's own (main)
-/// worktree, or a store link file for a linked one.
+/// One worktree registered in a store.
 ///
-/// Ordering and uniqueness are byte-wise and case-sensitive, over the
-/// path alone: no separate name or ID exists.
+/// The main worktree carries no stored path: it is the store root, so
+/// it follows the store when the store moves or is copied, and any
+/// spelling of the root opens it. A linked worktree is keyed by its
+/// store link's location (`store_key`); those keys are unique,
+/// byte-wise and case-sensitive.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Worktree {
-    /// Absolute store location: the store root, or a store link file.
+    /// Absolute store location: the store root as this handle opened it
+    /// for the main worktree, the store link file for a linked one.
     pub path: PathBuf,
+    /// Whether this is the store's own (main) worktree.
+    pub main: bool,
     /// What HEAD stores.
     pub head: Head,
 }
@@ -25,7 +34,7 @@ impl LocalStore {
     /// full store location including the final `.sekai` component. The
     /// link names this store's absolute root, so opening it resolves back
     /// here and the worktree shares this store's history, blobs, and
-    /// cache. The worktree row is keyed by `path` itself, made absolute,
+    /// cache. The worktree row is keyed by `path` through `store_key`,
     /// with `head` as its HEAD.
     ///
     /// The row is inserted before the link is written: the insert is the
@@ -67,17 +76,17 @@ impl LocalStore {
     }
 
     /// Remove a linked worktree: delete its store link and its row, the
-    /// inverse of [`Self::add_worktree`]. Returns the absolute location the
-    /// removed worktree was keyed by.
+    /// inverse of [`Self::add_worktree`]. Returns the location the removed
+    /// worktree was keyed by.
     ///
     /// The world directory the worktree backs up is left untouched: add
     /// never materialized it, so remove never deletes it. Only the link
     /// this store wrote and the registration row are this operation's own.
     ///
-    /// The store's own (main) worktree and an unregistered location are
-    /// refused, as Git refuses them. A link that is already gone is not an
-    /// error: the row is still removed, like Git cleaning up a worktree
-    /// whose directory vanished.
+    /// The store's own (main) worktree (named by its root) and an
+    /// unregistered location are refused, as Git refuses them. A link
+    /// that is already gone is not an error: the row is still removed,
+    /// like Git cleaning up a worktree whose directory vanished.
     ///
     /// The link is deleted before the row so a failed delete leaves a row
     /// a retry can finish, never a leftover link that no later remove can
@@ -85,16 +94,19 @@ impl LocalStore {
     pub async fn remove_worktree(&self, path: impl AsRef<Path>) -> Result<PathBuf, StorageError> {
         let path = path.as_ref();
         let key = store_key(path)?;
-        let worktrees = self.meta.worktrees().await?;
-        let Some(worktree) = worktrees.iter().find(|w| w.path == Path::new(&key)) else {
-            return Err(worktree_refusal(format!(
-                "'{}' is not a worktree",
-                path.display()
-            )));
-        };
-        if worktree.path == self.root {
+        if key == store_key(&self.root)? {
             return Err(worktree_refusal(format!(
                 "'{}' is a main worktree",
+                path.display()
+            )));
+        }
+        let registered = self.meta.worktrees().await?;
+        if !registered
+            .iter()
+            .any(|row| row.link.as_deref() == Some(key.as_str()))
+        {
+            return Err(worktree_refusal(format!(
+                "'{}' is not a worktree",
                 path.display()
             )));
         }
@@ -106,20 +118,35 @@ impl LocalStore {
             Err(source) => return Err(io_error(link.display().to_string(), source)),
         }
         self.meta.remove_worktree(&key).await?;
-        Ok(worktree.path.clone())
+        Ok(PathBuf::from(key))
     }
 
-    /// The worktrees registered in this store, in byte-wise path order.
+    /// The worktrees registered in this store: the main one first, then
+    /// the linked ones in byte-wise path order, as Git lists them.
     pub async fn worktrees(&self) -> Result<Vec<Worktree>, StorageError> {
-        self.meta.worktrees().await
+        let rows = self.meta.worktrees().await?;
+        Ok(rows
+            .into_iter()
+            .map(|row| match row.link {
+                Some(link) => Worktree {
+                    path: PathBuf::from(link),
+                    main: false,
+                    head: row.head,
+                },
+                None => Worktree {
+                    path: self.root.clone(),
+                    main: true,
+                    head: row.head,
+                },
+            })
+            .collect())
     }
 
-    /// Register the store itself as its main worktree, keyed by the
-    /// absolute store root with HEAD unborn on the default branch.
-    /// Called by init; a re-init keeps the existing row and its HEAD.
+    /// Register the store itself as its main worktree, with HEAD unborn on
+    /// the default branch. Called by init; a re-init keeps the existing
+    /// row and its HEAD.
     pub(crate) async fn init_worktree(&self) -> Result<(), StorageError> {
-        let key = store_key(&self.root)?;
-        self.meta.init_worktree(&key).await
+        self.meta.init_worktree().await
     }
 }
 
@@ -154,12 +181,12 @@ fn worktree_refusal(message: String) -> StorageError {
     )
 }
 
-/// The absolute UTF-8 spelling of a store location, the key a worktree
-/// row carries. The single normalization point for worktree keys: the
-/// store root and every link location resolve through this same rule,
-/// symlinks deliberately unresolved so the key keeps the caller's
-/// spelling. A location that is not valid UTF-8 fails loudly instead of
-/// storing a lossy path.
+/// The absolute UTF-8 spelling of a store link location, the key a
+/// linked worktree row carries. The single normalization point for
+/// those keys: registration and every open resolve a link through this
+/// same rule, symlinks deliberately unresolved so the key keeps the
+/// caller's spelling. A location that is not valid UTF-8 fails loudly
+/// instead of storing a lossy path.
 pub(crate) fn store_key(path: impl AsRef<Path>) -> Result<String, StorageError> {
     let path = path.as_ref();
     let path =

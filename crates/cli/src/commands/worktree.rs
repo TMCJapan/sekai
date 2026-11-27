@@ -4,7 +4,6 @@
 //! go through the opened `LocalStore` rather than an app operation.
 
 use std::fmt::Write as _;
-use std::path::Path;
 
 use anyhow::Context as _;
 use sekai_app::{CommitId, HeadState, Ref, RefName, SekaiInstance};
@@ -50,8 +49,8 @@ async fn list(store: &str, args: &WorktreeListArgs) -> anyhow::Result<()> {
 async fn remove(store: &str, args: &WorktreeRemoveArgs) -> anyhow::Result<()> {
     let instance = SekaiInstance::<LocalStore>::open(store).await?;
     let removed = instance.store().remove_worktree(&args.worktree).await?;
-    // Worktree keys are UTF-8 by construction (`store_key`), so the lossy
-    // conversion never replaces anything.
+    // Linked worktree keys are UTF-8 by construction (`store_key`), so the
+    // lossy conversion never replaces anything.
     let path = removed.to_string_lossy().into_owned();
     if args.json {
         println!("{}", envelope_ok("worktree", &WorktreeRemoveJson { path })?);
@@ -71,36 +70,32 @@ struct Listed {
     main: bool,
 }
 
-/// The store's worktrees with HEADs resolved, the main one first and the
-/// rest in path order, as Git lists them. A HEAD branch with no ref row
-/// is unborn, like Git's HEAD on a branch that does not exist yet.
+/// The store's worktrees with HEADs resolved, in the store's order: the
+/// main one first and the rest in path order, as Git lists them. A HEAD
+/// branch with no ref row is unborn, like Git's HEAD on a branch that
+/// does not exist yet.
 ///
 /// Each worktree's own HEAD is resolved, never the opened one's, so the
 /// listing works from a location no worktree is registered at.
 async fn listed(instance: &SekaiInstance<LocalStore>) -> anyhow::Result<Vec<Listed>> {
-    let store = instance.store();
-    let worktrees = store.worktrees().await?;
+    let worktrees = instance.store().worktrees().await?;
     let mut rows = Vec::with_capacity(worktrees.len());
     for worktree in &worktrees {
         let head = instance.resolve_head(worktree.head.clone()).await?;
-        rows.push(resolve(worktree, &head, store.root()));
-    }
-    // Rows arrive in path order; rotate the main one to the front without
-    // disturbing the order of the rest.
-    if let Some(pos) = rows.iter().position(|row| row.main) {
-        rows[..=pos].rotate_right(1);
+        rows.push(resolve(worktree, &head));
     }
     Ok(rows)
 }
 
-fn resolve(worktree: &Worktree, head: &HeadState, root: impl AsRef<Path>) -> Listed {
+fn resolve(worktree: &Worktree, head: &HeadState) -> Listed {
     Listed {
-        // Worktree keys are UTF-8 by construction (`store_key`), so the
-        // lossy conversion never replaces anything.
+        // Linked worktree keys are UTF-8 by construction (`store_key`) and
+        // the main worktree shows the root the store was opened at, so the
+        // lossy conversion replaces nothing a registration accepted.
         path: worktree.path.to_string_lossy().into_owned(),
         commit: head.commit(),
         branch: head.branch().cloned(),
-        main: worktree.path == root.as_ref(),
+        main: worktree.main,
     }
 }
 

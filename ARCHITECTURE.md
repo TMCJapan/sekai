@@ -390,9 +390,11 @@ HEAD names `main`, unborn.
 The store keys refs by the full Git refname (`refs/heads/main`); commands
 and JSON show the short name (`main`).
 
-A worktree is one world the store backs up, keyed by the absolute store
-location it opens: the store root itself for the store's own (main)
-worktree, a store link file for a linked one. Each worktree records a
+A worktree is one world the store backs up. The store's own (main)
+worktree is the store root itself and stores no path, so every spelling
+of the root (a trailing separator, `..`, a symlink) and every move or
+copy of the store opens it. A linked worktree is keyed by the absolute
+location of its store link file. Each worktree records a
 HEAD, which names a branch (born or unborn) or holds a commit directly
 (detached). A branch is the HEAD of at most one worktree. `sekai init`
 registers the store's own worktree with HEAD unborn on `main`; a
@@ -403,9 +405,9 @@ backend-neutral layers know nothing about them
 ([ADR-0038](docs/adr/0038-worktrees-local-only.md)). Those layers still
 read HEAD: `MetaStore::head()` returns the HEAD of the worktree the store
 was opened from, and the backend alone maps an opened store to its
-worktree (`LocalStore::open` keys it by the location the caller named,
-so a store link opens its linked worktree). A store opened from a
-location no worktree is registered at has no HEAD and cannot commit.
+worktree (`LocalStore::open` opens the main worktree from the root and
+a linked worktree from its store link). A store opened through a link no
+worktree is registered at has no HEAD and cannot commit.
 
 A new commit continues HEAD's commit - the trait rejects one whose
 parents omit it - and HEAD moves onto the new commit in the same

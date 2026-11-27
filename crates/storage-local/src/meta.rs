@@ -20,7 +20,7 @@ use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
 };
 
-use crate::worktree::{Worktree, store_key};
+use crate::worktree::store_key;
 
 const SCHEMA: &str = include_str!("../schema/sqlite.sql");
 
@@ -31,12 +31,21 @@ fn db_err(source: sqlx::Error) -> StorageError {
 
 /// SQLite-backed commit metadata: the history graph and snapshot trees.
 ///
-/// Opened from one worktree: `opened` is the absolute location the store
-/// was opened from, whose HEAD new commits land on.
+/// Opened from one worktree, whose HEAD new commits land on: the linked
+/// worktree of the absolute store link in `link`, or the store's own
+/// (main) worktree when `link` is `None`.
 #[derive(Debug, Clone)]
 pub struct SqliteMeta {
     pool: SqlitePool,
-    opened: PathBuf,
+    link: Option<PathBuf>,
+}
+
+/// One `worktrees` row: the key of a linked worktree's store link
+/// ([`store_key`]), or `None` for the store's own (main) worktree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorktreeRow {
+    pub(crate) link: Option<String>,
+    pub(crate) head: Head,
 }
 
 /// How long a connect keeps retrying `SQLITE_BUSY`, matching sqlx's
@@ -80,26 +89,29 @@ async fn has_schema<'c>(executor: impl sqlx::SqliteExecutor<'c>) -> Result<bool,
 }
 
 impl SqliteMeta {
-    /// Open the database at `path` from the store location `opened`,
+    /// Open the database at `path` from the worktree of the store link
+    /// `link`, or from the store's own worktree when `link` is `None`,
     /// creating the schema when missing.
     ///
     /// The parent directory must already exist; this type never creates it
     /// (directory layout is the store's concern). Opening while another
     /// opener creates the schema waits for it, up to the busy timeout.
     ///
-    /// `opened` names the worktree whose HEAD new commits land on. It is
+    /// The worktree is the one whose HEAD new commits land on. A link is
     /// made absolute here, against the working directory of the open,
-    /// and keyed the way worktree rows are only when HEAD is read: a
-    /// location that cannot be a key (not UTF-8) still serves every read
-    /// that never needs HEAD. The worktree need not be registered yet
-    /// either.
+    /// and keyed the way worktree rows are only when HEAD is read: a link
+    /// that cannot be a key (not UTF-8) still serves every read that
+    /// never needs HEAD. The worktree need not be registered yet either.
     pub(crate) async fn open(
         path: impl AsRef<Path>,
-        opened: impl AsRef<Path>,
+        link: Option<PathBuf>,
     ) -> Result<Self, StorageError> {
-        let opened = opened.as_ref();
-        let opened = std::path::absolute(opened)
-            .map_err(|source| io_error(opened.display().to_string(), source))?;
+        let link = link
+            .map(|link| {
+                std::path::absolute(&link)
+                    .map_err(|source| io_error(link.display().to_string(), source))
+            })
+            .transpose()?;
         let options = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
@@ -128,7 +140,7 @@ impl SqliteMeta {
             }
             tx.commit().await.map_err(db_err)?;
         }
-        Ok(Self { pool, opened })
+        Ok(Self { pool, link })
     }
 
     /// Record a whole commit atomically; returns its new ID.
@@ -166,8 +178,13 @@ impl SqliteMeta {
         Ok(map)
     }
 
-    /// Record a linked worktree under `path`, the normalized key
-    /// `store_key` produced.
+    /// The row key of the worktree this handle was opened from.
+    fn opened_key(&self) -> Result<Option<String>, StorageError> {
+        self.link.as_deref().map(store_key).transpose()
+    }
+
+    /// Record a linked worktree under `path`, the key `store_key`
+    /// produced.
     pub(crate) async fn add_worktree(&self, path: &str, head: Head) -> Result<(), StorageError> {
         let (head_ref, head_commit) = match &head {
             Head::Branch(branch) => (Some(Ref::branch(branch.clone()).full_name()), None),
@@ -183,7 +200,7 @@ impl SqliteMeta {
         Ok(())
     }
 
-    /// Delete the worktree row keyed by `path`, the normalized key
+    /// Delete the linked worktree row keyed by `path`, the key
     /// `store_key` produced. Rolls back an `add_worktree` whose store
     /// link could not be written; an absent key is a no-op.
     pub(crate) async fn remove_worktree(&self, path: &str) -> Result<(), StorageError> {
@@ -195,16 +212,14 @@ impl SqliteMeta {
         Ok(())
     }
 
-    /// Register the store's own worktree at init under `path`, the
-    /// normalized key `store_key` produced, with HEAD unborn on the
-    /// default branch. A re-init keeps the existing row and its HEAD,
+    /// Register the store's own worktree at init, with HEAD unborn on
+    /// the default branch. A re-init keeps the existing row and its HEAD,
     /// so initializing again never moves it.
-    pub(crate) async fn init_worktree(&self, path: &str) -> Result<(), StorageError> {
+    pub(crate) async fn init_worktree(&self) -> Result<(), StorageError> {
         sqlx::query(
-            "INSERT INTO worktrees (path, head_ref, head_commit) VALUES (?, ?, NULL)
-             ON CONFLICT (path) DO NOTHING",
+            "INSERT INTO worktrees (path, head_ref, head_commit) VALUES (NULL, ?, NULL)
+             ON CONFLICT DO NOTHING",
         )
-        .bind(path)
         .bind(Ref::branch(RefName::default_branch()).full_name())
         .execute(&self.pool)
         .await
@@ -212,7 +227,9 @@ impl SqliteMeta {
         Ok(())
     }
 
-    pub(crate) async fn worktrees(&self) -> Result<Vec<Worktree>, StorageError> {
+    /// Every worktree row: the main one first (SQLite orders `NULL`
+    /// first), then the linked ones in byte-wise key order.
+    pub(crate) async fn worktrees(&self) -> Result<Vec<WorktreeRow>, StorageError> {
         let rows = sqlx::query(
             "SELECT path, head_ref, head_commit FROM worktrees ORDER BY path COLLATE BINARY",
         )
@@ -311,8 +328,8 @@ fn branch_from_column(raw: String) -> Result<RefName, StorageError> {
 }
 
 /// Decode one `worktrees` row.
-fn decode_worktree(row: &sqlx::sqlite::SqliteRow) -> Result<Worktree, StorageError> {
-    let path: String = row.try_get("path").map_err(db_err)?;
+fn decode_worktree(row: &sqlx::sqlite::SqliteRow) -> Result<WorktreeRow, StorageError> {
+    let link: Option<String> = row.try_get("path").map_err(db_err)?;
     let head_ref: Option<String> = row.try_get("head_ref").map_err(db_err)?;
     let head_commit: Option<Vec<u8>> = row.try_get("head_commit").map_err(db_err)?;
     // The CHECK constraint keeps exactly one of the two columns set.
@@ -324,32 +341,50 @@ fn decode_worktree(row: &sqlx::sqlite::SqliteRow) -> Result<Worktree, StorageErr
                 "worktree",
                 std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    format!("worktree {path} has a corrupt HEAD row"),
+                    format!(
+                        "{} has a corrupt HEAD row",
+                        link.as_deref().map_or_else(
+                            || "the main worktree".to_owned(),
+                            |link| format!("worktree {link}")
+                        )
+                    ),
                 ),
             ));
         }
     };
-    Ok(Worktree {
-        path: PathBuf::from(path),
-        head,
-    })
+    Ok(WorktreeRow { link, head })
 }
 
-/// The HEAD of the worktree keyed by `path`, read in `executor`'s
-/// snapshot. A key no worktree carries is a store opened from somewhere
-/// it does not know.
+/// The HEAD of the worktree keyed by `link` (`None` for the main one),
+/// read in `executor`'s snapshot. A link no worktree carries is a store
+/// opened from somewhere it does not know; init always registers the main
+/// worktree, so its absence is corruption.
 async fn read_head<'c>(
     executor: impl sqlx::SqliteExecutor<'c>,
-    path: &str,
+    link: Option<&str>,
 ) -> Result<Head, StorageError> {
-    let row = sqlx::query("SELECT path, head_ref, head_commit FROM worktrees WHERE path = ?")
-        .bind(path)
+    // `IS` matches `NULL` to `NULL`, so one query serves both kinds.
+    let row = sqlx::query("SELECT path, head_ref, head_commit FROM worktrees WHERE path IS ?")
+        .bind(link)
         .fetch_optional(executor)
         .await
-        .map_err(db_err)?
-        .ok_or_else(|| StorageError::UnknownWorktree {
-            location: path.to_owned(),
-        })?;
+        .map_err(db_err)?;
+    let Some(row) = row else {
+        return Err(link.map_or_else(
+            || {
+                StorageError::backend(
+                    "worktree",
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "the store has no main worktree row",
+                    ),
+                )
+            },
+            |link| StorageError::UnknownWorktree {
+                location: link.to_owned(),
+            },
+        ));
+    };
     decode_worktree(&row).map(|worktree| worktree.head)
 }
 
@@ -896,14 +931,14 @@ impl sekai_storage::MetaStore for SqliteMeta {
     ) -> Result<ApplyOutcome, StorageError> {
         let commit = commit_hash(parents, created_at_ms, root);
         let created = millis_param(created_at_ms)?;
-        let worktree = store_key(&self.opened)?;
+        let worktree = self.opened_key()?;
         // Every early return further down drops `tx`, which rolls it back:
         // a rejected call writes nothing.
         let mut tx = self.pool.begin().await.map_err(db_err)?;
         // HEAD decides where the commit lands, and the new commit must
         // continue HEAD's commit: moving HEAD onto an unrelated history
         // would fork it. Read both before inserting.
-        let head = read_head(&mut *tx, &worktree).await?;
+        let head = read_head(&mut *tx, worktree.as_deref()).await?;
         let (base, branch) = match head {
             Head::Branch(branch) => {
                 let full = Ref::branch(branch).full_name();
@@ -940,9 +975,9 @@ impl sekai_storage::MetaStore for SqliteMeta {
             .bind(full)
             .bind(&id_param[..])
             .bind(created),
-            None => sqlx::query("UPDATE worktrees SET head_commit = ? WHERE path = ?")
+            None => sqlx::query("UPDATE worktrees SET head_commit = ? WHERE path IS ?")
                 .bind(&id_param[..])
-                .bind(&worktree),
+                .bind(worktree),
         };
         landed.execute(&mut *tx).await.map_err(db_err)?;
         tx.commit().await.map_err(db_err)?;
@@ -1044,7 +1079,7 @@ impl sekai_storage::MetaStore for SqliteMeta {
     }
 
     async fn head(&self) -> Result<Head, StorageError> {
-        read_head(&self.pool, &store_key(&self.opened)?).await
+        read_head(&self.pool, self.opened_key()?.as_deref()).await
     }
 
     async fn active_ref(&self) -> Result<Option<CommitRef>, StorageError> {
@@ -1229,12 +1264,13 @@ mod tests {
         (guard.path().to_path_buf(), guard)
     }
 
-    /// Location the test stores are opened from.
-    const OPENED: &str = "/store";
+    /// A store link no test registers as a worktree.
+    const STRAY: &str = "/stray.sekai";
 
-    /// An in-memory store opened from no registered worktree.
+    /// An in-memory store opened through a link no worktree is
+    /// registered at, with no main worktree row either.
     async fn bare_meta() -> SqliteMeta {
-        SqliteMeta::open(&std::path::PathBuf::from(":memory:"), OPENED)
+        SqliteMeta::open(":memory:", Some(PathBuf::from(STRAY)))
             .await
             .unwrap()
     }
@@ -1242,15 +1278,15 @@ mod tests {
     /// An in-memory store opened from its own worktree, as init leaves it:
     /// HEAD unborn on `main`.
     async fn memory_meta() -> SqliteMeta {
-        let meta = bare_meta().await;
-        meta.init_worktree(&key(OPENED)).await.unwrap();
+        let meta = SqliteMeta::open(":memory:", None).await.unwrap();
+        meta.init_worktree().await.unwrap();
         meta
     }
 
     /// The store at `path`, opened from its own registered worktree.
     async fn file_meta(path: impl AsRef<Path>) -> SqliteMeta {
-        let meta = SqliteMeta::open(path, OPENED).await.unwrap();
-        meta.init_worktree(&key(OPENED)).await.unwrap();
+        let meta = SqliteMeta::open(path, None).await.unwrap();
+        meta.init_worktree().await.unwrap();
         meta
     }
 
@@ -1262,10 +1298,7 @@ mod tests {
     async fn concurrent_openers_create_the_schema_once() {
         let (dir, _guard) = tempdir("concurrent-open");
         let path = dir.join("meta.sqlite");
-        let (a, b) = tokio::join!(
-            SqliteMeta::open(&path, OPENED),
-            SqliteMeta::open(&path, OPENED)
-        );
+        let (a, b) = tokio::join!(SqliteMeta::open(&path, None), SqliteMeta::open(&path, None));
         let a = a.unwrap();
         let _b = b.unwrap();
         let active = a.active_ref().await.unwrap().unwrap();
@@ -1432,21 +1465,49 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn open_keys_the_location_as_worktree_rows_are_keyed() {
+    async fn open_keys_a_link_as_worktree_rows_are_keyed() {
         // A relative spelling finds the row its absolute key carries.
-        let meta = SqliteMeta::open(&std::path::PathBuf::from(":memory:"), "worlds/store")
+        let link = Path::new("worlds/a/.sekai");
+        let meta = SqliteMeta::open(":memory:", Some(link.to_path_buf()))
             .await
             .unwrap();
-        meta.init_worktree(&key("worlds/store")).await.unwrap();
+        meta.add_worktree(&key(link), on_branch("feature"))
+            .await
+            .unwrap();
+        assert_eq!(meta.head().await.unwrap(), on_branch("feature"));
+    }
+
+    #[tokio::test]
+    async fn the_root_opens_the_main_worktree_whatever_links_exist() {
+        let meta = memory_meta().await;
+        meta.add_worktree(&key("/worlds/a/.sekai"), on_branch("feature"))
+            .await
+            .unwrap();
         assert_eq!(meta.head().await.unwrap(), on_branch(DEFAULT_REF_NAME));
+    }
+
+    #[tokio::test]
+    async fn a_missing_main_worktree_row_is_corruption() {
+        let meta = SqliteMeta::open(":memory:", None).await.unwrap();
+        let err = meta.head().await.unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                StorageError::Backend {
+                    backend: "worktree",
+                    ..
+                }
+            ),
+            "unexpected error: {err}"
+        );
     }
 
     #[cfg(unix)]
     #[tokio::test]
     async fn a_location_that_cannot_be_a_key_still_serves_reads() {
         use std::os::unix::ffi::OsStrExt as _;
-        let opened = std::ffi::OsStr::from_bytes(b"/st\xffore");
-        let mut meta = SqliteMeta::open(&std::path::PathBuf::from(":memory:"), opened)
+        let link = Path::new(std::ffi::OsStr::from_bytes(b"/st\xffore.sekai"));
+        let mut meta = SqliteMeta::open(":memory:", Some(link.to_path_buf()))
             .await
             .unwrap();
         let first = meta.create_commit(1_000, &[]).await.unwrap();
@@ -1541,22 +1602,23 @@ mod tests {
         assert_eq!(stored, seen);
     }
 
-    /// The normalized key a worktree row carries for `path`, absolute on
-    /// every platform (`/x` resolves to `C:\x` on Windows).
+    /// The key a linked worktree row carries for the link at `path`,
+    /// absolute on every platform (`/x` resolves to `C:\x` on Windows).
     fn key(path: impl AsRef<Path>) -> String {
-        std::path::absolute(path)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_owned()
+        store_key(path).unwrap()
     }
 
-    /// A worktree row as the store keeps it.
-    fn worktree(path: impl AsRef<Path>, head: Head) -> Worktree {
-        Worktree {
-            path: PathBuf::from(key(path)),
+    /// A linked worktree row as the store keeps it.
+    fn worktree(path: impl AsRef<Path>, head: Head) -> WorktreeRow {
+        WorktreeRow {
+            link: Some(key(path)),
             head,
         }
+    }
+
+    /// The main worktree row as the store keeps it.
+    const fn main_worktree(head: Head) -> WorktreeRow {
+        WorktreeRow { link: None, head }
     }
 
     fn on_branch(raw: &str) -> Head {
@@ -1573,7 +1635,7 @@ mod tests {
             worktree("/worlds/a", Head::Detached(first)),
         ];
         for one in &added {
-            meta.add_worktree(one.path.to_str().unwrap(), one.head.clone())
+            meta.add_worktree(one.link.as_deref().unwrap(), one.head.clone())
                 .await
                 .unwrap();
         }
@@ -1604,31 +1666,50 @@ mod tests {
 
     #[tokio::test]
     async fn init_worktree_is_idempotent_and_keeps_head() {
-        let meta = bare_meta().await;
-        meta.init_worktree(&key("/store")).await.unwrap();
+        let meta = memory_meta().await;
         assert_eq!(
             meta.worktrees().await.unwrap(),
-            [worktree("/store", on_branch(DEFAULT_REF_NAME))]
+            [main_worktree(on_branch(DEFAULT_REF_NAME))]
         );
 
         // A re-init keeps the row even once its HEAD has moved on.
-        sqlx::query("UPDATE worktrees SET head_ref = 'refs/heads/feature' WHERE path = ?")
-            .bind(key("/store"))
+        sqlx::query("UPDATE worktrees SET head_ref = 'refs/heads/feature' WHERE path IS NULL")
             .execute(&meta.pool)
             .await
             .unwrap();
-        meta.init_worktree(&key("/store")).await.unwrap();
+        meta.init_worktree().await.unwrap();
         assert_eq!(
             meta.worktrees().await.unwrap(),
-            [worktree("/store", on_branch("feature"))]
+            [main_worktree(on_branch("feature"))]
         );
+    }
+
+    #[tokio::test]
+    async fn the_main_worktree_lists_first_and_stays_single() {
+        let meta = memory_meta().await;
+        meta.add_worktree(&key("/a"), on_branch("feature"))
+            .await
+            .unwrap();
+        assert_eq!(
+            meta.worktrees().await.unwrap(),
+            [
+                main_worktree(on_branch(DEFAULT_REF_NAME)),
+                worktree("/a", on_branch("feature")),
+            ]
+        );
+        let err = sqlx::query("INSERT INTO worktrees (path, head_ref) VALUES (NULL, ?)")
+            .bind("refs/heads/other")
+            .execute(&meta.pool)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("UNIQUE"), "{err}");
     }
 
     #[tokio::test]
     async fn worktrees_keep_one_path_and_one_head_per_branch() {
         let mut meta = bare_meta().await;
         let main = worktree("/worlds/main", on_branch(DEFAULT_REF_NAME));
-        meta.add_worktree(main.path.to_str().unwrap(), main.head.clone())
+        meta.add_worktree(main.link.as_deref().unwrap(), main.head.clone())
             .await
             .unwrap();
 
@@ -1637,7 +1718,7 @@ mod tests {
             worktree("/worlds/other", on_branch(DEFAULT_REF_NAME)),
         ] {
             assert!(
-                meta.add_worktree(refused.path.to_str().unwrap(), refused.head.clone())
+                meta.add_worktree(refused.link.as_deref().unwrap(), refused.head.clone())
                     .await
                     .is_err(),
                 "{refused:?} is refused"
@@ -1657,7 +1738,7 @@ mod tests {
     async fn a_corrupt_worktree_head_row_fails_loudly() {
         let (dir, _guard) = tempdir("corrupt-head");
         let path = dir.join("meta.sqlite");
-        let mut meta = SqliteMeta::open(&path, OPENED).await.unwrap();
+        let mut meta = SqliteMeta::open(&path, None).await.unwrap();
         let first = meta.create_commit(1_000, &[]).await.unwrap();
         meta.add_worktree(&key("/worlds/main"), Head::Detached(first))
             .await
@@ -1892,7 +1973,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            matches!(&err, StorageError::UnknownWorktree { location } if *location == key(OPENED))
+            matches!(&err, StorageError::UnknownWorktree { location } if *location == key(STRAY))
         );
         assert!(matches!(
             meta.head().await,
