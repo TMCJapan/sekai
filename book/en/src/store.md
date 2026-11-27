@@ -51,26 +51,10 @@ store root. `--json` emits the standard envelope (see `docs/json.md`).
 
 A store can back up several worlds, each registered as a worktree keyed
 by the store location it opens: the store root itself for the store's own
-(main) worktree, a store link file for a linked one. `sekai worktree list`
-prints them (see [Inspection](commands/inspection.md)).
-
-`sekai worktree remove <worktree>` removes a linked worktree, mirroring
-`git worktree remove [-f] <worktree>`:
-
-```sh
-sekai worktree remove ./world-2/.sekai
-```
-
-The positional is the store location the worktree opens (its store link
-file), the same spelling `--store` accepts for it. Removal deletes that
-store link and the registration only — the world directory the worktree
-backs up is left untouched. The store's own (main) worktree cannot be
-removed and an unregistered location is refused, as in Git. `-f`/`--force`
-is accepted (and repeatable, `-f -f`) but has no effect: sekai worktrees
-carry no dirty or locked state. A link that is already gone is not an
-error; the registration is still cleaned up. Worktrees are a local-store
-feature
-([ADR-0038](https://github.com/tmcjapan/sekai/blob/main/docs/adr/0038-worktrees-local-only.md)).
+(main) worktree, a store link file for a linked one. Linked worktrees
+share the store's history, blobs, and cache. See
+[Worktrees](commands/worktree.md) for `sekai worktree list` and
+`sekai worktree remove`.
 
 ## Secondary backups
 
