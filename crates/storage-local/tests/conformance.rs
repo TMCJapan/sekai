@@ -874,16 +874,16 @@ async fn a_link_opens_its_worktree_under_any_spelling() {
         .unwrap();
     drop(store);
 
-    let mut spellings = vec![
+    let spellings = vec![
         world.join(".").join(".sekai"),
         world.join("..").join("world").join(".sekai"),
     ];
     #[cfg(unix)]
-    {
+    let spellings = {
         let alias = base.join("alias");
         std::os::unix::fs::symlink(&world, &alias).unwrap();
-        spellings.push(alias.join(".sekai"));
-    }
+        [spellings, vec![alias.join(".sekai")]].concat()
+    };
     let mut parents = Vec::new();
     for (time, link) in (1_000..).zip(&spellings) {
         let mut store = LocalStore::open(link).await.unwrap();
