@@ -1,6 +1,6 @@
 //! Region identities and observed file fingerprints.
 
-use super::{ChunkCoord, ChunkHash, CommitId, Dimension, RegionKind};
+use super::{ChunkHash, CommitId, Dimension, RegionKind, chunk_coord::ChunkCoord};
 
 /// Identity of one region file within its namespace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

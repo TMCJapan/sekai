@@ -11,7 +11,10 @@ pub struct OkEnvelope<'a, T: ?Sized> {
     result: &'a T,
 }
 
-pub fn envelope_ok<T: Serialize + ?Sized>(command: &str, result: &T) -> anyhow::Result<String> {
+pub(crate) fn envelope_ok<T: Serialize + ?Sized>(
+    command: &str,
+    result: &T,
+) -> anyhow::Result<String> {
     Ok(serde_json::to_string(&OkEnvelope {
         command,
         status: "ok",
@@ -28,7 +31,7 @@ pub struct ErrEnvelope<'a> {
     error: String,
 }
 
-pub fn envelope_err(command: &str, err: &anyhow::Error) -> anyhow::Result<String> {
+pub(crate) fn envelope_err(command: &str, err: &anyhow::Error) -> anyhow::Result<String> {
     Ok(serde_json::to_string(&ErrEnvelope {
         command,
         status: "error",
@@ -38,7 +41,7 @@ pub fn envelope_err(command: &str, err: &anyhow::Error) -> anyhow::Result<String
 
 /// Render a runtime failure for stderr: red bold `error:` prefix plus the
 /// anyhow context chain. Mirrors clap's own parse-error look.
-pub fn render_error(err: &anyhow::Error, style: Styler) -> String {
+pub(crate) fn render_error(err: &anyhow::Error, style: Styler) -> String {
     let chain = format!("{err:?}");
     let mut lines = chain.lines();
     let mut out = lines.next().map_or_else(

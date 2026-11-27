@@ -2,12 +2,10 @@
 //! the record types every other crate passes around.
 //!
 //! Pure data plus the invariants that belong to it (coordinate arithmetic,
-//! hex encoding, chunk digests); no I/O and no policy. The execution
-//! boundaries live here too: [`ThreadRunner`], the parallelism seam the
-//! orchestration runs over (the inline [`Sequential`] runner as the
-//! `no_std` baseline), and [`Clock`], the clock/timing seam (the
-//! timing-free [`Zero`] baseline). A host embedding composes its own (the
-//! `sekai` binary's `OsThread` pool and OS clock).
+//! hex encoding, chunk digests); no I/O and no policy. Execution seams
+//! (thread runners and clocks) live in `sekai-platform`, where a host
+//! embedding composes its own (the `sekai` binary's `OsThread` pool and
+//! OS clock).
 
 #![no_std]
 
@@ -25,17 +23,11 @@ pub mod region;
 pub mod region_kind;
 pub mod revision;
 pub mod scope;
-pub mod thread;
-pub mod time;
 pub mod tree;
 pub mod worktree;
 
-pub use chunk_coord::ChunkCoord;
 pub use commit::{Commit, CommitId};
 pub use dimension::Dimension;
-pub use error::{
-    HexError, NamedScopeError, ParseCodeError, RefNameError, RevisionError, ScopeNameError,
-};
 pub use hash::{BytesHasher, ChunkHash, hash_bytes};
 pub use named_scope::{NamedScope, ScopeName};
 pub use refs::{CommitRef, DEFAULT_REF_NAME, Ref, RefKind, RefName};
@@ -43,7 +35,4 @@ pub use region::{ApplyOutcome, CommitEntry, RegionFingerprint, RegionKey};
 pub use region_kind::{RegionKind, UnknownRegionKind};
 pub use revision::{Revision, RevisionBase};
 pub use scope::{Area, Rect, Scope};
-pub use thread::{JobSet, Sequential, ThreadRunner, WorkerPanic};
-pub use time::{Clock, Timer, Zero};
 pub use tree::{DimHash, RegionHash, RootHash};
-pub use worktree::Head;

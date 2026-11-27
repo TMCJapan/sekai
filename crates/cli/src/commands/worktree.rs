@@ -8,9 +8,9 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use anyhow::Context as _;
+use sekai_app::Head;
 use sekai_app::{CommitId, Ref, RefName, SekaiInstance};
-use sekai_storage_local::{LocalStore, Worktree};
-use sekai_util::Head;
+use sekai_storage_local::{LocalStore, worktree::Worktree};
 use serde::Serialize;
 use unicode_width::UnicodeWidthStr as _;
 

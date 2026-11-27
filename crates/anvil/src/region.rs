@@ -46,7 +46,7 @@ pub struct RegionLoc {
 }
 
 impl RegionLoc {
-    pub fn new(region_x: i32, region_z: i32) -> Result<Self, AnvilError> {
+    pub(crate) fn new(region_x: i32, region_z: i32) -> Result<Self, AnvilError> {
         let (base_x, base_z) = base_coords(region_x, region_z)?;
 
         Ok(Self {
@@ -57,15 +57,7 @@ impl RegionLoc {
         })
     }
 
-    pub const fn region_x(self) -> i32 {
-        self.region_x
-    }
-
-    pub const fn region_z(self) -> i32 {
-        self.region_z
-    }
-
-    pub fn slot_of(self, x: i32, z: i32) -> Result<u32, AnvilError> {
+    pub(crate) fn slot_of(self, x: i32, z: i32) -> Result<u32, AnvilError> {
         let wrong = || AnvilError::WrongRegion {
             region_x: self.region_x,
             region_z: self.region_z,
@@ -85,7 +77,7 @@ impl RegionLoc {
         Ok(dx.cast_unsigned() + ROW_WIDTH * dz.cast_unsigned())
     }
 
-    pub const fn coord_at(self, index: u32) -> (i32, i32) {
+    pub(crate) const fn coord_at(self, index: u32) -> (i32, i32) {
         (
             self.base_x + (index % ROW_WIDTH).cast_signed(),
             self.base_z + (index / ROW_WIDTH).cast_signed(),
@@ -235,9 +227,6 @@ mod tests {
     #[test]
     fn region_loc_maps_slots_both_ways() {
         let loc = RegionLoc::new(-1, 2).unwrap();
-
-        assert_eq!(loc.region_x(), -1);
-        assert_eq!(loc.region_z(), 2);
 
         let slot = loc.slot_of(-29, 69).unwrap();
 

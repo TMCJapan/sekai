@@ -7,10 +7,9 @@
 //! filesystem-bound: this tree only names its region files, and every file
 //! operation on them fails on purpose - the fake serves no bytes.
 
-use sekai_app::{
-    Dimension, Region, RegionFile, RegionKey, RegionKind, UnguardedReason, WorldLock,
-    WorldLockMode, WorldLockState, WorldTree, world_chunk_coords,
-};
+use sekai_app::{Dimension, RegionKey, RegionKind, world_chunk_coords};
+use sekai_world::lock::{UnguardedReason, WorldLock, WorldLockMode, WorldLockState};
+use sekai_world::{Region, RegionFile, WorldTree};
 
 /// Failure type of [`FakeWorld`], deliberately unrelated to any host
 /// backend's error.

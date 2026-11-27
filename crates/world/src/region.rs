@@ -1,6 +1,6 @@
 //! Region file handles: the read/write capability the world operations use.
 
-use sekai_core::{RegionFingerprint, RegionKey};
+use sekai_util::{RegionFingerprint, RegionKey};
 
 /// One region file, as the only capability the composition layer gets.
 ///

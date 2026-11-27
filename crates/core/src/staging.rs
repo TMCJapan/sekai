@@ -27,7 +27,7 @@
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
-use sekai_util::{ChunkCoord, ChunkHash, Commit, CommitEntry, RegionKey, Scope};
+use sekai_util::{ChunkHash, Commit, CommitEntry, RegionKey, Scope, chunk_coord::ChunkCoord};
 
 /// Previous commit plus the state the walk needs.
 #[derive(Debug, Clone, PartialEq, Eq)]

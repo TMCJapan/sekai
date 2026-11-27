@@ -3,7 +3,7 @@
 use crate::style::ColorChoice;
 use clap::{Parser, Subcommand};
 use sekai_app::{Area, ChunkCoord, Dimension, Rect, RegionKind, Revision, Scope, ScopeName};
-use sekai_storage_local::ConfigKey;
+use sekai_storage_local::config::ConfigKey;
 use std::path::{Path, PathBuf};
 
 /// Chunk-level deduplicated version control for Minecraft region files.
@@ -206,7 +206,7 @@ pub enum WorktreeCommand {
 
 impl WorktreeCommand {
     /// Whether the operation runs in JSON mode (`--json`).
-    pub const fn output_json(&self) -> bool {
+    const fn output_json(&self) -> bool {
         match self {
             Self::List(args) => args.json,
             Self::Remove(args) => args.json,
@@ -366,7 +366,7 @@ pub enum ScopeCommand {
 
 impl ScopeCommand {
     /// Whether the operation runs in JSON mode (`--json`).
-    pub const fn output_json(&self) -> bool {
+    const fn output_json(&self) -> bool {
         match self {
             Self::Create { json, .. } | Self::Delete { json, .. } | Self::List { json } => *json,
         }
@@ -405,7 +405,7 @@ pub enum CacheCommand {
 
 impl CacheCommand {
     /// Whether the operation runs in JSON mode (`--json`).
-    pub const fn output_json(&self) -> bool {
+    const fn output_json(&self) -> bool {
         match self {
             Self::Clean { json } => *json,
             Self::Update { output, .. } => output.json,
@@ -482,7 +482,7 @@ impl DiffArgs {
     /// accepts: `--world` compares against at most one commit (the second
     /// positional is refused at parse time), and the commit pair defaults
     /// resolve against the store at runtime.
-    pub fn target(&self) -> DiffTarget<'_> {
+    pub(crate) fn target(&self) -> DiffTarget<'_> {
         self.world.as_ref().map_or(
             DiffTarget::Commits {
                 old: self.old_commit.as_ref(),
@@ -524,7 +524,7 @@ pub enum DiffTarget<'a> {
 #[derive(Debug, clap::Args)]
 pub struct RestoreArgs {
     /// World directory to restore in place.
-    pub world: PathBuf,
+    pub(crate) world: PathBuf,
     /// Restore source: a commit ID, a branch, or `HEAD` / `@`, optionally
     /// followed by one `~<n>` (see `log`). Defaults to the active ref's
     /// target (`HEAD`).
@@ -537,21 +537,21 @@ pub struct RestoreArgs {
     pub overlay: bool,
     /// Human or JSON rendering plus optional phase timings.
     #[command(flatten)]
-    pub output: TimingArgs,
+    pub(crate) output: TimingArgs,
     /// Rebuild worker count. `0` means one per CPU.
     #[arg(long, default_value = "0")]
     pub jobs: usize,
     /// World portion to restore. Required, like git restore's pathspec:
     /// spell `--in`/`--region` areas or name a saved `--scope`.
     #[command(flatten)]
-    pub selection: Selection,
+    pub(crate) selection: Selection,
     /// How to handle a source blob missing from CAS.
     #[arg(long, value_enum, default_value_t = OnMissingBlob::Abort)]
-    pub on_missing_blob: OnMissingBlob,
+    pub(crate) on_missing_blob: OnMissingBlob,
     /// Where to rebuild a source-known region whose file is missing on
     /// disk.
     #[arg(long, value_enum, default_value_t = OnMissingFile::SiblingFirst)]
-    pub on_missing_file: OnMissingFile,
+    pub(crate) on_missing_file: OnMissingFile,
 }
 
 impl RestoreArgs {
@@ -559,7 +559,7 @@ impl RestoreArgs {
     /// demands a pathspec; an empty selection would silently widen the
     /// run to the whole world, which is checkout's job. `--kind` alone
     /// narrows families but spells no path, so it does not count.
-    pub const fn has_paths(&self) -> bool {
+    pub(crate) const fn has_paths(&self) -> bool {
         match &self.selection {
             Selection::Inline(inline) => !inline.areas.is_empty() || !inline.region.is_empty(),
             Selection::Scope(_) => true,
@@ -661,7 +661,7 @@ pub struct InlineSelection {
 
 impl InlineSelection {
     /// One-line human summary of the selected areas.
-    pub fn describe(&self) -> String {
+    fn describe(&self) -> String {
         if self.areas.is_empty() && self.region.is_empty() {
             return if self.kind.is_empty() {
                 "whole world".to_owned()
@@ -866,7 +866,7 @@ pub struct RegionSpec {
     /// Selected dimension.
     pub dim: Dimension,
     /// Region coordinates.
-    pub at: Xz,
+    at: Xz,
 }
 
 impl RegionSpec {
@@ -909,6 +909,6 @@ fn parse_pair(s: &str, whole: &str) -> Result<Xz, String> {
 /// `X,Z` coordinate pair inside `--in` and `--region` specs.
 #[derive(Debug, Clone, Copy)]
 pub struct Xz {
-    pub x: i32,
-    pub z: i32,
+    x: i32,
+    z: i32,
 }

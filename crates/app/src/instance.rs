@@ -19,10 +19,12 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use sekai_core::{Commit, CommitId, Revision};
+use sekai_platform::thread::{Sequential, ThreadRunner};
+use sekai_platform::time::{Clock, Zero};
 use sekai_storage::{CacheStore as _, SekaiStore, SekaiStoreOpener};
-use sekai_util::{Clock, Sequential, ThreadRunner, Zero};
-use sekai_world::{WorldLock, WorldLockMode, WorldLockState, WorldTree};
+use sekai_util::{Commit, CommitId, Revision};
+use sekai_world::WorldTree;
+use sekai_world::lock::{WorldLock, WorldLockMode, WorldLockState};
 
 use crate::error::{AppError, world_error};
 
@@ -31,8 +33,8 @@ use crate::error::{AppError, world_error};
 /// The runner is the instance's parallelism: every fan-out (ingest, cache
 /// update, diff reads, checkout writes) runs over it. The default is the
 /// inline [`Sequential`] runner; a host embedding composes a parallel one
-/// (the `sekai` binary's OS-thread pool) through [`Self::new`] /
-/// [`Self::open_with`] / [`Self::init_with`].
+/// (the `sekai` binary's OS-thread pool) through [`Self::open_with`] /
+/// [`Self::init_with`].
 ///
 /// The clock is the instance's time source: operations measure their
 /// phases and stamp commits through it. The default [`Zero`] reads no
@@ -47,7 +49,7 @@ pub struct SekaiInstance<S: SekaiStore, T: ThreadRunner = Sequential, B: Clock =
 impl<S: SekaiStore, T: ThreadRunner, B: Clock> SekaiInstance<S, T, B> {
     /// Compose an instance from an already opened store, its runner, and
     /// its clock.
-    pub const fn new(store: S, runner: T, time: B) -> Self {
+    const fn new(store: S, runner: T, time: B) -> Self {
         Self {
             store,
             runner,
@@ -65,17 +67,6 @@ impl<S: SekaiStore, T: ThreadRunner, B: Clock> SekaiInstance<S, T, B> {
     /// Mutable store handle for escape-hatch access; see [`Self::store`].
     pub const fn store_mut(&mut self) -> &mut S {
         &mut self.store
-    }
-
-    /// The runner every fan-out of this instance executes over.
-    pub const fn runner(&self) -> &T {
-        &self.runner
-    }
-
-    /// The clock every operation of this instance measures and stamps
-    /// through.
-    pub const fn time(&self) -> &B {
-        &self.time
     }
 
     /// Read-only handle rooted at `root`.
@@ -109,25 +100,6 @@ impl<S: SekaiStore, T: ThreadRunner, B: Clock> SekaiInstance<S, T, B> {
     /// Fails when the commit does not exist.
     pub async fn commit_parents(&self, commit: CommitId) -> Result<Vec<CommitId>, AppError> {
         sekai_storage::graph::commit_parents(self.store.meta(), commit)
-            .await
-            .map_err(AppError::Commit)
-    }
-
-    /// Every ancestor of a commit, nearest first.
-    ///
-    /// Fails when the commit does not exist.
-    pub async fn commit_ancestors(&self, commit: CommitId) -> Result<Vec<CommitId>, AppError> {
-        sekai_storage::graph::commit_ancestors(self.store.meta(), commit)
-            .await
-            .map_err(AppError::Commit)
-    }
-
-    /// The history of a commit: the commit itself followed by its
-    /// ancestors, nearest first.
-    ///
-    /// Fails when the commit does not exist.
-    pub async fn commit_history(&self, commit: CommitId) -> Result<Vec<Commit>, AppError> {
-        sekai_storage::graph::commit_history(self.store.meta(), commit)
             .await
             .map_err(AppError::Commit)
     }
@@ -256,15 +228,4 @@ pub struct WorldHandle<'a, W, S: SekaiStore, T: ThreadRunner = Sequential, B: Cl
 pub struct WorldHandleMut<'a, W, S: SekaiStore, T: ThreadRunner = Sequential, B: Clock = Zero> {
     pub(crate) instance: &'a mut SekaiInstance<S, T, B>,
     pub(crate) world: &'a mut W,
-}
-
-impl<W, S: SekaiStore, T: ThreadRunner, B: Clock> WorldHandleMut<'_, W, S, T, B> {
-    /// Read-only view of the same world, for read operations issued while a
-    /// write session is held.
-    pub(crate) const fn view(&self) -> WorldHandle<'_, W, S, T, B> {
-        WorldHandle {
-            instance: &*self.instance,
-            world: &*self.world,
-        }
-    }
 }

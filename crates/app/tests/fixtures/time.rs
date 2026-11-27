@@ -5,7 +5,7 @@
 
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use sekai_util::{Clock, Timer};
+use sekai_platform::time::{Clock, Timer};
 
 /// A [`Clock`] over the OS clock, mirroring the binary's `OsTime`.
 #[derive(Debug, Clone, Copy, Default)]

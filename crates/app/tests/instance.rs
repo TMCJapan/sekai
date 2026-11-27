@@ -83,9 +83,8 @@ async fn open_and_init_take_path_like_locations() {
 /// commits and checks out the same world through the same flows.
 #[tokio::test]
 async fn the_flows_run_over_a_custom_runner() {
-    use sekai_app::{
-        CheckoutOptions, CommitOptions, Scope, SekaiInstance, Sequential, ThreadRunner,
-    };
+    use sekai_app::{CheckoutOptions, CommitOptions, Scope, SekaiInstance};
+    use sekai_platform::thread::{Sequential, ThreadRunner};
 
     let (root, _guard) = tempdir("custom-runner");
     let world_path = root.join("world");

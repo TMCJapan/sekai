@@ -18,7 +18,7 @@
 //! sled is a synchronous embedded database, so every operation runs on the
 //! runtime's blocking pool, never inline on an async worker.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use sekai_storage::{BlobStore, StorageError, io_error};
 use sekai_util::ChunkHash;
@@ -34,10 +34,8 @@ fn join_err(source: tokio::task::JoinError) -> StorageError {
 }
 
 /// Build the missing-blob error once, for both trait sides.
-fn missing(hash: &ChunkHash) -> StorageError {
-    StorageError::BlobMissing {
-        hex: hash.hex_string(),
-    }
+const fn missing(hash: &ChunkHash) -> StorageError {
+    StorageError::BlobMissing { hex: *hash }
 }
 
 /// Run one blocking sled operation on the runtime's blocking pool.
@@ -54,7 +52,6 @@ where
 /// Content-addressed blob store backed by the sled keyspace at `<store>/blobs`.
 #[derive(Debug, Clone)]
 pub struct SledBlob {
-    path: PathBuf,
     db: sled::Db,
 }
 
@@ -64,7 +61,7 @@ impl SledBlob {
     /// The parent directory must already exist; this type never creates it
     /// (directory layout is the store's concern). While another handle holds
     /// the keyspace, this fails instead of waiting: sled admits one opener.
-    pub async fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
+    pub(crate) async fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
         let path = path.as_ref().to_path_buf();
         if !path.parent().is_some_and(Path::is_dir) {
             return Err(io_error(
@@ -81,12 +78,7 @@ impl SledBlob {
         })
         .await
         .map_err(join_err)??;
-        Ok(Self { path, db })
-    }
-
-    /// Keyspace directory this store owns.
-    pub fn path(&self) -> &Path {
-        &self.path
+        Ok(Self { db })
     }
 }
 

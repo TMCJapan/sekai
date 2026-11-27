@@ -31,7 +31,7 @@ mod vanilla;
 
 pub use error::WorldError;
 pub use fingerprint::fingerprint_file;
-pub use lock::{HostWorldLock, HostWorldLockError};
+pub use lock::HostWorldLock;
 pub use swap::{atomic_swap, open_image};
 
 use std::collections::BTreeMap;
@@ -39,8 +39,11 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use sekai_anvil::RegionImage;
-use sekai_core::{Dimension, RegionFingerprint, RegionKey, RegionKind};
-use sekai_world::{Region, RegionFile, WorldLockMode, WorldLockState, WorldTree};
+use sekai_util::{Dimension, RegionFingerprint, RegionKey, RegionKind};
+use sekai_world::lock::{WorldLockMode, WorldLockState};
+use sekai_world::{Region, RegionFile, WorldTree};
+
+use crate::lock::HostWorldLockError;
 
 /// Directory of `kind` under a dimension directory.
 const fn kind_dir(kind: RegionKind) -> &'static str {

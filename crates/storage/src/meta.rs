@@ -8,8 +8,8 @@
 use alloc::vec::Vec;
 use core::future::Future;
 use sekai_util::{
-    ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DimHash, NamedScope, Ref,
-    RegionHash, RootHash, ScopeName, hash_bytes,
+    ApplyOutcome, Commit, CommitEntry, CommitId, CommitRef, DimHash, NamedScope, Ref, RegionHash,
+    RootHash, ScopeName, chunk_coord::ChunkCoord, hash_bytes,
 };
 
 use crate::{DimNode, RegionNode, RootNode, TreeNodes};

@@ -25,7 +25,8 @@ pub struct ScopeName(String);
 
 impl ScopeName {
     /// Longest accepted name, in bytes (names are ASCII-only).
-    pub const MAX_LEN: usize = name::MAX_LEN;
+    #[allow(dead_code)]
+    const MAX_LEN: usize = name::MAX_LEN;
 
     /// Validate `raw` into a scope name.
     ///
@@ -125,7 +126,7 @@ impl NamedScope {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ChunkCoord, RegionKey, RegionKind};
+    use crate::{RegionKey, RegionKind, chunk_coord::ChunkCoord};
     use alloc::string::ToString;
     use alloc::vec;
 

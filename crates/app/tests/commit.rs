@@ -4,9 +4,8 @@ mod fixtures;
 
 use fixtures::chunk_nbt;
 
-use sekai_app::{
-    BuildProgress, CommitId, CommitOptions, Progress, RegionKind, Scope, SekaiStore, WorldTree,
-};
+use sekai_app::{BuildProgress, CommitId, CommitOptions, Progress, RegionKind, Scope, SekaiStore};
+use sekai_world::WorldTree;
 use sekai_world_local::HostWorldTree;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -294,8 +293,12 @@ async fn partial_scope_then_full_commit_reingests_unread_chunks() {
 
     let commits = instance.list_commits().await.unwrap();
     assert_eq!(commits.len(), 3);
-    let coord =
-        sekai_core::ChunkCoord::new(sekai_core::Dimension::OVERWORLD, RegionKind::Region, 1, 0);
+    let coord = sekai_util::chunk_coord::ChunkCoord::new(
+        sekai_util::Dimension::OVERWORLD,
+        RegionKind::Region,
+        1,
+        0,
+    );
     let diffs = instance
         .diff_chunk(commits[1].id, commits[2].id, &coord)
         .await
@@ -860,9 +863,9 @@ async fn commit_records_no_diff_metadata() {
         .meta()
         .lookup_chunk(
             commits[0].id,
-            &sekai_core::ChunkCoord::new(
-                sekai_core::Dimension::OVERWORLD,
-                sekai_core::RegionKind::Region,
+            &sekai_util::chunk_coord::ChunkCoord::new(
+                sekai_util::Dimension::OVERWORLD,
+                sekai_util::RegionKind::Region,
                 0,
                 0,
             ),
@@ -1114,9 +1117,9 @@ async fn diff_chunk_between_commits() {
     let commits = instance.list_commits().await.unwrap();
     assert_eq!(commits.len(), 2);
 
-    let coord = sekai_core::ChunkCoord::new(
-        sekai_core::Dimension::OVERWORLD,
-        sekai_core::RegionKind::Region,
+    let coord = sekai_util::chunk_coord::ChunkCoord::new(
+        sekai_util::Dimension::OVERWORLD,
+        sekai_util::RegionKind::Region,
         0,
         0,
     );
@@ -1188,9 +1191,9 @@ async fn diff_world_chunk_with_commit() {
 
     write_region(&region, &[(0, 0, chunk_nbt("minecraft:empty"))]);
 
-    let coord = sekai_core::ChunkCoord::new(
-        sekai_core::Dimension::OVERWORLD,
-        sekai_core::RegionKind::Region,
+    let coord = sekai_util::chunk_coord::ChunkCoord::new(
+        sekai_util::Dimension::OVERWORLD,
+        sekai_util::RegionKind::Region,
         0,
         0,
     );

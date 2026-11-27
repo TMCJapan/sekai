@@ -15,7 +15,7 @@ pub struct Chunk<'a> {
     /// Global chunk Z coordinate.
     pub z: i32,
     /// Region family the chunk was read from.
-    pub kind: RegionKind,
+    kind: RegionKind,
     /// Stored compression byte followed by the compressed body.
     pub payload: &'a [u8],
 }
@@ -91,14 +91,6 @@ impl RegionImage {
         })
     }
 
-    pub const fn region_x(&self) -> i32 {
-        self.loc.region_x()
-    }
-
-    pub const fn region_z(&self) -> i32 {
-        self.loc.region_z()
-    }
-
     pub fn image(&self) -> &[u8] {
         &self.bytes
     }
@@ -116,7 +108,7 @@ impl RegionImage {
     /// ```
     ///
     /// Rust requires this inherent method next to the [`IntoIterator`] impl.
-    pub fn iter(&self) -> RegionImageIter<'_> {
+    fn iter(&self) -> RegionImageIter<'_> {
         self.into_iter()
     }
 
@@ -124,8 +116,8 @@ impl RegionImage {
     ///
     /// Returning `false` stops iteration.
     ///
-    /// Unlike [`Self::iter`], which yields `Result` items, this visitor stops
-    /// on the first `false` and aborts on the first corrupt entry.
+    /// Unlike [`IntoIterator`], which yields `Result` items, this visitor
+    /// stops on the first `false` and aborts on the first corrupt entry.
     pub fn visit_chunks<F>(&self, mut visit: F) -> Result<(), AnvilError>
     where
         F: FnMut(Chunk<'_>) -> bool,

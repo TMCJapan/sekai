@@ -7,7 +7,7 @@
 use std::fs::File;
 use std::path::Path;
 
-use sekai_core::{RegionFingerprint, RegionKey};
+use sekai_util::{RegionFingerprint, RegionKey};
 
 use crate::error::WorldError;
 use crate::observation::{content_hash_of, mtime_ms_from_metadata};

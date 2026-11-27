@@ -4,8 +4,8 @@
 use clap::Parser as _;
 use sekai_app::SekaiStoreOpener as _;
 use sekai_cli::cli::Cli;
-use sekai_storage_local::{LocalStore, Worktree};
-use sekai_util::{Head, RefName};
+use sekai_storage_local::{LocalStore, worktree::Worktree};
+use sekai_util::{RefName, worktree::Head};
 
 const HASH: &str = "0101010101010101010101010101010101010101010101010101010101010101";
 

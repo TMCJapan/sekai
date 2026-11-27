@@ -1284,6 +1284,7 @@ dependencies = [
  "miniz_oxide",
  "sekai-anvil",
  "sekai-core",
+ "sekai-platform",
  "sekai-storage",
  "sekai-storage-local",
  "sekai-util",
@@ -1304,6 +1305,7 @@ dependencies = [
  "jiff",
  "sekai-anvil",
  "sekai-app",
+ "sekai-platform",
  "sekai-storage-local",
  "sekai-util",
  "sekai-world-local",
@@ -1321,6 +1323,10 @@ dependencies = [
  "criterion",
  "sekai-util",
 ]
+
+[[package]]
+name = "sekai-platform"
+version = "0.1.0"
 
 [[package]]
 name = "sekai-storage"
@@ -1355,7 +1361,7 @@ name = "sekai-world"
 version = "0.1.0"
 dependencies = [
  "sekai-anvil",
- "sekai-core",
+ "sekai-util",
 ]
 
 [[package]]
@@ -1364,7 +1370,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "sekai-anvil",
- "sekai-core",
+ "sekai-util",
  "sekai-world",
  "tempfile",
  "thiserror",

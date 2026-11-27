@@ -39,10 +39,11 @@ pub struct RefName(String);
 impl RefName {
     /// Longest accepted name, in bytes (names are ASCII-only). Git sets no
     /// limit.
-    pub const MAX_LEN: usize = name::MAX_LEN;
+    #[allow(dead_code)]
+    const MAX_LEN: usize = name::MAX_LEN;
 
     /// Name the store keeps for itself: no ref may carry it.
-    pub const RESERVED: &str = "HEAD";
+    const RESERVED: &str = "HEAD";
 
     /// Validate `raw` into a ref name.
     ///
@@ -118,7 +119,7 @@ pub enum RefKind {
 
 impl RefKind {
     /// Every kind, in refname order.
-    pub const ALL: [Self; 1] = [Self::Branch];
+    const ALL: [Self; 1] = [Self::Branch];
 
     /// Refname prefix of this namespace, trailing `/` included.
     pub const fn prefix(self) -> &'static str {
@@ -143,7 +144,7 @@ pub struct Ref {
 
 impl Ref {
     /// Construct a ref from its parts.
-    pub const fn new(kind: RefKind, name: RefName) -> Self {
+    const fn new(kind: RefKind, name: RefName) -> Self {
         Self { kind, name }
     }
 
@@ -216,7 +217,8 @@ impl CommitRef {
     }
 
     /// Whether the ref names no commit yet.
-    pub const fn is_unborn(&self) -> bool {
+    #[allow(dead_code)]
+    const fn is_unborn(&self) -> bool {
         self.commit.is_none()
     }
 }

@@ -15,6 +15,7 @@ sekai-anvil.workspace = true
 sekai-core.workspace = true
 sekai-storage.workspace = true
 sekai-util.workspace = true
+sekai-platform.workspace = true
 sekai-world.workspace = true
 thiserror.workspace = true
 

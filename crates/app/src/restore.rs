@@ -11,9 +11,9 @@
 //! stay off. Only the overlay choice (git's `--overlay`/`--no-overlay`)
 //! and the rebuild mechanics remain configurable.
 
-use sekai_core::{Revision, Scope};
+use sekai_platform::{thread::ThreadRunner, time::Clock};
 use sekai_storage::SekaiStore;
-use sekai_util::{Clock, ThreadRunner};
+use sekai_util::{Revision, Scope};
 use sekai_world::WorldTree;
 
 use crate::checkout::{
@@ -56,7 +56,7 @@ impl<S: SekaiStore, T: ThreadRunner, B: Clock> SekaiInstance<S, T, B> {
     /// keeps them, and every rebuilt file holds exactly the source's
     /// chunks. The run plans before it touches any file and holds the
     /// world lock like checkout; see
-    /// [`WorldHandleMut::checkout`](crate::WorldHandleMut::checkout) for
+    /// [`WorldHandleMut::checkout`](crate::instance::WorldHandleMut::checkout) for
     /// the failure and cancellation guarantees, which carry over whole.
     pub async fn restore<W: WorldTree>(
         &mut self,

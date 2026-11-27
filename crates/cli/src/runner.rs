@@ -16,7 +16,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::task::{Context, Poll, Waker};
 use std::thread;
 
-use sekai_util::{JobSet, ThreadRunner, WorkerPanic};
+use sekai_platform::thread::{JobSet, ThreadRunner, WorkerPanic};
 
 /// Recover a poisoned lock instead of failing: the queue and iterator
 /// stay structurally valid even when a worker panicked holding them.
@@ -310,7 +310,7 @@ impl<R> core::future::Future for OsCall<R> {
 #[cfg(test)]
 mod tests {
     use super::OsThread;
-    use sekai_util::{JobSet, ThreadRunner};
+    use sekai_platform::thread::{JobSet, ThreadRunner};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 

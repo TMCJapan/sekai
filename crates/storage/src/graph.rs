@@ -443,7 +443,7 @@ mod tests {
 
     #[test]
     fn counts_fresh_and_effective_rows() {
-        use sekai_util::{ChunkCoord, ChunkHash, Dimension, RegionKind};
+        use sekai_util::{ChunkHash, Dimension, RegionKind, chunk_coord::ChunkCoord};
         let mut meta = MemMeta::default();
         meta.with_active_ref(&RefName::parse("main").unwrap());
         let over = Dimension::OVERWORLD;
@@ -500,7 +500,7 @@ mod tests {
 
     #[test]
     fn counts_vanished_regions_and_dimensions() {
-        use sekai_util::{ChunkCoord, ChunkHash, Dimension, RegionKind};
+        use sekai_util::{ChunkHash, Dimension, RegionKind, chunk_coord::ChunkCoord};
         let mut meta = MemMeta::default();
         meta.with_active_ref(&RefName::parse("main").unwrap());
         let over = Dimension::OVERWORLD;
@@ -596,7 +596,7 @@ mod tests {
 
     #[test]
     fn a_commit_only_inherits_from_its_own_ancestors() {
-        use sekai_util::{ChunkCoord, ChunkHash, Dimension, RegionKind};
+        use sekai_util::{ChunkHash, Dimension, RegionKind, chunk_coord::ChunkCoord};
         let mut meta = MemMeta::default();
         meta.with_active_ref(&RefName::parse("main").unwrap());
         let coord = ChunkCoord::new(Dimension::OVERWORLD, RegionKind::Region, 0, 0);

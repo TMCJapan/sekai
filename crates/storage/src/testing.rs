@@ -11,8 +11,8 @@ use core::pin::pin;
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use sekai_util::{
-    ApplyOutcome, ChunkCoord, Commit, CommitEntry, CommitId, CommitRef, DimHash, NamedScope, Ref,
-    RefName, RegionHash, RootHash, ScopeName,
+    ApplyOutcome, Commit, CommitEntry, CommitId, CommitRef, DimHash, NamedScope, Ref, RefName,
+    RegionHash, RootHash, ScopeName, chunk_coord::ChunkCoord,
 };
 
 use crate::meta::{MetaStore, commit_hash};
@@ -86,19 +86,19 @@ pub fn block_on<F: Future>(fut: F) -> F::Output {
 #[derive(Debug, Default)]
 pub struct MemMeta {
     /// Commits in local record order (oldest first).
-    pub commits: Vec<Commit>,
+    commits: Vec<Commit>,
     /// Root nodes by hash.
-    pub root_nodes: BTreeMap<RootHash, RootNode>,
+    root_nodes: BTreeMap<RootHash, RootNode>,
     /// Dimension nodes by hash.
-    pub dim_nodes: BTreeMap<DimHash, DimNode>,
+    dim_nodes: BTreeMap<DimHash, DimNode>,
     /// Region nodes by hash.
-    pub region_nodes: BTreeMap<RegionHash, RegionNode>,
+    pub(crate) region_nodes: BTreeMap<RegionHash, RegionNode>,
     /// Refs by full refname order.
-    pub refs: BTreeMap<Ref, CommitRef>,
+    pub(crate) refs: BTreeMap<Ref, CommitRef>,
     /// Named scopes by name.
-    pub scopes: BTreeMap<ScopeName, NamedScope>,
+    scopes: BTreeMap<ScopeName, NamedScope>,
     /// Stable local sequence per commit hash.
-    pub seqs: BTreeMap<CommitId, u64>,
+    seqs: BTreeMap<CommitId, u64>,
     /// Next local sequence number to assign.
     next_seq: u64,
 }

@@ -1,0 +1,13 @@
+[package]
+name = "sekai-platform"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = ""
+keywords = ["minecraft", "version-control"]
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -7,7 +7,8 @@
 
 pub mod time;
 
-use sekai_app::{AppError, SekaiInstance, SekaiStoreOpener, Sequential, ThreadRunner as _};
+use sekai_app::{AppError, SekaiInstance, SekaiStoreOpener};
+use sekai_platform::thread::{Sequential, ThreadRunner as _};
 use sekai_storage_local::LocalStore;
 use time::HostTime;
 

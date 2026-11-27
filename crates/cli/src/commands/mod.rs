@@ -16,7 +16,8 @@ mod status;
 mod worktree;
 
 use anyhow::Context as _;
-use sekai_app::{Clock, Scope, SekaiInstance, SekaiStore, ThreadRunner};
+use sekai_app::{Scope, SekaiInstance, SekaiStore};
+use sekai_platform::{thread::ThreadRunner, time::Clock};
 
 use crate::cli::{Cli, Command, Selection, TimingArgs};
 use crate::style::Styler;
@@ -51,10 +52,10 @@ async fn resolve_selection<S: SekaiStore, T: ThreadRunner, B: Clock>(
 /// Output controls shared by report commands (commit, status, checkout).
 #[derive(Debug, Clone, Copy)]
 pub struct ReportOut {
-    pub timing: bool,
-    pub json: bool,
-    pub progress: bool,
-    pub style: Styler,
+    timing: bool,
+    json: bool,
+    progress: bool,
+    style: Styler,
 }
 
 impl ReportOut {

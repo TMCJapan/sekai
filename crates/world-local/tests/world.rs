@@ -1,7 +1,7 @@
 //! World filesystem behavior: discovery, fingerprints, swaps.
 
-use sekai_core::{Dimension, RegionKey, RegionKind};
-use sekai_world::{WorldLockMode, WorldTree};
+use sekai_util::{Dimension, RegionKey, RegionKind};
+use sekai_world::{WorldTree, lock::WorldLockMode};
 use sekai_world_local::{
     HostRegion, HostWorldLock, HostWorldTree, WorldError, atomic_swap, fingerprint_file, open_image,
 };

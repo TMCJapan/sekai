@@ -232,14 +232,14 @@ pub const fn options() -> sekai_app::CommitOptions {
     sekai_app::CommitOptions {}
 }
 
-/// A [`Clock`](sekai_util::Clock) over the host clock, mirroring the
+/// A [`Clock`](sekai_platform::time::Clock) over the host clock, mirroring the
 /// binary's `OsTime`: benches commit, so they need a real clock, which the
 /// `Zero` default does not provide.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct HostTime;
 
-impl sekai_util::Clock for HostTime {
-    fn timer(&self) -> impl sekai_util::Timer {
+impl sekai_platform::time::Clock for HostTime {
+    fn timer(&self) -> impl sekai_platform::time::Timer {
         HostTimer(std::time::Instant::now())
     }
 
@@ -253,7 +253,7 @@ impl sekai_util::Clock for HostTime {
 
 struct HostTimer(std::time::Instant);
 
-impl sekai_util::Timer for HostTimer {
+impl sekai_platform::time::Timer for HostTimer {
     fn stop(self) -> std::time::Duration {
         self.0.elapsed()
     }
@@ -263,12 +263,16 @@ impl sekai_util::Timer for HostTimer {
 pub async fn init(
     path: impl AsRef<<sekai_storage_local::LocalStore as sekai_app::SekaiStoreOpener>::Path>,
 ) -> Result<
-    sekai_app::SekaiInstance<sekai_storage_local::LocalStore, sekai_app::Sequential, HostTime>,
+    sekai_app::SekaiInstance<
+        sekai_storage_local::LocalStore,
+        sekai_platform::thread::Sequential,
+        HostTime,
+    >,
     sekai_app::AppError,
 > {
     sekai_app::SekaiInstance::init_with(
         path,
-        <sekai_app::Sequential as sekai_app::ThreadRunner>::new(0),
+        <sekai_platform::thread::Sequential as sekai_platform::thread::ThreadRunner>::new(0),
         HostTime,
     )
     .await

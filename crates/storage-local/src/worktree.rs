@@ -1,13 +1,8 @@
-//! Worktrees: the worlds a store backs up, each keyed by the store
-//! location it opens. The store's own (main) worktree is registered at
-//! init; a linked worktree is a store link that points another world
-//! folder at this store.
-
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use sekai_storage::{StorageError, io_error};
-use sekai_util::Head;
+use sekai_util::worktree::Head;
 
 use crate::LocalStore;
 

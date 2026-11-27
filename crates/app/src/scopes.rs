@@ -8,9 +8,9 @@
 use alloc::borrow::ToOwned;
 use alloc::vec::Vec;
 
-use sekai_core::{Dimension, NamedScope, Rect, Scope, ScopeName};
+use sekai_platform::{thread::ThreadRunner, time::Clock};
 use sekai_storage::{MetaStore as _, SekaiStore};
-use sekai_util::{Clock, ThreadRunner};
+use sekai_util::{Dimension, NamedScope, Rect, Scope, ScopeName};
 
 use crate::error::{AppError, Lookup, NameKind};
 use crate::instance::SekaiInstance;

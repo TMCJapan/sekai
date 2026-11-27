@@ -11,7 +11,7 @@
 //! and timing collection for `--timing` output.
 //!
 //! Ingest is split by executor: region reads and hashing run on the
-//! instance's [`ThreadRunner`](sekai_util::ThreadRunner) threads (the
+//! instance's [`ThreadRunner`](sekai_platform::thread::ThreadRunner) threads (the
 //! [`WorldTree`] boundary stays synchronous), and every blob put is an
 //! async CAS call on the caller's executor, interleaved with the joins.
 //! The CAS is append-only, so the writes need no lock at all.
@@ -31,10 +31,11 @@ use alloc::vec::Vec;
 use core::time::Duration;
 
 use sekai_core::staging::{Assembled, Ingested, Plan, Previous, assemble};
-use sekai_core::{ApplyOutcome, ChunkCoord, CommitEntry, CommitId, RegionKey, Scope};
+use sekai_platform::thread::{JobSet as _, ThreadRunner};
+use sekai_platform::time::{Clock, Timer as _};
 use sekai_storage::{BlobStore, MetaStore, RegionNode, SekaiStore};
-use sekai_util::{Clock, JobSet as _, ThreadRunner, Timer as _};
-use sekai_world::{Region, RegionFile, WorldLockMode, WorldTree};
+use sekai_util::{ApplyOutcome, CommitEntry, CommitId, RegionKey, Scope, chunk_coord::ChunkCoord};
+use sekai_world::{Region, RegionFile, WorldTree, lock::WorldLockMode};
 
 use crate::cache::prove_regions_unchanged;
 use crate::error::{AppError, image_error, world_error};
@@ -77,7 +78,7 @@ pub struct CommitReport {
 /// file is ingested - there is no file-level skip - and
 /// [`assemble`](sekai_core::staging::assemble) drops chunk facts whose blob
 /// already matches the base snapshot.
-pub(crate) async fn plan_commit<M: MetaStore>(
+async fn plan_commit<M: MetaStore>(
     meta: &M,
     discovered: &[RegionKey],
     scope: &Scope,
@@ -137,7 +138,7 @@ pub(crate) async fn plan_commit<M: MetaStore>(
 /// onto the new commit in the same transaction. Plan and commit must not be
 /// interleaved with another commit; the app holds the store's writer
 /// lock for the whole run.
-pub(crate) async fn record_commit<M: MetaStore>(
+async fn record_commit<M: MetaStore>(
     meta: &mut M,
     previous: &Previous,
     staged: &Assembled,
@@ -461,21 +462,6 @@ where
     }
 }
 
-impl<W: WorldTree, S: SekaiStore, T: ThreadRunner, B: Clock> WorldHandleMut<'_, W, S, T, B>
-where
-    W::Error: Send + Sync + 'static,
-{
-    /// Preview what a commit would record; see [`WorldHandle::status`].
-    pub async fn status(
-        &self,
-        options: StatusOptions,
-        scope: Scope,
-        progress_builder: &impl BuildProgress,
-    ) -> Result<(StatusReport, StatusTimings), AppError> {
-        self.view().status(options, scope, progress_builder).await
-    }
-}
-
 /// Preview implementation shared by read-only and read-write handles.
 async fn status_impl<W: WorldTree, S: SekaiStore>(
     store: &S,
@@ -766,7 +752,7 @@ struct Staged {
 
 /// One chunk payload waiting for its CAS write.
 struct ChunkWrite {
-    hash: sekai_core::ChunkHash,
+    hash: sekai_util::ChunkHash,
     payload: Vec<u8>,
 }
 
@@ -843,8 +829,8 @@ fn stage_chunk(
 mod tests {
     use super::*;
     use sekai_core::staging::stage_present;
-    use sekai_core::{Area, ChunkHash, Dimension, Rect, Ref, RefName, RegionKind};
     use sekai_storage::testing::{MemMeta, block_on};
+    use sekai_util::{Area, ChunkHash, Dimension, Rect, Ref, RefName, RegionKind};
 
     const OVER: Dimension = Dimension::OVERWORLD;
     const NETHER: Dimension = Dimension::NETHER;

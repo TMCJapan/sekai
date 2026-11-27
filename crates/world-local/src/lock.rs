@@ -21,7 +21,7 @@ use std::fs::{File, OpenOptions, TryLockError};
 use std::io;
 use std::path::Path;
 
-use sekai_world::{UnguardedReason, WorldLock, WorldLockMode, WorldLockState};
+use sekai_world::lock::{UnguardedReason, WorldLock, WorldLockMode, WorldLockState};
 
 /// [`WorldLock`] of a [`HostWorldTree`](crate::HostWorldTree): an OS file
 /// lock on [`Self::FILE_NAME`] in the world root.
@@ -85,7 +85,7 @@ impl HostWorldLock {
     /// cannot search (where absence cannot be told), is an error: silently
     /// running unguarded would let a reader overlap another user's
     /// checkout.
-    pub fn acquire(
+    pub(crate) fn acquire(
         path: impl AsRef<Path>,
         mode: WorldLockMode,
     ) -> Result<WorldLockState<Self>, HostWorldLockError> {

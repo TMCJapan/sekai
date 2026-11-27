@@ -16,7 +16,6 @@ use sekai_app::{
     Area, CacheUpdateOptions, CommitId, CommitOptions, Dimension, Rect, RegionHash, RegionKey,
     RegionKind, Scope, SekaiStore, StatusOptions,
 };
-use sekai_core::hash_bytes;
 use sekai_storage::{CacheStore as _, MetaStore as _, RegionEntry, RegionNode};
 use sekai_world_local::HostWorldTree;
 use std::path::Path;
@@ -99,7 +98,10 @@ fn file_region_hash(path: impl AsRef<Path>) -> RegionHash {
 /// `hash`.
 async fn assert_cached<S: SekaiStore>(store: &S, hash: RegionHash, image: &[u8]) {
     let cache = store.cache();
-    assert_eq!(cache.mca_hash(hash).await.unwrap(), Some(hash_bytes(image)));
+    assert_eq!(
+        cache.mca_hash(hash).await.unwrap(),
+        Some(sekai_util::hash_bytes(image))
+    );
     let mut fetched = Vec::new();
     assert!(cache.fetch_image(hash, &mut fetched).await.unwrap());
     assert_eq!(fetched, image);
