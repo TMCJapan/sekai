@@ -50,7 +50,12 @@ pub(crate) fn commit_error(error: CommitError<StorageError>) -> AppError {
 pub(crate) fn revision_error(error: ResolveError<StorageError>) -> AppError {
     match error {
         ResolveError::Meta(source) => AppError::Storage(source),
-        other => AppError::Revision(other),
+        other @ (ResolveError::UnknownCommit { .. }
+        | ResolveError::UnknownRef { .. }
+        | ResolveError::UnbornRef { .. }
+        | ResolveError::NoActiveRef
+        | ResolveError::UnbornHead { .. }
+        | ResolveError::UnknownRevision { .. }) => AppError::Revision(other),
     }
 }
 

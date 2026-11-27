@@ -250,10 +250,11 @@ impl<M: fmt::Debug> fmt::Display for ResolveError<M> {
 ///
 /// `HEAD` is the commit of the opened worktree's HEAD. A commit ID must
 /// name a recorded commit, and a name is looked up as a branch; an unborn
-/// one has no commit to point at yet. A `~<n>` step then follows the first parent `n`
-/// times, as Git's `get_nth_ancestor` does; a step past a root commit is an
-/// `UnknownRevision`. Parents are stored sorted by ID, so for a commit with
-/// several the first is the lowest-ID one; commits sekai records have one.
+/// one has no commit to point at yet. A `~<n>` step then follows the first
+/// parent `n` times, as Git's `get_nth_ancestor` does; a step past a root
+/// commit is an `UnknownRevision`. Parents are stored sorted by ID, so for a
+/// commit with several the first is the lowest-ID one; commits sekai records
+/// have one.
 pub async fn resolve_revision<M: MetaStore>(
     meta: &M,
     revision: &Revision,

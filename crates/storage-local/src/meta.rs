@@ -896,9 +896,9 @@ impl sekai_storage::MetaStore for SqliteMeta {
     ) -> Result<ApplyOutcome, StorageError> {
         let commit = commit_hash(parents, created_at_ms, root);
         let created = millis_param(created_at_ms)?;
-        // Every early return drops `tx`, which rolls it back: a rejected
-        // call writes nothing.
         let worktree = store_key(&self.opened)?;
+        // Every early return further down drops `tx`, which rolls it back:
+        // a rejected call writes nothing.
         let mut tx = self.pool.begin().await.map_err(db_err)?;
         // HEAD decides where the commit lands, and the new commit must
         // continue HEAD's commit: moving HEAD onto an unrelated history
