@@ -51,9 +51,9 @@ store root. `--json` emits the standard envelope (see `docs/json.md`).
 
 A store can back up several worlds, each registered as a worktree opened
 from a store location: the store root itself for the store's own (main)
-worktree, a store link file for a linked one. Any spelling of the store
-root opens the main worktree, and a moved or copied store keeps it.
-Linked worktrees
+worktree, a store link file for a linked one. Any spelling of either
+location opens the same worktree, and a moved or copied store keeps its
+main worktree. Linked worktrees
 share the store's history, blobs, and cache. See
 [Worktrees](commands/worktree.md) for `sekai worktree list` and
 `sekai worktree remove`.

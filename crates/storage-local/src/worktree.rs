@@ -181,17 +181,25 @@ fn worktree_refusal(message: String) -> StorageError {
     )
 }
 
-/// The absolute UTF-8 spelling of a store link location, the key a
-/// linked worktree row carries. The single normalization point for
-/// those keys: registration and every open resolve a link through this
-/// same rule, symlinks deliberately unresolved so the key keeps the
-/// caller's spelling. A location that is not valid UTF-8 fails loudly
-/// instead of storing a lossy path.
+/// The key a linked worktree row carries for the store link at `path`:
+/// the link's parent directory resolved through the filesystem
+/// (symlinks, `..`, and redundant separators), joined with the link's own
+/// file name. Registration and every open key a link through this one
+/// rule, so any spelling of the same link finds the same row. The link
+/// itself is not resolved: it is a file this store owns, not an alias.
+///
+/// A location that is not valid UTF-8 fails loudly instead of storing a
+/// lossy path.
 pub(crate) fn store_key(path: impl AsRef<Path>) -> Result<String, StorageError> {
     let path = path.as_ref();
-    let path =
+    let absolute =
         std::path::absolute(path).map_err(|source| io_error(path.display().to_string(), source))?;
-    path.to_str().map(str::to_owned).ok_or_else(|| {
+    let key = match (absolute.parent(), absolute.file_name()) {
+        (Some(parent), Some(name)) => resolve(parent)?.join(name),
+        // A filesystem root, or a path ending in `..`, names a directory.
+        _ => resolve(&absolute)?,
+    };
+    key.to_str().map(str::to_owned).ok_or_else(|| {
         StorageError::backend(
             "worktree",
             std::io::Error::new(
@@ -200,4 +208,80 @@ pub(crate) fn store_key(path: impl AsRef<Path>) -> Result<String, StorageError> 
             ),
         )
     })
+}
+
+/// The absolute `path` resolved through the filesystem as far as it
+/// exists, with the missing tail appended as spelled. A removed world
+/// folder thus still keys to what its registration resolved to, so its
+/// stale row stays removable. A missing tail that steps out with `..`
+/// cannot be appended faithfully, so the absolute spelling stands.
+///
+/// Windows spells a resolved path in its verbatim form (`\\?\C:\...`);
+/// the prefix is dropped where the plain form names the same location,
+/// so keys read the way users write paths.
+fn resolve(path: impl AsRef<Path>) -> Result<PathBuf, StorageError> {
+    let path = path.as_ref();
+    let mut missing = Vec::new();
+    let mut existing = path;
+    loop {
+        match std::fs::canonicalize(existing) {
+            Ok(resolved) => {
+                let resolved = without_verbatim_prefix(resolved);
+                return Ok(missing
+                    .iter()
+                    .rev()
+                    .fold(resolved, |acc, name| acc.join(name)));
+            }
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+                match (existing.parent(), existing.file_name()) {
+                    (Some(parent), Some(name)) => {
+                        missing.push(name);
+                        existing = parent;
+                    }
+                    _ => return Ok(path.to_path_buf()),
+                }
+            }
+            Err(source) => return Err(io_error(existing.display().to_string(), source)),
+        }
+    }
+}
+
+fn without_verbatim_prefix(path: PathBuf) -> PathBuf {
+    let plain = cfg!(windows)
+        .then(|| path.to_str().and_then(plain_windows_spelling))
+        .flatten();
+    plain.map_or(path, PathBuf::from)
+}
+
+/// The plain spelling of a Windows verbatim path that has one:
+/// `\\?\C:\x` is `C:\x` and `\\?\UNC\server\share` is `\\server\share`.
+/// Other verbatim forms (device paths, `\\?\Volume{...}`) have none.
+fn plain_windows_spelling(path: &str) -> Option<String> {
+    if let Some(share) = path.strip_prefix(r"\\?\UNC\") {
+        return Some(format!(r"\\{share}"));
+    }
+    let rest = path.strip_prefix(r"\\?\")?;
+    let mut chars = rest.chars();
+    let is_disk =
+        chars.next().is_some_and(|c| c.is_ascii_alphabetic()) && chars.next() == Some(':');
+    is_disk.then(|| rest.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verbatim_disk_and_unc_paths_have_plain_spellings() {
+        assert_eq!(
+            plain_windows_spelling(r"\\?\C:\worlds\a").as_deref(),
+            Some(r"C:\worlds\a")
+        );
+        assert_eq!(
+            plain_windows_spelling(r"\\?\UNC\server\share\a").as_deref(),
+            Some(r"\\server\share\a")
+        );
+        assert_eq!(plain_windows_spelling(r"\\?\Volume{abc}\a"), None);
+        assert_eq!(plain_windows_spelling(r"C:\worlds\a"), None);
+    }
 }
