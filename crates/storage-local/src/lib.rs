@@ -123,6 +123,15 @@ impl LocalStore {
         &self.root
     }
 
+    /// Close the store and wait until every file it holds is released, so
+    /// the store can be moved or deleted right after, even on Windows.
+    ///
+    /// The sled keyspaces release their files when their last handle drops;
+    /// only the SQLite connection needs an explicit close.
+    pub async fn close(self) {
+        self.meta.close().await;
+    }
+
     /// The store root a store link at `path` names, or `None` when `path`
     /// is no link and so is the root itself.
     ///

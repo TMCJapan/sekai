@@ -143,6 +143,16 @@ impl SqliteMeta {
         Ok(Self { pool, link })
     }
 
+    /// Close the database and wait until its file handles are released.
+    ///
+    /// Dropping the pool closes the connection on a background worker at
+    /// some later point, so the database files can stay open after the
+    /// drop; on Windows that blocks moving or deleting them. Closing affects
+    /// every clone of this handle.
+    pub async fn close(self) {
+        self.pool.close().await;
+    }
+
     /// Record a whole commit atomically; returns its new ID.
     ///
     /// Blobs must already be flushed to the blob store before calling.

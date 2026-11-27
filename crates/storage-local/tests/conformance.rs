@@ -902,7 +902,7 @@ async fn a_moved_or_copied_store_keeps_its_main_worktree() {
         .apply_commit(1_000, &[], &[])
         .await
         .unwrap();
-    drop(store);
+    store.close().await;
 
     let moved = base.join("moved");
     std::fs::rename(&original, &moved).unwrap();
