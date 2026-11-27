@@ -56,7 +56,7 @@ impl<S: SekaiStore, T: ThreadRunner, B: Clock> SekaiInstance<S, T, B> {
     /// keeps them, and every rebuilt file holds exactly the source's
     /// chunks. The run plans before it touches any file and holds the
     /// world lock like checkout; see
-    /// [`WorldHandleMut::checkout`](crate::WorldHandleMut::checkout) for
+    /// [`WorldHandleMut::checkout`](crate::instance::WorldHandleMut::checkout) for
     /// the failure and cancellation guarantees, which carry over whole.
     pub async fn restore<W: WorldTree>(
         &mut self,

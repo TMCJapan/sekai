@@ -37,7 +37,7 @@ impl Rect {
     /// Whole region file `(rx, rz)` as a rectangle.
     ///
     /// Region coordinates whose chunk span leaves `i32` are clamped, so the
-    /// rectangle stays consistent with [`Rect::overlaps_region`] instead of
+    /// rectangle stays consistent with `overlaps_region` instead of
     /// selecting nothing.
     pub const fn region(rx: i32, rz: i32) -> Self {
         Self {

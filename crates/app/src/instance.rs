@@ -33,8 +33,8 @@ use crate::error::{AppError, world_error};
 /// The runner is the instance's parallelism: every fan-out (ingest, cache
 /// update, diff reads, checkout writes) runs over it. The default is the
 /// inline [`Sequential`] runner; a host embedding composes a parallel one
-/// (the `sekai` binary's OS-thread pool) through [`Self::new`] /
-/// [`Self::open_with`] / [`Self::init_with`].
+/// (the `sekai` binary's OS-thread pool) through [`Self::open_with`] /
+/// [`Self::init_with`].
 ///
 /// The clock is the instance's time source: operations measure their
 /// phases and stamp commits through it. The default [`Zero`] reads no

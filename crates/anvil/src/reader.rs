@@ -116,8 +116,8 @@ impl RegionImage {
     ///
     /// Returning `false` stops iteration.
     ///
-    /// Unlike [`Self::iter`], which yields `Result` items, this visitor stops
-    /// on the first `false` and aborts on the first corrupt entry.
+    /// Unlike [`IntoIterator`], which yields `Result` items, this visitor
+    /// stops on the first `false` and aborts on the first corrupt entry.
     pub fn visit_chunks<F>(&self, mut visit: F) -> Result<(), AnvilError>
     where
         F: FnMut(Chunk<'_>) -> bool,

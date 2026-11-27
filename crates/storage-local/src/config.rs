@@ -114,7 +114,7 @@ impl Config {
         self.set(key, String::new());
     }
 
-    /// Every set key with its value, in [`ConfigKey::ALL`] order.
+    /// Every set key with its value, in `ConfigKey::ALL` order.
     pub fn entries(&self) -> impl Iterator<Item = (ConfigKey, &str)> {
         ConfigKey::ALL
             .into_iter()

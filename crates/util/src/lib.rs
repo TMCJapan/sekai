@@ -2,12 +2,10 @@
 //! the record types every other crate passes around.
 //!
 //! Pure data plus the invariants that belong to it (coordinate arithmetic,
-//! hex encoding, chunk digests); no I/O and no policy. The execution
-//! boundaries live here too: [`ThreadRunner`], the parallelism seam the
-//! orchestration runs over (the inline [`Sequential`] runner as the
-//! `no_std` baseline), and [`Clock`], the clock/timing seam (the
-//! timing-free [`Zero`] baseline). A host embedding composes its own (the
-//! `sekai` binary's `OsThread` pool and OS clock).
+//! hex encoding, chunk digests); no I/O and no policy. Execution seams
+//! (thread runners and clocks) live in `sekai-platform`, where a host
+//! embedding composes its own (the `sekai` binary's `OsThread` pool and
+//! OS clock).
 
 #![no_std]
 
