@@ -93,7 +93,7 @@ async fn init_creates_the_store_every_other_command_opens() {
         .await
         .expect("init is idempotent");
 
-    // The store registers itself as its main worktree, keyed by the
+    // The store registers itself as its main worktree, listed at the
     // absolute store root with HEAD unborn on `main`, and a re-init
     // leaves exactly that one row.
     let opened = LocalStore::open(store).await.unwrap();
@@ -102,6 +102,7 @@ async fn init_creates_the_store_every_other_command_opens() {
         opened.worktrees().await.unwrap(),
         [Worktree {
             path: root,
+            main: true,
             head: Head::Branch(RefName::default_branch()),
         }]
     );

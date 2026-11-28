@@ -190,9 +190,9 @@ pub struct BranchArgs {
 
 /// Worktree operations (ADR-0038).
 ///
-/// A worktree is one world the store backs up, keyed by the store
-/// location it opens: the store root itself (the main worktree) or a
-/// store link file (a linked one). Worktrees are a local-backend
+/// A worktree is one world the store backs up, opened from a store
+/// location: the store root itself (the main worktree) or a store link
+/// file (a linked one). Worktrees are a local-backend
 /// feature; the backend-neutral layers know nothing of them.
 #[derive(Debug, Subcommand)]
 pub enum WorktreeCommand {
@@ -300,7 +300,7 @@ fn non_empty_value(s: &str) -> Result<String, String> {
 
 /// `worktree remove` arguments, mirroring `git worktree remove [-f] <worktree>`.
 /// The positional is the store location the worktree opens (its store link
-/// file), the same spelling `--store` accepts for it.
+/// file), in any spelling `--store` accepts for it.
 #[derive(Debug, clap::Args)]
 pub struct WorktreeRemoveArgs {
     /// Store location of the worktree to remove: the store link file a

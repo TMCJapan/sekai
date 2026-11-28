@@ -57,7 +57,7 @@ sekai worktree remove ./world-2/.sekai
 ```
 
 The positional is the store location the worktree opens (its store link
-file), the same spelling `--store` accepts for it. Removal deletes that
+file), in any spelling `--store` accepts for it. Removal deletes that
 link and the registration only — the world directory the worktree backs
 up is left untouched.
 

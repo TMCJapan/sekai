@@ -38,6 +38,21 @@ fn stdout(output: &Output) -> &str {
     std::str::from_utf8(&output.stdout).unwrap()
 }
 
+/// The location a store link at `link` is listed at: its parent directory
+/// resolved through the filesystem (macOS temp dirs sit behind a symlink),
+/// without the verbatim prefix Windows resolves to.
+fn link_key(link: impl AsRef<Path>) -> String {
+    let link = link.as_ref();
+    let parent = std::fs::canonicalize(link.parent().unwrap()).unwrap();
+    let parent = parent.to_str().unwrap();
+    let parent = parent.strip_prefix(r"\\?\").unwrap_or(parent);
+    Path::new(parent)
+        .join(link.file_name().unwrap())
+        .to_str()
+        .unwrap()
+        .to_owned()
+}
+
 fn init(root: impl AsRef<Path>) -> std::path::PathBuf {
     let store = root.as_ref().join("store");
     stdout(&sekai(&store, &["init"]));
@@ -138,13 +153,10 @@ async fn lists_linked_worktrees_main_first() {
     drop(opened);
 
     let main_path = std::path::absolute(&store).unwrap();
-    let aaa_path = std::path::absolute(aaa.join(".sekai")).unwrap();
-    let zzz_path = std::path::absolute(zzz.join(".sekai")).unwrap();
-    let (main_path, aaa_path, zzz_path) = (
-        main_path.to_str().unwrap(),
-        aaa_path.to_str().unwrap(),
-        zzz_path.to_str().unwrap(),
-    );
+    let main_path = main_path.to_str().unwrap();
+    let aaa_path = link_key(aaa.join(".sekai"));
+    let zzz_path = link_key(zzz.join(".sekai"));
+    let (aaa_path, zzz_path) = (aaa_path.as_str(), zzz_path.as_str());
     // Git pads each path toward the widest byte length plus two spaces
     // at the widest, and each HEAD toward the widest abbreviation (7
     // here: the store holds one commit) plus one space.
@@ -259,15 +271,14 @@ async fn removes_a_linked_worktree_and_leaves_the_world() {
     let root = tempdir("worktree-remove");
     let store = init(root.path());
     let link = linked_worktree(&store, root.path()).await;
-    let abs = std::path::absolute(&link).unwrap();
-    let abs = abs.to_str().unwrap();
+    let key = link_key(&link);
 
     assert_eq!(
         stdout(&sekai(
             &store,
             &["worktree", "remove", link.to_str().unwrap()]
         )),
-        format!("removed worktree {abs}\n")
+        format!("removed worktree {key}\n")
     );
     assert!(!link.exists());
     // The world the worktree backed up is untouched.
@@ -288,7 +299,7 @@ async fn remove_reports_the_removed_path_as_json() {
     let root = tempdir("worktree-remove-json");
     let store = init(root.path());
     let link = linked_worktree(&store, root.path()).await;
-    let abs = std::path::absolute(&link).unwrap();
+    let key = link_key(&link);
 
     let envelope: serde_json::Value = serde_json::from_str(stdout(&sekai(
         &store,
@@ -297,7 +308,7 @@ async fn remove_reports_the_removed_path_as_json() {
     .unwrap();
     assert_eq!(envelope["command"], "worktree");
     assert_eq!(envelope["status"], "ok");
-    assert_eq!(envelope["result"]["path"], abs.to_str().unwrap());
+    assert_eq!(envelope["result"]["path"], key);
 }
 
 /// `--force` is inert (sekai worktrees carry no dirty or locked state) but

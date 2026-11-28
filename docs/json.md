@@ -393,8 +393,10 @@ as Git lists them. Worktrees are a local-backend feature (ADR-0038).
  {"path": "/srv/world-2/.sekai", "commit": null, "branch": "refs/heads/feature", "main": false}]
 ```
 
-`path` is the absolute store location the worktree opens (the store
-root itself for the main one, a store link file for a linked one).
+`path` is the absolute store location the worktree opens: the store
+root as this invocation opened it for the main one, and the store link
+file for a linked one, with the link's parent directory resolved through
+the filesystem (symlinks and `..`).
 `commit` is the HEAD commit's full ID, or `null` while unborn - a HEAD
 on a branch with no commits yet, as in `branch`. `branch` is the full
 refname HEAD sits on, or `null` when HEAD is detached. `main` is `true`
@@ -413,7 +415,7 @@ for unborn HEADs. `--json` is exclusive with `--porcelain`/`-z`.
 
 `path` is the absolute store location the removed worktree was keyed by,
 the same identity `worktree list` reports. The positional `<worktree>` is
-the store location the worktree opens (its store link file), the same
+the store location the worktree opens (its store link file), in any
 spelling `--store` accepts for it. Removal deletes that store link and the
 registration row only; the world directory the worktree backs up is left
 untouched (add never materialized it, so remove never deletes it). A link

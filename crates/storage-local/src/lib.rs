@@ -109,10 +109,19 @@ pub fn local_store_exists(root: impl AsRef<Path>) -> bool {
 }
 
 impl LocalStore {
-    /// The absolute root this handle opened: the key of the store's own
-    /// (main) worktree row, so a caller can tell it from the linked ones.
+    /// The absolute root this handle opened, the location the store's own
+    /// (main) worktree is listed at.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Close the store and wait until every file it holds is released, so
+    /// the store can be moved or deleted right after, even on Windows.
+    ///
+    /// The sled keyspaces release their files when their last handle drops;
+    /// only the SQLite connection needs an explicit close.
+    pub async fn close(self) {
+        self.meta.close().await;
     }
 
     /// Resolve the location the caller named to the store root.
