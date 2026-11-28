@@ -4,11 +4,11 @@
 //! before the metadata commit by the caller. The pool has one connection.
 
 use std::collections::{BTreeMap, BTreeSet, btree_map::Entry};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use sekai_storage::{
-    DimNode, MetaStore, RegionNode, RootNode, StorageError, TreeNodes, commit_hash,
+    DimNode, MetaStore, RegionNode, RootNode, StorageError, TreeNodes, commit_hash, io_error,
 };
 use sekai_util::{
     ApplyOutcome, Commit, CommitEntry, CommitId, CommitRef, DEFAULT_REF_NAME, DimHash, Dimension,
@@ -20,6 +20,8 @@ use sqlx::sqlite::{
     SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqlitePoolOptions, SqliteSynchronous,
 };
 
+use crate::worktree::store_key;
+
 const SCHEMA: &str = include_str!("../schema/sqlite.sql");
 
 /// Map a backend failure into the shared storage error.
@@ -28,13 +30,18 @@ fn db_err(source: sqlx::Error) -> StorageError {
 }
 
 /// SQLite-backed commit metadata: the history graph and snapshot trees.
+///
+/// Opened from one worktree, whose HEAD [`MetaStore::head`] reads: the
+/// linked worktree of the absolute store link in `link`, or the store's
+/// own (main) worktree when `link` is `None`.
 #[derive(Debug, Clone)]
 pub struct SqliteMeta {
     pool: SqlitePool,
+    link: Option<PathBuf>,
 }
 
 /// One `worktrees` row: the key of a linked worktree's store link
-/// (`store_key`), or `None` for the store's own (main) worktree.
+/// ([`store_key`]), or `None` for the store's own (main) worktree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WorktreeRow {
     pub(crate) link: Option<String>,
@@ -82,12 +89,29 @@ async fn has_schema<'c>(executor: impl sqlx::SqliteExecutor<'c>) -> Result<bool,
 }
 
 impl SqliteMeta {
-    /// Open the database at `path`, creating the schema when missing.
+    /// Open the database at `path` from the worktree of the store link
+    /// `link`, or from the store's own worktree when `link` is `None`,
+    /// creating the schema when missing.
     ///
     /// The parent directory must already exist; this type never creates it
     /// (directory layout is the store's concern). Opening while another
     /// opener creates the schema waits for it, up to the busy timeout.
-    pub(crate) async fn open(path: impl AsRef<Path>) -> Result<Self, StorageError> {
+    ///
+    /// The worktree is the one whose HEAD [`MetaStore::head`] reads. A
+    /// link is made absolute here, against the working directory of the
+    /// open, and keyed the way worktree rows are only when HEAD is read: a
+    /// link that cannot be a key (not UTF-8) still serves every read that
+    /// never needs HEAD. The worktree need not be registered yet either.
+    pub(crate) async fn open(
+        path: impl AsRef<Path>,
+        link: Option<PathBuf>,
+    ) -> Result<Self, StorageError> {
+        let link = link
+            .map(|link| {
+                std::path::absolute(&link)
+                    .map_err(|source| io_error(link.display().to_string(), source))
+            })
+            .transpose()?;
         let options = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)
@@ -116,7 +140,7 @@ impl SqliteMeta {
             }
             tx.commit().await.map_err(db_err)?;
         }
-        Ok(Self { pool })
+        Ok(Self { pool, link })
     }
 
     /// Close the database and wait until its file handles are released.
@@ -162,6 +186,11 @@ impl SqliteMeta {
             map.entry(child).or_default().push(parent);
         }
         Ok(map)
+    }
+
+    /// The row key of the worktree this handle was opened from.
+    fn opened_key(&self) -> Result<Option<String>, StorageError> {
+        self.link.as_deref().map(store_key).transpose()
     }
 
     /// Record a linked worktree under `path`, the key `store_key`
@@ -334,6 +363,39 @@ fn decode_worktree(row: &sqlx::sqlite::SqliteRow) -> Result<WorktreeRow, Storage
         }
     };
     Ok(WorktreeRow { link, head })
+}
+
+/// The HEAD of the worktree keyed by `link` (`None` for the main one),
+/// read in `executor`'s snapshot. A link no worktree carries is a store
+/// opened from somewhere it does not know; init always registers the main
+/// worktree, so its absence is corruption.
+async fn read_head<'c>(
+    executor: impl sqlx::SqliteExecutor<'c>,
+    link: Option<&str>,
+) -> Result<Head, StorageError> {
+    // `IS` matches `NULL` to `NULL`, so one query serves both kinds.
+    let row = sqlx::query("SELECT path, head_ref, head_commit FROM worktrees WHERE path IS ?")
+        .bind(link)
+        .fetch_optional(executor)
+        .await
+        .map_err(db_err)?;
+    let Some(row) = row else {
+        return Err(link.map_or_else(
+            || {
+                StorageError::backend(
+                    "worktree",
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "the store has no main worktree row",
+                    ),
+                )
+            },
+            |link| StorageError::UnknownWorktree {
+                location: link.to_owned(),
+            },
+        ));
+    };
+    decode_worktree(&row).map(|worktree| worktree.head)
 }
 
 /// One scope's columns, gathered from its joined area rows.
@@ -1019,6 +1081,10 @@ impl sekai_storage::MetaStore for SqliteMeta {
         }
     }
 
+    async fn head(&self) -> Result<Head, StorageError> {
+        read_head(&self.pool, self.opened_key()?.as_deref()).await
+    }
+
     async fn active_ref(&self) -> Result<Option<CommitRef>, StorageError> {
         // The target commit must exist: the foreign key keeps it honest,
         // and a dangling target is corruption, not an unborn ref.
@@ -1202,16 +1268,14 @@ mod tests {
     }
 
     async fn memory_meta() -> SqliteMeta {
-        SqliteMeta::open(&std::path::PathBuf::from(":memory:"))
-            .await
-            .unwrap()
+        SqliteMeta::open(":memory:", None).await.unwrap()
     }
 
     #[tokio::test]
     async fn concurrent_openers_create_the_schema_once() {
         let (dir, _guard) = tempdir("concurrent-open");
         let path = dir.join("meta.sqlite");
-        let (a, b) = tokio::join!(SqliteMeta::open(&path), SqliteMeta::open(&path));
+        let (a, b) = tokio::join!(SqliteMeta::open(&path, None), SqliteMeta::open(&path, None));
         let a = a.unwrap();
         let _b = b.unwrap();
         let active = a.active_ref().await.unwrap().unwrap();
@@ -1269,7 +1333,7 @@ mod tests {
     async fn activating_a_ref_refuses_a_dangling_target() {
         let (dir, _guard) = tempdir("dangling-target");
         let path = dir.join("meta.sqlite");
-        let mut meta = SqliteMeta::open(&path).await.unwrap();
+        let mut meta = SqliteMeta::open(&path, None).await.unwrap();
         let main = branch(DEFAULT_REF_NAME);
         let feature = branch("feature");
         let root = meta
@@ -1371,11 +1435,7 @@ mod tests {
     /// The key a linked worktree row carries for the link at `path`,
     /// absolute on every platform (`/x` resolves to `C:\x` on Windows).
     fn key(path: impl AsRef<Path>) -> String {
-        std::path::absolute(path)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_owned()
+        store_key(path).unwrap()
     }
 
     /// A linked worktree row as the store keeps it.
@@ -1393,6 +1453,72 @@ mod tests {
 
     fn on_branch(raw: &str) -> Head {
         Head::Branch(RefName::parse(raw).unwrap())
+    }
+
+    #[tokio::test]
+    async fn open_keys_a_link_as_worktree_rows_are_keyed() {
+        // A relative spelling finds the row its absolute key carries.
+        let link = Path::new("worlds/a/.sekai");
+        let meta = SqliteMeta::open(":memory:", Some(link.to_path_buf()))
+            .await
+            .unwrap();
+        meta.add_worktree(&key(link), on_branch("feature"))
+            .await
+            .unwrap();
+        assert_eq!(meta.head().await.unwrap(), on_branch("feature"));
+    }
+
+    #[tokio::test]
+    async fn the_root_opens_the_main_worktree_whatever_links_exist() {
+        let meta = memory_meta().await;
+        meta.init_worktree().await.unwrap();
+        meta.add_worktree(&key("/worlds/a/.sekai"), on_branch("feature"))
+            .await
+            .unwrap();
+        assert_eq!(meta.head().await.unwrap(), on_branch(DEFAULT_REF_NAME));
+    }
+
+    #[tokio::test]
+    async fn a_missing_main_worktree_row_is_corruption() {
+        let meta = memory_meta().await;
+        let err = meta.head().await.unwrap_err();
+        assert!(
+            matches!(
+                &err,
+                StorageError::Backend {
+                    backend: "worktree",
+                    ..
+                }
+            ),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unregistered_link_has_no_head() {
+        let link = Path::new("/stray.sekai");
+        let meta = SqliteMeta::open(":memory:", Some(link.to_path_buf()))
+            .await
+            .unwrap();
+        assert!(
+            matches!(meta.head().await, Err(StorageError::UnknownWorktree { location }) if location == key(link))
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_location_that_cannot_be_a_key_still_serves_reads() {
+        use std::os::unix::ffi::OsStrExt as _;
+        let link = Path::new(std::ffi::OsStr::from_bytes(b"/st\xffore.sekai"));
+        let mut meta = SqliteMeta::open(":memory:", Some(link.to_path_buf()))
+            .await
+            .unwrap();
+        let first = meta.create_commit(1_000, &[]).await.unwrap();
+        assert!(meta.lookup_commit(first).await.unwrap().is_some());
+        assert!(matches!(
+            meta.head().await.unwrap_err(),
+            StorageError::Backend { .. }
+        ));
     }
 
     #[tokio::test]
@@ -1510,7 +1636,7 @@ mod tests {
     async fn a_corrupt_worktree_head_row_fails_loudly() {
         let (dir, _guard) = tempdir("corrupt-head");
         let path = dir.join("meta.sqlite");
-        let mut meta = SqliteMeta::open(&path).await.unwrap();
+        let mut meta = SqliteMeta::open(&path, None).await.unwrap();
         let first = meta.apply_commit(1_000, &[], &[]).await.unwrap();
         meta.add_worktree(&key("/worlds/main"), Head::Detached(first))
             .await
@@ -1677,7 +1803,7 @@ mod tests {
     async fn a_corrupt_ref_row_fails_loudly() {
         let (dir, _guard) = tempdir("corrupt-ref");
         let path = dir.join("meta.sqlite");
-        let meta = SqliteMeta::open(&path).await.unwrap();
+        let meta = SqliteMeta::open(&path, None).await.unwrap();
         // Names are re-validated on decode: a row the schema no longer
         // accepts is corruption, never a new ref name.
         sqlx::query(

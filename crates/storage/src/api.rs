@@ -95,6 +95,12 @@ pub enum StorageError {
         /// Ref that was asked for.
         name: String,
     },
+    /// The store was opened from a location no worktree is registered
+    /// at, so it has no HEAD.
+    UnknownWorktree {
+        /// The location the store was opened from.
+        location: String,
+    },
     /// The store has no active ref, so a new commit has nowhere to land.
     ///
     /// Field-less on purpose: the condition is store-wide, not tied to a
@@ -177,6 +183,9 @@ impl fmt::Display for StorageError {
             Self::RefExists { name } => write!(f, "ref already exists: {name}"),
             Self::ActiveRefProtected { name } => {
                 write!(f, "the active ref is protected: {name}")
+            }
+            Self::UnknownWorktree { location } => {
+                write!(f, "no worktree of this store is registered at {location}")
             }
             Self::NoActiveRef => {
                 f.write_str("store has no active ref: a new commit has nowhere to hang from")

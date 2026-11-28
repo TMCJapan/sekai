@@ -73,7 +73,7 @@ impl SekaiStoreOpener for LocalStore {
         std::fs::create_dir_all(root)
             .map_err(|source| io_error(root.display().to_string(), source))?;
         version::init(root)?;
-        let store = Self::connect(root).await?;
+        let store = Self::connect(root, None).await?;
         store.init_worktree().await?;
         Ok(store)
     }
@@ -89,15 +89,23 @@ impl SekaiStoreOpener for LocalStore {
     /// The location may also be a plain file instead of a directory: a store
     /// link whose content names the real root, so several worlds can share
     /// one store. Only open follows a link; init never does.
+    ///
+    /// The location decides the worktree whose HEAD this store commits on:
+    /// a link opens its linked worktree, the root (however it is spelled)
+    /// the store's own.
     async fn open(path: impl AsRef<Self::Path>) -> Result<Self, StorageError> {
-        let root = Self::resolve_root(path.as_ref())?;
+        let path = path.as_ref();
+        let (root, link) = Self::link_target(path)?.map_or_else(
+            || (path.to_path_buf(), None),
+            |root| (root, Some(path.to_path_buf())),
+        );
         if !Self::markers_present(&root) {
             return Err(StorageError::StoreMissing {
                 path: root.display().to_string(),
             });
         }
         version::check(&root)?;
-        Self::connect(&root).await
+        Self::connect(&root, link).await
     }
 }
 
@@ -124,7 +132,8 @@ impl LocalStore {
         self.meta.close().await;
     }
 
-    /// Resolve the location the caller named to the store root.
+    /// The store root a store link at `path` names, or `None` when `path`
+    /// is no link and so is the root itself.
     ///
     /// A directory (or a path that does not exist) is the root itself. A
     /// plain file is a store link: its content is the real root's path, so
@@ -132,10 +141,10 @@ impl LocalStore {
     /// target resolves against the link's parent directory, keeping the
     /// link valid when the whole folder moves; the link is followed once,
     /// never chained.
-    fn resolve_root(path: impl AsRef<Path>) -> Result<PathBuf, StorageError> {
+    fn link_target(path: impl AsRef<Path>) -> Result<Option<PathBuf>, StorageError> {
         let path = path.as_ref();
         if !path.is_file() {
-            return Ok(path.to_path_buf());
+            return Ok(None);
         }
         let text = std::fs::read_to_string(path)
             .map_err(|source| io_error(path.display().to_string(), source))?;
@@ -152,7 +161,7 @@ impl LocalStore {
         } else {
             path.parent().unwrap_or_else(|| Path::new(".")).join(target)
         };
-        Ok(root)
+        Ok(Some(root))
     }
 
     /// Each component's existence marker, checked without opening (and
@@ -167,15 +176,16 @@ impl LocalStore {
     }
     /// Attach the metadata, blob, and cache adapters to an existing store root;
     /// the root directory must already hold `version`, `meta.sqlite`, and the
-    /// `blobs` and `cache` keyspaces. The root is made absolute, not canonical:
-    /// worktree links name it from any working directory, and the absolute
-    /// spelling is the identity every worktree key shares (`store_key`).
-    async fn connect(root: impl AsRef<Path>) -> Result<Self, StorageError> {
+    /// `blobs` and `cache` keyspaces. The root is made absolute so worktree
+    /// links name it from any working directory. `link` is the store link
+    /// the caller opened, the worktree the metadata commits on; `None` is
+    /// the store's own.
+    async fn connect(root: impl AsRef<Path>, link: Option<PathBuf>) -> Result<Self, StorageError> {
         let root = std::path::absolute(root.as_ref())
             .map_err(|source| io_error(root.as_ref().display().to_string(), source))?;
         let blob = SledBlob::open(root.join("blobs")).await?;
         let cache = SledCache::open(root.join("cache")).await?;
-        let meta = SqliteMeta::open(root.join("meta.sqlite")).await?;
+        let meta = SqliteMeta::open(root.join("meta.sqlite"), link).await?;
         Ok(Self {
             root,
             meta,

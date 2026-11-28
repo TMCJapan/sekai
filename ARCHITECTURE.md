@@ -403,8 +403,13 @@ re-initialization keeps that row and its HEAD, so no separate world
 registration exists. Worktrees are a local-backend feature: they name
 host filesystem paths, so `sekai-storage-local` owns them alone and the
 backend-neutral layers know nothing about them
-([ADR-0038](docs/adr/0038-worktrees-local-only.md)). Commits still land
-on the active ref; worktree HEADs take over that role in a later change.
+([ADR-0038](docs/adr/0038-worktrees-local-only.md)). Those layers can
+still read HEAD: `MetaStore::head()` returns the HEAD of the worktree the
+store was opened from, and the backend alone maps an opened store to its
+worktree (`LocalStore::open` opens the main worktree from the root and
+a linked worktree from its store link). A store opened through a link no
+worktree is registered at has no HEAD. Commits still land on the active
+ref; worktree HEADs take over that role in a later change.
 
 A new commit continues the target of the active ref - the trait rejects
 one whose parents omit it - and the active ref moves onto the new commit

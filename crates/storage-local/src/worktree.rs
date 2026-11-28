@@ -185,13 +185,13 @@ fn worktree_refusal(message: String) -> StorageError {
 /// The key a linked worktree row carries for the store link at `path`:
 /// the link's parent directory resolved through the filesystem
 /// (symlinks, `..`, and redundant separators), joined with the link's own
-/// file name. Registration and removal key a link through this one rule,
-/// so any spelling of the same link finds the same row. The link
+/// file name. Registration and every open key a link through this one
+/// rule, so any spelling of the same link finds the same row. The link
 /// itself is not resolved: it is a file this store owns, not an alias.
 ///
 /// A location that is not valid UTF-8 fails loudly instead of storing a
 /// lossy path.
-fn store_key(path: impl AsRef<Path>) -> Result<String, StorageError> {
+pub(crate) fn store_key(path: impl AsRef<Path>) -> Result<String, StorageError> {
     let path = path.as_ref();
     let absolute =
         std::path::absolute(path).map_err(|source| io_error(path.display().to_string(), source))?;
