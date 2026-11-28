@@ -390,9 +390,11 @@ one active ref, `main`, unborn.
 The store keys refs by the full Git refname (`refs/heads/main`); commands
 and JSON show the short name (`main`).
 
-A worktree is one world the store backs up, keyed by the absolute store
-location it opens: the store root itself for the store's own (main)
-worktree, a store link file for a linked one. Each worktree records a
+A worktree is one world the store backs up. The store's own (main)
+worktree is the store root itself and stores no path, so it follows the
+root under every spelling (a trailing separator, `..`, a symlink) and
+across every move or copy of the store. A linked worktree is keyed by
+the absolute location of its store link file. Each worktree records a
 HEAD, which names a branch (born or unborn) or holds a commit directly
 (detached). A branch is the HEAD of at most one worktree. `sekai init`
 registers the store's own worktree with HEAD unborn on `main`; a

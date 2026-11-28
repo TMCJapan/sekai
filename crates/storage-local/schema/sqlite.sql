@@ -62,20 +62,25 @@ CREATE TABLE refs(
 CREATE UNIQUE INDEX idx_refs_active
     ON refs(active) WHERE active = 1;
 
--- The worktrees a store backs up, keyed by the absolute store location
--- each opens: the store root itself (the main worktree, registered at
--- init) or a store link file (a linked worktree). Each row holds its
--- own HEAD: `head_ref` names a branch (born or unborn), or
--- `head_commit` holds a commit directly (detached); exactly one is set.
--- `head_ref` is no foreign key, because a branch a HEAD names need not
--- exist yet. A branch is checked out by at most one worktree, enforced
--- by the partial index below.
+-- The worktrees a store backs up. The store's own (main) worktree,
+-- registered at init, has a NULL `path`: it is the store root, so any
+-- spelling of the root and any copy or move of the store opens it. A
+-- linked worktree is keyed by its store link file's location, its parent
+-- directory resolved through the filesystem. Each row holds its own
+-- HEAD: `head_ref` names a branch (born or unborn), or `head_commit`
+-- holds a commit directly (detached); exactly one is set. `head_ref` is
+-- no foreign key, because a branch a HEAD names need not exist yet. A
+-- branch is checked out by at most one worktree, and a store has at most
+-- one main worktree, enforced by the partial indexes below.
 CREATE TABLE worktrees(
-    path TEXT NOT NULL COLLATE BINARY PRIMARY KEY,
+    path TEXT NULL COLLATE BINARY UNIQUE,
     head_ref TEXT NULL CHECK (head_ref GLOB 'refs/heads/?*'),
     head_commit BLOB NULL REFERENCES commits(id),
     CHECK ((head_ref IS NULL) != (head_commit IS NULL))
-) WITHOUT ROWID;
+);
+
+CREATE UNIQUE INDEX idx_worktrees_main
+    ON worktrees((path IS NULL)) WHERE path IS NULL;
 
 CREATE UNIQUE INDEX idx_worktrees_head_ref
     ON worktrees(head_ref) WHERE head_ref IS NOT NULL;

@@ -393,8 +393,9 @@ as Git lists them. Worktrees are a local-backend feature (ADR-0038).
  {"path": "/srv/world-2/.sekai", "commit": null, "branch": "refs/heads/feature", "main": false}]
 ```
 
-`path` is the absolute store location the worktree opens (the store
-root itself for the main one, a store link file for a linked one).
+`path` is the absolute store location the worktree opens: the store
+root as this invocation opened it for the main one, a store link file
+for a linked one.
 `commit` is the HEAD commit's full ID, or `null` while unborn - a HEAD
 on a branch with no commits yet, as in `branch`. `branch` is the full
 refname HEAD sits on, or `null` when HEAD is detached. `main` is `true`
