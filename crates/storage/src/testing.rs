@@ -12,7 +12,7 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use sekai_util::{
     ApplyOutcome, Commit, CommitEntry, CommitId, CommitRef, DimHash, NamedScope, Ref, RefName,
-    RegionHash, RootHash, ScopeName, chunk_coord::ChunkCoord,
+    RegionHash, RootHash, ScopeName, chunk_coord::ChunkCoord, worktree::Head,
 };
 
 use crate::meta::{MetaStore, commit_hash};
@@ -60,6 +60,8 @@ pub enum MemError {
         /// Ref that was asked for.
         name: Ref,
     },
+    /// The fake was given no HEAD for the worktree it stands for.
+    UnknownWorktree,
 }
 
 /// Drive an immediately-ready future without an executor.
@@ -95,6 +97,9 @@ pub struct MemMeta {
     pub(crate) region_nodes: BTreeMap<RegionHash, RegionNode>,
     /// Refs by full refname order.
     pub(crate) refs: BTreeMap<Ref, CommitRef>,
+    /// HEAD of the worktree the fake stands for, as if opened from it;
+    /// `None` is a location no worktree is registered at.
+    pub(crate) head: Option<Head>,
     /// Named scopes by name.
     scopes: BTreeMap<ScopeName, NamedScope>,
     /// Stable local sequence per commit hash.
@@ -161,6 +166,15 @@ impl MemMeta {
             .entry(name.clone())
             .and_modify(|record| record.active = true)
             .or_insert_with(|| CommitRef::new(name.clone(), None, true, 0));
+    }
+}
+
+impl MemMeta {
+    /// Open the fake from a worktree whose HEAD is `head`. A fresh store
+    /// looks like `with_head(Head::Branch(main))`: HEAD unborn on `main`,
+    /// with no ref row.
+    pub fn with_head(&mut self, head: Head) {
+        self.head = Some(head);
     }
 }
 
@@ -461,6 +475,10 @@ impl MetaStore for MemMeta {
             return core::future::ready(Err(MemError::ActiveRefProtected { name: name.clone() }));
         }
         core::future::ready(Ok(self.refs.remove(name).is_some()))
+    }
+
+    fn head(&self) -> impl Future<Output = Result<Head, MemError>> + Send {
+        core::future::ready(self.head.clone().ok_or(MemError::UnknownWorktree))
     }
 
     fn active_ref(&self) -> impl Future<Output = Result<Option<CommitRef>, MemError>> + Send {

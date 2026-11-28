@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 use core::future::Future;
 use sekai_util::{
     ApplyOutcome, Commit, CommitEntry, CommitId, CommitRef, DimHash, NamedScope, Ref, RegionHash,
-    RootHash, ScopeName, chunk_coord::ChunkCoord, hash_bytes,
+    RootHash, ScopeName, chunk_coord::ChunkCoord, hash_bytes, worktree::Head,
 };
 
 use crate::{DimNode, RegionNode, RootNode, TreeNodes};
@@ -194,6 +194,13 @@ pub trait MetaStore {
     ///
     /// The active ref is never removed.
     fn delete_ref(&mut self, name: &Ref) -> impl Future<Output = Result<bool, Self::Error>> + Send;
+
+    /// The HEAD of the worktree this store was opened from.
+    ///
+    /// The backend owns how an opened store finds its worktree; this layer
+    /// sees no locations. Fails when the store was opened from a location
+    /// no worktree is registered at.
+    fn head(&self) -> impl Future<Output = Result<Head, Self::Error>> + Send;
 
     /// The active ref - the one new commits hang from - or `None` when the
     /// store has none.
