@@ -3,13 +3,10 @@
 //! Worktrees are a local-backend feature (ADR-0038), so listing and removal
 //! go through the opened `LocalStore` rather than an app operation.
 
-use std::collections::HashMap;
 use std::fmt::Write as _;
-use std::path::Path;
 
 use anyhow::Context as _;
-use sekai_app::Head;
-use sekai_app::{CommitId, Ref, RefName, SekaiInstance};
+use sekai_app::{CommitId, HeadState, Ref, RefName, SekaiInstance};
 use sekai_storage_local::{LocalStore, worktree::Worktree};
 use serde::Serialize;
 use unicode_width::UnicodeWidthStr as _;
@@ -52,8 +49,8 @@ async fn list(store: &str, args: &WorktreeListArgs) -> anyhow::Result<()> {
 async fn remove(store: &str, args: &WorktreeRemoveArgs) -> anyhow::Result<()> {
     let instance = SekaiInstance::<LocalStore>::open(store).await?;
     let removed = instance.store().remove_worktree(&args.worktree).await?;
-    // Worktree keys are UTF-8 by construction (`store_key`), so the lossy
-    // conversion never replaces anything.
+    // Linked worktree keys are UTF-8 by construction (`store_key`), so the
+    // lossy conversion never replaces anything.
     let path = removed.to_string_lossy().into_owned();
     if args.json {
         println!("{}", envelope_ok("worktree", &WorktreeRemoveJson { path })?);
@@ -73,46 +70,32 @@ struct Listed {
     main: bool,
 }
 
-/// The store's worktrees with HEADs resolved, the main one first and the
-/// rest in path order, as Git lists them. A HEAD branch with no ref row
-/// is unborn, like Git's HEAD on a branch that does not exist yet.
+/// The store's worktrees with HEADs resolved, in the store's order: the
+/// main one first and the rest in path order, as Git lists them. A HEAD
+/// branch with no ref row is unborn, like Git's HEAD on a branch that
+/// does not exist yet.
+///
+/// Each worktree's own HEAD is resolved, never the opened one's, so the
+/// listing works from a location no worktree is registered at.
 async fn listed(instance: &SekaiInstance<LocalStore>) -> anyhow::Result<Vec<Listed>> {
-    let store = instance.store();
-    let worktrees = store.worktrees().await?;
-    let branches: HashMap<RefName, Option<CommitId>> = instance
-        .list_branches()
-        .await?
-        .into_iter()
-        .map(|branch| (branch.name.name, branch.commit))
-        .collect();
-    let mut rows: Vec<Listed> = worktrees
-        .iter()
-        .map(|worktree| resolve(worktree, &branches, store.root()))
-        .collect();
-    // Rows arrive in path order; rotate the main one to the front without
-    // disturbing the order of the rest.
-    if let Some(pos) = rows.iter().position(|row| row.main) {
-        rows[..=pos].rotate_right(1);
+    let worktrees = instance.store().worktrees().await?;
+    let mut rows = Vec::with_capacity(worktrees.len());
+    for worktree in &worktrees {
+        let head = instance.resolve_head(worktree.head.clone()).await?;
+        rows.push(resolve(worktree, &head));
     }
     Ok(rows)
 }
 
-fn resolve(
-    worktree: &Worktree,
-    branches: &HashMap<RefName, Option<CommitId>>,
-    root: impl AsRef<Path>,
-) -> Listed {
-    let (commit, branch) = match &worktree.head {
-        Head::Branch(name) => (branches.get(name).copied().flatten(), Some(name.clone())),
-        Head::Detached(id) => (Some(*id), None),
-    };
+fn resolve(worktree: &Worktree, head: &HeadState) -> Listed {
     Listed {
-        // Worktree keys are UTF-8 by construction (`store_key`), so the
-        // lossy conversion never replaces anything.
+        // Linked worktree keys are UTF-8 by construction (`store_key`) and
+        // the main worktree shows the root the store was opened at, so the
+        // lossy conversion replaces nothing a registration accepted.
         path: worktree.path.to_string_lossy().into_owned(),
-        commit,
-        branch,
-        main: worktree.path == root.as_ref(),
+        commit: head.commit(),
+        branch: head.branch().cloned(),
+        main: worktree.main,
     }
 }
 
@@ -360,6 +343,30 @@ mod tests {
                 zeros = "0".repeat(64),
             )
         );
+    }
+
+    #[tokio::test]
+    async fn lists_from_a_location_no_worktree_is_registered_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = dir.path().join("store");
+        drop(SekaiInstance::<LocalStore>::init(&store).await.unwrap());
+        // A store link written by hand, never registered as a worktree.
+        let link = dir.path().join("stray.sekai");
+        std::fs::write(&link, format!("{}\n", store.display())).unwrap();
+
+        let instance = SekaiInstance::<LocalStore>::open(&link).await.unwrap();
+        let rows = listed(&instance).await.unwrap();
+        let rows: Vec<_> = rows
+            .iter()
+            .map(|row| {
+                (
+                    row.commit,
+                    row.branch.as_ref().map(RefName::as_str),
+                    row.main,
+                )
+            })
+            .collect();
+        assert_eq!(rows, [(None, Some("main"), true)]);
     }
 
     #[test]

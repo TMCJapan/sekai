@@ -1,7 +1,7 @@
 //! Branch subcommand execution, DTOs, and output rendering.
 
 use anyhow::Context as _;
-use sekai_app::CommitRef;
+use sekai_app::{ListedBranch, Ref};
 use sekai_storage_local::LocalStore;
 use serde::Serialize;
 
@@ -11,7 +11,7 @@ use crate::style::Styler;
 
 pub async fn run(store: &str, args: &BranchArgs, style: Styler) -> anyhow::Result<()> {
     let instance = sekai_app::SekaiInstance::<LocalStore>::open(store).await?;
-    let branches: Vec<CommitRef> = instance
+    let branches: Vec<ListedBranch> = instance
         .list_branches()
         .await
         .with_context(|| format!("branch list for {store} failed"))?;
@@ -29,9 +29,9 @@ pub async fn run(store: &str, args: &BranchArgs, style: Styler) -> anyhow::Resul
 /// A listed branch as Git prints it: `* ` and green for HEAD's branch,
 /// two spaces for the others. HEAD's branch is listed even while unborn
 /// (deviation: Git has no ref to list then).
-fn list_line(branch: &CommitRef, style: Styler) -> String {
-    let name = branch.name.name.as_str();
-    if branch.active {
+fn list_line(branch: &ListedBranch, style: Styler) -> String {
+    let name = branch.name.as_str();
+    if branch.head {
         format!("* {}", style.green(name))
     } else {
         format!("  {name}")
@@ -47,12 +47,12 @@ struct BranchJson {
     head: bool,
 }
 
-impl From<&CommitRef> for BranchJson {
-    fn from(branch: &CommitRef) -> Self {
+impl From<&ListedBranch> for BranchJson {
+    fn from(branch: &ListedBranch) -> Self {
         Self {
-            name: branch.name.full_name(),
+            name: Ref::branch(branch.name.clone()).full_name(),
             commit: branch.commit.map(|commit| commit.to_string()),
-            head: branch.active,
+            head: branch.head,
         }
     }
 }
@@ -60,15 +60,14 @@ impl From<&CommitRef> for BranchJson {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sekai_app::{CommitId, Ref, RefName};
+    use sekai_app::{CommitId, RefName};
 
-    fn branch(name: &str, commit: Option<CommitId>, active: bool) -> CommitRef {
-        CommitRef::new(
-            Ref::branch(RefName::parse(name).unwrap()),
+    fn branch(name: &str, commit: Option<CommitId>, head: bool) -> ListedBranch {
+        ListedBranch {
+            name: RefName::parse(name).unwrap(),
             commit,
-            active,
-            0,
-        )
+            head,
+        }
     }
 
     #[test]

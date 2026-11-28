@@ -4,7 +4,10 @@ mod fixtures;
 
 use fixtures::chunk_nbt;
 
-use sekai_app::DEFAULT_REF_NAME;
+use sekai_app::{
+    AppError, DEFAULT_REF_NAME, Head, HeadState, ListedBranch, Ref, RefName, Revision,
+};
+use sekai_storage::{MetaStore as _, SekaiStore as _, StorageError};
 use sekai_world_local::HostWorldTree;
 use std::path::Path;
 
@@ -49,28 +52,36 @@ async fn commit<S: sekai_app::SekaiStore>(
         .0
 }
 
+fn main_branch() -> RefName {
+    RefName::parse(DEFAULT_REF_NAME).unwrap()
+}
+
 #[tokio::test]
-async fn a_fresh_store_starts_with_one_active_ref() {
+async fn a_fresh_store_starts_unborn_on_main() {
     let root = tempdir();
     let store = root.path().join("store").to_string_lossy().into_owned();
     let instance = fixtures::init(&store).await.unwrap();
 
-    let active = instance
-        .active_ref()
-        .await
-        .unwrap()
-        .expect("a store always has an active ref");
-    assert_eq!(active.name.name.as_str(), DEFAULT_REF_NAME);
-    assert!(active.active);
-    // Unborn: the store has no commit yet.
-    assert!(active.commit.is_none());
+    assert_eq!(
+        instance.head().await.unwrap(),
+        HeadState::Unborn {
+            branch: main_branch()
+        }
+    );
     assert_eq!(instance.current_commit_id().await.unwrap(), None);
-    // Listed although unborn: the row exists.
-    assert_eq!(instance.list_branches().await.unwrap(), vec![active]);
+    // Listed although unborn.
+    assert_eq!(
+        instance.list_branches().await.unwrap(),
+        [ListedBranch {
+            name: main_branch(),
+            commit: None,
+            head: true
+        }]
+    );
 }
 
 #[tokio::test]
-async fn a_commit_hangs_from_the_active_ref() {
+async fn a_commit_lands_on_heads_branch() {
     let root = tempdir();
     let world_path = root.path().join("world");
     let mut world = HostWorldTree::new(&world_path).unwrap();
@@ -83,20 +94,25 @@ async fn a_commit_hangs_from_the_active_ref() {
     let mut instance = fixtures::init(&store).await.unwrap();
     let first = commit(&mut instance, &mut world).await;
 
-    // The active ref moved onto the new commit.
-    let active = instance
-        .active_ref()
-        .await
-        .unwrap()
-        .expect("a store always has an active ref");
-    assert_eq!(active.name.name.as_str(), DEFAULT_REF_NAME);
-    assert_eq!(active.commit, Some(first.commit));
+    assert_eq!(
+        instance.head().await.unwrap(),
+        HeadState::Attached {
+            branch: main_branch(),
+            commit: first.commit
+        }
+    );
     assert_eq!(
         instance.current_commit_id().await.unwrap(),
         Some(first.commit)
     );
-
-    assert_eq!(instance.list_branches().await.unwrap(), vec![active]);
+    assert_eq!(
+        instance.list_branches().await.unwrap(),
+        [ListedBranch {
+            name: main_branch(),
+            commit: Some(first.commit),
+            head: true
+        }]
+    );
 
     // A second commit continues it.
     let second = commit(&mut instance, &mut world).await;
@@ -104,4 +120,99 @@ async fn a_commit_hangs_from_the_active_ref() {
         instance.commit_parents(second.commit).await.unwrap(),
         vec![first.commit]
     );
+}
+
+#[tokio::test]
+async fn each_worktree_commits_on_its_own_head() {
+    let root = tempdir();
+    let world_path = root.path().join("world");
+    let mut world = HostWorldTree::new(&world_path).unwrap();
+    let store = root.path().join("store");
+    let link = root.path().join("linked.sekai");
+    write_region(
+        world_path.join("region/r.0.0.mca"),
+        &[(0, 0, chunk_nbt("marker-1"))],
+    );
+
+    let first = {
+        let mut instance = fixtures::init(&store).await.unwrap();
+        let first = commit(&mut instance, &mut world).await.commit;
+        let feature = Ref::branch(RefName::parse("feature").unwrap());
+        instance
+            .store_mut()
+            .meta_mut()
+            .create_ref(&feature, first, 0)
+            .await
+            .unwrap();
+        instance
+            .store()
+            .add_worktree(&link, Head::Branch(feature.name))
+            .await
+            .unwrap();
+        first
+    };
+
+    // Opened through its link, the linked worktree commits on `feature`.
+    write_region(
+        world_path.join("region/r.0.0.mca"),
+        &[(0, 0, chunk_nbt("marker-2"))],
+    );
+    let second = {
+        let mut linked = fixtures::open(&link).await.unwrap();
+        let second = commit(&mut linked, &mut world).await.commit;
+        let listed: Vec<_> = linked
+            .list_branches()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|listed| (listed.name.to_string(), listed.commit, listed.head))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("feature".to_owned(), Some(second), true),
+                ("main".to_owned(), Some(first), false),
+            ]
+        );
+        second
+    };
+    assert_eq!(
+        fixtures::open(&link)
+            .await
+            .unwrap()
+            .commit_parents(second)
+            .await
+            .unwrap(),
+        [first]
+    );
+
+    // The store's own worktree stayed on `main`.
+    let own = fixtures::open(&store).await.unwrap();
+    assert_eq!(own.current_commit_id().await.unwrap(), Some(first));
+}
+
+#[tokio::test]
+async fn an_unregistered_location_has_no_head() {
+    let root = tempdir();
+    let store = root.path().join("store");
+    drop(fixtures::init(&store).await.unwrap());
+    // A store link written by hand, never registered as a worktree.
+    let link = root.path().join("stray.sekai");
+    std::fs::write(&link, format!("{}\n", store.display())).unwrap();
+
+    let instance = fixtures::open(&link).await.unwrap();
+    // Every way of reading HEAD fails alike.
+    let errors = [
+        instance.head().await.map(drop),
+        instance.current_commit_id().await.map(drop),
+        instance.resolve_revision(&Revision::head()).await.map(drop),
+    ];
+    for err in errors {
+        assert!(matches!(
+            err,
+            Err(AppError::Storage(StorageError::UnknownWorktree { .. }))
+        ));
+    }
+    // Commands that never read HEAD still work.
+    assert_eq!(instance.list_commits().await.unwrap(), []);
 }

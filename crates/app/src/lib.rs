@@ -58,10 +58,14 @@ pub use diff::{ChunkDiff, DiffTimings, world_chunk_coords};
 pub use error::{AppError, Lookup, NameKind};
 pub use instance::SekaiInstance;
 pub use progress::{BuildProgress, Progress};
+pub use refs::ListedBranch;
 pub use restore::RestoreOptions;
 pub use sekai_storage::{CommitStats, SekaiStore, SekaiStoreOpener};
 pub use sekai_util::{
     Area, ChunkHash, Commit, CommitId, CommitRef, DEFAULT_REF_NAME, DimHash, Dimension, NamedScope,
     Rect, Ref, RefKind, RefName, RegionFingerprint, RegionHash, RegionKey, RegionKind, Revision,
-    RevisionBase, RootHash, Scope, ScopeName, chunk_coord::ChunkCoord, error::*, worktree::Head,
+    RevisionBase, RootHash, Scope, ScopeName,
+    chunk_coord::ChunkCoord,
+    error::*,
+    worktree::{Head, HeadState},
 };

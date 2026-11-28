@@ -264,7 +264,7 @@ async fn restore_from_an_explicit_source_leaves_head_alone() {
     let commits = instance.list_commits().await.unwrap();
     assert_eq!(commits.len(), 2);
 
-    // `HEAD~1` names the older commit; the active ref stays on the newer.
+    // `HEAD~1` names the older commit; HEAD stays on the newer.
     let older = Revision::parse("HEAD~1").unwrap();
     instance
         .restore(

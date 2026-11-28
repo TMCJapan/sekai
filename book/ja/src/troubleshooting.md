@@ -3,7 +3,7 @@
 - `no store at <path>`: ストアがまだ初期化されていません。先に `sekai init` を実行してください（`--store` を指定している場合は同じ値で）。ストアを作成できるのは `init` だけで、他のコマンドは何も作成せずに失敗します。
 - `unknown commit: <hash>`: 指定されたハッシュのコミットがこのストアに存在しません。`log` コマンドで有効な 64 文字のハッシュを確認してください。ID は内容から導出されるため、親・タイムスタンプ・差分が同一なら別のストアでも同じハッシュになります。
 - `you must specify path(s) to restore`: restore は git restore の pathspec と同様に選択範囲の指定が必須です。`--in` / `--region` で領域を指定するか、`--scope` で保存済みのスコープを指定してください（`--kind` のみではパスを指定したことになりません）。ワールド全体の再構築は[チェックアウト](commands/checkout.md)の役割です。
-- `no commit selected: the store is empty or the active ref is unborn`: `--source` を省略した restore のデフォルト復元元は HEAD ですが、まだ復元元のコミットが存在しません。先に `commit` を実行するか、`--source` を明示してください。
+- `no commit selected: the store is empty or HEAD is unborn`: `--source` を省略した restore のデフォルト復元元は HEAD ですが、まだ復元元のコミットが存在しません。先に `commit` を実行するか、`--source` を明示してください。
 - `blob missing from CAS: <hex>`: ストア内のデータ破損、あるいは不完全にコピーされたストアであることを示します。不完全なワールドを書き戻すことによる破損リスクを避けるため、チェックアウトは即座に中断されます。`--on-missing-blob skip-chunk`（`checkout` と `restore` で利用可能）を指定すると、影響を受けるチャンクを除外して処理を続行できます。二次バックアップからストアを復元した上で、破損の原因を調査してください。
 - `cannot derive region path for dim ...` (`UnknownRegionPath`): 配置先フォルダをワールドのレイアウトから導出できないカスタムディメンションのリージョンです。兄弟フォルダからの自動導出が機能するように、コミット元と同一のフォルダ構成を持つワールドに対して実行してください。
 - `region file r.<x>.<z>.mca ... is missing ... refuses to derive its location` (`MissingRegionFile`): `--on-missing-file error` が指定されており、コミットが復元すべきリージョンファイルが存在しない位置に復元先を推測することをポリシーが拒否していることを示します。コミット元と同一のフォルダ構成を持つワールドに対して実行するか、フラグを外して導出位置にファイルを再作成させてください。
