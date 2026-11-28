@@ -33,12 +33,12 @@ use core::time::Duration;
 use sekai_core::staging::{Assembled, Ingested, Plan, Previous, assemble};
 use sekai_platform::thread::{JobSet as _, ThreadRunner};
 use sekai_platform::time::{Clock, Timer as _};
-use sekai_storage::{BlobStore, MetaStore, RegionNode, SekaiStore};
+use sekai_storage::{BlobStore, CommitError, MetaStore, RegionNode, SekaiStore};
 use sekai_util::{ApplyOutcome, CommitEntry, CommitId, RegionKey, Scope, chunk_coord::ChunkCoord};
 use sekai_world::{Region, RegionFile, WorldTree, lock::WorldLockMode};
 
 use crate::cache::prove_regions_unchanged;
-use crate::error::{AppError, image_error, world_error};
+use crate::error::{AppError, commit_error, image_error, world_error};
 use crate::instance::{WorldGuard, WorldHandle, WorldHandleMut};
 use crate::progress::{BuildProgress, Progress};
 use crate::regions::discover_regions;
@@ -61,13 +61,13 @@ pub struct CommitReport {
 
 /// Load prior state and list the in-scope regions to ingest.
 ///
-/// The base is the target of the active ref: a new commit continues the
-/// history that ref names, not the newest commit in the store. A store
-/// without an active ref (or with an unborn one) starts a new history.
+/// The base is the commit of the opened worktree's HEAD: a new commit
+/// continues the history HEAD names, not the newest commit in the store.
+/// An unborn HEAD starts a new history.
 ///
 /// The caller must hold the world's lock (shared or exclusive) from this
-/// call through [`record_commit`]: a commit that moves the active ref in
-/// between would make the plan's base and the recorded parent disagree.
+/// call through [`record_commit`]: a commit that moves HEAD in between
+/// would make the plan's base and the recorded parent disagree.
 ///
 /// Regions outside `scope` are ignored entirely: they are neither ingested
 /// nor reported as removed. Callers must quiesce the source while reading;
@@ -82,13 +82,19 @@ async fn plan_commit<M: MetaStore>(
     meta: &M,
     discovered: &[RegionKey],
     scope: &Scope,
-) -> Result<(Previous, Plan), M::Error> {
-    let active = meta.active_ref().await?;
-    // `MetaStore::active_ref` rejects a dangling target (the trait's
-    // contract), so the lookup below always finds the commit the ref
-    // names: a `None` here is an unborn ref.
-    let base = match active.as_ref().and_then(|r| r.commit) {
-        Some(id) => meta.lookup_commit(id).await?,
+) -> Result<(Previous, Plan), CommitError<M::Error>> {
+    let head = sekai_storage::refs::head_state(meta)
+        .await
+        .map_err(CommitError::Meta)?;
+    // A born HEAD whose commit is missing is a damaged store, not an
+    // unborn HEAD: planning from the empty snapshot would add every chunk.
+    let base = match head.commit() {
+        Some(id) => Some(
+            meta.lookup_commit(id)
+                .await
+                .map_err(CommitError::Meta)?
+                .ok_or(CommitError::UnknownCommit { id })?,
+        ),
         None => None,
     };
     let mut state: BTreeMap<ChunkCoord, CommitEntry> = BTreeMap::new();
@@ -99,7 +105,8 @@ async fn plan_commit<M: MetaStore>(
             state.insert(entry.coord, *entry);
             true
         })
-        .await?;
+        .await
+        .map_err(CommitError::Meta)?;
     }
     let previous = Previous {
         commit: base,
@@ -133,9 +140,9 @@ async fn plan_commit<M: MetaStore>(
 /// metadata transaction is committed.
 ///
 /// The new commit continues the history it was planned against: its
-/// parent is `previous.commit` - the target of the active ref, which is
-/// also the base tree its changes were computed against. The active ref moves
-/// onto the new commit in the same transaction. Plan and commit must not be
+/// parent is `previous.commit` - HEAD's commit, which is also the base
+/// tree its changes were computed against. HEAD moves onto the new commit
+/// in the same transaction. Plan and commit must not be
 /// interleaved with another commit; the app holds the store's writer
 /// lock for the whole run.
 async fn record_commit<M: MetaStore>(
@@ -172,7 +179,7 @@ pub struct StatusOptions {}
 pub struct StatusReport {
     /// Nothing in scope differs from the latest commit.
     pub clean: bool,
-    /// The active ref's target the preview is measured against, if any.
+    /// HEAD's commit the preview is measured against, if any.
     ///
     /// `None` when that ref is unborn, even if the store already holds
     /// commits from an earlier history.
@@ -390,7 +397,9 @@ where
 
     let universe_started = time.timer();
     let keys: Vec<RegionKey> = regions.keys().copied().collect();
-    let (previous, plan) = plan_commit(store.meta(), &keys, scope).await?;
+    let (previous, plan) = plan_commit(store.meta(), &keys, scope)
+        .await
+        .map_err(commit_error)?;
     // The proof needs the discovered handles, so it runs before the ingest
     // list takes them out of the map.
     let proven = match previous.commit.as_ref().filter(|_| dry_run) {
@@ -830,7 +839,7 @@ mod tests {
     use super::*;
     use sekai_core::staging::stage_present;
     use sekai_storage::testing::{MemMeta, block_on};
-    use sekai_util::{Area, ChunkHash, Dimension, Rect, Ref, RefName, RegionKind};
+    use sekai_util::{Area, ChunkHash, Dimension, Rect, Ref, RefName, RegionKind, worktree::Head};
 
     const OVER: Dimension = Dimension::OVERWORLD;
     const NETHER: Dimension = Dimension::NETHER;
@@ -852,15 +861,15 @@ mod tests {
         ChunkCoord::new(NETHER, REGION, x, z)
     }
 
-    /// The store's active ref: new commits hang from it.
+    /// The branch a fresh store's HEAD names.
     fn main_ref() -> RefName {
         RefName::parse("main").unwrap()
     }
 
-    /// A fake store with one active ref, the way a fresh store looks.
+    /// A fake store the way a fresh one looks: HEAD unborn on `main`.
     fn store_with_ref() -> MemMeta {
         let mut meta = MemMeta::default();
-        meta.with_active_ref(&main_ref());
+        meta.with_head(Head::Branch(main_ref()));
         meta
     }
 
@@ -876,12 +885,21 @@ mod tests {
     }
 
     #[test]
-    fn a_new_commit_continues_the_active_ref() {
+    fn a_missing_head_commit_is_reported_not_planned_as_unborn() {
+        let mut meta = MemMeta::default();
+        let missing = CommitId([9; 32]);
+        meta.with_head(Head::Detached(missing));
+        let err = block_on(plan_commit(&meta, &[key(0, 0)], &Scope::World)).unwrap_err();
+        assert!(matches!(err, CommitError::UnknownCommit { id } if id == missing));
+    }
+
+    #[test]
+    fn a_new_commit_continues_heads_branch() {
         let mut meta = store_with_ref();
         let main = main_ref();
         let discovered = [key(0, 0)];
 
-        // The active ref is unborn: the commit starts a history.
+        // HEAD is unborn: the commit starts a history.
         let (previous, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
         assert!(previous.commit.is_none());
         let staged = assemble(
@@ -895,15 +913,17 @@ mod tests {
             &Scope::World,
         );
         let first = block_on(record_commit(&mut meta, &previous, &staged, 1_000)).unwrap();
-        // The ref moved onto the new commit.
-        let active = block_on(meta.active_ref()).unwrap().unwrap();
-        assert_eq!(active.commit, Some(first.commit));
+        // HEAD's branch moved onto the new commit.
+        let born = block_on(meta.lookup_ref(&Ref::branch(main.clone())))
+            .unwrap()
+            .unwrap();
+        assert_eq!(born.commit, Some(first.commit));
 
-        // A second ref at the same commit forks the history: the next
-        // commit continues the ref that is active.
-        let feature = Ref::branch(RefName::parse("feature").unwrap());
-        block_on(meta.create_ref(&feature, first.commit, 1_500)).unwrap();
-        block_on(meta.activate_ref(&feature)).unwrap();
+        // A second branch at the same commit forks the history: the next
+        // commit continues the branch HEAD names.
+        let feature = RefName::parse("feature").unwrap();
+        block_on(meta.create_ref(&Ref::branch(feature.clone()), first.commit, 1_500)).unwrap();
+        meta.with_head(Head::Branch(feature));
 
         let (previous, plan) = block_on(plan_commit(&meta, &discovered, &Scope::World)).unwrap();
         assert_eq!(previous.commit.as_ref().map(|c| c.id), Some(first.commit));

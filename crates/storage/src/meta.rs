@@ -127,14 +127,16 @@ pub trait MetaStore {
     /// transaction as the commit row. Unchanged subtrees are shared by hash
     /// and not re-inserted. The new commit continues `parents`; an empty
     /// list starts a history. Recording a commit whose hash already exists
-    /// is idempotent: the existing ID is returned, while the active ref
-    /// still moves onto that commit.
+    /// is idempotent: the existing ID is returned, while HEAD still moves
+    /// onto that commit.
     ///
-    /// The new commit must continue the active ref's target: when the ref is
-    /// born, `parents` includes its commit, and backends reject a mismatch
-    /// instead of silently forking the ref onto another history. The active
-    /// ref moves onto the new commit in the same transaction. A store
-    /// without an active ref has nowhere to put the commit and fails.
+    /// The commit lands on [`Self::head`]. It must continue HEAD's commit:
+    /// when HEAD is born, `parents` includes that commit, and backends
+    /// reject a mismatch instead of silently forking HEAD onto another
+    /// history. HEAD moves onto the new commit in the same transaction: a
+    /// branch HEAD names moves (an unborn one is created), and a detached
+    /// HEAD moves itself. A store opened from no worktree has no HEAD and
+    /// writes nothing.
     ///
     /// Referenced blobs must already be flushed to CAS.
     fn commit_tree(
@@ -169,10 +171,10 @@ pub trait MetaStore {
     /// Point the existing ref `name` at `commit`, keeping its active flag
     /// and creation time.
     ///
-    /// Fails when `name` or `commit` does not exist, and when `name` is the
-    /// active ref: only a commit ([`Self::commit_tree`] or
-    /// [`Self::apply_commit_incremental`]) moves the active ref, so that its
-    /// target always continues the history new commits hang from.
+    /// Fails when `name` or `commit` does not exist, and when `name` is any
+    /// worktree's HEAD, unborn too: only a commit ([`Self::commit_tree`]
+    /// or [`Self::apply_commit_incremental`]) moves the branch HEAD names,
+    /// so that it always continues the history its worktree records.
     fn move_ref(
         &mut self,
         name: &Ref,
@@ -192,18 +194,20 @@ pub trait MetaStore {
 
     /// Remove `name`. Returns whether a ref was removed.
     ///
-    /// The active ref is never removed.
+    /// A branch that is any worktree's HEAD is never removed, unborn too;
+    /// the refusal comes before the lookup, as Git's does.
     fn delete_ref(&mut self, name: &Ref) -> impl Future<Output = Result<bool, Self::Error>> + Send;
 
-    /// The HEAD of the worktree this store was opened from.
+    /// The HEAD of the worktree this store was opened from: where new
+    /// commits land.
     ///
     /// The backend owns how an opened store finds its worktree; this layer
     /// sees no locations. Fails when the store was opened from a location
     /// no worktree is registered at.
     fn head(&self) -> impl Future<Output = Result<Head, Self::Error>> + Send;
 
-    /// The active ref - the one new commits hang from - or `None` when the
-    /// store has none.
+    /// The active ref, or `None` when the store has none. Commits no
+    /// longer read or move it; it remains until the flag is dropped.
     fn active_ref(&self) -> impl Future<Output = Result<Option<CommitRef>, Self::Error>> + Send;
 
     /// Make `name` the active ref. The name and its non-`None` target must

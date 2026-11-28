@@ -1,9 +1,9 @@
 //! Ref objects: the store's named, movable pointers to commits.
 //!
-//! A ref names a commit and moves with the history it names. Exactly one
-//! ref is active - the one new commits hang from. Each worktree's HEAD
-//! names a branch (or holds a commit). Reads here are pure lookups; the
-//! mutations live in [`MetaStore`] and the app layer.
+//! A ref names a commit and moves with the history it names. Each
+//! worktree's HEAD names a branch (or holds a commit), and new commits land
+//! on the HEAD of the worktree the store was opened from. Reads here are
+//! pure lookups; the mutations live in [`MetaStore`] and the app layer.
 
 use alloc::vec::Vec;
 
