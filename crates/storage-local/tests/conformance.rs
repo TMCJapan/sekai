@@ -673,6 +673,7 @@ async fn add_worktree_writes_a_link_open_follows() {
     drop(store);
     let store = LocalStore::open(&link).await.unwrap();
     assert_eq!(store.worktrees().await.unwrap(), expected);
+    assert_eq!(store.meta().head().await.unwrap(), on_branch("feature"));
 }
 
 /// Registering a worktree never clobbers what is already at the location,
@@ -855,6 +856,7 @@ async fn linked_worktree_keys_resolve_symlinks() {
     for link in [alias.join("world/.sekai"), real.join("world/.sekai")] {
         let store = LocalStore::open(&link).await.unwrap();
         assert_eq!(store.worktrees().await.unwrap(), expected);
+        assert_eq!(store.meta().head().await.unwrap(), on_branch("feature"));
     }
 }
 
@@ -896,10 +898,45 @@ async fn a_link_names_its_worktree_under_any_spelling() {
     }
 }
 
+/// Every spelling of a linked worktree's store link opens that worktree:
+/// relative, with `.` and `..` components, or through a symlinked folder.
+#[tokio::test]
+async fn a_link_opens_its_worktree_under_any_spelling() {
+    let (base, _guard) = tempdir("worktree-link-opens");
+    let store = init(base.join("store")).await;
+    let world = base.join("world");
+    std::fs::create_dir_all(&world).unwrap();
+    store
+        .add_worktree(world.join(".sekai"), on_branch("feature"))
+        .await
+        .unwrap();
+    drop(store);
+
+    let spellings = vec![
+        world.join(".").join(".sekai"),
+        world.join("..").join("world").join(".sekai"),
+    ];
+    #[cfg(unix)]
+    let spellings = {
+        let alias = base.join("alias");
+        std::os::unix::fs::symlink(&world, &alias).unwrap();
+        [spellings, vec![alias.join(".sekai")]].concat()
+    };
+    for link in &spellings {
+        let store = LocalStore::open(link).await.unwrap();
+        assert_eq!(
+            store.meta().head().await.unwrap(),
+            on_branch("feature"),
+            "{}",
+            link.display()
+        );
+    }
+}
+
 /// Every spelling of the store root opens the main worktree: with a
 /// trailing separator, `.` and `..` components, or through a symlink. Each
-/// lists it as the main worktree at the root it opened, and each refuses to
-/// remove it.
+/// lists it as the main worktree at the root it opened, refuses to remove
+/// it, and reads the main worktree's HEAD.
 #[tokio::test]
 async fn the_root_opens_the_main_worktree_under_any_spelling() {
     let (base, _guard) = tempdir("worktree-root-spelling");
@@ -922,6 +959,7 @@ async fn the_root_opens_the_main_worktree_under_any_spelling() {
         assert_eq!(store.worktrees().await.unwrap(), [main_worktree(location)]);
         let err = store.remove_worktree(location).await.unwrap_err();
         assert!(err.to_string().contains("main worktree"), "got: {err}");
+        assert_eq!(store.meta().head().await.unwrap(), on_main());
     }
 }
 
@@ -941,6 +979,7 @@ async fn a_moved_or_copied_store_keeps_its_main_worktree() {
     for root in [moved, copied] {
         let store = LocalStore::open(&root).await.unwrap();
         assert_eq!(store.worktrees().await.unwrap(), [main_worktree(&root)]);
+        assert_eq!(store.meta().head().await.unwrap(), on_main());
     }
 }
 
