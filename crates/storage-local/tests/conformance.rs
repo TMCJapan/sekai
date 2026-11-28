@@ -625,7 +625,8 @@ fn main_worktree(root: impl AsRef<Path>) -> Worktree {
     }
 }
 
-/// A linked worktree as the store lists it, keyed by its link.
+/// A linked worktree as the store lists it: keyed by the link with its
+/// parent directory resolved through the filesystem.
 fn linked_worktree(link: impl AsRef<Path>, head: Head) -> Worktree {
     Worktree {
         path: link_key(link),
@@ -634,9 +635,14 @@ fn linked_worktree(link: impl AsRef<Path>, head: Head) -> Worktree {
     }
 }
 
-/// The location a link at `link` is keyed by: its absolute spelling.
+/// The location a link at `link` is keyed by. Windows resolves to the
+/// verbatim form, which keys drop.
 fn link_key(link: impl AsRef<Path>) -> std::path::PathBuf {
-    std::path::absolute(link).unwrap()
+    let link = link.as_ref();
+    let parent = std::fs::canonicalize(link.parent().unwrap()).unwrap();
+    let parent = parent.to_str().unwrap();
+    let parent = parent.strip_prefix(r"\\?\").unwrap_or(parent);
+    Path::new(parent).join(link.file_name().unwrap())
 }
 
 /// `add_worktree` writes a store link naming the store's absolute root,
@@ -823,12 +829,12 @@ async fn init_registers_the_store_as_its_own_worktree() {
     assert_eq!(store.worktrees().await.unwrap(), expected);
 }
 
-/// Linked worktree keys keep the caller's absolute spelling, symlinks
-/// included, so opening the store through its link sees the very same
-/// rows.
+/// A linked worktree is keyed by its link with symlinks resolved, so a
+/// link registered through a symlinked folder lists at its real location
+/// and opens from either spelling.
 #[cfg(unix)]
 #[tokio::test]
-async fn linked_worktree_keys_keep_the_spelling_through_symlinks() {
+async fn linked_worktree_keys_resolve_symlinks() {
     let (base, _guard) = tempdir("worktree-symlink");
     let real = base.join("real");
     std::fs::create_dir_all(real.join("world")).unwrap();
@@ -836,19 +842,58 @@ async fn linked_worktree_keys_keep_the_spelling_through_symlinks() {
     std::os::unix::fs::symlink(&real, &alias).unwrap();
 
     let store = init(base.join("store")).await;
-    let link = alias.join("world/.sekai");
     store
-        .add_worktree(&link, on_branch("feature"))
+        .add_worktree(alias.join("world/.sekai"), on_branch("feature"))
         .await
         .unwrap();
     let expected = [
         main_worktree(base.join("store")),
-        linked_worktree(&link, on_branch("feature")),
+        linked_worktree(real.join("world/.sekai"), on_branch("feature")),
     ];
     assert_eq!(store.worktrees().await.unwrap(), expected);
     drop(store);
-    let store = LocalStore::open(&link).await.unwrap();
-    assert_eq!(store.worktrees().await.unwrap(), expected);
+    for link in [alias.join("world/.sekai"), real.join("world/.sekai")] {
+        let store = LocalStore::open(&link).await.unwrap();
+        assert_eq!(store.worktrees().await.unwrap(), expected);
+    }
+}
+
+/// Every spelling of a linked worktree's store link names its row:
+/// relative, with `.` and `..` components, or through a symlinked folder.
+#[tokio::test]
+async fn a_link_names_its_worktree_under_any_spelling() {
+    let (base, _guard) = tempdir("worktree-link-spelling");
+    let store = init(base.join("store")).await;
+    let world = base.join("world");
+    std::fs::create_dir_all(&world).unwrap();
+    let link = world.join(".sekai");
+
+    let spellings = vec![
+        world.join(".").join(".sekai"),
+        world.join("..").join("world").join(".sekai"),
+    ];
+    #[cfg(unix)]
+    let spellings = {
+        let alias = base.join("alias");
+        std::os::unix::fs::symlink(&world, &alias).unwrap();
+        [spellings, vec![alias.join(".sekai")]].concat()
+    };
+    for spelling in &spellings {
+        store
+            .add_worktree(&link, on_branch("feature"))
+            .await
+            .unwrap();
+        assert_eq!(
+            store.remove_worktree(spelling).await.unwrap(),
+            link_key(&link),
+            "{}",
+            spelling.display()
+        );
+        assert_eq!(
+            store.worktrees().await.unwrap(),
+            [main_worktree(base.join("store"))]
+        );
+    }
 }
 
 /// Every spelling of the store root opens the main worktree: with a
@@ -1042,4 +1087,40 @@ async fn remove_worktree_cleans_a_row_whose_link_vanished() {
 
     store.remove_worktree(&link).await.unwrap();
     assert_eq!(store.worktrees().await.unwrap(), [main_worktree(&real)]);
+}
+
+/// A removed world folder leaves a row that its registered spelling still
+/// removes, even when that spelling ran through a symlink: the key
+/// resolves as far as the path still exists.
+#[cfg(unix)]
+#[tokio::test]
+async fn remove_worktree_cleans_a_row_whose_world_vanished() {
+    let (base, _guard) = tempdir("worktree-remove-vanished");
+    let real = base.join("real-store");
+    let store = init(&real).await;
+    let worlds = base.join("worlds");
+    std::fs::create_dir_all(worlds.join("world")).unwrap();
+    let alias = base.join("alias");
+    std::os::unix::fs::symlink(&worlds, &alias).unwrap();
+    let link = alias.join("world").join(".sekai");
+    store
+        .add_worktree(&link, on_branch("feature"))
+        .await
+        .unwrap();
+    std::fs::remove_dir_all(worlds.join("world")).unwrap();
+
+    store.remove_worktree(&link).await.unwrap();
+    assert_eq!(store.worktrees().await.unwrap(), [main_worktree(&real)]);
+}
+
+/// The main worktree is refused under any spelling of the store root.
+#[tokio::test]
+async fn remove_worktree_refuses_the_main_worktree_under_any_spelling() {
+    let (base, _guard) = tempdir("worktree-remove-main-spelling");
+    let real = base.join("real-store");
+    let store = init(&real).await;
+    for spelling in [real.join("."), real.join("..").join("real-store")] {
+        let err = store.remove_worktree(&spelling).await.unwrap_err();
+        assert!(err.to_string().contains("main worktree"), "got: {err}");
+    }
 }

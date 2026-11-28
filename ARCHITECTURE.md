@@ -394,9 +394,10 @@ A worktree is one world the store backs up. The store's own (main)
 worktree is the store root itself and stores no path, so it follows the
 root under every spelling (a trailing separator, `..`, a symlink) and
 across every move or copy of the store. A linked worktree is keyed by
-the absolute location of its store link file. Each worktree records a
-HEAD, which names a branch (born or unborn) or holds a commit directly
-(detached). A branch is the HEAD of at most one worktree. `sekai init`
+its store link file, with the link's parent directory resolved through
+the filesystem, so every spelling of the link names the same row. Each
+worktree records a HEAD, which names a branch (born or unborn) or holds
+a commit directly (detached). A branch is the HEAD of at most one worktree. `sekai init`
 registers the store's own worktree with HEAD unborn on `main`; a
 re-initialization keeps that row and its HEAD, so no separate world
 registration exists. Worktrees are a local-backend feature: they name

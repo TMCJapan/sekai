@@ -300,7 +300,7 @@ fn non_empty_value(s: &str) -> Result<String, String> {
 
 /// `worktree remove` arguments, mirroring `git worktree remove [-f] <worktree>`.
 /// The positional is the store location the worktree opens (its store link
-/// file), the same spelling `--store` accepts for it.
+/// file), in any spelling `--store` accepts for it.
 #[derive(Debug, clap::Args)]
 pub struct WorktreeRemoveArgs {
     /// Store location of the worktree to remove: the store link file a
