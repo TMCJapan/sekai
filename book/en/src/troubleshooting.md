@@ -11,7 +11,7 @@
   like git restore's pathspec. Spell areas with `--in`/`--region` or
   name a saved scope with `--scope`; `--kind` alone spells no path.
   Whole-world rebuilding is [Checkout](commands/checkout.md)'s job.
-- `no commit selected: the store is empty or the active ref is unborn`
+- `no commit selected: the store is empty or HEAD is unborn`
   — restore without `--source` defaults to HEAD, and there is no commit
   to restore from yet. Record a `commit` first, or pass `--source`
   explicitly.

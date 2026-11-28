@@ -201,8 +201,8 @@ itself. With `--no-cache` the update pass is skipped: `cache_ms` is `0`,
 The `total_ms`/`phases` block appears only with `--timing`.
 `latest` is `null` when no commit exists yet. Counts describe what a
 commit would record; nothing is written. `latest` is the commit the
-preview is measured against - the target of the active ref, which is
-what the next commit would continue.
+preview is measured against - the commit of the opened worktree's HEAD,
+which is what the next commit would continue.
 
 ### `checkout`
 
