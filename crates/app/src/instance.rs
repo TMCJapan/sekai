@@ -26,7 +26,7 @@ use sekai_util::{Commit, CommitId, Revision};
 use sekai_world::WorldTree;
 use sekai_world::lock::{WorldLock, WorldLockMode, WorldLockState};
 
-use crate::error::{AppError, world_error};
+use crate::error::{AppError, revision_error, world_error};
 
 /// An opened store; all store-scoped operations go through this.
 ///
@@ -120,7 +120,7 @@ impl<S: SekaiStore, T: ThreadRunner, B: Clock> SekaiInstance<S, T, B> {
     pub async fn resolve_revision(&self, revision: &Revision) -> Result<CommitId, AppError> {
         sekai_storage::graph::resolve_revision(self.store.meta(), revision)
             .await
-            .map_err(AppError::Revision)
+            .map_err(revision_error)
     }
 
     /// Count fresh and effective rows for one commit.

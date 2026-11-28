@@ -900,6 +900,7 @@ async fn a_link_names_its_worktree_under_any_spelling() {
 
 /// Every spelling of a linked worktree's store link opens that worktree:
 /// relative, with `.` and `..` components, or through a symlinked folder.
+/// Each commit lands on the linked worktree's branch.
 #[tokio::test]
 async fn a_link_opens_its_worktree_under_any_spelling() {
     let (base, _guard) = tempdir("worktree-link-opens");
@@ -922,21 +923,32 @@ async fn a_link_opens_its_worktree_under_any_spelling() {
         std::os::unix::fs::symlink(&world, &alias).unwrap();
         [spellings, vec![alias.join(".sekai")]].concat()
     };
-    for link in &spellings {
-        let store = LocalStore::open(link).await.unwrap();
+    let mut parents = Vec::new();
+    for (time, link) in (1_000..).zip(&spellings) {
+        let mut store = LocalStore::open(link).await.unwrap();
         assert_eq!(
             store.meta().head().await.unwrap(),
             on_branch("feature"),
             "{}",
             link.display()
         );
+        let commit = store
+            .meta_mut()
+            .apply_commit(time, &parents, &[])
+            .await
+            .unwrap();
+        parents = vec![commit];
     }
+    let store = LocalStore::open(base.join("store")).await.unwrap();
+    let feature = sekai_util::Ref::branch(RefName::parse("feature").unwrap());
+    let landed = store.meta().lookup_ref(&feature).await.unwrap().unwrap();
+    assert_eq!(landed.commit, parents.first().copied());
 }
 
 /// Every spelling of the store root opens the main worktree: with a
 /// trailing separator, `.` and `..` components, or through a symlink. Each
 /// lists it as the main worktree at the root it opened, refuses to remove
-/// it, and reads the main worktree's HEAD.
+/// it, and lands its commit on the main worktree's branch.
 #[tokio::test]
 async fn the_root_opens_the_main_worktree_under_any_spelling() {
     let (base, _guard) = tempdir("worktree-root-spelling");
@@ -954,22 +966,39 @@ async fn the_root_opens_the_main_worktree_under_any_spelling() {
         std::os::unix::fs::symlink(&root, &alias).unwrap();
         [spellings, vec![alias]].concat()
     };
-    for location in &spellings {
-        let store = LocalStore::open(location).await.unwrap();
+    let mut parents = Vec::new();
+    for (time, location) in (1_000..).zip(&spellings) {
+        let mut store = LocalStore::open(location).await.unwrap();
         assert_eq!(store.worktrees().await.unwrap(), [main_worktree(location)]);
         let err = store.remove_worktree(location).await.unwrap_err();
         assert!(err.to_string().contains("main worktree"), "got: {err}");
         assert_eq!(store.meta().head().await.unwrap(), on_main());
+        let commit = store
+            .meta_mut()
+            .apply_commit(time, &parents, &[])
+            .await
+            .unwrap();
+        parents = vec![commit];
     }
+    let store = LocalStore::open(&root).await.unwrap();
+    let main = sekai_util::Ref::branch(RefName::default_branch());
+    let landed = store.meta().lookup_ref(&main).await.unwrap().unwrap();
+    assert_eq!(landed.commit, parents.first().copied());
 }
 
-/// A moved or copied store keeps its main worktree and its HEAD, listed at
-/// the new root.
+/// A moved or copied store keeps its main worktree: the root still opens
+/// it, commits land on it, and it lists at the new root.
 #[tokio::test]
 async fn a_moved_or_copied_store_keeps_its_main_worktree() {
     let (base, _guard) = tempdir("worktree-moved");
     let original = base.join("store");
-    init(&original).await.close().await;
+    let mut store = init(&original).await;
+    let first = store
+        .meta_mut()
+        .apply_commit(1_000, &[], &[])
+        .await
+        .unwrap();
+    store.close().await;
 
     let moved = base.join("moved");
     std::fs::rename(&original, &moved).unwrap();
@@ -977,9 +1006,14 @@ async fn a_moved_or_copied_store_keeps_its_main_worktree() {
     copy_dir(&moved, &copied);
 
     for root in [moved, copied] {
-        let store = LocalStore::open(&root).await.unwrap();
+        let mut store = LocalStore::open(&root).await.unwrap();
         assert_eq!(store.worktrees().await.unwrap(), [main_worktree(&root)]);
         assert_eq!(store.meta().head().await.unwrap(), on_main());
+        store
+            .meta_mut()
+            .apply_commit(2_000, &[first], &[])
+            .await
+            .unwrap();
     }
 }
 

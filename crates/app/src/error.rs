@@ -5,6 +5,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use core::fmt::Display;
 
+use sekai_storage::{CommitError, ResolveError, StorageError};
 use sekai_util::{RegionKey, chunk_coord::ChunkCoord};
 use sekai_world::{RegionFile, WorldTree};
 
@@ -30,6 +31,32 @@ where
 {
     let error: <W::Region as RegionFile>::Error = error.into();
     world_error::<W>(error)
+}
+
+/// Lift a commit-graph failure into [`AppError`]. A backend failure
+/// surfaces as [`AppError::Storage`], which keeps its cause: the graph
+/// error's message names none.
+pub(crate) fn commit_error(error: CommitError<StorageError>) -> AppError {
+    match error {
+        CommitError::Meta(source) => AppError::Storage(source),
+        other @ CommitError::UnknownCommit { .. } => AppError::Commit(other),
+    }
+}
+
+/// Lift a revision failure into [`AppError`], a backend failure as
+/// [`AppError::Storage`] like [`commit_error`]: a store opened from no
+/// worktree then fails alike whether HEAD is read directly or through a
+/// revision.
+pub(crate) fn revision_error(error: ResolveError<StorageError>) -> AppError {
+    match error {
+        ResolveError::Meta(source) => AppError::Storage(source),
+        other @ (ResolveError::UnknownCommit { .. }
+        | ResolveError::UnknownRef { .. }
+        | ResolveError::UnbornRef { .. }
+        | ResolveError::NoActiveRef
+        | ResolveError::UnbornHead { .. }
+        | ResolveError::UnknownRevision { .. }) => AppError::Revision(other),
+    }
 }
 
 /// Failure for a world tree that reports one region identity twice.
